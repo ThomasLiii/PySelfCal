@@ -37,9 +37,15 @@ off = offset, the exposure or detector offsets
 def _reproject_task(task_args):
     """Individual tasks called by batch_reproject's multiprocessing instances"""
     # Unpacked arguments for clarity
-    method, file_idx, file_path, det_idx, sci_ext, dq_ext, ref_wcs, sub_width, \
-    output_dir, oversample_factor, ignore_flags = task_args
-    
+    method, file_path, exp_idx, det_idx, sci_ext, dq_ext, ref_wcs, sub_width, \
+    output_dir, oversample_factor, replace_existing = task_args
+
+    # Save to HDF5
+    # Filename uses overall exposure index (file_idx) and detector index within that exposure (det_idx)
+    output_file = os.path.join(output_dir, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
+    if not replace_existing and os.path.exists(output_file):
+        return output_file # Skip if file already exists and replace_existing is False
+
     reproj_funcs = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
     kwargs = {}
     if method == 'adaptive':
@@ -80,12 +86,12 @@ def _reproject_task(task_args):
             
             # Process detector auxiliary data
             bitmask_data = hdul[dq_ext].data
-            bitmask_header = hdul[dq_ext].header
-            valid_mask = bit_to_bool(bitmask_data, ignore_flags, bitmask_header, invert=True)
+            # bitmask_header = hdul[dq_ext].header
+            # valid_mask = bit_to_bool(bitmask_data, ignore_flags, bitmask_header, invert=True)
 
             det_x, det_y = np.meshgrid(np.arange(det_width), np.arange(det_width))
 
-            det_aux = np.stack((valid_mask, det_x, det_y), axis=0) # Stack valid mask and pixel coordinates
+            det_aux = np.stack((bitmask_data, det_x, det_y), axis=0) # Stack valid mask and pixel coordinates
             grid_wcs = upscale_wcs(sub_wcs, oversample_factor)
             grid_width = sub_width * oversample_factor
 
@@ -93,14 +99,11 @@ def _reproject_task(task_args):
                 (det_aux, det_wcs), 
                 grid_wcs, 
                 shape_out=(grid_width, grid_width), 
+                order='nearest-neighbor'
             )
 
-            grid_weight = grid_aux[0] # Valid mask in the grid
+            grid_bitmask = grid_aux[0] # Valid mask in the grid
             grid_mapping = (grid_aux[1],grid_aux[2]) # X coordinates in the grid
-
-        # Save to HDF5
-        # Filename uses overall exposure index (file_idx) and detector index within that exposure (det_idx)
-        output_file = os.path.join(output_dir, f'exp_{file_idx:04d}_det_{det_idx:02d}.h5')
         
         with h5py.File(output_file, 'w') as hf:
             hf.create_dataset('sub_data', data=sub_data, compression='gzip')
@@ -110,18 +113,17 @@ def _reproject_task(task_args):
             hf.create_dataset('ref_coords', data=np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)) # Sub-frame location in full reference
             hf.create_dataset('sub_foot', data=sub_foot, compression='gzip') # Footprint of sub_data
             hf.create_dataset('file_path', data=file_path)
-            hf.create_dataset('grid_weight', data=grid_weight, compression='gzip') # Validity mask for grid
+            hf.create_dataset('grid_bitmask', data=grid_bitmask, compression='gzip') # Validity mask for grid
             hf.create_dataset('grid_mapping', data=grid_mapping, compression='gzip') # Pixel mapping in the grid
         return output_file # Return path on success
     except Exception as e:
-        print(f'Error processing detector {det_idx} from exposure file index {file_idx} ({file_path}): {e}')
+        print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
         # import traceback; traceback.print_exc() # Uncomment for detailed debugging
         return None # Return None on failure
 
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
                     output_dir='output/', padding_percentage=0.05, oversample_factor=2, num_processes=1,
-                    ignore_flags = ['HIERARCH MSK_FLAG_DARKNODET', 'HIERARCH MSK_FLAG_NLINEAR'],
-                    sci_ext_list=[], dq_ext_list=[], method='interp'):
+                    sci_ext_list=[], dq_ext_list=[], method='interp', exp_idx_list=None, det_idx_list=None, replace_existing=True):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -182,12 +184,14 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     sub_width = int(np.ceil(np.sqrt(2) * np.max(det_data_0.shape) / reso_ratio * (1 + 2 * padding_percentage)))
 
     tasks = []
-    for file_idx, file_path in enumerate(exposure_list): # file_idx is the overall exposure index
-        for det_idx, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
+    for i, file_path in enumerate(exposure_list): # file_idx is the overall exposure index
+        for j, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
+            exp_idx = exp_idx_list[i] if exp_idx_list is not None else i
+            det_idx = det_idx_list[j] if det_idx_list is not None else j
             tasks.append((
-                method, file_idx, file_path, det_idx, sci_ext, dq_ext, 
+                method, file_path, exp_idx, det_idx, sci_ext, dq_ext, 
                 ref_wcs, sub_width, 
-                output_dir, oversample_factor, ignore_flags
+                output_dir, oversample_factor, replace_existing
             ))
     
     results = []
@@ -237,18 +241,21 @@ def load_reproj_file(file_path, fields):
     data['_is_missing_'] = is_file_missing # Add a flag
     return data
 
+def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
+    valid_bit = ~np.isnan(bitmask)
+    grid_mask = np.zeros_like(bitmask, dtype=bool)
+    grid_mask[valid_bit] = bit_to_bool(bitmask[valid_bit].astype(np.uint32), ignore_list, invert=True) # 1 = Good pixel, 0 = Bad pixel
+    sub_mask_float = bin2d(grid_mask, oversample_factor) # Downscale to sub-frame size
+    sub_mask = np.where(sub_mask_float > valid_threshold, 1, 0).astype(bool)
+    return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
 
 def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx, 
                 apply_weight, apply_mask, chunk_map, chunk_valid_mask):
     """Prepares data from a single file for co-addition or lsqr."""
     fields=['sub_data', 'ref_coords', 'grid_mapping']
     if apply_mask:
-        fields.append('grid_weight') # More like grid validity weight
+        fields.append('grid_bitmask') # More like grid validity weight
     result = load_reproj_file(file, fields=fields)
-
-    # If file loading failed or essential data is missing, return None
-    if result['_is_missing_'] or result['sub_data'] is None or result['ref_coords'] is None or result['grid_mapping'] is None:
-        return None, None, None, None 
 
     data = result['sub_data']
     coords = result['ref_coords']
@@ -257,11 +264,10 @@ def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx,
     oversample_factor = int(grid.shape[-1] / data.shape[-1]) if grid is not None and data.shape[-1] > 0 else 1
 
     # Apply mask
-    if apply_mask and result.get('grid_weight') is not None:
-        grid_valid_weight = result['grid_weight']
-        sub_valid_weight = bin2d(grid_valid_weight, oversample_factor)
-        sub_valid_mask = np.nan_to_num(np.where(sub_valid_weight > 0.99, 1, 0), nan=0).astype(bool)
-        data[~sub_valid_mask] = np.nan
+    if apply_mask:
+        bitmask = result['grid_bitmask']
+        sub_mask = grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[17, 21], valid_threshold=0.99)
+        data[~sub_mask] = np.nan
 
     # Apply exposure offset if provided
     if exp_offset is not None:
@@ -433,22 +439,16 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
         num_sky = ref_h * ref_w
 
         # Identify valid pixels after _prep_subframe has applied its masking
-        sub_valid = ~np.isnan(sub_data)
+        sub_valid = np.ones_like(sub_data)#~np.isnan(sub_data)
         valid_sub_coords = np.nonzero(sub_valid) # Coordinates within sub_data, flat
         sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
         valid_vals = sub_data[valid_sub_coords] # Values at valid coordinates, flat
         valid_weight = sub_weight[valid_sub_coords] # Weights at valid coordinates, flat
         num_valid_pixels = valid_vals.shape[0]
+
         if num_valid_pixels == 0:
             print(f"No valid pixels found in subframe {i} from file {reproj_file}. Skipping.")
-            return {
-                'rows': np.array([], dtype=np.int64),
-                'cols': np.array([], dtype=np.int64),
-                'data': np.array([], dtype=np.float32),
-                'b': np.array([], dtype=np.float32),
-                'i': i,
-                'num_val_pix': 0
-            }
+            return np.array([]), np.array([]), np.array([]), np.array([])
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) # Convert to flat indices in the reference frame    
 
@@ -476,14 +476,13 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
         sub_cols = np.concatenate([S_cols, O_cols, D_cols])
         sub_data = np.concatenate([S_data, O_data, D_data])
 
-        return {
-            'rows': sub_rows,
-            'cols': sub_cols,
-            'data': sub_data,
-            'b': sub_b,
-            'i': i,
-            'num_valid_pixels': num_valid_pixels
-        }
+        keep_data = ~np.isnan(sub_b[sub_rows])
+        sub_rows = sub_rows[keep_data]
+        sub_cols = sub_cols[keep_data]
+        sub_data = sub_data[keep_data]
+        sub_b[np.isnan(sub_b)] = 0
+        num_rows = sub_h * sub_w
+        return sub_rows, sub_cols, sub_data, sub_b, num_rows
     except Exception as e:
         print(f"Error processing file {reproj_file} for exp_idx={exp_idx}, det_idx={det_idx}: {e}")
         traceback.print_exc()
@@ -529,16 +528,16 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
                 # Explicityly end all workers
                 executor.shutdown(wait=True)
                 return None, None
-            num_valid_pixels = result['num_valid_pixels']
-            if num_valid_pixels == 0:
+            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
+            if len(sub_b) == 0:
                 continue  # Skip frames with no valid data
             # Concatenate rows, cols, data directly
-            all_rows.append(result['rows'] + row_offset)
-            all_cols.append(result['cols'])
-            all_data.append(result['data'])
+            all_rows.append(sub_rows + row_offset)
+            all_cols.append(sub_cols)
+            all_data.append(sub_data)
             # b vector
-            all_b.append(result['b'])
-            row_offset += num_valid_pixels
+            all_b.append(sub_b)
+            row_offset += num_rows
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
@@ -555,21 +554,21 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     return full_A, full_b
 
 
-def apply_lsqr(A, b, ref_shape, num_exp + num_det * num_chunks, x0=None, 
-                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=3000):
+def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, chunk_map, x0=None, 
+                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):
+    num_chunks = len(np.unique(chunk_map))
+    num_exp = len(np.unique(exp_idx_list))
+    num_det = len(np.unique(det_idx_list))
     ref_h, ref_w = ref_shape
-    num_pixels_sky = ref_h * ref_w
-    chunks_per_det = n_chunk[0] * n_chunk[1]
-    total_detector_chunks = num_detectors * chunks_per_det
-    total_unknowns = num_pixels_sky + num_frames + total_detector_chunks
+    num_sky = ref_h * ref_w
 
-    print(f"Solving least squares for {total_unknowns} unknowns...")
+    print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
     result = lsqr(A, b, x0=x0, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     x = result[0]
 
-    S = x[:num_pixels_sky].reshape(ref_shape)
-    O = x[num_pixels_sky : num_pixels_sky + num_exp]
-    D = x[num_pixels_sky + num_exp:].reshape((num_detectors, num_chunks))
+    S = x[:num_sky].reshape(ref_shape)
+    O = x[num_sky : num_sky + num_exp]
+    D = x[num_sky + num_exp:]
 
     return O, S, D
 
