@@ -476,12 +476,20 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
         sub_cols = np.concatenate([S_cols, O_cols, D_cols])
         sub_data = np.concatenate([S_data, O_data, D_data])
 
-        keep_data = ~np.isnan(sub_b[sub_rows])
-        sub_rows = sub_rows[keep_data]
-        sub_cols = sub_cols[keep_data]
-        sub_data = sub_data[keep_data]
-        sub_b[np.isnan(sub_b)] = 0
-        num_rows = sub_h * sub_w
+        # Remove rows where sub_b is NaN or both sub_data and sub_b are zero, and reindex rows and sub_b accordingly
+        # First, get the mask for valid rows: not nan, and not both zero
+        valid_mask = ~np.isnan(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
+        sub_rows = sub_rows[valid_mask]
+        sub_cols = sub_cols[valid_mask]
+        sub_data = sub_data[valid_mask]
+
+        # Find which unique rows remain and create a mapping to new row indices
+        unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
+        sub_rows = new_row_indices
+
+        # Filter sub_b to only the kept rows, in the order of unique_rows
+        sub_b = sub_b[unique_rows]
+        num_rows = len(sub_b)
         return sub_rows, sub_cols, sub_data, sub_b, num_rows
     except Exception as e:
         print(f"Error processing file {reproj_file} for exp_idx={exp_idx}, det_idx={det_idx}: {e}")

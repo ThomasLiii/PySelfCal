@@ -5,11 +5,11 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix
 
 
-def bit_to_bool(bitmask_array, ignore_list, bitmask_header, invert=False):
+def bit_to_bool(bitmask_array, ignore_list, bitmask_header=None, invert=False):
     # bitmask_array = bitmask_array ^ np.uint32(1 << bitmask_header['MP_PERSIST'])
     ignore_mask_val = np.uint32(0)
-    for key in ignore_list:
-        bit = bitmask_header[key]
+    for item in ignore_list:
+        bit = bitmask_header[item] if bitmask_header is not None else item
         ignore_mask_val |= np.uint32(1 << bit)
     relevant_mask = np.invert(ignore_mask_val)
     mask = (bitmask_array & relevant_mask) != 0
