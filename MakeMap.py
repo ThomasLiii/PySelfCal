@@ -409,13 +409,76 @@ def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0,
     clipped_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
     return clipped_map, weight_sum
 
+def _prep_coverage(file, exp_offset, det_offset, exp_idx, det_idx, 
+                chunk_map, chunk_valid_mask):
+    fields = ['sub_data', 'ref_coords', 'grid_mapping']
+    result = load_reproj_file(file, fields=fields)
+
+    data = result['sub_data']
+    coords = result['ref_coords']
+    grid = result['grid_mapping']
+    oversample_factor = int(grid.shape[-1] / data.shape[-1])
+
+    chunk_contrib = compute_chunk_contrib(
+        grid_mapping=grid,
+        chunk_map=chunk_map,
+        oversample_factor=oversample_factor
+    )
+
+    chunk_weight = 1.0
+    if chunk_valid_mask is not None:
+        chunk_weight_flat = chunk_contrib.T @ chunk_valid_mask.flatten()
+        chunk_weight = chunk_weight_flat.reshape(data.shape) # Use data.shape
+
+    if exp_offset is not None or det_offset is not None:
+        cover = np.zeros_like(data)
+        if exp_offset is not None:
+            cover -= exp_offset[exp_idx]
+        if det_offset is not None:
+            sub_offset_flat = chunk_contrib.T @ det_offset[det_idx].flatten()
+            sub_offset = sub_offset_flat.reshape(data.shape) # Use data.shape for consistency
+            cover -= sub_offset
+    else:
+        cover = np.ones_like(data)
+
+    cover *= chunk_weight # chunk_weight is 1.0 if not modified
+    
+    return coords, cover
+
+def compute_coverage_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
+                     exp_idx_list=None, det_idx_list=None, 
+                     chunk_map=None, chunk_valid_mask=None, max_workers=20):
+    coverage_map = np.zeros(ref_shape, dtype=np.float32)
+    batch_size = max_workers * 10
+    total = len(reproj_file_list)
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            futures = {
+                executor.submit(_prep_coverage, reproj_file_list[i], exp_offset, det_offset, exp_idx_list[i], det_idx_list[i], 
+                chunk_map, chunk_valid_mask): i 
+                for i in range(batch_start, batch_end)
+            }
+            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Computing mean map [{batch_start}/{total}]"):
+                coords, cover = future.result() # Ignore chunk_contrib
+                if coords is None: continue # Skip if _prep_subframe failed
+    
+                sub_crop, ref_crop = compute_crop(ref_shape, coords)
+                coverage_map[ref_crop] += cover[sub_crop]
+
+                del coords, cover, sub_crop, ref_crop
+                gc.collect()
+
+    return coverage_map
+
 def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
                apply_mask, apply_weight, chunk_map, chunk_valid_mask):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.
     A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
     b.shape = (subframe_pixels,)
     Solve for x which has x.shape = (num_sky_pixels + num_exp + num_det * num_chunks)
-    Assumtions:
+    Assumptions:
     - Each pixel value in sub_data corresponds to a single sky pixel in the reference frame.
     - Each subframe comes from a single exposure and a single detector.
     '''
@@ -562,9 +625,8 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     return full_A, full_b
 
 
-def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, chunk_map, x0=None, 
+def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):
-    num_chunks = len(np.unique(chunk_map))
     num_exp = len(np.unique(exp_idx_list))
     num_det = len(np.unique(det_idx_list))
     ref_h, ref_w = ref_shape
