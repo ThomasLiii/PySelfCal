@@ -23,6 +23,7 @@ from functools import partial
 from MapUtility import bit_to_bool, make_weight, find_outliers, map_pixels, det_to_sub, compute_chunk_contrib, compute_crop, bin2d
 from WCSUtility import load_from_fits, save_to_fits, find_optimal_frame, upscale_wcs
 import traceback
+import warnings
 
 '''
 Naming convention:
@@ -482,7 +483,7 @@ def compute_coverage_map(ref_shape, reproj_file_list, exp_offset=None, det_offse
     return coverage_map
 
 def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
-               apply_mask, apply_weight, chunk_map, chunk_valid_mask):
+               apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.
     A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
     b.shape = (subframe_pixels,)
@@ -511,7 +512,10 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
         num_sky = ref_h * ref_w
 
         # Identify valid pixels after _prep_subframe has applied its masking
-        sub_valid = np.ones_like(sub_data)#~np.isnan(sub_data)
+        sub_valid = ~np.isnan(sub_data) # Boolean mask for valid pixels in sub_data
+        if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
+            sub_out = find_outliers(sub_data, threshold=outlier_thresh) # Find outliers in the sub_data
+            sub_valid &= ~sub_out # Combine valid mask with outlier mask
         valid_sub_coords = np.nonzero(sub_valid) # Coordinates within sub_data, flat
         sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
         valid_vals = sub_data[valid_sub_coords] # Values at valid coordinates, flat
@@ -570,7 +574,7 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
 
 
 def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
-               apply_mask, apply_weight, chunk_map, chunk_valid_mask,
+               apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh=3,
                max_workers=20):
 
     if not reproj_file_list:
@@ -595,7 +599,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
         futures = {
             executor.submit(_prep_lsqr, i, 
                             reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
-                            apply_mask, apply_weight, chunk_map, chunk_valid_mask
+                            apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh
                             ): i
             for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(reproj_file_list, exp_idx_list, det_idx_list))
         }
