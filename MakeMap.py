@@ -235,20 +235,20 @@ def load_reproj_file(file_path, fields):
     data = {}
     is_file_missing = False
     try:
-        with h5py.File(file_path, 'r') as file:
+        with h5py.File(file_path, 'r', libver='latest', swmr=True) as file:
             for key in fields:
-                if key == 'sub_wcs' or key == 'det_wcs': # WCS objects
+                if key in ('sub_wcs', 'det_wcs'):
                     header_key = 'sub_header' if key == 'sub_wcs' else 'det_header'
                     header_str = file[header_key][()].decode('utf-8')
                     data[key] = WCS(fits.Header.fromstring(header_str))
-                else: # Numpy arrays
-                    data[key] = np.array(file[key])
+                else:
+                    data[key] = file[key][()]  # Efficient read
     except Exception as e:
         print(f"Error loading {file_path}: {e}. Will use placeholders.")
-        is_file_missing = True # Treat as missing if other error occurs
+        is_file_missing = True
         for key in fields:
             data[key] = None
-    data['_is_missing_'] = is_file_missing # Add a flag
+    data['_is_missing_'] = is_file_missing
     return data
 
 def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
@@ -309,112 +309,153 @@ def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx,
     
     return coords, data, weight, chunk_contrib
 
-def compute_mean_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
-                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                     chunk_map=None, chunk_valid_mask=None, max_workers=20):
+def _compute_chunk_worker(args):
+    """Worker function for Pool processing that computes partial sums for a chunk of files"""
+    chunk_files, chunk_indices, exp_offset, det_offset, exp_idx_list, det_idx_list, \
+    apply_weight, apply_mask, chunk_map, chunk_valid_mask, ref_shape, operation_type, \
+    mean_map, std_map, sigma = args
+    
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
-    batch_size = max_workers * 10
+    
+    for i, file_path in enumerate(chunk_files):
+        idx = chunk_indices[i]
+        coords, data, weight, _ = _prep_subframe(
+            file_path, exp_offset, det_offset, 
+            exp_idx_list[idx], det_idx_list[idx], 
+            apply_weight, apply_mask, 
+            chunk_map, chunk_valid_mask
+        )
+        
+        if coords is None:
+            continue
+            
+        sub_crop, ref_crop = compute_crop(ref_shape, coords)
+        data_crop = data[sub_crop]
+        weight_crop = weight[sub_crop]
+        valid = ~np.isnan(data_crop)
+        
+        if operation_type == 'mean':
+            data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
+            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+        elif operation_type == 'std':
+            mean_crop = mean_map[ref_crop]
+            data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
+            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+        elif operation_type == 'sigma_clip':
+            mean_crop = mean_map[ref_crop]
+            std_crop = std_map[ref_crop]
+            clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
+            valid_clipped = valid & clip_mask
+            data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
+            weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+    
+    return data_sum, weight_sum
+
+def compute_mean_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
+                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
+                     chunk_map=None, chunk_valid_mask=None, max_workers=10):
+    
     total = len(reproj_file_list)
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            futures = {
-                executor.submit(_prep_subframe, reproj_file_list[i], exp_offset, det_offset, 
-                                exp_idx_list[i], det_idx_list[i], apply_weight, apply_mask, 
-                                chunk_map, chunk_valid_mask): i 
-                for i in range(batch_start, batch_end)
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Computing mean map [{batch_start}/{total}]"):
-                coords, data, weight, _ = future.result() # Ignore chunk_contrib
-                if coords is None: continue # Skip if _prep_subframe failed
-                
-                sub_crop, ref_crop = compute_crop(ref_shape, coords)
-                data_crop = data[sub_crop]
-                weight_crop = weight[sub_crop]
-                valid = ~np.isnan(data_crop)
-                
-                data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
-                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
-
-                del coords, data, weight, _, sub_crop, ref_crop, data_crop, weight_crop, valid
-                gc.collect()
+    
+    # Split files equally among workers
+    chunk_size = (total + max_workers - 1) // max_workers  # Ceiling division
+    chunks = []
+    
+    for i in range(max_workers):
+        start_idx = i * chunk_size
+        end_idx = min(start_idx + chunk_size, total)
+        if start_idx < total:
+            chunk_files = reproj_file_list[start_idx:end_idx]
+            chunk_indices = list(range(start_idx, end_idx))
+            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+                          exp_idx_list, det_idx_list, apply_weight, apply_mask, 
+                          chunk_map, chunk_valid_mask, ref_shape, 'mean', None, None, None))
+    
+    # Process chunks in parallel using Pool
+    with Pool(processes=max_workers) as pool:
+        results = list(tqdm(pool.imap(_compute_chunk_worker, chunks), 
+                           total=len(chunks), desc="Computing mean map"))
+    
+    # Combine results from all workers
+    data_sum = np.zeros(ref_shape, dtype=np.float32)
+    weight_sum = np.zeros(ref_shape, dtype=np.float32)
+    
+    for chunk_data_sum, chunk_weight_sum in results:
+        data_sum += chunk_data_sum
+        weight_sum += chunk_weight_sum
 
     mean_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
     return mean_map, weight_sum
 
 def compute_std_map(mean_map, ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                    chunk_map=None, chunk_valid_mask=None, max_workers=20):
+                    chunk_map=None, chunk_valid_mask=None, max_workers=10):
+    
+    total = len(reproj_file_list)
+    
+    # Split files equally among workers
+    chunk_size = (total + max_workers - 1) // max_workers  # Ceiling division
+    chunks = []
+    
+    for i in range(max_workers):
+        start_idx = i * chunk_size
+        end_idx = min(start_idx + chunk_size, total)
+        if start_idx < total:
+            chunk_files = reproj_file_list[start_idx:end_idx]
+            chunk_indices = list(range(start_idx, end_idx))
+            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+                          exp_idx_list, det_idx_list, apply_weight, apply_mask, 
+                          chunk_map, chunk_valid_mask, ref_shape, 'std', mean_map, None, None))
+    
+    # Process chunks in parallel using Pool
+    with Pool(processes=max_workers) as pool:
+        results = list(tqdm(pool.imap(_compute_chunk_worker, chunks), 
+                           total=len(chunks), desc="Computing std map"))
+    
+    # Combine results from all workers
     sq_diff_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
-    batch_size = max_workers * 10
-    total = len(reproj_file_list)
+    
+    for chunk_sq_diff_sum, chunk_weight_sum in results:
+        sq_diff_sum += chunk_sq_diff_sum
+        weight_sum += chunk_weight_sum
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            futures = {
-                executor.submit(_prep_subframe, reproj_file_list[i], exp_offset, det_offset,
-                                exp_idx_list[i], det_idx_list[i], apply_weight, apply_mask,
-                                chunk_map, chunk_valid_mask): i
-                for i in range(batch_start, batch_end)
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Computing Std [{batch_start}/{total}]"):
-                coords, data, weight, _ = future.result() # Ignore chunk_contrib
-                if coords is None: continue
-                
-                sub_crop, ref_crop = compute_crop(ref_shape, coords)
-                
-                valid = ~np.isnan(data[sub_crop])
-                mean_crop = mean_map[ref_crop]
-                
-                sq_diff_sum[ref_crop] += np.where(valid, (data[sub_crop] - mean_crop)**2 * weight[sub_crop], 0.0)
-                weight_sum[ref_crop] += np.where(valid, weight[sub_crop], 0.0) # Use actual weights sum
-
-                del coords, data, weight, _, sub_crop, ref_crop, valid, mean_crop
-                gc.collect()
-
-    variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0) # Prevent division by zero for variance
+    variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
     return np.sqrt(variance), weight_sum
 
-
 def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0, 
-                                exp_offset=None, det_offset=None, exp_idx_list=None, det_idx_list=None, 
-                                apply_weight=True, apply_mask=True, chunk_map=None, chunk_valid_mask=None, max_workers=20):
+                    exp_offset=None, det_offset=None, exp_idx_list=None, det_idx_list=None, 
+                    apply_weight=True, apply_mask=True, chunk_map=None, chunk_valid_mask=None, max_workers=10):
+    
+    total = len(reproj_file_list)
+    
+    # Split files equally among workers
+    chunk_size = (total + max_workers - 1) // max_workers  # Ceiling division
+    chunks = []
+    
+    for i in range(max_workers):
+        start_idx = i * chunk_size
+        end_idx = min(start_idx + chunk_size, total)
+        if start_idx < total:
+            chunk_files = reproj_file_list[start_idx:end_idx]
+            chunk_indices = list(range(start_idx, end_idx))
+            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+                          exp_idx_list, det_idx_list, apply_weight, apply_mask, 
+                          chunk_map, chunk_valid_mask, ref_shape, 'sigma_clip', mean_map, std_map, sigma))
+    
+    # Process chunks in parallel using Pool
+    with Pool(processes=max_workers) as pool:
+        results = list(tqdm(pool.imap(_compute_chunk_worker, chunks), 
+                           total=len(chunks), desc="Sigma-clipped coadd"))
+    
+    # Combine results from all workers
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
-    batch_size = max_workers * 10
-    total = len(reproj_file_list)
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            futures = {
-                 executor.submit(_prep_subframe, reproj_file_list[i], exp_offset, det_offset,
-                                exp_idx_list[i], det_idx_list[i], apply_weight, apply_mask,
-                                chunk_map, chunk_valid_mask): i
-                for i in range(batch_start, batch_end)
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Sigma-Clipped Coadd [{batch_start}/{total}]"):
-                coords, data, weight, _ = future.result() # Ignore chunk_contrib
-                if coords is None: continue
-
-                sub_crop, ref_crop = compute_crop(ref_shape, coords)
-                
-                data_crop = data[sub_crop]
-                mean_crop = mean_map[ref_crop]
-                std_crop = std_map[ref_crop]
-                
-                clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop # Use <= for inclusive range
-                valid = (~np.isnan(data_crop)) & clip_mask
-                
-                data_sum[ref_crop] += np.where(valid, data_crop * weight[sub_crop], 0.0)
-                weight_sum[ref_crop] += np.where(valid, weight[sub_crop], 0.0)
-
-                del coords, data, weight, _, sub_crop, ref_crop, data_crop, mean_crop, std_crop, clip_mask, valid
-                gc.collect()
+    
+    for chunk_data_sum, chunk_weight_sum in results:
+        data_sum += chunk_data_sum
+        weight_sum += chunk_weight_sum
 
     clipped_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
     return clipped_map, weight_sum
@@ -654,284 +695,3 @@ def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None,
     D = x[num_sky + num_exp:]
 
     return O, S, D
-
-class Mosaicker:
-    def __init__(self,  exposure_list=[], reproj_list=[], config=None, data_dict=None):
-        self.exposure_list = exposure_list
-        self.reproj_list = reproj_list
-        self.config = {
-            'band': None,
-            'n_chunk': None, 
-            'det_width': None, 
-            'num_detectors': None,
-            'ref_reso': None,
-            'grid_reso': None,
-            'ref_shape': None,
-            'ref_wcs': None,
-            'sci_ext_list': None,
-            'dq_ext_list': None,
-            'out_dir': None,
-            'run_name': None
-            }
-        if config is not None:
-            self.config.update(config)
-        # Convert padding pad_fraction to width in pixels
-        self.config['ref_padding'] = int((1+config['pad_fraction']) * (np.sqrt(2)-1) * \
-                                         config['det_width'] / (config['ref_reso']/config['det_reso']))
-        # Define path for reference wcs and reprojected files
-        self.config['wcs_path'] = os.path.join(config['out_dir'], config['run_name'], 'ref_frame.fits')
-        self.config['reproj_path'] = os.path.join(config['out_dir'], config['run_name'], 'reprojected', config['band'])
-        self.config['cal_path'] = os.path.join(config['out_dir'], config['run_name'], f'{config['band']}_cal.h5')
-    
-    def define_reference(self, new=False, use_ext=[1, 10, 37, 46]):
-        if os.path.exists(self.config['wcs_path']) and not new:
-            ref_wcs, ref_shape = load_from_fits(self.config['wcs_path'])
-        else:
-            ref_wcs, ref_shape = find_optimal_frame(
-                exposure_list=self.exposure_list,
-                resolution_arcsec=self.config['ref_reso'],
-                padding_pixels=self.config['ref_padding'],
-                use_ext=use_ext)
-            save_to_fits(ref_wcs, ref_shape, self.config['wcs_path'])
-        self.config['ref_wcs'] = ref_wcs
-        self.config['ref_shape'] = ref_shape
-        print(f'Reference frame loaded with shape {ref_shape}')
-        print(ref_wcs)
-
-
-    def run_reproject(self, apply_mask=True, ignore_flags = ['HIERARCH MSK_FLAG_DARKNODET', 'HIERARCH MSK_FLAG_NLINEAR'], 
-                      method = 'adaptive', num_processes = 100):
-        assert self.exposure_list, 'No exposure files loaded. Please load exposure files first.'
-        assert self.config['ref_wcs'] is not None, 'Reference WCS not defined. Please define reference frame first.'
-        reproj_list = batch_reproject(
-            # Can edit
-            apply_mask = apply_mask, 
-            num_processes = num_processes,
-            ignore_flags = ignore_flags,
-            method = method,  # interp: fastest, adaptive: conserves flux
-
-            # Porbably don't want to edit
-            exposure_list = self.exposure_list,
-            ref_wcs = self.config['ref_wcs'], 
-            ref_shape = self.config['ref_shape'],
-            output_dir = self.config['reproj_path'], 
-            padding_percentage = self.config['pad_fraction'],
-            grid_reso_arcsec = self.config['grid_reso'], 
-            sci_ext_list = self.config['sci_ext_list'], 
-            dq_ext_list = self.config['dq_ext_list'],
-            )
-        self.reproj_list = sorted(reproj_list)
-
-    def setup_lsqr(self, reproj_list=[], clip_outlier=True, apply_weight=True, max_workers=20):
-        if reproj_list:
-            self.reproj_list = reproj_list
-        A, b = setup_lsqr(
-            ref_shape=self.config['ref_shape'], 
-            clip_outlier=clip_outlier, 
-            apply_weight=apply_weight, 
-            n_chunk=self.config['n_chunk'],
-            num_detectors=self.config['num_detectors'],
-            reproj_file_list=self.reproj_list,
-            max_workers=max_workers,
-            )
-        self.A = A
-        self.b = b
-        print(f'Setup LSQR completed')
-        print(f'A has shape {A.shape} and {A.nnz} non-zero elements')
-        print(f'b has shape {b.shape}')
-    
-    def solve_lsqr(self, x0=None, atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=3000, save=True):
-        assert self.A is not None, 'LSQR matrix A not defined. Please run setup_lsqr first.'
-        O, S, D = apply_lsqr(
-            A=self.A, 
-            b=self.b, 
-            ref_shape=self.config['ref_shape'], 
-            num_frames=len(self.reproj_list), 
-            n_chunk=self.config['n_chunk'], 
-            x0=x0, 
-            num_detectors=self.config['num_detectors'], 
-            atol=atol,
-            btol=btol, 
-            damp=damp,
-            iter_lim=iter_lim
-            )
-        self.O = O
-        self.S = S
-        self.D = D
-        print(f'LSQR solved. O, S, D have shapes {O.shape}, {S.shape}, {D.shape}')
-        print(f'O has mean {np.nanmean(O):.2f} and std {np.nanstd(O):.2f}')
-        print(f'S has mean {np.nanmean(S):.2f} and std {np.nanstd(S):.2f}')
-        print(f'D has mean {np.nanmean(D):.2f} and std {np.nanstd(D):.2f}')
-        if save:
-            with h5py.File(self.config['cal_path'], 'w') as f:
-                f.create_dataset('O', data=O)
-                f.create_dataset('S', data=S)
-                f.create_dataset('D', data=D)
-            print(f'LSQR results saved to {self.config['cal_path']}')
-
-    def load_cal(self, cal_path=None):
-        if cal_path is None:
-            cal_path = self.config['cal_path']
-        with h5py.File(cal_path, 'r') as f:
-            self.O = f['O'][()]
-            self.S = f['S'][()]
-            self.D = f['D'][()]
-        print(f'LSQR results loaded from {cal_path}')
-        print(f'O has shape {self.O.shape}')
-        print(f'S has shape {self.S.shape}')
-        print(f'D has shape {self.D.shape}')
-    
-    def make_mosaic(self, apply_sigma_clip=False, apply_cal=False, norm_cal=True, sigma=3.0, apply_weight=True, max_workers=20):
-        assert self.reproj_list, 'No reprojection files loaded. Please run run_reproject first.'
-        assert self.config['ref_shape'] is not None, 'Reference shape not defined. Please define reference shape first.'
-        O = None
-        D = None
-        if apply_cal:
-            assert self.O is not None, 'Offsets not defined. Please run solve_lsqr first.'
-            assert self.D is not None, 'Detector chunk offsets not defined. Please run solve_lsqr first.'
-            O = self.O.copy()
-            D = self.D.copy()
-            if norm_cal:
-                O -= np.mean(self.O)
-                D -= np.mean(self.D, axis=0)
-        mean_map, mean_weight = compute_mean_map(
-            ref_shape=self.config['ref_shape'], 
-            reproj_file_list=self.reproj_list, 
-            det_width=self.config['det_width'], 
-            exp_offset=O,
-            det_offset=D,
-            apply_weight=apply_weight, 
-            max_workers=max_workers
-        )
-        if apply_sigma_clip:
-            std_map, std_weight = compute_std_map(
-                ref_shape=self.config['ref_shape'], 
-                reproj_file_list=self.reproj_list, 
-                det_width=self.config['det_width'], 
-                mean_map=mean_map, 
-                exp_offset=O, 
-                det_offset=D, 
-                apply_weight=apply_weight, 
-                max_workers=max_workers
-            )
-            coadd, coadd_weight = sigma_clip_coadd(
-                ref_shape=self.config['ref_shape'], 
-                reproj_file_list=self.reproj_list, 
-                det_width=self.config['det_width'], 
-                mean_map=mean_map, 
-                std_map=std_map, 
-                sigma=sigma, 
-                exp_offset=O, 
-                det_offset=D, 
-                apply_weight=apply_weight, 
-                max_workers=max_workers
-            )
-        else:
-            coadd = mean_map
-            coadd_weight = mean_weight   
-        return coadd, coadd_weight 
-
-"""------------------------------------------------------------Legacy Code---------------------------------------------------------"""
-# def estimate_memory_requirement(reproj_file_list, fields):
-#     """Estimate memroy requirement to load a list of HDF5 files into memory with the given fields
-#     Parameters
-#     ----------
-#     reproj_file_list : list or tup
-#         List of path to HDF5 files
-#     fields: tup
-#         List of strings corresponding to name of dataset to extract from the HDF5 file
-
-#     Returns
-#     -------
-#     mem_gb : float
-#         Memory requirement in GB
-#     """
-#     sample_data = None
-#     for file_path in reproj_file_list:
-#         if file_path and os.path.exists(file_path): # Check if path is not None and exists
-#             sample_data = load_reproj_file(file_path, fields)
-#             if not sample_data.get('_is_missing_'): break # Found a valid sample
-#         sample_data = None # Reset if loop finishes without break or if file_path was None
-
-#     if sample_data is None or sample_data.get('_is_missing_'):
-#         print('Could not load a sample file for memory estimation. Assuming 0.')
-#         return 0 
-    
-#     size_per_file = 0
-#     for key in fields: # Iterate through requested fields
-#         item = sample_data.get(key) # Get item from sample
-#         if item is not None:
-#             if isinstance(item, np.ndarray): size_per_file += item.nbytes
-#             elif isinstance(item, WCS): size_per_file += sys.getsizeof(str(item.to_header())) 
-#             else: size_per_file += sys.getsizeof(item)
-    
-#     mem_gb = len(reproj_file_list) * size_per_file / (1024**3)
-#     print(f'Estimated memory for {len(reproj_file_list)} files ({fields}): {mem_gb:.2f} GB')
-#     return mem_gb
-
-# def batch_load_reproj_data(reproj_file_list, 
-#                                 fields=('sub_data', 'sub_wcs', 'det_wcs', 'ref_coords', 'grid_mapping'), 
-#                                 max_workers=1, memory_limit=256):
-
-#     print(f"Attempting to load {len(reproj_file_list)} HDF5 files with {max_workers} workers...")
-#     memory_requ = estimate_memory_requirement(reproj_file_list, fields)
-#     if memory_requ > memory_limit:
-#         print(f'Warning: memory requirement ({memory_requ:.2f}GB) > memory limit ({memory_limit}GB) exceeded. Exiting.')
-#         return
-    
-#     data_dict = {key: [None] * len(reproj_file_list) for key in fields}
-    
-#     # Try to load the first existing file to get shapes for pre-allocation
-#     sample_data = None
-#     sample_path = None
-#     for file_path in reproj_file_list:
-#         if os.path.exists(file_path):
-#             sample_data = load_reproj_file(file_path, fields)
-#             if not sample_data.get('_is_missing_'):
-#                 sample_path = file_path
-#                 break # Found a valid sample
-#         sample_data = None # Reset if loop finishes
-
-#     if sample_data:
-#         for key in fields:
-#             item = sample_data.get(key)
-#             if isinstance(item, np.ndarray):
-#                 shape = item.shape
-#                 dtype = item.dtype
-#                 try:
-#                     data_dict[key] = np.empty((len(reproj_file_list), *shape), dtype=dtype)
-#                 except MemoryError:
-#                     print(f"MemoryError pre-allocating for {key}. Exiting.")
-#                     return
-#     else: 
-#         print("Warning: Could not infer shapes from any HDF5 file. Exiting.")
-#         return
-    
-#     num_success = 0
-    
-#     if max_workers > 1:
-#         load_func = partial(load_reproj_file, fields=fields)
-#         try:
-#             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-#                 for i, data_item in enumerate(tqdm(executor.map(load_func, reproj_file_list), total=len(reproj_file_list), desc='Parallel loading')):
-#                     if not data_item.get('_is_missing_'):
-#                         num_success += 1
-#                     for key in fields:
-#                         data_dict[key][i] = data_item[key]
-#                     del data_item  # Free memory immediately
-#         except KeyboardInterrupt:
-#             print("KeyboardInterrupt: cleaning memory")
-#             gc.collect()
-#             raise
-#         except Exception as e:
-#             print(f"An error occurred during parallel HDF5 loading: {e}")
-#     else:
-#         for i, file_path in enumerate(tqdm(reproj_file_list, desc='Sequential loading')):
-#             data_item = load_reproj_file(file_path, fields=fields)
-#             for key in fields:
-#                 num_success += 1
-#                 data_dict[key][i] = data_item[key]
-    
-#     print(f"Finished loading reprojected data. Successfully loaded {num_success} out of {len(reproj_file_list)} expected files.")
-#     return data_dict
-
