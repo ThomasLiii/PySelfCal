@@ -4,7 +4,7 @@ import numpy as np
 import glob
 from py.SPHERExUtility import interpolate_array, make_chunk_map, make_chunk_mask, visualize_chunk_map
 
-detector = 1
+detector = 6
 exposure_list = glob.glob(f'/data1/SPHEREx/deep_north/*/*/*/*D{detector}*.fits')
 for exp_file in exposure_list:
     hdul = fits.open(exp_file)

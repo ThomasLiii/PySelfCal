@@ -34,19 +34,3 @@ for ch in chs:
     cc.apply_lsqr(x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300)
 
     cal_path = cc.save_calibration(cal_file=f'cal_det{detector}_ch{ch_name}.h5')
-
-    mm = PipelineWrapper.Mosaicker(config)
-    mm.load_calibration(cal_path=cal_path)
-
-    mean, std, sc = mm.make_mosaic(
-        apply_mask=True, 
-        apply_weight=True, 
-        chunk_map=chunk_map, 
-        chunk_valid_mask=chunk_valid_mask, 
-        max_workers=40,
-        make_std_map=True, 
-        apply_sigma_clipping=True, 
-        sigma=2.0
-    )
-
-    mm.save_mosaic(mos_file=f'nep_6p2arcsec_det{detector}_ch{ch_name}.fits', overwrite=True)

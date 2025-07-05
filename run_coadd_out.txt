@@ -1,0 +1,3 @@
+Processing channels 6
+Loading reference frame from: /home/thomasli/spherex/selfcal/outputs/nep_det2_6p2arcsec/ref.fits
+Calibration loaded from /home/thomasli/spherex/selfcal/outputs/nep_det2_6p2arcsec/calibration/cal_det2_ch6.h5
