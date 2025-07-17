@@ -4,7 +4,7 @@ import numpy as np
 import glob
 from py.SPHERExUtility import interpolate_array, make_chunk_map, make_chunk_mask, visualize_chunk_map
 
-detector = 2
+detector = 6
 
 config = {}
 config['output_dir'] = '/home/thomasli/spherex/selfcal/outputs'
@@ -12,7 +12,7 @@ config['run_name'] = f'nep_det{detector}_6p2arcsec'
 config['resolution_arcsec'] = 6.2
 
 chunk_map = make_chunk_map(detector, interp_factor=5)
-chs = [[6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17]]
+chs = [[17]]
 
 for ch in chs:
     ch_name = '-'.join([str(i) for i in ch])
