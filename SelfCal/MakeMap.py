@@ -35,12 +35,9 @@ off = offset, the exposure or detector offsets
 {frame}_{name}: frame is the type of frame (sub, ref, det, grid), name describes the content
 
 #TODO:
-- Modify _prep_lsqr to handle out of bounds subframes
-- Modify apply_lsqr for multiple detectors
 - Better error handling in all parallel functions
 - Add more documentation and comments
 - Accelerate _prep_subframe
-- Adapt Mosaicker class to use the new functions
 - Add functionality to handle multiple chunk maps and valid masks
 '''
 
