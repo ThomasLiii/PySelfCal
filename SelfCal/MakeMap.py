@@ -256,9 +256,13 @@ def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_t
     sub_mask = np.where(sub_mask_float > valid_threshold, 1, 0).astype(bool)
     return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
 
-def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx, 
+def _prep_subframe(file, offset, exp_idx, det_idx, 
                 apply_weight, apply_mask, chunk_map, chunk_valid_mask):
-    """Prepares data from a single file for co-addition or lsqr."""
+    """Prepares data from a single file for co-addition or lsqr.
+    
+    offset: shape = (number of exposure, number of chunks)
+    
+    """
     fields=['sub_data', 'ref_coords', 'grid_mapping']
     if apply_mask:
         fields.append('grid_bitmask') # More like grid validity weight
@@ -276,22 +280,18 @@ def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx,
         sub_mask = grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[17, 21], valid_threshold=0.99)
         data[~sub_mask] = np.nan
 
-    # Apply exposure offset if provided
-    if exp_offset is not None:
-        data -= exp_offset[exp_idx]
-
-    # Compute chunk contribution to the sub-frame
+    # Apply offset if provided
     chunk_contrib = None # Initialize chunk_contrib
-    if chunk_map is not None and grid is not None: # Check grid is not None
+    if (offset is not None) or (chunk_valid_mask is not None):
         chunk_contrib = compute_chunk_contrib(
             grid_mapping=grid,
             chunk_map=chunk_map,
             oversample_factor=oversample_factor
         )
 
-    # Apply detector offset ONLY IF det_offset AND chunk_contrib are available
-    if det_offset is not None and chunk_contrib is not None:
-        sub_offset_flat = chunk_contrib.T @ det_offset[det_idx].flatten()
+    if offset is not None:
+        exp_offset = offset[exp_idx]
+        sub_offset_flat = chunk_contrib.T @ exp_offset.flatten()
         sub_offset = sub_offset_flat.reshape(data.shape) # Use data.shape for consistency
         data -= sub_offset
 
@@ -308,7 +308,7 @@ def _prep_subframe(file, exp_offset, det_offset, exp_idx, det_idx,
 
 def _compute_chunk_worker(args):
     """Worker function for Pool processing that computes partial sums for a chunk of files"""
-    chunk_files, chunk_indices, exp_offset, det_offset, exp_idx_list, det_idx_list, \
+    chunk_files, chunk_indices, offset, exp_idx_list, det_idx_list, \
     apply_weight, apply_mask, chunk_map, chunk_valid_mask, ref_shape, operation_type, \
     mean_map, std_map, sigma = args
     
@@ -318,7 +318,7 @@ def _compute_chunk_worker(args):
     for i, file_path in enumerate(chunk_files):
         idx = chunk_indices[i]
         coords, data, weight, _ = _prep_subframe(
-            file_path, exp_offset, det_offset, 
+            file_path, offset, 
             exp_idx_list[idx], det_idx_list[idx], 
             apply_weight, apply_mask, 
             chunk_map, chunk_valid_mask
@@ -349,7 +349,7 @@ def _compute_chunk_worker(args):
     
     return data_sum, weight_sum
 
-def compute_mean_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
+def compute_mean_map(ref_shape, reproj_file_list, offset=None, 
                      exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
                      chunk_map=None, chunk_valid_mask=None, max_workers=10):
     
@@ -365,7 +365,7 @@ def compute_mean_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=No
         if start_idx < total:
             chunk_files = reproj_file_list[start_idx:end_idx]
             chunk_indices = list(range(start_idx, end_idx))
-            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+            chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
                           chunk_map, chunk_valid_mask, ref_shape, 'mean', None, None, None))
     
@@ -385,7 +385,7 @@ def compute_mean_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=No
     mean_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
     return mean_map, weight_sum
 
-def compute_std_map(mean_map, ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
+def compute_std_map(mean_map, ref_shape, reproj_file_list, offset=None, 
                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
                     chunk_map=None, chunk_valid_mask=None, max_workers=10):
     
@@ -401,7 +401,7 @@ def compute_std_map(mean_map, ref_shape, reproj_file_list, exp_offset=None, det_
         if start_idx < total:
             chunk_files = reproj_file_list[start_idx:end_idx]
             chunk_indices = list(range(start_idx, end_idx))
-            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+            chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
                           chunk_map, chunk_valid_mask, ref_shape, 'std', mean_map, None, None))
     
@@ -422,7 +422,7 @@ def compute_std_map(mean_map, ref_shape, reproj_file_list, exp_offset=None, det_
     return np.sqrt(variance), weight_sum
 
 def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0, 
-                    exp_offset=None, det_offset=None, exp_idx_list=None, det_idx_list=None, 
+                    offset=None, exp_idx_list=None, det_idx_list=None, 
                     apply_weight=True, apply_mask=True, chunk_map=None, chunk_valid_mask=None, max_workers=10):
     
     total = len(reproj_file_list)
@@ -437,7 +437,7 @@ def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0,
         if start_idx < total:
             chunk_files = reproj_file_list[start_idx:end_idx]
             chunk_indices = list(range(start_idx, end_idx))
-            chunks.append((chunk_files, chunk_indices, exp_offset, det_offset, 
+            chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
                           chunk_map, chunk_valid_mask, ref_shape, 'sigma_clip', mean_map, std_map, sigma))
     
@@ -457,69 +457,6 @@ def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0,
     clipped_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
     return clipped_map, weight_sum
 
-def _prep_coverage(file, exp_offset, det_offset, exp_idx, det_idx, 
-                chunk_map, chunk_valid_mask):
-    fields = ['sub_data', 'ref_coords', 'grid_mapping']
-    result = load_reproj_file(file, fields=fields)
-
-    data = result['sub_data']
-    coords = result['ref_coords']
-    grid = result['grid_mapping']
-    oversample_factor = int(grid.shape[-1] / data.shape[-1])
-
-    chunk_contrib = compute_chunk_contrib(
-        grid_mapping=grid,
-        chunk_map=chunk_map,
-        oversample_factor=oversample_factor
-    )
-
-    chunk_weight = 1.0
-    if chunk_valid_mask is not None:
-        chunk_weight_flat = chunk_contrib.T @ chunk_valid_mask.flatten()
-        chunk_weight = chunk_weight_flat.reshape(data.shape) # Use data.shape
-
-    if exp_offset is not None or det_offset is not None:
-        cover = np.zeros_like(data)
-        if exp_offset is not None:
-            cover -= exp_offset[exp_idx]
-        if det_offset is not None:
-            sub_offset_flat = chunk_contrib.T @ det_offset[det_idx].flatten()
-            sub_offset = sub_offset_flat.reshape(data.shape) # Use data.shape for consistency
-            cover -= sub_offset
-    else:
-        cover = np.ones_like(data)
-
-    cover *= chunk_weight # chunk_weight is 1.0 if not modified
-    
-    return coords, cover
-
-def compute_coverage_map(ref_shape, reproj_file_list, exp_offset=None, det_offset=None, 
-                     exp_idx_list=None, det_idx_list=None, 
-                     chunk_map=None, chunk_valid_mask=None, max_workers=20):
-    coverage_map = np.zeros(ref_shape, dtype=np.float32)
-    batch_size = max_workers * 10
-    total = len(reproj_file_list)
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            futures = {
-                executor.submit(_prep_coverage, reproj_file_list[i], exp_offset, det_offset, exp_idx_list[i], det_idx_list[i], 
-                chunk_map, chunk_valid_mask): i 
-                for i in range(batch_start, batch_end)
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Computing mean map [{batch_start}/{total}]"):
-                coords, cover = future.result() # Ignore chunk_contrib
-                if coords is None: continue # Skip if _prep_subframe failed
-    
-                sub_crop, ref_crop = compute_crop(ref_shape, coords)
-                coverage_map[ref_crop] += cover[sub_crop]
-
-                del coords, cover, sub_crop, ref_crop
-                gc.collect()
-
-    return coverage_map
-
 def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
                apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.
@@ -533,8 +470,7 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
     try:
         ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
             file=reproj_file,
-            exp_offset=None,  # These are being solved for
-            det_offset=None,
+            offset=None,  # These are being solved for
             exp_idx=None,
             det_idx=None,
             apply_weight=apply_weight,
@@ -566,29 +502,24 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) # Convert to flat indices in the reference frame    
 
-        # Component S: Sky pixel indices
+        # Sky: Sky pixel indices
         S_rows = np.arange(num_valid_pixels)  # Rows for this frame's equations
         S_cols = ref_pix_indices  # Sky pixel indices
         S_data = valid_weight  # Weights for sky pixels
 
-        # Component O: Frame offsets
-        O_rows = np.arange(num_valid_pixels)  # Rows for this frame's equations
-        O_cols = np.full(num_valid_pixels, exp_idx) + num_sky # Frame offset index
-        O_data = valid_weight  # Weights for frame offsets
-
-        # Component D: Detector chunks
+        # Offset:
         chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() # Get chunk indices and subframe indices
-        chunk_vals = chunk_contrib[(chunk_idx, sub_idx)].A[0]
-        D_rows = sub_idx  # Local rows for this frame's equations
-        D_cols = chunk_idx + num_sky + num_exp + det_idx * num_chunks # Global column indices for detector chunks
-        D_data = valid_weight[sub_idx] * chunk_vals  # Weights for detector chunks
+        chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
+        O_rows = sub_idx  # Local rows for this frame's equations
+        O_cols = chunk_idx + exp_idx*num_chunks + (num_sky) 
+        O_data = valid_weight[sub_idx] * chunk_vals  # Weights for detector chunks
 
         sub_b = valid_vals * valid_weight  # Vector b for this subframe
 
-        # Concatenate datapoints for S, O, D
-        sub_rows = np.concatenate([S_rows, O_rows, D_rows])
-        sub_cols = np.concatenate([S_cols, O_cols, D_cols])
-        sub_data = np.concatenate([S_data, O_data, D_data])
+        # Concatenate datapoints for S, O
+        sub_rows = np.concatenate([S_rows, O_rows])
+        sub_cols = np.concatenate([S_cols, O_cols])
+        sub_data = np.concatenate([S_data, O_data])
 
         # Remove rows where sub_b is NaN or both sub_data and sub_b are zero, and reindex rows and sub_b accordingly
         # First, get the mask for valid rows: not nan, and not both zero
@@ -625,7 +556,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     num_det = len(np.unique(det_idx_list))
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    total_cols = num_sky + num_exp + num_det * num_chunks
+    total_cols = num_sky + num_exp * num_chunks
 
     # Prepare lists to collect all data for COO matrix
     all_rows = []
@@ -688,7 +619,5 @@ def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None,
     x = result[0]
 
     S = x[:num_sky].reshape(ref_shape)
-    O = x[num_sky : num_sky + num_exp]
-    D = x[num_sky + num_exp:]
-
-    return O, S, D
+    O = x[num_sky:].reshape(num_exp, (x.shape[0]-num_sky) // num_exp)
+    return O, S
