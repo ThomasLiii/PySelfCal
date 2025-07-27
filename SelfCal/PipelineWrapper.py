@@ -109,7 +109,7 @@ class Calibrator(Reprojector):
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
-        self.O, self.S, self.D = MakeMap.apply_lsqr(self.A, self.b, self.ref_shape, self.exp_idx_list, self.det_idx_list, 
+        self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, self.ref_shape, self.exp_idx_list, self.det_idx_list, 
                                                     x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
@@ -122,7 +122,6 @@ class Calibrator(Reprojector):
         with h5py.File(cal_path, 'w') as f:
             f.create_dataset('O', data=self.O, compression='gzip')
             f.create_dataset('S', data=self.S, compression='gzip')
-            f.create_dataset('D', data=self.D, compression='gzip')
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
         print(f"Calibration saved to {cal_path}")
         return cal_path
@@ -136,27 +135,30 @@ class Mosaicker(Reprojector):
         self.cal_path = None
         self.O = None
         self.S = None
-        self.D = None
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
             self.O = f['O'][:]
             self.S = f['S'][:]
-            self.D = f['D'][:]
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, 
-    make_std_map=False, apply_sigma_clipping=False, sigma=2.0):
+    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True):
         
-        if self.O is None or self.D is None:
+        if self.O is None:
             print("Waning: Calibration not loaded. No calibration will be applied to the mosaic.")
+        if normalize_offset:
+            if chunk_valid_mask is not None:
+                O = self.O-np.mean(self.O[:,chunk_valid_mask==1])
+            else:
+                print("Warning: No chunk_valid_mask provided. Normalizing offset across all valid pixels.")
+                O = self.O-np.mean(self.O[self.O!=0])    
 
         mean, weight = MakeMap.compute_mean_map(
             ref_shape=self.ref_shape,
             reproj_file_list=self.reproj_list,
-            exp_offset=self.O-np.mean(self.O, axis=0) if self.O is not None else None,
-            det_offset=[self.D-np.mean(self.D[chunk_valid_mask==1], axis=0)] if self.D is not None else None,
+            offset=O if apply_offset else None,
             det_idx_list=self.det_idx_list,
             exp_idx_list=self.exp_idx_list,
             apply_weight=apply_weight,
@@ -170,8 +172,7 @@ class Mosaicker(Reprojector):
                 mean_map=mean,
                 ref_shape=self.ref_shape,
                 reproj_file_list=self.reproj_list,
-                exp_offset=self.O-np.mean(self.O, axis=0) if self.O is not None else None,
-                det_offset=[self.D-np.mean(self.D[chunk_valid_mask==1], axis=0)] if self.D is not None else None,
+                offset=O if apply_offset else None,
                 det_idx_list=self.det_idx_list,
                 exp_idx_list=self.exp_idx_list,
                 apply_weight=apply_weight,
@@ -187,8 +188,7 @@ class Mosaicker(Reprojector):
                 sigma=sigma,
                 ref_shape=self.ref_shape,
                 reproj_file_list=self.reproj_list,
-                exp_offset=self.O-np.mean(self.O, axis=0) if self.O is not None else None,
-                det_offset=[self.D-np.mean(self.D[chunk_valid_mask==1], axis=0)] if self.D is not None else None,
+                offset=O if apply_offset else None,
                 exp_idx_list=self.exp_idx_list,
                 det_idx_list=self.det_idx_list,
                 apply_weight=apply_weight,
