@@ -101,10 +101,10 @@ class Calibrator(Reprojector):
         self.A = None
         self.B = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, outlier_thresh=3.0):
+    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, outlier_thresh=3.0, ignore_list=[]):
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, chunk_valid_mask=chunk_valid_mask,
-               max_workers=max_workers, outlier_thresh=outlier_thresh)
+               max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list)
         
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
         if self.A is None or self.b is None:
@@ -144,7 +144,7 @@ class Mosaicker(Reprojector):
         self.cal_path = cal_path
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, 
-    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True):
+    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[]):
         
         if self.O is None:
             print("Waning: Calibration not loaded. No calibration will be applied to the mosaic.")
@@ -166,6 +166,7 @@ class Mosaicker(Reprojector):
             chunk_map=chunk_map,
             max_workers=max_workers,
             chunk_valid_mask = chunk_valid_mask,
+            ignore_list = ignore_list
         )
         if make_std_map:
             std, _ = MakeMap.compute_std_map(
@@ -179,7 +180,8 @@ class Mosaicker(Reprojector):
                 apply_mask=apply_mask,
                 chunk_map=chunk_map,
                 max_workers=max_workers,
-                chunk_valid_mask = chunk_valid_mask
+                chunk_valid_mask = chunk_valid_mask,
+                ignore_list = ignore_list
             )
         if make_std_map and apply_sigma_clipping:
             sc_mean, weight = MakeMap.compute_sc_mean(
@@ -195,7 +197,8 @@ class Mosaicker(Reprojector):
                 apply_mask=True,
                 chunk_map=chunk_map,
                 chunk_valid_mask=chunk_valid_mask,
-                max_workers=max_workers
+                max_workers=max_workers,
+                ignore_list = ignore_list
             )
         self.mean_map = mean
         self.std_map = std if make_std_map else None

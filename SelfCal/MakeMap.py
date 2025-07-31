@@ -20,7 +20,7 @@ import sys
 import gc 
 from functools import partial
 
-from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, det_to_sub, compute_chunk_contrib, compute_crop, bin2d
+from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, bin2d, compute_offset_map, det_to_grid
 from .WCSHelper import load_from_fits, save_to_fits, find_optimal_frame, upscale_wcs
 import traceback
 import warnings
@@ -110,7 +110,7 @@ def _reproject_task(task_args):
             )
 
             grid_bitmask = grid_aux[0] # Valid mask in the grid
-            grid_mapping = (grid_aux[1],grid_aux[2]) # X coordinates in the grid
+            grid_mapping = (grid_aux[1],grid_aux[2]) # x, y
         
         with h5py.File(output_file, 'w') as hf:
             hf.create_dataset('sub_data', data=sub_data, compression='gzip')
@@ -257,7 +257,7 @@ def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_t
     return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
 
 def _prep_subframe(file, offset, exp_idx, det_idx, 
-                apply_weight, apply_mask, chunk_map, chunk_valid_mask):
+                apply_weight, apply_mask, chunk_map, chunk_valid_mask, ignore_list):
     """Prepares data from a single file for co-addition or lsqr.
     
     offset: shape = (number of exposure, number of chunks)
@@ -277,7 +277,7 @@ def _prep_subframe(file, offset, exp_idx, det_idx,
     # Apply mask
     if apply_mask:
         bitmask = result['grid_bitmask']
-        sub_mask = grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[17, 21], valid_threshold=0.99)
+        sub_mask = grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=ignore_list, valid_threshold=0.99)
         data[~sub_mask] = np.nan
 
     # Apply offset if provided
@@ -290,9 +290,12 @@ def _prep_subframe(file, offset, exp_idx, det_idx,
         )
 
     if offset is not None:
-        exp_offset = offset[exp_idx]
-        sub_offset_flat = chunk_contrib.T @ exp_offset.flatten()
-        sub_offset = sub_offset_flat.reshape(data.shape) # Use data.shape for consistency
+        det_offset = compute_offset_map(offset[exp_idx], chunk_map, interp_method='mp')
+        grid_offset = det_to_grid(grid, det_offset)
+        sub_offset = bin2d(grid_offset, bin_factor=oversample_factor)
+        # exp_offset = offset[exp_idx]
+        # sub_offset_flat = chunk_contrib.T @ exp_offset.flatten()
+        # sub_offset = sub_offset_flat.reshape(data.shape) # Use data.shape for consistency
         data -= sub_offset
 
     # If chunk_valid_mask is provided, compute the contribution weight
@@ -310,7 +313,7 @@ def _compute_chunk_worker(args):
     """Worker function for Pool processing that computes partial sums for a chunk of files"""
     chunk_files, chunk_indices, offset, exp_idx_list, det_idx_list, \
     apply_weight, apply_mask, chunk_map, chunk_valid_mask, ref_shape, operation_type, \
-    mean_map, std_map, sigma = args
+    mean_map, std_map, sigma, ignore_list = args
     
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
@@ -321,7 +324,7 @@ def _compute_chunk_worker(args):
             file_path, offset, 
             exp_idx_list[idx], det_idx_list[idx], 
             apply_weight, apply_mask, 
-            chunk_map, chunk_valid_mask
+            chunk_map, chunk_valid_mask, ignore_list
         )
         
         if coords is None:
@@ -351,7 +354,7 @@ def _compute_chunk_worker(args):
 
 def compute_mean_map(ref_shape, reproj_file_list, offset=None, 
                      exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                     chunk_map=None, chunk_valid_mask=None, max_workers=10):
+                     chunk_map=None, chunk_valid_mask=None, max_workers=10, ignore_list=[]):
     
     total = len(reproj_file_list)
     
@@ -367,7 +370,7 @@ def compute_mean_map(ref_shape, reproj_file_list, offset=None,
             chunk_indices = list(range(start_idx, end_idx))
             chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
-                          chunk_map, chunk_valid_mask, ref_shape, 'mean', None, None, None))
+                          chunk_map, chunk_valid_mask, ref_shape, 'mean', None, None, None, ignore_list))
     
     # Process chunks in parallel using Pool
     with Pool(processes=max_workers) as pool:
@@ -387,7 +390,7 @@ def compute_mean_map(ref_shape, reproj_file_list, offset=None,
 
 def compute_std_map(mean_map, ref_shape, reproj_file_list, offset=None, 
                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                    chunk_map=None, chunk_valid_mask=None, max_workers=10):
+                    chunk_map=None, chunk_valid_mask=None, max_workers=10, ignore_list=[]):
     
     total = len(reproj_file_list)
     
@@ -403,7 +406,7 @@ def compute_std_map(mean_map, ref_shape, reproj_file_list, offset=None,
             chunk_indices = list(range(start_idx, end_idx))
             chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
-                          chunk_map, chunk_valid_mask, ref_shape, 'std', mean_map, None, None))
+                          chunk_map, chunk_valid_mask, ref_shape, 'std', mean_map, None, None, ignore_list))
     
     # Process chunks in parallel using Pool
     with Pool(processes=max_workers) as pool:
@@ -423,7 +426,7 @@ def compute_std_map(mean_map, ref_shape, reproj_file_list, offset=None,
 
 def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0, 
                     offset=None, exp_idx_list=None, det_idx_list=None, 
-                    apply_weight=True, apply_mask=True, chunk_map=None, chunk_valid_mask=None, max_workers=10):
+                    apply_weight=True, apply_mask=True, chunk_map=None, chunk_valid_mask=None, max_workers=10, ignore_list=[]):
     
     total = len(reproj_file_list)
     
@@ -439,7 +442,7 @@ def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0,
             chunk_indices = list(range(start_idx, end_idx))
             chunks.append((chunk_files, chunk_indices, offset, 
                           exp_idx_list, det_idx_list, apply_weight, apply_mask, 
-                          chunk_map, chunk_valid_mask, ref_shape, 'sigma_clip', mean_map, std_map, sigma))
+                          chunk_map, chunk_valid_mask, ref_shape, 'sigma_clip', mean_map, std_map, sigma, ignore_list))
     
     # Process chunks in parallel using Pool
     with Pool(processes=max_workers) as pool:
@@ -458,7 +461,7 @@ def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0,
     return clipped_map, weight_sum
 
 def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
-               apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh):
+               apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh, ignore_list):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.
     A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
     b.shape = (subframe_pixels,)
@@ -476,7 +479,8 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
             apply_weight=apply_weight,
             apply_mask=apply_mask,
             chunk_map=chunk_map,
-            chunk_valid_mask=chunk_valid_mask
+            chunk_valid_mask=chunk_valid_mask,
+            ignore_list=ignore_list
         )
 
         chunk_contrib = chunk_contrib.tocsr()
@@ -544,7 +548,7 @@ def _prep_lsqr(i, reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, nu
 
 def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
                apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh=3,
-               max_workers=20):
+               max_workers=20, ignore_list=[]):
 
     if not reproj_file_list:
         raise ValueError("reproj_file_list must be provided.")
@@ -568,7 +572,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
         futures = {
             executor.submit(_prep_lsqr, i, 
                             reproj_file, ref_shape, exp_idx, det_idx, num_exp, num_det, num_chunks, 
-                            apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh
+                            apply_mask, apply_weight, chunk_map, chunk_valid_mask, outlier_thresh, ignore_list
                             ): i
             for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(reproj_file_list, exp_idx_list, det_idx_list))
         }

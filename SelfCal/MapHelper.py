@@ -101,37 +101,13 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
     # binned.sum_duplicates()
     return binned
 
-def det_to_sub(grid_mapping=None, n_chunk=10, sub_width = 157, det_size = 2040, det_off=None):
-    det_grid_x, det_grid_y = grid_mapping
-    oversample_factor = int(np.shape(det_grid_x)[-1]/sub_width)
-    
-    det_flat_x, det_flat_y = (det_grid_x.flatten(), det_grid_y.flatten())
-    
-    chunk_size = int(det_size/n_chunk)
-    chunk_edges_x, chunk_edges_y = compute_chunk_edges((det_size,det_size), (chunk_size, chunk_size))
-
-    chunk_idx_x = np.searchsorted(chunk_edges_x, det_flat_x)
-    chunk_mask_x = np.any([chunk_idx_x==len(chunk_edges_x), chunk_idx_x==0], axis=0)
-    chunk_idx_y = np.searchsorted(chunk_edges_y, det_flat_y)
-    chunk_mask_y = np.any([chunk_idx_y==len(chunk_edges_y), chunk_idx_y==0], axis=0)
-    valid_mask = ~np.any([chunk_mask_x, chunk_mask_y], axis=0)
-    
-    chunk_idx = ((chunk_idx_y-1)*(len(chunk_edges_x)-1) + (chunk_idx_x-1))
-
-    valid_idx = np.where(valid_mask)[0]
-    rows = chunk_idx[valid_mask]
-    cols = valid_idx
-    data = np.ones_like(rows, dtype=np.uint8)
-    chunk_contrib = coo_matrix((data, (rows, cols)), shape=(n_chunk**2, (sub_width*oversample_factor)**2))
-    chunk_contrib_bin = bin2d_coo_matrix(chunk_contrib, sub_width*oversample_factor, sub_width*oversample_factor, oversample_factor)
-
-    if det_off is not None:
-        # Map arbitrary offset_map (shape: n_chunk x n_chunk) to sub-frame
-        flat_offset = det_off.flatten()
-        sub_frame_offset = chunk_contrib_bin.T @ flat_offset  # shape: (sub_width**2,)
-        return sub_frame_offset.reshape(sub_width, sub_width)
-    
-    return chunk_contrib_bin
+def det_to_grid(grid_mapping, det_data):
+    valid_pix = np.all(~np.isnan(grid_mapping), axis=0)
+    grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
+    grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
+    grid_data = np.zeros_like(grid_mapping[0])
+    grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
+    return grid_data
 
 def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
     '''Compute footprint, weighted by exp_offset if given'''
@@ -180,3 +156,33 @@ def compute_crop(ref_shape, coords):
     sub_crop = np.s_[dy0:dy1, dx0:dx1]
     ref_crop = np.s_[y0:y1, x0:x1]
     return sub_crop, ref_crop
+
+def interp_1d(arr, method='mp', edge='extend'):
+    idx = np.arange(len(arr))
+    start = np.where(arr[:-1] != arr[1:])[0]+1
+    mean_idx = (start[:-1] + (start[1:] - 1))/2
+    mean_val = arr[start[:-1]]
+    if method == 'mp':
+        from mpsplines import MeanPreservingInterpolation as MPI
+        # https://github.com/jararias/mpsplines
+        mpi = MPI(yi=mean_val, xi=mean_idx)
+        smooth_arr = mpi(idx)
+    elif method == 'linear':
+        smooth_arr = np.interp(idx, mean_idx, mean_val)
+        
+    return smooth_arr
+
+def interp_2d_vertical(arr, method='mp'):
+    return np.apply_along_axis(interp_1d, axis=0, arr=arr, method=method)
+
+def compute_offset_map(flat_offset, chunk_map, interp_method=''):
+    offset_map = flat_offset[chunk_map]
+    if interp_method != '':
+        offset_map = interp_2d_vertical(offset_map, method=interp_method)
+    return offset_map
+
+
+
+
+
+
