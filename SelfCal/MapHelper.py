@@ -64,17 +64,34 @@ def compute_chunk_edges(det_shape, chunk_size):
 #     return binned
 
 def bin2d(arr, bin_factor, bin_func=np.mean):
-    h, w = arr.shape
-    assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
-
-    h_bins = h // bin_factor
-    w_bins = w // bin_factor
-
-    # Reshape and average
-    reshaped = arr.reshape(h_bins, bin_factor, w_bins, bin_factor)
-    binned = bin_func(reshaped, axis=(1, 3))
-
+    """
+    Bins a 2D array or a stack of 2D arrays (3D) by a given factor.
+    """
+    if arr.ndim == 2:
+        h, w = arr.shape
+        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        h_bins = h // bin_factor
+        w_bins = w // bin_factor
+        
+        # Reshape and apply function for a single 2D array
+        reshaped = arr.reshape(h_bins, bin_factor, w_bins, bin_factor)
+        binned = bin_func(reshaped, axis=(1, 3))
+        
+    elif arr.ndim == 3:
+        num_layers, h, w = arr.shape
+        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        h_bins = h // bin_factor
+        w_bins = w // bin_factor
+        
+        # Reshape and apply function for a stack of 2D arrays
+        reshaped = arr.reshape(num_layers, h_bins, bin_factor, w_bins, bin_factor)
+        binned = bin_func(reshaped, axis=(2, 4)) # Bin along the new height and width factor axes
+        
+    else:
+        raise ValueError(f"bin2d supports 2D or 3D arrays, but got {arr.ndim} dimensions.")
+        
     return binned
+
 
 
 def bin2d_coo_matrix(mat, height, width, bin_factor):
@@ -101,14 +118,6 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
     # binned.sum_duplicates()
     return binned
 
-def det_to_grid(grid_mapping, det_data):
-    valid_pix = np.all(~np.isnan(grid_mapping), axis=0)
-    grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
-    grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
-    grid_data = np.zeros_like(grid_mapping[0])
-    grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
-    return grid_data
-
 def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
     '''Compute footprint, weighted by exp_offset if given'''
     N = len(sub_data)
@@ -122,27 +131,6 @@ def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
         footprint[y_min:y_max, x_min:x_max] += p
     
     return footprint
-
-
-def compute_chunk_contrib(grid_mapping, chunk_map, oversample_factor):
-    num_chunks = len(np.unique(chunk_map))
-    sub_width = grid_mapping.shape[-1] // oversample_factor
-    valid_pix = np.all(~np.isnan(grid_mapping), axis=0)
-
-    # Extract valid pixel indices directly
-    flat_pix_idx0 = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
-    flat_pix_idx1 = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
-
-    # Map chunk indices and construct sparse matrix
-    chunk_idx_flat = chunk_map[flat_pix_idx1, flat_pix_idx0]
-    cols = np.flatnonzero(valid_pix)
-    data = np.ones_like(cols, dtype=np.float32)
-    map_width = sub_width * oversample_factor
-
-    chunk_idx_parsed = coo_matrix((data, (chunk_idx_flat, cols)), shape=(num_chunks, map_width * map_width))
-    chunk_contrib = bin2d_coo_matrix(chunk_idx_parsed, map_width, map_width, oversample_factor)
-    return chunk_contrib
-
 
 def compute_crop(ref_shape, coords):
     y_min, y_max, x_min, x_max = coords
@@ -175,14 +163,59 @@ def interp_1d(arr, method='mp', edge='extend'):
 def interp_2d_vertical(arr, method='mp'):
     return np.apply_along_axis(interp_1d, axis=0, arr=arr, method=method)
 
-def compute_offset_map(flat_offset, chunk_map, interp_method=''):
-    offset_map = flat_offset[chunk_map]
+def compute_offset_map(chunk_offset, chunk_map, interp_method=''):
+    offset_map = chunk_offset[chunk_map]
     if interp_method != '':
         offset_map = interp_2d_vertical(offset_map, method=interp_method)
     return offset_map
 
+def parse_grid_mapping(grid_mapping):
+    """
+    Parses a grid mapping to find valid pixels and their original detector coordinates.
+    This is the core reusable logic.
+    """
+    valid_pix = np.all(~np.isnan(grid_mapping), axis=0)
+    grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
+    grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
+    return valid_pix, grid_x_flat, grid_y_flat
 
+def det_to_grid(grid_mapping, det_data):
+    """
+    Maps detector data onto the grid using the grid_mapping.
+    This function can handle a single 2D array or a stack of 2D arrays (3D).
+    """
+    valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
 
+    if det_data.ndim == 2:
+        # Handle a single 2D array
+        grid_data = np.zeros_like(grid_mapping[0])
+        grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
+        return grid_data
+    elif det_data.ndim == 3:
+        # Handle a stack of 2D arrays (3D)
+        num_layers = det_data.shape[0]
+        grid_shape = (num_layers, grid_mapping.shape[1], grid_mapping.shape[2])
+        grid_data = np.zeros(grid_shape, dtype=det_data.dtype)
+        # Use advanced indexing to map all layers at once
+        grid_data[:, valid_pix] = det_data[:, grid_y_flat, grid_x_flat]
+        return grid_data
+    else:
+        raise ValueError(f"det_data must be 2D or 3D, but got {det_data.ndim} dimensions.")
 
+def compute_chunk_contrib(grid_mapping, chunk_map, oversample_factor):
+    """Computes the sparse matrix contribution for LSQR."""
+    num_chunks = len(np.unique(chunk_map))
+    map_width = grid_mapping.shape[-1]
+    
+    valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
+    
+    chunk_idx_flat = chunk_map[grid_y_flat, grid_x_flat]
+    cols = np.flatnonzero(valid_pix)
+    data = np.ones_like(cols, dtype=np.float32)
 
-
+    chunk_idx_parsed = coo_matrix(
+        (data, (chunk_idx_flat, cols)), 
+        shape=(num_chunks, map_width * map_width)
+    )
+    chunk_contrib = bin2d_coo_matrix(chunk_idx_parsed, map_width, map_width, oversample_factor)
+    return chunk_contrib
