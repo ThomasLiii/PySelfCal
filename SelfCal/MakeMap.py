@@ -36,8 +36,8 @@ off = offset, the exposure or detector offsets
 
 #TODO:
 - Better error handling in all parallel functions
+- Add more assertions to ensure data integrity
 - Add more documentation and comments
-- Accelerate _prep_subframe
 - Add functionality to handle multiple chunk maps and valid masks
 '''
 
@@ -600,7 +600,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
                 'apply_mask': apply_mask,
                 'apply_weight': apply_weight,
                 'chunk_map': chunk_map,
-                'det_valid_mask': det_valid_mask[i] if det_valid_mask is not None else None,
+                'det_valid_mask': det_valid_mask if det_valid_mask is not None else None,
                 'outlier_thresh': outlier_thresh,
                 'ignore_list': ignore_list
             }

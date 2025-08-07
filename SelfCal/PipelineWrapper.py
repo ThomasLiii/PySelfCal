@@ -101,9 +101,9 @@ class Calibrator(Reprojector):
         self.A = None
         self.B = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, outlier_thresh=3.0, ignore_list=[]):
+    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, outlier_thresh=3.0, ignore_list=[]):
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
-               apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, chunk_valid_mask=chunk_valid_mask,
+               apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list)
         
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
@@ -135,6 +135,9 @@ class Mosaicker(Reprojector):
         self.cal_path = None
         self.O = None
         self.S = None
+        self.maps = {'mean_map': None, 'mean_weight': None,
+                     'std_map': None, 'std_weight': None,
+                     'sc_mean_map': None, 'sc_mean_weight': None}
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
@@ -143,19 +146,15 @@ class Mosaicker(Reprojector):
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
-    def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, chunk_valid_mask=None, max_workers=20, 
+    def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
     make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[]):
         
         if self.O is None:
             print("Waning: Calibration not loaded. No calibration will be applied to the mosaic.")
         if normalize_offset:
-            if chunk_valid_mask is not None:
-                O = self.O-np.mean(self.O[:,chunk_valid_mask==1])
-            else:
-                print("Warning: No chunk_valid_mask provided. Normalizing offset across all valid pixels.")
-                O = self.O-np.mean(self.O[self.O!=0])    
+            O = self.O-np.mean(self.O[self.O!=0])    
 
-        mean, weight = MakeMap.compute_mean_map(
+        self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_mean_map(
             ref_shape=self.ref_shape,
             reproj_file_list=self.reproj_list,
             offset=O if apply_offset else None,
@@ -165,12 +164,12 @@ class Mosaicker(Reprojector):
             apply_mask=apply_mask,
             chunk_map=chunk_map,
             max_workers=max_workers,
-            chunk_valid_mask = chunk_valid_mask,
-            ignore_list = ignore_list
+            det_valid_mask=det_valid_mask,
+            ignore_list=ignore_list
         )
         if make_std_map:
-            std, _ = MakeMap.compute_std_map(
-                mean_map=mean,
+            self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_std_map(
+                mean_map=self.maps['mean_map'],
                 ref_shape=self.ref_shape,
                 reproj_file_list=self.reproj_list,
                 offset=O if apply_offset else None,
@@ -180,13 +179,13 @@ class Mosaicker(Reprojector):
                 apply_mask=apply_mask,
                 chunk_map=chunk_map,
                 max_workers=max_workers,
-                chunk_valid_mask = chunk_valid_mask,
-                ignore_list = ignore_list
+                det_valid_mask=det_valid_mask,
+                ignore_list=ignore_list
             )
         if make_std_map and apply_sigma_clipping:
-            sc_mean, weight = MakeMap.compute_sc_mean(
-                mean_map=mean,
-                std_map=std,
+            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_sc_mean(
+                mean_map=self.maps['mean_map'],
+                std_map=self.maps['std_map'],
                 sigma=sigma,
                 ref_shape=self.ref_shape,
                 reproj_file_list=self.reproj_list,
@@ -196,15 +195,12 @@ class Mosaicker(Reprojector):
                 apply_weight=apply_weight,
                 apply_mask=True,
                 chunk_map=chunk_map,
-                chunk_valid_mask=chunk_valid_mask,
+                det_valid_mask=det_valid_mask,
                 max_workers=max_workers,
-                ignore_list = ignore_list
+                ignore_list=ignore_list
             )
-        self.mean_map = mean
-        self.std_map = std if make_std_map else None
-        self.sc_mean = sc_mean if make_std_map and apply_sigma_clipping else None
 
-        return self.mean_map, self.std_map, self.sc_mean
+        return self.maps
 
         
     def save_mosaic(self, mos_dir=None, mos_file='mosaic.fits', overwrite=False):
@@ -215,22 +211,21 @@ class Mosaicker(Reprojector):
 
         mos_path = os.path.join(mos_dir, mos_file)
 
-        mosaic_hdu = fits.PrimaryHDU(data=self.sc_mean, header=self.ref_wcs.to_header())
-        mosaic_hdu.header['NAXIS1'] = self.ref_shape[1]
-        mosaic_hdu.header['NAXIS2'] = self.ref_shape[0]
-        mosaic_hdu.header['NAXIS'] = 2
-        mosaic_hdu.header['BUNIT'] = 'MJy/sr'
-        mosaic_hdu.header['EXTNAME'] = 'MOSAIC'
-        mosaic_hdu.header['CAL_FILE'] = self.cal_path
+        hdu_list = []
+        for m in self.maps:
+            if self.maps[m] is not None:
+                hdu = fits.ImageHDU(data=self.maps[m], header=self.ref_wcs.to_header())
+                hdu.header['NAXIS1'] = self.ref_shape[1]
+                hdu.header['NAXIS2'] = self.ref_shape[0]
+                hdu.header['NAXIS'] = 2
+                hdu.header['BUNIT'] = 'MJy/sr'
+                hdu.header['EXTNAME'] = m.upper()
+                hdu_list.append(hdu)
 
-        std_hdu = fits.ImageHDU(data=self.std_map, header=self.ref_wcs.to_header())
-        std_hdu.header['NAXIS1'] = self.ref_shape[1]
-        std_hdu.header['NAXIS2'] = self.ref_shape[0]
-        std_hdu.header['NAXIS'] = 2
-        std_hdu.header['BUNIT'] = 'MJy/sr'
-        std_hdu.header['EXTNAME'] = 'STD'
 
-        hdul = fits.HDUList([mosaic_hdu, std_hdu])
+        primary_hdu = fits.PrimaryHDU()
+
+        hdul = fits.HDUList([primary_hdu] + hdu_list)
         hdul.writeto(mos_path, overwrite=overwrite)
         print(f"Mosaic saved to {mos_path}")
         return mos_path
