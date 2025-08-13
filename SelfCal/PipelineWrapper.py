@@ -147,14 +147,15 @@ class Mosaicker(Reprojector):
         self.cal_path = cal_path
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
-    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[]):
-        
+    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], interp_func=None):
+
         if self.O is None:
             print("Waning: Calibration not loaded. No calibration will be applied to the mosaic.")
         if normalize_offset:
             O = self.O-np.mean(self.O[self.O!=0])    
 
-        self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_mean_map(
+        self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
+            mode='mean',
             ref_shape=self.ref_shape,
             reproj_file_list=self.reproj_list,
             offset=O if apply_offset else None,
@@ -165,10 +166,12 @@ class Mosaicker(Reprojector):
             chunk_map=chunk_map,
             max_workers=max_workers,
             det_valid_mask=det_valid_mask,
-            ignore_list=ignore_list
+            ignore_list=ignore_list,
+            interp_func=interp_func
         )
         if make_std_map:
-            self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_std_map(
+            self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
+                mode='std',
                 mean_map=self.maps['mean_map'],
                 ref_shape=self.ref_shape,
                 reproj_file_list=self.reproj_list,
@@ -180,10 +183,12 @@ class Mosaicker(Reprojector):
                 chunk_map=chunk_map,
                 max_workers=max_workers,
                 det_valid_mask=det_valid_mask,
-                ignore_list=ignore_list
+                ignore_list=ignore_list,
+                interp_func=interp_func
             )
         if make_std_map and apply_sigma_clipping:
-            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_sc_mean(
+            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_mean(
+                mode='sigma_clip',
                 mean_map=self.maps['mean_map'],
                 std_map=self.maps['std_map'],
                 sigma=sigma,
@@ -197,7 +202,8 @@ class Mosaicker(Reprojector):
                 chunk_map=chunk_map,
                 det_valid_mask=det_valid_mask,
                 max_workers=max_workers,
-                ignore_list=ignore_list
+                ignore_list=ignore_list,
+                interp_func=interp_func
             )
 
         return self.maps

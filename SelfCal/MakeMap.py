@@ -150,6 +150,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         Directory for all selfcal outputs
     padding_percentage: float, optional
         Fraction of the mosaic width to pad
+    oversample_factor : int, optional
+        Factor to oversample the reprojection grid, atleast 2, finer grids will be slower but more accurate
     num_processes : int, optional
         Number of parallel processes to use
     ignore_flags : list or tup
@@ -163,17 +165,33 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         - 'Exact': Slowest, conserves flux
         - 'Interp': Fastest, alter PSF profile, does not conserves flux
         - 'Adaptive': Faster then 'Exact', conserves flux
+    exp_idx_list : list or tup, optional
+        List of integers defining the exposure index in the exposure_list, if None, will use the index of the exposure_list
+    det_idx_list : list or tup, optional
+        List of integers defining the detector index in the exposure_list, if None, will use the index of the in fits file
+    replace_existing : bool, optional
+        If True, will overwrite existing files in the output directory, default is False
 
     Returns
     -------
     success_file : list
         List of path to the HDF5 files containing the reprojected data
     """
-    assert oversample_factor >= 1, "Oversample factor must be >= 1"
-    assert type(oversample_factor) is int, "Oversample factor must be an integer"
-    if not exposure_list: raise ValueError('No exposure files loaded.')
-    if ref_wcs is None or ref_shape is None: raise ValueError('Reference WCS and shape not defined.')
 
+    assert isinstance(exposure_list, (list, tuple)) and exposure_list, "exposure_list must be a non-empty list or tuple"
+    assert isinstance(ref_wcs, WCS), "Reference WCS must be an astropy.wcs.WCS object"
+    assert isinstance(ref_shape, (list, tuple, np.ndarray)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
+    assert oversample_factor >= 1, "Oversample factor must be >= 1"
+    assert isinstance(padding_percentage, float) and 0 <= padding_percentage, "padding_percentage must be a float larger than 0"
+    assert isinstance(oversample_factor, int), "Oversample factor must be an integer"
+    assert isinstance(num_processes, int) and num_processes > 0, "num_processes must be a positive integer"
+    assert sci_ext_list is None or isinstance(sci_ext_list, (list, tuple, np.ndarray)), "sci_ext_list must be a list or tuple"
+    assert dq_ext_list is None or isinstance(dq_ext_list, (list, tuple, np.ndarray)), "dq_ext_list must be a list or tuple"
+    assert method in ['exact', 'interp', 'adaptive'], "method must be one of 'exact', 'interp', or 'adaptive'"
+    assert exp_idx_list is None or isinstance(exp_idx_list, (list, tuple, np.ndarray)), "exp_idx_list must be a list or tuple"
+    assert det_idx_list is None or isinstance(det_idx_list, (list, tuple, np.ndarray)), "det_idx_list must be a list or tuple"
+    assert type(replace_existing) is bool, "replace_existing must be a boolean"  
+    
     os.makedirs(output_dir, exist_ok=True)
     print(f'Starting batch reprojection. Output will be saved to: {output_dir}')
     # Determine sub-frame width based on a sample detector frame
@@ -238,12 +256,16 @@ def load_reproj_file(file_path, fields):
         Path to a reprojected HDF5 file
     fields: tup
         List of strings corresponding to name of dataset to extract from the HDF5 file
+        Available fields: ['sub_data', 'det_data', 'sub_header', 'det_header', 'ref_coords', 'sub_foot', 'file_path', 'grid_bitmask', 'grid_mapping']
 
     Returns
     -------
     data : dict
         Dictionary containing the extracted data, key is the fields and value is the corresponding datas
     """
+
+    assert isinstance(file_path, str) and os.path.isfile(file_path), "file_path must be a valid file path"
+    assert isinstance(fields, (list, tuple)), "fields must be a list or tuple of strings"
 
     data = {}
     is_file_missing = False
@@ -264,6 +286,7 @@ def load_reproj_file(file_path, fields):
     data['_is_missing_'] = is_file_missing
     return data
 
+
 def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
     valid_bit = ~np.isnan(bitmask)
     grid_mask = np.zeros_like(bitmask, dtype=bool)
@@ -274,7 +297,7 @@ def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_t
 
 def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
                    apply_weight=False, apply_mask=False, chunk_offset=None, 
-                   ignore_list=[], valid_threshold=0.99, for_lsqr=False):
+                   ignore_list=[], valid_threshold=0.99, for_lsqr=False, interp_func=None):
     """Prepares data from a single file for co-addition or lsqr."""
     fields=['sub_data', 'ref_coords', 'grid_mapping']
     if apply_mask:
@@ -299,7 +322,8 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
     det_maps_to_process = []
     map_keys = []
     if chunk_offset is not None:
-        det_maps_to_process.append(compute_offset_map(chunk_offset, chunk_map, interp_method='mp'))
+        offset_map = compute_offset_map(chunk_offset, chunk_map, interp_func=interp_func)
+        det_maps_to_process.append(offset_map)
         map_keys.append('offset')
     if det_valid_mask is not None:
         det_maps_to_process.append(det_valid_mask)
@@ -332,8 +356,8 @@ def _coadd_batch_worker(params):
     batch_files = params['batch_files']
     batch_indices = params['batch_indices']
     ref_shape = params['ref_shape']
-    operation_type = params['operation_type']
-    
+    mode = params['mode']
+
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
     for i, file_path in enumerate(batch_files):
@@ -348,7 +372,8 @@ def _coadd_batch_worker(params):
             apply_mask=params['apply_mask'],
             chunk_offset=params['offset'][idx] if params['offset'] is not None else None,
             ignore_list=params.get('ignore_list', []),
-            det_valid_mask=params.get('det_valid_mask', None)
+            det_valid_mask=params.get('det_valid_mask', None),
+            interp_func=params.get('interp_func', None),
         )
 
         if coords is None:
@@ -358,17 +383,17 @@ def _coadd_batch_worker(params):
         data_crop = data[sub_crop]
         weight_crop = weight[sub_crop]
         valid = ~np.isnan(data_crop)
-        
-        if operation_type == 'mean':
+
+        if mode == 'mean':
             data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
             weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
-        
-        elif operation_type == 'std':
+
+        elif mode == 'std':
             mean_crop = params['mean_map'][ref_crop]
             data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
             weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
         
-        elif operation_type == 'sigma_clip':
+        elif mode == 'sigma_clip':
             mean_crop = params['mean_map'][ref_crop]
             std_crop = params['std_map'][ref_crop]
             sigma = params['sigma']
@@ -381,7 +406,7 @@ def _coadd_batch_worker(params):
     return data_sum, weight_sum
 
 
-def _process_parallel(operation_type, params):
+def _parallel_coadd(mode, params):
     """
     Central function to manage parallel processing.
     Accepts all processing parameters in a single dictionary.
@@ -408,11 +433,11 @@ def _process_parallel(operation_type, params):
         task_params.update({
             'batch_files': reproj_file_list[start_idx:end_idx],
             'batch_indices': list(range(start_idx, end_idx)),
-            'operation_type': operation_type,
+            'mode': mode,
         })
         tasks.append(task_params)
     with Pool(processes=max_workers) as pool:
-        results = list(tqdm(pool.imap(_coadd_batch_worker, tasks), total=len(tasks), desc=f'Computing {operation_type} map')) 
+        results = list(tqdm(pool.imap(_coadd_batch_worker, tasks), total=len(tasks), desc=f'Computing {mode} map')) 
 
     total_data_sum = np.sum([res[0] for res in results], axis=0)
     total_weight_sum = np.sum([res[1] for res in results], axis=0)
@@ -420,45 +445,103 @@ def _process_parallel(operation_type, params):
     return total_data_sum, total_weight_sum
 
 
-def compute_mean_map(ref_shape, reproj_file_list, offset=None, 
-                     exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                     chunk_map=None, det_valid_mask=None, max_workers=10, ignore_list=[]):
-    """Computes the weighted mean map in parallel."""
-    # Capture all arguments into a dictionary and pass it to the parallel manager
-    all_args = locals()
-    data_sum, weight_sum = _process_parallel(
-        operation_type='mean',
-        params=all_args
-    )
-    mean_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-    return mean_map, weight_sum
+def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
+                      offset=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
+                      apply_mask=True, chunk_map=None, det_valid_mask=None, 
+                      max_workers=10, ignore_list=[], interp_func=None):
+    """
+    Computes a coadded map based on the specified mode (mean, std, or sigma_clip).
 
+    This function serves as a unified interface for creating mean maps, standard
+    deviation maps, and sigma-clipped mean maps in parallel.
 
-def compute_std_map(mean_map, ref_shape, reproj_file_list, offset=None, 
-                    exp_idx_list=None, det_idx_list=None, apply_weight=True, apply_mask=True, 
-                    chunk_map=None, det_valid_mask=None, max_workers=10, ignore_list=[]):
-    """Computes the weighted standard deviation map in parallel."""
-    all_args = locals()
-    sq_diff_sum, weight_sum = _process_parallel(
-        operation_type='std',
-        params=all_args
-    )
-    variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
-    return np.sqrt(variance), weight_sum
+    Parameters
+    ----------
+    mode : {'mean', 'std', 'sigma_clip'}
+        The type of computation to perform.
+        - 'mean': Computes the weighted mean map.
+        - 'std': Computes the weighted standard deviation map. Requires `mean_map`.
+        - 'sigma_clip': Computes a sigma-clipped weighted mean. Requires `mean_map` and `std_map`.
+    ref_shape : tuple, list
+        Shape of the reference frame (height, width).
+    reproj_file_list : list
+        List of paths to the reprojected HDF5 files.
+    mean_map : np.ndarray, optional
+        The pre-computed mean map. Required when `mode` is 'std' or 'sigma_clip'.
+    std_map : np.ndarray, optional
+        The pre-computed standard deviation map. Required when `mode` is 'sigma_clip'.
+    sigma : float, optional
+        The number of standard deviations for sigma clipping. Used only when `mode` is 'sigma_clip'. Default is 3.0.
+    offset : list, optional
+        List of offsets for each exposure, shape (num_reproj_file, num_chunks). Default is None.
+    exp_idx_list : list, optional
+        List of exposure indices. Default is None.
+    det_idx_list : list, optional
+        List of detector indices. Default is None.
+    apply_weight : bool, optional
+        Whether to apply weights to the data. Default is True.
+    apply_mask : bool, optional
+        Whether to apply masks to the data. Default is True.
+    chunk_map : dict, optional
+        Mapping of chunk indices to their corresponding pixel indices. Default is None.
+    det_valid_mask : np.ndarray, optional
+        Mask indicating valid pixels for each detector. Default is None.
+    max_workers : int, optional
+        Maximum number of worker processes for parallel processing. Default is 10.
+    ignore_list : list, optional
+        List of data quality flags to ignore. Default is an empty list.
 
+    Returns
+    -------
+    result_map : np.ndarray
+        The computed map (mean, std, or sigma-clipped mean).
+    weight_sum : np.ndarray
+        The sum of weights used in the calculation.
+    """
+    # --- Common Assertions for All Modes ---
+    assert mode in ['mean', 'std', 'sigma_clip'], "mode must be one of 'mean', 'std', or 'sigma_clip'"
+    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
+    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
+    assert offset is None or (isinstance(offset, (list, np.ndarray)) and np.shape(offset) == (len(reproj_file_list), len(np.unique(chunk_map)))), \
+        "offset must be a list or array of shape (num_reproj_file, num_chunks)"
+    assert exp_idx_list is None or isinstance(exp_idx_list, (list, np.ndarray)), "exp_idx_list must be a list or array"
+    assert det_idx_list is None or isinstance(det_idx_list, (list, np.ndarray)), "det_idx_list must be a list or array"
+    assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
+    assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
+    assert chunk_map is None or isinstance(chunk_map, (list, np.ndarray)), "chunk_map must be a list or array"
+    assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
+    assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
+    assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
+    assert interp_func is None or callable(interp_func), "interp_func must be a callable function or None"
 
-def compute_sc_mean(ref_shape, reproj_file_list, mean_map, std_map, sigma=3.0, 
-                    offset=None, exp_idx_list=None, det_idx_list=None, 
-                    apply_weight=True, apply_mask=True, chunk_map=None, det_valid_mask=None, 
-                    max_workers=10, ignore_list=[]):
-    """Computes the sigma-clipped mean map in parallel."""
-    all_args = locals()
-    data_sum, weight_sum = _process_parallel(
-        operation_type='sigma_clip',
-        params=all_args
-    )
-    clipped_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-    return clipped_map, weight_sum
+    # Capture all function arguments into a dictionary to pass to the parallel processor
+    params = locals()
+
+    # --- Mode-Specific Logic ---
+    if mode == 'mean':
+        data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
+        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+        return result_map, weight_sum
+
+    elif mode == 'std':
+        assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
+            "For 'std' mode, mean_map must be a numpy array with the same shape as ref_shape"
+        
+        sq_diff_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
+        variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
+        result_map = np.sqrt(variance)
+        return result_map, weight_sum
+
+    elif mode == 'sigma_clip':
+        assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
+            "For 'sigma_clip' mode, mean_map must be a numpy array with the same shape as ref_shape"
+        assert isinstance(std_map, np.ndarray) and std_map.shape == ref_shape, \
+            "For 'sigma_clip' mode, std_map must be a numpy array with the same shape as ref_shape"
+        assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
+
+        data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
+        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+        return result_map, weight_sum
 
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.
@@ -561,16 +644,53 @@ def _prep_lsqr(task_params):
         traceback.print_exc()
         return None
 
-
-def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
-               apply_mask, apply_weight, chunk_map, det_valid_mask, outlier_thresh=3,
+def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list, 
+               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, outlier_thresh=3,
                max_workers=20, ignore_list=[]):
+    """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+    Parameters
+    ----------
+    reproj_file_list : list
+        List of paths to the reprojected HDF5 files
+    ref_shape : tuple, list
+        Shape of the reference frame (height, width)
+    exp_idx_list : list, optional
+        List of exposure indices corresponding to each reprojection file.
+    det_idx_list : list, optional
+        List of detector indices corresponding to each reprojection file.
+    chunk_map : np.ndarray, optional
+        Mapping of chunk indices to their corresponding pixel indices.
+    det_valid_mask : np.ndarray, optional
+        Mask indicating valid pixels for each detector.
+    apply_mask : bool, optional
+        Whether to apply masks to the data. Default is True.
+    apply_weight : bool, optional
+        Whether to apply weights to the data. Default is True.
+    outlier_thresh : float, optional
+        z-value threshold for outlier detection, default is 3.0.
+    max_workers : int, optional
+        Maximum number of worker processes to use for parallel processing, default is 20.
+    ignore_list : list, optional
+        List of data quality flags to ignore, default is an empty list.
+    Returns
+    -------
+    full_A : scipy.sparse.coo_matrix
+        The sparse matrix A in COO format, shape is (num_equations, num_unknowns)
+    full_b : np.ndarray
+        The vector b, shape is (num_equations,)
+    """
+    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
+    assert len(reproj_file_list) == len(exp_idx_list) == len(det_idx_list), \
+        "reproj_file_list, exp_idx_list, and det_idx_list must have the same length"
+    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
+    assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
+    assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
+    assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
+    assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
+    assert isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0, "outlier_thresh must be a positive number"
+    assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
+    assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
 
-    if not reproj_file_list:
-        raise ValueError("reproj_file_list must be provided.")
-    if not (len(reproj_file_list) == len(exp_idx_list) == len(det_idx_list)):
-        raise ValueError("reproj_file_list, exp_idx_list, and det_idx_list must have the same length.")
-    
     num_chunks = len(np.unique(chunk_map))
     num_exp = len(np.unique(exp_idx_list))
     num_det = len(np.unique(det_idx_list))
@@ -600,7 +720,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
                 'apply_mask': apply_mask,
                 'apply_weight': apply_weight,
                 'chunk_map': chunk_map,
-                'det_valid_mask': det_valid_mask if det_valid_mask is not None else None,
+                'det_valid_mask': det_valid_mask,
                 'outlier_thresh': outlier_thresh,
                 'ignore_list': ignore_list
             }
@@ -645,6 +765,37 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
 
 def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):
+    """Applies the LSQR algorithm to solve for the sky and detector offsets.
+    Parameters
+    ----------
+    A : scipy.sparse.coo_matrix
+        The sparse matrix A in COO format, shape is (num_equations, num_unknowns)
+    b : np.ndarray
+        The vector b, shape is (num_equations,)
+    ref_shape : tuple, list
+        Shape of the reference frame (height, width)
+    exp_idx_list : list, optional
+        List of exposure indices corresponding to each reprojection file.
+    det_idx_list : list, optional
+        List of detector indices corresponding to each reprojection file.
+    x0 : np.ndarray, optional
+        Initial guess for the solution, shape is (num_unknowns,). If None, will use a zero vector.
+    atol : float, optional
+        Absolute tolerance for convergence, default is 1e-05.
+    btol : float, optional
+        Relative tolerance for convergence, default is 1e-05. 
+    damp : float, optional
+        Damping factor for the LSQR algorithm, default is 1e-2.
+    iter_lim : int, optional
+        Maximum number of iterations for the LSQR algorithm, default is 100.
+
+    Returns
+    -------
+    O : np.ndarray
+        The detector offsets, shape is (num_exp, num_det, num_chunks)
+    S : np.ndarray
+        The sky offsets, shape is (height, width)   
+    """
     num_exp = len(np.unique(exp_idx_list))
     num_det = len(np.unique(det_idx_list))
     ref_h, ref_w = ref_shape

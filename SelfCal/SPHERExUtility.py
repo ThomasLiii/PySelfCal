@@ -65,3 +65,21 @@ def make_chunk_mask(valid_channels, interp_factor=5):
 def visualize_chunk_map(chunk_map, chunk_valid_mask):
     masked_chunk_map = np.where(chunk_valid_mask[chunk_map], chunk_map, np.nan)
     plt.imshow(masked_chunk_map, cmap='viridis', interpolation='none')
+
+def interp_1d(arr, method='mp', edge='extend'):
+    idx = np.arange(len(arr))
+    start = np.where(arr[:-1] != arr[1:])[0]+1
+    mean_idx = (start[:-1] + (start[1:] - 1))/2
+    mean_val = arr[start[:-1]]
+    if method == 'mp':
+        from mpsplines import MeanPreservingInterpolation as MPI
+        # https://github.com/jararias/mpsplines
+        mpi = MPI(yi=mean_val, xi=mean_idx)
+        smooth_arr = mpi(idx)
+    elif method == 'linear':
+        smooth_arr = np.interp(idx, mean_idx, mean_val)
+        
+    return smooth_arr
+
+def interp_2d_vertical(arr, method='mp'):
+    return np.apply_along_axis(interp_1d, axis=0, arr=arr, method=method)
