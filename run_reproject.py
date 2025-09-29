@@ -12,9 +12,9 @@ from tqdm import tqdm
 import os
 from SelfCal import MakeMap
 
-detector = 4
+detector = 1
 # exposure_list = glob.glob(f'/data1/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
-exposure_list = glob.glob(f'/data1/SPHEREx/galactic_plane/*/*/*/*D{detector}*.fits')
+exposure_list = glob.glob(f'/mnt/md127/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
 for exp_file in exposure_list:
     hdul = fits.open(exp_file)
     header = hdul[1].header
@@ -25,9 +25,9 @@ for exp_file in exposure_list:
 print(f"Found {len(exposure_list)} exposures")
 
 config = {}
-config['output_dir'] = '/home/thomasli/spherex/selfcal/outputs'
-config['run_name'] = f'gp_det{detector}_6p2arcsec'
-config['resolution_arcsec'] = 6.2
+config['output_dir'] = '/mnt/md127/thomasli/selfcal/outputs/'
+config['run_name'] = f'nep_det{detector}_3p1arcsec'
+config['resolution_arcsec'] = 3.1
 # config['ref_path'] = '/home/thomasli/spherex/selfcal/outputs/common_ref.fits'
 
 rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)
@@ -35,8 +35,10 @@ rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)
 rr.define_reference(padding_pixels=100, use_ext=[1])
 
 rr.run_reproject(max_workers=50, method='exact', padding_percentage=0.05, oversample_factor=2, 
-                      sci_ext_list=[1], 
-                      dq_ext_list=[2], 
-                      exp_idx_list=np.arange(0, len(exposure_list)), 
-                      det_idx_list=[0]*len(exposure_list),
-                      replace_existing=False)
+                    sci_ext_list=[1], 
+                    dq_ext_list=[2], 
+                    exp_idx_list=np.arange(0, len(exposure_list)), 
+                    det_idx_list=[0]*len(exposure_list),
+                    replace_existing=False,
+                 reproj_kwargs={'parallel': 4}
+                )

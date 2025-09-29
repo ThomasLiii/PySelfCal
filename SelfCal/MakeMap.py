@@ -62,9 +62,9 @@ def _reproject_worker(task_params):
         return output_file # Skip if file already exists and replace_existing is False
 
     reproj_funcs = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
-    reproj_kwargs = {}
-    if method == 'adaptive':
-        reproj_kwargs = {'bad_value_mode': 'ignore', 'boundary_mode': 'ignore', 'conserve_flux': True}
+    reproj_kwargs = task_params['reproj_kwargs']
+#     if method == 'adaptive':
+#         reproj_kwargs = {'bad_value_mode': 'ignore', 'boundary_mode': 'ignore', 'conserve_flux': True}
 
     try:
         with fits.open(file_path) as hdul:
@@ -110,7 +110,8 @@ def _reproject_worker(task_params):
                 (det_aux, det_wcs), 
                 grid_wcs, 
                 shape_out=(grid_width, grid_width), 
-                order='nearest-neighbor'
+                order='nearest-neighbor',
+                **reproj_kwargs
             )
 
             grid_bitmask = grid_aux[0] # Valid mask in the grid
@@ -135,7 +136,7 @@ def _reproject_worker(task_params):
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
                     output_dir='output/', padding_percentage=0.05, oversample_factor=2, num_processes=1,
                     sci_ext_list=[], dq_ext_list=[], method='interp', exp_idx_list=None, det_idx_list=None, 
-                    replace_existing=False):
+                    replace_existing=False, reproj_kwargs={}):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -231,7 +232,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
                 'sub_width': sub_width,
                 'output_dir': output_dir,
                 'oversample_factor': oversample_factor,
-                'replace_existing': replace_existing
+                'replace_existing': replace_existing,
+                'reproj_kwargs': reproj_kwargs
             }
             tasks.append(task_params)
     
@@ -450,8 +452,6 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], interp_func=None):
     """
-    Computes a coadded map based on the specified mode (mean, std, or sigma_clip).
-
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
 

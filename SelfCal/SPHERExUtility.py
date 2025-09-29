@@ -15,10 +15,11 @@ def interpolate_array(data_arr, interp_factor=5):
     return interp_arr
 
 def make_chunk_map(band, interp_factor=5,
-                   calibration_file='/data1/SPHEREx/Data/Survey_3/calibs/SSDC_SpecCal_v2025Feb/SSDC_CENTER_all_v20250202.fits'):
+                   calibration_file='/data1/SPHEREx/Data/Survey_3/calibs/SSDC_SpecCal_v2025Feb/SSDC_CENTER_all_v20250202.fits',
+                  channel_file='/home/thomasli/spherex/spherex_nep_catalogues/spherex_channels.csv'):
     hdul = fits.open(calibration_file)
     wav_map = hdul[0].data[band-1]
-    tbl = Table.read('/home/thomasli/spherex/spherex_nep_catalogues/spherex_channels.csv')
+    tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)

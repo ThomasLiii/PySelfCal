@@ -50,7 +50,7 @@ class Reprojector:
 
     def run_reproject(self, max_workers=50, method='exact', padding_percentage=0.05, oversample_factor=2, 
                       sci_ext_list=None, dq_ext_list=None, exp_idx_list=None, det_idx_list=None,
-                      output_dir=None, replace_existing=False):
+                      output_dir=None, replace_existing=False, reproj_kwargs={}):
         if self.ref_wcs is None or self.ref_shape is None:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
@@ -71,7 +71,8 @@ class Reprojector:
             dq_ext_list = dq_ext_list,
             exp_idx_list = exp_idx_list,
             det_idx_list = det_idx_list,
-            replace_existing = replace_existing
+            replace_existing = replace_existing,
+            reproj_kwargs = reproj_kwargs
             )
         
     def check_reproj_files(self):
@@ -187,7 +188,7 @@ class Mosaicker(Reprojector):
                 interp_func=interp_func
             )
         if make_std_map and apply_sigma_clipping:
-            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_mean(
+            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
                 mode='sigma_clip',
                 mean_map=self.maps['mean_map'],
                 std_map=self.maps['std_map'],
