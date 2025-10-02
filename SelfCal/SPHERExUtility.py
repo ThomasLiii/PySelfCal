@@ -1,3 +1,5 @@
+import os
+import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -14,16 +16,22 @@ def interpolate_array(data_arr, interp_factor=5):
     ] + [data_arr[-1]])  # Append the last element
     return interp_arr
 
-def make_chunk_map(band, interp_factor=5,
-                   calibration_file='/data1/SPHEREx/Data/Survey_3/calibs/SSDC_SpecCal_v2025Feb/SSDC_CENTER_all_v20250202.fits',
-                  channel_file='/home/thomasli/spherex/spherex_nep_catalogues/spherex_channels.csv'):
-    hdul = fits.open(calibration_file)
-    wav_map = hdul[0].data[band-1]
+def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
+    BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
+    BW_files = glob.glob(os.path.join(calibration_dir, f'*BW_Band{band}.fits'))
+    if len(BC_files) != 1 or len(BW_files) != 1:
+        raise ValueError(f"Expected one BC and one BW file for band {band}, found {len(BC_files)} BC files and {len(BW_files)} BW files.")
+    BC_map = fits.getdata(BC_files[0])
+    BW_map = fits.getdata(BW_files[0])
+    return BC_map, BW_map
+
+def make_chunk_map(band, BC_map, interp_factor=5,
+                   channel_file='/home/thomasli/spherex/spherex_nep_catalogues/spherex_channels.csv'):
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    channel_idx = np.searchsorted(fine_edges, wav_map, side='right')
+    channel_idx = np.searchsorted(fine_edges, BC_map, side='right')
 
     mask_smooth = np.zeros_like(channel_idx)
 

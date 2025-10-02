@@ -36,8 +36,6 @@ off = offset, the exposure or detector offsets
 
 #TODO:
 - Better error handling in all parallel functions
-- Add more assertions to ensure data integrity
-- Add more documentation and comments
 - Add functionality to handle multiple chunk maps and valid masks
 '''
 
@@ -404,6 +402,9 @@ def _coadd_batch_worker(params):
             
             data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
             weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+
+        elif mode == 'custom':
+            pass # Placeholder for future custom modes
     
     return data_sum, weight_sum
 
