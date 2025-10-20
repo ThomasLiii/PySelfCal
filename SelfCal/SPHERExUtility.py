@@ -25,8 +25,11 @@ def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calib
     BW_map = fits.getdata(BW_files[0])
     return BC_map, BW_map
 
-def make_chunk_map(band, BC_map, interp_factor=5,
+def make_chunk_map(band, BC_map, num_subchannels=5, num_channels=17,
                    channel_file='/home/thomasli/spherex/spherex_nep_catalogues/spherex_channels.csv'):
+    if num_channels%17 != 0:
+        raise ValueError("num_channels must be a multiple of 17.")
+    interp_factor = num_subchannels * num_channels//17
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
@@ -66,9 +69,9 @@ def make_chunk_map(band, BC_map, interp_factor=5,
 
     return mask_smooth
 
-def make_chunk_mask(valid_channels, interp_factor=5):
-    chunk_valid_mask = np.zeros(17*interp_factor + 2)
-    chunk_valid_mask[np.hstack(((np.array(valid_channels)-1)*interp_factor)[:, None] + np.arange(interp_factor)) + 1] = 1
+def make_chunk_mask(valid_channels, num_subchannels=5, num_channels=17):
+    chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
+    chunk_valid_mask[np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + np.arange(num_subchannels)) + 1] = 1
     return chunk_valid_mask
 
 def visualize_chunk_map(chunk_map, chunk_valid_mask):

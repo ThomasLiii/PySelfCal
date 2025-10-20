@@ -2,7 +2,7 @@ from SelfCal import PipelineWrapper
 from astropy.io import fits
 import numpy as np
 import glob
-from SelfCal.SPHERExUtility import interpolate_array, make_chunk_map, make_chunk_mask, visualize_chunk_map, interp_2d_vertical
+from SelfCal.SPHERExUtility import interpolate_array, make_chunk_map, make_chunk_mask, visualize_chunk_map, interp_2d_vertical, load_calibration
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 # Import LogNorm
@@ -13,18 +13,21 @@ import gc
 
 detector = 1
 config = {}
-config['output_dir'] = '/mnt/md127/thomasli/selfcal/outputs/'
+config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
 config['run_name'] = f'nep_det{detector}_3p1arcsec'
 config['resolution_arcsec'] = 3.1
 
-chunk_map = make_chunk_map(detector, interp_factor=10,
-                          channel_file='/home/thomasli/spherex/spherex_channels.csv')
 
-chs = [[16]]#, [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17]]
+det_BC, det_BW = load_calibration(band=detector, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
+
+chunk_map = make_chunk_map(detector, det_BC, num_subchannels=10, num_channels=17*2,
+                   channel_file='/home/thomasli/spherex/spherex_channels.csv')
+
+chs = [[i] for i in range(13, 35)] 
 
 for ch in chs:
     print(f"Processing channel {ch} for detector {detector}")
-    chunk_valid_mask = make_chunk_mask(ch, interp_factor=10)
+    chunk_valid_mask = make_chunk_mask(ch,  num_subchannels=10, num_channels=17*2)
     det_valid_mask = chunk_valid_mask[chunk_map]
     cc = PipelineWrapper.Calibrator(config)
     cc.setup_lsqr(
