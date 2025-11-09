@@ -20,7 +20,8 @@ import sys
 import gc 
 from functools import partial
 
-from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, bin2d, compute_offset_map, det_to_grid
+from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, bin2d_cv,\
+compute_offset_map, det_to_grid, check_invalid
 from .WCSHelper import load_from_fits, save_to_fits, find_optimal_frame, upscale_wcs
 import traceback
 import warnings
@@ -111,20 +112,22 @@ def _reproject_worker(task_params):
                 order='nearest-neighbor',
                 **reproj_kwargs
             )
-
+            
+            grid_aux = np.nan_to_num(grid_aux, nan=-9999)
+            grid_aux = grid_aux.astype(np.int32)
             grid_bitmask = grid_aux[0] # Valid mask in the grid
             grid_mapping = (grid_aux[1],grid_aux[2]) # x, y
         
         with h5py.File(output_file, 'w') as hf:
-            hf.create_dataset('sub_data', data=sub_data, compression='gzip')
-            hf.create_dataset('det_data', data=det_data, compression='gzip') # Original detector data
+            hf.create_dataset('sub_data', data=sub_data, compression='gzip', dtype=np.float32) # Reprojected sub-frame data
+            hf.create_dataset('det_data', data=det_data, compression='gzip', dtype=np.float32) # Original detector data
             hf.create_dataset('sub_header', data=sub_header_str) # WCS of sub_data
             hf.create_dataset('det_header', data=det_header_str) # WCS of det_data
             hf.create_dataset('ref_coords', data=np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)) # Sub-frame location in full reference
-            hf.create_dataset('sub_foot', data=sub_foot, compression='gzip') # Footprint of sub_data
+            hf.create_dataset('sub_foot', data=sub_foot, compression='gzip', dtype=np.int16) # Footprint of sub_data
             hf.create_dataset('file_path', data=file_path)
-            hf.create_dataset('grid_bitmask', data=grid_bitmask, compression='gzip') # Validity mask for grid
-            hf.create_dataset('grid_mapping', data=grid_mapping, compression='gzip') # Pixel mapping in the grid
+            hf.create_dataset('grid_bitmask', data=grid_bitmask, compression='gzip', dtype=np.int32) # Validity mask for grid
+            hf.create_dataset('grid_mapping', data=grid_mapping, compression='gzip', dtype=np.int16) # Pixel mapping in the grid
         return output_file # Return path on success
     except Exception as e:
         print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
@@ -288,11 +291,10 @@ def load_reproj_file(file_path, fields):
 
 
 def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
-    valid_bit = ~np.isnan(bitmask)
-    grid_mask = np.zeros_like(bitmask, dtype=bool)
-    grid_mask[valid_bit] = bit_to_bool(bitmask[valid_bit].astype(np.uint32), ignore_list, invert=True) # 1 = Good pixel, 0 = Bad pixel
-    sub_mask_float = bin2d(grid_mask, oversample_factor) # Downscale to sub-frame size
-    sub_mask = np.where(sub_mask_float > valid_threshold, 1, 0).astype(bool)
+    valid_bit = ~check_invalid(bitmask)
+    grid_mask = bit_to_bool(bitmask, ignore_list, invert=True) & valid_bit# 1 = Good pixel, 0 = Bad pixel
+    sub_mask_float = bin2d_cv(grid_mask, oversample_factor) # Downscale to sub-frame size
+    sub_mask = sub_mask_float > valid_threshold
     return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
 
 def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
@@ -330,8 +332,9 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
         map_keys.append('valid_mask')
     if det_maps_to_process:
         stacked_det_maps = np.stack(det_maps_to_process, axis=0)
-        stacked_grid_maps = det_to_grid(grid_mapping, stacked_det_maps)
-        stacked_sub_maps = bin2d(stacked_grid_maps, bin_factor=oversample_factor)
+        stacked_grid_maps = [det_to_grid(grid_mapping, det_data=det_map) for det_map in stacked_det_maps]
+        stacked_sub_maps = [bin2d_cv(grid_map, oversample_factor) for grid_map in stacked_grid_maps]
+        # stacked_sub_maps = bin2d_cv(stacked_grid_maps, bin_factor=oversample_factor)
         if 'offset' in map_keys:
             data -= stacked_sub_maps[map_keys.index('offset')]
         if 'valid_mask' in map_keys:
@@ -382,7 +385,7 @@ def _coadd_batch_worker(params):
         sub_crop, ref_crop = compute_crop(ref_shape, coords)
         data_crop = data[sub_crop]
         weight_crop = weight[sub_crop]
-        valid = ~np.isnan(data_crop)
+        valid = ~check_invalid(data_crop)
 
         if mode == 'mean':
             data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
@@ -590,7 +593,7 @@ def _prep_lsqr(task_params):
         num_sky = ref_h * ref_w
 
         # Identify valid pixels after _prep_subframe has applied its masking
-        sub_valid = ~np.isnan(sub_data) # Boolean mask for valid pixels in sub_data
+        sub_valid = ~check_invalid(sub_data) # Boolean mask for valid pixels in sub_data
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
             sub_out = find_outliers(sub_data, threshold=outlier_thresh) # Find outliers in the sub_data
             sub_valid &= ~sub_out # Combine valid mask with outlier mask
@@ -627,7 +630,7 @@ def _prep_lsqr(task_params):
 
         # Remove rows where sub_b is NaN or both sub_data and sub_b are zero, and reindex rows and sub_b accordingly
         # First, get the mask for valid rows: not nan, and not both zero
-        valid_mask = ~np.isnan(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
+        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
         sub_data = sub_data[valid_mask]

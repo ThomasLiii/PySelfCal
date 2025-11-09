@@ -3,7 +3,7 @@ import numpy as np
 
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix
-
+import cv2
 
 def bit_to_bool(bitmask_array, ignore_list, bitmask_header=None, invert=False):
     # bitmask_array = bitmask_array ^ np.uint32(1 << bitmask_header['MP_PERSIST'])
@@ -18,7 +18,7 @@ def bit_to_bool(bitmask_array, ignore_list, bitmask_header=None, invert=False):
 def make_weight(frame, sigma=1.4):
     '''Make weight used for weighted mean'''
     # inverse = 1/frame
-    # inverse[np.isnan(inverse)] = 0
+    # inverse[check_invalid(inverse)] = 0
     # weight = gaussian_filter(inverse, sigma=sigma)
     filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
     convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
@@ -92,7 +92,26 @@ def bin2d(arr, bin_factor, bin_func=np.mean):
         
     return binned
 
+def bin2d_cv(arr, bin_factor):
+    """
+    Bins a 2D array using cv2.resize.
+    This is only appropriate for mean-binning.
+    """
+    if arr.ndim != 2:
+        raise ValueError("OpenCV resize only suitable for 2D arrays in this context.")
+        
+    h, w = arr.shape
+    if not (h % bin_factor == 0 and w % bin_factor == 0):
+        # cv2.resize can handle this, but it's not a true 'binning'
+        # if the dimensions are not multiples.
+        print("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
 
+    h_new, w_new = h // bin_factor, w // bin_factor
+    
+    # INTER_AREA is the key for averaging-like downsampling
+    binned = cv2.resize(arr.astype(np.float32), (w_new, h_new), interpolation=cv2.INTER_AREA)
+    
+    return binned
 
 def bin2d_coo_matrix(mat, height, width, bin_factor):
     """
@@ -125,7 +144,7 @@ def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
 
     for i in range(N):
         (y_min, y_max, x_min, x_max) = ref_coords[i]
-        p = ~np.isnan(sub_data[i])
+        p = ~check_invalid(sub_data[i])
         if exp_offset is not None:
             p = p.astype(np.float32) * exp_offset[i]
         footprint[y_min:y_max, x_min:x_max] += p
@@ -158,7 +177,7 @@ def parse_grid_mapping(grid_mapping):
     Parses a grid mapping to find valid pixels and their original detector coordinates.
     This is the core reusable logic.
     """
-    valid_pix = np.all(~np.isnan(grid_mapping), axis=0)
+    valid_pix = np.all(~check_invalid(grid_mapping), axis=0)
     grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
     grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
     return valid_pix, grid_x_flat, grid_y_flat
@@ -203,3 +222,13 @@ def compute_chunk_contrib(grid_mapping, chunk_map, oversample_factor):
     )
     chunk_contrib = bin2d_coo_matrix(chunk_idx_parsed, map_width, map_width, oversample_factor)
     return chunk_contrib
+
+def check_invalid(arr):
+    if np.issubdtype(arr.dtype, np.integer):
+        invalid = arr == -9999
+    elif np.issubdtype(arr.dtype, np.floating):
+        invalid = np.isnan(arr)
+    else:
+        raise ValueError("Unsupported array data type for invalid check.")
+    return invalid
+
