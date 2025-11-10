@@ -1,9 +1,14 @@
+from xml.parsers.expat import errors
 from tqdm import tqdm
 import numpy as np
 
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix
 import cv2
+
+from mpsplines import MeanPreservingInterpolation as MPI
+from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
+from scipy.optimize import minimize
 
 def bit_to_bool(bitmask_array, ignore_list, bitmask_header=None, invert=False):
     # bitmask_array = bitmask_array ^ np.uint32(1 << bitmask_header['MP_PERSIST'])
@@ -232,3 +237,81 @@ def check_invalid(arr):
         raise ValueError("Unsupported array data type for invalid check.")
     return invalid
 
+def linear_spline(x_sample, y_sample):
+    def interpolator(x):
+        return np.interp(x, x_sample, y_sample)
+    return interpolator
+
+def mean_preserving_spline(x_edge, y_mean, method='cubic'):
+    #TODO apply on 2d
+    """
+    Generates a mean-preserving spline function f(x) based on edge
+    positions x_edge and the average value y_mean in each interval.
+
+    The function f(x) is constructed as the derivative of a monotonic
+    cubic spline F(x), where F(x) is the integral of f(x).
+    """
+    assert len(x_edge) == len(y_mean) + 1, \
+        "Length of x_edge must be 1 more than the length of y_mean."
+
+    x_edge = np.asarray(x_edge, dtype=float)
+    y_mean = np.asarray(y_mean, dtype=float)
+    dx = np.diff(x_edge)
+    interval_integrals = y_mean * dx
+    integral_values = np.concatenate(([0], np.cumsum(interval_integrals)))
+
+    if method == 'pchip':
+        # Pchip (monotonic C1 for F, C0 for f)
+        # Guarantees f(x) >= 0 if all y_mean >= 0
+        F_spline = PchipInterpolator(x_edge, integral_values)
+    elif method == 'akima':
+        # Akima (local C1 for F, C0 for f)
+        # Avoids ringing and often looks more natural than PCHIP.
+        F_spline = Akima1DInterpolator(x_edge, integral_values)
+    elif method == 'cubic':
+        # Standard C^2 spline (C1 for f)
+        # "Smoother" (f(x) will be C^1), but F(x) is not guaranteed
+        # to be monotonic, so f(x) may go < 0 ("ringing").
+        F_spline = CubicSpline(x_edge, integral_values, bc_type='not-a-knot')
+    else:
+        raise ValueError("method must be one of 'pchip', 'akima', or 'cubic'")
+
+    f_spline = F_spline.derivative()
+
+    return f_spline
+
+
+
+def arc_spline(x_sample, y_sample, return_params=False):
+    assert len(x_sample) == len(y_sample), "x and y must be the same length."
+
+    def _arc_cost(params, x, y):
+        xc, yc, R = params
+        distances = np.sqrt((x - xc)**2 + (y - yc)**2)
+        errors = distances - R
+        return np.sum(errors**2)
+
+    yc_guess = 10000#np.mean(y)
+    xc_guess = np.median(x_sample)
+    R_guess = np.mean(np.sqrt((x_sample - xc_guess)**2 + (y_sample - yc_guess)**2))
+
+    initial_guess = [xc_guess, yc_guess, R_guess]
+
+    # Run the optimization (non-linear least squares)
+    result = minimize(
+        _arc_cost,
+        initial_guess,
+        args=(x_sample, y_sample),
+        method='Nelder-Mead' # A robust method for this type of problem
+    )
+
+    if not result.success:
+        raise RuntimeError(f"Arc fitting optimization failed: {result.message}")
+
+    # Extract the fitted parameters
+    xc_fit, yc_fit, R_fit = result.x
+
+    spl = lambda x: -np.sqrt(R_fit**2 - (x - xc_fit)**2) + yc_fit
+    if return_params:
+        return spl, (xc_fit, yc_fit, R_fit)
+    return spl

@@ -324,6 +324,7 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
     det_maps_to_process = []
     map_keys = []
     if chunk_offset is not None:
+        #TODO Update to use higher resolution chunk_map
         offset_map = compute_offset_map(chunk_offset, chunk_map, interp_func=interp_func)
         det_maps_to_process.append(offset_map)
         map_keys.append('offset')
