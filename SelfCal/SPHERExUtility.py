@@ -8,66 +8,9 @@ from tqdm import tqdm
 
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline
+from scipy.optimize import least_squares
+from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline
 
-
-def extract_spherex_channel_edges(band, channel_file='/home/thomasli/spherex/spherex_channels.csv'):
-    tbl = Table.read(channel_file)
-    sub_tbl = tbl[tbl['band'] == band]
-    channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
-    return channel_edges
-
-def interpolate_array(data_arr, interp_factor=5):
-    interp_arr = np.hstack([
-        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
-        for i in range(len(data_arr) - 1)
-    ] + [data_arr[-1]])  # Append the last element
-    return interp_arr
-
-def make_spherex_chunk_map(BC_map, channel_edges):
-
-    channel_idx = np.searchsorted(channel_edges, BC_map, side='right')
-
-    mask_smooth = np.zeros_like(channel_idx)
-
-    for i in tqdm(np.unique(channel_idx)[:]):
-        mask = channel_idx >= i
-        contours = measure.find_contours(mask, level=0.1, positive_orientation='low')
-        if len(contours) == 0:
-            continue
-        contour = []
-        for c in contours:
-            if len(c) > 500:  # Filter out small contours
-                contour.append(c)
-        contour = np.concatenate(contour)
-        ys, xs = contour[:, 0], contour[:, 1]
-
-        # sort
-        sorted_indices = np.argsort(xs)
-        xs = xs[sorted_indices]
-        ys = ys[sorted_indices]
-        # remove duplicates
-        unique_indices = np.unique(xs, return_index=True)[1]
-        xs = xs[unique_indices]
-        ys = ys[unique_indices]
-
-        spl = make_smoothing_spline(xs, ys, lam=1e7)
-        x_idx = np.arange(mask_smooth.shape[1])
-        y_lim = spl(x_idx)
-        y_lim = np.clip(y_lim, 0, mask_smooth.shape[0]-1)
-
-        for x, y in zip(x_idx, y_lim):
-            mask_smooth[:int(y+0.5), int(x)] = i
-
-    return mask_smooth
-
-def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv'):
-    if num_channels%17 != 0:
-        raise ValueError("num_channels must be a multiple of 17.")
-    interp_factor = num_subchannels * num_channels//17
-    channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
-    fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map = make_spherex_chunk_map(BC_map, fine_edges)
-    return chunk_map
 
 def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
     BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
@@ -78,6 +21,115 @@ def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calib
     BW_map = fits.getdata(BW_files[0])
     return BC_map, BW_map
 
+def extract_spherex_channel_edges(band, channel_file='/home/thomasli/spherex/spherex_channels.csv'):
+    tbl = Table.read(channel_file)
+    sub_tbl = tbl[tbl['band'] == band]
+    channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
+    return channel_edges
+
+def extract_edge_samples(BC_map, channel_edges):
+    edge_x_list = []
+    edge_y_list = []
+    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
+        edge_y = np.argmin(np.abs(BC_map - lam), axis=0).astype(np.float32)
+        edge_x = np.arange(len(edge_y)).astype(np.float32)
+
+        if i == len(channel_edges)-1:
+            edge_mask = (edge_x > 650) & (edge_x < BC_map.shape[0]-650)
+            edge_y[edge_mask] = np.nan
+            edge_x[edge_mask] = np.nan
+        elif i == 0:
+            edge_mask = (edge_x < 50) & (edge_x > BC_map.shape[0]-50)
+            edge_y[edge_mask] = np.nan
+            edge_x[edge_mask] = np.nan
+
+        edge_x_list.append(edge_x)
+        edge_y_list.append(edge_y)
+
+    return np.array(edge_x_list), np.array(edge_y_list)
+
+def interpolate_array(data_arr, interp_factor=5):
+    interp_arr = np.hstack([
+        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
+        for i in range(len(data_arr) - 1)
+    ] + [data_arr[-1]])  # Append the last element
+    return interp_arr
+
+def fit_lvf_arcs(edge_x_list, edge_y_list):
+    assert edge_x_list.shape == edge_y_list.shape, "x and y must be the same shape."
+
+    def _arc_residuals(params, edge_x_list, edge_y_list):
+        xc, yc = params[0], params[1]
+        R_list = params[2:]
+        distances = np.sqrt((edge_x_list - xc)**2 + (edge_y_list - yc)**2)
+        R_list_expanded = R_list[:, np.newaxis]
+        errors = distances - R_list_expanded
+        return np.nan_to_num(errors.ravel())
+
+    arc_x_means = np.nanmean(edge_x_list, axis=1)
+    arc_y_means = np.nanmean(edge_y_list, axis=1)
+    xc_guess = 1020
+    yc_guess = 9632.4376
+    R_guess_list = np.sqrt((arc_x_means - xc_guess)**2 + (arc_y_means - yc_guess)**2)
+    initial_params = np.concatenate(([xc_guess, yc_guess], R_guess_list))
+
+    result = least_squares(
+        _arc_residuals,
+        initial_params,
+        args=(edge_x_list, edge_y_list),
+        method='lm'
+    )
+
+    if not result.success:
+        # result.status is more informative than just result.message
+        raise RuntimeError(f"Arc fitting optimization failed: {result.status} ({result.message})")
+
+    xc_fit, yc_fit = result.x[0], result.x[1]
+    R_fit = result.x[2:]
+    lvf_params = {'xc': xc_fit, 'yc': yc_fit, 'R': R_fit}
+    return lvf_params
+
+def make_arc_spline(xc, yc, R):
+    def arc_spline(x):
+        return -np.sqrt(R**2 - (x - xc)**2) + yc
+    return arc_spline
+
+def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
+    out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
+    chunk_map = np.zeros(out_shape, dtype=np.int16)
+    y_bound = np.full(out_shape[1], out_shape[0]-1)
+    x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
+
+    print("Fitting LVF contours...")
+    edge_x_list, edge_y_list = extract_edge_samples(BC_map, channel_edges)
+    lvf_params = fit_lvf_arcs(edge_x_list, edge_y_list)
+    lvf_params['wave_edges'] = channel_edges
+
+    print("Making chunk map...")
+    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
+        prev_y_bound = y_bound
+
+        spl = make_arc_spline(lvf_params['xc'], lvf_params['yc'], lvf_params['R'][i])
+        x_bound = np.arange(out_shape[1])
+        y_bound = spl(x_bound)
+        y_bound = np.clip(y_bound, 0, out_shape[1])
+        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
+    else:
+        prev_y_bound = y_bound
+        y_bound = np.zeros_like(y_bound)
+        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i+1
+    return chunk_map, lvf_params
+
+def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv', 
+                            oversample_factor=1):
+    if num_channels%17 != 0:
+        raise ValueError("num_channels must be a multiple of 17.")
+    interp_factor = num_subchannels * num_channels//17
+    channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
+    fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
+    chunk_map, fit_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor)
+    return chunk_map, fit_params
+
 def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
     chunk_valid_mask[np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + np.arange(num_subchannels)) + 1] = 1
@@ -87,19 +139,18 @@ def visualize_chunk_map(chunk_map, chunk_valid_mask):
     masked_chunk_map = np.where(chunk_valid_mask[chunk_map], chunk_map, np.nan)
     plt.imshow(masked_chunk_map, cmap='viridis', interpolation='none')
 
+# https://github.com/jararias/mpsplines
+from mpsplines import MeanPreservingInterpolation as MPI
 def interp_1d(arr, method='mp', edge='extend'):
     idx = np.arange(len(arr))
     mean_idx, mean_val, edge_idx = parse_bin(arr)
     if method == 'mp_external':
-        from mpsplines import MeanPreservingInterpolation as MPI
-        # https://github.com/jararias/mpsplines
-        mpi = MPI(yi=mean_val, xi=mean_idx)
-        smooth_arr = mpi(idx)
+        interpolator = MPI(yi=mean_val, xi=mean_idx)
     elif method == 'mp':
-        mps_interp = mean_preserving_spline(edge_idx, mean_val, method='cubic')
-        smooth_arr = mps_interp(idx)
+        interpolator = mean_preserving_spline(edge_idx, mean_val, method='cubic')
     elif method == 'linear':
-        smooth_arr = np.interp(idx, mean_idx, mean_val)
+        interpolator = linear_spline(mean_idx, mean_val)
+    smooth_arr = interpolator(idx)
     return smooth_arr
 
 def interp_2d_vertical(arr, method='mp'):
@@ -111,42 +162,3 @@ def parse_bin(arr):
     mean_idx = (start[:-1] + (start[1:] - 1))/2
     mean_val = arr[start[:-1]]
     return mean_idx, mean_val, edge
-
-from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
-
-def mean_preserving_spline(x_edges, avg_values, method='cubic'):
-    """
-    Generates a mean-preserving spline function f(x) based on edge
-    positions x_edges and the average value avg_values in each interval.
-
-    The function f(x) is constructed as the derivative of a monotonic
-    cubic spline F(x), where F(x) is the integral of f(x).
-    """
-    assert len(x_edges) == len(avg_values) + 1, \
-        "Length of x_edges must be 1 more than the length of avg_values."
-
-    x_edges = np.asarray(x_edges, dtype=float)
-    avg_values = np.asarray(avg_values, dtype=float)
-    dx = np.diff(x_edges)
-    interval_integrals = avg_values * dx
-    integral_values = np.concatenate(([0], np.cumsum(interval_integrals)))
-
-    if method == 'pchip':
-        # Pchip (monotonic C1 for F, C0 for f)
-        # Guarantees f(x) >= 0 if all avg_values >= 0
-        F_spline = PchipInterpolator(x_edges, integral_values)
-    elif method == 'akima':
-        # Akima (local C1 for F, C0 for f)
-        # Avoids ringing and often looks more natural than PCHIP.
-        F_spline = Akima1DInterpolator(x_edges, integral_values)
-    elif method == 'cubic':
-        # Standard C^2 spline (C1 for f)
-        # "Smoother" (f(x) will be C^1), but F(x) is not guaranteed
-        # to be monotonic, so f(x) may go < 0 ("ringing").
-        F_spline = CubicSpline(x_edges, integral_values, bc_type='not-a-knot')
-    else:
-        raise ValueError("method must be one of 'pchip', 'akima', or 'cubic'")
-
-    f_spline = F_spline.derivative()
-
-    return f_spline
