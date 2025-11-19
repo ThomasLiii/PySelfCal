@@ -67,7 +67,7 @@ def _reproject_worker(task_params):
 
     try:
         with fits.open(file_path) as hdul:
-            det_data = hdul[sci_ext].data.astype(np.float32)
+            det_data = hdul[sci_ext].data
             det_width = np.shape(det_data)[-1]
             det_header = hdul[sci_ext].header
             det_header_str = det_header.tostring().encode('utf-8')

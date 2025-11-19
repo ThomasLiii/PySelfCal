@@ -127,8 +127,8 @@ def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, c
     interp_factor = num_subchannels * num_channels//17
     channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map, fit_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor)
-    return chunk_map, fit_params
+    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor)
+    return chunk_map, lvf_params
 
 def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
