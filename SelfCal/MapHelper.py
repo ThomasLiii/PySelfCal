@@ -10,15 +10,54 @@ from mpsplines import MeanPreservingInterpolation as MPI
 from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
 from scipy.optimize import minimize
 
-def bit_to_bool(bitmask_array, ignore_list, bitmask_header=None, invert=False):
-    # bitmask_array = bitmask_array ^ np.uint32(1 << bitmask_header['MP_PERSIST'])
+def bit_to_bool(bitmask_array, ignore_list=[], bitmask_header=None, invert=False, expand_bits=False):
     ignore_mask_val = np.uint32(0)
     for item in ignore_list:
         bit = bitmask_header[item] if bitmask_header is not None else item
         ignore_mask_val |= np.uint32(1 << bit)
+    
     relevant_mask = np.invert(ignore_mask_val)
+
+    if expand_bits:
+        if bitmask_header is not None:
+            return {
+                name: (~((bitmask_array & (1 << bit)) != 0) if invert else ((bitmask_array & (1 << bit)) != 0))
+                for name, bit in bitmask_header.items()
+                if not (ignore_mask_val & (1 << bit))
+            }
+        else:
+            # Return (32, ...) boolean array
+            bits = np.arange(32, dtype=np.uint32)
+            
+            # Broadcast: (32, 1) & (1, N) -> (32, N)
+            # Ensure bitmask_array is at least 1D for broadcasting or expand dims appropriately
+            # Using bitmask_array & (1 << bits)[:, None] works if bitmask_array is (N,)
+            expanded_mask = (bitmask_array & (1 << bits)[:, None, None]) != 0
+            
+            # Apply ignore mask (32, 1) against (32, N)
+            keep_bits = (relevant_mask & (1 << bits)) != 0
+            expanded_mask &= keep_bits[:, None, None]
+            
+            return ~expanded_mask if invert else expanded_mask
+
     mask = (bitmask_array & relevant_mask) != 0
     return ~mask if invert else mask
+
+def bool_to_bit(expanded_mask, dtype=np.uint32):
+    """
+    Converts an expanded boolean mask (32, N, ...) back into a 
+    compact integer bitmask (N, ...).
+    """
+    
+    # Create bit values [1, 2, 4, 8...] as a (32, 1) column vector
+    bit_values = (1 << np.arange(32, dtype=dtype))[:, None, None]
+    
+    # Multiply the (32, N) boolean mask by the (32, 1) bit values
+    # This uses broadcasting, resulting in a (32, N) array
+    # Then, sum along the bit-axis (axis=0) to collapse into (N,)
+    bitmask = np.sum(expanded_mask * bit_values, axis=0, dtype=dtype)
+    
+    return bitmask
 
 def make_weight(frame, sigma=1.4):
     '''Make weight used for weighted mean'''
@@ -279,7 +318,6 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
     f_spline = F_spline.derivative()
 
     return f_spline
-
 
 
 def arc_spline(x_sample, y_sample, return_params=False):
