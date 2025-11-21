@@ -280,8 +280,8 @@ def load_reproj_file(file_path, fields):
     return data
 
 def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
-                   apply_weight=False, apply_mask=False, chunk_offset=None, make_det_offset=None,
-                   ignore_list=[], valid_threshold=0.99, for_lsqr=False,):
+                   apply_weight=False, apply_mask=False, chunk_offset=None, det_offset_func=None,
+                   ignore_list=[], valid_threshold=0.99, for_lsqr=False, oversample_factor=1):
     """Prepares data from a single file for co-addition or lsqr."""
     fields=['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
@@ -300,11 +300,12 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
 
     if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr:
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
-        interp_matrix = make_linear_interp_matrix(sub_mapping_flat, input_shape=np.shape(chunk_map))
+        sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
+        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
 
     if chunk_offset is not None:
-        if make_det_offset:
-            det_offset = make_det_offset(chunk_offset)
+        if det_offset_func is not None:
+            det_offset = det_offset_func(chunk_map, chunk_offset)
         else:
             det_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
         sub_offset = det_to_sub(det_offset, interp_matrix=interp_matrix)
@@ -347,7 +348,8 @@ def _coadd_batch_worker(params):
             chunk_offset=params['offset'][idx] if params['offset'] is not None else None,
             ignore_list=params.get('ignore_list', []),
             det_valid_mask=params.get('det_valid_mask', None),
-            interp_func=params.get('interp_func', None),
+            det_offset_func=params.get('det_offset_func', None),
+            oversample_factor=params.get('oversample_factor', 1)
         )
 
         if coords is None:
@@ -425,7 +427,7 @@ def _parallel_coadd(mode, params):
 def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
-                      max_workers=10, ignore_list=[], interp_func=None):
+                      max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -465,7 +467,10 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         Maximum number of worker processes for parallel processing. Default is 10.
     ignore_list : list, optional
         List of data quality flags to ignore. Default is an empty list.
-
+    det_offset_func : callable, optional
+        Function to compute detector offsets. Default is None.
+    oversample_factor : int, optional
+        Factor by which the chunk map is oversampled. Default is 1.
     Returns
     -------
     result_map : np.ndarray
@@ -487,7 +492,8 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
-    assert interp_func is None or callable(interp_func), "interp_func must be a callable function or None"
+    assert det_offset_func is None or callable(det_offset_func), "det_offset_func must be a callable function or None"
+    assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
 
     # Capture all function arguments into a dictionary to pass to the parallel processor
     params = locals()
@@ -542,6 +548,7 @@ def _prep_lsqr(task_params):
     det_valid_mask = task_params['det_valid_mask']
     outlier_thresh = task_params['outlier_thresh']
     ignore_list = task_params['ignore_list']
+    oversample_factor = task_params['oversample_factor']
 
     try:
         ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
@@ -555,6 +562,8 @@ def _prep_lsqr(task_params):
             det_valid_mask=det_valid_mask,
             ignore_list=ignore_list,
             for_lsqr=True,
+            det_offset_func=None,
+            oversample_factor=oversample_factor
         )
 
         chunk_contrib = chunk_contrib.tocsr()
@@ -621,7 +630,7 @@ def _prep_lsqr(task_params):
 
 def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list, 
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, outlier_thresh=3,
-               max_workers=20, ignore_list=[]):
+               max_workers=20, ignore_list=[], oversample_factor=1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -647,6 +656,8 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
         Maximum number of worker processes to use for parallel processing, default is 20.
     ignore_list : list, optional
         List of data quality flags to ignore, default is an empty list.
+    oversample_factor : int, optional
+        Factor by which the chunk map is oversampled. Default is 1.
     Returns
     -------
     full_A : scipy.sparse.coo_matrix
@@ -697,7 +708,8 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
                 'chunk_map': chunk_map,
                 'det_valid_mask': det_valid_mask,
                 'outlier_thresh': outlier_thresh,
-                'ignore_list': ignore_list
+                'ignore_list': ignore_list,
+                'oversample_factor': oversample_factor,
             }
             tasks.append(task_params)
 
