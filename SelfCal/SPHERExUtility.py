@@ -27,6 +27,13 @@ def extract_spherex_channel_edges(band, channel_file='/home/thomasli/spherex/sph
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
     return channel_edges
 
+def interpolate_array(data_arr, interp_factor=5):
+    interp_arr = np.hstack([
+        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
+        for i in range(len(data_arr) - 1)
+    ] + [data_arr[-1]])  # Append the last element
+    return interp_arr
+
 def extract_edge_samples(BC_map, channel_edges):
     edge_x_list = []
     edge_y_list = []
@@ -47,14 +54,7 @@ def extract_edge_samples(BC_map, channel_edges):
         edge_y_list.append(edge_y)
 
     return np.array(edge_x_list), np.array(edge_y_list)
-
-def interpolate_array(data_arr, interp_factor=5):
-    interp_arr = np.hstack([
-        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
-        for i in range(len(data_arr) - 1)
-    ] + [data_arr[-1]])  # Append the last element
-    return interp_arr
-
+    
 def fit_lvf_arcs(edge_x_list, edge_y_list):
     assert edge_x_list.shape == edge_y_list.shape, "x and y must be the same shape."
 
@@ -94,22 +94,33 @@ def make_arc_spline(xc, yc, R):
         return -np.sqrt(R**2 - (x - xc)**2) + yc
     return arc_spline
 
-def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
-    out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
-    chunk_map = np.zeros(out_shape, dtype=np.int16)
-    y_bound = np.full(out_shape[1], out_shape[0]-1)
-    x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
-
-    print("Fitting LVF contours...")
+def fit_lvf_params(BC_map, channel_edges):
     edge_x_list, edge_y_list = extract_edge_samples(BC_map, channel_edges)
     lvf_params = fit_lvf_arcs(edge_x_list, edge_y_list)
     lvf_params['wave_edges'] = channel_edges
+    return lvf_params
+
+def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_params=None):
+    out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
+    chunk_map = np.zeros(out_shape, dtype=np.int16)
+    x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
+    if lvf_params is None:
+        print("Fitting LVF parameters...")
+        lvf_params = fit_lvf_params(BC_map, channel_edges)
 
     print("Making chunk map...")
+    y_bound = np.full(out_shape[1], out_shape[0]-1)
     for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
         prev_y_bound = y_bound
 
-        spl = make_arc_spline(lvf_params['xc'], lvf_params['yc'], lvf_params['R'][i])
+        xc = lvf_params['xc']
+        yc = lvf_params['yc']
+        if lam not in lvf_params['wave_edges']:
+            R = np.interp(lam, lvf_params['wave_edges'], lvf_params['R'])
+        else:
+            R = lvf_params['R'][np.where(lvf_params['wave_edges'] == lam)[0][0]]
+        spl = make_arc_spline(xc, yc, R)
+
         x_bound = np.arange(out_shape[1])
         y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
@@ -121,13 +132,13 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
     return chunk_map, lvf_params
 
 def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv', 
-                            oversample_factor=1):
+                            oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
     interp_factor = num_subchannels * num_channels//17
     channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor)
+    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params)
     return chunk_map, lvf_params
 
 def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
