@@ -111,7 +111,7 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
 
         spl = make_arc_spline(lvf_params['xc'], lvf_params['yc'], lvf_params['R'][i])
         x_bound = np.arange(out_shape[1])
-        y_bound = spl(x_bound)
+        y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
         chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
     else:

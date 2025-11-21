@@ -20,8 +20,8 @@ import sys
 import gc 
 from functools import partial
 
-from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, bin2d_cv,\
-compute_offset_map, det_to_grid, check_invalid
+from .MapHelper import bit_to_bool, bool_to_bit, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, \
+    bin2d_cv, chunk_to_det, check_invalid, det_to_sub, make_linear_interp_matrix
 from .WCSHelper import load_from_fits, save_to_fits, find_optimal_frame, upscale_wcs
 import traceback
 import warnings
@@ -31,9 +31,8 @@ Naming convention:
 sub = subframe, reprojected exposure inside the bounding box inside the reference frame
 ref = reference frame, the mosaic
 det = detector, the original detector frame
-grid = grid, the oversampled grid of the subframe
 off = offset, the exposure or detector offsets
-{frame}_{name}: frame is the type of frame (sub, ref, det, grid), name describes the content
+{frame}_{name}: frame is the type of frame (sub, ref, det), name describes the content
 
 #TODO:
 - Better error handling in all parallel functions
@@ -43,7 +42,7 @@ off = offset, the exposure or detector offsets
 def _reproject_worker(task_params):
     """Individual tasks called by batch_reproject's multiprocessing instances"""
     # Unpacked arguments for clarity
-    method = task_params['method']
+    reproj_func = task_params['reproj_func']
     file_path = task_params['file_path']
     exp_idx = task_params['exp_idx']
     det_idx = task_params['det_idx']
@@ -52,18 +51,15 @@ def _reproject_worker(task_params):
     ref_wcs = task_params['ref_wcs']
     sub_width = task_params['sub_width']
     output_dir = task_params['output_dir']
-    oversample_factor = task_params['oversample_factor']
     replace_existing = task_params['replace_existing']
+    reproject_kwargs = task_params['reproject_kwargs']
 
     # Save to HDF5
     output_file = os.path.join(output_dir, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
     if not replace_existing and os.path.exists(output_file):
         return output_file # Skip if file already exists and replace_existing is False
 
-    reproj_funcs = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
-    reproj_kwargs = task_params['reproj_kwargs']
-#     if method == 'adaptive':
-#         reproj_kwargs = {'bad_value_mode': 'ignore', 'boundary_mode': 'ignore', 'conserve_flux': True}
+    reproj_func_dict = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
 
     try:
         with fits.open(file_path) as hdul:
@@ -91,43 +87,40 @@ def _reproject_worker(task_params):
             sub_header_str = sub_wcs.to_header().tostring().encode('utf-8') 
             
             # Perform reprojection
-            sub_data, sub_foot = reproj_funcs[method](
+            sub_data, sub_foot = reproj_func_dict[reproj_func](
                 (det_data, det_wcs), 
                 sub_wcs, 
                 shape_out=(sub_width, sub_width), 
-                **reproj_kwargs
+                **reproject_kwargs
             )
             
             # Process detector auxiliary data
-            bitmask_data = hdul[dq_ext].data
-            det_x, det_y = np.meshgrid(np.arange(det_width), np.arange(det_width))
-            det_aux = np.stack((bitmask_data, det_x, det_y), axis=0) # Stack valid mask and pixel coordinates
-            grid_wcs = upscale_wcs(sub_wcs, oversample_factor)
-            grid_width = sub_width * oversample_factor
-
-            grid_aux, _ = reproj_funcs['interp'](
+            det_bitmask = hdul[dq_ext].data
+            det_expanded_mask = bit_to_bool(det_bitmask, expand_bits=True)
+            det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_width))
+            det_aux = np.stack((det_xmesh, det_ymesh, *det_expanded_mask), axis=0)
+            sub_aux, _ = reproject_interp(
                 (det_aux, det_wcs), 
-                grid_wcs, 
-                shape_out=(grid_width, grid_width), 
-                order='nearest-neighbor',
-                **reproj_kwargs
+                sub_wcs, 
+                shape_out=(sub_width, sub_width), 
+                order='bilinear',
             )
-            
-            grid_aux = np.nan_to_num(grid_aux, nan=-9999)
-            grid_aux = grid_aux.astype(np.int32)
-            grid_bitmask = grid_aux[0] # Valid mask in the grid
-            grid_mapping = (grid_aux[1],grid_aux[2]) # x, y
+            sub_mapping = sub_aux[0:2] # x, y
+            sub_expanded_mask_float = sub_aux[2:]
+            sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
+            sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
         
         with h5py.File(output_file, 'w') as hf:
             hf.create_dataset('sub_data', data=sub_data, compression='gzip', dtype=np.float32) # Reprojected sub-frame data
-            hf.create_dataset('det_data', data=det_data, compression='gzip', dtype=np.float32) # Original detector data
             hf.create_dataset('sub_header', data=sub_header_str) # WCS of sub_data
+            hf.create_dataset('sub_foot', data=sub_foot, compression='gzip', dtype=np.float16) # Footprint of sub_data
+            hf.create_dataset('sub_bitmask', data=sub_bitmask, compression='gzip', dtype=np.int32) # Validity mask for sub
+            hf.create_dataset('sub_mapping', data=sub_mapping, compression='gzip', dtype=np.float32) # Pixel mapping in the sub
+            hf.create_dataset('det_data', data=det_data, compression='gzip', dtype=np.float32) # Original detector data
             hf.create_dataset('det_header', data=det_header_str) # WCS of det_data
             hf.create_dataset('ref_coords', data=np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)) # Sub-frame location in full reference
-            hf.create_dataset('sub_foot', data=sub_foot, compression='gzip', dtype=np.int16) # Footprint of sub_data
             hf.create_dataset('file_path', data=file_path)
-            hf.create_dataset('grid_bitmask', data=grid_bitmask, compression='gzip', dtype=np.int32) # Validity mask for grid
-            hf.create_dataset('grid_mapping', data=grid_mapping, compression='gzip', dtype=np.int16) # Pixel mapping in the grid
+
         return output_file # Return path on success
     except Exception as e:
         print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
@@ -135,9 +128,9 @@ def _reproject_worker(task_params):
         return None # Return None on failure
 
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
-                    output_dir='output/', padding_percentage=0.05, oversample_factor=2, num_processes=1,
-                    sci_ext_list=[], dq_ext_list=[], method='interp', exp_idx_list=None, det_idx_list=None, 
-                    replace_existing=False, reproj_kwargs={}):
+                    output_dir='output/', padding_percentage=0.05, num_processes=1,
+                    sci_ext_list=[], dq_ext_list=[], reproj_func='interp', exp_idx_list=None, det_idx_list=None, 
+                    replace_existing=False, reproject_kwargs={}):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -152,8 +145,6 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         Directory for all selfcal outputs
     padding_percentage: float, optional
         Fraction of the mosaic width to pad
-    oversample_factor : int, optional
-        Factor to oversample the reprojection grid, atleast 2, finer grids will be slower but more accurate
     num_processes : int, optional
         Number of parallel processes to use
     ignore_flags : list or tup
@@ -162,8 +153,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         List of integers defining the extension in the fits files containing the science data
     dq_ext_list : list or tup
         List of integers defining the extension in the fits files containing the data quality bitmask
-    method : str
-        Method for reprojecting the science extensions
+    reproj_func : str
+        Reproject function for reprojecting the science extensions
         - 'Exact': Slowest, conserves flux
         - 'Interp': Fastest, alter PSF profile, does not conserves flux
         - 'Adaptive': Faster then 'Exact', conserves flux
@@ -183,13 +174,11 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     assert isinstance(exposure_list, (list, tuple)) and exposure_list, "exposure_list must be a non-empty list or tuple"
     assert isinstance(ref_wcs, WCS), "Reference WCS must be an astropy.wcs.WCS object"
     assert isinstance(ref_shape, (list, tuple, np.ndarray)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert oversample_factor >= 1, "Oversample factor must be >= 1"
     assert isinstance(padding_percentage, float) and 0 <= padding_percentage, "padding_percentage must be a float larger than 0"
-    assert isinstance(oversample_factor, int), "Oversample factor must be an integer"
     assert isinstance(num_processes, int) and num_processes > 0, "num_processes must be a positive integer"
     assert sci_ext_list is None or isinstance(sci_ext_list, (list, tuple, np.ndarray)), "sci_ext_list must be a list or tuple"
     assert dq_ext_list is None or isinstance(dq_ext_list, (list, tuple, np.ndarray)), "dq_ext_list must be a list or tuple"
-    assert method in ['exact', 'interp', 'adaptive'], "method must be one of 'exact', 'interp', or 'adaptive'"
+    assert reproj_func in ['exact', 'interp', 'adaptive'], "reproj_func must be one of 'exact', 'interp', or 'adaptive'"
     assert exp_idx_list is None or isinstance(exp_idx_list, (list, tuple, np.ndarray)), "exp_idx_list must be a list or tuple"
     assert det_idx_list is None or isinstance(det_idx_list, (list, tuple, np.ndarray)), "det_idx_list must be a list or tuple"
     assert type(replace_existing) is bool, "replace_existing must be a boolean"  
@@ -223,7 +212,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
             
             # Create a dictionary of parameters for each task
             task_params = {
-                'method': method,
+                'reproj_func': reproj_func,
                 'file_path': file_path,
                 'exp_idx': exp_idx,
                 'det_idx': det_idx,
@@ -232,9 +221,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
                 'ref_wcs': ref_wcs,
                 'sub_width': sub_width,
                 'output_dir': output_dir,
-                'oversample_factor': oversample_factor,
                 'replace_existing': replace_existing,
-                'reproj_kwargs': reproj_kwargs
+                'reproject_kwargs': reproject_kwargs
             }
             tasks.append(task_params)
     
@@ -250,7 +238,6 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     print(f'Batch reprojection completed. {len(success_file)} frames successfully processed out of {len(tasks)}.')
     return success_file
 
-
 def load_reproj_file(file_path, fields):
     """Helper to load selected fields from a single HDF5 file.
     Parameters
@@ -259,7 +246,8 @@ def load_reproj_file(file_path, fields):
         Path to a reprojected HDF5 file
     fields: tup
         List of strings corresponding to name of dataset to extract from the HDF5 file
-        Available fields: ['sub_data', 'det_data', 'sub_header', 'det_header', 'ref_coords', 'sub_foot', 'file_path', 'grid_bitmask', 'grid_mapping']
+        Available fields: ['sub_data', 'det_data', 'sub_header', 'det_header', 'ref_coords', 'sub_foot', 'file_path', 
+        'sub_bitmask', 'sub_mapping']
 
     Returns
     -------
@@ -279,6 +267,8 @@ def load_reproj_file(file_path, fields):
                     header_key = 'sub_header' if key == 'sub_wcs' else 'det_header'
                     header_str = file[header_key][()].decode('utf-8')
                     data[key] = WCS(fits.Header.fromstring(header_str))
+                elif key == 'file_path':
+                    data[key] = file[key][()].decode('utf-8')
                 else:
                     data[key] = file[key][()]  # Efficient read
     except Exception as e:
@@ -289,71 +279,51 @@ def load_reproj_file(file_path, fields):
     data['_is_missing_'] = is_file_missing
     return data
 
-
-def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
-    valid_bit = ~check_invalid(bitmask)
-    grid_mask = bit_to_bool(bitmask, ignore_list, invert=True) & valid_bit# 1 = Good pixel, 0 = Bad pixel
-    sub_mask_float = bin2d_cv(grid_mask, oversample_factor) # Downscale to sub-frame size
-    sub_mask = sub_mask_float > valid_threshold
-    return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
-
 def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
-                   apply_weight=False, apply_mask=False, chunk_offset=None, 
-                   ignore_list=[], valid_threshold=0.99, for_lsqr=False, interp_func=None):
+                   apply_weight=False, apply_mask=False, chunk_offset=None, make_det_offset=None,
+                   ignore_list=[], valid_threshold=0.99, for_lsqr=False,):
     """Prepares data from a single file for co-addition or lsqr."""
-    fields=['sub_data', 'ref_coords', 'grid_mapping']
+    fields=['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
-        fields.append('grid_bitmask')
+        fields.append('sub_bitmask')
     result = load_reproj_file(file, fields=fields)
 
-    data = result['sub_data']
-    coords = result['ref_coords']
-    grid_mapping = result['grid_mapping']
+    sub_data = result['sub_data']
+    ref_coords = result['ref_coords']
+    sub_fullmask = np.ones_like(sub_data, dtype=bool)
+    sub_mapping = result['sub_mapping']
     
-    oversample_factor = 1
-    if grid_mapping is not None and data.shape[-1] > 0:
-        oversample_factor = int(grid_mapping.shape[-1] / data.shape[-1])
+    if 'sub_bitmask' in result:
+        # invert=True: 1 = Good pixel, 0 = Bad pixel
+        sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
+        sub_fullmask &= sub_boolmask
 
-    sub_mask = np.ones_like(data, dtype=bool)
-    if 'grid_bitmask' in result:
-        bitmask = result['grid_bitmask']
-        sub_mask &= grid_bitmask_to_sub_mask(
-            bitmask, oversample_factor, ignore_list=ignore_list, valid_threshold=valid_threshold
-        )
+    if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr:
+        sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
+        interp_matrix = make_linear_interp_matrix(sub_mapping_flat, input_shape=np.shape(chunk_map))
 
-    det_maps_to_process = []
-    map_keys = []
     if chunk_offset is not None:
-        #TODO Update to use higher resolution chunk_map
-        offset_map = compute_offset_map(chunk_offset, chunk_map, interp_func=interp_func)
-        det_maps_to_process.append(offset_map)
-        map_keys.append('offset')
+        if make_det_offset:
+            det_offset = make_det_offset(chunk_offset)
+        else:
+            det_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
+        sub_offset = det_to_sub(det_offset, interp_matrix=interp_matrix)
+        sub_data -= sub_offset
+   
     if det_valid_mask is not None:
-        det_maps_to_process.append(det_valid_mask)
-        map_keys.append('valid_mask')
-    if det_maps_to_process:
-        stacked_det_maps = np.stack(det_maps_to_process, axis=0)
-        stacked_grid_maps = [det_to_grid(grid_mapping, det_data=det_map) for det_map in stacked_det_maps]
-        stacked_sub_maps = [bin2d_cv(grid_map, oversample_factor) for grid_map in stacked_grid_maps]
-        # stacked_sub_maps = bin2d_cv(stacked_grid_maps, bin_factor=oversample_factor)
-        if 'offset' in map_keys:
-            data -= stacked_sub_maps[map_keys.index('offset')]
-        if 'valid_mask' in map_keys:
-            sub_mask &= (stacked_sub_maps[map_keys.index('valid_mask')] > 0.5)
+        sub_valid_frac = det_to_sub(det_valid_mask, interp_matrix=interp_matrix)
+        sub_valid_mask = sub_valid_frac > valid_threshold
+        sub_fullmask &= sub_valid_mask
 
-    data[~sub_mask] = np.nan
+    sub_data[~sub_fullmask] = np.nan
     
-    weight = make_weight(data) if apply_weight else np.ones_like(data, dtype=np.float32)
+    sub_weight = make_weight(sub_data) if apply_weight else np.ones_like(sub_data, dtype=np.float32)
 
     chunk_contrib = None
     if for_lsqr:
-        chunk_contrib = compute_chunk_contrib(
-            grid_mapping=grid_mapping,
-            chunk_map=chunk_map,
-            oversample_factor=oversample_factor
-        )
+        chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
-    return coords, data, weight, chunk_contrib
+    return ref_coords, sub_data, sub_weight, chunk_contrib
 
 def _coadd_batch_worker(params):
     """Worker function that processes a batch of files using dictionary parameters."""

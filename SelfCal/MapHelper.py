@@ -3,14 +3,17 @@ from tqdm import tqdm
 import numpy as np
 
 from scipy.ndimage import gaussian_filter
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 import cv2
 
 from mpsplines import MeanPreservingInterpolation as MPI
 from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
 from scipy.optimize import minimize
+from scipy.ndimage import map_coordinates
 
 def bit_to_bool(bitmask_array, ignore_list=[], bitmask_header=None, invert=False, expand_bits=False):
+    # By default, 1 indicates bad pixels and 0 indicates good pixels.
+    # If invert=True, this is flipped.
     ignore_mask_val = np.uint32(0)
     for item in ignore_list:
         bit = bitmask_header[item] if bitmask_header is not None else item
@@ -208,63 +211,144 @@ def compute_crop(ref_shape, coords):
     ref_crop = np.s_[y0:y1, x0:x1]
     return sub_crop, ref_crop
 
-def compute_offset_map(chunk_offset, chunk_map, interp_func=None):
-    offset_map = chunk_offset[chunk_map]
-    if interp_func is not None:
-        assert callable(interp_func), "interp_func must be a callable function"
-        # Apply interpolation function if provided
-        offset_map = interp_func(offset_map)
-    return offset_map
+def chunk_to_det(chunk_map, chunk_data):
+    det_offset = chunk_data[chunk_map]
+    return det_offset
 
-def parse_grid_mapping(grid_mapping):
-    """
-    Parses a grid mapping to find valid pixels and their original detector coordinates.
-    This is the core reusable logic.
-    """
-    valid_pix = np.all(~check_invalid(grid_mapping), axis=0)
-    grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
-    grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
-    return valid_pix, grid_x_flat, grid_y_flat
+# def parse_grid_mapping(grid_mapping):
+#     """
+#     Parses a grid mapping to find valid pixels and their original detector coordinates.
+#     This is the core reusable logic.
+#     """
+#     valid_pix = np.all(~check_invalid(grid_mapping), axis=0)
+#     grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
+#     grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
+#     return valid_pix, grid_x_flat, grid_y_flat
 
-def det_to_grid(grid_mapping, det_data):
-    """
-    Maps detector data onto the grid using the grid_mapping.
-    This function can handle a single 2D array or a stack of 2D arrays (3D).
-    """
-    valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
+# def det_to_grid(grid_mapping, det_data):
+#     """
+#     Maps detector data onto the grid using the grid_mapping.
+#     This function can handle a single 2D array or a stack of 2D arrays (3D).
+#     """
+#     valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
 
-    if det_data.ndim == 2:
-        # Handle a single 2D array
-        grid_data = np.zeros_like(grid_mapping[0])
-        grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
-        return grid_data
-    elif det_data.ndim == 3:
-        # Handle a stack of 2D arrays (3D)
-        num_layers = det_data.shape[0]
-        grid_shape = (num_layers, grid_mapping.shape[1], grid_mapping.shape[2])
-        grid_data = np.zeros(grid_shape, dtype=det_data.dtype)
-        # Use advanced indexing to map all layers at once
-        grid_data[:, valid_pix] = det_data[:, grid_y_flat, grid_x_flat]
-        return grid_data
-    else:
-        raise ValueError(f"det_data must be 2D or 3D, but got {det_data.ndim} dimensions.")
+#     if det_data.ndim == 2:
+#         # Handle a single 2D array
+#         grid_data = np.zeros_like(grid_mapping[0])
+#         grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
+#         return grid_data
+#     elif det_data.ndim == 3:
+#         # Handle a stack of 2D arrays (3D)
+#         num_layers = det_data.shape[0]
+#         grid_shape = (num_layers, grid_mapping.shape[1], grid_mapping.shape[2])
+#         grid_data = np.zeros(grid_shape, dtype=det_data.dtype)
+#         # Use advanced indexing to map all layers at once
+#         grid_data[:, valid_pix] = det_data[:, grid_y_flat, grid_x_flat]
+#         return grid_data
+#     else:
+#         raise ValueError(f"det_data must be 2D or 3D, but got {det_data.ndim} dimensions.")
 
-def compute_chunk_contrib(grid_mapping, chunk_map, oversample_factor):
-    """Computes the sparse matrix contribution for LSQR."""
-    num_chunks = len(np.unique(chunk_map))
-    map_width = grid_mapping.shape[-1]
+def make_linear_interp_matrix(coords, input_shape):
+    # Coords = (y_coords, x_coords)
+    H, W = input_shape
+    N_total = coords.shape[1]  # Original total number of points
+
+    # 1. Identify valid inputs (removing NaNs)
+    valid_mask = ~(np.isnan(coords[0]) | np.isnan(coords[1]))
+    valid_idxs = np.where(valid_mask)[0] # Indices in original array
     
-    valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
+    # Filter coordinates immediately
+    row_coords = coords[0][valid_mask]
+    col_coords = coords[1][valid_mask]
     
-    chunk_idx_flat = chunk_map[grid_y_flat, grid_x_flat]
-    cols = np.flatnonzero(valid_pix)
-    data = np.ones_like(cols, dtype=np.float32)
+    n_valid = len(row_coords) # Number of valid points
 
-    chunk_idx_parsed = coo_matrix(
-        (data, (chunk_idx_flat, cols)), 
-        shape=(num_chunks, map_width * map_width)
+    # 2. Integer floors and fractional parts (Calculated only on valid points)
+    r0 = np.floor(row_coords).astype(np.int32)
+    c0 = np.floor(col_coords).astype(np.int32)
+    
+    r_frac = row_coords - r0
+    c_frac = col_coords - c0
+    rf_inv = 1.0 - r_frac
+    cf_inv = 1.0 - c_frac
+
+    # 3. Allocation
+    # We allocate based on n_valid, not N_total
+    total_entries = n_valid * 4
+    
+    data = np.empty(total_entries, dtype=np.float64)
+    cols = np.empty(total_entries, dtype=np.int32)
+    
+    # CRITICAL FIX: The rows array must point to the *original* indices.
+    # We repeat the valid indices 4 times (one for each neighbor).
+    rows = np.repeat(valid_idxs, 4)
+
+    # 4. Fill Weights (Strided assignment)
+    data[0::4] = rf_inv * cf_inv # Top-Left
+    data[1::4] = rf_inv * c_frac # Top-Right
+    data[2::4] = r_frac * cf_inv # Bottom-Left
+    data[3::4] = r_frac * c_frac # Bottom-Right
+
+    # 5. Fill Indices (Strided assignment)
+    # Calculate base index (r0, c0)
+    base_idx = r0 * W + c0
+    
+    cols[0::4] = base_idx
+    cols[1::4] = base_idx + 1
+    cols[2::4] = base_idx + W
+    cols[3::4] = base_idx + W + 1
+
+    # 6. Bounds Check (Secondary validation)
+    # Even if not NaN, coords might be outside image dimensions (0 to H/W)
+    # We expand r0/c0 to match the shape of 'cols' to check all 4 neighbors
+    all_r = np.empty(total_entries, dtype=np.int32)
+    all_r[0::4] = r0
+    all_r[1::4] = r0
+    all_r[2::4] = r0 + 1
+    all_r[3::4] = r0 + 1
+
+    all_c = np.empty(total_entries, dtype=np.int32)
+    all_c[0::4] = c0
+    all_c[1::4] = c0 + 1
+    all_c[2::4] = c0
+    all_c[3::4] = c0 + 1
+
+    # Strictly within bounds
+    bounds_mask = (all_r >= 0) & (all_r < H) & (all_c >= 0) & (all_c < W)
+
+    # 7. Final Construction
+    # We use N_total for the shape so the output matrix aligns with the original input
+    interp_matrix = coo_matrix(
+        (data[bounds_mask], (rows[bounds_mask], cols[bounds_mask])), 
+        shape=(N_total, H * W)
     )
-    chunk_contrib = bin2d_coo_matrix(chunk_idx_parsed, map_width, map_width, oversample_factor)
+    
+    return interp_matrix.tocsr()
+
+def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
+    if interp_matrix is not None:
+        sub_width = np.sqrt(interp_matrix.shape[0]).astype(np.int32)
+        det_data_flat = det_data.ravel()
+        sub_data_flat = interp_matrix @ det_data_flat
+        sub_data = sub_data_flat.reshape(sub_width, sub_width)
+    elif sub_mapping is not None:
+        sub_data = map_coordinates(det_data, sub_mapping[::-1], order=1, output=np.float32)
+    else:
+        raise ValueError("Either sub_mapping or interp_matrix must be provided.")
+    return sub_data
+
+def compute_chunk_contrib(chunk_map, interp_matrix):
+    """Computes the sparse matrix contribution for LSQR."""
+    chunk_map_flat = chunk_map.ravel()
+    total_rows = chunk_map_flat.size
+    total_cols = chunk_map_flat.max() + 1
+
+    indptr = np.arange(total_rows + 1)
+    indices = chunk_map_flat
+    data = np.ones(total_rows, dtype=np.float32)
+
+    chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
+    chunk_contrib = (interp_matrix @ chunk_map_parsed).T
     return chunk_contrib
 
 def check_invalid(arr):
@@ -353,3 +437,11 @@ def arc_spline(x_sample, y_sample, return_params=False):
     if return_params:
         return spl, (xc_fit, yc_fit, R_fit)
     return spl
+
+
+def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
+    valid_bit = ~check_invalid(bitmask)
+    grid_mask = bit_to_bool(bitmask, ignore_list, invert=True) & valid_bit# 1 = Good pixel, 0 = Bad pixel
+    sub_mask_float = bin2d_cv(grid_mask, oversample_factor) # Downscale to sub-frame size
+    sub_mask = sub_mask_float > valid_threshold
+    return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
