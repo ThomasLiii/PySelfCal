@@ -191,3 +191,21 @@ def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_param
     
     offset_map = spl(r_mesh)
     return offset_map
+
+def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params):
+    R = lvf_params['R']
+    xc, yc = lvf_params['xc'], lvf_params['yc']
+
+    edge_valid_mask = chunk_valid_mask[1:].astype(bool) | chunk_valid_mask[:-1].astype(bool)
+    valid_R = R[edge_valid_mask]
+    spl = mean_preserving_spline(x_edge=valid_R, y_mean=chunk_offset[chunk_valid_mask.astype(bool)])
+
+    h, w = np.shape(chunk_map)
+    oversample_factor = h // 2040
+    
+    x_vec = (np.arange(w) / oversample_factor) - xc
+    y_vec = (np.arange(h) / oversample_factor) - yc
+    r_mesh = np.sqrt(x_vec**2 + y_vec[:, None]**2)
+    
+    offset_map = spl(r_mesh)
+    return offset_map

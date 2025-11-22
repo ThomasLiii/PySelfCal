@@ -1,15 +1,18 @@
+import sys
+import os
+parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_path)
+
 from SelfCal import PipelineWrapper
 from astropy.io import fits
 import numpy as np
 import glob
-from SelfCal.SPHERExUtility import interpolate_array, make_chunk_map, make_chunk_mask, visualize_chunk_map
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 mpl.rcParams['figure.dpi'] = 400 # User can set this outside the class if needed
 # Import LogNorm
 from matplotlib.colors import LogNorm
 from tqdm import tqdm
-import os
 from SelfCal import MakeMap
 
 detector = 4
@@ -25,7 +28,7 @@ for exp_file in exposure_list:
 print(f"Found {len(exposure_list)} exposures")
 
 config = {}
-config['output_dir'] = '/mnt/md127/thomasli/selfcal/outputs/'
+config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
 config['run_name'] = f'nep_det{detector}_3p1arcsec'
 config['resolution_arcsec'] = 3.1
 # config['ref_path'] = '/home/thomasli/spherex/selfcal/outputs/common_ref.fits'
@@ -34,11 +37,11 @@ rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)
 
 rr.define_reference(padding_pixels=100, use_ext=[1])
 
-rr.run_reproject(max_workers=50, method='exact', padding_percentage=0.05, oversample_factor=2, 
+rr.run_reproject(max_workers=50, reproj_func='exact', padding_percentage=0.05, 
                     sci_ext_list=[1], 
                     dq_ext_list=[2], 
                     exp_idx_list=np.arange(0, len(exposure_list)), 
                     det_idx_list=[0]*len(exposure_list),
                     replace_existing=False,
-                 reproj_kwargs={'parallel': 4}
+                 reproject_kwargs={'parallel': 4}
                 )

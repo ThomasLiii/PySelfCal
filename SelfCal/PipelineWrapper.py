@@ -48,9 +48,9 @@ class Reprojector:
         print(f'Mosaic shape: {self.ref_shape}')
         print(f'Mosaic WCS: {self.ref_wcs}')
 
-    def run_reproject(self, max_workers=50, method='exact', padding_percentage=0.05, oversample_factor=2, 
+    def run_reproject(self, max_workers=50, reproj_func='exact', padding_percentage=0.05, 
                       sci_ext_list=None, dq_ext_list=None, exp_idx_list=None, det_idx_list=None,
-                      output_dir=None, replace_existing=False, reproj_kwargs={}):
+                      output_dir=None, replace_existing=False, reproject_kwargs={}):
         if self.ref_wcs is None or self.ref_shape is None:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
@@ -58,7 +58,7 @@ class Reprojector:
         self.reproj_list = MakeMap.batch_reproject(
             # Can edit
             num_processes = max_workers, 
-            method = method,  # interp: fastest, adaptive: conserves flux, exact: most accurate
+            reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
 
             # Porbably don't want to edit
             exposure_list = self.exposure_list,
@@ -66,13 +66,12 @@ class Reprojector:
             ref_shape = self.ref_shape,
             output_dir = output_dir, 
             padding_percentage = padding_percentage,
-            oversample_factor = oversample_factor,
             sci_ext_list = sci_ext_list, 
             dq_ext_list = dq_ext_list,
             exp_idx_list = exp_idx_list,
             det_idx_list = det_idx_list,
             replace_existing = replace_existing,
-            reproj_kwargs = reproj_kwargs
+            reproject_kwargs = reproject_kwargs
             )
         
     def check_reproj_files(self):
@@ -102,10 +101,12 @@ class Calibrator(Reprojector):
         self.A = None
         self.B = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, outlier_thresh=3.0, ignore_list=[]):
+    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
+                   outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10):
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
-               max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list)
+               max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
+               batch_size=batch_size)
         
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
         if self.A is None or self.b is None:
@@ -148,63 +149,60 @@ class Mosaicker(Reprojector):
         self.cal_path = cal_path
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
-    make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], interp_func=None):
+        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], 
+        oversample_factor=1, det_offset_func=None, batch_size=10):
 
         if self.O is None:
-            print("Waning: Calibration not loaded. No calibration will be applied to the mosaic.")
-        if normalize_offset:
-            O = self.O-np.mean(self.O[self.O!=0])    
+            print("Warning: Calibration not loaded. No calibration will be applied to the mosaic.")
+        
+        offset_param = None
+        if self.O is not None and apply_offset:
+            O = self.O
+            if normalize_offset:
+                O = O - np.mean(O[O != 0])
+            offset_param = O
+
+        # Bundle arguments common to all compute_coadd_map calls
+        common_kwargs = {
+            'ref_shape': self.ref_shape,
+            'reproj_file_list': self.reproj_list,
+            'offset_list': offset_param,
+            'det_idx_list': self.det_idx_list,
+            'exp_idx_list': self.exp_idx_list,
+            'apply_weight': apply_weight,
+            'apply_mask': apply_mask,
+            'chunk_map': chunk_map,
+            'max_workers': max_workers,
+            'det_valid_mask': det_valid_mask,
+            'ignore_list': ignore_list,
+            'oversample_factor': oversample_factor,
+            'det_offset_func': det_offset_func,
+            'batch_size': batch_size
+        }
 
         self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
-            mode='mean',
-            ref_shape=self.ref_shape,
-            reproj_file_list=self.reproj_list,
-            offset=O if apply_offset else None,
-            det_idx_list=self.det_idx_list,
-            exp_idx_list=self.exp_idx_list,
-            apply_weight=apply_weight,
-            apply_mask=apply_mask,
-            chunk_map=chunk_map,
-            max_workers=max_workers,
-            det_valid_mask=det_valid_mask,
-            ignore_list=ignore_list,
-            interp_func=interp_func
+            mode='mean', 
+            **common_kwargs
         )
+
         if make_std_map:
             self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
-                mode='std',
-                mean_map=self.maps['mean_map'],
-                ref_shape=self.ref_shape,
-                reproj_file_list=self.reproj_list,
-                offset=O if apply_offset else None,
-                det_idx_list=self.det_idx_list,
-                exp_idx_list=self.exp_idx_list,
-                apply_weight=apply_weight,
-                apply_mask=apply_mask,
-                chunk_map=chunk_map,
-                max_workers=max_workers,
-                det_valid_mask=det_valid_mask,
-                ignore_list=ignore_list,
-                interp_func=interp_func
+                mode='std', 
+                mean_map=self.maps['mean_map'], 
+                **common_kwargs
             )
+
         if make_std_map and apply_sigma_clipping:
+            # Create a copy to override apply_mask without affecting other calls
+            sc_kwargs = common_kwargs.copy()
+            sc_kwargs['apply_mask'] = True
+            
             self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
                 mode='sigma_clip',
                 mean_map=self.maps['mean_map'],
                 std_map=self.maps['std_map'],
                 sigma=sigma,
-                ref_shape=self.ref_shape,
-                reproj_file_list=self.reproj_list,
-                offset=O if apply_offset else None,
-                exp_idx_list=self.exp_idx_list,
-                det_idx_list=self.det_idx_list,
-                apply_weight=apply_weight,
-                apply_mask=True,
-                chunk_map=chunk_map,
-                det_valid_mask=det_valid_mask,
-                max_workers=max_workers,
-                ignore_list=ignore_list,
-                interp_func=interp_func
+                **sc_kwargs
             )
 
         return self.maps
