@@ -337,7 +337,7 @@ def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
         raise ValueError("Either sub_mapping or interp_matrix must be provided.")
     return sub_data
 
-def compute_chunk_contrib(chunk_map, interp_matrix):
+def compute_chunk_contrib(chunk_map, interp_matrix=None):
     """Computes the sparse matrix contribution for LSQR."""
     chunk_map_flat = chunk_map.ravel()
     total_rows = chunk_map_flat.size
@@ -348,8 +348,11 @@ def compute_chunk_contrib(chunk_map, interp_matrix):
     data = np.ones(total_rows, dtype=np.float32)
 
     chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
-    chunk_contrib = (interp_matrix @ chunk_map_parsed).T
-    return chunk_contrib
+    if interp_matrix is not None:
+        chunk_contrib = (interp_matrix @ chunk_map_parsed).T
+        return chunk_contrib
+    else:
+        return chunk_map_parsed
 
 def check_invalid(arr):
     if np.issubdtype(arr.dtype, np.integer):
