@@ -15,7 +15,7 @@ from matplotlib.colors import LogNorm
 from tqdm import tqdm
 from SelfCal import MakeMap
 
-detector = 4
+detector = 1
 # exposure_list = glob.glob(f'/data1/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
 exposure_list = glob.glob(f'/mnt/md127/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
 for exp_file in exposure_list:
