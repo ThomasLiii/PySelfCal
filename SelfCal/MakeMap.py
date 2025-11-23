@@ -576,6 +576,95 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
         return result_map, weight_sum
 
+def _prep_lsqr(task_params):
+    '''Compute the components of the LSQR matrix A and vector b for a single subframe.
+    A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
+    b.shape = (subframe_pixels,)
+    Solve for x which has x.shape = (num_sky_pixels + num_exp + num_det * num_chunks)
+    Assumptions:
+    - Each pixel value in sub_data corresponds to a single sky pixel in the reference frame.
+    - Each subframe comes from a single exposure and a single detector.
+    '''
+    # Unpack parameters from the dictionary
+    i = task_params['i']
+    reproj_file = task_params['reproj_file']
+    ref_shape = task_params['ref_shape']
+    exp_idx = task_params['exp_idx']
+    num_exp = task_params['num_exp']
+    num_chunks = task_params['num_chunks']
+    outlier_thresh = task_params['outlier_thresh']
+    
+    try:
+        # Implicit pass: feed the whole dictionary.
+        # Explicit receiver: _prep_subframe grabs what it needs.
+        ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
+            file=reproj_file,
+            chunk_offset=None,
+            # exp_idx=exp_idx,
+            # det_idx=None,
+            for_lsqr=True,
+            **task_params 
+        )
+
+        ref_h, ref_w = ref_shape
+        sub_h, sub_w = sub_data.shape
+        num_sky = ref_h * ref_w
+
+        # Identify valid pixels after _prep_subframe has applied its masking
+        sub_valid = ~check_invalid(sub_data) 
+        if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
+            sub_out = find_outliers(sub_data, threshold=outlier_thresh) 
+            sub_valid &= ~sub_out 
+        valid_sub_coords = np.nonzero(sub_valid) 
+        sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
+        valid_vals = sub_data[valid_sub_coords] 
+        valid_weight = sub_weight[valid_sub_coords] 
+        num_valid_pixels = valid_vals.shape[0]
+
+        if num_valid_pixels == 0:
+            print(f"No valid pixels found in subframe {i} from file {reproj_file}. Skipping.")
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0
+
+        ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) 
+
+        # Sky: Sky pixel indices
+        S_rows = np.arange(num_valid_pixels) 
+        S_cols = ref_pix_indices 
+        S_data = valid_weight 
+
+        # Offset:
+        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() 
+        chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
+        O_rows = sub_idx 
+        O_cols = chunk_idx + exp_idx*num_chunks + (num_sky) 
+        O_data = valid_weight[sub_idx] * chunk_vals 
+
+        sub_b = valid_vals * valid_weight 
+
+        # Concatenate datapoints for S, O
+        sub_rows = np.concatenate([S_rows, O_rows])
+        sub_cols = np.concatenate([S_cols, O_cols])
+        sub_data = np.concatenate([S_data, O_data])
+
+        # Remove rows where sub_b is NaN or both sub_data and sub_b are zero
+        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
+        sub_rows = sub_rows[valid_mask]
+        sub_cols = sub_cols[valid_mask]
+        sub_data = sub_data[valid_mask]
+
+        # Find which unique rows remain and create a mapping to new row indices
+        unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
+        sub_rows = new_row_indices
+
+        # Filter sub_b to only the kept rows
+        sub_b = sub_b[unique_rows]
+        num_rows = len(sub_b)
+        return sub_rows, sub_cols, sub_data, sub_b, num_rows
+    except Exception as e:
+        print(f"Error processing file {reproj_file} for exp_idx={exp_idx}: {e}")
+        traceback.print_exc()
+        return None
+
 def _prep_lsqr_batch_worker(batch_params):
     """
     Wrapper to process a list (batch) of subframes in a single worker process.
