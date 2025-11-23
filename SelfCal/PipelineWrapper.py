@@ -4,6 +4,7 @@ import sys
 import glob
 from tqdm import tqdm
 import numpy as np
+import time
 
 from . import WCSHelper
 from . import MakeMap
@@ -55,6 +56,8 @@ class Reprojector:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
             output_dir = self.config['reproj_dir']
+
+        start_time = time.time()
         self.reproj_list = MakeMap.batch_reproject(
             # Can edit
             num_processes = max_workers, 
@@ -73,6 +76,8 @@ class Reprojector:
             replace_existing = replace_existing,
             reproject_kwargs = reproject_kwargs
             )
+        end_time = time.time()
+        print(f"Reprojection completed in {end_time - start_time:.2f} seconds.")
         
     def check_reproj_files(self):
         for f in tqdm(self.reproj_list):
@@ -103,16 +108,22 @@ class Calibrator(Reprojector):
 
     def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10):
+        start_time = time.time()
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                batch_size=batch_size)
-        
+        end_time = time.time()
+        print(f"LSQR setup completed in {end_time - start_time:.2f} seconds.")
+
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
+        start_time = time.time()
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, self.ref_shape, self.exp_idx_list, self.det_idx_list, 
                                                     x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+        end_time = time.time()
+        print(f"LSQR solved in {end_time - start_time:.2f} seconds.")
     
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
         if cal_dir is None:
@@ -180,23 +191,30 @@ class Mosaicker(Reprojector):
             'batch_size': batch_size
         }
 
+        start_time = time.time()
         self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
             mode='mean', 
             **common_kwargs
         )
-
+        end_time = time.time()
+        print(f"Mean map computed in {end_time - start_time:.2f} seconds.")
+        
         if make_std_map:
+            start_time = time.time()
             self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
                 mode='std', 
                 mean_map=self.maps['mean_map'], 
                 **common_kwargs
             )
+            end_time = time.time()
+            print(f"Std map computed in {end_time - start_time:.2f} seconds.")
 
         if make_std_map and apply_sigma_clipping:
             # Create a copy to override apply_mask without affecting other calls
             sc_kwargs = common_kwargs.copy()
             sc_kwargs['apply_mask'] = True
             
+            start_time = time.time()
             self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
                 mode='sigma_clip',
                 mean_map=self.maps['mean_map'],
@@ -204,6 +222,8 @@ class Mosaicker(Reprojector):
                 sigma=sigma,
                 **sc_kwargs
             )
+            end_time = time.time()
+            print(f"Sigma-clipped mean map computed in {end_time - start_time:.2f} seconds.")
 
         return self.maps
 
