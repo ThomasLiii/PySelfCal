@@ -5,11 +5,15 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.table import Table
 from tqdm import tqdm
+import scipy.ndimage as nd
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor
 
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline
 from scipy.optimize import least_squares
-from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline
+from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool
+from SelfCal.MakeMap import load_reproj_file
 
 
 def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
@@ -209,3 +213,38 @@ def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_param
     
     offset_map = spl(r_mesh)
     return offset_map
+
+def compute_mean_pixval(exp_file, chunk_map):
+    with fits.open(exp_file) as hdul:
+        data = hdul[1].data
+        bitmask = hdul[2].data
+
+    valid_mask = bit_to_bool(bitmask, ignore_list=[7], invert=True)
+    max_chunk_id = np.max(chunk_map)
+    index_range = np.arange(max_chunk_id + 1)
+
+    labels = chunk_map.copy()
+    labels[~valid_mask] = -1
+    mean = nd.mean(data, labels=labels, index=index_range)
+    if np.isnan(mean).any():
+        print("Warning: NaN values found in mean pixel value computation, filling with 0.")
+        mean = np.nan_to_num(mean, nan=0.0)
+    return mean
+
+
+def compute_offsets_guess(reproj_list, det_chunk_map):
+    def _extract_file_path(reproj_file):
+        reproj_data = load_reproj_file(reproj_file, fields=['file_path'])
+        return reproj_data['file_path']
+    exp_files = [_extract_file_path(reproj_file) for reproj_file in reproj_list]
+    compute_mean_pixval_partial = partial(compute_mean_pixval, chunk_map=det_chunk_map)
+
+    with ProcessPoolExecutor(max_workers=20) as executor:
+        results = list(tqdm(executor.map(compute_mean_pixval_partial, exp_files), 
+                            total=len(exp_files), 
+                            desc="Calculating initial guess offsets"))
+    offset_guess = np.array(results)
+    return offset_guess
+
+
+    
