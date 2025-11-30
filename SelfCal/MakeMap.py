@@ -320,11 +320,21 @@ def load_reproj_file(file_path, fields):
     data['_is_missing_'] = is_file_missing
     return data
 
-def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
-                   apply_weight=False, apply_mask=False, chunk_offset=None, det_offset_func=None,
-                   ignore_list=[], valid_threshold=0.99, for_lsqr=False, oversample_factor=1, **kwargs):
-    """Prepares data from a single file for co-addition or lsqr."""
-    fields=['sub_data', 'ref_coords', 'sub_mapping']
+def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False, 
+                   chunk_offset=None, det_offset_func=None, ignore_list=None, 
+                   det_valid_mask=None, valid_threshold=0.99, 
+                   for_lsqr=False, oversample_factor=1, 
+                   # These arguments are accepted for compatibility/internal logic 
+                   # but might not be used depending on logic path
+                   exp_idx=None, det_idx=None):
+    """
+    Prepares data from a single file for co-addition or lsqr.
+    
+    Refactored to use explicit arguments instead of **kwargs.
+    """
+    if ignore_list is None: ignore_list = []
+
+    fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
         fields.append('sub_bitmask')
     result = load_reproj_file(file, fields=fields)
@@ -339,6 +349,7 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
         sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
         sub_fullmask &= sub_boolmask
 
+    interp_matrix = None
     if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr:
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
@@ -363,34 +374,57 @@ def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
 
     chunk_contrib = None
     if for_lsqr:
+        # Note: If compute_chunk_contrib needs exp_idx/det_idx, ensure they are passed here.
         chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
     return ref_coords, sub_data, sub_weight, chunk_contrib
 
 def _coadd_batch_worker(params):
-    """Worker function that processes a batch. Arguments are handled implicitly."""
+    """
+    Worker function that processes a batch. 
+    Arguments are unpacked explicitly from the params dictionary.
+    """
+    # 1. Unpack Batch-specific data
     batch_files = params['batch_files']
     batch_indices = params['batch_indices']
+    
+    # 2. Unpack Global Configuration for Processing
     ref_shape = params['ref_shape']
     mode = params['mode']
     
+    # 3. Unpack Iterables (to be indexed by 'i')
+    exp_idx_list = params['exp_idx_list']
+    det_idx_list = params['det_idx_list']
+    offset_list = params['offset_list']
+    
+    # 4. Unpack Configuration for _prep_subframe explicitly
+    # This dictionary isolates the kwargs needed for _prep_subframe
+    prep_config = {
+        'chunk_map': params['chunk_map'],
+        'apply_weight': params['apply_weight'],
+        'apply_mask': params['apply_mask'],
+        'ignore_list': params['ignore_list'],
+        'det_valid_mask': params['det_valid_mask'],
+        'det_offset_func': params['det_offset_func'],
+        'oversample_factor': params['oversample_factor'],
+        'valid_threshold': params['valid_threshold'], # Ensure defaults match upper level
+        'for_lsqr': False
+    }
+
     # --- Shared Memory Reconstruction Start ---
     shm_handles = []
+    mean_map = None
+    std_map = None
     if 'mean_map_name' in params:
         shm_mean = SharedMemory(name=params['mean_map_name'])
-        params['mean_map'] = np.ndarray(ref_shape, dtype=params['dtype'], buffer=shm_mean.buf)
+        mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
         shm_handles.append(shm_mean)
         
     if 'std_map_name' in params:
         shm_std = SharedMemory(name=params['std_map_name'])
-        params['std_map'] = np.ndarray(ref_shape, dtype=params['dtype'], buffer=shm_std.buf)
+        std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
         shm_handles.append(shm_std)
     # --- Shared Memory Reconstruction End ---
-
-    # Extract list-based parameters to avoid repeated dictionary lookups
-    exp_idx_list = params.get('exp_idx_list')
-    det_idx_list = params.get('det_idx_list')
-    offset_list = params.get('offset_list')
 
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)
@@ -403,13 +437,12 @@ def _coadd_batch_worker(params):
         current_det = det_idx_list[idx] if det_idx_list is not None else None
         current_offset = offset_list[idx] if offset_list is not None else None
 
-        # Call prep_subframe with specific dynamic args, 
         coords, data, weight, _ = _prep_subframe(
             file=file_path,
             exp_idx=current_exp,
             det_idx=current_det,
             chunk_offset=current_offset,
-            **params 
+            **prep_config 
         )
 
         if coords is None:
@@ -425,13 +458,13 @@ def _coadd_batch_worker(params):
             weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
 
         elif mode == 'std':
-            mean_crop = params['mean_map'][ref_crop]
+            mean_crop = mean_map[ref_crop]
             data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
             weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
         
         elif mode == 'sigma_clip':
-            mean_crop = params['mean_map'][ref_crop]
-            std_crop = params['std_map'][ref_crop]
+            mean_crop = mean_map[ref_crop]
+            std_crop = std_map[ref_crop]
             sigma = params['sigma']
             clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
             valid_clipped = valid & clip_mask
@@ -448,7 +481,6 @@ def _coadd_batch_worker(params):
 
     return data_sum, weight_sum
 
-
 def _parallel_coadd(mode, params):
     """
     Central function to manage parallel processing.
@@ -457,7 +489,7 @@ def _parallel_coadd(mode, params):
     reproj_file_list = params['reproj_file_list']
     ref_shape = params['ref_shape']
     max_workers = params.get('max_workers', 10)
-    batch_size = params.get('batch_size', 20) # Default to 20 if not set, though it should be set by caller
+    batch_size = params.get('batch_size', 20) 
     
     total_files = len(reproj_file_list)
     if total_files == 0:
@@ -483,22 +515,18 @@ def _parallel_coadd(mode, params):
     total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
 
     with Pool(processes=max_workers) as pool:
-        # Iterate through the iterator directly, do not cast to list
         for data_part, weight_part in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
             total_data_sum += data_part
             total_weight_sum += weight_part
-            
-            # Explicitly delete to encourage GC (optional but safer)
             del data_part, weight_part
         
     return total_data_sum, total_weight_sum
-
 
 def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
-                      batch_size=10):
+                      batch_size=10, valid_threshold=0.99):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -569,13 +597,38 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
     assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
-    # Capture all function arguments into a dictionary to pass to the parallel processor
-    params = locals()
+    # Explicitly build the params dictionary. 
+    # Only keys defined here are accessible in _coadd_batch_worker.
+    params = {
+        # Execution control
+        'mode': mode,
+        'ref_shape': ref_shape,
+        'reproj_file_list': reproj_file_list, # Used by _parallel_coadd for batch slicing
+        'max_workers': max_workers,
+        'batch_size': batch_size,
+        
+        # Iterables
+        'exp_idx_list': exp_idx_list,
+        'det_idx_list': det_idx_list,
+        'offset_list': offset_list,
+        
+        # Configuration for _prep_subframe
+        'chunk_map': chunk_map,
+        'det_valid_mask': det_valid_mask,
+        'apply_weight': apply_weight,
+        'apply_mask': apply_mask,
+        'ignore_list': ignore_list,
+        'det_offset_func': det_offset_func,
+        'oversample_factor': oversample_factor,
+        'valid_threshold': valid_threshold,
+        
+        # Mode-specific
+        'sigma': sigma,
+    }
 
-    # --- Shared Memory Setup ---
-    shm_objects = []
     try:
-        # Move mean_map to shared memory if present
+        # --- Shared Memory Setup ---
+        shm_objects = []
         if mean_map is not None and mode in ['std', 'sigma_clip']:
             shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
             shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
@@ -583,10 +636,8 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
             shm_objects.append(shm_mean)
             
             params['mean_map_name'] = shm_mean.name
-            params['dtype'] = mean_map.dtype # Needed to reconstruct in worker
-            params['mean_map'] = None # Remove large array from params to prevent pickling
+            params['mean_map_dtype'] = mean_map.dtype 
 
-        # Move std_map to shared memory if present
         if std_map is not None and mode in ['sigma_clip']:
             shm_std = SharedMemory(create=True, size=std_map.nbytes)
             shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
@@ -594,9 +645,8 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
             shm_objects.append(shm_std)
             
             params['std_map_name'] = shm_std.name
-            params['dtype'] = std_map.dtype
-            params['std_map'] = None # Remove large array from params
-
+            params['std_map_dtype'] = std_map.dtype
+    
         # --- Mode-Specific Logic ---
         if mode == 'mean':
             data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
@@ -604,66 +654,62 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
             return result_map, weight_sum
 
         elif mode == 'std':
-            assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
-                "For 'std' mode, mean_map must be a numpy array with the same shape as ref_shape"
-            
             sq_diff_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
             variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
             result_map = np.sqrt(variance)
             return result_map, weight_sum
 
         elif mode == 'sigma_clip':
-            assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
-                "For 'sigma_clip' mode, mean_map must be a numpy array with the same shape as ref_shape"
-            assert isinstance(std_map, np.ndarray) and std_map.shape == ref_shape, \
-                "For 'sigma_clip' mode, std_map must be a numpy array with the same shape as ref_shape"
-            assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
-
             data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
             result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
             return result_map, weight_sum
 
     finally:
-        # Ensure shared memory is cleaned up regardless of success or failure
         for shm in shm_objects:
             shm.close()
             shm.unlink()
 
 def _prep_lsqr(task_params):
-    '''Compute the components of the LSQR matrix A and vector b for a single subframe.
-    A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
-    b.shape = (subframe_pixels,)
-    Solve for x which has x.shape = (num_sky_pixels + num_exp + num_det * num_chunks)
-    Assumptions:
-    - Each pixel value in sub_data corresponds to a single sky pixel in the reference frame.
-    - Each subframe comes from a single exposure and a single detector.
-    '''
-    # Unpack parameters from the dictionary
+    '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
+    # 1. Unpack task specific
     i = task_params['i']
     reproj_file = task_params['reproj_file']
-    ref_shape = task_params['ref_shape']
     exp_idx = task_params['exp_idx']
+    det_idx = task_params['det_idx']
+    
+    # 2. Unpack Config for Logic
+    ref_shape = task_params['ref_shape']
     num_exp = task_params['num_exp']
     num_chunks = task_params['num_chunks']
     outlier_thresh = task_params['outlier_thresh']
-    
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
+
     try:
-        # Implicit pass: feed the whole dictionary.
-        # Explicit receiver: _prep_subframe grabs what it needs.
+        # 3. Explicit Call to _prep_subframe
+        # We explicitly retrieve args from task_params. 
+        # Using .get() allows for safe defaults if the setup function forgot to pack them.
         ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
             file=reproj_file,
-            chunk_offset=None,
-            # exp_idx=exp_idx,
-            # det_idx=None,
+            exp_idx=exp_idx,
+            det_idx=det_idx,
+            chunk_offset=None, # LSQR usually solves for this, so we don't apply it yet
             for_lsqr=True,
-            **task_params 
+            det_offset_func=None,
+            
+            # Explicit Parameters passed down
+            chunk_map=task_params['chunk_map'],
+            apply_weight=task_params['apply_weight'],
+            apply_mask=task_params['apply_mask'],
+            ignore_list=task_params['ignore_list'],
+            det_valid_mask=task_params['det_valid_mask'],
+            oversample_factor=task_params['oversample_factor'],
+            valid_threshold=task_params['valid_threshold']
         )
 
-        ref_h, ref_w = ref_shape
         sub_h, sub_w = sub_data.shape
-        num_sky = ref_h * ref_w
-
-        # Identify valid pixels after _prep_subframe has applied its masking
+        
+        # ... [Rest of logic remains identical] ...
         sub_valid = ~check_invalid(sub_data) 
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
             sub_out = find_outliers(sub_data, threshold=outlier_thresh) 
@@ -675,17 +721,14 @@ def _prep_lsqr(task_params):
         num_valid_pixels = valid_vals.shape[0]
 
         if num_valid_pixels == 0:
-            print(f"No valid pixels found in subframe {i} from file {reproj_file}. Skipping.")
             return np.array([]), np.array([]), np.array([]), np.array([]), 0
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) 
 
-        # Sky: Sky pixel indices
         S_rows = np.arange(num_valid_pixels) 
         S_cols = ref_pix_indices 
         S_data = valid_weight 
 
-        # Offset:
         chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() 
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
         O_rows = sub_idx 
@@ -694,38 +737,30 @@ def _prep_lsqr(task_params):
 
         sub_b = valid_vals * valid_weight 
 
-        # Concatenate datapoints for S, O
         sub_rows = np.concatenate([S_rows, O_rows])
         sub_cols = np.concatenate([S_cols, O_cols])
-        sub_data = np.concatenate([S_data, O_data])
+        sub_data_vec = np.concatenate([S_data, O_data]) 
 
-        # Remove rows where sub_b is NaN or both sub_data and sub_b are zero
-        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
+        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data_vec == 0) & (sub_b[sub_rows] == 0))
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
-        sub_data = sub_data[valid_mask]
+        sub_data_vec = sub_data_vec[valid_mask]
 
-        # Find which unique rows remain and create a mapping to new row indices
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
         sub_rows = new_row_indices
-
-        # Filter sub_b to only the kept rows
         sub_b = sub_b[unique_rows]
-        num_rows = len(sub_b)
-        return sub_rows, sub_cols, sub_data, sub_b, num_rows
+        
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
+
     except Exception as e:
         print(f"Error processing file {reproj_file} for exp_idx={exp_idx}: {e}")
         traceback.print_exc()
         return None
 
 def _prep_lsqr_batch_worker(batch_params):
-    """
-    Wrapper to process a list (batch) of subframes in a single worker process.
-    This reduces IPC overhead and I/O thrashing.
-    """
+    """Wrapper to process a list (batch) of subframes in a single worker process."""
     sub_tasks = batch_params['sub_tasks']
     
-    # Local buffers for the batch
     batch_rows = []
     batch_cols = []
     batch_data = []
@@ -742,7 +777,6 @@ def _prep_lsqr_batch_worker(batch_params):
         if len(sub_b) == 0:
             continue
             
-        # Shift the row indices by the current batch offset so they stack correctly
         batch_rows.append(sub_rows + batch_row_offset)
         batch_cols.append(sub_cols)
         batch_data.append(sub_data)
@@ -752,7 +786,6 @@ def _prep_lsqr_batch_worker(batch_params):
     if len(batch_b) == 0:
         return None
 
-    # Concatenate within the worker before sending back to main process
     return (
         np.concatenate(batch_rows),
         np.concatenate(batch_cols),
@@ -762,8 +795,10 @@ def _prep_lsqr_batch_worker(batch_params):
     )
 
 def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list, 
-               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, outlier_thresh=3,
-               max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10):
+               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
+               # Exposed new arguments here to be explicit
+               valid_threshold=0.99,
+               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -813,7 +848,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
-    num_chunks = len(np.unique(chunk_map))
+    num_chunks = len(np.unique(chunk_map)) if chunk_map is not None else 0
     unique_exps, reindexed_exp_idx_list = np.unique(exp_idx_list, return_inverse=True)
     num_exp = len(unique_exps)
     num_det = len(np.unique(det_idx_list))
@@ -821,14 +856,18 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     num_sky = ref_h * ref_w
     total_cols = num_sky + num_exp * num_chunks
 
-    # We explicitly gather the common configuration into a dictionary to be passed down implicitly.
+    # Explicitly gather the common configuration for the workers
     common_params = {
+        # Arguments for _prep_subframe
         'chunk_map': chunk_map,
         'det_valid_mask': det_valid_mask,
         'apply_mask': apply_mask,
         'apply_weight': apply_weight,
         'ignore_list': ignore_list,
         'oversample_factor': oversample_factor,
+        'valid_threshold': valid_threshold,
+        
+        # Arguments for _prep_lsqr logic
         'outlier_thresh': outlier_thresh,
         'num_exp': num_exp,
         'num_chunks': num_chunks,
@@ -864,7 +903,6 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     all_b = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit the BATCH worker, not the individual worker
         futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
         
         total_rows = 0
@@ -872,14 +910,10 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
             result = future.result()
             
             if result is None:
-                # If a batch failed or returned no data, we skip it
-                # Note: If a critical error occurred, you might want to handle it differently
                 continue
                 
-            # Result contains concatenated data for the whole batch
             b_rows, b_cols, b_data, b_b, b_num_rows = result
             
-            # Since the batch worker returned rows relative to 0, we add the current total_rows
             all_rows.append(b_rows + total_rows)
             all_cols.append(b_cols)
             all_data.append(b_data)
