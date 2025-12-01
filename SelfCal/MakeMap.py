@@ -381,126 +381,168 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
 
 def _coadd_batch_worker(params):
     """
-    Worker function that processes a batch. 
-    Arguments are unpacked explicitly from the params dictionary.
+    Unified worker function for parallel processing.
+    
+    Modes:
+    1. Caching Mode:
+       - Runs _prep_subframe -> Saves to HDF5 -> Returns list of filenames.
+    2. Coadd Mode:
+       - Runs _prep_subframe (or loads cache) -> Stacks data -> Returns (sum, weights).
     """
-    # 1. Unpack Batch-specific data
+    # 1. Unpack Common Parameters
+    mode = params['mode']
     batch_files = params['batch_files']
     batch_indices = params['batch_indices']
-    
-    # 2. Unpack Global Configuration for Processing
     ref_shape = params['ref_shape']
-    mode = params['mode']
     
-    # 3. Unpack Iterables (to be indexed by 'i')
+    # Execution Flags
+    use_cached = params['use_cached']
+    
+    # Iterables
     exp_idx_list = params['exp_idx_list']
     det_idx_list = params['det_idx_list']
     offset_list = params['offset_list']
-    
-    # 4. Unpack Configuration for _prep_subframe explicitly
-    # This dictionary isolates the kwargs needed for _prep_subframe
-    prep_config = {
-        'chunk_map': params['chunk_map'],
-        'apply_weight': params['apply_weight'],
-        'apply_mask': params['apply_mask'],
-        'ignore_list': params['ignore_list'],
-        'det_valid_mask': params['det_valid_mask'],
-        'det_offset_func': params['det_offset_func'],
-        'oversample_factor': params['oversample_factor'],
-        'valid_threshold': params['valid_threshold'], # Ensure defaults match upper level
-        'for_lsqr': False
-    }
 
-    # --- Shared Memory Reconstruction Start ---
-    shm_handles = []
-    mean_map = None
-    std_map = None
-    if 'mean_map_name' in params:
-        shm_mean = SharedMemory(name=params['mean_map_name'])
-        mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
-        shm_handles.append(shm_mean)
-        
-    if 'std_map_name' in params:
-        shm_std = SharedMemory(name=params['std_map_name'])
-        std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
-        shm_handles.append(shm_std)
-    # --- Shared Memory Reconstruction End ---
+    # 2. Initialize Mode-Specific Containers
+    if mode == 'cache':
+        cache_dir = params['cache_dir']
+        cached_list = []
+    else:
+        data_sum = np.zeros(ref_shape, dtype=np.float32)
+        weight_sum = np.zeros(ref_shape, dtype=np.float32)
 
-    data_sum = np.zeros(ref_shape, dtype=np.float32)
-    weight_sum = np.zeros(ref_shape, dtype=np.float32)
-    
+        # Shared Memory Setup
+        shm_handles = []
+        mean_map = None
+        std_map = None
+        if 'mean_map_name' in params:
+            shm_mean = SharedMemory(name=params['mean_map_name'])
+            mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
+            shm_handles.append(shm_mean)
+            
+        if 'std_map_name' in params:
+            shm_std = SharedMemory(name=params['std_map_name'])
+            std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
+            shm_handles.append(shm_std)
+
+    # 3. Configuration for _prep_subframe
+    if not use_cached:
+        prep_config = {
+            'chunk_map': params['chunk_map'],
+            'apply_weight': params['apply_weight'],
+            'apply_mask': params['apply_mask'],
+            'ignore_list': params['ignore_list'],
+            'det_valid_mask': params['det_valid_mask'],
+            'det_offset_func': params['det_offset_func'],
+            'oversample_factor': params['oversample_factor'],
+            'valid_threshold': params['valid_threshold'],
+            'for_lsqr': False
+        }
+
+    # 4. Processing Loop
     for i, file_path in enumerate(batch_files):
         idx = batch_indices[i]
         
-        # Calculate dynamic arguments for this specific file
-        current_exp = exp_idx_list[idx] if exp_idx_list is not None else None
-        current_det = det_idx_list[idx] if det_idx_list is not None else None
-        current_offset = offset_list[idx] if offset_list is not None else None
+        ref_coords, sub_data, sub_weight = None, None, None
 
-        coords, data, weight, _ = _prep_subframe(
-            file=file_path,
-            exp_idx=current_exp,
-            det_idx=current_det,
-            chunk_offset=current_offset,
-            **prep_config 
-        )
+        # --- A. GET DATA ---
+        if use_cached:
+            # Load from existing cache
+            try:
+                with h5py.File(file_path, 'r') as hf:
+                    ref_coords = hf['ref_coords'][:]
+                    sub_data = hf['sub_data'][:]
+                    sub_weight = hf['sub_weight'][:]
+            except Exception as e:
+                print(f"Error loading cached file {file_path}: {e}")
+                continue
+        else:
+            # Compute on the fly
+            current_exp = exp_idx_list[idx] if exp_idx_list is not None else 0
+            current_det = det_idx_list[idx] if det_idx_list is not None else 0
+            current_offset = offset_list[idx] if offset_list is not None else None
 
-        if coords is None:
-            continue
-            
-        sub_crop, ref_crop = compute_crop(ref_shape, coords)
-        data_crop = data[sub_crop]
-        weight_crop = weight[sub_crop]
-        valid = ~check_invalid(data_crop)
+            ref_coords, sub_data, sub_weight, _ = _prep_subframe(
+                file=file_path,
+                exp_idx=current_exp,
+                det_idx=current_det,
+                chunk_offset=current_offset,
+                **prep_config 
+            )
 
-        if mode == 'mean':
-            data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
-
-        elif mode == 'std':
-            mean_crop = mean_map[ref_crop]
-            data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+        # --- B. PROCESS DATA ---
         
-        elif mode == 'sigma_clip':
-            mean_crop = mean_map[ref_crop]
-            std_crop = std_map[ref_crop]
-            sigma = params['sigma']
-            clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
-            valid_clipped = valid & clip_mask
+        # Path 1: Save to Cache (and stop there)
+        if mode == 'cache':
+            comp_args = {
+                **hdf5plugin.Zstd(clevel=5), 
+                'shuffle': True,
+                'track_times': False}
+            org_name = os.path.basename(file_path)
+            cache_name = f"cached_{org_name}"
+            cache_path = os.path.join(cache_dir, cache_name)
             
-            data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+            with h5py.File(cache_path, 'w') as hf:
+                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype)
+                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, **comp_args)
+                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, **comp_args)
+            
+            cached_list.append(cache_path)
+        
+        # Path 2: Accumulate to Mosaic
+        else:
+            sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
+            data_crop = sub_data[sub_crop]
+            weight_crop = sub_weight[sub_crop]
+            valid = ~check_invalid(data_crop)
 
-        elif mode == 'custom':
-            pass 
-    
-    # Cleanup shared memory handles for this worker
-    for shm in shm_handles:
-        shm.close()
+            if mode == 'mean':
+                data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
 
-    return data_sum, weight_sum
+            elif mode == 'std':
+                mean_crop = mean_map[ref_crop]
+                data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+            
+            elif mode == 'sigma_clip':
+                mean_crop = mean_map[ref_crop]
+                std_crop = std_map[ref_crop]
+                sigma = params['sigma']
+                clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
+                valid_clipped = valid & clip_mask
+                
+                data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
 
-def _parallel_coadd(params):
+    # 5. Cleanup & Return
+    if mode == 'cache':
+        return cached_list
+    else:
+        for shm in shm_handles:
+            shm.close()
+        return data_sum, weight_sum
+
+def _coadd_batch_manager(params):
     """
-    Central function to manage parallel processing.
-    Accepts all processing parameters in a single dictionary.
+    Unified manager that handles Shared Memory setup and Worker Pool execution.
     """
     mode = params['mode']
-    reproj_file_list = params['reproj_file_list']
-    ref_shape = params['ref_shape']
+    file_list = params['file_list']
     max_workers = params['max_workers']
     batch_size = params['batch_size']
     mean_map = params['mean_map']
     std_map = params['std_map']
-    
-    total_files = len(reproj_file_list)
+        
+    total_files = len(file_list)
     if total_files == 0:
-        return np.zeros(ref_shape, dtype=np.float32), np.zeros(ref_shape, dtype=np.float32)
-    
+        if mode == 'cache': return []
+        else: return np.zeros(params['ref_shape']), np.zeros(params['ref_shape'])
+
+    # --- Shared Memory Setup (Only for Coadd mode) ---
+    shm_objects = []
     try:
-        # --- Shared Memory Setup ---
-        shm_objects = []
+        # Move large maps to Shared Memory if we are Coadding
         if mean_map is not None and mode in ['std', 'sigma_clip']:
             shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
             shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
@@ -509,7 +551,7 @@ def _parallel_coadd(params):
             
             params['mean_map_name'] = shm_mean.name
             params['mean_map_dtype'] = mean_map.dtype 
-            params['mean_map'] = None  # Clear reference to avoid duplication
+            params['mean_map'] = None  # Clear ref to avoid pickling
 
         if std_map is not None and mode in ['sigma_clip']:
             shm_std = SharedMemory(create=True, size=std_map.nbytes)
@@ -519,43 +561,54 @@ def _parallel_coadd(params):
             
             params['std_map_name'] = shm_std.name
             params['std_map_dtype'] = std_map.dtype
-            params['std_map'] = None  # Clear reference to avoid duplication
+            params['std_map'] = None
 
+        # --- Task Creation ---
         tasks = []
-        # Create tasks based on fixed batch_size instead of splitting by max_workers
         for start_idx in range(0, total_files, batch_size):
             end_idx = min(start_idx + batch_size, total_files)
-            
-            # Create the parameter dictionary for this specific batch/worker
             task_params = params.copy()
             task_params.update({
-                'batch_files': reproj_file_list[start_idx:end_idx],
+                'batch_files': file_list[start_idx:end_idx],
                 'batch_indices': list(range(start_idx, end_idx)),
             })
             tasks.append(task_params)
 
-        print(f"Processing {total_files} files in {len(tasks)} batches (Batch Size: {batch_size})...")
+        print(f"Processing {total_files} files in {len(tasks)} batches...")
 
-        total_data_sum = np.zeros(ref_shape, dtype=np.float32)
-        total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+        # --- Execution ---
+        if mode == 'cache':
+            total_result = []
+            with Pool(processes=max_workers) as pool:
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    if mode == 'cache':
+                        total_result.extend(res)
+            total_result.sort()
+            return total_result
+        else:
+            ref_shape = params['ref_shape']
+            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
+            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
 
-        with Pool(processes=max_workers) as pool:
-            for data_part, weight_part in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                total_data_sum += data_part
-                total_weight_sum += weight_part
-                del data_part, weight_part
-            
-        return total_data_sum, total_weight_sum
+            with Pool(processes=max_workers) as pool:
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    data_part, weight_part = res
+                    total_data_sum += data_part
+                    total_weight_sum += weight_part
+                    del data_part, weight_part
+            return total_data_sum, total_weight_sum
+
     finally:
         for shm in shm_objects:
             shm.close()
             shm.unlink()
 
-def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
+def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
-                      batch_size=10, valid_threshold=0.99):
+                      batch_size=10, valid_threshold=0.99,
+                      cache_dir='cache/', use_cached=False):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -569,7 +622,7 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         - 'sigma_clip': Computes a sigma-clipped weighted mean. Requires `mean_map` and `std_map`.
     ref_shape : tuple, list
         Shape of the reference frame (height, width).
-    reproj_file_list : list
+    file_list : list
         List of paths to the reprojected HDF5 files.
     mean_map : np.ndarray, optional
         The pre-computed mean map. Required when `mode` is 'std' or 'sigma_clip'.
@@ -609,10 +662,19 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         The sum of weights used in the calculation.
     """
     # --- Common Assertions for All Modes ---
-    assert mode in ['mean', 'std', 'sigma_clip'], "mode must be one of 'mean', 'std', or 'sigma_clip'"
+    assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
+    if mode == 'cache':
+        assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
+        os.makedirs(cache_dir, exist_ok=True)
+    if mode == 'std':
+        assert mean_map is not None, "mean_map must be provided for 'std' mode"
+    if mode == 'sigma_clip':
+        assert mean_map is not None, "mean_map must be provided for 'sigma_clip' mode"
+        assert std_map is not None, "std_map must be provided for 'sigma_clip' mode"
+        assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
-    assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(reproj_file_list), len(np.unique(chunk_map)))), \
+    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
+    assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(file_list), len(np.unique(chunk_map)))), \
         "offset_list must be a list or array of shape (num_reproj_file, num_chunks)"
     assert exp_idx_list is None or isinstance(exp_idx_list, (list, np.ndarray)), "exp_idx_list must be a list or array"
     assert det_idx_list is None or isinstance(det_idx_list, (list, np.ndarray)), "det_idx_list must be a list or array"
@@ -625,25 +687,24 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
     assert det_offset_func is None or callable(det_offset_func), "det_offset_func must be a callable function or None"
     assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
+    assert use_cached & (mode == 'cache') == False, "use_cached and mode='cache' cannot both be True"
+    if use_cached:
+        assert os.path.isdir(cache_dir), "cache_dir must be a valid directory when use_cached is True"
 
-    # Explicitly build the params dictionary. 
-    # Only keys defined here are accessible in _coadd_batch_worker.
+    # Pack parameters
     params = {
-        # Execution control
         'mode': mode,
         'ref_shape': ref_shape,
-        'reproj_file_list': reproj_file_list, # Used by _parallel_coadd for batch slicing
+        'file_list': file_list, 
         'max_workers': max_workers,
         'batch_size': batch_size,
         'mean_map': mean_map,
         'std_map': std_map,
         
-        # Iterables
         'exp_idx_list': exp_idx_list,
         'det_idx_list': det_idx_list,
         'offset_list': offset_list,
         
-        # Configuration for _prep_subframe
         'chunk_map': chunk_map,
         'det_valid_mask': det_valid_mask,
         'apply_weight': apply_weight,
@@ -652,26 +713,33 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         'det_offset_func': det_offset_func,
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
-        
-        # Mode-specific
         'sigma': sigma,
+        
+        'cache_dir': cache_dir,
+        'use_cached': use_cached
     }
     
-    # --- Mode-Specific Logic ---
-    if mode == 'mean':
-        data_sum, weight_sum = _parallel_coadd(params=params)
-        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+    # --- Branch 1: Caching Only ---
+    if mode == 'cache':
+        cached_list = _coadd_batch_manager(params)
+        return cached_list
 
-    elif mode == 'std':
-        sq_diff_sum, weight_sum = _parallel_coadd(params=params)
-        variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
-        result_map = np.sqrt(variance)
+    # --- Branch 2: Co-addition (Standard or from Cache) ---
+    else:
+        data_sum, weight_sum = _coadd_batch_manager(params)
 
-    elif mode == 'sigma_clip':
-        data_sum, weight_sum = _parallel_coadd(params=params)
-        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-    
-    return result_map, weight_sum
+        if mode == 'mean':
+            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+
+        elif mode == 'std':
+            sq_diff_sum = data_sum # For std mode, data_sum contains squared differences
+            variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
+            result_map = np.sqrt(variance)
+
+        elif mode == 'sigma_clip':
+            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+        
+        return result_map, weight_sum
 
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
@@ -798,7 +866,7 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_row_offset
     )
 
-def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list, 
+def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list, 
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                # Exposed new arguments here to be explicit
                valid_threshold=0.99,
@@ -806,7 +874,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
-    reproj_file_list : list
+    file_list : list
         List of paths to the reprojected HDF5 files
     ref_shape : tuple, list
         Shape of the reference frame (height, width)
@@ -839,9 +907,9 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     full_b : np.ndarray
         The vector b, shape is (num_equations,)
     """
-    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
-    assert len(reproj_file_list) == len(exp_idx_list) == len(det_idx_list), \
-        "reproj_file_list, exp_idx_list, and det_idx_list must have the same length"
+    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
+    assert len(file_list) == len(exp_idx_list) == len(det_idx_list), \
+        "file_list, exp_idx_list, and det_idx_list must have the same length"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
     assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
@@ -880,7 +948,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
 
     # 1. Create all individual task definitions
     all_individual_tasks = []
-    for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(reproj_file_list, reindexed_exp_idx_list, det_idx_list)):
+    for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(file_list, reindexed_exp_idx_list, det_idx_list)):
         task_params = {
             'i': i,
             'reproj_file': reproj_file,

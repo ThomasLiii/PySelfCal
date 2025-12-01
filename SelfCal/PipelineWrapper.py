@@ -4,12 +4,21 @@ import sys
 import glob
 from tqdm import tqdm
 import numpy as np
-import time
 
 from . import WCSHelper
 from . import MakeMap
 
 from astropy.io import fits
+
+from contextlib import contextmanager
+import time
+
+@contextmanager
+def timer(description):
+    start = time.perf_counter() # distinct from time.time(), better for execution duration
+    yield
+    elapsed = time.perf_counter() - start
+    print(f"{description} finished in {elapsed:.2f} seconds.")
 
 class Reprojector:
     def __init__(self, config, exposure_list=None):
@@ -58,7 +67,7 @@ class Reprojector:
             output_dir = self.config['reproj_dir']
 
         start_time = time.time()
-        self.reproj_list = MakeMap.batch_reproject(
+        self.file_list = MakeMap.batch_reproject(
             # Can edit
             num_processes = max_workers, 
             reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
@@ -80,7 +89,7 @@ class Reprojector:
         print(f"Reprojection completed in {end_time - start_time:.2f} seconds.")
         
     def check_reproj_files(self):
-        for f in tqdm(self.reproj_list):
+        for f in tqdm(self.file_list):
             result = MakeMap.load_reproj_file(f, fields=['sub_data',])
             if result['_is_missing_']:
                 os.remove(f)
@@ -89,10 +98,10 @@ class Reprojector:
     def get_reproj_files(self, reproj_dir=None):
         if reproj_dir is None:
             reproj_dir = self.config['reproj_dir']
-        self.reproj_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
+        self.file_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
         self.det_idx_list = []
         self.exp_idx_list = []
-        for file in tqdm(self.reproj_list):
+        for file in tqdm(self.file_list):
             file_name = os.path.basename(file)
             self.det_idx_list.append(int(file_name[file_name.find('det_')+4:file_name.find('det_')+6]))
             self.exp_idx_list.append(int(file_name[file_name.find('exp_')+4:file_name.find('exp_')+8]))
@@ -109,7 +118,7 @@ class Calibrator(Reprojector):
     def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10):
         start_time = time.time()
-        self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
+        self.A, self.b = MakeMap.setup_lsqr(self.file_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                batch_size=batch_size)
@@ -135,7 +144,7 @@ class Calibrator(Reprojector):
         with h5py.File(cal_path, 'w') as f:
             f.create_dataset('O', data=self.O, compression='gzip')
             f.create_dataset('S', data=self.S, compression='gzip')
-            f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
+            f.create_dataset('file_list', data=np.array(self.file_list, dtype='S'))
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
@@ -161,7 +170,7 @@ class Mosaicker(Reprojector):
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], 
-        oversample_factor=1, det_offset_func=None, batch_size=10):
+        oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', cache_intermediate=False):
 
         if self.O is None:
             print("Warning: Calibration not loaded. No calibration will be applied to the mosaic.")
@@ -176,7 +185,7 @@ class Mosaicker(Reprojector):
         # Bundle arguments common to all compute_coadd_map calls
         common_kwargs = {
             'ref_shape': self.ref_shape,
-            'reproj_file_list': self.reproj_list,
+            'file_list': self.file_list,
             'offset_list': offset_param,
             'det_idx_list': self.det_idx_list,
             'exp_idx_list': self.exp_idx_list,
@@ -188,42 +197,51 @@ class Mosaicker(Reprojector):
             'ignore_list': ignore_list,
             'oversample_factor': oversample_factor,
             'det_offset_func': det_offset_func,
-            'batch_size': batch_size
+            'cache_dir': cache_dir,
+            'use_cached': False,
         }
 
-        start_time = time.time()
-        self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
-            mode='mean', 
-            **common_kwargs
-        )
-        end_time = time.time()
-        print(f"Mean map computed in {end_time - start_time:.2f} seconds.")
-        
-        if make_std_map:
-            start_time = time.time()
-            self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
-                mode='std', 
-                mean_map=self.maps['mean_map'], 
+        if cache_intermediate:
+            print("Caching intermediate computations...")
+            with timer("Cache computation"):
+                cached_files = MakeMap.compute_coadd_map(
+                    mode='cache',
+                    batch_size=cache_batch_size,
+                    **common_kwargs
+                )
+            common_kwargs['file_list'] = cached_files
+            common_kwargs['use_cached'] = True
+
+        print("Computing mean map...")
+        with timer("Mean map computation"):
+            self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
+                mode='mean', 
+                batch_size=coadd_batch_size,
                 **common_kwargs
             )
-            end_time = time.time()
-            print(f"Std map computed in {end_time - start_time:.2f} seconds.")
+        
+        if make_std_map:
+            print("Computing std map...")
+            with timer("Std map computation"):
+                self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
+                    mode='std', 
+                    mean_map=self.maps['mean_map'], 
+                    batch_size=coadd_batch_size,
+                    **common_kwargs
+                )
 
         if make_std_map and apply_sigma_clipping:
-            # Create a copy to override apply_mask without affecting other calls
-            sc_kwargs = common_kwargs.copy()
-            sc_kwargs['apply_mask'] = True
+            print("Computing sigma-clipped mean map...")
             
-            start_time = time.time()
-            self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
-                mode='sigma_clip',
-                mean_map=self.maps['mean_map'],
-                std_map=self.maps['std_map'],
-                sigma=sigma,
-                **sc_kwargs
-            )
-            end_time = time.time()
-            print(f"Sigma-clipped mean map computed in {end_time - start_time:.2f} seconds.")
+            with timer("Sigma-clipped mean map computation"):
+                self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
+                    mode='sigma_clip',
+                    mean_map=self.maps['mean_map'],
+                    std_map=self.maps['std_map'],
+                    sigma=sigma,
+                    batch_size=coadd_batch_size,
+                    **common_kwargs
+                    )
 
         return self.maps
 
