@@ -481,46 +481,75 @@ def _coadd_batch_worker(params):
 
     return data_sum, weight_sum
 
-def _parallel_coadd(mode, params):
+def _parallel_coadd(params):
     """
     Central function to manage parallel processing.
     Accepts all processing parameters in a single dictionary.
     """
+    mode = params['mode']
     reproj_file_list = params['reproj_file_list']
     ref_shape = params['ref_shape']
-    max_workers = params.get('max_workers', 10)
-    batch_size = params.get('batch_size', 20) 
+    max_workers = params['max_workers']
+    batch_size = params['batch_size']
+    mean_map = params['mean_map']
+    std_map = params['std_map']
     
     total_files = len(reproj_file_list)
     if total_files == 0:
         return np.zeros(ref_shape, dtype=np.float32), np.zeros(ref_shape, dtype=np.float32)
-        
-    tasks = []
-    # Create tasks based on fixed batch_size instead of splitting by max_workers
-    for start_idx in range(0, total_files, batch_size):
-        end_idx = min(start_idx + batch_size, total_files)
-        
-        # Create the parameter dictionary for this specific batch/worker
-        task_params = params.copy()
-        task_params.update({
-            'batch_files': reproj_file_list[start_idx:end_idx],
-            'batch_indices': list(range(start_idx, end_idx)),
-            'mode': mode,
-        })
-        tasks.append(task_params)
+    
+    try:
+        # --- Shared Memory Setup ---
+        shm_objects = []
+        if mean_map is not None and mode in ['std', 'sigma_clip']:
+            shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
+            shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
+            shared_mean_arr[:] = mean_map[:]
+            shm_objects.append(shm_mean)
+            
+            params['mean_map_name'] = shm_mean.name
+            params['mean_map_dtype'] = mean_map.dtype 
+            params['mean_map'] = None  # Clear reference to avoid duplication
 
-    print(f"Processing {total_files} files in {len(tasks)} batches (Batch Size: {batch_size})...")
+        if std_map is not None and mode in ['sigma_clip']:
+            shm_std = SharedMemory(create=True, size=std_map.nbytes)
+            shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
+            shared_std_arr[:] = std_map[:]
+            shm_objects.append(shm_std)
+            
+            params['std_map_name'] = shm_std.name
+            params['std_map_dtype'] = std_map.dtype
+            params['std_map'] = None  # Clear reference to avoid duplication
 
-    total_data_sum = np.zeros(ref_shape, dtype=np.float32)
-    total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+        tasks = []
+        # Create tasks based on fixed batch_size instead of splitting by max_workers
+        for start_idx in range(0, total_files, batch_size):
+            end_idx = min(start_idx + batch_size, total_files)
+            
+            # Create the parameter dictionary for this specific batch/worker
+            task_params = params.copy()
+            task_params.update({
+                'batch_files': reproj_file_list[start_idx:end_idx],
+                'batch_indices': list(range(start_idx, end_idx)),
+            })
+            tasks.append(task_params)
 
-    with Pool(processes=max_workers) as pool:
-        for data_part, weight_part in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-            total_data_sum += data_part
-            total_weight_sum += weight_part
-            del data_part, weight_part
-        
-    return total_data_sum, total_weight_sum
+        print(f"Processing {total_files} files in {len(tasks)} batches (Batch Size: {batch_size})...")
+
+        total_data_sum = np.zeros(ref_shape, dtype=np.float32)
+        total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+
+        with Pool(processes=max_workers) as pool:
+            for data_part, weight_part in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                total_data_sum += data_part
+                total_weight_sum += weight_part
+                del data_part, weight_part
+            
+        return total_data_sum, total_weight_sum
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
 
 def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
@@ -606,6 +635,8 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         'reproj_file_list': reproj_file_list, # Used by _parallel_coadd for batch slicing
         'max_workers': max_workers,
         'batch_size': batch_size,
+        'mean_map': mean_map,
+        'std_map': std_map,
         
         # Iterables
         'exp_idx_list': exp_idx_list,
@@ -625,49 +656,22 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         # Mode-specific
         'sigma': sigma,
     }
-
-    try:
-        # --- Shared Memory Setup ---
-        shm_objects = []
-        if mean_map is not None and mode in ['std', 'sigma_clip']:
-            shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
-            shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
-            shared_mean_arr[:] = mean_map[:]
-            shm_objects.append(shm_mean)
-            
-            params['mean_map_name'] = shm_mean.name
-            params['mean_map_dtype'] = mean_map.dtype 
-
-        if std_map is not None and mode in ['sigma_clip']:
-            shm_std = SharedMemory(create=True, size=std_map.nbytes)
-            shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
-            shared_std_arr[:] = std_map[:]
-            shm_objects.append(shm_std)
-            
-            params['std_map_name'] = shm_std.name
-            params['std_map_dtype'] = std_map.dtype
     
-        # --- Mode-Specific Logic ---
-        if mode == 'mean':
-            data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-            return result_map, weight_sum
+    # --- Mode-Specific Logic ---
+    if mode == 'mean':
+        data_sum, weight_sum = _parallel_coadd(params=params)
+        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
 
-        elif mode == 'std':
-            sq_diff_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-            variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
-            result_map = np.sqrt(variance)
-            return result_map, weight_sum
+    elif mode == 'std':
+        sq_diff_sum, weight_sum = _parallel_coadd(params=params)
+        variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
+        result_map = np.sqrt(variance)
 
-        elif mode == 'sigma_clip':
-            data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-            return result_map, weight_sum
-
-    finally:
-        for shm in shm_objects:
-            shm.close()
-            shm.unlink()
+    elif mode == 'sigma_clip':
+        data_sum, weight_sum = _parallel_coadd(params=params)
+        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+    
+    return result_map, weight_sum
 
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''

@@ -249,21 +249,28 @@ def chunk_to_det(chunk_map, chunk_data):
 #         raise ValueError(f"det_data must be 2D or 3D, but got {det_data.ndim} dimensions.")
 
 def make_linear_interp_matrix(coords, input_shape):
+    """
+    Optimized generation of sparse interpolation matrix.
+    """
     # Coords = (y_coords, x_coords)
     H, W = input_shape
-    N_total = coords.shape[1]  # Original total number of points
+    N_total = coords.shape[1] 
 
     # 1. Identify valid inputs (removing NaNs)
-    valid_mask = ~(np.isnan(coords[0]) | np.isnan(coords[1]))
+    # np.isfinite is generally slightly faster than ~np.isnan
+    valid_mask = np.isfinite(coords[0]) & np.isfinite(coords[1])
     valid_idxs = np.where(valid_mask)[0] # Indices in original array
     
     # Filter coordinates immediately
     row_coords = coords[0][valid_mask]
     col_coords = coords[1][valid_mask]
     
-    n_valid = len(row_coords) # Number of valid points
+    n_valid = len(row_coords)
+    if n_valid == 0:
+        return coo_matrix((0, 0), shape=(N_total, H * W)).tocsr()
 
-    # 2. Integer floors and fractional parts (Calculated only on valid points)
+    # 2. Integer floors and fractional parts
+    # Floor returns float, safe to cast to int32 for indexing
     r0 = np.floor(row_coords).astype(np.int32)
     c0 = np.floor(col_coords).astype(np.int32)
     
@@ -272,55 +279,60 @@ def make_linear_interp_matrix(coords, input_shape):
     rf_inv = 1.0 - r_frac
     cf_inv = 1.0 - c_frac
 
-    # 3. Allocation
-    # We allocate based on n_valid, not N_total
+    # 3. Optimized Bounds Check (The bottleneck fix)
+    # Instead of creating 'all_r' (size 4N), check bounds on 'r0' (size N)
+    # Pre-calculate boolean masks for rows/cols being inside image
+    in_r0 = (r0 >= 0) & (r0 < H)
+    in_c0 = (c0 >= 0) & (c0 < W)
+    in_r1 = (r0 + 1 >= 0) & (r0 + 1 < H)
+    in_c1 = (c0 + 1 >= 0) & (c0 + 1 < W)
+
+    # 4. Allocation
     total_entries = n_valid * 4
     
-    data = np.empty(total_entries, dtype=np.float64)
+    # Use float32 for weights to save memory (sufficient precision for interp)
+    data = np.empty(total_entries, dtype=np.float32)
     cols = np.empty(total_entries, dtype=np.int32)
     
-    # CRITICAL FIX: The rows array must point to the *original* indices.
-    # We repeat the valid indices 4 times (one for each neighbor).
-    rows = np.repeat(valid_idxs, 4)
+    # Create the row indices repeated 4 times
+    rows = np.repeat(valid_idxs, 4).astype(np.int32)
 
-    # 4. Fill Weights (Strided assignment)
-    data[0::4] = rf_inv * cf_inv # Top-Left
-    data[1::4] = rf_inv * c_frac # Top-Right
-    data[2::4] = r_frac * cf_inv # Bottom-Left
-    data[3::4] = r_frac * c_frac # Bottom-Right
-
-    # 5. Fill Indices (Strided assignment)
-    # Calculate base index (r0, c0)
+    # 5. Fill Weights and Indices (Strided assignment)
     base_idx = r0 * W + c0
     
+    # We construct the bounds_mask directly using the pre-calced booleans
+    bounds_mask = np.empty(total_entries, dtype=bool)
+
+    # Top-Left (r0, c0)
+    data[0::4] = rf_inv * cf_inv
     cols[0::4] = base_idx
+    bounds_mask[0::4] = in_r0 & in_c0
+
+    # Top-Right (r0, c0+1)
+    data[1::4] = rf_inv * c_frac
     cols[1::4] = base_idx + 1
+    bounds_mask[1::4] = in_r0 & in_c1
+
+    # Bottom-Left (r0+1, c0)
+    data[2::4] = r_frac * cf_inv
     cols[2::4] = base_idx + W
+    bounds_mask[2::4] = in_r1 & in_c0
+
+    # Bottom-Right (r0+1, c0+1)
+    data[3::4] = r_frac * c_frac
     cols[3::4] = base_idx + W + 1
+    bounds_mask[3::4] = in_r1 & in_c1
 
-    # 6. Bounds Check (Secondary validation)
-    # Even if not NaN, coords might be outside image dimensions (0 to H/W)
-    # We expand r0/c0 to match the shape of 'cols' to check all 4 neighbors
-    all_r = np.empty(total_entries, dtype=np.int32)
-    all_r[0::4] = r0
-    all_r[1::4] = r0
-    all_r[2::4] = r0 + 1
-    all_r[3::4] = r0 + 1
+    # 6. Final Construction
+    # Filter using the boolean mask
+    keep_rows = rows[bounds_mask]
+    keep_cols = cols[bounds_mask]
+    keep_data = data[bounds_mask]
 
-    all_c = np.empty(total_entries, dtype=np.int32)
-    all_c[0::4] = c0
-    all_c[1::4] = c0 + 1
-    all_c[2::4] = c0
-    all_c[3::4] = c0 + 1
-
-    # Strictly within bounds
-    bounds_mask = (all_r >= 0) & (all_r < H) & (all_c >= 0) & (all_c < W)
-
-    # 7. Final Construction
-    # We use N_total for the shape so the output matrix aligns with the original input
     interp_matrix = coo_matrix(
-        (data[bounds_mask], (rows[bounds_mask], cols[bounds_mask])), 
-        shape=(N_total, H * W)
+        (keep_data, (keep_rows, keep_cols)), 
+        shape=(N_total, H * W),
+        dtype=np.float32
     )
     
     return interp_matrix.tocsr()
