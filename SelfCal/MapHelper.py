@@ -215,39 +215,6 @@ def chunk_to_det(chunk_map, chunk_data):
     det_offset = chunk_data[chunk_map]
     return det_offset
 
-# def parse_grid_mapping(grid_mapping):
-#     """
-#     Parses a grid mapping to find valid pixels and their original detector coordinates.
-#     This is the core reusable logic.
-#     """
-#     valid_pix = np.all(~check_invalid(grid_mapping), axis=0)
-#     grid_x_flat = np.rint(grid_mapping[0][valid_pix]).astype(np.int32)
-#     grid_y_flat = np.rint(grid_mapping[1][valid_pix]).astype(np.int32)
-#     return valid_pix, grid_x_flat, grid_y_flat
-
-# def det_to_grid(grid_mapping, det_data):
-#     """
-#     Maps detector data onto the grid using the grid_mapping.
-#     This function can handle a single 2D array or a stack of 2D arrays (3D).
-#     """
-#     valid_pix, grid_x_flat, grid_y_flat = parse_grid_mapping(grid_mapping)
-
-#     if det_data.ndim == 2:
-#         # Handle a single 2D array
-#         grid_data = np.zeros_like(grid_mapping[0])
-#         grid_data[valid_pix] = det_data[grid_y_flat, grid_x_flat]
-#         return grid_data
-#     elif det_data.ndim == 3:
-#         # Handle a stack of 2D arrays (3D)
-#         num_layers = det_data.shape[0]
-#         grid_shape = (num_layers, grid_mapping.shape[1], grid_mapping.shape[2])
-#         grid_data = np.zeros(grid_shape, dtype=det_data.dtype)
-#         # Use advanced indexing to map all layers at once
-#         grid_data[:, valid_pix] = det_data[:, grid_y_flat, grid_x_flat]
-#         return grid_data
-#     else:
-#         raise ValueError(f"det_data must be 2D or 3D, but got {det_data.ndim} dimensions.")
-
 def make_linear_interp_matrix(coords, input_shape):
     """
     Optimized generation of sparse interpolation matrix.
@@ -453,10 +420,50 @@ def arc_spline(x_sample, y_sample, return_params=False):
         return spl, (xc_fit, yc_fit, R_fit)
     return spl
 
-
-def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
-    valid_bit = ~check_invalid(bitmask)
-    grid_mask = bit_to_bool(bitmask, ignore_list, invert=True) & valid_bit# 1 = Good pixel, 0 = Bad pixel
-    sub_mask_float = bin2d_cv(grid_mask, oversample_factor) # Downscale to sub-frame size
-    sub_mask = sub_mask_float > valid_threshold
-    return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
+def upscale2d(array, upscale_factor):
+    # Ensure input is a numpy array
+    array = np.array(array, dtype=float)
+    h, w = array.shape
+    
+    # Calculate new dimensions
+    new_h, new_w = h * upscale_factor, w * upscale_factor
+    
+    # generate grid coordinates for the new array
+    # We want to map indices 0 to new_h-1 back to 0 to h-1
+    # aligning the centers of the corner pixels
+    r_idx = np.linspace(0, h - 1, new_h)
+    c_idx = np.linspace(0, w - 1, new_w)
+    
+    # Get vertical and horizontal indices for the grid
+    # r and c are float indices in the original array space
+    r, c = np.meshgrid(r_idx, c_idx, indexing='ij')
+    
+    # Get the integer parts (top-left neighbor)
+    r0 = np.floor(r).astype(int)
+    c0 = np.floor(c).astype(int)
+    
+    # Get the neighbor to the right/bottom, clamping to edge
+    r1 = np.minimum(r0 + 1, h - 1)
+    c1 = np.minimum(c0 + 1, w - 1)
+    
+    # Calculate weights (fractional parts)
+    dr = r - r0
+    dc = c - c0
+    
+    # Get the values of the four neighbors
+    # Ia: Top-left, Ib: Top-right
+    # Ic: Bottom-left, Id: Bottom-right
+    Ia = array[r0, c0]
+    Ib = array[r0, c1]
+    Ic = array[r1, c0]
+    Id = array[r1, c1]
+    
+    # Perform bilinear interpolation
+    # Interpolate top row (wa) and bottom row (wb)
+    wa = (1 - dc) * Ia + dc * Ib
+    wb = (1 - dc) * Ic + dc * Id
+    
+    # Interpolate vertically between top and bottom
+    result = (1 - dr) * wa + dr * wb
+    
+    return result

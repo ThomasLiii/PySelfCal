@@ -326,7 +326,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
                    for_lsqr=False, oversample_factor=1, 
                    # These arguments are accepted for compatibility/internal logic 
                    # but might not be used depending on logic path
-                   exp_idx=None, det_idx=None):
+                   exp_idx=None, det_idx=None, det_aux=None):
     """
     Prepares data from a single file for co-addition or lsqr.
     
@@ -350,7 +350,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
         sub_fullmask &= sub_boolmask
 
     interp_matrix = None
-    if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr:
+    if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr or det_aux is not None:
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
@@ -368,6 +368,10 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
         sub_valid_mask = sub_valid_frac > valid_threshold
         sub_fullmask &= sub_valid_mask
 
+    sub_aux = None
+    if det_aux is not None:
+        sub_aux = np.array([det_to_sub(det_aux_data, interp_matrix=interp_matrix) for det_aux_data in det_aux])
+
     sub_data[~sub_fullmask] = np.nan
     
     sub_weight = make_weight(sub_data) if apply_weight else np.ones_like(sub_data, dtype=np.float32)
@@ -377,7 +381,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
         # Note: If compute_chunk_contrib needs exp_idx/det_idx, ensure they are passed here.
         chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
-    return ref_coords, sub_data, sub_weight, chunk_contrib
+    return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
 
 def _coadd_batch_worker(params):
     """
@@ -403,6 +407,13 @@ def _coadd_batch_worker(params):
     det_idx_list = params['det_idx_list']
     offset_list = params['offset_list']
 
+    det_aux = None
+    shm_handles = []
+    if 'det_aux_name' in params:
+        shm_aux = SharedMemory(name=params['det_aux_name'])
+        det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
+        shm_handles.append(shm_aux)
+
     # 2. Initialize Mode-Specific Containers
     if mode == 'cache':
         cache_dir = params['cache_dir']
@@ -410,9 +421,8 @@ def _coadd_batch_worker(params):
     else:
         data_sum = np.zeros(ref_shape, dtype=np.float32)
         weight_sum = np.zeros(ref_shape, dtype=np.float32)
-
+        aux_sum = np.zeros((det_aux.shape[0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
         # Shared Memory Setup
-        shm_handles = []
         mean_map = None
         std_map = None
         if 'mean_map_name' in params:
@@ -436,14 +446,14 @@ def _coadd_batch_worker(params):
             'det_offset_func': params['det_offset_func'],
             'oversample_factor': params['oversample_factor'],
             'valid_threshold': params['valid_threshold'],
-            'for_lsqr': False
+            'for_lsqr': False,
         }
 
     # 4. Processing Loop
     for i, file_path in enumerate(batch_files):
         idx = batch_indices[i]
         
-        ref_coords, sub_data, sub_weight = None, None, None
+        ref_coords, sub_data, sub_weight, sub_aux = None, None, None, None
 
         # --- A. GET DATA ---
         if use_cached:
@@ -453,6 +463,9 @@ def _coadd_batch_worker(params):
                     ref_coords = hf['ref_coords'][:]
                     sub_data = hf['sub_data'][:]
                     sub_weight = hf['sub_weight'][:]
+                    if 'sub_aux' in hf:
+                        sub_aux = hf['sub_aux'][:]
+
             except Exception as e:
                 print(f"Error loading cached file {file_path}: {e}")
                 continue
@@ -462,11 +475,12 @@ def _coadd_batch_worker(params):
             current_det = det_idx_list[idx] if det_idx_list is not None else 0
             current_offset = offset_list[idx] if offset_list is not None else None
 
-            ref_coords, sub_data, sub_weight, _ = _prep_subframe(
+            ref_coords, sub_data, sub_weight, _, sub_aux = _prep_subframe(
                 file=file_path,
                 exp_idx=current_exp,
                 det_idx=current_det,
                 chunk_offset=current_offset,
+                det_aux=det_aux,
                 **prep_config 
             )
 
@@ -486,6 +500,8 @@ def _coadd_batch_worker(params):
                 hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype)
                 hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, **comp_args)
                 hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, **comp_args)
+                if sub_aux is not None:
+                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, **comp_args)
             
             cached_list.append(cache_path)
         
@@ -499,11 +515,15 @@ def _coadd_batch_worker(params):
             if mode == 'mean':
                 data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
                 weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid, sub_aux[:, *sub_crop] * weight_crop, 0.0)
 
             elif mode == 'std':
                 mean_crop = mean_map[ref_crop]
                 data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
                 weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid, (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop, 0.0)
             
             elif mode == 'sigma_clip':
                 mean_crop = mean_map[ref_crop]
@@ -514,14 +534,16 @@ def _coadd_batch_worker(params):
                 
                 data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
                 weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid_clipped, sub_aux[:, *sub_crop] * weight_crop, 0.0)
 
     # 5. Cleanup & Return
+    for shm in shm_handles:
+        shm.close()
     if mode == 'cache':
         return cached_list
     else:
-        for shm in shm_handles:
-            shm.close()
-        return data_sum, weight_sum
+        return data_sum, weight_sum, aux_sum
 
 def _coadd_batch_manager(params):
     """
@@ -533,6 +555,7 @@ def _coadd_batch_manager(params):
     batch_size = params['batch_size']
     mean_map = params['mean_map']
     std_map = params['std_map']
+    det_aux = params['det_aux']
         
     total_files = len(file_list)
     if total_files == 0:
@@ -563,6 +586,17 @@ def _coadd_batch_manager(params):
             params['std_map_dtype'] = std_map.dtype
             params['std_map'] = None
 
+        if det_aux is not None:
+            shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
+            shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
+            shared_aux_arr[:] = det_aux[:]
+            shm_objects.append(shm_aux)
+            
+            params['det_aux_name'] = shm_aux.name
+            params['det_aux_dtype'] = det_aux.dtype
+            params['det_aux_shape'] = det_aux.shape
+            params['det_aux'] = None
+
         # --- Task Creation ---
         tasks = []
         for start_idx in range(0, total_files, batch_size):
@@ -589,14 +623,18 @@ def _coadd_batch_manager(params):
             ref_shape = params['ref_shape']
             total_data_sum = np.zeros(ref_shape, dtype=np.float32)
             total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+            total_aux_sum = np.zeros((params['det_aux_shape'][0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
 
             with Pool(processes=max_workers) as pool:
                 for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    data_part, weight_part = res
+                    data_part, weight_part, aux_part = res
                     total_data_sum += data_part
                     total_weight_sum += weight_part
                     del data_part, weight_part
-            return total_data_sum, total_weight_sum
+                    if aux_part is not None:
+                        total_aux_sum += aux_part
+                        del aux_part
+            return total_data_sum, total_weight_sum, total_aux_sum
 
     finally:
         for shm in shm_objects:
@@ -608,7 +646,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
-                      cache_dir='cache/', use_cached=False):
+                      cache_dir='cache/', use_cached=False, det_aux=None):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -654,6 +692,14 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         Factor by which the chunk map is oversampled. Default is 1.
     batch_size : int, optional
         Number of files to process per worker task. Default is 20.
+    valid_threshold : float, optional
+        Threshold for valid pixel fraction when applying detector valid mask. Default is 0.99.
+    cache_dir : str, optional
+        Directory to store or load cached intermediate results. Default is 'cache/'.
+    use_cached : bool, optional
+        If True, assume file_list contains cached intermediate results and load them instead of recomputing. Default is False.
+    det_aux : list, optional
+        Additional data that may be required for specific computations. Default is None.
     Returns
     -------
     result_map : np.ndarray
@@ -700,6 +746,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         'batch_size': batch_size,
         'mean_map': mean_map,
         'std_map': std_map,
+        'det_aux': det_aux,
         
         'exp_idx_list': exp_idx_list,
         'det_idx_list': det_idx_list,
@@ -726,11 +773,11 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
 
     # --- Branch 2: Co-addition (Standard or from Cache) ---
     else:
-        data_sum, weight_sum = _coadd_batch_manager(params)
+        data_sum, weight_sum, aux_sum = _coadd_batch_manager(params)
 
         if mode == 'mean':
             result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-
+    
         elif mode == 'std':
             sq_diff_sum = data_sum # For std mode, data_sum contains squared differences
             variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
@@ -739,7 +786,9 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         elif mode == 'sigma_clip':
             result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
         
-        return result_map, weight_sum
+        aux_map = np.divide(aux_sum, weight_sum, out=np.zeros_like(aux_sum), where=weight_sum != 0) if aux_sum is not None else None
+
+        return result_map, weight_sum, aux_map
 
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
@@ -761,13 +810,14 @@ def _prep_lsqr(task_params):
         # 3. Explicit Call to _prep_subframe
         # We explicitly retrieve args from task_params. 
         # Using .get() allows for safe defaults if the setup function forgot to pack them.
-        ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
+        ref_coords, sub_data, sub_weight, chunk_contrib, _ = _prep_subframe(
             file=reproj_file,
             exp_idx=exp_idx,
             det_idx=det_idx,
             chunk_offset=None, # LSQR usually solves for this, so we don't apply it yet
             for_lsqr=True,
             det_offset_func=None,
+            det_aux=None,
             
             # Explicit Parameters passed down
             chunk_map=task_params['chunk_map'],

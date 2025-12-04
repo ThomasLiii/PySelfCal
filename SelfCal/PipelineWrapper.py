@@ -67,7 +67,7 @@ class Reprojector:
             output_dir = self.config['reproj_dir']
 
         start_time = time.time()
-        self.file_list = MakeMap.batch_reproject(
+        self.reproj_list = MakeMap.batch_reproject(
             # Can edit
             num_processes = max_workers, 
             reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
@@ -89,7 +89,7 @@ class Reprojector:
         print(f"Reprojection completed in {end_time - start_time:.2f} seconds.")
         
     def check_reproj_files(self):
-        for f in tqdm(self.file_list):
+        for f in tqdm(self.reproj_list):
             result = MakeMap.load_reproj_file(f, fields=['sub_data',])
             if result['_is_missing_']:
                 os.remove(f)
@@ -98,10 +98,10 @@ class Reprojector:
     def get_reproj_files(self, reproj_dir=None):
         if reproj_dir is None:
             reproj_dir = self.config['reproj_dir']
-        self.file_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
+        self.reproj_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
         self.det_idx_list = []
         self.exp_idx_list = []
-        for file in tqdm(self.file_list):
+        for file in tqdm(self.reproj_list):
             file_name = os.path.basename(file)
             self.det_idx_list.append(int(file_name[file_name.find('det_')+4:file_name.find('det_')+6]))
             self.exp_idx_list.append(int(file_name[file_name.find('exp_')+4:file_name.find('exp_')+8]))
@@ -118,7 +118,7 @@ class Calibrator(Reprojector):
     def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10):
         start_time = time.time()
-        self.A, self.b = MakeMap.setup_lsqr(self.file_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
+        self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                batch_size=batch_size)
@@ -144,7 +144,7 @@ class Calibrator(Reprojector):
         with h5py.File(cal_path, 'w') as f:
             f.create_dataset('O', data=self.O, compression='gzip')
             f.create_dataset('S', data=self.S, compression='gzip')
-            f.create_dataset('file_list', data=np.array(self.file_list, dtype='S'))
+            f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
@@ -155,11 +155,12 @@ class Mosaicker(Reprojector):
         self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
         self.config['mos_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'mosaic')
         self.cal_path = None
+        self.cached_list = []
         self.O = None
         self.S = None
-        self.maps = {'mean_map': None, 'mean_weight': None,
-                     'std_map': None, 'std_weight': None,
-                     'sc_mean_map': None, 'sc_mean_weight': None}
+        self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
+                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'Weight'},
+                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'Auxiliary'}}
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
@@ -170,7 +171,8 @@ class Mosaicker(Reprojector):
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], 
-        oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', cache_intermediate=False):
+        oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
+        cache_intermediate=False, det_aux=None):
 
         if self.O is None:
             print("Warning: Calibration not loaded. No calibration will be applied to the mosaic.")
@@ -185,7 +187,7 @@ class Mosaicker(Reprojector):
         # Bundle arguments common to all compute_coadd_map calls
         common_kwargs = {
             'ref_shape': self.ref_shape,
-            'file_list': self.file_list,
+            'file_list': self.reproj_list,
             'offset_list': offset_param,
             'det_idx_list': self.det_idx_list,
             'exp_idx_list': self.exp_idx_list,
@@ -199,22 +201,24 @@ class Mosaicker(Reprojector):
             'det_offset_func': det_offset_func,
             'cache_dir': cache_dir,
             'use_cached': False,
+            'det_aux': det_aux
         }
 
         if cache_intermediate:
             print("Caching intermediate computations...")
             with timer("Cache computation"):
-                cached_files = MakeMap.compute_coadd_map(
+                cached_list = MakeMap.compute_coadd_map(
                     mode='cache',
                     batch_size=cache_batch_size,
                     **common_kwargs
                 )
-            common_kwargs['file_list'] = cached_files
+            self.cached_list = cached_list
+            common_kwargs['file_list'] = cached_list
             common_kwargs['use_cached'] = True
 
         print("Computing mean map...")
         with timer("Mean map computation"):
-            self.maps['mean_map'], self.maps['mean_weight'] = MakeMap.compute_coadd_map(
+            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
                 mode='mean', 
                 batch_size=coadd_batch_size,
                 **common_kwargs
@@ -223,9 +227,9 @@ class Mosaicker(Reprojector):
         if make_std_map:
             print("Computing std map...")
             with timer("Std map computation"):
-                self.maps['std_map'], self.maps['std_weight'] = MakeMap.compute_coadd_map(
+                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
                     mode='std', 
-                    mean_map=self.maps['mean_map'], 
+                    mean_map=self.maps['mean_map']['data'], 
                     batch_size=coadd_batch_size,
                     **common_kwargs
                 )
@@ -234,18 +238,23 @@ class Mosaicker(Reprojector):
             print("Computing sigma-clipped mean map...")
             
             with timer("Sigma-clipped mean map computation"):
-                self.maps['sc_mean_map'], self.maps['sc_mean_weight'] = MakeMap.compute_coadd_map(
+                self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = MakeMap.compute_coadd_map(
                     mode='sigma_clip',
-                    mean_map=self.maps['mean_map'],
-                    std_map=self.maps['std_map'],
+                    mean_map=self.maps['mean_map']['data'],
+                    std_map=self.maps['std_map']['data'],
                     sigma=sigma,
                     batch_size=coadd_batch_size,
                     **common_kwargs
                     )
 
         return self.maps
+    
+    def append_maps(self, new_maps):
+        for map_name in new_maps:
+            self.maps[map_name] = {'data': None, 'weight': None, 'aux': None, 'unit': None}
+            for key in new_maps[map_name]:
+                self.maps[map_name][key] = new_maps[map_name][key]
 
-        
     def save_mosaic(self, mos_dir=None, mos_file='mosaic.fits', overwrite=False):
         if mos_dir is None:
             mos_dir = self.config['mos_dir']
@@ -256,13 +265,29 @@ class Mosaicker(Reprojector):
 
         hdu_list = []
         for m in self.maps:
-            if self.maps[m] is not None:
-                hdu = fits.ImageHDU(data=self.maps[m], header=self.ref_wcs.to_header())
+            if self.maps[m]['data'] is not None:
+                hdu = fits.ImageHDU(data=self.maps[m]['data'], header=self.ref_wcs.to_header())
                 hdu.header['NAXIS1'] = self.ref_shape[1]
                 hdu.header['NAXIS2'] = self.ref_shape[0]
                 hdu.header['NAXIS'] = 2
-                hdu.header['BUNIT'] = 'MJy/sr'
+                hdu.header['BUNIT'] = self.maps[m]['unit']
                 hdu.header['EXTNAME'] = m.upper()
+                hdu_list.append(hdu)
+            if self.maps[m]['weight'] is not None:
+                hdu = fits.ImageHDU(data=self.maps[m]['weight'], header=self.ref_wcs.to_header())
+                hdu.header['NAXIS1'] = self.ref_shape[1]
+                hdu.header['NAXIS2'] = self.ref_shape[0]
+                hdu.header['NAXIS'] = 2
+                hdu.header['BUNIT'] = 'Weight'
+                hdu.header['EXTNAME'] = f"{m.upper()}_WEIGHT"
+                hdu_list.append(hdu)
+            if self.maps[m]['aux'] is not None:
+                hdu = fits.ImageHDU(data=self.maps[m]['aux'], header=self.ref_wcs.to_header())
+                hdu.header['NAXIS1'] = self.ref_shape[1]
+                hdu.header['NAXIS2'] = self.ref_shape[0]
+                hdu.header['NAXIS'] = 2
+                hdu.header['BUNIT'] = 'Auxiliary'
+                hdu.header['EXTNAME'] = f"{m.upper()}_AUX"
                 hdu_list.append(hdu)
 
 
