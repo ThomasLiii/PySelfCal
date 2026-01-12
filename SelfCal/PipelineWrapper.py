@@ -178,11 +178,14 @@ class Mosaicker(Reprojector):
             print("Warning: Calibration not loaded. No calibration will be applied to the mosaic.")
         
         offset_param = None
-        if self.O is not None and apply_offset:
-            O = self.O
-            if normalize_offset:
-                O = O - np.mean(O[O != 0])
-            offset_param = O
+        if apply_offset:
+            if self.O is not None:
+                O = self.O
+                if normalize_offset:
+                    O = O - np.mean(O[O != 0])
+                offset_param = O
+            else:
+                print("Warning: Calibration offsets not available. No offsets will be applied.")
 
         # Bundle arguments common to all compute_coadd_map calls
         common_kwargs = {

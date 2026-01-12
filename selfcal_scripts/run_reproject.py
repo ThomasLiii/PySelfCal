@@ -15,7 +15,7 @@ from matplotlib.colors import LogNorm
 from tqdm import tqdm
 from SelfCal import MakeMap
 
-detector = 2
+detector = 1
 # exposure_list = glob.glob(f'/data1/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
 exposure_list = glob.glob(f'/mnt/md127/SPHEREx/reproc_data/deep_north/*/*/*/*D{detector}*.fits')
 for exp_file in exposure_list:
@@ -29,8 +29,8 @@ print(f"Found {len(exposure_list)} exposures")
 
 config = {}
 config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
-config['run_name'] = f'nep_det{detector}_3p1arcsec'
-config['resolution_arcsec'] = 3.1
+config['run_name'] = f'nep_det{detector}_6p2arcsec'
+config['resolution_arcsec'] = 6.2
 # config['ref_path'] = '/home/thomasli/spherex/selfcal/outputs/common_ref.fits'
 
 rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)

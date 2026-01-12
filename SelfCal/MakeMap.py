@@ -203,7 +203,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     try:
         with fits.open(exposure_list[0]) as hdul_sample:
             # Assuming first science extension is representative
-            sci_ext_0 = sci_ext_list[0] if sci_ext_list else 1
+            sci_ext_0 = sci_ext_list[0] if len(sci_ext_list) > 0 else 1
             if sci_ext_0 >= len(hdul_sample):
                 raise ValueError(f'Sample FITS {exposure_list[0]} does not have extension {sci_ext_0}')
             det_data_0 = hdul_sample[sci_ext_0].data
@@ -933,7 +933,7 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
     det_idx_list : list, optional
         List of detector indices corresponding to each reprojection file.
     chunk_map : np.ndarray, optional
-        Mapping of chunk indices to their corresponding pixel indices.
+        Mapping of chunk indices to their corresponding pixel indices. Must be 0 indexed and continuous!!
     det_valid_mask : np.ndarray, optional
         Mask indicating valid pixels for each detector.
     apply_mask : bool, optional
@@ -970,6 +970,7 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
+    #TODO : Validate chunk_map continuity?
     num_chunks = len(np.unique(chunk_map)) if chunk_map is not None else 0
     unique_exps, reindexed_exp_idx_list = np.unique(exp_idx_list, return_inverse=True)
     num_exp = len(unique_exps)

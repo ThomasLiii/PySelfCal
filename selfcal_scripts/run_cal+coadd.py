@@ -19,37 +19,44 @@ from tqdm import tqdm
 import gc
 from functools import partial
 
-DETECTOR = 4
+DETECTOR = 1
 OVERSAMPLE_FACTOR = 2
 NUM_SUBCHANNELS = 10
-NUM_CHANNELS = 34
+NUM_CHANNELS = 17
 FILE_SUFFIX = ''
-FILE_PREFIX = f'_34channels'
+FILE_PREFIX = f''
 
 config = {}
 config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
-config['run_name'] = f'nep_det{DETECTOR}_3p1arcsec'
-config['resolution_arcsec'] = 3.1
+config['run_name'] = f'nep_det{DETECTOR}_6p2arcsec'
+config['resolution_arcsec'] = 6.2
 
-chs = [[19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32]]
+# chs = [[19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32]]
+chs = [[i] for i in range(1, 18)]
 
 det_BC, det_BW = load_calibration(band=DETECTOR, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
 chunk_map, lvf_params = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
                                                 oversample_factor=OVERSAMPLE_FACTOR)
 det_chunk_map, _ = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
-                                           oversample_factor=OVERSAMPLE_FACTOR, lvf_params=lvf_params)
+                                           oversample_factor=1, lvf_params=lvf_params)
 
 for ch in chs:
     print(f"Processing channel {ch} for detector {DETECTOR}")
     t0 = time.time()
-    chunk_valid_mask = make_fiducial_chunk_mask(ch,  num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS)
+    chunk_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS)
+
+    chunk_valid_mask_1subpad = chunk_valid_mask.copy()
+    where_valid = np.where(chunk_valid_mask_1subpad)
+    chunk_valid_mask_1subpad[np.min(where_valid)-1:np.max(where_valid)+2] = 1
+    # Erode back to original
     det_valid_mask = chunk_valid_mask[chunk_map]
+    det_valid_mask_1subpad = chunk_valid_mask_1subpad[chunk_map]
     cc = PipelineWrapper.Calibrator(config)
     cc.setup_lsqr(
         apply_mask=True, 
         apply_weight=True, 
         chunk_map=chunk_map, 
-        det_valid_mask=det_valid_mask, 
+        det_valid_mask=det_valid_mask_1subpad, 
         max_workers=40, 
         outlier_thresh=10.0,
         ignore_list=[],
