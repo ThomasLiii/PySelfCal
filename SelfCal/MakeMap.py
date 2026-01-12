@@ -1,7 +1,9 @@
 import os
 import h5py
+import hdf5plugin
 from tqdm import tqdm
 from multiprocessing import Pool
+from multiprocessing.shared_memory import SharedMemory
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import numpy as np
 
@@ -20,8 +22,8 @@ import sys
 import gc 
 from functools import partial
 
-from .MapHelper import bit_to_bool, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, bin2d_cv,\
-compute_offset_map, det_to_grid, check_invalid
+from .MapHelper import bit_to_bool, bool_to_bit, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, \
+    bin2d_cv, chunk_to_det, check_invalid, det_to_sub, make_linear_interp_matrix
 from .WCSHelper import load_from_fits, save_to_fits, find_optimal_frame, upscale_wcs
 import traceback
 import warnings
@@ -31,9 +33,8 @@ Naming convention:
 sub = subframe, reprojected exposure inside the bounding box inside the reference frame
 ref = reference frame, the mosaic
 det = detector, the original detector frame
-grid = grid, the oversampled grid of the subframe
 off = offset, the exposure or detector offsets
-{frame}_{name}: frame is the type of frame (sub, ref, det, grid), name describes the content
+{frame}_{name}: frame is the type of frame (sub, ref, det), name describes the content
 
 #TODO:
 - Better error handling in all parallel functions
@@ -43,7 +44,7 @@ off = offset, the exposure or detector offsets
 def _reproject_worker(task_params):
     """Individual tasks called by batch_reproject's multiprocessing instances"""
     # Unpacked arguments for clarity
-    method = task_params['method']
+    reproj_func = task_params['reproj_func']
     file_path = task_params['file_path']
     exp_idx = task_params['exp_idx']
     det_idx = task_params['det_idx']
@@ -52,82 +53,88 @@ def _reproject_worker(task_params):
     ref_wcs = task_params['ref_wcs']
     sub_width = task_params['sub_width']
     output_dir = task_params['output_dir']
-    oversample_factor = task_params['oversample_factor']
     replace_existing = task_params['replace_existing']
+    reproject_kwargs = task_params['reproject_kwargs']
 
     # Save to HDF5
     output_file = os.path.join(output_dir, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
     if not replace_existing and os.path.exists(output_file):
         return output_file # Skip if file already exists and replace_existing is False
 
-    reproj_funcs = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
-    reproj_kwargs = task_params['reproj_kwargs']
-#     if method == 'adaptive':
-#         reproj_kwargs = {'bad_value_mode': 'ignore', 'boundary_mode': 'ignore', 'conserve_flux': True}
+    reproj_func_dict = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
 
     try:
         with fits.open(file_path) as hdul:
-            det_data = hdul[sci_ext].data.astype(np.float32)
-            det_width = np.shape(det_data)[-1]
+            det_data = hdul[sci_ext].data
             det_header = hdul[sci_ext].header
-            det_header_str = det_header.tostring().encode('utf-8')
-            det_wcs = WCS(det_header)
+            det_bitmask = hdul[dq_ext].data
+        det_width = np.shape(det_data)[-1]
+        det_header_str = det_header.tostring().encode('utf-8')
+        det_wcs = WCS(det_header)
 
-            # Map detector center to world, then to reference frame pixels 
-            det_center = [det_data.shape[0] / 2.0, det_data.shape[1] / 2.0]           
-            skycoord = det_wcs.pixel_to_world(det_center[1], det_center[0])
-            ref_det_center = np.array(ref_wcs.world_to_pixel(skycoord))
-            
-            # Define sub-frame boundaries in the reference frame
-            ref_x_min = int(ref_det_center[0] - sub_width // 2)
-            ref_x_max = ref_x_min + sub_width
-            ref_y_min = int(ref_det_center[1] - sub_width // 2)
-            ref_y_max = ref_y_min + sub_width
-
-            # Create WCS for the sub-frame
-            sub_wcs = ref_wcs.deepcopy()
-            sub_wcs.wcs.crpix[0] -= ref_x_min # Adjust CRPIX for the sub-frame origin
-            sub_wcs.wcs.crpix[1] -= ref_y_min
-            sub_header_str = sub_wcs.to_header().tostring().encode('utf-8') 
-            
-            # Perform reprojection
-            sub_data, sub_foot = reproj_funcs[method](
-                (det_data, det_wcs), 
-                sub_wcs, 
-                shape_out=(sub_width, sub_width), 
-                **reproj_kwargs
-            )
-            
-            # Process detector auxiliary data
-            bitmask_data = hdul[dq_ext].data
-            det_x, det_y = np.meshgrid(np.arange(det_width), np.arange(det_width))
-            det_aux = np.stack((bitmask_data, det_x, det_y), axis=0) # Stack valid mask and pixel coordinates
-            grid_wcs = upscale_wcs(sub_wcs, oversample_factor)
-            grid_width = sub_width * oversample_factor
-
-            grid_aux, _ = reproj_funcs['interp'](
-                (det_aux, det_wcs), 
-                grid_wcs, 
-                shape_out=(grid_width, grid_width), 
-                order='nearest-neighbor',
-                **reproj_kwargs
-            )
-            
-            grid_aux = np.nan_to_num(grid_aux, nan=-9999)
-            grid_aux = grid_aux.astype(np.int32)
-            grid_bitmask = grid_aux[0] # Valid mask in the grid
-            grid_mapping = (grid_aux[1],grid_aux[2]) # x, y
+        # Map detector center to world, then to reference frame pixels 
+        det_center = [det_data.shape[0] / 2.0, det_data.shape[1] / 2.0]           
+        skycoord = det_wcs.pixel_to_world(det_center[1], det_center[0])
+        ref_det_center = np.array(ref_wcs.world_to_pixel(skycoord))
         
-        with h5py.File(output_file, 'w') as hf:
-            hf.create_dataset('sub_data', data=sub_data, compression='gzip', dtype=np.float32) # Reprojected sub-frame data
-            hf.create_dataset('det_data', data=det_data, compression='gzip', dtype=np.float32) # Original detector data
-            hf.create_dataset('sub_header', data=sub_header_str) # WCS of sub_data
-            hf.create_dataset('det_header', data=det_header_str) # WCS of det_data
-            hf.create_dataset('ref_coords', data=np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)) # Sub-frame location in full reference
-            hf.create_dataset('sub_foot', data=sub_foot, compression='gzip', dtype=np.int16) # Footprint of sub_data
-            hf.create_dataset('file_path', data=file_path)
-            hf.create_dataset('grid_bitmask', data=grid_bitmask, compression='gzip', dtype=np.int32) # Validity mask for grid
-            hf.create_dataset('grid_mapping', data=grid_mapping, compression='gzip', dtype=np.int16) # Pixel mapping in the grid
+        # Define sub-frame boundaries in the reference frame
+        ref_x_min = int(ref_det_center[0] - sub_width // 2)
+        ref_x_max = ref_x_min + sub_width
+        ref_y_min = int(ref_det_center[1] - sub_width // 2)
+        ref_y_max = ref_y_min + sub_width
+
+        # Create WCS for the sub-frame
+        sub_wcs = ref_wcs.deepcopy()
+        sub_wcs.wcs.crpix[0] -= ref_x_min # Adjust CRPIX for the sub-frame origin
+        sub_wcs.wcs.crpix[1] -= ref_y_min
+        sub_header_str = sub_wcs.to_header().tostring().encode('utf-8') 
+        
+        # Perform reprojection
+        sub_data, sub_foot = reproj_func_dict[reproj_func](
+            (det_data, det_wcs), 
+            sub_wcs, 
+            shape_out=(sub_width, sub_width), 
+            **reproject_kwargs
+        )
+        
+        # Process detector auxiliary data
+        det_expanded_mask = bit_to_bool(det_bitmask, expand_bits=True)
+        det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_width))
+        det_aux = np.stack((det_xmesh, det_ymesh, *det_expanded_mask), axis=0)
+        sub_aux, _ = reproject_interp(
+            (det_aux, det_wcs), 
+            sub_wcs, 
+            shape_out=(sub_width, sub_width), 
+            order='bilinear',
+        )
+        sub_mapping = sub_aux[0:2] # x, y
+        sub_expanded_mask_float = sub_aux[2:]
+        sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
+        sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
+        
+        with h5py.File(output_file, 'w', libver='latest') as hf:
+    
+            # CONFIG: Zstd + Shuffle
+            # Zstd creates smaller files than Gzip, relieving your I/O bottleneck.
+            # **hdf5plugin.Zstd() automatically handles the filter setup.
+            comp_args = {
+                **hdf5plugin.Zstd(clevel=5), 
+                'shuffle': True,
+                'track_times': False
+            }
+
+            # 1. Save Data
+            hf.create_dataset('sub_data', data=sub_data, dtype=np.float32, chunks=sub_data.shape, **comp_args)
+            hf.create_dataset('sub_foot', data=sub_foot, dtype=np.float16, chunks=sub_foot.shape, **comp_args)
+            hf.create_dataset('sub_bitmask', data=sub_bitmask, dtype=np.int32, chunks=sub_bitmask.shape, **comp_args)
+            hf.create_dataset('sub_mapping', data=sub_mapping, dtype=np.float32, chunks=sub_mapping.shape, **comp_args)
+            
+            # 2. Save Metadata as Attributes
+            hf.attrs['sub_header'] = sub_header_str
+            hf.attrs['det_header'] = det_header_str
+            hf.attrs['file_path'] = file_path
+            hf.attrs['ref_coords'] = np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)
+
         return output_file # Return path on success
     except Exception as e:
         print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
@@ -135,9 +142,9 @@ def _reproject_worker(task_params):
         return None # Return None on failure
 
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
-                    output_dir='output/', padding_percentage=0.05, oversample_factor=2, num_processes=1,
-                    sci_ext_list=[], dq_ext_list=[], method='interp', exp_idx_list=None, det_idx_list=None, 
-                    replace_existing=False, reproj_kwargs={}):
+                    output_dir='output/', padding_percentage=0.05, num_processes=1,
+                    sci_ext_list=[], dq_ext_list=[], reproj_func='interp', exp_idx_list=None, det_idx_list=None, 
+                    replace_existing=False, reproject_kwargs={}):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -152,8 +159,6 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         Directory for all selfcal outputs
     padding_percentage: float, optional
         Fraction of the mosaic width to pad
-    oversample_factor : int, optional
-        Factor to oversample the reprojection grid, atleast 2, finer grids will be slower but more accurate
     num_processes : int, optional
         Number of parallel processes to use
     ignore_flags : list or tup
@@ -162,8 +167,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         List of integers defining the extension in the fits files containing the science data
     dq_ext_list : list or tup
         List of integers defining the extension in the fits files containing the data quality bitmask
-    method : str
-        Method for reprojecting the science extensions
+    reproj_func : str
+        Reproject function for reprojecting the science extensions
         - 'Exact': Slowest, conserves flux
         - 'Interp': Fastest, alter PSF profile, does not conserves flux
         - 'Adaptive': Faster then 'Exact', conserves flux
@@ -183,13 +188,11 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     assert isinstance(exposure_list, (list, tuple)) and exposure_list, "exposure_list must be a non-empty list or tuple"
     assert isinstance(ref_wcs, WCS), "Reference WCS must be an astropy.wcs.WCS object"
     assert isinstance(ref_shape, (list, tuple, np.ndarray)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert oversample_factor >= 1, "Oversample factor must be >= 1"
     assert isinstance(padding_percentage, float) and 0 <= padding_percentage, "padding_percentage must be a float larger than 0"
-    assert isinstance(oversample_factor, int), "Oversample factor must be an integer"
     assert isinstance(num_processes, int) and num_processes > 0, "num_processes must be a positive integer"
     assert sci_ext_list is None or isinstance(sci_ext_list, (list, tuple, np.ndarray)), "sci_ext_list must be a list or tuple"
     assert dq_ext_list is None or isinstance(dq_ext_list, (list, tuple, np.ndarray)), "dq_ext_list must be a list or tuple"
-    assert method in ['exact', 'interp', 'adaptive'], "method must be one of 'exact', 'interp', or 'adaptive'"
+    assert reproj_func in ['exact', 'interp', 'adaptive'], "reproj_func must be one of 'exact', 'interp', or 'adaptive'"
     assert exp_idx_list is None or isinstance(exp_idx_list, (list, tuple, np.ndarray)), "exp_idx_list must be a list or tuple"
     assert det_idx_list is None or isinstance(det_idx_list, (list, tuple, np.ndarray)), "det_idx_list must be a list or tuple"
     assert type(replace_existing) is bool, "replace_existing must be a boolean"  
@@ -200,7 +203,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     try:
         with fits.open(exposure_list[0]) as hdul_sample:
             # Assuming first science extension is representative
-            sci_ext_0 = sci_ext_list[0] if sci_ext_list else 1
+            sci_ext_0 = sci_ext_list[0] if len(sci_ext_list) > 0 else 1
             if sci_ext_0 >= len(hdul_sample):
                 raise ValueError(f'Sample FITS {exposure_list[0]} does not have extension {sci_ext_0}')
             det_data_0 = hdul_sample[sci_ext_0].data
@@ -223,7 +226,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
             
             # Create a dictionary of parameters for each task
             task_params = {
-                'method': method,
+                'reproj_func': reproj_func,
                 'file_path': file_path,
                 'exp_idx': exp_idx,
                 'det_idx': det_idx,
@@ -232,9 +235,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
                 'ref_wcs': ref_wcs,
                 'sub_width': sub_width,
                 'output_dir': output_dir,
-                'oversample_factor': oversample_factor,
                 'replace_existing': replace_existing,
-                'reproj_kwargs': reproj_kwargs
+                'reproject_kwargs': reproject_kwargs
             }
             tasks.append(task_params)
     
@@ -250,7 +252,6 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     print(f'Batch reprojection completed. {len(success_file)} frames successfully processed out of {len(tasks)}.')
     return success_file
 
-
 def load_reproj_file(file_path, fields):
     """Helper to load selected fields from a single HDF5 file.
     Parameters
@@ -259,7 +260,8 @@ def load_reproj_file(file_path, fields):
         Path to a reprojected HDF5 file
     fields: tup
         List of strings corresponding to name of dataset to extract from the HDF5 file
-        Available fields: ['sub_data', 'det_data', 'sub_header', 'det_header', 'ref_coords', 'sub_foot', 'file_path', 'grid_bitmask', 'grid_mapping']
+        Available fields: ['sub_data', 'sub_header', 'det_header', 'ref_coords', 'sub_foot', 'file_path', 
+        'sub_bitmask', 'sub_mapping']
 
     Returns
     -------
@@ -272,190 +274,379 @@ def load_reproj_file(file_path, fields):
 
     data = {}
     is_file_missing = False
+    
     try:
+        # swmr=True allows reading while the file is being written (if supported), 
+        # libver='latest' supports the newer layout used in creation.
         with h5py.File(file_path, 'r', libver='latest', swmr=True) as file:
+            
             for key in fields:
+                # --- CASE 1: WCS Objects (Derived from Header Attributes) ---
                 if key in ('sub_wcs', 'det_wcs'):
-                    header_key = 'sub_header' if key == 'sub_wcs' else 'det_header'
-                    header_str = file[header_key][()].decode('utf-8')
-                    data[key] = WCS(fits.Header.fromstring(header_str))
+                    attr_key = 'sub_header' if key == 'sub_wcs' else 'det_header'
+                    # Retrieve from attributes
+                    if attr_key in file.attrs:
+                        header_val = file.attrs[attr_key]
+                        # Attributes often come out as bytes if encoded during write
+                        if isinstance(header_val, bytes):
+                            header_val = header_val.decode('utf-8')
+                        data[key] = WCS(fits.Header.fromstring(header_val))
+                    else:
+                        data[key] = None # Handle missing header gracefully
+
+                # --- CASE 2: Attributes (Metadata: headers, coords, paths) ---
+                elif key in file.attrs:
+                    val = file.attrs[key]
+                    # Decode bytes to string if necessary (e.g., for file_path or headers)
+                    if isinstance(val, bytes):
+                        val = val.decode('utf-8')
+                    data[key] = val
+
+                # --- CASE 3: Datasets (Heavy Data: sub_data, sub_bitmask, etc.) ---
+                elif key in file:
+                    data[key] = file[key][()] # Load dataset into memory
+
+                # --- CASE 4: Key not found ---
                 else:
-                    data[key] = file[key][()]  # Efficient read
+                    # Fallback for backward compatibility or missing keys
+                    data[key] = None
+
     except Exception as e:
         print(f"Error loading {file_path}: {e}. Will use placeholders.")
         is_file_missing = True
         for key in fields:
             data[key] = None
+            
     data['_is_missing_'] = is_file_missing
     return data
 
+def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False, 
+                   chunk_offset=None, det_offset_func=None, ignore_list=None, 
+                   det_valid_mask=None, valid_threshold=0.99, 
+                   for_lsqr=False, oversample_factor=1, 
+                   # These arguments are accepted for compatibility/internal logic 
+                   # but might not be used depending on logic path
+                   exp_idx=None, det_idx=None, det_aux=None):
+    """
+    Prepares data from a single file for co-addition or lsqr.
+    
+    Refactored to use explicit arguments instead of **kwargs.
+    """
+    if ignore_list is None: ignore_list = []
 
-def grid_bitmask_to_sub_mask(bitmask, oversample_factor, ignore_list=[], valid_threshold=0.99):
-    valid_bit = ~check_invalid(bitmask)
-    grid_mask = bit_to_bool(bitmask, ignore_list, invert=True) & valid_bit# 1 = Good pixel, 0 = Bad pixel
-    sub_mask_float = bin2d_cv(grid_mask, oversample_factor) # Downscale to sub-frame size
-    sub_mask = sub_mask_float > valid_threshold
-    return sub_mask # Boolean mask for the sub-frame, True = Good pixel, False = Bad pixel
-
-def _prep_subframe(file, exp_idx, det_idx, chunk_map, det_valid_mask=None,
-                   apply_weight=False, apply_mask=False, chunk_offset=None, 
-                   ignore_list=[], valid_threshold=0.99, for_lsqr=False, interp_func=None):
-    """Prepares data from a single file for co-addition or lsqr."""
-    fields=['sub_data', 'ref_coords', 'grid_mapping']
+    fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
-        fields.append('grid_bitmask')
+        fields.append('sub_bitmask')
     result = load_reproj_file(file, fields=fields)
 
-    data = result['sub_data']
-    coords = result['ref_coords']
-    grid_mapping = result['grid_mapping']
+    sub_data = result['sub_data']
+    ref_coords = result['ref_coords']
+    sub_fullmask = np.ones_like(sub_data, dtype=bool)
+    sub_mapping = result['sub_mapping']
     
-    oversample_factor = 1
-    if grid_mapping is not None and data.shape[-1] > 0:
-        oversample_factor = int(grid_mapping.shape[-1] / data.shape[-1])
+    if 'sub_bitmask' in result:
+        # invert=True: 1 = Good pixel, 0 = Bad pixel
+        sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
+        sub_fullmask &= sub_boolmask
 
-    sub_mask = np.ones_like(data, dtype=bool)
-    if 'grid_bitmask' in result:
-        bitmask = result['grid_bitmask']
-        sub_mask &= grid_bitmask_to_sub_mask(
-            bitmask, oversample_factor, ignore_list=ignore_list, valid_threshold=valid_threshold
-        )
+    interp_matrix = None
+    if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr or det_aux is not None:
+        sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
+        sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
+        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
 
-    det_maps_to_process = []
-    map_keys = []
     if chunk_offset is not None:
-        #TODO Update to use higher resolution chunk_map
-        offset_map = compute_offset_map(chunk_offset, chunk_map, interp_func=interp_func)
-        det_maps_to_process.append(offset_map)
-        map_keys.append('offset')
+        if det_offset_func is not None:
+            det_offset = det_offset_func(chunk_map, chunk_offset)
+        else:
+            det_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
+        sub_offset = det_to_sub(det_offset, interp_matrix=interp_matrix)
+        sub_data -= sub_offset
+   
     if det_valid_mask is not None:
-        det_maps_to_process.append(det_valid_mask)
-        map_keys.append('valid_mask')
-    if det_maps_to_process:
-        stacked_det_maps = np.stack(det_maps_to_process, axis=0)
-        stacked_grid_maps = [det_to_grid(grid_mapping, det_data=det_map) for det_map in stacked_det_maps]
-        stacked_sub_maps = [bin2d_cv(grid_map, oversample_factor) for grid_map in stacked_grid_maps]
-        # stacked_sub_maps = bin2d_cv(stacked_grid_maps, bin_factor=oversample_factor)
-        if 'offset' in map_keys:
-            data -= stacked_sub_maps[map_keys.index('offset')]
-        if 'valid_mask' in map_keys:
-            sub_mask &= (stacked_sub_maps[map_keys.index('valid_mask')] > 0.5)
+        sub_valid_frac = det_to_sub(det_valid_mask, interp_matrix=interp_matrix)
+        sub_valid_mask = sub_valid_frac > valid_threshold
+        sub_fullmask &= sub_valid_mask
 
-    data[~sub_mask] = np.nan
+    sub_aux = None
+    if det_aux is not None:
+        sub_aux = np.array([det_to_sub(det_aux_data, interp_matrix=interp_matrix) for det_aux_data in det_aux])
+
+    sub_data[~sub_fullmask] = np.nan
     
-    weight = make_weight(data) if apply_weight else np.ones_like(data, dtype=np.float32)
+    sub_weight = make_weight(sub_data) if apply_weight else np.ones_like(sub_data, dtype=np.float32)
 
     chunk_contrib = None
     if for_lsqr:
-        chunk_contrib = compute_chunk_contrib(
-            grid_mapping=grid_mapping,
-            chunk_map=chunk_map,
-            oversample_factor=oversample_factor
-        )
+        # Note: If compute_chunk_contrib needs exp_idx/det_idx, ensure they are passed here.
+        chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
-    return coords, data, weight, chunk_contrib
+    return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
 
 def _coadd_batch_worker(params):
-    """Worker function that processes a batch of files using dictionary parameters."""
+    """
+    Unified worker function for parallel processing.
+    
+    Modes:
+    1. Caching Mode:
+       - Runs _prep_subframe -> Saves to HDF5 -> Returns list of filenames.
+    2. Coadd Mode:
+       - Runs _prep_subframe (or loads cache) -> Stacks data -> Returns (sum, weights).
+    """
+    # 1. Unpack Common Parameters
+    mode = params['mode']
     batch_files = params['batch_files']
     batch_indices = params['batch_indices']
     ref_shape = params['ref_shape']
-    mode = params['mode']
+    
+    # Execution Flags
+    use_cached = params['use_cached']
+    
+    # Iterables
+    exp_idx_list = params['exp_idx_list']
+    det_idx_list = params['det_idx_list']
+    offset_list = params['offset_list']
 
-    data_sum = np.zeros(ref_shape, dtype=np.float32)
-    weight_sum = np.zeros(ref_shape, dtype=np.float32)
+    det_aux = None
+    shm_handles = []
+    if 'det_aux_name' in params:
+        shm_aux = SharedMemory(name=params['det_aux_name'])
+        det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
+        shm_handles.append(shm_aux)
+
+    # 2. Initialize Mode-Specific Containers
+    if mode == 'cache':
+        cache_dir = params['cache_dir']
+        cached_list = []
+    else:
+        data_sum = np.zeros(ref_shape, dtype=np.float32)
+        weight_sum = np.zeros(ref_shape, dtype=np.float32)
+        aux_sum = np.zeros((det_aux.shape[0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
+        # Shared Memory Setup
+        mean_map = None
+        std_map = None
+        if 'mean_map_name' in params:
+            shm_mean = SharedMemory(name=params['mean_map_name'])
+            mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
+            shm_handles.append(shm_mean)
+            
+        if 'std_map_name' in params:
+            shm_std = SharedMemory(name=params['std_map_name'])
+            std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
+            shm_handles.append(shm_std)
+
+    # 3. Configuration for _prep_subframe
+    if not use_cached:
+        prep_config = {
+            'chunk_map': params['chunk_map'],
+            'apply_weight': params['apply_weight'],
+            'apply_mask': params['apply_mask'],
+            'ignore_list': params['ignore_list'],
+            'det_valid_mask': params['det_valid_mask'],
+            'det_offset_func': params['det_offset_func'],
+            'oversample_factor': params['oversample_factor'],
+            'valid_threshold': params['valid_threshold'],
+            'for_lsqr': False,
+        }
+
+    # 4. Processing Loop
     for i, file_path in enumerate(batch_files):
         idx = batch_indices[i]
         
-        coords, data, weight, _ = _prep_subframe(
-            file=file_path,
-            exp_idx=params['exp_idx_list'][idx] if params['exp_idx_list'] is not None else None,
-            det_idx=params['det_idx_list'][idx] if params['det_idx_list'] is not None else None,
-            chunk_map=params['chunk_map'],
-            apply_weight=params['apply_weight'],
-            apply_mask=params['apply_mask'],
-            chunk_offset=params['offset'][idx] if params['offset'] is not None else None,
-            ignore_list=params.get('ignore_list', []),
-            det_valid_mask=params.get('det_valid_mask', None),
-            interp_func=params.get('interp_func', None),
-        )
+        ref_coords, sub_data, sub_weight, sub_aux = None, None, None, None
 
-        if coords is None:
-            continue
-            
-        sub_crop, ref_crop = compute_crop(ref_shape, coords)
-        data_crop = data[sub_crop]
-        weight_crop = weight[sub_crop]
-        valid = ~check_invalid(data_crop)
+        # --- A. GET DATA ---
+        if use_cached:
+            # Load from existing cache
+            try:
+                with h5py.File(file_path, 'r') as hf:
+                    ref_coords = hf['ref_coords'][:]
+                    sub_data = hf['sub_data'][:]
+                    sub_weight = hf['sub_weight'][:]
+                    if 'sub_aux' in hf:
+                        sub_aux = hf['sub_aux'][:]
 
-        if mode == 'mean':
-            data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+            except Exception as e:
+                print(f"Error loading cached file {file_path}: {e}")
+                continue
+        else:
+            # Compute on the fly
+            current_exp = exp_idx_list[idx] if exp_idx_list is not None else 0
+            current_det = det_idx_list[idx] if det_idx_list is not None else 0
+            current_offset = offset_list[idx] if offset_list is not None else None
 
-        elif mode == 'std':
-            mean_crop = params['mean_map'][ref_crop]
-            data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+            ref_coords, sub_data, sub_weight, _, sub_aux = _prep_subframe(
+                file=file_path,
+                exp_idx=current_exp,
+                det_idx=current_det,
+                chunk_offset=current_offset,
+                det_aux=det_aux,
+                **prep_config 
+            )
+
+        # --- B. PROCESS DATA ---
         
-        elif mode == 'sigma_clip':
-            mean_crop = params['mean_map'][ref_crop]
-            std_crop = params['std_map'][ref_crop]
-            sigma = params['sigma']
-            clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
-            valid_clipped = valid & clip_mask
+        # Path 1: Save to Cache (and stop there)
+        if mode == 'cache':
+            comp_args = {
+                **hdf5plugin.Zstd(clevel=5), 
+                'shuffle': True,
+                'track_times': False}
+            org_name = os.path.basename(file_path)
+            cache_name = f"cached_{org_name}"
+            cache_path = os.path.join(cache_dir, cache_name)
             
-            data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
-            weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+            with h5py.File(cache_path, 'w') as hf:
+                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype)
+                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, **comp_args)
+                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, **comp_args)
+                if sub_aux is not None:
+                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, **comp_args)
+            
+            cached_list.append(cache_path)
+        
+        # Path 2: Accumulate to Mosaic
+        else:
+            sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
+            data_crop = sub_data[sub_crop]
+            weight_crop = sub_weight[sub_crop]
+            valid = ~check_invalid(data_crop)
 
-        elif mode == 'custom':
-            pass # Placeholder for future custom modes
-    
-    return data_sum, weight_sum
+            if mode == 'mean':
+                data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid, sub_aux[:, *sub_crop] * weight_crop, 0.0)
 
+            elif mode == 'std':
+                mean_crop = mean_map[ref_crop]
+                data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid, (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop, 0.0)
+            
+            elif mode == 'sigma_clip':
+                mean_crop = mean_map[ref_crop]
+                std_crop = std_map[ref_crop]
+                sigma = params['sigma']
+                clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
+                valid_clipped = valid & clip_mask
+                
+                data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
+                weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+                if aux_sum is not None and sub_aux is not None:
+                    aux_sum[:, *ref_crop] += np.where(valid_clipped, sub_aux[:, *sub_crop] * weight_crop, 0.0)
 
-def _parallel_coadd(mode, params):
+    # 5. Cleanup & Return
+    for shm in shm_handles:
+        shm.close()
+    if mode == 'cache':
+        return cached_list
+    else:
+        return data_sum, weight_sum, aux_sum
+
+def _coadd_batch_manager(params):
     """
-    Central function to manage parallel processing.
-    Accepts all processing parameters in a single dictionary.
+    Unified manager that handles Shared Memory setup and Worker Pool execution.
     """
-    reproj_file_list = params['reproj_file_list']
-    ref_shape = params['ref_shape']
-    max_workers = params.get('max_workers', 10)
-    
-    total_files = len(reproj_file_list)
+    mode = params['mode']
+    file_list = params['file_list']
+    max_workers = params['max_workers']
+    batch_size = params['batch_size']
+    mean_map = params['mean_map']
+    std_map = params['std_map']
+    det_aux = params['det_aux']
+        
+    total_files = len(file_list)
     if total_files == 0:
-        return np.zeros(ref_shape, dtype=np.float32), np.zeros(ref_shape, dtype=np.float32)
-        
-    batch_size = (total_files + max_workers - 1) // max_workers
-    
-    tasks = []
-    for i in range(max_workers):
-        start_idx = i * batch_size
-        end_idx = min(start_idx + batch_size, total_files)
-        if start_idx >= total_files:
-            continue
-        
-        # Create the parameter dictionary for this specific batch/worker
-        task_params = params.copy()
-        task_params.update({
-            'batch_files': reproj_file_list[start_idx:end_idx],
-            'batch_indices': list(range(start_idx, end_idx)),
-            'mode': mode,
-        })
-        tasks.append(task_params)
-    with Pool(processes=max_workers) as pool:
-        results = list(tqdm(pool.imap(_coadd_batch_worker, tasks), total=len(tasks), desc=f'Computing {mode} map')) 
+        if mode == 'cache': return []
+        else: return np.zeros(params['ref_shape']), np.zeros(params['ref_shape'])
 
-    total_data_sum = np.sum([res[0] for res in results], axis=0)
-    total_weight_sum = np.sum([res[1] for res in results], axis=0)
-        
-    return total_data_sum, total_weight_sum
+    # --- Shared Memory Setup (Only for Coadd mode) ---
+    shm_objects = []
+    try:
+        # Move large maps to Shared Memory if we are Coadding
+        if mean_map is not None and mode in ['std', 'sigma_clip']:
+            shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
+            shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
+            shared_mean_arr[:] = mean_map[:]
+            shm_objects.append(shm_mean)
+            
+            params['mean_map_name'] = shm_mean.name
+            params['mean_map_dtype'] = mean_map.dtype 
+            params['mean_map'] = None  # Clear ref to avoid pickling
 
+        if std_map is not None and mode in ['sigma_clip']:
+            shm_std = SharedMemory(create=True, size=std_map.nbytes)
+            shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
+            shared_std_arr[:] = std_map[:]
+            shm_objects.append(shm_std)
+            
+            params['std_map_name'] = shm_std.name
+            params['std_map_dtype'] = std_map.dtype
+            params['std_map'] = None
 
-def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=None, sigma=3.0, 
-                      offset=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
+        if det_aux is not None:
+            shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
+            shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
+            shared_aux_arr[:] = det_aux[:]
+            shm_objects.append(shm_aux)
+            
+            params['det_aux_name'] = shm_aux.name
+            params['det_aux_dtype'] = det_aux.dtype
+            params['det_aux_shape'] = det_aux.shape
+            params['det_aux'] = None
+
+        # --- Task Creation ---
+        tasks = []
+        for start_idx in range(0, total_files, batch_size):
+            end_idx = min(start_idx + batch_size, total_files)
+            task_params = params.copy()
+            task_params.update({
+                'batch_files': file_list[start_idx:end_idx],
+                'batch_indices': list(range(start_idx, end_idx)),
+            })
+            tasks.append(task_params)
+
+        print(f"Processing {total_files} files in {len(tasks)} batches...")
+
+        # --- Execution ---
+        if mode == 'cache':
+            total_result = []
+            with Pool(processes=max_workers) as pool:
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    if mode == 'cache':
+                        total_result.extend(res)
+            total_result.sort()
+            return total_result
+        else:
+            ref_shape = params['ref_shape']
+            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
+            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+            total_aux_sum = np.zeros((params['det_aux_shape'][0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
+
+            with Pool(processes=max_workers) as pool:
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    data_part, weight_part, aux_part = res
+                    total_data_sum += data_part
+                    total_weight_sum += weight_part
+                    del data_part, weight_part
+                    if aux_part is not None:
+                        total_aux_sum += aux_part
+                        del aux_part
+            return total_data_sum, total_weight_sum, total_aux_sum
+
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
+
+def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
+                      offset_list=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
-                      max_workers=10, ignore_list=[], interp_func=None):
+                      max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
+                      batch_size=10, valid_threshold=0.99,
+                      cache_dir='cache/', use_cached=False, det_aux=None):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -469,7 +660,7 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         - 'sigma_clip': Computes a sigma-clipped weighted mean. Requires `mean_map` and `std_map`.
     ref_shape : tuple, list
         Shape of the reference frame (height, width).
-    reproj_file_list : list
+    file_list : list
         List of paths to the reprojected HDF5 files.
     mean_map : np.ndarray, optional
         The pre-computed mean map. Required when `mode` is 'std' or 'sigma_clip'.
@@ -477,7 +668,7 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         The pre-computed standard deviation map. Required when `mode` is 'sigma_clip'.
     sigma : float, optional
         The number of standard deviations for sigma clipping. Used only when `mode` is 'sigma_clip'. Default is 3.0.
-    offset : list, optional
+    offset_list : list, optional
         List of offsets for each exposure, shape (num_reproj_file, num_chunks). Default is None.
     exp_idx_list : list, optional
         List of exposure indices. Default is None.
@@ -495,7 +686,20 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         Maximum number of worker processes for parallel processing. Default is 10.
     ignore_list : list, optional
         List of data quality flags to ignore. Default is an empty list.
-
+    det_offset_func : callable, optional
+        Function to compute detector offsets. Default is None.
+    oversample_factor : int, optional
+        Factor by which the chunk map is oversampled. Default is 1.
+    batch_size : int, optional
+        Number of files to process per worker task. Default is 20.
+    valid_threshold : float, optional
+        Threshold for valid pixel fraction when applying detector valid mask. Default is 0.99.
+    cache_dir : str, optional
+        Directory to store or load cached intermediate results. Default is 'cache/'.
+    use_cached : bool, optional
+        If True, assume file_list contains cached intermediate results and load them instead of recomputing. Default is False.
+    det_aux : list, optional
+        Additional data that may be required for specific computations. Default is None.
     Returns
     -------
     result_map : np.ndarray
@@ -504,11 +708,20 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
         The sum of weights used in the calculation.
     """
     # --- Common Assertions for All Modes ---
-    assert mode in ['mean', 'std', 'sigma_clip'], "mode must be one of 'mean', 'std', or 'sigma_clip'"
+    assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
+    if mode == 'cache':
+        assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
+        os.makedirs(cache_dir, exist_ok=True)
+    if mode == 'std':
+        assert mean_map is not None, "mean_map must be provided for 'std' mode"
+    if mode == 'sigma_clip':
+        assert mean_map is not None, "mean_map must be provided for 'sigma_clip' mode"
+        assert std_map is not None, "std_map must be provided for 'sigma_clip' mode"
+        assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
-    assert offset is None or (isinstance(offset, (list, np.ndarray)) and np.shape(offset) == (len(reproj_file_list), len(np.unique(chunk_map)))), \
-        "offset must be a list or array of shape (num_reproj_file, num_chunks)"
+    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
+    assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(file_list), len(np.unique(chunk_map)))), \
+        "offset_list must be a list or array of shape (num_reproj_file, num_chunks)"
     assert exp_idx_list is None or isinstance(exp_idx_list, (list, np.ndarray)), "exp_idx_list must be a list or array"
     assert det_idx_list is None or isinstance(det_idx_list, (list, np.ndarray)), "det_idx_list must be a list or array"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
@@ -517,145 +730,201 @@ def compute_coadd_map(mode, ref_shape, reproj_file_list, mean_map=None, std_map=
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
-    assert interp_func is None or callable(interp_func), "interp_func must be a callable function or None"
+    assert det_offset_func is None or callable(det_offset_func), "det_offset_func must be a callable function or None"
+    assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
+    assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
+    assert use_cached & (mode == 'cache') == False, "use_cached and mode='cache' cannot both be True"
+    if use_cached:
+        assert os.path.isdir(cache_dir), "cache_dir must be a valid directory when use_cached is True"
 
-    # Capture all function arguments into a dictionary to pass to the parallel processor
-    params = locals()
-
-    # --- Mode-Specific Logic ---
-    if mode == 'mean':
-        data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-        return result_map, weight_sum
-
-    elif mode == 'std':
-        assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
-            "For 'std' mode, mean_map must be a numpy array with the same shape as ref_shape"
+    # Pack parameters
+    params = {
+        'mode': mode,
+        'ref_shape': ref_shape,
+        'file_list': file_list, 
+        'max_workers': max_workers,
+        'batch_size': batch_size,
+        'mean_map': mean_map,
+        'std_map': std_map,
+        'det_aux': det_aux,
         
-        sq_diff_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-        variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
-        result_map = np.sqrt(variance)
-        return result_map, weight_sum
+        'exp_idx_list': exp_idx_list,
+        'det_idx_list': det_idx_list,
+        'offset_list': offset_list,
+        
+        'chunk_map': chunk_map,
+        'det_valid_mask': det_valid_mask,
+        'apply_weight': apply_weight,
+        'apply_mask': apply_mask,
+        'ignore_list': ignore_list,
+        'det_offset_func': det_offset_func,
+        'oversample_factor': oversample_factor,
+        'valid_threshold': valid_threshold,
+        'sigma': sigma,
+        
+        'cache_dir': cache_dir,
+        'use_cached': use_cached
+    }
+    
+    # --- Branch 1: Caching Only ---
+    if mode == 'cache':
+        cached_list = _coadd_batch_manager(params)
+        return cached_list
 
-    elif mode == 'sigma_clip':
-        assert isinstance(mean_map, np.ndarray) and mean_map.shape == ref_shape, \
-            "For 'sigma_clip' mode, mean_map must be a numpy array with the same shape as ref_shape"
-        assert isinstance(std_map, np.ndarray) and std_map.shape == ref_shape, \
-            "For 'sigma_clip' mode, std_map must be a numpy array with the same shape as ref_shape"
-        assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
+    # --- Branch 2: Co-addition (Standard or from Cache) ---
+    else:
+        data_sum, weight_sum, aux_sum = _coadd_batch_manager(params)
 
-        data_sum, weight_sum = _parallel_coadd(mode=mode, params=params)
-        result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
-        return result_map, weight_sum
+        if mode == 'mean':
+            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+    
+        elif mode == 'std':
+            sq_diff_sum = data_sum # For std mode, data_sum contains squared differences
+            variance = np.divide(sq_diff_sum, weight_sum, out=np.zeros_like(sq_diff_sum), where=weight_sum > 0)
+            result_map = np.sqrt(variance)
+
+        elif mode == 'sigma_clip':
+            result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+        
+        aux_map = np.divide(aux_sum, weight_sum, out=np.zeros_like(aux_sum), where=weight_sum != 0) if aux_sum is not None else None
+
+        return result_map, weight_sum, aux_map
 
 def _prep_lsqr(task_params):
-    '''Compute the components of the LSQR matrix A and vector b for a single subframe.
-    A.shape = (subframe_pixels, num_sky_pixels + num_det + num_chunks * num_det)
-    b.shape = (subframe_pixels,)
-    Solve for x which has x.shape = (num_sky_pixels + num_exp + num_det * num_chunks)
-    Assumptions:
-    - Each pixel value in sub_data corresponds to a single sky pixel in the reference frame.
-    - Each subframe comes from a single exposure and a single detector.
-    '''
-    # Unpack parameters from the dictionary
+    '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
+    # 1. Unpack task specific
     i = task_params['i']
     reproj_file = task_params['reproj_file']
-    ref_shape = task_params['ref_shape']
     exp_idx = task_params['exp_idx']
     det_idx = task_params['det_idx']
+    
+    # 2. Unpack Config for Logic
+    ref_shape = task_params['ref_shape']
     num_exp = task_params['num_exp']
-    num_det = task_params['num_det']
     num_chunks = task_params['num_chunks']
-    apply_mask = task_params['apply_mask']
-    apply_weight = task_params['apply_weight']
-    chunk_map = task_params['chunk_map']
-    det_valid_mask = task_params['det_valid_mask']
     outlier_thresh = task_params['outlier_thresh']
-    ignore_list = task_params['ignore_list']
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
 
     try:
-        ref_coords, sub_data, sub_weight, chunk_contrib = _prep_subframe(
+        # 3. Explicit Call to _prep_subframe
+        # We explicitly retrieve args from task_params. 
+        # Using .get() allows for safe defaults if the setup function forgot to pack them.
+        ref_coords, sub_data, sub_weight, chunk_contrib, _ = _prep_subframe(
             file=reproj_file,
-            chunk_offset=None,  # These are being solved for
-            exp_idx=None,
-            det_idx=None,
-            apply_weight=apply_weight,
-            apply_mask=apply_mask,
-            chunk_map=chunk_map,
-            det_valid_mask=det_valid_mask,
-            ignore_list=ignore_list,
+            exp_idx=exp_idx,
+            det_idx=det_idx,
+            chunk_offset=None, # LSQR usually solves for this, so we don't apply it yet
             for_lsqr=True,
+            det_offset_func=None,
+            det_aux=None,
+            
+            # Explicit Parameters passed down
+            chunk_map=task_params['chunk_map'],
+            apply_weight=task_params['apply_weight'],
+            apply_mask=task_params['apply_mask'],
+            ignore_list=task_params['ignore_list'],
+            det_valid_mask=task_params['det_valid_mask'],
+            oversample_factor=task_params['oversample_factor'],
+            valid_threshold=task_params['valid_threshold']
         )
 
-        chunk_contrib = chunk_contrib.tocsr()
-
-        ref_h, ref_w = ref_shape
         sub_h, sub_w = sub_data.shape
-        num_sky = ref_h * ref_w
-
-        # Identify valid pixels after _prep_subframe has applied its masking
-        sub_valid = ~check_invalid(sub_data) # Boolean mask for valid pixels in sub_data
+        
+        # ... [Rest of logic remains identical] ...
+        sub_valid = ~check_invalid(sub_data) 
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
-            sub_out = find_outliers(sub_data, threshold=outlier_thresh) # Find outliers in the sub_data
-            sub_valid &= ~sub_out # Combine valid mask with outlier mask
-        valid_sub_coords = np.nonzero(sub_valid) # Coordinates within sub_data, flat
+            sub_out = find_outliers(sub_data, threshold=outlier_thresh) 
+            sub_valid &= ~sub_out 
+        valid_sub_coords = np.nonzero(sub_valid) 
         sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
-        valid_vals = sub_data[valid_sub_coords] # Values at valid coordinates, flat
-        valid_weight = sub_weight[valid_sub_coords] # Weights at valid coordinates, flat
+        valid_vals = sub_data[valid_sub_coords] 
+        valid_weight = sub_weight[valid_sub_coords] 
         num_valid_pixels = valid_vals.shape[0]
 
         if num_valid_pixels == 0:
-            print(f"No valid pixels found in subframe {i} from file {reproj_file}. Skipping.")
             return np.array([]), np.array([]), np.array([]), np.array([]), 0
 
-        ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) # Convert to flat indices in the reference frame    
+        ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) 
 
-        # Sky: Sky pixel indices
-        S_rows = np.arange(num_valid_pixels)  # Rows for this frame's equations
-        S_cols = ref_pix_indices  # Sky pixel indices
-        S_data = valid_weight  # Weights for sky pixels
+        S_rows = np.arange(num_valid_pixels) 
+        S_cols = ref_pix_indices 
+        S_data = valid_weight 
 
-        # Offset:
-        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() # Get chunk indices and subframe indices
+        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() 
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
-        O_rows = sub_idx  # Local rows for this frame's equations
+        O_rows = sub_idx 
         O_cols = chunk_idx + exp_idx*num_chunks + (num_sky) 
-        O_data = valid_weight[sub_idx] * chunk_vals  # Weights for detector chunks
+        O_data = valid_weight[sub_idx] * chunk_vals 
 
-        sub_b = valid_vals * valid_weight  # Vector b for this subframe
+        sub_b = valid_vals * valid_weight 
 
-        # Concatenate datapoints for S, O
         sub_rows = np.concatenate([S_rows, O_rows])
         sub_cols = np.concatenate([S_cols, O_cols])
-        sub_data = np.concatenate([S_data, O_data])
+        sub_data_vec = np.concatenate([S_data, O_data]) 
 
-        # Remove rows where sub_b is NaN or both sub_data and sub_b are zero, and reindex rows and sub_b accordingly
-        # First, get the mask for valid rows: not nan, and not both zero
-        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data == 0) & (sub_b[sub_rows] == 0))
+        valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data_vec == 0) & (sub_b[sub_rows] == 0))
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
-        sub_data = sub_data[valid_mask]
+        sub_data_vec = sub_data_vec[valid_mask]
 
-        # Find which unique rows remain and create a mapping to new row indices
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
         sub_rows = new_row_indices
-
-        # Filter sub_b to only the kept rows, in the order of unique_rows
         sub_b = sub_b[unique_rows]
-        num_rows = len(sub_b)
-        return sub_rows, sub_cols, sub_data, sub_b, num_rows
+        
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
+
     except Exception as e:
-        print(f"Error processing file {reproj_file} for exp_idx={exp_idx}, det_idx={det_idx}: {e}")
+        print(f"Error processing file {reproj_file} for exp_idx={exp_idx}: {e}")
         traceback.print_exc()
         return None
 
-def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list, 
-               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, outlier_thresh=3,
-               max_workers=20, ignore_list=[]):
+def _prep_lsqr_batch_worker(batch_params):
+    """Wrapper to process a list (batch) of subframes in a single worker process."""
+    sub_tasks = batch_params['sub_tasks']
+    
+    batch_rows = []
+    batch_cols = []
+    batch_data = []
+    batch_b = []
+    batch_row_offset = 0
+
+    for task_params in sub_tasks:
+        result = _prep_lsqr(task_params)
+        
+        if result is None:
+            continue
+            
+        sub_rows, sub_cols, sub_data, sub_b, num_rows = result
+        if len(sub_b) == 0:
+            continue
+            
+        batch_rows.append(sub_rows + batch_row_offset)
+        batch_cols.append(sub_cols)
+        batch_data.append(sub_data)
+        batch_b.append(sub_b)
+        batch_row_offset += num_rows
+
+    if len(batch_b) == 0:
+        return None
+
+    return (
+        np.concatenate(batch_rows),
+        np.concatenate(batch_cols),
+        np.concatenate(batch_data),
+        np.concatenate(batch_b),
+        batch_row_offset
+    )
+
+def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list, 
+               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
+               # Exposed new arguments here to be explicit
+               valid_threshold=0.99,
+               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
-    reproj_file_list : list
+    file_list : list
         List of paths to the reprojected HDF5 files
     ref_shape : tuple, list
         Shape of the reference frame (height, width)
@@ -664,7 +933,7 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     det_idx_list : list, optional
         List of detector indices corresponding to each reprojection file.
     chunk_map : np.ndarray, optional
-        Mapping of chunk indices to their corresponding pixel indices.
+        Mapping of chunk indices to their corresponding pixel indices. Must be 0 indexed and continuous!!
     det_valid_mask : np.ndarray, optional
         Mask indicating valid pixels for each detector.
     apply_mask : bool, optional
@@ -677,6 +946,10 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
         Maximum number of worker processes to use for parallel processing, default is 20.
     ignore_list : list, optional
         List of data quality flags to ignore, default is an empty list.
+    oversample_factor : int, optional
+        Factor by which the chunk map is oversampled. Default is 1.
+    batch_size : int, optional
+        Number of files to process per worker task. Default is 10.
     Returns
     -------
     full_A : scipy.sparse.coo_matrix
@@ -684,9 +957,9 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     full_b : np.ndarray
         The vector b, shape is (num_equations,)
     """
-    assert isinstance(reproj_file_list, (list, np.ndarray)) and reproj_file_list, "reproj_file_list must be a non-empty list"
-    assert len(reproj_file_list) == len(exp_idx_list) == len(det_idx_list), \
-        "reproj_file_list, exp_idx_list, and det_idx_list must have the same length"
+    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
+    assert len(file_list) == len(exp_idx_list) == len(det_idx_list), \
+        "file_list, exp_idx_list, and det_idx_list must have the same length"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
     assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
@@ -695,78 +968,93 @@ def setup_lsqr(reproj_file_list, ref_shape, exp_idx_list, det_idx_list,
     assert isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0, "outlier_thresh must be a positive number"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
+    assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
-    num_chunks = len(np.unique(chunk_map))
-    num_exp = len(np.unique(exp_idx_list))
+    #TODO : Validate chunk_map continuity?
+    num_chunks = len(np.unique(chunk_map)) if chunk_map is not None else 0
+    unique_exps, reindexed_exp_idx_list = np.unique(exp_idx_list, return_inverse=True)
+    num_exp = len(unique_exps)
     num_det = len(np.unique(det_idx_list))
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     total_cols = num_sky + num_exp * num_chunks
 
-    # Prepare lists to collect all data for COO matrix
+    # Explicitly gather the common configuration for the workers
+    common_params = {
+        # Arguments for _prep_subframe
+        'chunk_map': chunk_map,
+        'det_valid_mask': det_valid_mask,
+        'apply_mask': apply_mask,
+        'apply_weight': apply_weight,
+        'ignore_list': ignore_list,
+        'oversample_factor': oversample_factor,
+        'valid_threshold': valid_threshold,
+        
+        # Arguments for _prep_lsqr logic
+        'outlier_thresh': outlier_thresh,
+        'num_exp': num_exp,
+        'num_chunks': num_chunks,
+        'ref_shape': ref_shape,
+    }
+
+    # 1. Create all individual task definitions
+    all_individual_tasks = []
+    for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(file_list, reindexed_exp_idx_list, det_idx_list)):
+        task_params = {
+            'i': i,
+            'reproj_file': reproj_file,
+            'exp_idx': exp_idx,
+            'det_idx': det_idx,
+        }
+        # Combine the dynamic task params with the static common params
+        task_params.update(common_params)
+        all_individual_tasks.append(task_params)
+
+    # 2. Group tasks into batches
+    batched_tasks = []
+    for i in range(0, len(all_individual_tasks), batch_size):
+        batch = {
+            'sub_tasks': all_individual_tasks[i : i + batch_size]
+        }
+        batched_tasks.append(batch)
+
+    print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches (Batch Size: {batch_size})...")
+
     all_rows = []
     all_cols = []
     all_data = []
     all_b = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Create a dictionary of parameters for each task
-        tasks = []
-        for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(reproj_file_list, exp_idx_list, det_idx_list)):
-            task_params = {
-                'i': i,
-                'reproj_file': reproj_file,
-                'ref_shape': ref_shape,
-                'exp_idx': exp_idx,
-                'det_idx': det_idx,
-                'num_exp': num_exp,
-                'num_det': num_det,
-                'num_chunks': num_chunks,
-                'apply_mask': apply_mask,
-                'apply_weight': apply_weight,
-                'chunk_map': chunk_map,
-                'det_valid_mask': det_valid_mask,
-                'outlier_thresh': outlier_thresh,
-                'ignore_list': ignore_list
-            }
-            tasks.append(task_params)
-
-        futures = {executor.submit(_prep_lsqr, task): i for i, task in enumerate(tasks)}
+        futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
         
-        row_offset = 0
+        total_rows = 0
         for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
             result = future.result()
+            
             if result is None:
-                # End all parallel processing if any task fails
-                print("A task failed. Ending all parallel processing.")
-                # Explicityly end all workers
-                executor.shutdown(wait=True)
-                return None, None
-            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
-            if len(sub_b) == 0:
-                continue  # Skip frames with no valid data
-            # Concatenate rows, cols, data directly
-            all_rows.append(sub_rows + row_offset)
-            all_cols.append(sub_cols)
-            all_data.append(sub_data)
-            # b vector
-            all_b.append(sub_b)
-            row_offset += num_rows
+                continue
+                
+            b_rows, b_cols, b_data, b_b, b_num_rows = result
+            
+            all_rows.append(b_rows + total_rows)
+            all_cols.append(b_cols)
+            all_data.append(b_data)
+            all_b.append(b_b)
+            total_rows += b_num_rows
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
         return None, None
 
-    # Concatenate all arrays
     rows = np.concatenate(all_rows)
     cols = np.concatenate(all_cols)
     data = np.concatenate(all_data)
     b = np.concatenate(all_b)
 
-    full_A = coo_matrix((data, (rows, cols)), shape=(row_offset, total_cols))
+    full_A = coo_matrix((data, (rows, cols)), shape=(total_rows, total_cols))
     full_b = b
     return full_A, full_b
-
 
 def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):

@@ -1,6 +1,0 @@
-Processing channel [1] for detector 1
-Loading reference frame from: /mnt/md127/thomasli/selfcal/outputs/nep_det1_3p1arcsec/ref.fits
-Processing channel [1] for detector 1
-Loading reference frame from: /mnt/md127/thomasli/selfcal/outputs/nep_det1_3p1arcsec/ref.fits
-Calibration loaded from /mnt/md127/thomasli/selfcal/outputs/nep_det1_3p1arcsec/calibration/cal_det1_ch1.h5
-Mosaic saved to /mnt/md127/thomasli/selfcal/outputs/nep_det1_3p1arcsec/mosaic/mosaic_det1_ch1.fits

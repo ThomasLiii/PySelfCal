@@ -5,11 +5,15 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.table import Table
 from tqdm import tqdm
+import scipy.ndimage as nd
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor
 
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline
 from scipy.optimize import least_squares
-from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline
+from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool
+from SelfCal.MakeMap import load_reproj_file
 
 
 def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
@@ -26,6 +30,13 @@ def extract_spherex_channel_edges(band, channel_file='/home/thomasli/spherex/sph
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
     return channel_edges
+
+def interpolate_array(data_arr, interp_factor=5):
+    interp_arr = np.hstack([
+        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
+        for i in range(len(data_arr) - 1)
+    ] + [data_arr[-1]])  # Append the last element
+    return interp_arr
 
 def extract_edge_samples(BC_map, channel_edges):
     edge_x_list = []
@@ -47,14 +58,7 @@ def extract_edge_samples(BC_map, channel_edges):
         edge_y_list.append(edge_y)
 
     return np.array(edge_x_list), np.array(edge_y_list)
-
-def interpolate_array(data_arr, interp_factor=5):
-    interp_arr = np.hstack([
-        np.linspace(data_arr[i], data_arr[i + 1], interp_factor, endpoint=False) 
-        for i in range(len(data_arr) - 1)
-    ] + [data_arr[-1]])  # Append the last element
-    return interp_arr
-
+    
 def fit_lvf_arcs(edge_x_list, edge_y_list):
     assert edge_x_list.shape == edge_y_list.shape, "x and y must be the same shape."
 
@@ -94,24 +98,35 @@ def make_arc_spline(xc, yc, R):
         return -np.sqrt(R**2 - (x - xc)**2) + yc
     return arc_spline
 
-def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
-    out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
-    chunk_map = np.zeros(out_shape, dtype=np.int16)
-    y_bound = np.full(out_shape[1], out_shape[0]-1)
-    x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
-
-    print("Fitting LVF contours...")
+def fit_lvf_params(BC_map, channel_edges):
     edge_x_list, edge_y_list = extract_edge_samples(BC_map, channel_edges)
     lvf_params = fit_lvf_arcs(edge_x_list, edge_y_list)
     lvf_params['wave_edges'] = channel_edges
+    return lvf_params
+
+def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_params=None):
+    out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
+    chunk_map = np.zeros(out_shape, dtype=np.int16)
+    x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
+    if lvf_params is None:
+        print("Fitting LVF parameters...")
+        lvf_params = fit_lvf_params(BC_map, channel_edges)
 
     print("Making chunk map...")
+    y_bound = np.full(out_shape[1], out_shape[0]-1)
     for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
         prev_y_bound = y_bound
 
-        spl = make_arc_spline(lvf_params['xc'], lvf_params['yc'], lvf_params['R'][i])
+        xc = lvf_params['xc']
+        yc = lvf_params['yc']
+        if lam not in lvf_params['wave_edges']:
+            R = np.interp(lam, lvf_params['wave_edges'], lvf_params['R'])
+        else:
+            R = lvf_params['R'][np.where(lvf_params['wave_edges'] == lam)[0][0]]
+        spl = make_arc_spline(xc, yc, R)
+
         x_bound = np.arange(out_shape[1])
-        y_bound = spl(x_bound)
+        y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
         chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
     else:
@@ -121,14 +136,14 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1):
     return chunk_map, lvf_params
 
 def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv', 
-                            oversample_factor=1):
+                            oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
     interp_factor = num_subchannels * num_channels//17
     channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map, fit_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor)
-    return chunk_map, fit_params
+    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params)
+    return chunk_map, lvf_params
 
 def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
@@ -162,3 +177,56 @@ def parse_bin(arr):
     mean_idx = (start[:-1] + (start[1:] - 1))/2
     mean_val = arr[start[:-1]]
     return mean_idx, mean_val, edge
+
+def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params):
+    R = lvf_params['R']
+    xc, yc = lvf_params['xc'], lvf_params['yc']
+
+    edge_valid_mask = chunk_valid_mask[1:].astype(bool) | chunk_valid_mask[:-1].astype(bool)
+    valid_R = R[edge_valid_mask]
+    spl = mean_preserving_spline(x_edge=valid_R, y_mean=chunk_offset[chunk_valid_mask.astype(bool)])
+
+    h, w = np.shape(chunk_map)
+    oversample_factor = h // 2040
+    
+    x_vec = (np.arange(w) / oversample_factor) - xc
+    y_vec = (np.arange(h) / oversample_factor) - yc
+    r_mesh = np.sqrt(x_vec**2 + y_vec[:, None]**2)
+    
+    offset_map = spl(r_mesh)
+    return offset_map
+
+def compute_mean_pixval(exp_file, chunk_map):
+    with fits.open(exp_file) as hdul:
+        data = hdul[1].data
+        bitmask = hdul[2].data
+
+    valid_mask = bit_to_bool(bitmask, ignore_list=[7], invert=True)
+    max_chunk_id = np.max(chunk_map)
+    index_range = np.arange(max_chunk_id + 1)
+
+    labels = chunk_map.copy()
+    labels[~valid_mask] = -1
+    mean = nd.mean(data, labels=labels, index=index_range)
+    if np.isnan(mean).any():
+        print("Warning: NaN values found in mean pixel value computation, filling with 0.")
+        mean = np.nan_to_num(mean, nan=0.0)
+    return mean
+
+
+def compute_offsets_guess(reproj_list, det_chunk_map):
+    def _extract_file_path(reproj_file):
+        reproj_data = load_reproj_file(reproj_file, fields=['file_path'])
+        return reproj_data['file_path']
+    exp_files = [_extract_file_path(reproj_file) for reproj_file in reproj_list]
+    compute_mean_pixval_partial = partial(compute_mean_pixval, chunk_map=det_chunk_map)
+
+    with ProcessPoolExecutor(max_workers=20) as executor:
+        results = list(tqdm(executor.map(compute_mean_pixval_partial, exp_files), 
+                            total=len(exp_files), 
+                            desc="Calculating initial guess offsets"))
+    offset_guess = np.array(results)
+    return offset_guess
+
+
+    

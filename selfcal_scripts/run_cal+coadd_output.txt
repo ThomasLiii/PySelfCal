@@ -1,0 +1,1889 @@
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [10] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [10] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [10] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [10] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+LSQR setup completed in 1370.79 seconds.
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [10] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+LSQR setup completed in 1393.14 seconds.
+Making chunk map...
+Warning: NaN values found in exposure offset for /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/reprojected/exp_1627_det_00.h5, filling with 0.
+Solving least squares for 318693932 unknowns with 1259917517 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 1259917517 rows and 318693932 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   7.057e+03  7.057e+03    1.0e+00  1.3e-01
+     1  0.00000e+00   6.930e+03  6.930e+03    9.6e-02  3.7e-02   5.0e+03  1.0e+00
+     2  0.00000e+00   6.924e+03  6.924e+03    9.6e-02  1.3e-02   6.8e+03  2.1e+00
+     3  0.00000e+00   6.922e+03  6.922e+03    9.6e-02  1.3e-02   7.8e+03  3.6e+00
+     4  0.00000e+00   6.916e+03  6.916e+03    9.6e-02  1.9e-02   8.9e+03  7.2e+00
+     5  0.00000e+00   6.895e+03  6.895e+03    9.6e-02  3.3e-02   1.0e+04  1.6e+01
+     6  0.00000e+00   6.822e+03  6.822e+03    9.5e-02  5.4e-02   1.1e+04  3.3e+01
+     7  0.00000e+00   6.676e+03  6.676e+03    9.3e-02  5.7e-02   1.2e+04  5.7e+01
+     8  0.00000e+00   6.558e+03  6.558e+03    9.1e-02  3.9e-02   1.3e+04  7.4e+01
+     9  0.00000e+00   6.504e+03  6.504e+03    9.0e-02  2.2e-02   1.4e+04  8.5e+01
+    10  0.00000e+00   6.486e+03  6.486e+03    9.0e-02  1.1e-02   1.5e+04  9.2e+01
+   190  0.00000e+00   6.212e+03  6.212e+03    8.6e-02  1.1e-04   6.3e+04  2.9e+03
+   191  0.00000e+00   6.212e+03  6.212e+03    8.6e-02  1.9e-04   6.3e+04  2.9e+03
+   192  0.00000e+00   6.212e+03  6.212e+03    8.6e-02  3.4e-04   6.3e+04  2.9e+03
+   193  0.00000e+00   6.212e+03  6.212e+03    8.6e-02  5.0e-04   6.3e+04  2.9e+03
+   194  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  4.8e-04   6.4e+04  3.0e+03
+   195  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  3.0e-04   6.4e+04  3.0e+03
+   196  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  1.5e-04   6.4e+04  3.1e+03
+   197  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  8.3e-05   6.4e+04  3.1e+03
+   198  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  5.8e-05   6.4e+04  3.1e+03
+   199  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  6.5e-05   6.4e+04  3.1e+03
+   200  0.00000e+00   6.211e+03  6.211e+03    8.6e-02  1.1e-04   6.4e+04  3.1e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 6.2e+03   anorm = 6.4e+04   arnorm = 4.4e+04
+itn   =     200   r2norm = 6.2e+03   acond = 3.1e+03   xnorm  = 4.2e+01
+ 
+LSQR solved in 17867.33 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/calibration/cal_det4_ch10.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/calibration/cal_det4_ch10.h5
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Fitting LVF parameters...
+Making chunk map...
+Processing channel [12] for detector 4
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Processing 4405 items in 441 batches (Batch Size: 10)...
+LSQR setup completed in 1447.59 seconds.
+Making chunk map...
+Warning: NaN values found in exposure offset for /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/reprojected/exp_1627_det_00.h5, filling with 0.
+Solving least squares for 318693932 unknowns with 1260841274 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 1260841274 rows and 318693932 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   7.053e+03  7.053e+03    1.0e+00  1.2e-01
+     1  0.00000e+00   6.930e+03  6.930e+03    9.5e-02  4.2e-02   4.6e+03  1.0e+00
+     2  0.00000e+00   6.922e+03  6.922e+03    9.4e-02  1.6e-02   6.2e+03  2.1e+00
+     3  0.00000e+00   6.919e+03  6.919e+03    9.4e-02  1.4e-02   7.2e+03  3.6e+00
+     4  0.00000e+00   6.911e+03  6.911e+03    9.4e-02  2.2e-02   8.1e+03  7.0e+00
+     5  0.00000e+00   6.882e+03  6.882e+03    9.4e-02  3.9e-02   9.2e+03  1.6e+01
+     6  0.00000e+00   6.784e+03  6.784e+03    9.3e-02  6.3e-02   1.0e+04  3.3e+01
+     7  0.00000e+00   6.573e+03  6.573e+03    9.0e-02  6.9e-02   1.1e+04  5.8e+01
+     8  0.00000e+00   6.402e+03  6.402e+03    8.7e-02  4.4e-02   1.2e+04  7.6e+01
+     9  0.00000e+00   6.339e+03  6.339e+03    8.7e-02  2.3e-02   1.3e+04  8.6e+01
+    10  0.00000e+00   6.321e+03  6.321e+03    8.6e-02  1.1e-02   1.4e+04  9.2e+01
+   190  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  9.4e-05   5.7e+04  3.1e+03
+   191  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  9.7e-05   5.8e+04  3.1e+03
+   192  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  1.5e-04   5.8e+04  3.2e+03
+   193  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  2.7e-04   5.8e+04  3.2e+03
+   194  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  4.8e-04   5.8e+04  3.2e+03
+   195  0.00000e+00   5.938e+03  5.938e+03    8.1e-02  6.6e-04   5.8e+04  3.2e+03
+   196  0.00000e+00   5.937e+03  5.937e+03    8.1e-02  5.6e-04   5.8e+04  3.3e+03
+   197  0.00000e+00   5.937e+03  5.937e+03    8.1e-02  3.3e-04   5.9e+04  3.3e+03
+   198  0.00000e+00   5.937e+03  5.937e+03    8.1e-02  1.8e-04   5.9e+04  3.3e+03
+   199  0.00000e+00   5.937e+03  5.937e+03    8.1e-02  1.1e-04   5.9e+04  3.4e+03
+   200  0.00000e+00   5.937e+03  5.937e+03    8.1e-02  7.9e-05   5.9e+04  3.4e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 5.9e+03   anorm = 5.9e+04   arnorm = 2.8e+04
+itn   =     200   r2norm = 5.9e+03   acond = 3.4e+03   xnorm  = 5.8e+01
+ 
+LSQR solved in 10450.76 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/calibration/cal_det4_ch12.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/calibration/cal_det4_ch12.h5
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Mean map computed in 2667.35 seconds.
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Std map computed in 3020.95 seconds.
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Sigma-clipped mean map computed in 2399.03 seconds.
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/mosaic/mosaic_det4_ch12.fits
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Processing channel [1] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 3458 items in 173 batches (Batch Size: 20)...
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Processing channel [1] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 3458 items in 173 batches (Batch Size: 20)...
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0040_det_00.h5 for exp_idx=40: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0041_det_00.h5 for exp_idx=41: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0042_det_00.h5 for exp_idx=42: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0043_det_00.h5 for exp_idx=43: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0044_det_00.h5 for exp_idx=44: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0045_det_00.h5 for exp_idx=45: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0046_det_00.h5 for exp_idx=46: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0047_det_00.h5 for exp_idx=47: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0048_det_00.h5 for exp_idx=48: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0049_det_00.h5 for exp_idx=49: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0050_det_00.h5 for exp_idx=50: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0051_det_00.h5 for exp_idx=51: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0052_det_00.h5 for exp_idx=52: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0053_det_00.h5 for exp_idx=53: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0054_det_00.h5 for exp_idx=54: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0055_det_00.h5 for exp_idx=55: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0056_det_00.h5 for exp_idx=56: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0057_det_00.h5 for exp_idx=57: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0058_det_00.h5 for exp_idx=58: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0059_det_00.h5 for exp_idx=59: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0120_det_00.h5 for exp_idx=120: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0121_det_00.h5 for exp_idx=121: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0122_det_00.h5 for exp_idx=122: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0123_det_00.h5 for exp_idx=123: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0124_det_00.h5 for exp_idx=124: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0125_det_00.h5 for exp_idx=125: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0126_det_00.h5 for exp_idx=126: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0127_det_00.h5 for exp_idx=127: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0128_det_00.h5 for exp_idx=128: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0129_det_00.h5 for exp_idx=129: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0130_det_00.h5 for exp_idx=130: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0131_det_00.h5 for exp_idx=131: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0132_det_00.h5 for exp_idx=132: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0133_det_00.h5 for exp_idx=133: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0134_det_00.h5 for exp_idx=134: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0135_det_00.h5 for exp_idx=135: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0136_det_00.h5 for exp_idx=136: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0137_det_00.h5 for exp_idx=137: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0138_det_00.h5 for exp_idx=138: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0139_det_00.h5 for exp_idx=139: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0080_det_00.h5 for exp_idx=80: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0081_det_00.h5 for exp_idx=81: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0082_det_00.h5 for exp_idx=82: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0083_det_00.h5 for exp_idx=83: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0084_det_00.h5 for exp_idx=84: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0085_det_00.h5 for exp_idx=85: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0086_det_00.h5 for exp_idx=86: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0087_det_00.h5 for exp_idx=87: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0088_det_00.h5 for exp_idx=88: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0089_det_00.h5 for exp_idx=89: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0090_det_00.h5 for exp_idx=90: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0091_det_00.h5 for exp_idx=91: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0092_det_00.h5 for exp_idx=92: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0093_det_00.h5 for exp_idx=93: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0094_det_00.h5 for exp_idx=94: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0095_det_00.h5 for exp_idx=95: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0096_det_00.h5 for exp_idx=96: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0097_det_00.h5 for exp_idx=97: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0098_det_00.h5 for exp_idx=98: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0099_det_00.h5 for exp_idx=99: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0060_det_00.h5 for exp_idx=60: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0061_det_00.h5 for exp_idx=61: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0062_det_00.h5 for exp_idx=62: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0063_det_00.h5 for exp_idx=63: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0064_det_00.h5 for exp_idx=64: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0065_det_00.h5 for exp_idx=65: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0066_det_00.h5 for exp_idx=66: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0067_det_00.h5 for exp_idx=67: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0068_det_00.h5 for exp_idx=68: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0069_det_00.h5 for exp_idx=69: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0070_det_00.h5 for exp_idx=70: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0071_det_00.h5 for exp_idx=71: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0072_det_00.h5 for exp_idx=72: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0073_det_00.h5 for exp_idx=73: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0074_det_00.h5 for exp_idx=74: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0075_det_00.h5 for exp_idx=75: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0076_det_00.h5 for exp_idx=76: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0077_det_00.h5 for exp_idx=77: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0078_det_00.h5 for exp_idx=78: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0079_det_00.h5 for exp_idx=79: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0020_det_00.h5 for exp_idx=20: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0021_det_00.h5 for exp_idx=21: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0022_det_00.h5 for exp_idx=22: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0023_det_00.h5 for exp_idx=23: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0024_det_00.h5 for exp_idx=24: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0025_det_00.h5 for exp_idx=25: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0026_det_00.h5 for exp_idx=26: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0027_det_00.h5 for exp_idx=27: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0028_det_00.h5 for exp_idx=28: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0029_det_00.h5 for exp_idx=29: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0030_det_00.h5 for exp_idx=30: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0031_det_00.h5 for exp_idx=31: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0032_det_00.h5 for exp_idx=32: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0033_det_00.h5 for exp_idx=33: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0034_det_00.h5 for exp_idx=34: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0035_det_00.h5 for exp_idx=35: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0036_det_00.h5 for exp_idx=36: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0037_det_00.h5 for exp_idx=37: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0038_det_00.h5 for exp_idx=38: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0039_det_00.h5 for exp_idx=39: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0000_det_00.h5 for exp_idx=0: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0001_det_00.h5 for exp_idx=1: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0002_det_00.h5 for exp_idx=2: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0003_det_00.h5 for exp_idx=3: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0004_det_00.h5 for exp_idx=4: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0005_det_00.h5 for exp_idx=5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0006_det_00.h5 for exp_idx=6: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0007_det_00.h5 for exp_idx=7: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0008_det_00.h5 for exp_idx=8: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0009_det_00.h5 for exp_idx=9: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0010_det_00.h5 for exp_idx=10: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0011_det_00.h5 for exp_idx=11: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0012_det_00.h5 for exp_idx=12: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0013_det_00.h5 for exp_idx=13: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0014_det_00.h5 for exp_idx=14: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0015_det_00.h5 for exp_idx=15: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0016_det_00.h5 for exp_idx=16: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0017_det_00.h5 for exp_idx=17: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0018_det_00.h5 for exp_idx=18: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/reprojected/exp_0019_det_00.h5 for exp_idx=19: unsupported operand type(s) for &: 'NoneType' and 'int'
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Processing channel [1] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 399.88 seconds.
+Solving least squares for 81958156 unknowns with 758119676 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 758119676 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   4.036e+03  4.036e+03    1.0e+00  9.7e-02
+     1  0.00000e+00   3.993e+03  3.993e+03    7.3e-02  9.3e-02   2.7e+03  1.0e+00
+     2  0.00000e+00   3.969e+03  3.969e+03    7.2e-02  3.3e-02   3.9e+03  2.5e+00
+     3  0.00000e+00   3.964e+03  3.964e+03    7.2e-02  1.4e-02   4.9e+03  3.8e+00
+     4  0.00000e+00   3.962e+03  3.962e+03    7.2e-02  1.5e-02   5.5e+03  5.4e+00
+     5  0.00000e+00   3.957e+03  3.957e+03    7.2e-02  1.6e-02   6.2e+03  8.7e+00
+     6  0.00000e+00   3.951e+03  3.951e+03    7.2e-02  2.0e-02   6.8e+03  1.3e+01
+     7  0.00000e+00   3.935e+03  3.935e+03    7.2e-02  3.1e-02   7.3e+03  2.2e+01
+     8  0.00000e+00   3.901e+03  3.901e+03    7.1e-02  3.5e-02   7.9e+03  3.5e+01
+     9  0.00000e+00   3.860e+03  3.860e+03    7.0e-02  3.8e-02   8.4e+03  4.8e+01
+    10  0.00000e+00   3.801e+03  3.801e+03    6.9e-02  4.0e-02   8.9e+03  6.3e+01
+   190  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  3.2e-04   3.9e+04  2.0e+03
+   191  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  3.7e-04   3.9e+04  2.0e+03
+   192  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  4.2e-04   3.9e+04  2.0e+03
+   193  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  4.5e-04   3.9e+04  2.0e+03
+   194  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  4.6e-04   3.9e+04  2.1e+03
+   195  0.00000e+00   3.523e+03  3.523e+03    6.4e-02  4.6e-04   3.9e+04  2.1e+03
+   196  0.00000e+00   3.522e+03  3.522e+03    6.4e-02  4.3e-04   3.9e+04  2.1e+03
+   197  0.00000e+00   3.522e+03  3.522e+03    6.4e-02  3.8e-04   3.9e+04  2.1e+03
+   198  0.00000e+00   3.522e+03  3.522e+03    6.4e-02  3.3e-04   3.9e+04  2.1e+03
+   199  0.00000e+00   3.522e+03  3.522e+03    6.4e-02  2.8e-04   3.9e+04  2.2e+03
+   200  0.00000e+00   3.522e+03  3.522e+03    6.4e-02  2.3e-04   4.0e+04  2.2e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 3.5e+03   anorm = 4.0e+04   arnorm = 3.2e+04
+itn   =     200   r2norm = 3.5e+03   acond = 2.2e+03   xnorm  = 3.2e+01
+ 
+LSQR solved in 3818.96 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch1.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch1.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.82 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.05 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.12 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.89 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch1.fits
+Finished channel [1] for detector 1 in 5060.24 seconds
+Processing channel [2] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 362.30 seconds.
+Solving least squares for 81958156 unknowns with 609413692 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 609413692 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.547e+03  3.547e+03    1.0e+00  8.4e-02
+     1  0.00000e+00   3.486e+03  3.486e+03    7.1e-02  4.4e-02   1.6e+03  1.0e+00
+     2  0.00000e+00   3.481e+03  3.481e+03    7.1e-02  2.4e-02   2.1e+03  2.1e+00
+     3  0.00000e+00   3.473e+03  3.473e+03    7.1e-02  3.6e-02   2.4e+03  4.7e+00
+     4  0.00000e+00   3.443e+03  3.443e+03    7.0e-02  6.0e-02   2.8e+03  1.1e+01
+     5  0.00000e+00   3.362e+03  3.362e+03    6.8e-02  7.4e-02   3.2e+03  2.3e+01
+     6  0.00000e+00   3.272e+03  3.272e+03    6.7e-02  5.8e-02   3.5e+03  3.3e+01
+     7  0.00000e+00   3.226e+03  3.226e+03    6.6e-02  3.2e-02   3.8e+03  4.0e+01
+     8  0.00000e+00   3.210e+03  3.210e+03    6.5e-02  2.0e-02   4.1e+03  4.4e+01
+     9  0.00000e+00   3.201e+03  3.201e+03    6.5e-02  1.7e-02   4.3e+03  4.8e+01
+    10  0.00000e+00   3.195e+03  3.195e+03    6.5e-02  1.2e-02   4.6e+03  5.1e+01
+   190  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  3.8e-04   2.0e+04  1.6e+03
+   191  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  3.5e-04   2.0e+04  1.6e+03
+   192  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  3.1e-04   2.0e+04  1.6e+03
+   193  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.6e-04   2.0e+04  1.6e+03
+   194  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.2e-04   2.0e+04  1.6e+03
+   195  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.1e-04   2.0e+04  1.7e+03
+   196  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.0e-04   2.0e+04  1.7e+03
+   197  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  1.9e-04   2.0e+04  1.7e+03
+   198  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  1.9e-04   2.0e+04  1.7e+03
+   199  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.2e-04   2.0e+04  1.7e+03
+   200  0.00000e+00   3.045e+03  3.045e+03    6.2e-02  2.7e-04   2.0e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 3.0e+03   anorm = 2.0e+04   arnorm = 1.6e+04
+itn   =     200   r2norm = 3.0e+03   acond = 1.7e+03   xnorm  = 3.8e+01
+ 
+LSQR solved in 3174.79 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch2.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch2.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.26 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.00 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.04 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.50 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch2.fits
+Finished channel [2] for detector 1 in 4361.47 seconds
+Processing channel [3] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 306.51 seconds.
+Solving least squares for 81958156 unknowns with 605905223 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 605905223 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.460e+03  3.460e+03    1.0e+00  8.4e-02
+     1  0.00000e+00   3.400e+03  3.400e+03    7.0e-02  4.5e-02   1.6e+03  1.0e+00
+     2  0.00000e+00   3.395e+03  3.395e+03    6.9e-02  2.4e-02   2.1e+03  2.1e+00
+     3  0.00000e+00   3.387e+03  3.387e+03    6.9e-02  3.6e-02   2.4e+03  4.6e+00
+     4  0.00000e+00   3.359e+03  3.359e+03    6.9e-02  5.9e-02   2.8e+03  1.1e+01
+     5  0.00000e+00   3.278e+03  3.278e+03    6.7e-02  7.8e-02   3.1e+03  2.3e+01
+     6  0.00000e+00   3.178e+03  3.178e+03    6.5e-02  6.3e-02   3.5e+03  3.4e+01
+     7  0.00000e+00   3.129e+03  3.129e+03    6.4e-02  3.2e-02   3.8e+03  4.1e+01
+     8  0.00000e+00   3.116e+03  3.116e+03    6.4e-02  1.7e-02   4.1e+03  4.5e+01
+     9  0.00000e+00   3.111e+03  3.111e+03    6.4e-02  1.3e-02   4.3e+03  4.9e+01
+    10  0.00000e+00   3.107e+03  3.107e+03    6.4e-02  1.1e-02   4.5e+03  5.2e+01
+   190  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  3.0e-04   1.9e+04  1.6e+03
+   191  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.9e-04   1.9e+04  1.6e+03
+   192  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.9e-04   1.9e+04  1.6e+03
+   193  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   1.9e+04  1.6e+03
+   194  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   1.9e+04  1.6e+03
+   195  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   1.9e+04  1.6e+03
+   196  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   1.9e+04  1.7e+03
+   197  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.6e-04   1.9e+04  1.7e+03
+   198  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.7e-04   1.9e+04  1.7e+03
+   199  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   2.0e+04  1.7e+03
+   200  0.00000e+00   2.956e+03  2.956e+03    6.0e-02  2.8e-04   2.0e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 3.0e+03   anorm = 2.0e+04   arnorm = 1.6e+04
+itn   =     200   r2norm = 3.0e+03   acond = 1.7e+03   xnorm  = 3.9e+01
+ 
+LSQR solved in 3129.64 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch3.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch3.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.43 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.29 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 90.20 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.63 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch3.fits
+Finished channel [3] for detector 1 in 4278.77 seconds
+Processing channel [4] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 306.03 seconds.
+Solving least squares for 81958156 unknowns with 601788622 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 601788622 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.442e+03  3.442e+03    1.0e+00  8.3e-02
+     1  0.00000e+00   3.382e+03  3.382e+03    6.9e-02  4.5e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.377e+03  3.377e+03    6.9e-02  2.5e-02   2.0e+03  2.1e+00
+     3  0.00000e+00   3.369e+03  3.369e+03    6.9e-02  3.7e-02   2.3e+03  4.6e+00
+     4  0.00000e+00   3.337e+03  3.337e+03    6.8e-02  6.4e-02   2.7e+03  1.1e+01
+     5  0.00000e+00   3.245e+03  3.245e+03    6.7e-02  8.1e-02   3.1e+03  2.3e+01
+     6  0.00000e+00   3.143e+03  3.143e+03    6.4e-02  6.1e-02   3.4e+03  3.5e+01
+     7  0.00000e+00   3.099e+03  3.099e+03    6.4e-02  3.0e-02   3.7e+03  4.1e+01
+     8  0.00000e+00   3.086e+03  3.086e+03    6.3e-02  1.7e-02   4.0e+03  4.5e+01
+     9  0.00000e+00   3.080e+03  3.080e+03    6.3e-02  1.4e-02   4.2e+03  4.8e+01
+    10  0.00000e+00   3.075e+03  3.075e+03    6.3e-02  1.1e-02   4.4e+03  5.2e+01
+   190  0.00000e+00   2.916e+03  2.916e+03    6.0e-02  2.7e-04   1.9e+04  1.6e+03
+   191  0.00000e+00   2.916e+03  2.916e+03    6.0e-02  2.7e-04   1.9e+04  1.6e+03
+   192  0.00000e+00   2.916e+03  2.916e+03    6.0e-02  2.8e-04   1.9e+04  1.7e+03
+   193  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  2.9e-04   1.9e+04  1.7e+03
+   194  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  3.2e-04   1.9e+04  1.7e+03
+   195  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  3.5e-04   1.9e+04  1.7e+03
+   196  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  3.6e-04   1.9e+04  1.7e+03
+   197  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  3.3e-04   1.9e+04  1.7e+03
+   198  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  3.0e-04   1.9e+04  1.7e+03
+   199  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  2.8e-04   1.9e+04  1.7e+03
+   200  0.00000e+00   2.915e+03  2.915e+03    6.0e-02  2.7e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.9e+03   anorm = 1.9e+04   arnorm = 1.5e+04
+itn   =     200   r2norm = 2.9e+03   acond = 1.7e+03   xnorm  = 4.2e+01
+ 
+LSQR solved in 3125.03 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch4.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch4.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 260.56 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.24 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.72 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.61 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch4.fits
+Finished channel [4] for detector 1 in 4256.02 seconds
+Processing channel [5] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 301.30 seconds.
+Solving least squares for 81958156 unknowns with 597688918 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 597688918 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.355e+03  3.355e+03    1.0e+00  8.4e-02
+     1  0.00000e+00   3.293e+03  3.293e+03    6.8e-02  4.9e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.287e+03  3.287e+03    6.8e-02  2.6e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.280e+03  3.280e+03    6.8e-02  3.7e-02   2.2e+03  4.5e+00
+     4  0.00000e+00   3.250e+03  3.250e+03    6.7e-02  6.3e-02   2.6e+03  1.1e+01
+     5  0.00000e+00   3.168e+03  3.168e+03    6.6e-02  7.8e-02   3.0e+03  2.2e+01
+     6  0.00000e+00   3.072e+03  3.072e+03    6.4e-02  6.3e-02   3.3e+03  3.3e+01
+     7  0.00000e+00   3.023e+03  3.023e+03    6.3e-02  3.6e-02   3.6e+03  4.0e+01
+     8  0.00000e+00   3.004e+03  3.004e+03    6.2e-02  2.3e-02   3.8e+03  4.4e+01
+     9  0.00000e+00   2.993e+03  2.993e+03    6.2e-02  1.8e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.985e+03  2.985e+03    6.2e-02  1.4e-02   4.3e+03  5.2e+01
+   190  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.2e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.2e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.1e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.0e-04   1.8e+04  1.7e+03
+   194  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.0e-04   1.8e+04  1.7e+03
+   195  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.1e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.2e-04   1.9e+04  1.7e+03
+   197  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.4e-04   1.9e+04  1.7e+03
+   198  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.6e-04   1.9e+04  1.7e+03
+   199  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.4e-04   1.9e+04  1.7e+03
+   200  0.00000e+00   2.823e+03  2.823e+03    5.8e-02  3.1e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.8e+03   anorm = 1.9e+04   arnorm = 1.6e+04
+itn   =     200   r2norm = 2.8e+03   acond = 1.7e+03   xnorm  = 4.3e+01
+ 
+LSQR solved in 3103.41 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch5.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch5.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.45 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 89.65 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.13 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.49 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch5.fits
+Finished channel [5] for detector 1 in 4256.14 seconds
+Processing channel [6] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 705.32 seconds.
+Solving least squares for 81958156 unknowns with 594668602 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 594668602 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.284e+03  3.284e+03    1.0e+00  8.3e-02
+     1  0.00000e+00   3.224e+03  3.224e+03    6.7e-02  4.7e-02   1.4e+03  1.0e+00
+     2  0.00000e+00   3.218e+03  3.218e+03    6.7e-02  2.6e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.210e+03  3.210e+03    6.7e-02  3.9e-02   2.2e+03  4.6e+00
+     4  0.00000e+00   3.178e+03  3.178e+03    6.6e-02  6.6e-02   2.5e+03  1.1e+01
+     5  0.00000e+00   3.096e+03  3.096e+03    6.5e-02  7.9e-02   2.9e+03  2.2e+01
+     6  0.00000e+00   3.005e+03  3.005e+03    6.3e-02  6.1e-02   3.2e+03  3.3e+01
+     7  0.00000e+00   2.960e+03  2.960e+03    6.2e-02  3.6e-02   3.5e+03  3.9e+01
+     8  0.00000e+00   2.940e+03  2.940e+03    6.1e-02  2.6e-02   3.7e+03  4.4e+01
+     9  0.00000e+00   2.927e+03  2.927e+03    6.1e-02  2.0e-02   3.9e+03  4.8e+01
+    10  0.00000e+00   2.919e+03  2.919e+03    6.1e-02  1.3e-02   4.2e+03  5.2e+01
+   190  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  2.7e-04   1.8e+04  1.7e+03
+   191  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  2.7e-04   1.8e+04  1.7e+03
+   192  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  2.9e-04   1.8e+04  1.7e+03
+   193  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.1e-04   1.8e+04  1.7e+03
+   194  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.3e-04   1.8e+04  1.7e+03
+   195  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.4e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.5e-04   1.8e+04  1.7e+03
+   197  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.7e-04   1.8e+04  1.7e+03
+   198  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.8e-04   1.8e+04  1.8e+03
+   199  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.7e-04   1.8e+04  1.8e+03
+   200  0.00000e+00   2.760e+03  2.760e+03    5.8e-02  3.5e-04   1.8e+04  1.8e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.8e+03   anorm = 1.8e+04   arnorm = 1.8e+04
+itn   =     200   r2norm = 2.8e+03   acond = 1.8e+03   xnorm  = 4.4e+01
+ 
+LSQR solved in 3091.03 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch6.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch6.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 259.55 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.51 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.69 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.15 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch6.fits
+Finished channel [6] for detector 1 in 4638.55 seconds
+Processing channel [7] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 301.06 seconds.
+Solving least squares for 81958156 unknowns with 586661389 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 586661389 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.425e+03  3.425e+03    1.0e+00  8.7e-02
+     1  0.00000e+00   3.359e+03  3.359e+03    6.9e-02  4.7e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.353e+03  3.353e+03    6.9e-02  2.6e-02   2.0e+03  2.1e+00
+     3  0.00000e+00   3.344e+03  3.344e+03    6.9e-02  4.2e-02   2.3e+03  4.8e+00
+     4  0.00000e+00   3.303e+03  3.303e+03    6.8e-02  7.1e-02   2.7e+03  1.2e+01
+     5  0.00000e+00   3.203e+03  3.203e+03    6.6e-02  8.2e-02   3.1e+03  2.4e+01
+     6  0.00000e+00   3.110e+03  3.110e+03    6.4e-02  5.7e-02   3.4e+03  3.4e+01
+     7  0.00000e+00   3.069e+03  3.069e+03    6.3e-02  3.3e-02   3.7e+03  3.9e+01
+     8  0.00000e+00   3.051e+03  3.051e+03    6.3e-02  2.5e-02   3.9e+03  4.4e+01
+     9  0.00000e+00   3.036e+03  3.036e+03    6.3e-02  2.1e-02   4.2e+03  4.7e+01
+    10  0.00000e+00   3.028e+03  3.028e+03    6.3e-02  1.2e-02   4.4e+03  5.1e+01
+   190  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  1.2e-04   1.9e+04  2.0e+03
+   191  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  1.6e-04   1.9e+04  2.0e+03
+   192  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  2.4e-04   1.9e+04  2.0e+03
+   193  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  3.2e-04   1.9e+04  2.0e+03
+   194  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  3.5e-04   1.9e+04  2.0e+03
+   195  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  3.3e-04   1.9e+04  2.0e+03
+   196  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  2.8e-04   1.9e+04  2.1e+03
+   197  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  2.1e-04   1.9e+04  2.1e+03
+   198  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  1.3e-04   1.9e+04  2.1e+03
+   199  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  1.0e-04   1.9e+04  2.1e+03
+   200  0.00000e+00   2.850e+03  2.850e+03    5.9e-02  1.1e-04   1.9e+04  2.1e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.8e+03   anorm = 1.9e+04   arnorm = 6.0e+03
+itn   =     200   r2norm = 2.8e+03   acond = 2.1e+03   xnorm  = 4.7e+01
+ 
+LSQR solved in 3178.61 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch7.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch7.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 256.95 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.96 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.52 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.32 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch7.fits
+Finished channel [7] for detector 1 in 4315.67 seconds
+Processing channel [8] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 299.89 seconds.
+Solving least squares for 81958156 unknowns with 583965516 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 583965516 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.388e+03  3.388e+03    1.0e+00  8.8e-02
+     1  0.00000e+00   3.321e+03  3.321e+03    6.9e-02  4.8e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.315e+03  3.315e+03    6.9e-02  2.6e-02   2.0e+03  2.1e+00
+     3  0.00000e+00   3.305e+03  3.305e+03    6.9e-02  4.4e-02   2.3e+03  4.8e+00
+     4  0.00000e+00   3.264e+03  3.264e+03    6.8e-02  7.2e-02   2.7e+03  1.2e+01
+     5  0.00000e+00   3.166e+03  3.166e+03    6.6e-02  8.1e-02   3.0e+03  2.4e+01
+     6  0.00000e+00   3.075e+03  3.075e+03    6.4e-02  5.8e-02   3.3e+03  3.3e+01
+     7  0.00000e+00   3.031e+03  3.031e+03    6.3e-02  3.6e-02   3.6e+03  3.9e+01
+     8  0.00000e+00   3.009e+03  3.009e+03    6.2e-02  2.7e-02   3.9e+03  4.4e+01
+     9  0.00000e+00   2.994e+03  2.994e+03    6.2e-02  2.1e-02   4.1e+03  4.8e+01
+    10  0.00000e+00   2.986e+03  2.986e+03    6.2e-02  1.2e-02   4.3e+03  5.1e+01
+   190  0.00000e+00   2.808e+03  2.808e+03    5.8e-02  1.0e-04   1.9e+04  2.1e+03
+   191  0.00000e+00   2.808e+03  2.808e+03    5.8e-02  1.6e-04   1.9e+04  2.1e+03
+   192  0.00000e+00   2.808e+03  2.808e+03    5.8e-02  2.6e-04   1.9e+04  2.1e+03
+   193  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  3.2e-04   1.9e+04  2.2e+03
+   194  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  2.9e-04   1.9e+04  2.2e+03
+   195  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  2.1e-04   1.9e+04  2.2e+03
+   196  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  1.6e-04   1.9e+04  2.2e+03
+   197  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  1.2e-04   1.9e+04  2.2e+03
+   198  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  9.7e-05   1.9e+04  2.2e+03
+   199  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  8.6e-05   1.9e+04  2.2e+03
+   200  0.00000e+00   2.807e+03  2.807e+03    5.8e-02  1.0e-04   1.9e+04  2.2e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.8e+03   anorm = 1.9e+04   arnorm = 5.5e+03
+itn   =     200   r2norm = 2.8e+03   acond = 2.2e+03   xnorm  = 4.8e+01
+ 
+LSQR solved in 3283.80 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch8.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch8.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.83 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.06 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.82 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.86 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch8.fits
+Finished channel [8] for detector 1 in 4413.92 seconds
+Processing channel [9] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 299.71 seconds.
+Solving least squares for 81958156 unknowns with 577133339 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 577133339 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.334e+03  3.334e+03    1.0e+00  8.9e-02
+     1  0.00000e+00   3.265e+03  3.265e+03    6.9e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.259e+03  3.259e+03    6.8e-02  2.7e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.250e+03  3.250e+03    6.8e-02  3.9e-02   2.2e+03  4.6e+00
+     4  0.00000e+00   3.220e+03  3.220e+03    6.8e-02  6.3e-02   2.6e+03  1.1e+01
+     5  0.00000e+00   3.139e+03  3.139e+03    6.6e-02  7.8e-02   3.0e+03  2.1e+01
+     6  0.00000e+00   3.044e+03  3.044e+03    6.4e-02  6.4e-02   3.3e+03  3.1e+01
+     7  0.00000e+00   2.987e+03  2.987e+03    6.3e-02  4.3e-02   3.6e+03  3.8e+01
+     8  0.00000e+00   2.956e+03  2.956e+03    6.2e-02  3.2e-02   3.8e+03  4.3e+01
+     9  0.00000e+00   2.936e+03  2.936e+03    6.2e-02  2.3e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.927e+03  2.927e+03    6.1e-02  1.4e-02   4.3e+03  5.1e+01
+   190  0.00000e+00   2.743e+03  2.743e+03    5.8e-02  3.9e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.743e+03  2.743e+03    5.8e-02  3.9e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.9e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.8e-04   1.8e+04  1.6e+03
+   194  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.6e-04   1.8e+04  1.7e+03
+   195  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.5e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.4e-04   1.8e+04  1.7e+03
+   197  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.4e-04   1.8e+04  1.7e+03
+   198  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.4e-04   1.8e+04  1.7e+03
+   199  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.4e-04   1.9e+04  1.7e+03
+   200  0.00000e+00   2.742e+03  2.742e+03    5.8e-02  3.5e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.8e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.7e+03   xnorm  = 4.5e+01
+ 
+LSQR solved in 3421.34 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch9.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch9.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.28 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.19 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.56 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.22 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch9.fits
+Finished channel [9] for detector 1 in 4550.17 seconds
+Processing channel [10] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 354.67 seconds.
+Solving least squares for 81958156 unknowns with 576510060 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 576510060 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.307e+03  3.307e+03    1.0e+00  9.1e-02
+     1  0.00000e+00   3.238e+03  3.238e+03    6.8e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.232e+03  3.232e+03    6.8e-02  2.7e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.223e+03  3.223e+03    6.8e-02  4.0e-02   2.2e+03  4.6e+00
+     4  0.00000e+00   3.191e+03  3.191e+03    6.7e-02  6.6e-02   2.6e+03  1.1e+01
+     5  0.00000e+00   3.101e+03  3.101e+03    6.5e-02  8.4e-02   3.0e+03  2.2e+01
+     6  0.00000e+00   2.998e+03  2.998e+03    6.3e-02  6.5e-02   3.3e+03  3.3e+01
+     7  0.00000e+00   2.947e+03  2.947e+03    6.2e-02  3.9e-02   3.6e+03  4.0e+01
+     8  0.00000e+00   2.923e+03  2.923e+03    6.1e-02  2.8e-02   3.8e+03  4.4e+01
+     9  0.00000e+00   2.908e+03  2.908e+03    6.1e-02  2.1e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.900e+03  2.900e+03    6.1e-02  1.3e-02   4.3e+03  5.2e+01
+   190  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.6e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.6e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.5e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.4e-04   1.8e+04  1.6e+03
+   194  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.3e-04   1.8e+04  1.6e+03
+   195  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.2e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.3e-04   1.8e+04  1.7e+03
+   197  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.4e-04   1.9e+04  1.7e+03
+   198  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.5e-04   1.9e+04  1.7e+03
+   199  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.5e-04   1.9e+04  1.7e+03
+   200  0.00000e+00   2.722e+03  2.722e+03    5.7e-02  3.4e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.7e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.7e+03   xnorm  = 4.4e+01
+ 
+LSQR solved in 3200.79 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch10.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch10.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 256.96 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.52 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.36 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.18 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch10.fits
+Finished channel [10] for detector 1 in 4392.43 seconds
+Processing channel [11] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 301.56 seconds.
+Solving least squares for 81958156 unknowns with 571630850 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 571630850 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.324e+03  3.324e+03    1.0e+00  9.2e-02
+     1  0.00000e+00   3.253e+03  3.253e+03    6.8e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.246e+03  3.246e+03    6.8e-02  2.7e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.237e+03  3.237e+03    6.8e-02  4.1e-02   2.2e+03  4.7e+00
+     4  0.00000e+00   3.199e+03  3.199e+03    6.7e-02  7.2e-02   2.6e+03  1.2e+01
+     5  0.00000e+00   3.098e+03  3.098e+03    6.5e-02  8.6e-02   3.0e+03  2.3e+01
+     6  0.00000e+00   2.999e+03  2.999e+03    6.3e-02  6.3e-02   3.3e+03  3.3e+01
+     7  0.00000e+00   2.951e+03  2.951e+03    6.2e-02  4.0e-02   3.6e+03  4.0e+01
+     8  0.00000e+00   2.926e+03  2.926e+03    6.1e-02  2.9e-02   3.8e+03  4.4e+01
+     9  0.00000e+00   2.911e+03  2.911e+03    6.1e-02  2.0e-02   4.1e+03  4.8e+01
+    10  0.00000e+00   2.904e+03  2.904e+03    6.1e-02  1.1e-02   4.3e+03  5.2e+01
+   190  0.00000e+00   2.720e+03  2.720e+03    5.7e-02  3.7e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.720e+03  2.720e+03    5.7e-02  3.6e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.720e+03  2.720e+03    5.7e-02  3.6e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.4e-04   1.8e+04  1.6e+03
+   194  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.3e-04   1.8e+04  1.7e+03
+   195  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.4e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.5e-04   1.8e+04  1.7e+03
+   197  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.6e-04   1.9e+04  1.7e+03
+   198  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.8e-04   1.9e+04  1.7e+03
+   199  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.8e-04   1.9e+04  1.7e+03
+   200  0.00000e+00   2.719e+03  2.719e+03    5.7e-02  3.5e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.8e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.7e+03   xnorm  = 4.5e+01
+ 
+LSQR solved in 3002.90 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch11.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch11.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.85 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.67 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.06 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.44 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch11.fits
+Finished channel [11] for detector 1 in 4158.95 seconds
+Processing channel [12] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 382.97 seconds.
+Solving least squares for 81958156 unknowns with 567756188 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 567756188 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.332e+03  3.332e+03    1.0e+00  9.3e-02
+     1  0.00000e+00   3.259e+03  3.259e+03    6.8e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.253e+03  3.253e+03    6.8e-02  2.7e-02   2.0e+03  2.1e+00
+     3  0.00000e+00   3.243e+03  3.243e+03    6.8e-02  4.2e-02   2.2e+03  4.7e+00
+     4  0.00000e+00   3.200e+03  3.200e+03    6.7e-02  7.6e-02   2.6e+03  1.2e+01
+     5  0.00000e+00   3.084e+03  3.084e+03    6.5e-02  8.8e-02   3.0e+03  2.5e+01
+     6  0.00000e+00   2.985e+03  2.985e+03    6.3e-02  5.8e-02   3.3e+03  3.4e+01
+     7  0.00000e+00   2.943e+03  2.943e+03    6.2e-02  3.7e-02   3.6e+03  4.0e+01
+     8  0.00000e+00   2.922e+03  2.922e+03    6.1e-02  2.5e-02   3.8e+03  4.4e+01
+     9  0.00000e+00   2.910e+03  2.910e+03    6.1e-02  1.6e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.905e+03  2.905e+03    6.1e-02  9.9e-03   4.3e+03  5.1e+01
+   190  0.00000e+00   2.716e+03  2.716e+03    5.7e-02  3.3e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.4e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.7e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.9e-04   1.8e+04  1.6e+03
+   194  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.9e-04   1.8e+04  1.7e+03
+   195  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  4.1e-04   1.8e+04  1.7e+03
+   196  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  4.2e-04   1.8e+04  1.7e+03
+   197  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  4.0e-04   1.8e+04  1.7e+03
+   198  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.5e-04   1.8e+04  1.7e+03
+   199  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  3.0e-04   1.8e+04  1.7e+03
+   200  0.00000e+00   2.715e+03  2.715e+03    5.7e-02  2.9e-04   1.9e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.4e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.7e+03   xnorm  = 4.6e+01
+ 
+LSQR solved in 3031.88 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch12.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch12.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.04 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.25 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.14 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.39 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch12.fits
+Finished channel [12] for detector 1 in 4258.20 seconds
+Processing channel [13] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 404.12 seconds.
+Solving least squares for 81958156 unknowns with 564267034 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 564267034 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.333e+03  3.333e+03    1.0e+00  9.4e-02
+     1  0.00000e+00   3.258e+03  3.258e+03    6.8e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.251e+03  3.251e+03    6.8e-02  2.7e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.241e+03  3.241e+03    6.8e-02  4.3e-02   2.2e+03  4.7e+00
+     4  0.00000e+00   3.196e+03  3.196e+03    6.7e-02  7.9e-02   2.6e+03  1.2e+01
+     5  0.00000e+00   3.068e+03  3.068e+03    6.4e-02  9.3e-02   3.0e+03  2.5e+01
+     6  0.00000e+00   2.961e+03  2.961e+03    6.2e-02  5.7e-02   3.3e+03  3.5e+01
+     7  0.00000e+00   2.925e+03  2.925e+03    6.1e-02  3.1e-02   3.6e+03  4.1e+01
+     8  0.00000e+00   2.910e+03  2.910e+03    6.1e-02  2.2e-02   3.8e+03  4.5e+01
+     9  0.00000e+00   2.902e+03  2.902e+03    6.1e-02  1.4e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.898e+03  2.898e+03    6.1e-02  9.2e-03   4.3e+03  5.1e+01
+   190  0.00000e+00   2.699e+03  2.699e+03    5.7e-02  4.4e-04   1.8e+04  1.8e+03
+   191  0.00000e+00   2.699e+03  2.699e+03    5.7e-02  4.9e-04   1.8e+04  1.8e+03
+   192  0.00000e+00   2.699e+03  2.699e+03    5.7e-02  4.5e-04   1.8e+04  1.8e+03
+   193  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  3.7e-04   1.8e+04  1.8e+03
+   194  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  2.9e-04   1.8e+04  1.9e+03
+   195  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  2.2e-04   1.8e+04  1.9e+03
+   196  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  1.7e-04   1.8e+04  1.9e+03
+   197  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  1.7e-04   1.8e+04  1.9e+03
+   198  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  1.8e-04   1.8e+04  1.9e+03
+   199  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  2.3e-04   1.8e+04  1.9e+03
+   200  0.00000e+00   2.698e+03  2.698e+03    5.7e-02  3.1e-04   1.9e+04  1.9e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.6e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.9e+03   xnorm  = 4.9e+01
+ 
+LSQR solved in 3019.05 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch13.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch13.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.19 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.66 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.05 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.48 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch13.fits
+Finished channel [13] for detector 1 in 4285.72 seconds
+Processing channel [14] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 409.62 seconds.
+Solving least squares for 81958156 unknowns with 560110361 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 560110361 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.302e+03  3.302e+03    1.0e+00  9.4e-02
+     1  0.00000e+00   3.229e+03  3.229e+03    6.8e-02  5.0e-02   1.5e+03  1.0e+00
+     2  0.00000e+00   3.222e+03  3.222e+03    6.8e-02  2.7e-02   1.9e+03  2.1e+00
+     3  0.00000e+00   3.213e+03  3.213e+03    6.8e-02  4.2e-02   2.2e+03  4.7e+00
+     4  0.00000e+00   3.166e+03  3.166e+03    6.7e-02  8.2e-02   2.6e+03  1.3e+01
+     5  0.00000e+00   3.028e+03  3.028e+03    6.4e-02  9.5e-02   3.0e+03  2.7e+01
+     6  0.00000e+00   2.920e+03  2.920e+03    6.2e-02  5.4e-02   3.3e+03  3.6e+01
+     7  0.00000e+00   2.890e+03  2.890e+03    6.1e-02  2.6e-02   3.6e+03  4.2e+01
+     8  0.00000e+00   2.881e+03  2.881e+03    6.1e-02  1.6e-02   3.8e+03  4.5e+01
+     9  0.00000e+00   2.876e+03  2.876e+03    6.1e-02  1.1e-02   4.0e+03  4.8e+01
+    10  0.00000e+00   2.873e+03  2.873e+03    6.1e-02  8.9e-03   4.2e+03  5.1e+01
+   190  0.00000e+00   2.666e+03  2.666e+03    5.6e-02  1.2e-04   1.8e+04  2.1e+03
+   191  0.00000e+00   2.666e+03  2.666e+03    5.6e-02  1.9e-04   1.8e+04  2.2e+03
+   192  0.00000e+00   2.666e+03  2.666e+03    5.6e-02  3.0e-04   1.8e+04  2.2e+03
+   193  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  3.6e-04   1.8e+04  2.2e+03
+   194  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  3.1e-04   1.8e+04  2.2e+03
+   195  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  2.1e-04   1.8e+04  2.2e+03
+   196  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  1.3e-04   1.8e+04  2.2e+03
+   197  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  9.2e-05   1.8e+04  2.3e+03
+   198  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  9.3e-05   1.8e+04  2.3e+03
+   199  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  1.3e-04   1.9e+04  2.3e+03
+   200  0.00000e+00   2.665e+03  2.665e+03    5.6e-02  2.1e-04   1.9e+04  2.3e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.9e+04   arnorm = 1.1e+04
+itn   =     200   r2norm = 2.7e+03   acond = 2.3e+03   xnorm  = 5.4e+01
+ 
+LSQR solved in 3024.34 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch14.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch14.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 259.54 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 93.07 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.56 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.94 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch14.fits
+Finished channel [14] for detector 1 in 4293.03 seconds
+Processing channel [15] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 300.17 seconds.
+Solving least squares for 81958156 unknowns with 548445033 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 548445033 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.318e+03  3.318e+03    1.0e+00  8.8e-02
+     1  0.00000e+00   3.230e+03  3.230e+03    7.1e-02  1.0e-01   1.3e+03  1.0e+00
+     2  0.00000e+00   3.204e+03  3.204e+03    7.0e-02  5.4e-02   1.8e+03  2.3e+00
+     3  0.00000e+00   3.189e+03  3.189e+03    7.0e-02  3.6e-02   2.1e+03  3.9e+00
+     4  0.00000e+00   3.178e+03  3.178e+03    7.0e-02  3.2e-02   2.5e+03  6.0e+00
+     5  0.00000e+00   3.164e+03  3.164e+03    7.0e-02  3.2e-02   2.8e+03  8.7e+00
+     6  0.00000e+00   3.148e+03  3.148e+03    6.9e-02  3.3e-02   3.1e+03  1.2e+01
+     7  0.00000e+00   3.125e+03  3.125e+03    6.9e-02  3.5e-02   3.3e+03  1.7e+01
+     8  0.00000e+00   3.097e+03  3.097e+03    6.8e-02  3.6e-02   3.6e+03  2.3e+01
+     9  0.00000e+00   3.064e+03  3.064e+03    6.7e-02  3.6e-02   3.8e+03  2.9e+01
+    10  0.00000e+00   3.029e+03  3.029e+03    6.7e-02  3.4e-02   4.0e+03  3.5e+01
+   190  0.00000e+00   2.695e+03  2.695e+03    5.9e-02  4.8e-04   1.8e+04  1.6e+03
+   191  0.00000e+00   2.695e+03  2.695e+03    5.9e-02  4.8e-04   1.8e+04  1.6e+03
+   192  0.00000e+00   2.695e+03  2.695e+03    5.9e-02  4.7e-04   1.8e+04  1.6e+03
+   193  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.6e-04   1.8e+04  1.6e+03
+   194  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.5e-04   1.8e+04  1.6e+03
+   195  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.4e-04   1.8e+04  1.6e+03
+   196  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.4e-04   1.8e+04  1.6e+03
+   197  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.4e-04   1.8e+04  1.6e+03
+   198  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.4e-04   1.8e+04  1.7e+03
+   199  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.3e-04   1.8e+04  1.7e+03
+   200  0.00000e+00   2.694e+03  2.694e+03    5.9e-02  4.3e-04   1.8e+04  1.7e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 1.8e+04   arnorm = 2.1e+04
+itn   =     200   r2norm = 2.7e+03   acond = 1.7e+03   xnorm  = 5.1e+01
+ 
+LSQR solved in 2902.06 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch15.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch15.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.15 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.91 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.01 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 94.79 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch15.fits
+Finished channel [15] for detector 1 in 4079.87 seconds
+Processing channel [16] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 435.97 seconds.
+Solving least squares for 81958156 unknowns with 559256375 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 559256375 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.561e+03  1.561e+03    1.0e+00  4.5e-02
+     1  0.00000e+00   1.550e+03  1.550e+03    5.4e-02  6.9e-02   5.8e+02  1.0e+00
+     2  0.00000e+00   1.546e+03  1.546e+03    5.4e-02  3.3e-02   9.2e+02  2.3e+00
+     3  0.00000e+00   1.545e+03  1.545e+03    5.4e-02  2.1e-02   1.2e+03  3.9e+00
+     4  0.00000e+00   1.543e+03  1.543e+03    5.4e-02  1.6e-02   1.4e+03  5.9e+00
+     5  0.00000e+00   1.542e+03  1.542e+03    5.4e-02  1.5e-02   1.7e+03  8.4e+00
+     6  0.00000e+00   1.540e+03  1.540e+03    5.4e-02  1.5e-02   1.8e+03  1.2e+01
+     7  0.00000e+00   1.538e+03  1.538e+03    5.4e-02  1.6e-02   2.0e+03  1.6e+01
+     8  0.00000e+00   1.535e+03  1.535e+03    5.4e-02  1.7e-02   2.2e+03  2.1e+01
+     9  0.00000e+00   1.532e+03  1.532e+03    5.4e-02  1.8e-02   2.3e+03  2.8e+01
+    10  0.00000e+00   1.527e+03  1.527e+03    5.3e-02  2.0e-02   2.4e+03  3.6e+01
+   190  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.4e-04   1.1e+04  1.7e+03
+   191  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.3e-04   1.1e+04  1.7e+03
+   192  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.3e-04   1.1e+04  1.7e+03
+   193  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.3e-04   1.1e+04  1.7e+03
+   194  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.4e-04   1.1e+04  1.7e+03
+   195  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.3e-04   1.1e+04  1.7e+03
+   196  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.4e-04   1.1e+04  1.8e+03
+   197  0.00000e+00   1.388e+03  1.388e+03    4.9e-02  5.4e-04   1.1e+04  1.8e+03
+   198  0.00000e+00   1.388e+03  1.388e+03    4.8e-02  5.1e-04   1.1e+04  1.8e+03
+   199  0.00000e+00   1.387e+03  1.387e+03    4.8e-02  5.2e-04   1.1e+04  1.8e+03
+   200  0.00000e+00   1.387e+03  1.387e+03    4.8e-02  5.2e-04   1.1e+04  1.8e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.4e+03   anorm = 1.1e+04   arnorm = 7.8e+03
+itn   =     200   r2norm = 1.4e+03   acond = 1.8e+03   xnorm  = 4.9e+01
+ 
+LSQR solved in 2947.39 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch16.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch16.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 262.51 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.66 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.61 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.92 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch16.fits
+Finished channel [16] for detector 1 in 4232.86 seconds
+Processing channel [17] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Processing 4412 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 303.31 seconds.
+Solving least squares for 81958156 unknowns with 543845914 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 543845914 rows and 81958156 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      200
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   2.910e+03  2.910e+03    1.0e+00  7.1e-02
+     1  0.00000e+00   2.845e+03  2.845e+03    7.4e-02  1.3e-01   9.9e+02  1.0e+00
+     2  0.00000e+00   2.820e+03  2.820e+03    7.3e-02  6.2e-02   1.5e+03  2.4e+00
+     3  0.00000e+00   2.807e+03  2.807e+03    7.3e-02  3.9e-02   1.9e+03  4.0e+00
+     4  0.00000e+00   2.797e+03  2.797e+03    7.2e-02  3.1e-02   2.3e+03  6.0e+00
+     5  0.00000e+00   2.788e+03  2.788e+03    7.2e-02  2.7e-02   2.6e+03  8.3e+00
+     6  0.00000e+00   2.779e+03  2.779e+03    7.2e-02  2.5e-02   2.9e+03  1.1e+01
+     7  0.00000e+00   2.770e+03  2.770e+03    7.2e-02  2.4e-02   3.1e+03  1.4e+01
+     8  0.00000e+00   2.759e+03  2.759e+03    7.1e-02  2.5e-02   3.4e+03  1.8e+01
+     9  0.00000e+00   2.747e+03  2.747e+03    7.1e-02  2.5e-02   3.6e+03  2.3e+01
+    10  0.00000e+00   2.731e+03  2.731e+03    7.1e-02  2.5e-02   3.8e+03  2.9e+01
+   190  0.00000e+00   2.378e+03  2.378e+03    6.1e-02  6.3e-04   1.7e+04  1.7e+03
+   191  0.00000e+00   2.378e+03  2.378e+03    6.1e-02  6.2e-04   1.7e+04  1.7e+03
+   192  0.00000e+00   2.377e+03  2.377e+03    6.1e-02  6.2e-04   1.7e+04  1.7e+03
+   193  0.00000e+00   2.377e+03  2.377e+03    6.1e-02  6.2e-04   1.7e+04  1.7e+03
+   194  0.00000e+00   2.377e+03  2.377e+03    6.1e-02  6.2e-04   1.7e+04  1.7e+03
+   195  0.00000e+00   2.377e+03  2.377e+03    6.1e-02  6.2e-04   1.7e+04  1.7e+03
+   196  0.00000e+00   2.377e+03  2.377e+03    6.1e-02  6.1e-04   1.7e+04  1.7e+03
+   197  0.00000e+00   2.376e+03  2.376e+03    6.1e-02  6.1e-04   1.7e+04  1.7e+03
+   198  0.00000e+00   2.376e+03  2.376e+03    6.1e-02  6.0e-04   1.7e+04  1.7e+03
+   199  0.00000e+00   2.376e+03  2.376e+03    6.1e-02  6.0e-04   1.7e+04  1.8e+03
+   200  0.00000e+00   2.376e+03  2.376e+03    6.1e-02  5.9e-04   1.8e+04  1.8e+03
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.4e+03   anorm = 1.8e+04   arnorm = 2.5e+04
+itn   =     200   r2norm = 2.4e+03   acond = 1.8e+03   xnorm  = 5.8e+01
+ 
+LSQR solved in 2875.27 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch17.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/calibration/cal_D1_Ch17.h5
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 258.66 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 89.86 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.54 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.97 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch17.fits
+Finished channel [17] for detector 1 in 4041.15 seconds
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Processing channel [1] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 257.90 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.22 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 90.30 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.33 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch1naiveoffset.fits
+Finished channel [1] for detector 1 in 818.81 seconds
+Processing channel [2] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 333.30 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.06 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.08 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 98.30 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch2naiveoffset.fits
+Finished channel [2] for detector 1 in 914.54 seconds
+Processing channel [3] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 361.45 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.11 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.83 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 93.57 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch3naiveoffset.fits
+Finished channel [3] for detector 1 in 981.87 seconds
+Processing channel [4] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 402.21 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.55 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.91 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.15 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch4naiveoffset.fits
+Finished channel [4] for detector 1 in 999.03 seconds
+Processing channel [5] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 425.38 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.18 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.55 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 103.93 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch5naiveoffset.fits
+Finished channel [5] for detector 1 in 1085.05 seconds
+Processing channel [6] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 418.71 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.33 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.81 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 105.91 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch6naiveoffset.fits
+Finished channel [6] for detector 1 in 1111.67 seconds
+Processing channel [7] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 431.33 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.34 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.97 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 97.44 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch7naiveoffset.fits
+Finished channel [7] for detector 1 in 1094.20 seconds
+Processing channel [8] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 459.49 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.60 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 99.41 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 107.20 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch8naiveoffset.fits
+Finished channel [8] for detector 1 in 1109.07 seconds
+Processing channel [9] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 401.18 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.16 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 100.00 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 108.66 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch9naiveoffset.fits
+Finished channel [9] for detector 1 in 1069.11 seconds
+Processing channel [10] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 403.94 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.20 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 102.51 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 111.88 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch10naiveoffset.fits
+Finished channel [10] for detector 1 in 1092.44 seconds
+Processing channel [11] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 436.46 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 94.75 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 95.32 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 99.44 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch11naiveoffset.fits
+Finished channel [11] for detector 1 in 1108.17 seconds
+Processing channel [12] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 445.85 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 88.77 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 104.41 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 116.31 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch12naiveoffset.fits
+Finished channel [12] for detector 1 in 1164.08 seconds
+Processing channel [13] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 430.34 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.36 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.67 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 113.94 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch13naiveoffset.fits
+Finished channel [13] for detector 1 in 1120.24 seconds
+Processing channel [14] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 426.35 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.61 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.60 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 110.57 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch14naiveoffset.fits
+Finished channel [14] for detector 1 in 1096.27 seconds
+Processing channel [15] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 450.21 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 96.60 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 100.51 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 111.65 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch15naiveoffset.fits
+Finished channel [15] for detector 1 in 1118.28 seconds
+Processing channel [16] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 465.51 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 115.79 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 105.96 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 113.19 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch16naiveoffset.fits
+Finished channel [16] for detector 1 in 1221.89 seconds
+Processing channel [17] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 463.45 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 97.18 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 97.50 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 107.14 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch17naiveoffset.fits
+Finished channel [17] for detector 1 in 1127.05 seconds
+Fitting LVF parameters...
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Processing channel [1] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 304.13 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.73 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.69 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.42 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch1naiveoffset.fits
+Finished channel [1] for detector 1 in 819.21 seconds
+Processing channel [2] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 217.92 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.48 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 91.16 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.62 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch2naiveoffset.fits
+Finished channel [2] for detector 1 in 716.29 seconds
+Processing channel [3] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 225.13 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.22 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.05 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 99.63 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch3naiveoffset.fits
+Finished channel [3] for detector 1 in 835.54 seconds
+Processing channel [4] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 247.12 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.58 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.83 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 97.25 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch4naiveoffset.fits
+Finished channel [4] for detector 1 in 846.58 seconds
+Processing channel [5] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 243.31 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.60 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.80 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 98.81 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch5naiveoffset.fits
+Finished channel [5] for detector 1 in 818.58 seconds
+Processing channel [6] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 241.85 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.86 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.33 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 98.56 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch6naiveoffset.fits
+Finished channel [6] for detector 1 in 864.57 seconds
+Processing channel [7] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 265.47 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.76 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.21 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.66 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch7naiveoffset.fits
+Finished channel [7] for detector 1 in 837.81 seconds
+Processing channel [8] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 251.36 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.70 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.32 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.49 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch8naiveoffset.fits
+Finished channel [8] for detector 1 in 871.63 seconds
+Processing channel [9] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 255.51 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.80 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.46 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 100.02 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch9naiveoffset.fits
+Finished channel [9] for detector 1 in 827.07 seconds
+Processing channel [10] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 249.48 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.96 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.10 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 100.59 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch10naiveoffset.fits
+Finished channel [10] for detector 1 in 839.90 seconds
+Processing channel [11] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 278.44 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 93.06 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 95.37 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.94 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch11naiveoffset.fits
+Finished channel [11] for detector 1 in 909.83 seconds
+Processing channel [12] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 290.33 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.87 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 94.12 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 103.87 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch12naiveoffset.fits
+Finished channel [12] for detector 1 in 904.49 seconds
+Processing channel [13] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 289.90 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 94.14 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.69 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 96.03 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch13naiveoffset.fits
+Finished channel [13] for detector 1 in 938.97 seconds
+Processing channel [14] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 291.27 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 90.71 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 92.49 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.91 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch14naiveoffset.fits
+Finished channel [14] for detector 1 in 918.38 seconds
+Processing channel [15] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 300.56 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.29 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.96 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 95.85 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch15naiveoffset.fits
+Finished channel [15] for detector 1 in 874.89 seconds
+Processing channel [16] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 260.13 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 91.25 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.62 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 98.29 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch16naiveoffset.fits
+Finished channel [16] for detector 1 in 904.78 seconds
+Processing channel [17] for detector 1
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/ref.fits
+Caching intermediate computations...
+Processing 4412 files in 221 batches...
+Cache computation finished in 293.93 seconds.
+Computing mean map...
+Processing 4412 files in 45 batches...
+Mean map computation finished in 92.37 seconds.
+Computing std map...
+Processing 4412 files in 45 batches...
+Std map computation finished in 93.55 seconds.
+Computing sigma-clipped mean map...
+Processing 4412 files in 45 batches...
+Sigma-clipped mean map computation finished in 103.21 seconds.
+Processing 4412 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det1_6p2arcsec/mosaic/mosaic_D1_Ch17naiveoffset.fits
+Finished channel [17] for detector 1 in 929.85 seconds
