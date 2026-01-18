@@ -3,22 +3,18 @@ import os
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 import time
+from astropy.io import fits
+import numpy as np
+import glob
+import gc
+from functools import partial
 
 from SelfCal import PipelineWrapper
 from SelfCal.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_mask, \
 load_calibration, make_spherex_offset_map, compute_offsets_guess
 from SelfCal.SPHERExAppendWav import wav_coadd
 
-from astropy.io import fits
-import numpy as np
-import glob
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-# Import LogNorm
-from tqdm import tqdm
-import gc
-from functools import partial
-
+# Define self-calibration parameters
 DETECTOR = 2
 OVERSAMPLE_FACTOR = 2
 NUM_SUBCHANNELS = 10
@@ -26,20 +22,48 @@ NUM_CHANNELS = 17
 FILE_SUFFIX = ''
 FILE_PREFIX = f''
 
+# Set up run configuration
 config = {}
 config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
 config['run_name'] = f'nep_det{DETECTOR}_6p2arcsec'
 config['resolution_arcsec'] = 6.2
 
-# chs = [[19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32]]
-chs = [[i] for i in range(1, 18)]
+# Gather list of exposures
+exposure_list = glob.glob(f'/mnt/md127/SPHEREx/reproc_data/deep_north/*/*/*/*D{DETECTOR}*.fits')
+for exp_file in exposure_list:
+    hdul = fits.open(exp_file)
+    header = hdul[1].header
+    # Check for good astrometry
+    good_astrometry = header.get('FINAST', 2)
+    if good_astrometry != 0:
+        print(f"Skipping {exp_file} due to poor astrometry (FINAST={good_astrometry})")
+        exposure_list.remove(exp_file)
+print(f"Found {len(exposure_list)} exposures")
 
+# Initialize Reprojector and run reprojection
+rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)
+# Define reference frame with padding
+rr.define_reference(padding_pixels=100, use_ext=[1])
+# Run reprojection
+rr.run_reproject(max_workers=50, reproj_func='exact', padding_percentage=0.05, 
+                    sci_ext_list=[1], 
+                    dq_ext_list=[2], 
+                    exp_idx_list=np.arange(0, len(exposure_list)), 
+                    det_idx_list=[0]*len(exposure_list),
+                    replace_existing=False,
+                 reproject_kwargs={'parallel': 4}
+                )
+
+# Load detector band pass
 det_BC, det_BW = load_calibration(band=DETECTOR, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
+# Create chunk maps
 chunk_map, lvf_params = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
                                                 oversample_factor=OVERSAMPLE_FACTOR)
+
 det_chunk_map, _ = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
                                            oversample_factor=1, lvf_params=lvf_params)
 
+chs = [[i] for i in range(1, 18)]
 for ch in chs:
     print(f"Processing channel {ch} for detector {DETECTOR}")
     t0 = time.time()
