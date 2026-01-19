@@ -145,9 +145,11 @@ def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, c
     chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params)
     return chunk_map, lvf_params
 
-def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
+def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10, padding=0):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
-    chunk_valid_mask[np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + np.arange(num_subchannels)) + 1] = 1
+    valid_subchannels = np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + \
+                                  np.arange(0-padding,num_subchannels+padding)) + 1
+    chunk_valid_mask[valid_subchannels] = 1
     return chunk_valid_mask
 
 def visualize_chunk_map(chunk_map, chunk_valid_mask):
