@@ -118,7 +118,7 @@ class Calibrator(Reprojector):
     def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10):
         start_time = time.time()
-        self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape, self.exp_idx_list, self.det_idx_list,
+        self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                batch_size=batch_size)
@@ -129,7 +129,7 @@ class Calibrator(Reprojector):
         start_time = time.time()
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
-        self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, self.ref_shape, self.exp_idx_list, self.det_idx_list, 
+        self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_frames=len(self.reproj_list),
                                                     x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
         end_time = time.time()
         print(f"LSQR solved in {end_time - start_time:.2f} seconds.")
@@ -166,6 +166,7 @@ class Mosaicker(Reprojector):
         with h5py.File(cal_path, 'r') as f:
             self.O = f['O'][:]
             self.S = f['S'][:]
+            self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
@@ -174,9 +175,6 @@ class Mosaicker(Reprojector):
         oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
         cache_intermediate=False, det_aux=None):
 
-        if self.O is None:
-            print("Warning: Calibration not loaded. No calibration will be applied to the mosaic.")
-        
         offset_param = None
         if apply_offset:
             if self.O is not None:
@@ -192,8 +190,6 @@ class Mosaicker(Reprojector):
             'ref_shape': self.ref_shape,
             'file_list': self.reproj_list,
             'offset_list': offset_param,
-            'det_idx_list': self.det_idx_list,
-            'exp_idx_list': self.exp_idx_list,
             'apply_weight': apply_weight,
             'apply_mask': apply_mask,
             'chunk_map': chunk_map,

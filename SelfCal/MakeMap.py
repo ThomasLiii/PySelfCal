@@ -326,7 +326,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
                    for_lsqr=False, oversample_factor=1, 
                    # These arguments are accepted for compatibility/internal logic 
                    # but might not be used depending on logic path
-                   exp_idx=None, det_idx=None, det_aux=None):
+                   det_aux=None):
     """
     Prepares data from a single file for co-addition or lsqr.
     
@@ -378,7 +378,6 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
 
     chunk_contrib = None
     if for_lsqr:
-        # Note: If compute_chunk_contrib needs exp_idx/det_idx, ensure they are passed here.
         chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
     return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
@@ -397,15 +396,11 @@ def _coadd_batch_worker(params):
     mode = params['mode']
     batch_files = params['batch_files']
     batch_indices = params['batch_indices']
+    batch_offsets = params['batch_offsets']
     ref_shape = params['ref_shape']
     
     # Execution Flags
     use_cached = params['use_cached']
-    
-    # Iterables
-    exp_idx_list = params['exp_idx_list']
-    det_idx_list = params['det_idx_list']
-    offset_list = params['offset_list']
 
     det_aux = None
     shm_handles = []
@@ -450,8 +445,8 @@ def _coadd_batch_worker(params):
         }
 
     # 4. Processing Loop
-    for i, file_path in enumerate(batch_files):
-        idx = batch_indices[i]
+    for in_index, file_path in enumerate(batch_files):
+        index = batch_indices[in_index]
         
         ref_coords, sub_data, sub_weight, sub_aux = None, None, None, None
 
@@ -471,14 +466,10 @@ def _coadd_batch_worker(params):
                 continue
         else:
             # Compute on the fly
-            current_exp = exp_idx_list[idx] if exp_idx_list is not None else 0
-            current_det = det_idx_list[idx] if det_idx_list is not None else 0
-            current_offset = offset_list[idx] if offset_list is not None else None
+            current_offset = batch_offsets[in_index] if batch_offsets is not None else None
 
             ref_coords, sub_data, sub_weight, _, sub_aux = _prep_subframe(
                 file=file_path,
-                exp_idx=current_exp,
-                det_idx=current_det,
                 chunk_offset=current_offset,
                 det_aux=det_aux,
                 **prep_config 
@@ -551,6 +542,7 @@ def _coadd_batch_manager(params):
     """
     mode = params['mode']
     file_list = params['file_list']
+    offset_list = params['offset_list']
     max_workers = params['max_workers']
     batch_size = params['batch_size']
     mean_map = params['mean_map']
@@ -605,6 +597,7 @@ def _coadd_batch_manager(params):
             task_params.update({
                 'batch_files': file_list[start_idx:end_idx],
                 'batch_indices': list(range(start_idx, end_idx)),
+                'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
             })
             tasks.append(task_params)
 
@@ -642,7 +635,7 @@ def _coadd_batch_manager(params):
             shm.unlink()
 
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
-                      offset_list=None, exp_idx_list=None, det_idx_list=None, apply_weight=True, 
+                      offset_list=None, apply_weight=True, 
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
@@ -670,10 +663,6 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         The number of standard deviations for sigma clipping. Used only when `mode` is 'sigma_clip'. Default is 3.0.
     offset_list : list, optional
         List of offsets for each exposure, shape (num_reproj_file, num_chunks). Default is None.
-    exp_idx_list : list, optional
-        List of exposure indices. Default is None.
-    det_idx_list : list, optional
-        List of detector indices. Default is None.
     apply_weight : bool, optional
         Whether to apply weights to the data. Default is True.
     apply_mask : bool, optional
@@ -720,10 +709,8 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
-    assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(file_list), len(np.unique(chunk_map)))), \
-        "offset_list must be a list or array of shape (num_reproj_file, num_chunks)"
-    assert exp_idx_list is None or isinstance(exp_idx_list, (list, np.ndarray)), "exp_idx_list must be a list or array"
-    assert det_idx_list is None or isinstance(det_idx_list, (list, np.ndarray)), "det_idx_list must be a list or array"
+    # assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(file_list), len(np.unique(chunk_map)))), \
+    #     "offset_list must be a list or array of shape (num_reproj_file, num_chunks)"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
     assert chunk_map is None or isinstance(chunk_map, (list, np.ndarray)), "chunk_map must be a list or array"
@@ -748,8 +735,6 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         'std_map': std_map,
         'det_aux': det_aux,
         
-        'exp_idx_list': exp_idx_list,
-        'det_idx_list': det_idx_list,
         'offset_list': offset_list,
         
         'chunk_map': chunk_map,
@@ -793,14 +778,12 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
     # 1. Unpack task specific
-    i = task_params['i']
+    index = task_params['index']
     reproj_file = task_params['reproj_file']
-    exp_idx = task_params['exp_idx']
-    det_idx = task_params['det_idx']
-    
+
     # 2. Unpack Config for Logic
     ref_shape = task_params['ref_shape']
-    num_exp = task_params['num_exp']
+    num_frames = task_params['num_frames']
     num_chunks = task_params['num_chunks']
     outlier_thresh = task_params['outlier_thresh']
     ref_h, ref_w = ref_shape
@@ -812,8 +795,6 @@ def _prep_lsqr(task_params):
         # Using .get() allows for safe defaults if the setup function forgot to pack them.
         ref_coords, sub_data, sub_weight, chunk_contrib, _ = _prep_subframe(
             file=reproj_file,
-            exp_idx=exp_idx,
-            det_idx=det_idx,
             chunk_offset=None, # LSQR usually solves for this, so we don't apply it yet
             for_lsqr=True,
             det_offset_func=None,
@@ -854,7 +835,7 @@ def _prep_lsqr(task_params):
         chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() 
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
         O_rows = sub_idx 
-        O_cols = chunk_idx + exp_idx*num_chunks + (num_sky) 
+        O_cols = num_sky + (index * num_chunks) + chunk_idx
         O_data = valid_weight[sub_idx] * chunk_vals 
 
         sub_b = valid_vals * valid_weight 
@@ -875,7 +856,7 @@ def _prep_lsqr(task_params):
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except Exception as e:
-        print(f"Error processing file {reproj_file} for exp_idx={exp_idx}: {e}")
+        print(f"Error processing file {reproj_file}: {e}")
         traceback.print_exc()
         return None
 
@@ -916,7 +897,7 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_row_offset
     )
 
-def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list, 
+def setup_lsqr(file_list, ref_shape, 
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                # Exposed new arguments here to be explicit
                valid_threshold=0.99,
@@ -928,10 +909,6 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
         List of paths to the reprojected HDF5 files
     ref_shape : tuple, list
         Shape of the reference frame (height, width)
-    exp_idx_list : list, optional
-        List of exposure indices corresponding to each reprojection file.
-    det_idx_list : list, optional
-        List of detector indices corresponding to each reprojection file.
     chunk_map : np.ndarray, optional
         Mapping of chunk indices to their corresponding pixel indices. Must be 0 indexed and continuous!!
     det_valid_mask : np.ndarray, optional
@@ -958,8 +935,6 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
         The vector b, shape is (num_equations,)
     """
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
-    assert len(file_list) == len(exp_idx_list) == len(det_idx_list), \
-        "file_list, exp_idx_list, and det_idx_list must have the same length"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
     assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
@@ -971,13 +946,11 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
     #TODO : Validate chunk_map continuity?
-    num_chunks = len(np.unique(chunk_map)) if chunk_map is not None else 0
-    unique_exps, reindexed_exp_idx_list = np.unique(exp_idx_list, return_inverse=True)
-    num_exp = len(unique_exps)
-    num_det = len(np.unique(det_idx_list))
+    num_chunks = chunk_map.max().astype(np.int32) + 1 if chunk_map is not None else 0
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    total_cols = num_sky + num_exp * num_chunks
+    num_frames = len(file_list)
+    total_cols = num_sky + num_chunks * num_frames
 
     # Explicitly gather the common configuration for the workers
     common_params = {
@@ -992,19 +965,17 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
         
         # Arguments for _prep_lsqr logic
         'outlier_thresh': outlier_thresh,
-        'num_exp': num_exp,
         'num_chunks': num_chunks,
+        'num_frames': num_frames,
         'ref_shape': ref_shape,
     }
 
     # 1. Create all individual task definitions
     all_individual_tasks = []
-    for i, (reproj_file, exp_idx, det_idx) in enumerate(zip(file_list, reindexed_exp_idx_list, det_idx_list)):
+    for index, reproj_file in enumerate(file_list):
         task_params = {
-            'i': i,
+            'index': index,
             'reproj_file': reproj_file,
-            'exp_idx': exp_idx,
-            'det_idx': det_idx,
         }
         # Combine the dynamic task params with the static common params
         task_params.update(common_params)
@@ -1056,7 +1027,7 @@ def setup_lsqr(file_list, ref_shape, exp_idx_list, det_idx_list,
     full_b = b
     return full_A, full_b
 
-def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None, 
+def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):
     """Applies the LSQR algorithm to solve for the sky and detector offsets.
     Parameters
@@ -1067,10 +1038,6 @@ def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None,
         The vector b, shape is (num_equations,)
     ref_shape : tuple, list
         Shape of the reference frame (height, width)
-    exp_idx_list : list, optional
-        List of exposure indices corresponding to each reprojection file.
-    det_idx_list : list, optional
-        List of detector indices corresponding to each reprojection file.
     x0 : np.ndarray, optional
         Initial guess for the solution, shape is (num_unknowns,). If None, will use a zero vector.
     atol : float, optional
@@ -1089,15 +1056,18 @@ def apply_lsqr(A, b, ref_shape, exp_idx_list, det_idx_list, x0=None,
     S : np.ndarray
         The sky offsets, shape is (height, width)   
     """
-    num_exp = len(np.unique(exp_idx_list))
-    num_det = len(np.unique(det_idx_list))
+    assert isinstance(A, coo_matrix), "A must be a scipy.sparse.coo_matrix"
+    assert isinstance(b, np.ndarray), "b must be a numpy array"
+    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
+    assert isinstance(num_frames, int) and num_frames > 0, "num_frames must be a positive integer"
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
+    assert (A.shape[1]-num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
     print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
     result = lsqr(A, b, x0=x0, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     x = result[0]
 
     S = x[:num_sky].reshape(ref_shape)
-    O = x[num_sky:].reshape(num_exp, (x.shape[0]-num_sky) // num_exp)
+    O = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
     return O, S
