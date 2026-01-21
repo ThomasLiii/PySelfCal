@@ -106,7 +106,7 @@ def fit_lvf_params(BC_map, channel_edges):
 
 def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_params=None):
     out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
-    chunk_map = np.zeros(out_shape, dtype=np.int16)
+    chunk_map = np.zeros(out_shape, dtype=np.int32)
     x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
     if lvf_params is None:
         print("Fitting LVF parameters...")
