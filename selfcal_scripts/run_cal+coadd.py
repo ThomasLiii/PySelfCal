@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 import time
@@ -19,20 +20,20 @@ from tqdm import tqdm
 import gc
 from functools import partial
 
-DETECTOR = 2
+DETECTOR = 4
 OVERSAMPLE_FACTOR = 2
 NUM_SUBCHANNELS = 10
-NUM_CHANNELS = 17
-FILE_SUFFIX = ''
-FILE_PREFIX = f''
+NUM_CHANNELS = 34
+FILE_SUFFIX = f''
+FILE_PREFIX = f'_34channels'
 
 config = {}
 config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
 config['run_name'] = f'nep_det{DETECTOR}_6p2arcsec'
 config['resolution_arcsec'] = 6.2
 
-# chs = [[19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32]]
-chs = [[i] for i in range(1, 18)]
+# chs = [[15], [16]]
+chs = [[i] for i in range(26, 28)] # 15-22, 22-28, 28-35
 
 det_BC, det_BW = load_calibration(band=DETECTOR, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
 chunk_map, lvf_params = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
@@ -66,7 +67,7 @@ for ch in chs:
 
     offset_guess = compute_offsets_guess(cc.reproj_list, det_chunk_map)
     x0 = np.hstack([np.zeros(np.prod(cc.ref_shape)), offset_guess.flatten()])
-    cc.apply_lsqr(x0=x0, atol=1e-06, btol=1e-06, damp=1e-3, iter_lim=200)
+    cc.apply_lsqr(x0=x0, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=100)
     cal_path = cc.save_calibration(cal_file=f'cal{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}.h5')
 
     del cc
@@ -76,6 +77,7 @@ for ch in chs:
     mm.load_calibration(cal_path=cal_path)
     partial_make_offset_map = partial(make_spherex_offset_map, chunk_valid_mask=chunk_valid_mask, lvf_params=lvf_params)
     sc_sigma = 1.0
+    cache_dir = '/home/thomasli/spherex/selfcal/cache/' + f'cache{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}/'
     maps = mm.make_mosaic(
         apply_mask=True, 
         apply_weight=True, 
@@ -90,7 +92,7 @@ for ch in chs:
         det_offset_func=partial_make_offset_map,
         cache_batch_size=20,
         coadd_batch_size=100,
-        cache_dir='/home/thomasli/spherex/selfcal/cache',
+        cache_dir=cache_dir,
         cache_intermediate=True,
         det_aux=None
     )
@@ -108,5 +110,13 @@ for ch in chs:
     # Clear memory
     del mm, maps
     gc.collect()
+
+    if os.path.isdir(cache_dir):
+        try:
+            shutil.rmtree(cache_dir)
+            print(f"Directory '{cache_dir}' and all its contents have been removed.")
+        except OSError as e:
+            print(f"Error: {cache_dir} : {e.strerror}")
+
     t1 = time.time()
     print(f"Finished channel {ch} for detector {DETECTOR} in {t1 - t0:.2f} seconds")
