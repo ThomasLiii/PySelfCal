@@ -159,8 +159,8 @@ class Mosaicker(Reprojector):
         self.O = None
         self.S = None
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
-                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'Weight'},
-                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'Auxiliary'}}
+                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
+                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
@@ -255,6 +255,19 @@ class Mosaicker(Reprojector):
                 self.maps[map_name][key] = new_maps[map_name][key]
 
     def save_mosaic(self, mos_dir=None, mos_file='mosaic.fits', overwrite=False):
+        '''
+        Extension naming convention:
+        Coadd Maps: 
+            - 'MEAN_MAP': Simple mean coadd
+            - 'MEAN_MAP_WEIGHT': Weight map for mean coadd
+            - 'STD_MAP': Standard deviation of pixel values per pixel
+            - 'STD_MAP_WEIGHT': Weight map for std coadd
+            - 'SC_MEAN_MAP': Sigma-clipped mean coadd
+            - 'SC_MEAN_MAP_WEIGHT': Weight map for sigma-clipped mean coadd
+        Auxiliary Maps:
+            - 'WAV_MEAN': Mean wavelength map
+            - 'WAV_STD': Standard deviation of wavelength map
+        '''
         if mos_dir is None:
             mos_dir = self.config['mos_dir']
         if not os.path.exists(mos_dir):
