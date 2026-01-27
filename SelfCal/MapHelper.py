@@ -69,7 +69,7 @@ def make_weight(frame, sigma=1.4):
     # weight = gaussian_filter(inverse, sigma=sigma)
     filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
     convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
-    weight = 1.0 / (np.abs(frame) + np.abs(convolved_frame * 4) + 0.1) ** 2
+    weight = 1.0 / (np.abs(frame))# + np.abs(convolved_frame * 4) + 0.1) ** 2
     # abs_frame = np.abs(filled_frame)
     # filling_value = np.nanpercentile(abs_frame[abs_frame>0], 1)
     # abs_frame[abs_frame < filling_value] = filling_value
@@ -348,7 +348,6 @@ def linear_spline(x_sample, y_sample):
     return interpolator
 
 def mean_preserving_spline(x_edge, y_mean, method='cubic'):
-    #TODO apply on 2d
     """
     Generates a mean-preserving spline function f(x) based on edge
     positions x_edge and the average value y_mean in each interval.
