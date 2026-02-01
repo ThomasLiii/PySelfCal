@@ -12,19 +12,27 @@ from SelfCal.SPHERExUtility import load_calibration
 
 worker_context = {}
 
-def create_shared_array(name, shape, dtype, data=None):
-    """Allocates shared memory and optionally copies data into it."""
+def create_shared_array(shape, dtype, data=None):
+    """
+    Allocates shared memory with a UNIQUE system-generated name.
+    Returns: (shm_object, unique_name, numpy_array)
+    """
     d_size = np.dtype(dtype).itemsize
     n_bytes = int(np.prod(shape) * d_size)
-    shm = SharedMemory(name=name, create=True, size=n_bytes)
+    
+    # name=None asks the OS for a unique name, preventing collisions
+    shm = SharedMemory(name=None, create=True, size=n_bytes)
+    
     arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
     if data is not None:
         arr[:] = data[:]
-    return shm, arr
+        
+    return shm, shm.name, arr
 
 def init_worker(shm_info, lock, reproj_list, cache_list, ref_shape, sigma):
     """
-    Worker initializer: Attaches to existing shared memory blocks.
+    Worker initializer: Attaches to existing shared memory blocks using unique names
+    but maps them to standard logical names in worker_context.
     """
     worker_context['reproj_list'] = reproj_list
     worker_context['cache_list'] = cache_list
@@ -33,24 +41,31 @@ def init_worker(shm_info, lock, reproj_list, cache_list, ref_shape, sigma):
     worker_context['lock'] = lock
     worker_context['shm_handles'] = [] # Keep references open
 
-    # Reattach to all shared memory blocks by name
-    for name, shape, dtype in shm_info:
+    # Reattach to all shared memory blocks
+    # unique_name: the messy system name (e.g. "psm_8273...")
+    # logical_name: the variable name your code expects (e.g. "det_BC")
+    for unique_name, logical_name, shape, dtype in shm_info:
         try:
-            shm = SharedMemory(name=name)
+            shm = SharedMemory(name=unique_name)
             worker_context['shm_handles'].append(shm)
+            
             # Create numpy view
             arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
-            worker_context[name] = arr
+            
+            # Store it under the logical name so the calculation code doesn't need changing
+            worker_context[logical_name] = arr
+            
         except FileNotFoundError:
-            print(f"Worker failed to attach to SharedMemory: {name}")
+            print(f"Worker failed to attach to SharedMemory: {unique_name} ({logical_name})")
 
 def _wavcoadd_batch_worker(batch_indices):
+    # --- Logic remains exactly the same as before ---
     reproj_list = worker_context['reproj_list']
     cache_list  = worker_context['cache_list']
     ref_shape   = worker_context['ref_shape']
     sigma       = worker_context['sigma']
     
-    # Inputs (Read-Only)
+    # Inputs (Read-Only) - Accessed via logical names
     det_BC      = worker_context['det_BC']
     det_BW      = worker_context['det_BW']
     mean_map    = worker_context['mean_map']
@@ -58,10 +73,10 @@ def _wavcoadd_batch_worker(batch_indices):
     
     # Outputs (Read-Write)
     total_BCBW_sum     = worker_context['total_BCBW_sum']
-    total_BW_sum     = worker_context['total_BW_sum']
-    total_meanvar_sum = worker_context['total_meanvar_sum']
+    total_BW_sum       = worker_context['total_BW_sum']
+    total_meanvar_sum  = worker_context['total_meanvar_sum']
     
-    # 2. Local Accumulation Arrays
+    # Local Accumulation Arrays
     batch_BCBW_sum = np.zeros(ref_shape, dtype=np.float32)
     batch_BW_sum = np.zeros(ref_shape, dtype=np.float32)
     batch_meanvar_sum = np.zeros(ref_shape, dtype=np.float32)
@@ -95,12 +110,12 @@ def _wavcoadd_batch_worker(batch_indices):
         batch_BW_sum[ref_crop] += np.where(valid_clipped, sub_BW[sub_crop] * weight_crop, 0.0)
         batch_meanvar_sum[ref_crop] += np.where(valid_clipped, (sub_BW * ((sub_BW**2) / 12 + sub_BC**2))[sub_crop] * weight_crop, 0.0)
 
-    # 4. Critical Section: Write to Global Shared Memory
+    # Critical Section: Write to Global Shared Memory
     lock = worker_context['lock']
     with lock:
         total_BCBW_sum     += batch_BCBW_sum
-        total_BW_sum     += batch_BW_sum
-        total_meanvar_sum += batch_meanvar_sum
+        total_BW_sum       += batch_BW_sum
+        total_meanvar_sum  += batch_meanvar_sum
 
     return True
 
@@ -110,35 +125,38 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
     """
     # --- Initialize Shared Memory ---
     shm_objects = []
-    shm_info = [] # Stores (name, shape, dtype) to send to workers
+    # shm_info stores: (unique_system_name, logical_user_name, shape, dtype)
+    shm_info = [] 
+    
     try:
+        # 1. Setup Input Arrays
         input_arrays = [
             ('det_BC', det_BC),
             ('det_BW', det_BW),
             ('mean_map', mean_map),
             ('std_map', std_map)
         ]
-        for name, arr in input_arrays:
-            shm, _ = create_shared_array(name, arr.shape, arr.dtype, data=arr)
+        
+        for logical_name, arr in input_arrays:
+            # We don't pass a name; we let the OS generate one and return it
+            shm, unique_name, _ = create_shared_array(arr.shape, arr.dtype, data=arr)
             shm_objects.append(shm)
-            shm_info.append((name, arr.shape, arr.dtype))
+            shm_info.append((unique_name, logical_name, arr.shape, arr.dtype))
 
-
+        # 2. Setup Output Arrays
         output_shapes = [
             ('total_BCBW_sum', ref_shape),
             ('total_BW_sum', ref_shape),
             ('total_meanvar_sum', ref_shape),
-            # ('total_weight_sum', ref_shape)
         ]
-        for name, shape in output_shapes:
-            # create_shared_array allocates; we must zero it out explicitly to be safe
-            shm, arr = create_shared_array(name, shape, np.float32)
+        
+        for logical_name, shape in output_shapes:
+            shm, unique_name, arr = create_shared_array(shape, np.float32)
             arr.fill(0) 
             shm_objects.append(shm)
-            shm_info.append((name, shape, np.float32))
+            shm_info.append((unique_name, logical_name, shape, np.float32))
 
         # --- Multiprocessing ---
-
         all_indices = np.arange(len(reproj_list))
         tasks = [all_indices[i:i + batch_size] for i in range(0, len(all_indices), batch_size)]
         print(f"Processing {len(reproj_list)} files in {len(tasks)} batches with {max_workers} workers...")
@@ -151,23 +169,30 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
                 list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks)))
 
         # --- Aggregate ---    
-        # Based on order of creation: 0-3 are inputs
+        # We retrieve data using the saved buffer references from the main process
+        # Indices 4, 5, 6 correspond to the output arrays created above
         BCBW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[4].buf).copy()
         BW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[5].buf).copy()
         meanvar_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[6].buf).copy()
-        # weight_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[7].buf).copy()
 
-        wav_mean_map = BCBW_sum / BW_sum
-        wav_std_map = np.sqrt(meanvar_sum/BW_sum - wav_mean_map**2)
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            wav_mean_map = BCBW_sum / BW_sum
+            wav_std_map = np.sqrt(meanvar_sum/BW_sum - wav_mean_map**2)
+            
+        wav_mean_map[~np.isfinite(wav_mean_map)] = 0
+        wav_std_map[~np.isfinite(wav_std_map)] = 0
 
     finally:
-        # --- 6. Cleanup ---
+        # --- Cleanup ---
+        # Crucial: Unlink ensures the OS frees the memory, but only after we are done
         for shm in shm_objects:
             try:
                 shm.close()
                 shm.unlink()
             except:
                 pass
+                
     return wav_mean_map, wav_std_map
 
 if __name__ == "__main__":
@@ -185,9 +210,9 @@ if __name__ == "__main__":
     cache_list = sorted(glob.glob(os.path.join(cache_dir, '*.h5')))
 
     mos_hdul = fits.open('/mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/mosaic/mosaic_34ch_det4_ch22.fits')
-    mean_map = mos_hdul[1].data.astype(np.float32) # Ensure float32
+    mean_map = mos_hdul[1].data.astype(np.float32) 
     std_map = mos_hdul[3].data.astype(np.float32)
     ref_shape = mean_map.shape
 
     wav_mean, wav_std = wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_shape, sigma, 
-                            batch_size=batch_size, max_workers=max_workers)    
+                            batch_size=batch_size, max_workers=max_workers)
