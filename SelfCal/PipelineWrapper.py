@@ -171,14 +171,14 @@ class Mosaicker(Reprojector):
         self.cal_path = cal_path
 
     def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
-        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=True, apply_offset=True, ignore_list=[], 
+        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[], 
         oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
         cache_intermediate=False, det_aux=None):
 
         offset_param = None
         if apply_offset:
             if self.O is not None:
-                O = self.O
+                O = self.O.copy()
                 if normalize_offset:
                     O = O - np.mean(O[O != 0])
                 offset_param = O
