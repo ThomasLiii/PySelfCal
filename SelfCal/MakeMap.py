@@ -786,21 +786,19 @@ def _prep_lsqr(task_params):
     num_frames = task_params['num_frames']
     num_chunks = task_params['num_chunks']
     outlier_thresh = task_params['outlier_thresh']
+    reg_weight = task_params.get('reg_weight', 0.0)
+    adj_info = task_params.get('adj_info', None) # Pre-computed adjacency (row, col) pairs
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
 
     try:
         # 3. Explicit Call to _prep_subframe
-        # We explicitly retrieve args from task_params. 
-        # Using .get() allows for safe defaults if the setup function forgot to pack them.
         ref_coords, sub_data, sub_weight, chunk_contrib, _ = _prep_subframe(
             file=reproj_file,
-            chunk_offset=None, # LSQR usually solves for this, so we don't apply it yet
+            chunk_offset=None,
             for_lsqr=True,
             det_offset_func=None,
             det_aux=None,
-            
-            # Explicit Parameters passed down
             chunk_map=task_params['chunk_map'],
             apply_weight=task_params['apply_weight'],
             apply_mask=task_params['apply_mask'],
@@ -812,37 +810,54 @@ def _prep_lsqr(task_params):
 
         sub_h, sub_w = sub_data.shape
         
-        # ... [Rest of logic remains identical] ...
-        sub_valid = ~check_invalid(sub_data) 
+        sub_valid = ~check_invalid(sub_data)
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
-            sub_out = find_outliers(sub_data, threshold=outlier_thresh) 
-            sub_valid &= ~sub_out 
-        valid_sub_coords = np.nonzero(sub_valid) 
+            sub_out = find_outliers(sub_data, threshold=outlier_thresh)
+            sub_valid &= ~sub_out
+        valid_sub_coords = np.nonzero(sub_valid)
+
         sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
-        valid_vals = sub_data[valid_sub_coords] 
-        valid_weight = sub_weight[valid_sub_coords] 
+        valid_vals = sub_data[valid_sub_coords]
+        valid_weight = sub_weight[valid_sub_coords]
         num_valid_pixels = valid_vals.shape[0]
 
-        if num_valid_pixels == 0:
+        if num_valid_pixels == 0 and reg_weight == 0:
             return np.array([]), np.array([]), np.array([]), np.array([]), 0
 
-        ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2]) 
+        ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
-        S_rows = np.arange(num_valid_pixels) 
-        S_cols = ref_pix_indices 
-        S_data = valid_weight 
+        S_rows = np.arange(num_valid_pixels)
+        S_cols = ref_pix_indices
+        S_data = valid_weight
 
-        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero() 
+        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero()
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
-        O_rows = sub_idx 
+        O_rows = sub_idx
         O_cols = num_sky + (index * num_chunks) + chunk_idx
-        O_data = valid_weight[sub_idx] * chunk_vals 
+        O_data = valid_weight[sub_idx] * chunk_vals
 
-        sub_b = valid_vals * valid_weight 
+        sub_b = valid_vals * valid_weight
 
-        sub_rows = np.concatenate([S_rows, O_rows])
-        sub_cols = np.concatenate([S_cols, O_cols])
-        sub_data_vec = np.concatenate([S_data, O_data]) 
+        # --- Spatial Regularization (Adjacency) ---
+        reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
+        if reg_weight > 0 and adj_info is not None:
+            # adj_info is expected to be a tuple of (chunk_i, chunk_j) indices that are neighbors
+            chunk_i, chunk_j = adj_info
+            num_constraints = len(chunk_i)
+            offset_base = num_sky + (index * num_chunks)
+            
+            # Constraint: reg_weight * (O_i - O_j) = 0
+            # Equations start after the data equations (num_valid_pixels)
+            reg_rows = np.repeat(np.arange(num_constraints) + num_valid_pixels, 2)
+            reg_cols = np.stack([offset_base + chunk_i, offset_base + chunk_j], axis=1).flatten()
+            reg_data = np.tile([reg_weight, -reg_weight], num_constraints)
+            reg_b = np.zeros(num_constraints)
+
+        # Concatenate Data and Regularization
+        sub_rows = np.concatenate([S_rows, O_rows, reg_rows]) if len(reg_rows) > 0 else np.concatenate([S_rows, O_rows])
+        sub_cols = np.concatenate([S_cols, O_cols, reg_cols]) if len(reg_cols) > 0 else np.concatenate([S_cols, O_cols])
+        sub_data_vec = np.concatenate([S_data, O_data, reg_data]) if len(reg_data) > 0 else np.concatenate([S_data, O_data])
+        sub_b = np.concatenate([sub_b, reg_b]) if len(reg_b) > 0 else sub_b
 
         valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data_vec == 0) & (sub_b[sub_rows] == 0))
         sub_rows = sub_rows[valid_mask]
@@ -899,9 +914,9 @@ def _prep_lsqr_batch_worker(batch_params):
 
 def setup_lsqr(file_list, ref_shape, 
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
-               # Exposed new arguments here to be explicit
                valid_threshold=0.99,
-               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10):
+               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
+               reg_weight=0.0):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -910,13 +925,16 @@ def setup_lsqr(file_list, ref_shape,
     ref_shape : tuple, list
         Shape of the reference frame (height, width)
     chunk_map : np.ndarray, optional
-        Mapping of chunk indices to their corresponding pixel indices. Must be 0 indexed and continuous!!
+        Mapping of chunk indices to their corresponding pixel indices.
+        Must be 0 indexed and continuous!!
     det_valid_mask : np.ndarray, optional
         Mask indicating valid pixels for each detector.
     apply_mask : bool, optional
-        Whether to apply masks to the data. Default is True.
+        Whether to apply masks to the data.
+        Default is True.
     apply_weight : bool, optional
-        Whether to apply weights to the data. Default is True.
+        Whether to apply weights to the data.
+        Default is True.
     outlier_thresh : float, optional
         z-value threshold for outlier detection, default is 3.0.
     max_workers : int, optional
@@ -924,9 +942,13 @@ def setup_lsqr(file_list, ref_shape,
     ignore_list : list, optional
         List of data quality flags to ignore, default is an empty list.
     oversample_factor : int, optional
-        Factor by which the chunk map is oversampled. Default is 1.
+        Factor by which the chunk map is oversampled.
+        Default is 1.
     batch_size : int, optional
-        Number of files to process per worker task. Default is 10.
+        Number of files to process per worker task.
+        Default is 10.
+    reg_weight : float, optional
+        Weight for spatial regularization between adjacent detector chunks.
     Returns
     -------
     full_A : scipy.sparse.coo_matrix
@@ -945,16 +967,36 @@ def setup_lsqr(file_list, ref_shape,
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
-    #TODO : Validate chunk_map continuity?
     num_chunks = chunk_map.max().astype(np.int32) + 1 if chunk_map is not None else 0
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
     total_cols = num_sky + num_chunks * num_frames
 
-    # Explicitly gather the common configuration for the workers
+    # --- djacency Pre-computation ---
+    adj_info = None
+    if reg_weight > 0 and chunk_map is not None:
+        print("Pre-computing adjacency matrix...")
+        # Horizontal neighbors
+        h_diff = chunk_map[:, :-1] != chunk_map[:, 1:]
+        h_idx_i = chunk_map[:, :-1][h_diff]
+        h_idx_j = chunk_map[:, 1:][h_diff]
+        
+        # Vertical neighbors
+        v_diff = chunk_map[:-1, :] != chunk_map[1:, :]
+        v_idx_i = chunk_map[:-1, :][v_diff]
+        v_idx_j = chunk_map[1:, :][v_diff]
+        
+        # Combine and remove duplicates
+        all_i = np.concatenate([h_idx_i, v_idx_i])
+        all_j = np.concatenate([h_idx_j, v_idx_j])
+        
+        # Ensure i < j to avoid double counting and self-loops
+        mask = all_i < all_j
+        unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
+        adj_info = (unique_pairs[:, 0], unique_pairs[:, 1])
+
     common_params = {
-        # Arguments for _prep_subframe
         'chunk_map': chunk_map,
         'det_valid_mask': det_valid_mask,
         'apply_mask': apply_mask,
@@ -962,39 +1004,28 @@ def setup_lsqr(file_list, ref_shape,
         'ignore_list': ignore_list,
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
-        
-        # Arguments for _prep_lsqr logic
         'outlier_thresh': outlier_thresh,
         'num_chunks': num_chunks,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
+        'reg_weight': reg_weight,
+        'adj_info': adj_info # Pass the pre-computed neighbor pairs to workers
     }
 
-    # 1. Create all individual task definitions
     all_individual_tasks = []
     for index, reproj_file in enumerate(file_list):
-        task_params = {
-            'index': index,
-            'reproj_file': reproj_file,
-        }
-        # Combine the dynamic task params with the static common params
+        task_params = {'index': index, 'reproj_file': reproj_file}
         task_params.update(common_params)
         all_individual_tasks.append(task_params)
 
-    # 2. Group tasks into batches
     batched_tasks = []
     for i in range(0, len(all_individual_tasks), batch_size):
-        batch = {
-            'sub_tasks': all_individual_tasks[i : i + batch_size]
-        }
+        batch = {'sub_tasks': all_individual_tasks[i : i + batch_size]}
         batched_tasks.append(batch)
 
-    print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches (Batch Size: {batch_size})...")
+    print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
-    all_rows = []
-    all_cols = []
-    all_data = []
-    all_b = []
+    all_rows, all_cols, all_data, all_b = [], [], [], []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
@@ -1002,12 +1033,9 @@ def setup_lsqr(file_list, ref_shape,
         total_rows = 0
         for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
             result = future.result()
-            
-            if result is None:
-                continue
+            if result is None: continue
                 
             b_rows, b_cols, b_data, b_b, b_num_rows = result
-            
             all_rows.append(b_rows + total_rows)
             all_cols.append(b_cols)
             all_data.append(b_data)
