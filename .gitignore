@@ -2,3 +2,5 @@ outputs/
 figures/
 test_dir/
 cache/
+.ipynb_checkpoints/
+__pycache__/
