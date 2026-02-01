@@ -24,7 +24,7 @@ DETECTOR = 4
 OVERSAMPLE_FACTOR = 2
 NUM_SUBCHANNELS = 10
 NUM_CHANNELS = 34
-FILE_SUFFIX = f''
+FILE_SUFFIX = f'_unnormoffsets_noweight'
 FILE_PREFIX = f'_34channels'
 
 config = {}
@@ -33,7 +33,7 @@ config['run_name'] = f'nep_det{DETECTOR}_6p2arcsec'
 config['resolution_arcsec'] = 6.2
 
 # chs = [[15], [16]]
-chs = [[i] for i in range(26, 28)] # 15-22, 22-28, 28-35
+chs = [[i] for i in range(28, 35)] # 15-22, 22-28, 28-35
 
 det_BC, det_BW = load_calibration(band=DETECTOR, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
 chunk_map, lvf_params = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
@@ -46,18 +46,16 @@ for ch in chs:
     t0 = time.time()
     chunk_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS)
 
-    chunk_valid_mask_1subpad = chunk_valid_mask.copy()
-    where_valid = np.where(chunk_valid_mask_1subpad)
-    chunk_valid_mask_1subpad[np.min(where_valid)-1:np.max(where_valid)+2] = 1
+    chunk_valid_mask_padded = make_fiducial_chunk_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, padding=1)
     # Erode back to original
     det_valid_mask = chunk_valid_mask[chunk_map]
-    det_valid_mask_1subpad = chunk_valid_mask_1subpad[chunk_map]
+    det_valid_mask_padded = chunk_valid_mask_padded[chunk_map]
     cc = PipelineWrapper.Calibrator(config)
     cc.setup_lsqr(
         apply_mask=True, 
-        apply_weight=True, 
+        apply_weight=False, 
         chunk_map=chunk_map, 
-        det_valid_mask=det_valid_mask_1subpad, 
+        det_valid_mask=det_valid_mask_padded, 
         max_workers=40, 
         outlier_thresh=10.0,
         ignore_list=[],
@@ -80,7 +78,7 @@ for ch in chs:
     cache_dir = '/home/thomasli/spherex/selfcal/cache/' + f'cache{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}/'
     maps = mm.make_mosaic(
         apply_mask=True, 
-        apply_weight=True, 
+        apply_weight=False, 
         chunk_map=chunk_map, 
         det_valid_mask=det_valid_mask, 
         max_workers=40,
@@ -94,7 +92,8 @@ for ch in chs:
         coadd_batch_size=100,
         cache_dir=cache_dir,
         cache_intermediate=True,
-        det_aux=None
+        det_aux=None,
+        normalize_offset=False,
     )
 
     wav_mean, wav_std = wav_coadd(det_BC, det_BW, mean_map=maps['mean_map']['data'], std_map=maps['std_map']['data'], 
