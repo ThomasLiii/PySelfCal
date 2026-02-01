@@ -16,7 +16,7 @@ from reproject import reproject_interp
 from reproject import reproject_exact
 from reproject import reproject_adaptive
 
-from scipy.sparse import coo_matrix, vstack
+from scipy.sparse import coo_matrix, vstack, diags
 from scipy.sparse.linalg import lsqr
 import sys 
 import gc 
@@ -1028,7 +1028,7 @@ def setup_lsqr(file_list, ref_shape,
     return full_A, full_b
 
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 
-                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100):
+                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True):
     """Applies the LSQR algorithm to solve for the sky and detector offsets.
     Parameters
     ----------
@@ -1064,9 +1064,36 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
     num_sky = ref_h * ref_w
     assert (A.shape[1]-num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
+
+    if precondition:
+        print("Applying column-norm preconditioning...")
+        # diag(A.T @ A) corresponds to the sum of squares of column entries
+        # This is more memory efficient than calculating A.T @ A directly
+        col_norms = np.sqrt(np.array(A.power(2).sum(axis=0)).flatten())
+        col_norms[col_norms == 0] = 1.0 # Avoid division by zero for unobserved pixels
+        
+        M_inv = col_norms # Preconditioner scaling factors
+        M = 1.0 / M_inv
+        
+        # Scale A columns: A_pre = A @ diag(M)
+        # In sparse format, this scales each entry A[i, j] by M[j]
+        A_solver = A.dot(diags(M))
+        
+        # Scale the initial guess if provided: x0_pre = x0 / M = x0 * M_inv
+        x0_solver = x0 * M_inv if x0 is not None else None
+    else:
+        A_solver = A
+        x0_solver = x0
+
     print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
-    result = lsqr(A, b, x0=x0, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
-    x = result[0]
+    result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+    
+    x_solver = result[0]
+
+    # Convert the preconditioned solution back to original units: x = x_pre * M
+    x = x_solver * M if precondition else x_solver
 
     S = x[:num_sky].reshape(ref_shape)
     O = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)

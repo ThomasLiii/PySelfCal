@@ -125,12 +125,12 @@ class Calibrator(Reprojector):
         end_time = time.time()
         print(f"LSQR setup completed in {end_time - start_time:.2f} seconds.")
 
-    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300):
+    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True):
         start_time = time.time()
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_frames=len(self.reproj_list),
-                                                    x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                                                    x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition)
         end_time = time.time()
         print(f"LSQR solved in {end_time - start_time:.2f} seconds.")
     
