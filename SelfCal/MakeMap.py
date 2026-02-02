@@ -916,7 +916,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
-               reg_weight=0.0):
+               reg_weight=0.0, mean_offsets=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -949,6 +949,9 @@ def setup_lsqr(file_list, ref_shape,
         Default is 10.
     reg_weight : float, optional
         Weight for spatial regularization between adjacent detector chunks.
+    mean_offsets : list or np.ndarray, optional
+        A list of target mean offset values for each frame (length must equal num_frames).
+        This forces the average of a frame's chunk offsets to equal the given value.
     Returns
     -------
     full_A : scipy.sparse.coo_matrix
@@ -1053,6 +1056,34 @@ def setup_lsqr(file_list, ref_shape,
 
     full_A = coo_matrix((data, (rows, cols)), shape=(total_rows, total_cols))
     full_b = b
+
+    # --- ADD PER-FRAME TARGET MEAN CONSTRAINT ---
+    if mean_offsets is not None:
+        print(f"Applying target mean offset constraints for {num_frames} frames...")
+        mean_offsets_arr = np.asarray(mean_offsets)
+        assert mean_offsets_arr.size == num_frames, f"mean_offsets size ({mean_offsets_arr.size}) must match num_frames ({num_frames})"
+        
+        # Use a high weight to ensure the constraint is strictly enforced
+        constraint_weight = 10.0 
+        
+        # Each constraint is: weight * sum(offsets_for_frame_i) = weight * num_chunks * target_mean_i
+        constr_rows = np.repeat(np.arange(num_frames), num_chunks)
+        constr_cols = []
+        for i in range(num_frames):
+            offset_start = num_sky + (i * num_chunks)
+            constr_cols.extend(np.arange(offset_start, offset_start + num_chunks))
+        
+        constr_data = np.ones(len(constr_cols), dtype=np.float32) * constraint_weight
+        
+        A_constr = coo_matrix((constr_data, (constr_rows, constr_cols)), 
+                              shape=(num_frames, total_cols))
+        
+        # Equation target: weight * num_chunks * mean_value
+        b_constr = mean_offsets_arr.flatten() * num_chunks * constraint_weight
+        
+        full_A = vstack([full_A, A_constr])
+        full_b = np.concatenate([full_b, b_constr])
+
     return full_A, full_b
 
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 

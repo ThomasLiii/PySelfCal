@@ -116,12 +116,12 @@ class Calibrator(Reprojector):
         self.B = None
 
     def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
-                   outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10, reg_weight=0.0):
+                   outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10, reg_weight=0.0, mean_offsets=None):
         start_time = time.time()
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
-               batch_size=batch_size, reg_weight=reg_weight)
+               batch_size=batch_size, reg_weight=reg_weight, mean_offsets=mean_offsets)
         end_time = time.time()
         print(f"LSQR setup completed in {end_time - start_time:.2f} seconds.")
 
