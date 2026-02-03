@@ -1089,66 +1089,48 @@ def setup_lsqr(file_list, ref_shape,
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True):
     """Applies the LSQR algorithm to solve for the sky and detector offsets.
-    Parameters
-    ----------
-    A : scipy.sparse.coo_matrix
-        The sparse matrix A in COO format, shape is (num_equations, num_unknowns)
-    b : np.ndarray
-        The vector b, shape is (num_equations,)
-    ref_shape : tuple, list
-        Shape of the reference frame (height, width)
-    x0 : np.ndarray, optional
-        Initial guess for the solution, shape is (num_unknowns,). If None, will use a zero vector.
-    atol : float, optional
-        Absolute tolerance for convergence, default is 1e-05.
-    btol : float, optional
-        Relative tolerance for convergence, default is 1e-05. 
-    damp : float, optional
-        Damping factor for the LSQR algorithm, default is 1e-2.
-    iter_lim : int, optional
-        Maximum number of iterations for the LSQR algorithm, default is 100.
-
-    Returns
-    -------
-    O : np.ndarray
-        The detector offsets, shape is (num_exp, num_det, num_chunks)
-    S : np.ndarray
-        The sky offsets, shape is (height, width)   
+    
+    Optimized to use direct numpy array manipulation for preconditioning 
+    instead of sparse matrix algebra.
     """
     assert isinstance(A, coo_matrix), "A must be a scipy.sparse.coo_matrix"
     assert isinstance(b, np.ndarray), "b must be a numpy array"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
     assert isinstance(num_frames, int) and num_frames > 0, "num_frames must be a positive integer"
+    
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     assert (A.shape[1]-num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
-    ref_h, ref_w = ref_shape
-    num_sky = ref_h * ref_w
-
     if precondition:
         print("Applying column-norm preconditioning...")
-        # diag(A.T @ A) corresponds to the sum of squares of column entries
-        # This is more memory efficient than calculating A.T @ A directly
-        col_norms = np.sqrt(np.array(A.power(2).sum(axis=0)).flatten())
-        col_norms[col_norms == 0] = 1.0 # Avoid division by zero for unobserved pixels
+        # A.col contains the column index for every non-zero entry.
+        # weights=A.data**2 sums the squares of the values belonging to each column.
+        col_sq_norm = np.bincount(A.col, weights=A.data**2, minlength=A.shape[1])
+        col_norms = np.sqrt(col_sq_norm)
+        
+        # Handle unobserved pixels (norm 0) to avoid division by zero
+        col_norms[col_norms == 0] = 1.0 
         
         M_inv = col_norms # Preconditioner scaling factors
         M = 1.0 / M_inv
         
-        # Scale A columns: A_pre = A @ diag(M)
-        # In sparse format, this scales each entry A[i, j] by M[j]
-        A_solver = A.dot(diags(M))
+        # M[A.col] maps the column scaler to every non-zero element in that column.
+        scaled_data = A.data * M[A.col]
         
-        # Scale the initial guess if provided: x0_pre = x0 / M = x0 * M_inv
+        # Create new COO matrix reusing the structure of A
+        A_solver = coo_matrix((scaled_data, (A.row, A.col)), shape=A.shape)
+        
+        # Scale the initial guess
         x0_solver = x0 * M_inv if x0 is not None else None
     else:
         A_solver = A
         x0_solver = x0
 
     print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
-    result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     
+    # Run LSQR
+    result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     x_solver = result[0]
 
     # Convert the preconditioned solution back to original units: x = x_pre * M
