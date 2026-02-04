@@ -326,7 +326,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
                    for_lsqr=False, oversample_factor=1, 
                    # These arguments are accepted for compatibility/internal logic 
                    # but might not be used depending on logic path
-                   det_aux=None):
+                   det_aux=None, post_process_func=None):
     """
     Prepares data from a single file for co-addition or lsqr.
     
@@ -380,6 +380,9 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     if for_lsqr:
         chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
+    if post_process_func is not None:
+        sub_data, sub_weight = post_process_func(sub_data, sub_weight)
+    
     return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
 
 def _coadd_batch_worker(params):
@@ -786,8 +789,8 @@ def _prep_lsqr(task_params):
     num_frames = task_params['num_frames']
     num_chunks = task_params['num_chunks']
     outlier_thresh = task_params['outlier_thresh']
-    reg_weight = task_params.get('reg_weight', 0.0)
-    adj_info = task_params.get('adj_info', None) # Pre-computed adjacency (row, col) pairs
+    reg_weight = task_params['reg_weight']
+    adj_info = task_params['adj_info'] # Pre-computed adjacency (row, col) pairs
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
 
@@ -805,7 +808,8 @@ def _prep_lsqr(task_params):
             ignore_list=task_params['ignore_list'],
             det_valid_mask=task_params['det_valid_mask'],
             oversample_factor=task_params['oversample_factor'],
-            valid_threshold=task_params['valid_threshold']
+            valid_threshold=task_params['valid_threshold'],
+            post_process_func=task_params['postprocess_func']
         )
 
         sub_h, sub_w = sub_data.shape
@@ -916,7 +920,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
-               reg_weight=0.0, mean_offsets=None):
+               reg_weight=0.0, mean_offsets=None, postprocess_func=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -965,10 +969,16 @@ def setup_lsqr(file_list, ref_shape,
     assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
-    assert isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0, "outlier_thresh must be a positive number"
+    assert isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0), "outlier_thresh must be a positive number or None"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
+    if postprocess_func is not None:
+        assert callable(postprocess_func), "postprocess_func must be a callable function"
+        test_data = np.random.rand(100, 100).astype(np.float32)
+        assert test_data.shape == postprocess_func(test_data, np.ones_like(test_data))[0].shape, \
+            "postprocess_func must return data and weight arrays of the same shape as input"
+
 
     num_chunks = chunk_map.max().astype(np.int32) + 1 if chunk_map is not None else 0
     ref_h, ref_w = ref_shape
@@ -1012,7 +1022,8 @@ def setup_lsqr(file_list, ref_shape,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
         'reg_weight': reg_weight,
-        'adj_info': adj_info # Pass the pre-computed neighbor pairs to workers
+        'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
+        'postprocess_func': postprocess_func,
     }
 
     all_individual_tasks = []
