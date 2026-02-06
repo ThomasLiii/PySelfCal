@@ -67,9 +67,9 @@ def make_weight(frame, sigma=1.4):
     # inverse = 1/frame
     # inverse[check_invalid(inverse)] = 0
     # weight = gaussian_filter(inverse, sigma=sigma)
-    filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
-    convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
-    weight = 1.0 / (np.abs(frame))# + np.abs(convolved_frame * 4) + 0.1) ** 2
+    # filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
+    # convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
+    weight = 1.0 / (np.abs(frame**2))# + np.abs(convolved_frame * 4) + 0.1) ** 2
     # abs_frame = np.abs(filled_frame)
     # filling_value = np.nanpercentile(abs_frame[abs_frame>0], 1)
     # abs_frame[abs_frame < filling_value] = filling_value
