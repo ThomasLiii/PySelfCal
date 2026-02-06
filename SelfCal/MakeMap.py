@@ -310,12 +310,19 @@ def load_reproj_file(file_path, fields):
                 else:
                     # Fallback for backward compatibility or missing keys
                     data[key] = None
-
+        
+        # Parse indices from filename
+        det_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-1])
+        exp_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-3])
+        data['det_idx'] = det_idx
+        data['exp_idx'] = exp_idx
     except Exception as e:
         print(f"Error loading {file_path}: {e}. Will use placeholders.")
         is_file_missing = True
         for key in fields:
             data[key] = None
+        det_idx = None
+        exp_idx = None
             
     data['_is_missing_'] = is_file_missing
     return data
@@ -326,7 +333,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
                    for_lsqr=False, oversample_factor=1, 
                    # These arguments are accepted for compatibility/internal logic 
                    # but might not be used depending on logic path
-                   det_aux=None, post_process_func=None):
+                   det_aux=None, postprocess_func=None, preprocess_func=None):
     """
     Prepares data from a single file for co-addition or lsqr.
     
@@ -343,7 +350,12 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     ref_coords = result['ref_coords']
     sub_fullmask = np.ones_like(sub_data, dtype=bool)
     sub_mapping = result['sub_mapping']
+    exp_idx = result['exp_idx']
+    det_idx = result['det_idx']
     
+    if preprocess_func is not None:
+        sub_data = preprocess_func(locals())
+
     if 'sub_bitmask' in result:
         # invert=True: 1 = Good pixel, 0 = Bad pixel
         sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
@@ -380,8 +392,8 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     if for_lsqr:
         chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
 
-    if post_process_func is not None:
-        sub_data, sub_weight = post_process_func(sub_data, sub_weight)
+    if postprocess_func is not None:
+        sub_data = postprocess_func(locals())
     
     return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
 
@@ -445,6 +457,8 @@ def _coadd_batch_worker(params):
             'oversample_factor': params['oversample_factor'],
             'valid_threshold': params['valid_threshold'],
             'for_lsqr': False,
+            'preprocess_func': params['preprocess_func'],
+            'postprocess_func': params['postprocess_func'],
         }
 
     # 4. Processing Loop
@@ -642,7 +656,8 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       apply_mask=True, chunk_map=None, det_valid_mask=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
-                      cache_dir='cache/', use_cached=False, det_aux=None):
+                      cache_dir='cache/', use_cached=False, det_aux=None,
+                      preprocess_func=None, postprocess_func=None):
     """
     This function serves as a unified interface for creating mean maps, standard
     deviation maps, and sigma-clipped mean maps in parallel.
@@ -749,6 +764,8 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
         'sigma': sigma,
+        'preprocess_func': preprocess_func,
+        'postprocess_func': postprocess_func,
         
         'cache_dir': cache_dir,
         'use_cached': use_cached
@@ -809,7 +826,8 @@ def _prep_lsqr(task_params):
             det_valid_mask=task_params['det_valid_mask'],
             oversample_factor=task_params['oversample_factor'],
             valid_threshold=task_params['valid_threshold'],
-            post_process_func=task_params['postprocess_func']
+            postprocess_func=task_params['postprocess_func'],
+            preprocess_func=task_params['preprocess_func']
         )
 
         sub_h, sub_w = sub_data.shape
@@ -920,7 +938,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
-               reg_weight=0.0, mean_offsets=None, postprocess_func=None):
+               reg_weight=0.0, mean_offsets=None, postprocess_func=None, preprocess_func=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -973,12 +991,17 @@ def setup_lsqr(file_list, ref_shape,
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
-    if postprocess_func is not None:
-        assert callable(postprocess_func), "postprocess_func must be a callable function"
-        test_data = np.random.rand(100, 100).astype(np.float32)
-        assert test_data.shape == postprocess_func(test_data, np.ones_like(test_data))[0].shape, \
-            "postprocess_func must return data and weight arrays of the same shape as input"
+    # if postprocess_func is not None:
+    #     assert callable(postprocess_func), "postprocess_func must be a callable function"
+    #     test_data = np.random.rand(100, 100).astype(np.float32)
+    #     assert test_data.shape == postprocess_func(test_data, np.ones_like(test_data))[0].shape, \
+    #         "postprocess_func must return data and weight arrays of the same shape as input"
 
+    # if preprocess_func is not None:
+    #     assert callable(preprocess_func), "preprocess_func must be a callable function"
+    #     test_data = np.random.rand(100, 100).astype(np.float32)
+    #     assert test_data.shape == preprocess_func(test_data, np.ones_like(test_data))[0].shape, \
+    #         "preprocess_func must return data and weight arrays of the same shape as input"
 
     num_chunks = chunk_map.max().astype(np.int32) + 1 if chunk_map is not None else 0
     ref_h, ref_w = ref_shape
@@ -1024,6 +1047,7 @@ def setup_lsqr(file_list, ref_shape,
         'reg_weight': reg_weight,
         'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
         'postprocess_func': postprocess_func,
+        'preprocess_func': preprocess_func,
     }
 
     all_individual_tasks = []
