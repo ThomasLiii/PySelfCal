@@ -938,7 +938,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
-               reg_weight=0.0, mean_offsets=None, postprocess_func=None, preprocess_func=None):
+               reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -971,6 +971,8 @@ def setup_lsqr(file_list, ref_shape,
         Default is 10.
     reg_weight : float, optional
         Weight for spatial regularization between adjacent detector chunks.
+    adj_info : tuple or None, optional
+        Precomputed adjacency information for regularization.
     mean_offsets : list or np.ndarray, optional
         A list of target mean offset values for each frame (length must equal num_frames).
         This forces the average of a frame's chunk offsets to equal the given value.
@@ -1008,29 +1010,6 @@ def setup_lsqr(file_list, ref_shape,
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
     total_cols = num_sky + num_chunks * num_frames
-
-    # --- djacency Pre-computation ---
-    adj_info = None
-    if reg_weight > 0 and chunk_map is not None:
-        print("Pre-computing adjacency matrix...")
-        # Horizontal neighbors
-        h_diff = chunk_map[:, :-1] != chunk_map[:, 1:]
-        h_idx_i = chunk_map[:, :-1][h_diff]
-        h_idx_j = chunk_map[:, 1:][h_diff]
-        
-        # Vertical neighbors
-        v_diff = chunk_map[:-1, :] != chunk_map[1:, :]
-        v_idx_i = chunk_map[:-1, :][v_diff]
-        v_idx_j = chunk_map[1:, :][v_diff]
-        
-        # Combine and remove duplicates
-        all_i = np.concatenate([h_idx_i, v_idx_i])
-        all_j = np.concatenate([h_idx_j, v_idx_j])
-        
-        # Ensure i < j to avoid double counting and self-loops
-        mask = all_i < all_j
-        unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
-        adj_info = (unique_pairs[:, 0], unique_pairs[:, 1])
 
     common_params = {
         'chunk_map': chunk_map,
@@ -1171,6 +1150,17 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
     # Convert the preconditioned solution back to original units: x = x_pre * M
     x = x_solver * M if precondition else x_solver
 
-    S = x[:num_sky].reshape(ref_shape)
-    O = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
+    S, O = parse_x(x, ref_shape, num_frames)
     return O, S
+
+def parse_x(x, ref_shape, num_frames):
+    """Utility function to parse the LSQR solution vector x into sky and offset components."""
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
+    O = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
+    S = x[:num_sky].reshape(ref_shape)
+    return S, O
+
+def endocde_x(S, O):
+    """Utility function to encode the sky and offset components back into a single vector x."""
+    return np.concatenate([S.flatten(), O.flatten()])
