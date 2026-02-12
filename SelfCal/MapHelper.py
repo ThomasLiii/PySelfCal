@@ -466,3 +466,66 @@ def upscale2d(array, upscale_factor):
     result = (1 - dr) * wa + dr * wb
     
     return result
+
+def compute_chunk_adjacency(chunk_map, reg_axis='both'):
+    """
+    Computes the adjacency list for a given chunk map.
+    
+    Parameters
+    ----------
+    chunk_map : np.ndarray
+        2D array where each pixel value is the chunk ID. -1 indicates ignored pixels.
+    reg_axis : str, optional
+        'both': Horizontal and Vertical neighbors.
+        'x': Horizontal only.
+        'y': Vertical only.
+        
+    Returns
+    -------
+    tuple or None
+        (neighbors_i, neighbors_j) arrays of shape (N_pairs,), or None if no pairs found.
+    """
+    if chunk_map is None:
+        return None
+
+    print(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
+    
+    all_i_list = []
+    all_j_list = []
+
+    # 1. Horizontal neighbors (x-axis)
+    if reg_axis in ['both', 'x', 'horizontal']:
+        # Compare [:, :-1] with [:, 1:]
+        h_diff = (chunk_map[:, :-1] != -1) & \
+                 (chunk_map[:, 1:] != -1) & \
+                 (chunk_map[:, :-1] != chunk_map[:, 1:])
+                 
+        h_idx_i = chunk_map[:, :-1][h_diff]
+        h_idx_j = chunk_map[:, 1:][h_diff]
+        all_i_list.append(h_idx_i)
+        all_j_list.append(h_idx_j)
+    
+    # 2. Vertical neighbors (y-axis)
+    if reg_axis in ['both', 'y', 'vertical']:
+        # Compare [:-1, :] with [1:, :]
+        v_diff = (chunk_map[:-1, :] != -1) & \
+                 (chunk_map[1:, :] != -1) & \
+                 (chunk_map[:-1, :] != chunk_map[1:, :])
+                 
+        v_idx_i = chunk_map[:-1, :][v_diff]
+        v_idx_j = chunk_map[1:, :][v_diff]
+        all_i_list.append(v_idx_i)
+        all_j_list.append(v_idx_j)
+    
+    # Combine and remove duplicates
+    if all_i_list:
+        all_i = np.concatenate(all_i_list)
+        all_j = np.concatenate(all_j_list)
+        
+        # Ensure i < j to avoid double counting
+        mask = all_i < all_j
+        unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
+        return (unique_pairs[:, 0], unique_pairs[:, 1])
+    else:
+        print("Warning: No adjacency pairs found.")
+        return None
