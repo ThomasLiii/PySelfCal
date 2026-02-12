@@ -20,6 +20,7 @@ from scipy.sparse import coo_matrix, vstack, diags
 from scipy.sparse.linalg import lsqr
 import sys 
 import gc 
+import traceback
 from functools import partial
 
 from .MapHelper import bit_to_bool, bool_to_bit, make_weight, find_outliers, map_pixels, compute_chunk_contrib, compute_crop, \
@@ -843,7 +844,7 @@ def _prep_lsqr(task_params):
         valid_weight = sub_weight[valid_sub_coords]
         num_valid_pixels = valid_vals.shape[0]
 
-        if num_valid_pixels == 0 and reg_weight == 0:
+        if num_valid_pixels == 0:
             return np.array([]), np.array([]), np.array([]), np.array([]), 0
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
@@ -938,7 +939,8 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
-               reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None):
+               reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None,
+               weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
     ----------
@@ -1097,6 +1099,41 @@ def setup_lsqr(file_list, ref_shape,
         
         full_A = vstack([full_A, A_constr])
         full_b = np.concatenate([full_b, b_constr])
+
+    # --- COVERAGE-WEIGHTED DAMPING ---
+    if weighted_damping and damp_weight > 0:
+        print("Applying Coverage-Weighted Damping...")
+        
+        # 1. Calculate Coverage Map (Hits per Sky Pixel)
+        # Identify indices in the 'Sky' section (cols < num_sky)
+        sky_cols_only = full_A.col[full_A.col < num_sky]
+        
+        # Count occurrences (Coverage N)
+        coverage_map = np.bincount(sky_cols_only, minlength=num_sky)
+        
+        # We only apply damping to observed pixels
+        valid_pixel_indices = np.where(coverage_map > 0)[0]
+        
+        if len(valid_pixel_indices) > 0:
+            # 2. Calculate Damping Factors
+            # We want the penalty term to be: damp_weight * N * S^2
+            # In the matrix A (which is squared by LSQR), we put sqrt(damp_weight * N)
+            damp_values = np.sqrt(damp_weight * coverage_map[valid_pixel_indices])
+            
+            # 3. Build the Damping Matrix
+            # Each row corresponds to one sky pixel constraint
+            num_damp_constraints = len(valid_pixel_indices)
+            damp_rows = np.arange(num_damp_constraints)
+            damp_cols = valid_pixel_indices
+            
+            A_damp = coo_matrix((damp_values, (damp_rows, damp_cols)), 
+                                shape=(num_damp_constraints, total_cols))
+            b_damp = np.zeros(num_damp_constraints)
+            
+            full_A = vstack([full_A, A_damp])
+            full_b = np.concatenate([full_b, b_damp])
+
+    return full_A, full_b
 
     return full_A, full_b
 
