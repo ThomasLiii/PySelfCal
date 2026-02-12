@@ -1,0 +1,65 @@
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_6p2arcsec/ref.fits
+Processing 4405 items in 221 batches (Batch Size: 20)...
+LSQR setup completed in 753.14 seconds.
+Warning: NaN values found in mean pixel value computation, filling with 0.
+Solving least squares for 82784178 unknowns with 197921363 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 197921363 rows and 82784178 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      100
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.235e+05  1.235e+05    1.0e+00  1.6e+01
+     1  0.00000e+00   2.008e+04  2.008e+04    1.4e+00  1.6e-01   2.1e+06  1.0e+00
+     2  0.00000e+00   6.074e+03  6.074e+03    4.3e-01  3.6e-02   2.1e+06  6.1e+00
+     3  0.00000e+00   3.158e+03  3.158e+03    2.2e-01  8.9e-03   2.1e+06  2.4e+01
+     4  0.00000e+00   2.026e+03  2.026e+03    1.4e-01  2.4e-03   2.1e+06  9.0e+01
+     5  0.00000e+00   2.022e+03  2.022e+03    1.4e-01  6.1e-02   2.1e+06  9.4e+01
+     6  0.00000e+00   1.947e+03  1.947e+03    1.4e-01  1.5e-03   2.9e+06  2.1e+02
+     7  0.00000e+00   1.759e+03  1.759e+03    1.2e-01  6.3e-04   2.9e+06  4.4e+02
+     8  0.00000e+00   1.754e+03  1.754e+03    1.2e-01  6.5e-03   2.9e+06  4.5e+02
+     9  0.00000e+00   1.748e+03  1.748e+03    1.2e-01  6.7e-04   2.9e+06  4.8e+02
+    10  0.00000e+00   1.748e+03  1.748e+03    1.2e-01  9.7e-04   3.1e+06  5.2e+02
+    90  0.00000e+00   1.391e+03  1.391e+03    9.9e-02  2.8e-05   9.5e+06  9.6e+04
+    91  0.00000e+00   1.390e+03  1.390e+03    9.9e-02  1.1e-03   9.5e+06  9.6e+04
+    92  0.00000e+00   1.387e+03  1.387e+03    9.9e-02  2.5e-05   9.5e+06  9.7e+04
+    93  0.00000e+00   1.387e+03  1.387e+03    9.9e-02  1.6e-05   9.7e+06  9.9e+04
+    94  0.00000e+00   1.387e+03  1.387e+03    9.9e-02  1.4e-05   9.7e+06  1.0e+05
+    95  0.00000e+00   1.379e+03  1.379e+03    9.8e-02  3.0e-05   9.7e+06  1.0e+05
+    96  0.00000e+00   1.378e+03  1.378e+03    9.8e-02  1.1e-03   9.7e+06  1.1e+05
+    97  0.00000e+00   1.378e+03  1.378e+03    9.8e-02  6.5e-05   9.9e+06  1.1e+05
+    98  0.00000e+00   1.378e+03  1.378e+03    9.8e-02  1.1e-04   9.9e+06  1.1e+05
+    99  0.00000e+00   1.377e+03  1.377e+03    9.8e-02  1.1e-05   9.9e+06  1.1e+05
+   100  0.00000e+00   1.376e+03  1.376e+03    9.8e-02  2.2e-05   9.9e+06  1.1e+05
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.4e+03   anorm = 9.9e+06   arnorm = 3.0e+05
+itn   =     100   r2norm = 1.4e+03   acond = 1.1e+05   xnorm  = 7.3e+00
+ 
+LSQR solved in 1486.65 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_6p2arcsec/calibration/cal_34channels_D4_3p4um_subchannel249-260.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det4_6p2arcsec/calibration/cal_34channels_D4_3p4um_subchannel249-260.h5
+Caching intermediate computations...
+Processing 4405 files in 221 batches...
+Cache computation finished in 1078.54 seconds.
+Computing mean map...
+Processing 4405 files in 45 batches...
+Mean map computation finished in 200.22 seconds.
+Computing std map...
+Processing 4405 files in 45 batches...
+Std map computation finished in 99.90 seconds.
+Computing sigma-clipped mean map...
+Processing 4405 files in 45 batches...
+Sigma-clipped mean map computation finished in 116.59 seconds.
+Processing 4405 files in 111 batches with 40 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_6p2arcsec/mosaic/mosaic_34channels_D4_3p4um_subchannel249-260.fits
+Directory '/home/thomasli/spherex/selfcal/cache/cache_34channels_D4_3p4um_subchannel249-260/' and all its contents have been removed.
+Finished in 4590.24 seconds

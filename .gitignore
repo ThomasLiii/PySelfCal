@@ -1,4 +1,4 @@
-outputs/
+analysis/
 figures/
 test_dir/
 cache/
@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+SelfCal/.ipynb_checkpoints
+SelfCal/.ipynb_checkpoints

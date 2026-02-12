@@ -1,0 +1,66 @@
+Fitting LVF parameters...
+Making chunk map...
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/calibration/cal_det4_ch10.h5
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Mean map computed in 1975.32 seconds.
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Std map computed in 2011.04 seconds.
+Processing 4405 files in 221 batches (Batch Size: 20)...
+Sigma-clipped mean map computed in 2008.62 seconds.
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/mosaic/mosaic_det4_ch10_narrow.fits
+Filename: selfcal_scripts/test_mosaicker.py
+
+Line #    Mem usage    Increment  Occurrences   Line Contents
+=============================================================
+    73  204.000 MiB  204.000 MiB           1   @profile
+    74                                         def main():
+    75                                             """Main mosaicking workflow."""
+    76                                             # Configuration
+    77  204.000 MiB    0.000 MiB           1       detector = 4
+    78  204.000 MiB    0.000 MiB           1       channels = [10]
+    79                                             
+    80                                             # Setup
+    81  204.000 MiB    0.000 MiB           1       config = setup_config(detector)
+    82  387.574 MiB  183.574 MiB           1       det_BC, det_BW, chunk_map, lvf_params = load_detector_data(detector)
+    83  895.562 MiB  507.988 MiB           1       chunk_valid_mask, det_valid_mask = setup_masks(channels, chunk_map)
+    84                                             
+    85                                             # Initialize mosaicker
+    86  895.562 MiB    0.000 MiB           1       mm = PipelineWrapper.Mosaicker(config)
+    87                                             
+    88                                             # Trim reproj_list for testing (optional)
+    89                                             # mm.reproj_list = mm.reproj_list[0:1200]
+    90                                         
+    91                                             # Load calibration
+    92  895.562 MiB    0.000 MiB           1       cal_path = f'/mnt/md124/thomasli/selfcal/outputs/nep_det{detector}_3p1arcsec/calibration/cal_det{detector}_ch{channels[0]}.h5'
+    93 3410.367 MiB 2514.805 MiB           1       mm.load_calibration(cal_path=cal_path)
+    94                                             # mm.O = mm.O[0:1200, :]
+    95                                             
+    96                                             # Setup offset function
+    97 3410.367 MiB    0.000 MiB           2       partial_make_offset_map = partial(
+    98 3410.367 MiB    0.000 MiB           1           make_spherex_offset_map, 
+    99 3410.367 MiB    0.000 MiB           1           chunk_valid_mask=chunk_valid_mask, 
+   100 3410.367 MiB    0.000 MiB           1           lvf_params=lvf_params
+   101                                             )
+   102                                             
+   103                                             # Create mosaic
+   104 10365.496 MiB 6955.129 MiB           2       maps = mm.make_mosaic(
+   105 3410.367 MiB    0.000 MiB           1           apply_mask=True,
+   106 3410.367 MiB    0.000 MiB           1           apply_weight=True,
+   107 3410.367 MiB    0.000 MiB           1           chunk_map=chunk_map,
+   108 3410.367 MiB    0.000 MiB           1           det_valid_mask=det_valid_mask,
+   109 3410.367 MiB    0.000 MiB           1           max_workers=40,
+   110 3410.367 MiB    0.000 MiB           1           make_std_map=True,
+   111 3410.367 MiB    0.000 MiB           1           apply_sigma_clipping=True,
+   112 3410.367 MiB    0.000 MiB           1           sigma=1.0,
+   113 3410.367 MiB    0.000 MiB           1           ignore_list=[21],
+   114 3410.367 MiB    0.000 MiB           1           oversample_factor=4,
+   115 3410.367 MiB    0.000 MiB           1           det_offset_func=partial_make_offset_map,
+   116 3410.367 MiB    0.000 MiB           1           batch_size=20
+   117                                             )
+   118                                             
+   119                                             # Save results
+   120 10365.496 MiB    0.000 MiB           1       output_filename = f'mosaic_det{detector}_ch{"-".join(map(str, channels))}_narrow.fits'
+   121 10365.496 MiB    0.000 MiB           1       mm.save_mosaic(mos_file=output_filename, overwrite=True)
+
+

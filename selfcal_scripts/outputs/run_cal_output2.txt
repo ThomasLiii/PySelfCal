@@ -1,0 +1,61 @@
+Fitting LVF parameters...
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 0 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det1_6p2arcsec/ref.fits
+Processing 13454 items in 449 batches...
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 686 vertical strip boundaries.
+Fitting LVF parameters...
+Making chunk map...
+Making chunk map...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 686 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det1_6p2arcsec/ref.fits
+Processing 13281 items in 443 batches...
+LSQR setup completed in 2044.58 seconds.
+Solving least squares for 171733924 unknowns with 1276685567 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 1276685567 rows and 171733924 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =      100
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   5.389e+03  5.389e+03    1.0e+00  7.7e-03
+     1  0.00000e+00   1.033e+03  1.033e+03    1.9e-01  8.9e-01   4.2e+01  1.0e+00
+     2  0.00000e+00   4.264e+02  4.264e+02    7.9e-02  4.9e-01   5.9e+01  2.0e+00
+     3  0.00000e+00   2.940e+02  2.940e+02    5.5e-02  2.7e-01   7.3e+01  3.1e+00
+     4  0.00000e+00   2.527e+02  2.527e+02    4.7e-02  1.6e-01   8.5e+01  4.4e+00
+     5  0.00000e+00   2.358e+02  2.358e+02    4.4e-02  9.7e-02   9.5e+01  5.8e+00
+     6  0.00000e+00   2.279e+02  2.279e+02    4.2e-02  6.5e-02   1.0e+02  7.3e+00
+     7  0.00000e+00   2.234e+02  2.234e+02    4.1e-02  4.7e-02   1.1e+02  9.1e+00
+     8  0.00000e+00   2.205e+02  2.205e+02    4.1e-02  3.7e-02   1.2e+02  1.1e+01
+     9  0.00000e+00   2.184e+02  2.184e+02    4.1e-02  3.1e-02   1.3e+02  1.3e+01
+    10  0.00000e+00   2.167e+02  2.167e+02    4.0e-02  2.6e-02   1.3e+02  1.6e+01
+    90  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  4.3e-04   3.9e+02  4.4e+02
+    91  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  4.3e-04   3.9e+02  4.5e+02
+    92  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  4.3e-04   3.9e+02  4.5e+02
+    93  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  4.2e-04   4.0e+02  4.6e+02
+    94  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  4.1e-04   4.0e+02  4.7e+02
+    95  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.9e-04   4.0e+02  4.7e+02
+    96  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.7e-04   4.0e+02  4.8e+02
+    97  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.7e-04   4.0e+02  4.9e+02
+    98  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.7e-04   4.1e+02  4.9e+02
+    99  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.5e-04   4.1e+02  5.0e+02
+   100  0.00000e+00   2.062e+02  2.062e+02    3.8e-02  3.4e-04   4.1e+02  5.1e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.1e+02   anorm = 4.1e+02   arnorm = 2.9e+01
+itn   =     100   r2norm = 2.1e+02   acond = 5.1e+02   xnorm  = 1.4e+02
+ 
+LSQR solved in 9473.35 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det1_6p2arcsec/calibration/cal_D1_Ch10_17channels_5verticalbands.h5
