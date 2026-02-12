@@ -103,8 +103,9 @@ class Reprojector:
         self.exp_idx_list = []
         for file in tqdm(self.reproj_list):
             file_name = os.path.basename(file)
-            self.det_idx_list.append(int(file_name[file_name.find('det_')+4:file_name.find('det_')+6]))
-            self.exp_idx_list.append(int(file_name[file_name.find('exp_')+4:file_name.find('exp_')+8]))
+            exp_idx, det_idx = int(file_name.split('_')[1]), int(file_name.split('_')[3].strip('.h5'))
+            self.det_idx_list.append(det_idx)
+            self.exp_idx_list.append(exp_idx)
         
 class Calibrator(Reprojector):
     def __init__(self, config, reproj_dir=None):
