@@ -246,7 +246,7 @@ def save_lvf_params(lvf_params, output_dir='/home/thomasli/spherex/selfcal/selfc
     np.save(output_path, lvf_params)
     print(f"Saved LVF parameters to {output_path}")
 
-def compute_vertical_strip_adjacency(chunk_map, num_vertical_bands):
+def compute_vertical_strip_adjacency(chunk_map, num_columns):
     """
     Generates adjacency pairs ONLY for vertical strip transitions, 
     ignoring spectral arc transitions.
@@ -255,8 +255,8 @@ def compute_vertical_strip_adjacency(chunk_map, num_vertical_bands):
     ----------
     chunk_map : np.ndarray
         The full ID map (Subchannel * N + Band)
-    num_vertical_bands : int
-        The NUM_VERTICAL_BANDS constant used to build the map.
+    num_columns : int
+        The NUM_COLUMNS constant used to build the map.
     """
     print("Computing Vertical Strip Adjacency (Filtering Arcs)...")
     
@@ -271,8 +271,8 @@ def compute_vertical_strip_adjacency(chunk_map, num_vertical_bands):
     
     # 2. Decompose IDs back into (Subchannel, Band)
     # Formula: ID = Sub * N + Band
-    sub_u = u // num_vertical_bands
-    sub_v = v // num_vertical_bands
+    sub_u = u // num_columns
+    sub_v = v // num_columns
     
     # 3. FILTER: Only keep pairs that are in the SAME Subchannel
     # This rejects the boundaries where the arc changes.
@@ -290,26 +290,26 @@ def compute_vertical_strip_adjacency(chunk_map, num_vertical_bands):
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
-                            oversample_factor=1, num_vertical_bands=1, lvf_params=None, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration'):
+                            oversample_factor=1, num_columns=1, lvf_params=None, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration'):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
-    def make_vertical_band_maps(sub_channel_map, num_vertical_bands):
+    def make_vertical_band_maps(sub_channel_map, num_columns):
         vertchunk_map = np.zeros_like(sub_channel_map)
-        for band in range(num_vertical_bands):
-            width = vertchunk_map.shape[1] // num_vertical_bands
+        for band in range(num_columns):
+            width = vertchunk_map.shape[1] // num_columns
             vertchunk_map[:, band*width:(band+1)*width] = band
         return vertchunk_map
     subchannel_map, lvf_params = make_fiducial_chunk_map(detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels, oversample_factor=oversample_factor, lvf_params=lvf_params)
-    verticalchunk_map = make_vertical_band_maps(subchannel_map, num_vertical_bands)
-    chunk_map = subchannel_map * num_vertical_bands + verticalchunk_map
+    column_chunk_map = make_vertical_band_maps(subchannel_map, num_columns)
+    chunk_map = subchannel_map * num_columns + column_chunk_map
     return chunk_map, lvf_params
 
 def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17, 
-                                   num_vertical_bands=1, subchannel_padding=0):
-    def make_chunk_valid_mask(subchannel_valid_mask, num_vertical_bands):
-        chunk_valid_mask = np.zeros(len(subchannel_valid_mask)*num_vertical_bands, dtype=subchannel_valid_mask.dtype)
-        for band in range(num_vertical_bands):
-            chunk_valid_mask[band::num_vertical_bands] = subchannel_valid_mask
+                                   num_columns=1, subchannel_padding=0):
+    def make_chunk_valid_mask(subchannel_valid_mask, num_columns):
+        chunk_valid_mask = np.zeros(len(subchannel_valid_mask)*num_columns, dtype=subchannel_valid_mask.dtype)
+        for band in range(num_columns):
+            chunk_valid_mask[band::num_columns] = subchannel_valid_mask
         return chunk_valid_mask
     subchannel_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, padding=subchannel_padding)
-    chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_vertical_bands=num_vertical_bands)
+    chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask

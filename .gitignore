@@ -1,5 +1,6 @@
 analysis/
 figures/
+selfcal_scripts/
 test_dir/
 cache/
 .ipynb_checkpoints/
