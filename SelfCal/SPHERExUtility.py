@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline
 from scipy.optimize import least_squares
-from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool
+from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
 from SelfCal.MakeMap import load_reproj_file
 
 
@@ -108,23 +108,26 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
     chunk_map = np.zeros(out_shape, dtype=np.int32)
     x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
+    
     if lvf_params is None:
-        print("Fitting LVF parameters...")
         lvf_params = fit_lvf_params(BC_map, channel_edges)
 
-    print("Making chunk map...")
+    r_edges = []
     y_bound = np.full(out_shape[1], out_shape[0]-1)
+    
     for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
         prev_y_bound = y_bound
-
         xc = lvf_params['xc']
         yc = lvf_params['yc']
+        
         if lam not in lvf_params['wave_edges']:
             R = np.interp(lam, lvf_params['wave_edges'], lvf_params['R'])
         else:
             R = lvf_params['R'][np.where(lvf_params['wave_edges'] == lam)[0][0]]
-        spl = make_arc_spline(xc, yc, R)
+        
+        r_edges.append(R)
 
+        spl = make_arc_spline(xc, yc, R)
         x_bound = np.arange(out_shape[1])
         y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
@@ -132,18 +135,23 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     else:
         prev_y_bound = y_bound
         y_bound = np.zeros_like(y_bound)
-        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i+1
-    return chunk_map, lvf_params
+        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i + 1
+    
+    return chunk_map, lvf_params, np.array(r_edges)
 
-def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv', 
+def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, 
+                            channel_file='/home/thomasli/spherex/spherex_channels.csv', 
                             oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
     interp_factor = num_subchannels * num_channels//17
     channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params)
-    return chunk_map, lvf_params
+    
+    chunk_map, lvf_params, r_edges = make_spherex_chunk_map(
+        BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params
+    )
+    return chunk_map, lvf_params, r_edges
 
 def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10, padding=0):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
@@ -290,18 +298,27 @@ def compute_vertical_strip_adjacency(chunk_map, num_columns):
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
-                            oversample_factor=1, num_columns=1, lvf_params=None, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration'):
+                            oversample_factor=1, num_columns=1, lvf_params=None, 
+                            calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration'):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
-    def make_vertical_band_maps(sub_channel_map, num_columns):
-        vertchunk_map = np.zeros_like(sub_channel_map)
-        for band in range(num_columns):
-            width = vertchunk_map.shape[1] // num_columns
-            vertchunk_map[:, band*width:(band+1)*width] = band
-        return vertchunk_map
-    subchannel_map, lvf_params = make_fiducial_chunk_map(detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels, oversample_factor=oversample_factor, lvf_params=lvf_params)
-    column_chunk_map = make_vertical_band_maps(subchannel_map, num_columns)
-    chunk_map = subchannel_map * num_columns + column_chunk_map
-    return chunk_map, lvf_params
+    
+    subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
+        detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels, 
+        oversample_factor=oversample_factor, lvf_params=lvf_params
+    )
+    
+    vertchunk_map = np.zeros_like(subchannel_map)
+    width = vertchunk_map.shape[1]
+    x_edges = np.linspace(0, width, num_columns + 1)
+    
+    for band in range(num_columns):
+        start = int(x_edges[band])
+        end = int(x_edges[band+1])
+        vertchunk_map[:, start:end] = band
+
+    chunk_map = subchannel_map * num_columns + vertchunk_map
+    
+    return chunk_map, lvf_params, r_edges, x_edges
 
 def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17, 
                                    num_columns=1, subchannel_padding=0):
@@ -313,3 +330,28 @@ def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17,
     subchannel_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, padding=subchannel_padding)
     chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask
+
+def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns):
+    reshaped_offset = chunk_offset.reshape(tot_subchannels, num_columns)[1:-1]
+    reshaped_valid_mask = chunk_valid_mask.reshape(tot_subchannels, num_columns)[1:-1]
+
+    y_slice, x_slice = get_valid_bounds(~reshaped_valid_mask.astype(bool))
+
+    trimmed_offset = reshaped_offset[y_slice, x_slice]
+    trimmed_r_edges = r_edges[y_slice.start : y_slice.stop + 1]
+    trimmed_x_edges = x_edges[x_slice.start : x_slice.stop + 1]
+
+    spl = mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, kx=3, ky=3)
+
+    xc, yc = lvf_params['xc'], lvf_params['yc']
+
+    h, w = np.shape(chunk_map)
+    oversample_factor = h // 2040
+    subpixel_shift = 0.5 / oversample_factor
+    det_size = 2040
+    increment = 1 / oversample_factor
+    x_mesh, y_mesh = np.meshgrid(np.arange(subpixel_shift, det_size+subpixel_shift, increment), np.arange(subpixel_shift, det_size+subpixel_shift, increment))
+    r_mesh = np.sqrt((y_mesh - yc)**2 + (x_mesh - xc)**2)
+    
+    offset_map = spl(r_mesh, x_mesh)
+    return offset_map

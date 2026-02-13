@@ -7,7 +7,7 @@ from scipy.sparse import coo_matrix, csr_matrix
 import cv2
 
 from mpsplines import MeanPreservingInterpolation as MPI
-from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
+from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
 from scipy.optimize import minimize
 from scipy.ndimage import map_coordinates
 
@@ -529,3 +529,80 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
     else:
         print("Warning: No adjacency pairs found.")
         return None
+    
+def mean_preserving_spline_2d(y_edges, x_edges, means, kx=3, ky=3):
+    """
+    Generates a 2D mean-preserving spline surface f(y, x).
+    
+    Parameters
+    ----------
+    y_edges : array-like
+        The edges of the y bins (length N+1).
+    x_edges : array-like
+        The edges of the x bins (length M+1).
+    means : array-like
+        The 2D array of mean offsets in each bin (shape N, M).
+        means[i, j] corresponds to interval (y[i]~y[i+1], x[j]~x[j+1]).
+    kx, ky : int
+        Degrees of the bivariate spline (3=cubic).
+        
+    Returns
+    -------
+    evaluator : function
+        A function `func(y, x)` that takes coordinates and returns 
+        the interpolated continuous offset values.
+    """
+    y_edges = np.asarray(y_edges, dtype=float)
+    x_edges = np.asarray(x_edges, dtype=float)
+    means = np.asarray(means, dtype=float)
+    
+    # 1. Compute Bin Areas and Volumes
+    # dy shape: (N, 1), dx shape: (1, M)
+    dy = np.diff(y_edges)[:, None]
+    dx = np.diff(x_edges)[None, :]
+    
+    # Volume = Mean * Area (Height * Width * Depth)
+    volumes = means * dy * dx
+    
+    # 2. Compute 2D Cumulative Sum (Integral Surface)
+    # We pad with zeros at the start (y=0, x=0 boundary condition)
+    integral_surface = np.zeros((len(y_edges), len(x_edges)))
+    
+    # cumsum along axis 0 (y), then axis 1 (x)
+    integral_surface[1:, 1:] = np.cumsum(np.cumsum(volumes, axis=0), axis=1)
+    
+    # 3. Fit 2D Spline to the Integral Surface
+    # This is F(y, x) where F is the double integral of our desired function
+    # s=0 ensures we pass exactly through the knot points (strict mean preservation)
+    F_spline = RectBivariateSpline(y_edges, x_edges, integral_surface, 
+                                   kx=kx, ky=ky, s=0)
+    
+    # 4. Define the derivative evaluator
+    # The desired function is the mixed partial derivative: d2F / (dy dx)
+    def spl(y, x):
+        """
+        Evaluate the continuous offset map.
+        y, x can be 2D arrays (like image coordinates).
+        """
+        y = np.atleast_1d(y)
+        x = np.atleast_1d(x)
+        
+        # grid=False allows element-wise evaluation if y and x are same shape images
+        # dx=1, dy=1 computes the mixed partial derivative
+        return F_spline(y, x, dx=1, dy=1, grid=False)
+        
+    return spl
+
+def get_valid_bounds(mask):
+    """Finds the bounding box of valid (False) data in a boolean mask."""
+    # Rows where at least one pixel is valid
+    valid_rows = np.any(~mask, axis=1)
+    # Cols where at least one pixel is valid
+    valid_cols = np.any(~mask, axis=0)
+
+    # Find indices
+    y_min, y_max = np.where(valid_rows)[0][[0, -1]]
+    x_min, x_max = np.where(valid_cols)[0][[0, -1]]
+
+    # Return slices (add +1 to max for python slicing)
+    return slice(y_min, y_max + 1), slice(x_min, x_max + 1)
