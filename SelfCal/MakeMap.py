@@ -808,6 +808,7 @@ def _prep_lsqr(task_params):
     num_chunks = task_params['num_chunks']
     outlier_thresh = task_params['outlier_thresh']
     reg_weight = task_params['reg_weight']
+    offset_regularization = task_params['offset_regularization']
     adj_info = task_params['adj_info'] # Pre-computed adjacency (row, col) pairs
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -863,7 +864,7 @@ def _prep_lsqr(task_params):
 
         # --- Spatial Regularization (Adjacency) ---
         reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
-        if reg_weight > 0 and adj_info is not None:
+        if reg_weight > 0 and adj_info is not None and offset_regularization:
             # adj_info is expected to be a tuple of (chunk_i, chunk_j) indices that are neighbors
             chunk_i, chunk_j = adj_info
             num_constraints = len(chunk_i)
@@ -938,7 +939,7 @@ def _prep_lsqr_batch_worker(batch_params):
 def setup_lsqr(file_list, ref_shape, 
                chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
-               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10,
+               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
@@ -1025,6 +1026,7 @@ def setup_lsqr(file_list, ref_shape,
         'num_chunks': num_chunks,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
+        'offset_regularization': offset_regularization,
         'reg_weight': reg_weight,
         'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
         'postprocess_func': postprocess_func,
