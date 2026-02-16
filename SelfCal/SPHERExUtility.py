@@ -10,7 +10,7 @@ from functools import partial
 from concurrent.futures import ProcessPoolExecutor
 
 from skimage import measure
-from scipy.interpolate import make_smoothing_spline
+from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
 from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
 from SelfCal.MakeMap import load_reproj_file
@@ -338,6 +338,7 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     y_slice, x_slice = get_valid_bounds(~reshaped_valid_mask.astype(bool))
 
     trimmed_offset = reshaped_offset[y_slice, x_slice]
+    trimmed_offset = fill_invalid_offsets(trimmed_offset)
     trimmed_r_edges = r_edges[y_slice.start : y_slice.stop + 1]
     trimmed_x_edges = x_edges[x_slice.start : x_slice.stop + 1]
 
@@ -355,3 +356,34 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     
     offset_map = spl(r_mesh, x_mesh)
     return offset_map
+
+def fill_invalid_offsets(data):
+    """
+    Fills zeros in a 2D array using linear interpolation for the interior
+    and nearest-neighbor for extrapolation at the edges.
+    """
+    h, w = data.shape
+    y, x = np.mgrid[0:h, 0:w]
+    
+    # 1. Mask the zeros (the "bad" data)
+    mask = (data != 0)
+    
+    # If the whole thing is zeros or there are no zeros, return as is
+    if not np.any(mask) or np.all(mask):
+        return data
+
+    # 2. Extract valid points
+    points = np.array((y[mask], x[mask])).T
+    values = data[mask]
+    
+    # 3. Interpolate the entire grid
+    # 'linear' handles the interior bilinear logic
+    # We use 'nearest' for the points griddata can't reach (extrapolation)
+    filled = griddata(points, values, (y, x), method='linear')
+    
+    # 4. Fill remaining NaNs (edges/corners) with nearest neighbor extrapolation
+    nan_mask = np.isnan(filled)
+    if np.any(nan_mask):
+        filled[nan_mask] = griddata(points, values, (y[nan_mask], x[nan_mask]), method='nearest')
+        
+    return filled
