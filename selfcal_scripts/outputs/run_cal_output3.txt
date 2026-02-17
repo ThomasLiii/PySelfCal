@@ -62,3 +62,115 @@ itn   =     100   r2norm = 2.4e+02   acond = 4.9e+02   xnorm  = 8.2e+01
  
 LSQR solved in 4005.87 seconds.
 Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch12_17channels_5verticalbands.h5
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D1.npy
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 0 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det1_6p2arcsec/ref.fits
+Processing 13281 items in 443 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D1.npy
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D1.npy
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 686 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det1_6p2arcsec/ref.fits
+Processing 13281 items in 443 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+Processing channel Ch8 for detector 2...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 688 vertical strip boundaries.
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+Processing channel Ch8 for detector 2...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 688 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/ref.fits
+Processing 3288 items in 110 batches...
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1140_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1200_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0900_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1020_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1170_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1080_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0720_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0721_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0990_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0840_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0841_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0780_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0781_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0330_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0331_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0332_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0333_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0334_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0300_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0301_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0302_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0303_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0304_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0060_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0061_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0062_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0063_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0064_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0065_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0066_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0067_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0750_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0751_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0120_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0121_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0122_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0123_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0124_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0125_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0126_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0127_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0630_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0631_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0600_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0601_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0602_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1050_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0930_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0390_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0391_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0392_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0393_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0030_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0031_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0032_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0033_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0034_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0035_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0036_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0037_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_1230_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0690_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0691_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0270_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0271_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0272_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0273_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0274_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0450_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0451_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0452_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0510_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0511_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0512_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0000_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0001_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0002_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0003_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0004_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0005_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0006_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0007_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0180_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0181_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0182_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0183_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0184_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0185_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0570_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'
+Error processing file /mnt/md124/caoye/selfcal/outputs/nep_det2_6p2arcsec/reprojected/exp_0571_det_00.h5: unsupported operand type(s) for &: 'NoneType' and 'int'

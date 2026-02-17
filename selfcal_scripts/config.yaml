@@ -1,0 +1,48 @@
+# config.yaml
+
+# --- Input / Output Paths ---
+paths:
+  output_dir: "/mnt/md124/thomasli/selfcal/outputs/"
+  run_name: "SPHEREx_nep_qr2_det4_6p2arcsec"
+  calibration_dir: "/home/thomasli/spherex/SPHEREx_Spectral_Calibration"
+  # Optional: Path to a .npy file containing a list/array of custom boolean masks
+  # If this is set, 'channels' list below is ignored.
+  custom_masks_path: null 
+
+# --- Target Selection ---
+target:
+  detector: 4
+  resolution_arcsec: 6.2
+  # List of channels to process sequentially. Ignored if custom_masks_path is set.
+  channels: [10, 11, 12] 
+  
+  # Parameters for generating standard masks (if no custom mask provided)
+  num_subchannels: 10
+  num_channels: 34
+  num_columns: 5
+
+# --- Execution Control ---
+execution:
+  run_calibration: true
+  run_mosaic: true
+  
+  # If True, re-runs LSQR even if a matching calibration file exists.
+  # If False, it skips LSQR and loads the existing file.
+  overwrite_calibration: true
+  overwrite_mosaic: true
+  
+  max_workers: 50
+
+# --- Algorithm Settings (Saved to Filename) ---
+# These parameters will be appended to filenames to prevent overwrites
+lsqr_settings:
+  outlier_thresh: 2.0
+  reg_weight: 10.0
+  damp_weight: 1.0
+  weighted_damping: true
+  batch_size: 30
+  
+mosaic_settings:
+  sigma_clip: 1.0
+  oversample_factor: 1
+  coadd_batch_size: 100

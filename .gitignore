@@ -1,6 +1,5 @@
 analysis/
 figures/
-selfcal_scripts/
 test_dir/
 cache/
 .ipynb_checkpoints/
@@ -8,5 +7,4 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-SelfCal/.ipynb_checkpoints
 SelfCal/.ipynb_checkpoints
