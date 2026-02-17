@@ -530,7 +530,7 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
         print("Warning: No adjacency pairs found.")
         return None
     
-def mean_preserving_spline_2d(y_edges, x_edges, means, kx=3, ky=3):
+def mean_preserving_spline_2d(y_edges, x_edges, means, x_degree=3, y_degree=3):
     """
     Generates a 2D mean-preserving spline surface f(y, x).
     
@@ -543,7 +543,7 @@ def mean_preserving_spline_2d(y_edges, x_edges, means, kx=3, ky=3):
     means : array-like
         The 2D array of mean offsets in each bin (shape N, M).
         means[i, j] corresponds to interval (y[i]~y[i+1], x[j]~x[j+1]).
-    kx, ky : int
+    x_degree, y_degree : int
         Degrees of the bivariate spline (3=cubic).
         
     Returns
@@ -556,40 +556,47 @@ def mean_preserving_spline_2d(y_edges, x_edges, means, kx=3, ky=3):
     x_edges = np.asarray(x_edges, dtype=float)
     means = np.asarray(means, dtype=float)
     
-    # 1. Compute Bin Areas and Volumes
-    # dy shape: (N, 1), dx shape: (1, M)
-    dy = np.diff(y_edges)[:, None]
-    dx = np.diff(x_edges)[None, :]
-    
-    # Volume = Mean * Area (Height * Width * Depth)
-    volumes = means * dy * dx
-    
-    # 2. Compute 2D Cumulative Sum (Integral Surface)
-    # We pad with zeros at the start (y=0, x=0 boundary condition)
-    integral_surface = np.zeros((len(y_edges), len(x_edges)))
-    
-    # cumsum along axis 0 (y), then axis 1 (x)
-    integral_surface[1:, 1:] = np.cumsum(np.cumsum(volumes, axis=0), axis=1)
-    
-    # 3. Fit 2D Spline to the Integral Surface
-    # This is F(y, x) where F is the double integral of our desired function
-    # s=0 ensures we pass exactly through the knot points (strict mean preservation)
+    single_ybin = (len(y_edges) == 2)
+    single_xbin = (len(x_edges) == 2)
+
+    volume = means
+    if not single_ybin:
+        dy = np.diff(y_edges)[:, None]
+        volume = volume * dy
+        
+    if not single_xbin:
+        dx = np.diff(x_edges)[None, :]
+        volume = volume * dx
+
+    if not single_ybin:
+        # Pad Y axis with 0
+        temp = np.zeros((len(y_edges), volume.shape[1]))
+        temp[1:, :] = np.cumsum(volume, axis=0)
+        volume = temp
+    else:
+        volume = np.vstack([volume, volume])
+
+    if not single_xbin:
+        final_grid = np.zeros((volume.shape[0], len(x_edges)))
+        final_grid[:, 1:] = np.cumsum(volume, axis=1)
+        integral_surface = final_grid
+    else:
+        integral_surface = np.hstack([volume, volume])
+
+    kx_fit = 1 if single_ybin else min(y_degree, len(y_edges)-1)
+    ky_fit = 1 if single_xbin else min(x_degree, len(x_edges)-1)
+    # Note: kx parameter controls Y-axis (axis 0), ky parameter controls X-axis (axis 1)
     F_spline = RectBivariateSpline(y_edges, x_edges, integral_surface, 
-                                   kx=kx, ky=ky, s=0)
+                                   kx=kx_fit, ky=ky_fit, s=0)
     
-    # 4. Define the derivative evaluator
-    # The desired function is the mixed partial derivative: d2F / (dy dx)
+    d_order_y = 0 if single_ybin else 1
+    d_order_x = 0 if single_xbin else 1
+
     def spl(y, x):
-        """
-        Evaluate the continuous offset map.
-        y, x can be 2D arrays (like image coordinates).
-        """
         y = np.atleast_1d(y)
         x = np.atleast_1d(x)
         
-        # grid=False allows element-wise evaluation if y and x are same shape images
-        # dx=1, dy=1 computes the mixed partial derivative
-        return F_spline(y, x, dx=1, dy=1, grid=False)
+        return F_spline(y, x, dx=d_order_y, dy=d_order_x, grid=False)
         
     return spl
 

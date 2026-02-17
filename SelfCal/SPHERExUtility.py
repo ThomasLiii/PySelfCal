@@ -331,18 +331,19 @@ def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17,
     chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask
 
-def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns):
+def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=True):
     reshaped_offset = chunk_offset.reshape(tot_subchannels, num_columns)[1:-1]
     reshaped_valid_mask = chunk_valid_mask.reshape(tot_subchannels, num_columns)[1:-1]
 
     y_slice, x_slice = get_valid_bounds(~reshaped_valid_mask.astype(bool))
 
     trimmed_offset = reshaped_offset[y_slice, x_slice]
-    trimmed_offset = fill_invalid_offsets(trimmed_offset)
+    if fill_invalid:
+        trimmed_offset = fill_invalid_offsets(trimmed_offset)
     trimmed_r_edges = r_edges[y_slice.start : y_slice.stop + 1]
     trimmed_x_edges = x_edges[x_slice.start : x_slice.stop + 1]
 
-    spl = mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, kx=3, ky=3)
+    spl = mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, x_degree=3, y_degree=3)
 
     xc, yc = lvf_params['xc'], lvf_params['yc']
 
