@@ -1,13 +1,11 @@
 import sys
 import os
-import shutil
-parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_path)
 import time
 
 from SelfCal import PipelineWrapper
 from SelfCal.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_mask, \
-load_calibration, make_spherex_offset_map, compute_offsets_guess
+load_calibration, make_spherex_offset_map, compute_offsets_guess, load_lvf_params, compute_vertical_strip_adjacency, \
+make_stripped_chunk_map, make_stripped_chunk_valid_mask
 from SelfCal.SPHERExAppendWav import wav_coadd
 
 from astropy.io import fits
@@ -15,107 +13,67 @@ import numpy as np
 import glob
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from matplotlib.colors import LogNorm
+mpl.rcParams['figure.dpi'] = 200
 # Import LogNorm
 from tqdm import tqdm
 import gc
 from functools import partial
 
-DETECTOR = 4
-OVERSAMPLE_FACTOR = 2
-NUM_SUBCHANNELS = 10
-NUM_CHANNELS = 34
-FILE_SUFFIX = f'_unnormoffsets_noweight'
-FILE_PREFIX = f'_34channels'
+if __name__ == "__main__":
+    DETECTOR = 4
+    OVERSAMPLE_FACTOR = 2
+    NUM_SUBCHANNELS = 10
+    NUM_CHANNELS = 17
+    NUM_COLUMNS = 5
 
-config = {}
-config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
-config['run_name'] = f'nep_det{DETECTOR}_6p2arcsec'
-config['resolution_arcsec'] = 6.2
+    setting_tags = {
+                'NumSub': NUM_SUBCHANNELS,
+                'NumCh': NUM_CHANNELS,
+                'NumCol': NUM_COLUMNS,
+    }
+    setting_str = '_'.join([f'{key}{value}' for key, value in setting_tags.items()])
 
-# chs = [[15], [16]]
-chs = [[i] for i in range(28, 35)] # 15-22, 22-28, 28-35
+    FILE_SUFFIX = f''
+    FILE_PREFIX = f''
 
-det_BC, det_BW = load_calibration(band=DETECTOR, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
-chunk_map, lvf_params = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
-                                                oversample_factor=OVERSAMPLE_FACTOR)
-det_chunk_map, _ = make_fiducial_chunk_map(DETECTOR, det_BC, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
-                                           oversample_factor=1, lvf_params=lvf_params)
+    config = {}
+    config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
+    config['run_name'] = f'SPHEREx_nep_qr2_det{DETECTOR}_6p2arcsec'
+    config['resolution_arcsec'] = 6.2
 
-for ch in chs:
-    print(f"Processing channel {ch} for detector {DETECTOR}")
-    t0 = time.time()
-    chunk_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS)
+    lvf_filename = f'lvf_params_D{DETECTOR}.npy'
+    lvf_params = load_lvf_params(lvf_filename)
 
-    chunk_valid_mask_padded = make_fiducial_chunk_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, padding=1)
-    # Erode back to original
-    det_valid_mask = chunk_valid_mask[chunk_map]
-    det_valid_mask_padded = chunk_valid_mask_padded[chunk_map]
+    grid_chunk_map, _ = make_stripped_chunk_map(DETECTOR, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, num_columns=NUM_COLUMNS,
+                                                    oversample_factor=OVERSAMPLE_FACTOR, lvf_params=lvf_params)
+    det_chunk_map, _ = make_stripped_chunk_map(DETECTOR, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, num_columns=NUM_COLUMNS,
+                                            oversample_factor=1, lvf_params=lvf_params)
+    
+    ch = [12]
+
+    chunk_valid_mask_padded = make_stripped_chunk_valid_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
+                                    num_columns=NUM_COLUMNS, subchannel_padding=1)
+    chunk_valid_mask = make_stripped_chunk_valid_mask(ch, num_subchannels=NUM_SUBCHANNELS, num_channels=NUM_CHANNELS, 
+                                    num_columns=NUM_COLUMNS, subchannel_padding=0)
+
+    adj_info = compute_vertical_strip_adjacency(det_chunk_map, NUM_COLUMNS)
+
     cc = PipelineWrapper.Calibrator(config)
     cc.setup_lsqr(
         apply_mask=True, 
-        apply_weight=False, 
-        chunk_map=chunk_map, 
-        det_valid_mask=det_valid_mask_padded, 
-        max_workers=40, 
-        outlier_thresh=10.0,
+        apply_weight=False,
+        chunk_map=det_chunk_map, 
+        det_valid_mask=chunk_valid_mask_padded[det_chunk_map], 
+        max_workers=50, 
+        outlier_thresh=2.0,
         ignore_list=[],
-        oversample_factor=OVERSAMPLE_FACTOR,
-        batch_size=20
+        oversample_factor=1,
+        batch_size=30,
+        reg_weight=10.0,
+        adj_info=adj_info,
+        weighted_damping=True,
+        damp_weight=1
         )
-
-    offset_guess = compute_offsets_guess(cc.reproj_list, det_chunk_map)
-    x0 = np.hstack([np.zeros(np.prod(cc.ref_shape)), offset_guess.flatten()])
-    cc.apply_lsqr(x0=x0, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=100)
-    cal_path = cc.save_calibration(cal_file=f'cal{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}.h5')
-
-    del cc
-    gc.collect()
-
-    mm = PipelineWrapper.Mosaicker(config)
-    mm.load_calibration(cal_path=cal_path)
-    partial_make_offset_map = partial(make_spherex_offset_map, chunk_valid_mask=chunk_valid_mask, lvf_params=lvf_params)
-    sc_sigma = 1.0
-    cache_dir = '/home/thomasli/spherex/selfcal/cache/' + f'cache{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}/'
-    maps = mm.make_mosaic(
-        apply_mask=True, 
-        apply_weight=False, 
-        chunk_map=chunk_map, 
-        det_valid_mask=det_valid_mask, 
-        max_workers=40,
-        make_std_map=True, 
-        apply_sigma_clipping=True,  
-        sigma=sc_sigma,
-        ignore_list=[21],
-        oversample_factor=OVERSAMPLE_FACTOR,
-        det_offset_func=partial_make_offset_map,
-        cache_batch_size=20,
-        coadd_batch_size=100,
-        cache_dir=cache_dir,
-        cache_intermediate=True,
-        det_aux=None,
-        normalize_offset=False,
-    )
-
-    wav_mean, wav_std = wav_coadd(det_BC, det_BW, mean_map=maps['mean_map']['data'], std_map=maps['std_map']['data'], 
-                                  reproj_list=mm.reproj_list, cache_list=mm.cached_list, ref_shape=maps['mean_map']['data'].shape, 
-                                  sigma=sc_sigma, batch_size=40, max_workers=40)    
-
-    wav_mean_maps = {'data': wav_mean, 'unit': 'um'}
-    wav_std_maps = {'data': wav_std, 'unit': 'um'}
-    mm.append_maps({'wav_mean_map': wav_mean_maps, 'wav_std_map': wav_std_maps})
-
-    mm.save_mosaic(mos_file=f'mosaic{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}{FILE_SUFFIX}.fits', overwrite=True)
-
-    # Clear memory
-    del mm, maps
-    gc.collect()
-
-    if os.path.isdir(cache_dir):
-        try:
-            shutil.rmtree(cache_dir)
-            print(f"Directory '{cache_dir}' and all its contents have been removed.")
-        except OSError as e:
-            print(f"Error: {cache_dir} : {e.strerror}")
-
-    t1 = time.time()
-    print(f"Finished channel {ch} for detector {DETECTOR} in {t1 - t0:.2f} seconds")
+    
+    cal_path = cc.save_calibration(cal_file=f'cal{FILE_PREFIX}_D{DETECTOR}_Ch{"-".join(map(str, ch))}_{setting_str}{FILE_SUFFIX}.h5')
