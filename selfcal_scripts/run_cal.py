@@ -72,7 +72,7 @@ if __name__ == "__main__":
         'ApplyMask': True,
         'ApplyWeight': False,
         'OutlierThresh': 2.0,
-        'IgnoreList': [],
+        'IgnoreList': [21],
         'OffsetRegularization': True,
         'RegWeight': 10.0,
         'WeightedDamping': True,
@@ -90,7 +90,7 @@ if __name__ == "__main__":
     }
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_FullLamWeighted'
+    FILE_SUFFIX = f'_Control'
 
     selfcal_config = {}
     selfcal_config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
@@ -129,13 +129,13 @@ if __name__ == "__main__":
         det_valid_mask = chunk_valid_mask_padded[detector_inputs['det_chunk_map']]
         det_valid_weight = fast_vertical_dist(det_valid_mask)
         det_valid_weight /= np.max(det_valid_weight)  # Normalize weights to [0, 1]
-        det_valid_weight = 0.5 + 0.5 * det_valid_weight  # Scale to [0.5, 1]
+        # det_valid_weight[det_valid_mask>0] = 0.5 + 0.5 * det_valid_weight[det_valid_mask>0]  # Scale to [0.5, 1]
         cc.setup_lsqr(
             apply_mask=calibration_setting['ApplyMask'], 
             apply_weight=calibration_setting['ApplyWeight'],
             chunk_map=detector_inputs['det_chunk_map'], 
-            grid_valid_weight=det_valid_weight, 
-            max_workers=30, 
+            grid_valid_weight=det_valid_mask, 
+            max_workers=50, 
             outlier_thresh=calibration_setting['OutlierThresh'],
             ignore_list=calibration_setting['IgnoreList'],
             oversample_factor=1,
@@ -165,13 +165,13 @@ if __name__ == "__main__":
         grid_valid_mask = chunk_valid_mask_padded[detector_inputs['grid_chunk_map']]
         grid_valid_weight = fast_vertical_dist(grid_valid_mask)
         grid_valid_weight /= np.max(grid_valid_weight)  # Normalize weights to [0, 1]
-        grid_valid_weight = 0.5 + 0.5 * grid_valid_weight  # Scale to [0.5, 1]
+        # grid_valid_weight[grid_valid_mask>0] = 0.5 + 0.5 * grid_valid_weight[grid_valid_mask>0]  # Scale to [0.5, 1]
         maps = mm.make_mosaic(
             apply_mask=mosaic_setting['ApplyMask'], 
             apply_weight=mosaic_setting['ApplyWeight'], 
             chunk_map=detector_inputs['grid_chunk_map'], 
             grid_valid_weight=grid_valid_weight, 
-            max_workers=30,
+            max_workers=50,
             make_std_map=mosaic_setting['MakeStdMap'], 
             apply_sigma_clipping=mosaic_setting['ApplySigmaClipping'],  
             sigma=mosaic_setting['Sigma'],
@@ -192,7 +192,7 @@ if __name__ == "__main__":
                                       reproj_list=mm.reproj_list, 
                                       cache_list=mm.cached_list,
                                       ref_shape=maps['mean_map']['data'].shape, 
-                                      sigma=mosaic_setting['Sigma'], batch_size=40, max_workers=30)    
+                                      sigma=mosaic_setting['Sigma'], batch_size=40, max_workers=50)    
 
         wav_mean_maps = {'data': wav_mean, 'unit': 'um'}
         wav_std_maps = {'data': wav_std, 'unit': 'um'}
