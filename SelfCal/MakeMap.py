@@ -330,7 +330,7 @@ def load_reproj_file(file_path, fields):
 
 def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False, 
                    chunk_offset=None, det_offset_func=None, ignore_list=None, 
-                   det_valid_mask=None, valid_threshold=0.99, 
+                   grid_valid_weight=None, valid_threshold=0.99, 
                    for_lsqr=False, oversample_factor=1, 
                    # These arguments are accepted for compatibility/internal logic 
                    # but might not be used depending on logic path
@@ -349,7 +349,7 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
 
     sub_data = result['sub_data']
     ref_coords = result['ref_coords']
-    sub_fullmask = np.ones_like(sub_data, dtype=bool)
+    sub_weight = np.ones_like(sub_data, dtype=np.float32)
     sub_mapping = result['sub_mapping']
     exp_idx = result['exp_idx']
     det_idx = result['det_idx']
@@ -357,37 +357,39 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     if preprocess_func is not None:
         sub_data = preprocess_func(locals())
 
+    # Apply bitmask
     if 'sub_bitmask' in result:
         # invert=True: 1 = Good pixel, 0 = Bad pixel
         sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
-        sub_fullmask &= sub_boolmask
+        sub_weight *= sub_boolmask
 
+    # Compute bilinear interpolation matrix for mapping between chunk and subframe
     interp_matrix = None
-    if (chunk_map is not None) or (chunk_offset is not None) or for_lsqr or det_aux is not None:
+    if (chunk_map is not None) or (chunk_offset is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
 
+    # Apply chunk offset if provided
     if chunk_offset is not None:
         if det_offset_func is not None:
-            det_offset = det_offset_func(chunk_map, chunk_offset)
+            grid_offset = det_offset_func(chunk_map, chunk_offset)
         else:
-            det_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
-        sub_offset = det_to_sub(det_offset, interp_matrix=interp_matrix)
+            grid_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
+        sub_offset = det_to_sub(grid_offset, interp_matrix=interp_matrix)
         sub_data -= sub_offset
-   
-    if det_valid_mask is not None:
-        sub_valid_frac = det_to_sub(det_valid_mask, interp_matrix=interp_matrix)
-        sub_valid_mask = sub_valid_frac > valid_threshold
-        sub_fullmask &= sub_valid_mask
+    
+    # Apply valid weight
+    if grid_valid_weight is not None:
+        sub_valid_weight = det_to_sub(grid_valid_weight, interp_matrix=interp_matrix)
+        sub_weight *= sub_valid_weight
 
     sub_aux = None
     if det_aux is not None:
         sub_aux = np.array([det_to_sub(det_aux_data, interp_matrix=interp_matrix) for det_aux_data in det_aux])
 
-    sub_data[~sub_fullmask] = np.nan
-    
-    sub_weight = make_weight(sub_data) if apply_weight else np.ones_like(sub_data, dtype=np.float32)
+    if apply_weight:
+        sub_weight *= make_weight(sub_data)
 
     chunk_contrib = None
     if for_lsqr:
@@ -395,6 +397,11 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
 
     if postprocess_func is not None:
         sub_data = postprocess_func(locals())
+
+    # Check for NaNs and set corresponding weights to 0
+    nan_mask = np.isnan(sub_data)
+    sub_data[nan_mask] = 0.0
+    sub_weight[nan_mask] = 0.0
     
     return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
 
@@ -453,7 +460,7 @@ def _coadd_batch_worker(params):
             'apply_weight': params['apply_weight'],
             'apply_mask': params['apply_mask'],
             'ignore_list': params['ignore_list'],
-            'det_valid_mask': params['det_valid_mask'],
+            'grid_valid_weight': params['grid_valid_weight'],
             'det_offset_func': params['det_offset_func'],
             'oversample_factor': params['oversample_factor'],
             'valid_threshold': params['valid_threshold'],
@@ -519,32 +526,30 @@ def _coadd_batch_worker(params):
             sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
             data_crop = sub_data[sub_crop]
             weight_crop = sub_weight[sub_crop]
-            valid = ~check_invalid(data_crop)
 
             if mode == 'mean':
-                data_sum[ref_crop] += np.where(valid, data_crop * weight_crop, 0.0)
-                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                data_sum[ref_crop] += data_crop * weight_crop
+                weight_sum[ref_crop] += weight_crop
                 if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += np.where(valid, sub_aux[:, *sub_crop] * weight_crop, 0.0)
+                    aux_sum[:, *ref_crop] += sub_aux[:, *sub_crop] * weight_crop
 
             elif mode == 'std':
                 mean_crop = mean_map[ref_crop]
-                data_sum[ref_crop] += np.where(valid, (data_crop - mean_crop)**2 * weight_crop, 0.0)
-                weight_sum[ref_crop] += np.where(valid, weight_crop, 0.0)
+                data_sum[ref_crop] += (data_crop - mean_crop)**2 * weight_crop
+                weight_sum[ref_crop] += weight_crop
                 if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += np.where(valid, (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop, 0.0)
+                    aux_sum[:, *ref_crop] += (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop
             
             elif mode == 'sigma_clip':
                 mean_crop = mean_map[ref_crop]
                 std_crop = std_map[ref_crop]
                 sigma = params['sigma']
                 clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
-                valid_clipped = valid & clip_mask
                 
-                data_sum[ref_crop] += np.where(valid_clipped, data_crop * weight_crop, 0.0)
-                weight_sum[ref_crop] += np.where(valid_clipped, weight_crop, 0.0)
+                data_sum[ref_crop] += data_crop * weight_crop * clip_mask
+                weight_sum[ref_crop] += weight_crop * clip_mask
                 if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += np.where(valid_clipped, sub_aux[:, *sub_crop] * weight_crop, 0.0)
+                    aux_sum[:, *ref_crop] += sub_aux[:, *sub_crop] * weight_crop * clip_mask
 
     # 5. Cleanup & Return
     for shm in shm_handles:
@@ -654,7 +659,7 @@ def _coadd_batch_manager(params):
 
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, apply_weight=True, 
-                      apply_mask=True, chunk_map=None, det_valid_mask=None, 
+                      apply_mask=True, chunk_map=None, grid_valid_weight=None, 
                       max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
                       cache_dir='cache/', use_cached=False, det_aux=None,
@@ -688,8 +693,8 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         Whether to apply masks to the data. Default is True.
     chunk_map : dict, optional
         Mapping of chunk indices to their corresponding pixel indices. Default is None.
-    det_valid_mask : np.ndarray, optional
-        Mask indicating valid pixels for each detector. Default is None.
+    grid_valid_weight : np.ndarray, optional
+        Weight indicating valid pixels for each grid. Default is None.
     max_workers : int, optional
         Maximum number of worker processes for parallel processing. Default is 10.
     ignore_list : list, optional
@@ -733,7 +738,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
     assert chunk_map is None or isinstance(chunk_map, (list, np.ndarray)), "chunk_map must be a list or array"
-    assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
+    assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert det_offset_func is None or callable(det_offset_func), "det_offset_func must be a callable function or None"
@@ -757,7 +762,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         'offset_list': offset_list,
         
         'chunk_map': chunk_map,
-        'det_valid_mask': det_valid_mask,
+        'grid_valid_weight': grid_valid_weight,
         'apply_weight': apply_weight,
         'apply_mask': apply_mask,
         'ignore_list': ignore_list,
@@ -825,7 +830,7 @@ def _prep_lsqr(task_params):
             apply_weight=task_params['apply_weight'],
             apply_mask=task_params['apply_mask'],
             ignore_list=task_params['ignore_list'],
-            det_valid_mask=task_params['det_valid_mask'],
+            grid_valid_weight=task_params['grid_valid_weight'],
             oversample_factor=task_params['oversample_factor'],
             valid_threshold=task_params['valid_threshold'],
             postprocess_func=task_params['postprocess_func'],
@@ -834,9 +839,9 @@ def _prep_lsqr(task_params):
 
         sub_h, sub_w = sub_data.shape
         
-        sub_valid = ~check_invalid(sub_data)
+        sub_valid = sub_weight > 0
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
-            sub_out = find_outliers(sub_data, threshold=outlier_thresh)
+            sub_out = find_outliers(np.where(sub_valid, sub_data, np.nan), threshold=outlier_thresh)
             sub_valid &= ~sub_out
         valid_sub_coords = np.nonzero(sub_valid)
 
@@ -937,7 +942,7 @@ def _prep_lsqr_batch_worker(batch_params):
     )
 
 def setup_lsqr(file_list, ref_shape, 
-               chunk_map=None, det_valid_mask=None, apply_mask=True, apply_weight=False, 
+               chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None,
@@ -952,8 +957,8 @@ def setup_lsqr(file_list, ref_shape,
     chunk_map : np.ndarray, optional
         Mapping of chunk indices to their corresponding pixel indices.
         Must be 0 indexed and continuous!!
-    det_valid_mask : np.ndarray, optional
-        Mask indicating valid pixels for each detector.
+    grid_valid_weight : np.ndarray, optional
+        Weight indicating valid pixels for each grid pixel.
     apply_mask : bool, optional
         Whether to apply masks to the data.
         Default is True.
@@ -989,7 +994,7 @@ def setup_lsqr(file_list, ref_shape,
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
     assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
-    assert det_valid_mask is None or isinstance(det_valid_mask, np.ndarray), "det_valid_mask must be a numpy array"
+    assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
     assert isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0), "outlier_thresh must be a positive number or None"
@@ -1016,7 +1021,7 @@ def setup_lsqr(file_list, ref_shape,
 
     common_params = {
         'chunk_map': chunk_map,
-        'det_valid_mask': det_valid_mask,
+        'grid_valid_weight': grid_valid_weight,
         'apply_mask': apply_mask,
         'apply_weight': apply_weight,
         'ignore_list': ignore_list,
@@ -1134,8 +1139,6 @@ def setup_lsqr(file_list, ref_shape,
             
             full_A = vstack([full_A, A_damp])
             full_b = np.concatenate([full_b, b_damp])
-
-    return full_A, full_b
 
     return full_A, full_b
 

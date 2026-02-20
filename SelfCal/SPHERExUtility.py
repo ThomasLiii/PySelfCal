@@ -331,7 +331,7 @@ def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17,
     chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask
 
-def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=True):
+def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=False):
     reshaped_offset = chunk_offset.reshape(tot_subchannels, num_columns)[1:-1]
     reshaped_valid_mask = chunk_valid_mask.reshape(tot_subchannels, num_columns)[1:-1]
 
@@ -388,3 +388,22 @@ def fill_invalid_offsets(data):
         filled[nan_mask] = griddata(points, values, (y[nan_mask], x[nan_mask]), method='nearest')
         
     return filled
+
+def fast_vertical_dist(arr):
+    rows, cols = arr.shape
+    # Result arrays
+    dist_up = np.zeros((rows, cols), dtype=np.int32)
+    dist_down = np.zeros((rows, cols), dtype=np.int32)
+
+    # We use a running count that resets at every 0
+    # 1. Distance to zero ABOVE
+    for r in range(1, rows):
+        # If current is 1, distance is (dist of row above) + 1
+        # If current is 0, distance is 0
+        dist_up[r] = (dist_up[r-1] + 1) * (arr[r] != 0)
+
+    # 2. Distance to zero BELOW
+    for r in range(rows - 2, -1, -1):
+        dist_down[r] = (dist_down[r+1] + 1) * (arr[r] != 0)
+
+    return np.minimum(dist_up, dist_down).astype(np.float32)

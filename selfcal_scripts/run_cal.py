@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from SelfCal import PipelineWrapper
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_vertical_strip_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map
+make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
 
 
@@ -76,7 +76,7 @@ if __name__ == "__main__":
         'OffsetRegularization': True,
         'RegWeight': 10.0,
         'WeightedDamping': True,
-        'DampWeight': 10.0,
+        'DampWeight': 100.0,
     }
 
     mosaic_setting = {
@@ -90,7 +90,7 @@ if __name__ == "__main__":
     }
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f''
+    FILE_SUFFIX = f'_FullLamWeighted'
 
     selfcal_config = {}
     selfcal_config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
@@ -102,7 +102,8 @@ if __name__ == "__main__":
     frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
     detector_inputs = prepare_detector_inputs(frame_setting, calibration_setting, mosaic_setting)
     # chs = [[8], [9], [10], [11], [12], [13], [14], [15], [16]]
-    chs = [[17], [18], [19], [20], [21], [22], [23], [24], [25]]
+    # chs = [[17], [18], [19], [20], [21], [22], [23], [24], [25]]
+    chs = [[8]]
     channel_jobs = {
         f'Ch{"-".join(map(str, ch))}': prepare_channel_inputs(ch, frame_setting) for ch in chs
     }
@@ -115,35 +116,39 @@ if __name__ == "__main__":
         chunk_valid_mask_padded = channel_inputs['chunk_valid_mask_padded']
         chunk_valid_mask = channel_inputs['chunk_valid_mask']
         adj_info = compute_vertical_strip_adjacency(detector_inputs['det_chunk_map'], frame_setting['NumCol'])
-        job_tag = f'D{frame_setting["Detector"]}_{job_name}_{frame_setting_str}'
-        cal_file = f'cal_{job_tag}{FILE_SUFFIX}.h5'
-        mos_file = f"mosaic_{job_tag}{FILE_SUFFIX}.fits"
+        job_tag = f'{frame_setting_str}_{job_name}{FILE_SUFFIX}'
+        cal_file = f'cal_{job_tag}.h5'
+        mos_file = f"mosaic_{job_tag}.fits"
 
         # Calibration
         cc = PipelineWrapper.Calibrator(selfcal_config)
         cal_path = os.path.join(cc.config['cal_dir'], cal_file)
-        if os.path.exists(cal_path):
-            print(f"Calibration file {cal_path} already exists. Skipping calibration and mosaicking for channel {job_name}.")
-        else:
-            cc.setup_lsqr(
-                apply_mask=calibration_setting['ApplyMask'], 
-                apply_weight=calibration_setting['ApplyWeight'],
-                chunk_map=detector_inputs['det_chunk_map'], 
-                det_valid_mask=chunk_valid_mask_padded[detector_inputs['det_chunk_map']], 
-                max_workers=50, 
-                outlier_thresh=calibration_setting['OutlierThresh'],
-                ignore_list=calibration_setting['IgnoreList'],
-                oversample_factor=1,
-                batch_size=40,
-                offset_regularization=calibration_setting['OffsetRegularization'],
-                reg_weight=calibration_setting['RegWeight'],
-                adj_info=adj_info,
-                weighted_damping=calibration_setting['WeightedDamping'],
-                damp_weight=calibration_setting['DampWeight'],
-                )
-            
-            cc.apply_lsqr(x0=None, atol=1e-06, btol=1e-06, damp=1e-3, iter_lim=50, precondition=False)
-            cal_path = cc.save_calibration(cal_file=cal_file)
+        # if os.path.exists(cal_path):
+        #     print(f"Calibration file {cal_path} already exists. Skipping calibration and mosaicking for channel {job_name}.")
+        # else:
+        det_valid_mask = chunk_valid_mask_padded[detector_inputs['det_chunk_map']]
+        det_valid_weight = fast_vertical_dist(det_valid_mask)
+        det_valid_weight /= np.max(det_valid_weight)  # Normalize weights to [0, 1]
+        det_valid_weight = 0.5 + 0.5 * det_valid_weight  # Scale to [0.5, 1]
+        cc.setup_lsqr(
+            apply_mask=calibration_setting['ApplyMask'], 
+            apply_weight=calibration_setting['ApplyWeight'],
+            chunk_map=detector_inputs['det_chunk_map'], 
+            grid_valid_weight=det_valid_weight, 
+            max_workers=30, 
+            outlier_thresh=calibration_setting['OutlierThresh'],
+            ignore_list=calibration_setting['IgnoreList'],
+            oversample_factor=1,
+            batch_size=40,
+            offset_regularization=calibration_setting['OffsetRegularization'],
+            reg_weight=calibration_setting['RegWeight'],
+            adj_info=adj_info,
+            weighted_damping=calibration_setting['WeightedDamping'],
+            damp_weight=calibration_setting['DampWeight'],
+            )
+        
+        cc.apply_lsqr(x0=None, atol=1e-06, btol=1e-06, damp=1e-3, iter_lim=50, precondition=False)
+        cal_path = cc.save_calibration(cal_file=cal_file)
 
         # Mosaicking
         partial_make_offset_map = partial(make_spherex_stripped_offset_map,
@@ -157,12 +162,16 @@ if __name__ == "__main__":
         mm = PipelineWrapper.Mosaicker(selfcal_config)
         mm.load_calibration(cal_path=cal_path)
         cache_dir = f'{CACHE_DIR}cache_{job_tag}'
+        grid_valid_mask = chunk_valid_mask_padded[detector_inputs['grid_chunk_map']]
+        grid_valid_weight = fast_vertical_dist(grid_valid_mask)
+        grid_valid_weight /= np.max(grid_valid_weight)  # Normalize weights to [0, 1]
+        grid_valid_weight = 0.5 + 0.5 * grid_valid_weight  # Scale to [0.5, 1]
         maps = mm.make_mosaic(
             apply_mask=mosaic_setting['ApplyMask'], 
             apply_weight=mosaic_setting['ApplyWeight'], 
             chunk_map=detector_inputs['grid_chunk_map'], 
-            det_valid_mask=chunk_valid_mask[detector_inputs['grid_chunk_map']], 
-            max_workers=50,
+            grid_valid_weight=grid_valid_weight, 
+            max_workers=30,
             make_std_map=mosaic_setting['MakeStdMap'], 
             apply_sigma_clipping=mosaic_setting['ApplySigmaClipping'],  
             sigma=mosaic_setting['Sigma'],
@@ -183,7 +192,7 @@ if __name__ == "__main__":
                                       reproj_list=mm.reproj_list, 
                                       cache_list=mm.cached_list,
                                       ref_shape=maps['mean_map']['data'].shape, 
-                                      sigma=mosaic_setting['Sigma'], batch_size=40, max_workers=50)    
+                                      sigma=mosaic_setting['Sigma'], batch_size=40, max_workers=30)    
 
         wav_mean_maps = {'data': wav_mean, 'unit': 'um'}
         wav_std_maps = {'data': wav_std, 'unit': 'um'}

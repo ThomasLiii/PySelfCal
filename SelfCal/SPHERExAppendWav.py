@@ -99,7 +99,7 @@ def _wavcoadd_batch_worker(batch_indices):
         sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
         data_crop = sub_data[sub_crop]
         weight_crop = sub_weight[sub_crop]
-        valid = ~check_invalid(data_crop)
+        valid = weight_crop > 0
         mean_crop = mean_map[ref_crop]
         std_crop = std_map[ref_crop]
         

@@ -116,12 +116,12 @@ class Calibrator(Reprojector):
         self.A = None
         self.B = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
+    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, grid_valid_weight=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
                    postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
         start_time = time.time()
         self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
-               apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, det_valid_mask=det_valid_mask,
+               apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, grid_valid_weight=grid_valid_weight,
                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                batch_size=batch_size, offset_regularization=offset_regularization, reg_weight=reg_weight, adj_info=adj_info, mean_offsets=mean_offsets, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                weighted_damping=weighted_damping, damp_weight=damp_weight)
@@ -173,7 +173,7 @@ class Mosaicker(Reprojector):
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
-    def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, det_valid_mask=None, max_workers=20, 
+    def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, grid_valid_weight=None, max_workers=20, 
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[], 
         oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
         cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None):
@@ -197,7 +197,7 @@ class Mosaicker(Reprojector):
             'apply_mask': apply_mask,
             'chunk_map': chunk_map,
             'max_workers': max_workers,
-            'det_valid_mask': det_valid_mask,
+            'grid_valid_weight': grid_valid_weight,
             'ignore_list': ignore_list,
             'oversample_factor': oversample_factor,
             'det_offset_func': det_offset_func,
