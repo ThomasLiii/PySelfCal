@@ -1072,75 +1072,85 @@ def setup_lsqr(file_list, ref_shape,
         print("No valid data found in any subframe.")
         return None, None
 
-    rows = np.concatenate(all_rows)
-    cols = np.concatenate(all_cols)
-    data = np.concatenate(all_data)
-    b = np.concatenate(all_b)
+    # Overwrite the lists with a single concatenated array 
+    # This prepares them for appending and lets us access the combined cols safely
+    all_rows = [np.concatenate(all_rows)]
+    all_cols = [np.concatenate(all_cols)]
+    all_data = [np.concatenate(all_data)]
+    all_b = [np.concatenate(all_b)]
 
-    full_A = coo_matrix((data, (rows, cols)), shape=(total_rows, total_cols))
-    full_b = b
+    # --- MEMORY OPTIMIZED: Calculate valid pixel fractions AND coverage map ---
+    # We access the combined columns via all_cols[0]
+    pixel_counts = np.bincount(all_cols[0], minlength=total_cols)
+    sky_pixel_counts = pixel_counts[:num_sky]
+    offset_pixel_counts = pixel_counts[num_sky:]
 
     # --- ADD PER-FRAME TARGET MEAN CONSTRAINT ---
+    #TODO: Pass weight from higher level instead of hardcoding here
     if mean_offsets is not None:
         print(f"Applying target mean offset constraints for {num_frames} frames...")
         mean_offsets_arr = np.asarray(mean_offsets)
-        assert mean_offsets_arr.size == num_frames, f"mean_offsets size ({mean_offsets_arr.size}) must match num_frames ({num_frames})"
         
-        # Use a high weight to ensure the constraint is strictly enforced
         constraint_weight = 10.0 
         
-        # Each constraint is: weight * sum(offsets_for_frame_i) = weight * num_chunks * target_mean_i
-        constr_rows = np.repeat(np.arange(num_frames), num_chunks)
+        constr_rows = total_rows + np.repeat(np.arange(num_frames), num_chunks)
+        
         constr_cols = []
         for i in range(num_frames):
             offset_start = num_sky + (i * num_chunks)
             constr_cols.extend(np.arange(offset_start, offset_start + num_chunks))
         
         constr_data = np.ones(len(constr_cols), dtype=np.float32) * constraint_weight
-        
-        A_constr = coo_matrix((constr_data, (constr_rows, constr_cols)), 
-                              shape=(num_frames, total_cols))
-        
-        # Equation target: weight * num_chunks * mean_value
         b_constr = mean_offsets_arr.flatten() * num_chunks * constraint_weight
         
-        full_A = vstack([full_A, A_constr])
-        full_b = np.concatenate([full_b, b_constr])
+        # Append directly to our existing lists
+        all_rows.append(constr_rows)
+        all_cols.append(np.array(constr_cols))
+        all_data.append(constr_data)
+        all_b.append(b_constr)
+        
+        total_rows += num_frames
 
     # --- COVERAGE-WEIGHTED DAMPING ---
     if weighted_damping and damp_weight > 0:
         print("Applying Coverage-Weighted Damping...")
         
-        # 1. Calculate Coverage Map (Hits per Sky Pixel)
-        # Identify indices in the 'Sky' section (cols < num_sky)
-        sky_cols_only = full_A.col[full_A.col < num_sky]
-        
-        # Count occurrences (Coverage N)
-        coverage_map = np.bincount(sky_cols_only, minlength=num_sky)
-        
-        # We only apply damping to observed pixels
-        valid_pixel_indices = np.where(coverage_map > 0)[0]
+        valid_pixel_indices = np.nonzero(sky_pixel_counts)[0]
         
         if len(valid_pixel_indices) > 0:
-            # 2. Calculate Damping Factors
-            # We want the penalty term to be: damp_weight * N * S^2
-            # In the matrix A (which is squared by LSQR), we put sqrt(damp_weight * N)
-            damp_values = np.sqrt(damp_weight * coverage_map[valid_pixel_indices])
-            
-            # 3. Build the Damping Matrix
-            # Each row corresponds to one sky pixel constraint
+            damp_values = np.sqrt(damp_weight * sky_pixel_counts[valid_pixel_indices])
             num_damp_constraints = len(valid_pixel_indices)
-            damp_rows = np.arange(num_damp_constraints)
-            damp_cols = valid_pixel_indices
             
-            A_damp = coo_matrix((damp_values, (damp_rows, damp_cols)), 
-                                shape=(num_damp_constraints, total_cols))
+            damp_rows = total_rows + np.arange(num_damp_constraints)
+            damp_cols = valid_pixel_indices
             b_damp = np.zeros(num_damp_constraints)
             
-            full_A = vstack([full_A, A_damp])
-            full_b = np.concatenate([full_b, b_damp])
+            # Append directly to our existing lists
+            all_rows.append(damp_rows)
+            all_cols.append(damp_cols)
+            all_data.append(damp_values)
+            all_b.append(b_damp)
+            
+            total_rows += num_damp_constraints
 
-    return full_A, full_b
+    # --- FINAL SPARSE MATRIX CONSTRUCTION ---
+    # One final concatenation of the main data + new constraints
+    full_A = coo_matrix((np.concatenate(all_data), 
+                        (np.concatenate(all_rows), np.concatenate(all_cols))), 
+                        shape=(total_rows, total_cols))
+    
+    full_b = np.concatenate(all_b)
+
+    return full_A, full_b, pixel_counts
+
+def parse_pixel_counts(pixel_counts, ref_shape, num_frames, chunk_map):
+    num_sky = ref_shape[0] * ref_shape[1]
+    skymap_coverage = pixel_counts[:num_sky].reshape(ref_shape)
+    offset_coverage = pixel_counts[num_sky:].reshape(num_frames, -1)
+    num_chunks = np.max(chunk_map) + 1
+    chunk_sizes = np.bincount(chunk_map[chunk_map >= 0].ravel(), minlength=num_chunks)
+    offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+    return skymap_coverage, offset_coverage, offset_valid_frac
 
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True):
@@ -1192,17 +1202,16 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
     # Convert the preconditioned solution back to original units: x = x_pre * M
     x = x_solver * M if precondition else x_solver
 
-    S, O = parse_x(x, ref_shape, num_frames)
-    return O, S
+    return x
 
 def parse_x(x, ref_shape, num_frames):
     """Utility function to parse the LSQR solution vector x into sky and offset components."""
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    O = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
-    S = x[:num_sky].reshape(ref_shape)
-    return S, O
+    offset = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
+    skymap = x[:num_sky].reshape(ref_shape)
+    return skymap, offset
 
-def endocde_x(S, O):
+def encode_x(skymap, offset):
     """Utility function to encode the sky and offset components back into a single vector x."""
-    return np.concatenate([S.flatten(), O.flatten()])
+    return np.concatenate([skymap.flatten(), offset.flatten()])

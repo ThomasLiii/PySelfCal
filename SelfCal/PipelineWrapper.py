@@ -66,28 +66,25 @@ class Reprojector:
         if output_dir is None:
             output_dir = self.config['reproj_dir']
 
-        start_time = time.time()
-        self.reproj_list = MakeMap.batch_reproject(
-            # Can edit
-            num_processes = max_workers, 
-            reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
-
-            # Porbably don't want to edit
-            exposure_list = self.exposure_list,
-            ref_wcs = self.ref_wcs, 
-            ref_shape = self.ref_shape,
-            output_dir = output_dir, 
-            padding_percentage = padding_percentage,
-            sci_ext_list = sci_ext_list, 
-            dq_ext_list = dq_ext_list,
-            exp_idx_list = exp_idx_list,
-            det_idx_list = det_idx_list,
-            replace_existing = replace_existing,
-            reproject_kwargs = reproject_kwargs
-            )
-        end_time = time.time()
-        print(f"Reprojection completed in {end_time - start_time:.2f} seconds.")
-        
+        with timer("Reprojection"):
+            self.reproj_list = MakeMap.batch_reproject(
+                # Can edit
+                num_processes = max_workers, 
+                reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
+                # Porbably don't want to edit
+                exposure_list = self.exposure_list,
+                ref_wcs = self.ref_wcs, 
+                ref_shape = self.ref_shape,
+                output_dir = output_dir, 
+                padding_percentage = padding_percentage,
+                sci_ext_list = sci_ext_list, 
+                dq_ext_list = dq_ext_list,
+                exp_idx_list = exp_idx_list,
+                det_idx_list = det_idx_list,
+                replace_existing = replace_existing,
+                reproject_kwargs = reproject_kwargs
+                )
+            
     def check_reproj_files(self):
         for f in tqdm(self.reproj_list):
             result = MakeMap.load_reproj_file(f, fields=['sub_data',])
@@ -108,83 +105,119 @@ class Reprojector:
             self.exp_idx_list.append(exp_idx)
         
 class Calibrator(Reprojector):
-    def __init__(self, config, reproj_dir=None):
+    def __init__(self, config, chunk_map, reproj_dir=None):
         super().__init__(config)
+        self.chunk_map = chunk_map
         self.config['cal_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'calibration')
         self.get_reproj_files(reproj_dir)
         self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
         self.A = None
-        self.B = None
+        self.b = None
+        self.x = None
+        self.pixel_counts = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, chunk_map=None, grid_valid_weight=None, max_workers=20, 
+    def setup_lsqr(self, apply_mask=True, apply_weight=True, grid_valid_weight=None, max_workers=20, 
                    outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
                    postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
-        start_time = time.time()
-        self.A, self.b = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
-               apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, grid_valid_weight=grid_valid_weight,
-               max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
-               batch_size=batch_size, offset_regularization=offset_regularization, reg_weight=reg_weight, adj_info=adj_info, mean_offsets=mean_offsets, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
-               weighted_damping=weighted_damping, damp_weight=damp_weight)
-        end_time = time.time()
-        print(f"LSQR setup completed in {end_time - start_time:.2f} seconds.")
-
-    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True):
-        start_time = time.time()
+        with timer("Setup LSQR"):
+            self.A, self.b, self.pixel_counts = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
+                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=self.chunk_map, grid_valid_weight=grid_valid_weight,
+                max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
+                batch_size=batch_size, offset_regularization=offset_regularization, reg_weight=reg_weight, adj_info=adj_info, mean_offsets=mean_offsets, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
+                weighted_damping=weighted_damping, damp_weight=damp_weight)
+    
+    
+    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False):
+        if resume:
+            if self.x is None:
+                print("No previous solution found. Starting from scratch.")
+            else:
+                x0 = self.x
+                print("Resuming LSQR from previous solution.")
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
-        self.O, self.S = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_frames=len(self.reproj_list),
-                                                    x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition)
-        end_time = time.time()
-        print(f"LSQR solved in {end_time - start_time:.2f} seconds.")
+        with timer("LSQR"):
+            self.x = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_frames=len(self.reproj_list),
+                                                        x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition)
     
+    def load_calibration(self, cal_path=None):
+        if cal_path is None:
+            cal_path = self.config['cal_path']
+        with h5py.File(cal_path, 'r') as f:
+            skymap = f['skymap']
+            offset = f['offset']
+            self.x = MakeMap.encode_x(skymap, offset)
+
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
         if cal_dir is None:
             cal_dir = self.config['cal_dir']
         if not os.path.exists(cal_dir):
             os.makedirs(cal_dir)
+        skymap, offset = MakeMap.parse_x(self.x, ref_shape=self.ref_shape, num_frames=len(self.reproj_list))
+        num_sky = self.ref_shape[0] * self.ref_shape[1]
+
+        skymap_coverage, offset_coverage, offset_coverage_frac = MakeMap.parse_pixel_counts(
+            pixel_counts=self.pixel_counts, ref_shape=self.ref_shape, num_frames=len(self.reproj_list), chunk_map=self.chunk_map)
 
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
-            f.create_dataset('O', data=self.O, compression='gzip')
-            f.create_dataset('S', data=self.S, compression='gzip')
+            f.create_dataset('offset', data=offset, compression='gzip')
+            f.create_dataset('skymap', data=skymap, compression='gzip')
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
+            f.create_dataset('skymap_coverage', data=skymap_coverage, compression='gzip')
+            f.create_dataset('offset_coverage', data=offset_coverage, compression='gzip')
+            f.create_dataset('offset_coverage_frac', data=offset_coverage_frac, compression='gzip')
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
+    def get_skymap(self):
+        skymap, offset = MakeMap.parse_x(self.x, ref_shape=self.ref_shape, num_frames=len(self.reproj_list))
+        return skymap
+
+    def get_offset(self):
+        skymap, offset = MakeMap.parse_x(self.x, ref_shape=self.ref_shape, num_frames=len(self.reproj_list))
+        return offset
+
 class Mosaicker(Reprojector):
-    def __init__(self, config, reproj_dir=None):
+    def __init__(self, config, chunk_map, reproj_dir=None):
         super().__init__(config)
+        self.chunk_map = chunk_map
         self.get_reproj_files(reproj_dir)
         self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
         self.config['mos_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'mosaic')
         self.cal_path = None
         self.cached_list = []
-        self.O = None
-        self.S = None
+        self.offset = None
+        self.skymap = None
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
-            self.O = f['O'][:]
-            self.S = f['S'][:]
+            self.offset = f['offset'][:]
+            self.skymap = f['skymap'][:]
             self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+            self.offset_coverage_frac = f['offset_coverage_frac'][:]
+            self.skymap_coverage = f['skymap_coverage'][:]
+            self.offset_coverage = f['offset_coverage'][:]
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
-    def make_mosaic(self, apply_mask=True, apply_weight=True, chunk_map=None, grid_valid_weight=None, max_workers=20, 
+    def make_mosaic(self, apply_mask=True, apply_weight=True, grid_valid_weight=None, max_workers=20, 
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[], 
         oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
-        cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None):
+        cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01):
 
         offset_param = None
         if apply_offset:
-            if self.O is not None:
-                O = self.O.copy()
+            if self.offset is not None:
+                offset = self.offset.copy()
+                offset_valid_mask = (self.offset_coverage_frac >= valid_chunk_thresh)
                 if normalize_offset:
-                    O = O - np.mean(O[O != 0])
-                offset_param = O
+                    offset[offset_valid_mask] = offset[offset_valid_mask] - np.mean(offset[offset_valid_mask])
+                offset[~offset_valid_mask] = 0.0
+                offset_param = offset
             else:
                 print("Warning: Calibration offsets not available. No offsets will be applied.")
 
@@ -195,7 +228,7 @@ class Mosaicker(Reprojector):
             'offset_list': offset_param,
             'apply_weight': apply_weight,
             'apply_mask': apply_mask,
-            'chunk_map': chunk_map,
+            'chunk_map': self.chunk_map,
             'max_workers': max_workers,
             'grid_valid_weight': grid_valid_weight,
             'ignore_list': ignore_list,
