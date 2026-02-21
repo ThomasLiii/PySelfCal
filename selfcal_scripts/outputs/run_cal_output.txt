@@ -2018,3 +2018,824 @@ Processing 13184 files in 132 batches...
 Std map computation finished in 512.84 seconds.
 Computing sigma-clipped mean map...
 Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 586.31 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch10_Detector4_NumSub10_NumCh34_NumCol5.fits
+Finished channel Ch10 for detector 4 in 6366.70 seconds.
+--------------------------------------------------
+
+Processing channel Ch11 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 1345.11 seconds.
+Solving least squares for 175557051 unknowns with 657559658 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 657559658 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.931e+03  1.931e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   5.203e+02  5.203e+02    2.7e-01  8.1e-01   3.0e+01  1.0e+00
+     2  0.00000e+00   2.571e+02  2.571e+02    1.3e-01  4.4e-01   4.2e+01  2.1e+00
+     3  0.00000e+00   1.902e+02  1.902e+02    9.9e-02  2.3e-01   5.1e+01  3.2e+00
+     4  0.00000e+00   1.690e+02  1.690e+02    8.8e-02  1.4e-01   5.8e+01  4.5e+00
+     5  0.00000e+00   1.596e+02  1.596e+02    8.3e-02  8.7e-02   6.4e+01  6.0e+00
+     6  0.00000e+00   1.552e+02  1.552e+02    8.0e-02  5.5e-02   7.1e+01  7.6e+00
+     7  0.00000e+00   1.531e+02  1.531e+02    7.9e-02  3.6e-02   7.6e+01  9.2e+00
+     8  0.00000e+00   1.521e+02  1.521e+02    7.9e-02  2.4e-02   8.2e+01  1.1e+01
+     9  0.00000e+00   1.516e+02  1.516e+02    7.9e-02  1.6e-02   8.7e+01  1.3e+01
+    10  0.00000e+00   1.514e+02  1.514e+02    7.8e-02  1.1e-02   9.2e+01  1.4e+01
+    40  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  3.1e-05   1.8e+02  9.0e+01
+    41  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  2.5e-05   1.8e+02  9.2e+01
+    42  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  1.9e-05   1.9e+02  9.5e+01
+    43  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  1.5e-05   1.9e+02  9.7e+01
+    44  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  1.2e-05   1.9e+02  9.9e+01
+    45  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  9.2e-06   1.9e+02  1.0e+02
+    46  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  7.0e-06   1.9e+02  1.0e+02
+    47  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  5.3e-06   2.0e+02  1.1e+02
+    48  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  3.9e-06   2.0e+02  1.1e+02
+    49  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  3.0e-06   2.0e+02  1.1e+02
+    50  0.00000e+00   1.511e+02  1.511e+02    7.8e-02  2.3e-06   2.0e+02  1.1e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 2.0e+02   arnorm = 7.2e-02
+itn   =      50   r2norm = 1.5e+02   acond = 1.1e+02   xnorm  = 7.1e+01
+ 
+LSQR solved in 1033.93 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch11_Detector4_NumSub10_NumCh34_NumCol5.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch11_Detector4_NumSub10_NumCh34_NumCol5.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 882.12 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 628.64 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 665.87 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 500.47 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch11_Detector4_NumSub10_NumCh34_NumCol5.fits
+Finished channel Ch11 for detector 4 in 5632.37 seconds.
+--------------------------------------------------
+
+Processing channel Ch12 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 701.38 seconds.
+Solving least squares for 175557051 unknowns with 648709364 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 648709364 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.911e+03  1.911e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   5.157e+02  5.157e+02    2.7e-01  8.1e-01   3.0e+01  1.0e+00
+     2  0.00000e+00   2.545e+02  2.545e+02    1.3e-01  4.4e-01   4.1e+01  2.1e+00
+     3  0.00000e+00   1.880e+02  1.880e+02    9.8e-02  2.3e-01   5.0e+01  3.2e+00
+     4  0.00000e+00   1.671e+02  1.671e+02    8.7e-02  1.4e-01   5.8e+01  4.5e+00
+     5  0.00000e+00   1.578e+02  1.578e+02    8.3e-02  8.7e-02   6.4e+01  6.0e+00
+     6  0.00000e+00   1.535e+02  1.535e+02    8.0e-02  5.5e-02   7.0e+01  7.6e+00
+     7  0.00000e+00   1.514e+02  1.514e+02    7.9e-02  3.6e-02   7.6e+01  9.2e+00
+     8  0.00000e+00   1.504e+02  1.504e+02    7.9e-02  2.4e-02   8.1e+01  1.1e+01
+     9  0.00000e+00   1.499e+02  1.499e+02    7.8e-02  1.6e-02   8.6e+01  1.3e+01
+    10  0.00000e+00   1.497e+02  1.497e+02    7.8e-02  1.1e-02   9.1e+01  1.4e+01
+    40  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  4.8e-05   1.8e+02  9.2e+01
+    41  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  3.9e-05   1.8e+02  9.4e+01
+    42  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  3.3e-05   1.8e+02  9.7e+01
+    43  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  2.7e-05   1.9e+02  9.9e+01
+    44  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  2.3e-05   1.9e+02  1.0e+02
+    45  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  1.9e-05   1.9e+02  1.0e+02
+    46  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  1.6e-05   1.9e+02  1.1e+02
+    47  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  1.4e-05   2.0e+02  1.1e+02
+    48  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  1.2e-05   2.0e+02  1.1e+02
+    49  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  1.1e-05   2.0e+02  1.1e+02
+    50  0.00000e+00   1.493e+02  1.493e+02    7.8e-02  9.6e-06   2.0e+02  1.2e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 2.0e+02   arnorm = 2.9e-01
+itn   =      50   r2norm = 1.5e+02   acond = 1.2e+02   xnorm  = 7.0e+01
+ 
+LSQR solved in 1119.27 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch12_Detector4_NumSub10_NumCh34_NumCol5.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch12_Detector4_NumSub10_NumCh34_NumCol5.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 843.47 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 581.60 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 693.67 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 567.77 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch12_Detector4_NumSub10_NumCh34_NumCol5.fits
+Finished channel Ch12 for detector 4 in 5065.67 seconds.
+--------------------------------------------------
+
+Processing channel Ch13 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 583.42 seconds.
+Solving least squares for 175557051 unknowns with 648668481 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 648668481 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.892e+03  1.892e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   5.135e+02  5.135e+02    2.7e-01  8.1e-01   3.0e+01  1.0e+00
+     2  0.00000e+00   2.526e+02  2.526e+02    1.3e-01  4.4e-01   4.1e+01  2.1e+00
+     3  0.00000e+00   1.861e+02  1.861e+02    9.8e-02  2.3e-01   5.0e+01  3.2e+00
+     4  0.00000e+00   1.653e+02  1.653e+02    8.7e-02  1.4e-01   5.8e+01  4.5e+00
+     5  0.00000e+00   1.560e+02  1.560e+02    8.2e-02  8.8e-02   6.4e+01  6.0e+00
+     6  0.00000e+00   1.517e+02  1.517e+02    8.0e-02  5.5e-02   7.0e+01  7.6e+00
+     7  0.00000e+00   1.497e+02  1.497e+02    7.9e-02  3.6e-02   7.6e+01  9.2e+00
+     8  0.00000e+00   1.487e+02  1.487e+02    7.9e-02  2.4e-02   8.1e+01  1.1e+01
+     9  0.00000e+00   1.482e+02  1.482e+02    7.8e-02  1.6e-02   8.6e+01  1.3e+01
+    10  0.00000e+00   1.480e+02  1.480e+02    7.8e-02  1.1e-02   9.1e+01  1.4e+01
+    40  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.8e-04   1.8e+02  1.1e+02
+    41  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.7e-04   1.8e+02  1.1e+02
+    42  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.6e-04   1.9e+02  1.1e+02
+    43  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.6e-04   1.9e+02  1.2e+02
+    44  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.5e-04   1.9e+02  1.2e+02
+    45  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.4e-04   1.9e+02  1.3e+02
+    46  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.4e-04   1.9e+02  1.3e+02
+    47  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.3e-04   2.0e+02  1.4e+02
+    48  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.3e-04   2.0e+02  1.4e+02
+    49  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.2e-04   2.0e+02  1.5e+02
+    50  0.00000e+00   1.476e+02  1.476e+02    7.8e-02  1.1e-04   2.0e+02  1.5e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 2.0e+02   arnorm = 3.2e+00
+itn   =      50   r2norm = 1.5e+02   acond = 1.5e+02   xnorm  = 7.0e+01
+ 
+LSQR solved in 1228.90 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch13_Detector4_NumSub10_NumCh34_NumCol5.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch13_Detector4_NumSub10_NumCh34_NumCol5.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 841.49 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 521.95 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 687.29 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 609.32 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch13_Detector4_NumSub10_NumCh34_NumCol5.fits
+Finished channel Ch13 for detector 4 in 5049.17 seconds.
+--------------------------------------------------
+
+Processing channel Ch14 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 630.67 seconds.
+Solving least squares for 175557051 unknowns with 646674789 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 646674789 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.871e+03  1.871e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   5.065e+02  5.065e+02    2.7e-01  8.1e-01   3.0e+01  1.0e+00
+     2  0.00000e+00   2.490e+02  2.490e+02    1.3e-01  4.4e-01   4.1e+01  2.1e+00
+     3  0.00000e+00   1.838e+02  1.838e+02    9.8e-02  2.3e-01   5.0e+01  3.2e+00
+     4  0.00000e+00   1.633e+02  1.633e+02    8.7e-02  1.4e-01   5.7e+01  4.5e+00
+     5  0.00000e+00   1.541e+02  1.541e+02    8.2e-02  8.8e-02   6.4e+01  6.0e+00
+     6  0.00000e+00   1.499e+02  1.499e+02    8.0e-02  5.6e-02   7.0e+01  7.6e+00
+     7  0.00000e+00   1.480e+02  1.480e+02    7.9e-02  3.7e-02   7.6e+01  9.2e+00
+     8  0.00000e+00   1.470e+02  1.470e+02    7.9e-02  2.4e-02   8.2e+01  1.1e+01
+     9  0.00000e+00   1.465e+02  1.465e+02    7.8e-02  1.6e-02   8.7e+01  1.3e+01
+    10  0.00000e+00   1.463e+02  1.463e+02    7.8e-02  1.1e-02   9.2e+01  1.4e+01
+    40  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  3.0e-04   1.8e+02  1.2e+02
+    41  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  2.8e-04   1.8e+02  1.3e+02
+    42  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  2.6e-04   1.9e+02  1.3e+02
+    43  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  2.5e-04   1.9e+02  1.3e+02
+    44  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  2.3e-04   1.9e+02  1.4e+02
+    45  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  2.1e-04   1.9e+02  1.4e+02
+    46  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  1.8e-04   1.9e+02  1.5e+02
+    47  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  1.6e-04   2.0e+02  1.5e+02
+    48  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  1.4e-04   2.0e+02  1.6e+02
+    49  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  1.2e-04   2.0e+02  1.6e+02
+    50  0.00000e+00   1.459e+02  1.459e+02    7.8e-02  1.1e-04   2.0e+02  1.6e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 2.0e+02   arnorm = 3.2e+00
+itn   =      50   r2norm = 1.5e+02   acond = 1.6e+02   xnorm  = 6.9e+01
+ 
+LSQR solved in 1565.66 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch14_Detector4_NumSub10_NumCh34_NumCol5.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch14_Detector4_NumSub10_NumCh34_NumCol5.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 1091.92 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 590.29 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 1047.69 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 703.89 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch14_Detector4_NumSub10_NumCh34_NumCol5.fits
+Finished channel Ch14 for detector 4 in 6196.83 seconds.
+--------------------------------------------------
+
+Processing channel Ch15 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 745.12 seconds.
+Solving least squares for 175557051 unknowns with 654079079 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 654079079 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.868e+03  1.868e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   5.058e+02  5.058e+02    2.7e-01  8.1e-01   3.0e+01  1.0e+00
+     2  0.00000e+00   2.483e+02  2.483e+02    1.3e-01  4.4e-01   4.1e+01  2.1e+00
+     3  0.00000e+00   1.836e+02  1.836e+02    9.8e-02  2.3e-01   5.1e+01  3.2e+00
+     4  0.00000e+00   1.633e+02  1.633e+02    8.7e-02  1.4e-01   5.8e+01  4.5e+00
+     5  0.00000e+00   1.541e+02  1.541e+02    8.3e-02  8.7e-02   6.4e+01  6.0e+00
+     6  0.00000e+00   1.498e+02  1.498e+02    8.0e-02  5.4e-02   7.0e+01  7.6e+00
+     7  0.00000e+00   1.479e+02  1.479e+02    7.9e-02  3.5e-02   7.6e+01  9.2e+00
+     8  0.00000e+00   1.469e+02  1.469e+02    7.9e-02  2.3e-02   8.1e+01  1.1e+01
+     9  0.00000e+00   1.465e+02  1.465e+02    7.8e-02  1.5e-02   8.6e+01  1.3e+01
+    10  0.00000e+00   1.462e+02  1.462e+02    7.8e-02  1.1e-02   9.1e+01  1.4e+01
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 589.34 seconds.
+Solving least squares for 175557051 unknowns with 663486021 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 663486021 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   4.049e+04  4.049e+04    1.0e+00  1.9e-02
+     1  0.00000e+00   1.750e+04  1.750e+04    4.3e-01  7.0e-01   8.6e+02  1.0e+00
+     2  0.00000e+00   1.062e+04  1.062e+04    2.6e-01  4.2e-01   1.2e+03  2.1e+00
+     3  0.00000e+00   7.791e+03  7.791e+03    1.9e-01  2.9e-01   1.4e+03  3.4e+00
+     4  0.00000e+00   6.201e+03  6.201e+03    1.5e-01  2.3e-01   1.7e+03  4.9e+00
+     5  0.00000e+00   5.283e+03  5.283e+03    1.3e-01  1.8e-01   1.9e+03  6.6e+00
+     6  0.00000e+00   4.707e+03  4.707e+03    1.2e-01  1.4e-01   2.1e+03  8.3e+00
+     7  0.00000e+00   4.294e+03  4.294e+03    1.1e-01  1.2e-01   2.3e+03  1.0e+01
+     8  0.00000e+00   3.969e+03  3.969e+03    9.8e-02  9.4e-02   2.4e+03  1.2e+01
+     9  0.00000e+00   3.749e+03  3.749e+03    9.3e-02  7.1e-02   2.6e+03  1.5e+01
+    10  0.00000e+00   3.613e+03  3.613e+03    8.9e-02  5.7e-02   2.7e+03  1.7e+01
+    40  0.00000e+00   2.694e+03  2.694e+03    6.7e-02  4.5e-03   5.4e+03  1.2e+02
+    41  0.00000e+00   2.692e+03  2.692e+03    6.6e-02  4.3e-03   5.5e+03  1.3e+02
+    42  0.00000e+00   2.690e+03  2.690e+03    6.6e-02  4.1e-03   5.5e+03  1.3e+02
+    43  0.00000e+00   2.688e+03  2.688e+03    6.6e-02  3.9e-03   5.6e+03  1.4e+02
+    44  0.00000e+00   2.687e+03  2.687e+03    6.6e-02  3.7e-03   5.6e+03  1.4e+02
+    45  0.00000e+00   2.685e+03  2.685e+03    6.6e-02  3.5e-03   5.7e+03  1.5e+02
+    46  0.00000e+00   2.684e+03  2.684e+03    6.6e-02  3.3e-03   5.8e+03  1.5e+02
+    47  0.00000e+00   2.682e+03  2.682e+03    6.6e-02  3.1e-03   5.8e+03  1.6e+02
+    48  0.00000e+00   2.681e+03  2.681e+03    6.6e-02  2.9e-03   5.9e+03  1.6e+02
+    49  0.00000e+00   2.680e+03  2.680e+03    6.6e-02  2.8e-03   5.9e+03  1.7e+02
+    50  0.00000e+00   2.679e+03  2.679e+03    6.6e-02  2.6e-03   6.0e+03  1.7e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 2.7e+03   anorm = 6.0e+03   arnorm = 4.2e+04
+itn   =      50   r2norm = 2.7e+03   acond = 1.7e+02   xnorm  = 7.5e+01
+ 
+LSQR solved in 817.70 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 806.64 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 1145.29 seconds.
+Solving least squares for 175557051 unknowns with 663486021 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 663486021 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.157e+03  1.157e+03    1.0e+00  1.9e-02
+     1  0.00000e+00   5.299e+02  5.299e+02    4.6e-01  7.0e-01   2.5e+01  1.0e+00
+     2  0.00000e+00   3.352e+02  3.352e+02    2.9e-01  4.4e-01   3.5e+01  2.2e+00
+     3  0.00000e+00   2.474e+02  2.474e+02    2.1e-01  3.0e-01   4.3e+01  3.5e+00
+     4  0.00000e+00   1.970e+02  1.970e+02    1.7e-01  2.3e-01   5.0e+01  5.0e+00
+     5  0.00000e+00   1.654e+02  1.654e+02    1.4e-01  1.8e-01   5.7e+01  6.7e+00
+     6  0.00000e+00   1.456e+02  1.456e+02    1.3e-01  1.5e-01   6.3e+01  8.4e+00
+     7  0.00000e+00   1.322e+02  1.322e+02    1.1e-01  1.2e-01   6.9e+01  1.0e+01
+     8  0.00000e+00   1.222e+02  1.222e+02    1.1e-01  9.9e-02   7.5e+01  1.2e+01
+     9  0.00000e+00   1.147e+02  1.147e+02    9.9e-02  8.2e-02   8.0e+01  1.5e+01
+    10  0.00000e+00   1.095e+02  1.095e+02    9.5e-02  6.3e-02   8.4e+01  1.7e+01
+    40  0.00000e+00   8.718e+01  8.718e+01    7.5e-02  1.4e-03   1.7e+02  1.1e+02
+    41  0.00000e+00   8.717e+01  8.717e+01    7.5e-02  1.2e-03   1.8e+02  1.1e+02
+    42  0.00000e+00   8.717e+01  8.717e+01    7.5e-02  1.0e-03   1.8e+02  1.1e+02
+    43  0.00000e+00   8.717e+01  8.717e+01    7.5e-02  8.9e-04   1.8e+02  1.2e+02
+    44  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  7.8e-04   1.8e+02  1.2e+02
+    45  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  6.9e-04   1.8e+02  1.2e+02
+    46  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  6.3e-04   1.9e+02  1.3e+02
+    47  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  5.7e-04   1.9e+02  1.3e+02
+    48  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  5.2e-04   1.9e+02  1.3e+02
+    49  0.00000e+00   8.716e+01  8.716e+01    7.5e-02  4.8e-04   1.9e+02  1.4e+02
+    50  0.00000e+00   8.715e+01  8.715e+01    7.5e-02  4.4e-04   1.9e+02  1.4e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 8.7e+01   anorm = 1.9e+02   arnorm = 7.5e+00
+itn   =      50   r2norm = 8.7e+01   acond = 1.4e+02   xnorm  = 7.2e+01
+ 
+LSQR solved in 930.66 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 1152.74 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 547.34 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 487.40 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 492.86 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.fits
+Finished channel Ch8 for detector 4 in 6009.77 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration file /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeighted.h5 already exists. Skipping calibration and mosaicking for channel Ch8.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration file /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.h5 already exists. Skipping calibration and mosaicking for channel Ch8.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 871.37 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 451.59 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 458.52 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 465.29 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.fits
+Finished channel Ch8 for detector 4 in 2829.41 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration file /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.h5 already exists. Skipping calibration and mosaicking for channel Ch8.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 814.95 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 463.51 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 469.54 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 480.38 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch8_Detector4_NumSub10_NumCh34_NumCol5_WavelengthWeightedCoaddOnly.fits
+Finished channel Ch8 for detector 4 in 2810.92 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 1143.20 seconds.
+Solving least squares for 175557051 unknowns with 663486021 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 663486021 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.971e+03  1.971e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   9.199e+02  9.199e+02    4.7e-01  1.9e+00   3.2e+01  1.0e+00
+     2  0.00000e+00   5.241e+02  5.241e+02    2.7e-01  4.8e-01   8.9e+01  3.2e+00
+     3  0.00000e+00   4.049e+02  4.049e+02    2.1e-01  3.2e-01   1.1e+02  4.6e+00
+     4  0.00000e+00   3.325e+02  3.325e+02    1.7e-01  2.8e-01   1.4e+02  6.2e+00
+     5  0.00000e+00   2.741e+02  2.741e+02    1.4e-01  2.2e-01   1.7e+02  8.2e+00
+     6  0.00000e+00   2.325e+02  2.325e+02    1.2e-01  1.5e-01   1.9e+02  1.0e+01
+     7  0.00000e+00   2.115e+02  2.115e+02    1.1e-01  1.1e-01   2.1e+02  1.2e+01
+     8  0.00000e+00   1.990e+02  1.990e+02    1.0e-01  9.1e-02   2.2e+02  1.4e+01
+     9  0.00000e+00   1.897e+02  1.897e+02    9.6e-02  7.4e-02   2.4e+02  1.6e+01
+    10  0.00000e+00   1.825e+02  1.825e+02    9.3e-02  6.1e-02   2.5e+02  1.8e+01
+    40  0.00000e+00   1.559e+02  1.559e+02    7.9e-02  8.2e-03   5.3e+02  1.5e+02
+    41  0.00000e+00   1.555e+02  1.555e+02    7.9e-02  8.5e-03   5.4e+02  1.6e+02
+    42  0.00000e+00   1.550e+02  1.550e+02    7.9e-02  8.8e-03   5.5e+02  1.7e+02
+    43  0.00000e+00   1.545e+02  1.545e+02    7.8e-02  8.9e-03   5.5e+02  1.9e+02
+    44  0.00000e+00   1.540e+02  1.540e+02    7.8e-02  8.9e-03   5.6e+02  2.0e+02
+    45  0.00000e+00   1.535e+02  1.535e+02    7.8e-02  8.7e-03   5.7e+02  2.1e+02
+    46  0.00000e+00   1.530e+02  1.530e+02    7.8e-02  8.4e-03   5.7e+02  2.2e+02
+    47  0.00000e+00   1.525e+02  1.525e+02    7.7e-02  8.0e-03   5.8e+02  2.4e+02
+    48  0.00000e+00   1.521e+02  1.521e+02    7.7e-02  7.5e-03   5.9e+02  2.5e+02
+    49  0.00000e+00   1.517e+02  1.517e+02    7.7e-02  7.0e-03   5.9e+02  2.6e+02
+    50  0.00000e+00   1.513e+02  1.513e+02    7.7e-02  6.5e-03   6.0e+02  2.7e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 6.0e+02   arnorm = 5.9e+02
+itn   =      50   r2norm = 1.5e+02   acond = 2.7e+02   xnorm  = 7.6e+01
+ 
+LSQR solved in 1474.98 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_LamWeightedControl_Detector4_NumSub10_NumCh34_NumCol5_LamWeightedControl.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_D4_Ch8_LamWeightedControl_Detector4_NumSub10_NumCh34_NumCol5_LamWeightedControl.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 3156.00 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 548.51 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 547.45 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 560.59 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_D4_Ch8_LamWeightedControl_Detector4_NumSub10_NumCh34_NumCol5_LamWeightedControl.fits
+Finished channel Ch8 for detector 4 in 8961.73 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 1246.94 seconds.
+Solving least squares for 175557051 unknowns with 663486021 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 663486021 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.517e+03  1.517e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   8.454e+02  8.454e+02    5.6e-01  1.9e+00   2.8e+01  1.0e+00
+     2  0.00000e+00   5.889e+02  5.889e+02    3.9e-01  3.8e-01   8.7e+01  3.6e+00
+     3  0.00000e+00   5.007e+02  5.007e+02    3.3e-01  2.8e-01   1.1e+02  5.1e+00
+     4  0.00000e+00   4.255e+02  4.255e+02    2.8e-01  2.8e-01   1.4e+02  7.0e+00
+     5  0.00000e+00   3.459e+02  3.459e+02    2.3e-01  2.4e-01   1.6e+02  9.5e+00
+     6  0.00000e+00   2.808e+02  2.808e+02    1.9e-01  1.8e-01   1.9e+02  1.2e+01
+     7  0.00000e+00   2.431e+02  2.431e+02    1.6e-01  1.5e-01   2.0e+02  1.4e+01
+     8  0.00000e+00   2.166e+02  2.166e+02    1.4e-01  1.3e-01   2.2e+02  1.6e+01
+     9  0.00000e+00   1.939e+02  1.939e+02    1.3e-01  1.2e-01   2.4e+02  1.8e+01
+    10  0.00000e+00   1.746e+02  1.746e+02    1.2e-01  1.0e-01   2.5e+02  2.1e+01
+    40  0.00000e+00   1.187e+02  1.187e+02    7.8e-02  2.6e-03   5.3e+02  1.1e+02
+    41  0.00000e+00   1.186e+02  1.186e+02    7.8e-02  2.4e-03   5.4e+02  1.1e+02
+    42  0.00000e+00   1.186e+02  1.186e+02    7.8e-02  2.4e-03   5.5e+02  1.2e+02
+    43  0.00000e+00   1.186e+02  1.186e+02    7.8e-02  2.3e-03   5.5e+02  1.2e+02
+    44  0.00000e+00   1.186e+02  1.186e+02    7.8e-02  2.3e-03   5.6e+02  1.3e+02
+    45  0.00000e+00   1.185e+02  1.185e+02    7.8e-02  2.3e-03   5.7e+02  1.3e+02
+    46  0.00000e+00   1.185e+02  1.185e+02    7.8e-02  2.3e-03   5.7e+02  1.4e+02
+    47  0.00000e+00   1.185e+02  1.185e+02    7.8e-02  2.3e-03   5.8e+02  1.4e+02
+    48  0.00000e+00   1.184e+02  1.184e+02    7.8e-02  2.3e-03   5.9e+02  1.5e+02
+    49  0.00000e+00   1.184e+02  1.184e+02    7.8e-02  2.4e-03   5.9e+02  1.5e+02
+    50  0.00000e+00   1.184e+02  1.184e+02    7.8e-02  2.4e-03   6.0e+02  1.6e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.2e+02   anorm = 6.0e+02   arnorm = 1.7e+02
+itn   =      50   r2norm = 1.2e+02   acond = 1.6e+02   xnorm  = 7.3e+01
+ 
+LSQR solved in 1194.27 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_FullLamWeighted.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_FullLamWeighted.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 1790.42 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 634.61 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 518.11 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 543.45 seconds.
+Processing 13184 files in 330 batches with 30 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_Detector4_NumSub10_NumCh34_NumCol5_Ch8_FullLamWeighted.fits
+Finished channel Ch8 for detector 4 in 8142.03 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 748.94 seconds.
+Solving least squares for 175557051 unknowns with 663486021 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 663486021 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   1.971e+03  1.971e+03    1.0e+00  1.5e-02
+     1  0.00000e+00   9.199e+02  9.199e+02    4.7e-01  1.9e+00   3.2e+01  1.0e+00
+     2  0.00000e+00   5.241e+02  5.241e+02    2.7e-01  4.8e-01   8.9e+01  3.2e+00
+     3  0.00000e+00   4.049e+02  4.049e+02    2.1e-01  3.2e-01   1.1e+02  4.6e+00
+     4  0.00000e+00   3.325e+02  3.325e+02    1.7e-01  2.8e-01   1.4e+02  6.2e+00
+     5  0.00000e+00   2.741e+02  2.741e+02    1.4e-01  2.2e-01   1.7e+02  8.2e+00
+     6  0.00000e+00   2.325e+02  2.325e+02    1.2e-01  1.5e-01   1.9e+02  1.0e+01
+     7  0.00000e+00   2.115e+02  2.115e+02    1.1e-01  1.1e-01   2.1e+02  1.2e+01
+     8  0.00000e+00   1.990e+02  1.990e+02    1.0e-01  9.1e-02   2.2e+02  1.4e+01
+     9  0.00000e+00   1.897e+02  1.897e+02    9.6e-02  7.4e-02   2.4e+02  1.6e+01
+    10  0.00000e+00   1.825e+02  1.825e+02    9.3e-02  6.1e-02   2.5e+02  1.8e+01
+    40  0.00000e+00   1.559e+02  1.559e+02    7.9e-02  8.2e-03   5.3e+02  1.5e+02
+    41  0.00000e+00   1.555e+02  1.555e+02    7.9e-02  8.5e-03   5.4e+02  1.6e+02
+    42  0.00000e+00   1.550e+02  1.550e+02    7.9e-02  8.8e-03   5.5e+02  1.7e+02
+    43  0.00000e+00   1.545e+02  1.545e+02    7.8e-02  8.9e-03   5.5e+02  1.9e+02
+    44  0.00000e+00   1.540e+02  1.540e+02    7.8e-02  8.9e-03   5.6e+02  2.0e+02
+    45  0.00000e+00   1.535e+02  1.535e+02    7.8e-02  8.7e-03   5.7e+02  2.1e+02
+    46  0.00000e+00   1.530e+02  1.530e+02    7.8e-02  8.4e-03   5.7e+02  2.2e+02
+    47  0.00000e+00   1.525e+02  1.525e+02    7.7e-02  8.0e-03   5.8e+02  2.4e+02
+    48  0.00000e+00   1.521e+02  1.521e+02    7.7e-02  7.5e-03   5.9e+02  2.5e+02
+    49  0.00000e+00   1.517e+02  1.517e+02    7.7e-02  7.0e-03   5.9e+02  2.6e+02
+    50  0.00000e+00   1.513e+02  1.513e+02    7.7e-02  6.5e-03   6.0e+02  2.7e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 1.5e+02   anorm = 6.0e+02   arnorm = 5.9e+02
+itn   =      50   r2norm = 1.5e+02   acond = 2.7e+02   xnorm  = 7.6e+01
+ 
+LSQR solved in 940.80 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_CoaddLamWeighted_Narrow.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_CoaddLamWeighted_Narrow.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 770.02 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 464.46 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 467.94 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 471.25 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_Detector4_NumSub10_NumCh34_NumCol5_Ch8_CoaddLamWeighted_Narrow.fits
+Finished channel Ch8 for detector 4 in 5006.98 seconds.
+--------------------------------------------------
+
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D4.npy
+Processing channel Ch8 for detector 4...
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 1367 vertical strip boundaries.
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Processing 13184 items in 330 batches...
+Applying Coverage-Weighted Damping...
+LSQR setup completed in 2029.49 seconds.
+Solving least squares for 175557051 unknowns with 1507025525 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 1507025525 rows and 175557051 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       50
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.150e+03  3.150e+03    1.0e+00  1.3e-02
+     1  0.00000e+00   8.288e+02  8.288e+02    2.6e-01  1.6e+00   4.3e+01  1.0e+00
+     2  0.00000e+00   4.518e+02  4.518e+02    1.4e-01  4.3e-01   9.7e+01  2.6e+00
+     3  0.00000e+00   3.722e+02  3.722e+02    1.2e-01  2.3e-01   1.2e+02  3.7e+00
+     4  0.00000e+00   3.454e+02  3.454e+02    1.1e-01  1.4e-01   1.5e+02  5.1e+00
+     5  0.00000e+00   3.338e+02  3.338e+02    1.1e-01  7.2e-02   1.8e+02  6.7e+00
+     6  0.00000e+00   3.292e+02  3.292e+02    1.0e-01  3.7e-02   2.0e+02  8.2e+00
+     7  0.00000e+00   3.276e+02  3.276e+02    1.0e-01  2.2e-02   2.2e+02  9.6e+00
+     8  0.00000e+00   3.269e+02  3.269e+02    1.0e-01  1.6e-02   2.4e+02  1.1e+01
+     9  0.00000e+00   3.264e+02  3.264e+02    1.0e-01  1.3e-02   2.5e+02  1.3e+01
+    10  0.00000e+00   3.260e+02  3.260e+02    1.0e-01  1.1e-02   2.7e+02  1.5e+01
+    40  0.00000e+00   3.116e+02  3.116e+02    9.9e-02  1.6e-03   5.6e+02  1.9e+02
+    41  0.00000e+00   3.116e+02  3.116e+02    9.9e-02  1.4e-03   5.6e+02  1.9e+02
+    42  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  1.2e-03   5.7e+02  2.0e+02
+    43  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  1.0e-03   5.8e+02  2.0e+02
+    44  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  8.7e-04   5.8e+02  2.0e+02
+    45  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  7.6e-04   5.9e+02  2.1e+02
+    46  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  6.5e-04   6.0e+02  2.1e+02
+    47  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  5.7e-04   6.0e+02  2.1e+02
+    48  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  5.0e-04   6.1e+02  2.2e+02
+    49  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  4.4e-04   6.2e+02  2.2e+02
+    50  0.00000e+00   3.115e+02  3.115e+02    9.9e-02  3.9e-04   6.2e+02  2.2e+02
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 3.1e+02   anorm = 6.2e+02   arnorm = 7.6e+01
+itn   =      50   r2norm = 3.1e+02   acond = 2.2e+02   xnorm  = 8.1e+01
+ 
+LSQR solved in 13662.16 seconds.
+Calibration saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_Control.h5
+Loading reference frame from: /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/ref.fits
+Calibration loaded from /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_Ch8_Control.h5
+Caching intermediate computations...
+Processing 13184 files in 330 batches...
+Cache computation finished in 835.57 seconds.
+Computing mean map...
+Processing 13184 files in 132 batches...
+Mean map computation finished in 557.86 seconds.
+Computing std map...
+Processing 13184 files in 132 batches...
+Std map computation finished in 522.10 seconds.
+Computing sigma-clipped mean map...
+Processing 13184 files in 132 batches...
+Sigma-clipped mean map computation finished in 583.59 seconds.
+Processing 13184 files in 330 batches with 50 workers...
+Mosaic saved to /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det4_6p2arcsec/mosaic/mosaic_Detector4_NumSub10_NumCh34_NumCol5_Ch8_Control.fits
+Finished channel Ch8 for detector 4 in 23500.90 seconds.
+--------------------------------------------------
+
