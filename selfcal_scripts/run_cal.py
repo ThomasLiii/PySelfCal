@@ -72,7 +72,7 @@ if __name__ == "__main__":
         'ApplyMask': True,
         'ApplyWeight': False,
         'OutlierThresh': 2.0,
-        'IgnoreList': [21],
+        'IgnoreList': [],
         'OffsetRegularization': True,
         'RegWeight': 10.0,
         'WeightedDamping': True,
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         mos_file = f"mosaic_{job_tag}.fits"
 
         # Calibration
-        cc = PipelineWrapper.Calibrator(selfcal_config)
+        cc = PipelineWrapper.Calibrator(selfcal_config, chunk_map=detector_inputs['det_chunk_map'])
         cal_path = os.path.join(cc.config['cal_dir'], cal_file)
         # if os.path.exists(cal_path):
         #     print(f"Calibration file {cal_path} already exists. Skipping calibration and mosaicking for channel {job_name}.")
@@ -133,7 +133,6 @@ if __name__ == "__main__":
         cc.setup_lsqr(
             apply_mask=calibration_setting['ApplyMask'], 
             apply_weight=calibration_setting['ApplyWeight'],
-            chunk_map=detector_inputs['det_chunk_map'], 
             grid_valid_weight=det_valid_mask, 
             max_workers=50, 
             outlier_thresh=calibration_setting['OutlierThresh'],
@@ -159,7 +158,7 @@ if __name__ == "__main__":
                                     tot_subchannels=frame_setting['NumSub']*frame_setting['NumCh']+2, 
                                     num_columns=frame_setting['NumCol'])
         
-        mm = PipelineWrapper.Mosaicker(selfcal_config)
+        mm = PipelineWrapper.Mosaicker(selfcal_config, chunk_map=detector_inputs['grid_chunk_map'])
         mm.load_calibration(cal_path=cal_path)
         cache_dir = f'{CACHE_DIR}cache_{job_tag}'
         grid_valid_mask = chunk_valid_mask_padded[detector_inputs['grid_chunk_map']]
@@ -169,7 +168,6 @@ if __name__ == "__main__":
         maps = mm.make_mosaic(
             apply_mask=mosaic_setting['ApplyMask'], 
             apply_weight=mosaic_setting['ApplyWeight'], 
-            chunk_map=detector_inputs['grid_chunk_map'], 
             grid_valid_weight=grid_valid_weight, 
             max_workers=50,
             make_std_map=mosaic_setting['MakeStdMap'], 
