@@ -9,6 +9,7 @@ from . import WCSHelper
 from . import MakeMap
 
 from astropy.io import fits
+from dataclasses import dataclass, field
 
 from contextlib import contextmanager
 import time
@@ -20,41 +21,54 @@ def timer(description):
     elapsed = time.perf_counter() - start
     print(f"{description} finished in {elapsed:.2f} seconds.")
 
+@dataclass
+class PipelineConfig:
+    output_dir: str
+    run_name: str
+    resolution_arcsec: float
+    ref_path: str = None
+    reproj_dir: str = None
+    cal_dir: str = None
+    mos_dir: str = None
+
+    def __post_init__(self):
+        # Auto-fill dependent paths if they weren't provided
+        base_path = os.path.join(self.output_dir, self.run_name)
+        if self.ref_path is None:
+            self.ref_path = os.path.join(base_path, 'ref.fits')
+        if self.reproj_dir is None:
+            self.reproj_dir = os.path.join(base_path, 'reprojected')
+        if self.cal_dir is None:
+            self.cal_dir = os.path.join(base_path, 'calibration')
+        if self.mos_dir is None:
+            self.mos_dir = os.path.join(base_path, 'mosaic')
+
 class Reprojector:
-    def __init__(self, config, exposure_list=None):
+    def __init__(self, config: PipelineConfig, exposure_list=None):
         '''Initialize path to reference WCS and reprojected files'''
         self.config = config
-        # check if the config has the required keys
-        required_keys = ['output_dir', 'run_name', 'resolution_arcsec']
-        for key in required_keys:
-            if key not in self.config:
-                raise ValueError(f"Configuration must include '{key}'")
 
         self.exposure_list = exposure_list
-        if 'ref_path' not in self.config:
-            self.config['ref_path'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'ref.fits')
-        if 'reproj_dir' not in self.config:
-            self.config['reproj_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'reprojected')
-        if not os.path.exists(self.config['reproj_dir']):
-            os.makedirs(self.config['reproj_dir'])
+        if not os.path.exists(self.config.reproj_dir):
+            os.makedirs(self.config.reproj_dir)
 
         self.ref_shape = None
         self.ref_wcs = None
 
     def define_reference(self, padding_pixels=100, use_ext=[1]):
         '''Define the smallest WCS oriented north-up, east-left frame that can contain all exposures'''
-        if not os.path.exists(self.config['ref_path']):
-            print(f"Reference WCS not found at {self.config['ref_path']}. Creating a new reference frame.")
+        if not os.path.exists(self.config.ref_path):
+            print(f"Reference WCS not found at {self.config.ref_path}. Creating a new reference frame.")
             self.ref_wcs, self.ref_shape = WCSHelper.find_optimal_frame(
                 exposure_list=self.exposure_list,
-                resolution_arcsec=self.config['resolution_arcsec'],
+                resolution_arcsec=self.config.resolution_arcsec,
                 padding_pixels=padding_pixels,
                 use_ext=use_ext
             )
-            WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, os.path.join(self.config['output_dir'], self.config['run_name'], 'ref.fits'))
-            print(f"Reference WCS saved to {self.config['ref_path']}")
+            WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
+            print(f"Reference WCS saved to {self.config.ref_path}")
         else:
-            self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
+            self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
         print(f'Mosaic shape: {self.ref_shape}')
         print(f'Mosaic WCS: {self.ref_wcs}')
 
@@ -64,7 +78,7 @@ class Reprojector:
         if self.ref_wcs is None or self.ref_shape is None:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
-            output_dir = self.config['reproj_dir']
+            output_dir = self.config.reproj_dir
 
         with timer("Reprojection"):
             self.reproj_list = MakeMap.batch_reproject(
@@ -94,7 +108,7 @@ class Reprojector:
 
     def get_reproj_files(self, reproj_dir=None):
         if reproj_dir is None:
-            reproj_dir = self.config['reproj_dir']
+            reproj_dir = self.config.reproj_dir
         self.reproj_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
         self.det_idx_list = []
         self.exp_idx_list = []
@@ -105,23 +119,22 @@ class Reprojector:
             self.exp_idx_list.append(exp_idx)
         
 class Calibrator(Reprojector):
-    def __init__(self, config, chunk_map, reproj_dir=None):
+    def __init__(self, config: PipelineConfig, reproj_dir=None):
         super().__init__(config)
-        self.chunk_map = chunk_map
-        self.config['cal_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'calibration')
         self.get_reproj_files(reproj_dir)
-        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
+        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
         self.A = None
         self.b = None
         self.x = None
         self.pixel_counts = None
 
-    def setup_lsqr(self, apply_mask=True, apply_weight=True, grid_valid_weight=None, max_workers=20, 
-                   outlier_thresh=3.0, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
+    def setup_lsqr(self, chunk_map, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20, 
+                   outlier_thresh=3.0, ignore_list=[], batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
                    postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
+        self.chunk_map = chunk_map
         with timer("Setup LSQR"):
             self.A, self.b, self.pixel_counts = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
-                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=self.chunk_map, grid_valid_weight=grid_valid_weight,
+                apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, grid_valid_weight=grid_valid_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization, reg_weight=reg_weight, adj_info=adj_info, mean_offsets=mean_offsets, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight)
@@ -142,7 +155,7 @@ class Calibrator(Reprojector):
     
     def load_calibration(self, cal_path=None):
         if cal_path is None:
-            cal_path = self.config['cal_path']
+            cal_path = os.path.join(self.config.cal_dir, 'cal.h5')
         with h5py.File(cal_path, 'r') as f:
             skymap = f['skymap']
             offset = f['offset']
@@ -150,7 +163,7 @@ class Calibrator(Reprojector):
 
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
         if cal_dir is None:
-            cal_dir = self.config['cal_dir']
+            cal_dir = self.config.cal_dir
         if not os.path.exists(cal_dir):
             os.makedirs(cal_dir)
         skymap, offset = MakeMap.parse_x(self.x, ref_shape=self.ref_shape, num_frames=len(self.reproj_list))
@@ -179,12 +192,10 @@ class Calibrator(Reprojector):
         return offset
 
 class Mosaicker(Reprojector):
-    def __init__(self, config, chunk_map, reproj_dir=None):
+    def __init__(self, config: PipelineConfig, reproj_dir=None):
         super().__init__(config)
-        self.chunk_map = chunk_map
         self.get_reproj_files(reproj_dir)
-        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config['ref_path'])
-        self.config['mos_dir'] = os.path.join(self.config['output_dir'], self.config['run_name'], 'mosaic')
+        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
         self.cal_path = None
         self.cached_list = []
         self.offset = None
@@ -204,10 +215,12 @@ class Mosaicker(Reprojector):
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
-    def make_mosaic(self, apply_mask=True, apply_weight=True, grid_valid_weight=None, max_workers=20, 
+    def make_mosaic(self, chunk_map, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20, 
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[], 
-        oversample_factor=1, det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
+        det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
         cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01):
+        
+        self.chunk_map = chunk_map
 
         offset_param = None
         if apply_offset:
@@ -228,7 +241,7 @@ class Mosaicker(Reprojector):
             'offset_list': offset_param,
             'apply_weight': apply_weight,
             'apply_mask': apply_mask,
-            'chunk_map': self.chunk_map,
+            'chunk_map': chunk_map,
             'max_workers': max_workers,
             'grid_valid_weight': grid_valid_weight,
             'ignore_list': ignore_list,
@@ -307,7 +320,7 @@ class Mosaicker(Reprojector):
             - 'WAV_STD': Standard deviation of wavelength map
         '''
         if mos_dir is None:
-            mos_dir = self.config['mos_dir']
+            mos_dir = self.config.mos_dir
         if not os.path.exists(mos_dir):
             os.makedirs(mos_dir)
 
