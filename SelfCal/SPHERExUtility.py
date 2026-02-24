@@ -254,7 +254,7 @@ def save_lvf_params(lvf_params, output_dir='/home/thomasli/spherex/selfcal/selfc
     np.save(output_path, lvf_params)
     print(f"Saved LVF parameters to {output_path}")
 
-def compute_vertical_strip_adjacency(chunk_map, num_columns):
+def compute_column_adjacency(chunk_map, num_columns):
     """
     Generates adjacency pairs ONLY for vertical strip transitions, 
     ignoring spectral arc transitions.
@@ -295,6 +295,43 @@ def compute_vertical_strip_adjacency(chunk_map, num_columns):
     unique_pairs = np.unique(pairs, axis=0)
     
     print(f"Found {len(unique_pairs)} vertical strip boundaries.")
+    return unique_pairs[:, 0], unique_pairs[:, 1]
+
+def compute_subchannel_adjacency(chunk_map, num_columns):
+    """
+    Generates adjacency pairs for vertical subchannel transitions.
+    This links chunk IDs across the boundaries of subchannels, keeping within the same column.
+    """
+    print("Computing Vertical Subchannel Adjacency...")
+    
+    # Compare pixel i with pixel i+1 vertically
+    mask = (chunk_map[:-1, :] != -1) & \
+           (chunk_map[1:, :] != -1) & \
+           (chunk_map[:-1, :] != chunk_map[1:, :])
+           
+    u = chunk_map[:-1, :][mask]
+    v = chunk_map[1:, :][mask]
+    
+    # Check that they represent different subchannels in the same column
+    sub_u = u // num_columns
+    sub_v = v // num_columns
+    col_u = u % num_columns
+    col_v = v % num_columns
+    
+    # Keep pairs that are adjacent vertically AND in the same column
+    valid_pair_mask = (np.abs(sub_u - sub_v) == 1) & (col_u == col_v)
+    
+    u_filtered = u[valid_pair_mask]
+    v_filtered = v[valid_pair_mask]
+    
+    if len(u_filtered) == 0:
+        print("Found 0 vertical subchannel boundaries.")
+        return np.array([]), np.array([])
+        
+    pairs = np.sort(np.stack([u_filtered, v_filtered], axis=1), axis=1)
+    unique_pairs = np.unique(pairs, axis=0)
+    
+    print(f"Found {len(unique_pairs)} vertical subchannel boundaries.")
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
@@ -380,7 +417,13 @@ def fill_invalid_offsets(data):
     # 3. Interpolate the entire grid
     # 'linear' handles the interior bilinear logic
     # We use 'nearest' for the points griddata can't reach (extrapolation)
-    filled = griddata(points, values, (y, x), method='linear')
+    # If points are collinear (e.g. valid data in only one column), Delaunay triangulation fails.
+    # In that case, we catch the Qhull precision error and fallback to 'nearest' immediately.
+    from scipy.spatial.qhull import QhullError
+    try:
+        filled = griddata(points, values, (y, x), method='linear')
+    except QhullError:
+        filled = griddata(points, values, (y, x), method='nearest')
     
     # 4. Fill remaining NaNs (edges/corners) with nearest neighbor extrapolation
     nan_mask = np.isnan(filled)
