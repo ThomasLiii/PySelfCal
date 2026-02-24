@@ -10,7 +10,8 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
-from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_vertical_strip_adjacency, \
+from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
+compute_subchannel_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
 
@@ -30,7 +31,14 @@ def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
     det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
                                             oversample_factor=1, lvf_params=lvf_params)
     
-    adj_info = compute_vertical_strip_adjacency(det_chunk_map, num_columns)
+    adj_info_column = compute_column_adjacency(det_chunk_map, num_columns)
+    # adj_info_subchannel = compute_subchannel_adjacency(det_chunk_map, num_columns)
+    
+    # adj_info = (
+    #     np.concatenate([adj_info_column[0], adj_info_subchannel[0]]),
+    #     np.concatenate([adj_info_column[1], adj_info_subchannel[1]])
+    # )
+    adj_info = adj_info_column
         
     return {
         'lvf_params': lvf_params,
@@ -74,6 +82,16 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
         'grid_valid_weight': grid_valid_weight
     }
 
+def mask_bright_pixels(local_vars):
+    sub_data = local_vars['sub_data']
+    sub_weight = local_vars['sub_weight']
+    
+    valid_mask = sub_weight > 0
+    if np.sum(valid_mask) > 0:
+        threshold = np.nanpercentile(sub_data[valid_mask], 50)
+        sub_data[sub_data > threshold] = np.nan
+        
+    return sub_data
 
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
@@ -81,7 +99,7 @@ if __name__ == "__main__":
         'Detector': 4,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 5,
+        'NumCol': 3,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -100,7 +118,8 @@ if __name__ == "__main__":
         'reg_weight': 10.0,
         'weighted_damping': True,
         'damp_weight': 100.0,
-        'max_workers': 50
+        'max_workers': 30,
+        'postprocess_func': mask_bright_pixels
     }
 
     lsqr_kwargs = {
@@ -121,16 +140,18 @@ if __name__ == "__main__":
         'cache_batch_size': 40,
         'coadd_batch_size': 100,
         'cache_intermediate': True,
-        'max_workers': 50
+        'max_workers': 30
     }
     
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_weightedLSQR'
+    FILE_SUFFIX = f'_100Damp_10Reg_noSubReg_brightPixelMask'
 
     # Channels to process
-    chs = [[23]]
+    chs = [[18], [19], [20], [21], [22], [24]]
+    # chs = [[31], [32], [33], [34]]
+    # chs = [[23]]
     # ----------------------------- End of Settings -----------------------------
 
     frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
@@ -153,18 +174,21 @@ if __name__ == "__main__":
         channel_inputs = prepare_channel_inputs(ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
         
         # ----------------------------- Calibration -----------------------------
+        cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
         cc = PipelineWrapper.Calibrator(selfcal_config)
-        
-        cc.setup_lsqr(
-            chunk_map=detector_inputs['det_chunk_map'],
-            grid_valid_weight=channel_inputs['det_valid_weight'],
-            oversample_factor=1,
-            adj_info=detector_inputs['adj_info'],
-            **calibration_kwargs
-        )
-        
-        cc.apply_lsqr(**lsqr_kwargs)
-        cal_path = cc.save_calibration(cal_file=cal_file)
+        if os.path.exists(cal_path):
+            print(f"Calibration file {cal_path} already exists. Skipping calibration.")
+        else:
+            cc.setup_lsqr(
+                chunk_map=detector_inputs['det_chunk_map'],
+                grid_valid_weight=channel_inputs['det_valid_mask'],
+                oversample_factor=1,
+                adj_info=detector_inputs['adj_info'],
+                **calibration_kwargs
+            )
+            
+            cc.apply_lsqr(**lsqr_kwargs)
+            cal_path = cc.save_calibration(cal_file=cal_file)
 
         # ----------------------------- Mosaicking -----------------------------
         partial_make_offset_map = partial(make_spherex_stripped_offset_map,
@@ -196,7 +220,7 @@ if __name__ == "__main__":
                                       cache_list=mm.cached_list,
                                       ref_shape=maps['mean_map']['data'].shape, 
                                       sigma=mosaic_kwargs['sigma'], 
-                                      batch_size=40, max_workers=50)    
+                                      batch_size=40, max_workers=30)    
 
         mm.append_maps({
             'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
