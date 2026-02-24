@@ -1195,6 +1195,9 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
 
     print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
     
+    # Convert to CSR format for faster matrix-vector products during LSQR iterations
+    A_solver = A_solver.tocsr()
+    
     # Run LSQR
     result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
     x_solver = result[0]
