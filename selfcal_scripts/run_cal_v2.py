@@ -1,5 +1,10 @@
-import sys
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import sys
 import shutil
 import time
 import gc
@@ -10,8 +15,9 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
+from SelfCal.MakeMap import encode_x
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-compute_subchannel_adjacency, \
+compute_subchannel_adjacency, compute_offsets_guess, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
 
@@ -57,9 +63,19 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
     num_channels = frame_setting['NumCh']
     num_columns = frame_setting['NumCol']
     
-    chunk_valid_mask_padded = make_stripped_chunk_valid_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, 
+    if isinstance(ch, list) or isinstance(ch, np.ndarray):
+        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
                                         num_columns=num_columns, subchannel_padding=1)
-    chunk_valid_mask = make_stripped_chunk_valid_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, 
+        chunk_valid_mask = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
+                                        num_columns=num_columns, subchannel_padding=0)
+    elif isinstance(ch, str):
+        if ch == 'Aromatic':
+            subch = np.arange(225, 236)
+        elif ch == 'Aliphatic':
+            subch = np.arange(249, 260)
+        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels, 
+                                        num_columns=num_columns, subchannel_padding=1)
+        chunk_valid_mask = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels, 
                                         num_columns=num_columns, subchannel_padding=0)
 
     # Pre-calculate weights safely
@@ -88,7 +104,7 @@ def mask_bright_pixels(local_vars):
     
     valid_mask = sub_weight > 0
     if np.sum(valid_mask) > 0:
-        threshold = np.nanpercentile(sub_data[valid_mask], 50)
+        threshold = np.nanpercentile(sub_data[valid_mask], 25)
         sub_data[sub_data > threshold] = np.nan
         
     return sub_data
@@ -96,7 +112,7 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 4,
+        'Detector': 1,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 3,
@@ -111,23 +127,23 @@ if __name__ == "__main__":
     calibration_kwargs = {
         'apply_mask': True,
         'apply_weight': False,
-        'outlier_thresh': 2.0,
+        'outlier_thresh': 5.0,
         'ignore_list': [],
-        'batch_size': 40,
-        'offset_regularization': True,
+        'batch_size': 100,
+        'offset_regularization': False,
         'reg_weight': 10.0,
         'weighted_damping': True,
-        'damp_weight': 100.0,
+        'damp_weight': 0.1,
         'max_workers': 30,
-        'postprocess_func': mask_bright_pixels
+        'postprocess_func': None,#mask_bright_pixels
     }
 
     lsqr_kwargs = {
         'atol': 1e-06,
         'btol': 1e-06,
-        'damp': 1e-3,
-        'iter_lim': 100,
-        'precondition': False
+        'damp': 0,
+        'iter_lim': 50,
+        'precondition': True
     }
 
     mosaic_kwargs = {
@@ -135,10 +151,10 @@ if __name__ == "__main__":
         'apply_weight': False,
         'make_std_map': True,
         'apply_sigma_clipping': True,
-        'sigma': 1.0,
+        'sigma': 2.0,
         'ignore_list': [21],
-        'cache_batch_size': 40,
-        'coadd_batch_size': 100,
+        'cache_batch_size': 100,
+        'coadd_batch_size': 200,
         'cache_intermediate': True,
         'max_workers': 30
     }
@@ -146,12 +162,12 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_100Damp_10Reg_noSubReg_brightPixelMask'
+    FILE_SUFFIX = f'_damp0p1_noReg_noBrightPixelMask_outThresh5_sigma2_fast'
 
     # Channels to process
-    chs = [[18], [19], [20], [21], [22], [24]]
-    # chs = [[31], [32], [33], [34]]
-    # chs = [[23]]
+    # chs = [[22], [23], [24], [25]]
+    chs = [[2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14],]
+    # chs = ['Aliphatic']
     # ----------------------------- End of Settings -----------------------------
 
     frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
@@ -161,7 +177,10 @@ if __name__ == "__main__":
     
     # 2. Iterate through channels
     for ch in chs:
-        job_name = f'Ch{"-".join(map(str, ch))}'
+        if isinstance(ch, list):
+            job_name = f'Ch{"-".join(map(str, ch))}'
+        else:
+            job_name = ch
         t0 = time.time()
         print(f"Processing channel {job_name} for detector {frame_setting['Detector']}...")
 
@@ -187,7 +206,11 @@ if __name__ == "__main__":
                 **calibration_kwargs
             )
             
-            cc.apply_lsqr(**lsqr_kwargs)
+            offset = compute_offsets_guess(reproj_list=cc.ref_shape, det_chunk_map=detector_inputs['det_chunk_map'])
+            skymap = np.zeros(cc.ref_shape)
+            x0 = encode_x(skymap, offset)
+
+            cc.apply_lsqr(x0=x0, **lsqr_kwargs)
             cal_path = cc.save_calibration(cal_file=cal_file)
 
         # ----------------------------- Mosaicking -----------------------------
