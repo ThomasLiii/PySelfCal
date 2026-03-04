@@ -203,6 +203,7 @@ class Mosaicker(Reprojector):
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
+        self.mean_offset = 0.0
 
     def load_calibration(self, cal_path):
         with h5py.File(cal_path, 'r') as f:
@@ -227,8 +228,9 @@ class Mosaicker(Reprojector):
             if self.offset is not None:
                 offset = self.offset.copy()
                 offset_valid_mask = (self.offset_coverage_frac >= valid_chunk_thresh)
+                self.mean_offset = np.mean(offset[offset_valid_mask])
                 if normalize_offset:
-                    offset[offset_valid_mask] = offset[offset_valid_mask] - np.mean(offset[offset_valid_mask])
+                    offset[offset_valid_mask] = offset[offset_valid_mask] - self.mean_offset
                 offset[~offset_valid_mask] = 0.0
                 offset_param = offset
             else:
@@ -335,6 +337,7 @@ class Mosaicker(Reprojector):
                 hdu.header['NAXIS'] = 2
                 hdu.header['BUNIT'] = self.maps[m]['unit']
                 hdu.header['EXTNAME'] = m.upper()
+                hdu.header['MEANOFF'] = self.mean_offset
                 hdu_list.append(hdu)
             if self.maps[m]['weight'] is not None:
                 hdu = fits.ImageHDU(data=self.maps[m]['weight'], header=self.ref_wcs.to_header())
