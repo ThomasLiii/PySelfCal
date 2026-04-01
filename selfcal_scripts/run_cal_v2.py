@@ -130,19 +130,19 @@ if __name__ == "__main__":
         'outlier_thresh': 5.0,
         'ignore_list': [],
         'batch_size': 100,
-        'offset_regularization': False,
-        'reg_weight': 10.0,
+        'offset_regularization': True,
+        'reg_weight': 0.1,
         'weighted_damping': True,
         'damp_weight': 0.1,
         'max_workers': 30,
-        'postprocess_func': None,#mask_bright_pixels
+        'postprocess_func': None, #mask_bright_pixels,
     }
 
     lsqr_kwargs = {
         'atol': 1e-06,
         'btol': 1e-06,
         'damp': 0,
-        'iter_lim': 50,
+        'iter_lim': 10,
         'precondition': True
     }
 
@@ -162,12 +162,13 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_noReg_noBrightPixelMask_outThresh5_sigma2_fast'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
     # Channels to process
-    # chs = [[22], [23], [24], [25]]
-    chs = [[2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14],]
-    # chs = ['Aliphatic']
+    chs = [[18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
+    # chs = [[29], [30], [31], [32], [33], [34]]
+    # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
+    # chs = ['Aliphatic', 'Aromatic']
     # ----------------------------- End of Settings -----------------------------
 
     frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
@@ -206,10 +207,13 @@ if __name__ == "__main__":
                 **calibration_kwargs
             )
             
-            offset = compute_offsets_guess(reproj_list=cc.ref_shape, det_chunk_map=detector_inputs['det_chunk_map'])
+            print('Computing initial guess offsets...')
+            t00 = time.time()
+            offset = compute_offsets_guess(reproj_list=cc.reproj_list, det_chunk_map=detector_inputs['det_chunk_map'])
             skymap = np.zeros(cc.ref_shape)
             x0 = encode_x(skymap, offset)
-
+            print(f"Initial guess offsets computed in {time.time() - t00:.2f} seconds.")
+            
             cc.apply_lsqr(x0=x0, **lsqr_kwargs)
             cal_path = cc.save_calibration(cal_file=cal_file)
 
@@ -236,6 +240,8 @@ if __name__ == "__main__":
         )
 
         # Append wavelength maps
+        print("Coadding wavelength maps...")
+        t00 = time.time()
         wav_mean, wav_std = wav_coadd(detector_inputs['det_BC'], detector_inputs['det_BW'], 
                                       mean_map=maps['mean_map']['data'], 
                                       std_map=maps['std_map']['data'], 
@@ -244,6 +250,7 @@ if __name__ == "__main__":
                                       ref_shape=maps['mean_map']['data'].shape, 
                                       sigma=mosaic_kwargs['sigma'], 
                                       batch_size=40, max_workers=30)    
+        print(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
 
         mm.append_maps({
             'wav_mean_map': {'data': wav_mean, 'unit': 'um'},

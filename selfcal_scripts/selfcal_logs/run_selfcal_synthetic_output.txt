@@ -1,0 +1,128 @@
+python: can't open file '/home/thomasli/spherex/selfcal/selfcal_scripts/selfcal_scripts/run_selfcal_synthetic.py': [Errno 2] No such file or directory
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+  0%|          | 0/171 [00:00<?, ?it/s]  1%|          | 1/171 [00:00<01:10,  2.43it/s]  2%|▏         | 3/171 [00:00<00:46,  3.59it/s]  2%|▏         | 4/171 [00:01<01:00,  2.78it/s]  4%|▎         | 6/171 [00:01<00:51,  3.20it/s]  5%|▍         | 8/171 [00:02<00:45,  3.60it/s]  5%|▌         | 9/171 [00:02<00:49,  3.28it/s]  6%|▋         | 11/171 [00:03<00:45,  3.55it/s]  7%|▋         | 12/171 [00:03<00:46,  3.44it/s]  8%|▊         | 14/171 [00:04<00:41,  3.83it/s]  9%|▉         | 15/171 [00:04<00:46,  3.38it/s] 10%|▉         | 17/171 [00:04<00:39,  3.93it/s] 11%|█         | 18/171 [00:05<00:42,  3.64it/s] 12%|█▏        | 20/171 [00:05<00:38,  3.92it/s] 13%|█▎        | 22/171 [00:06<00:38,  3.90it/s] 13%|█▎        | 23/171 [00:06<00:45,  3.28it/s] 15%|█▍        | 25/171 [00:07<00:40,  3.58it/s] 15%|█▌        | 26/171 [00:07<00:45,  3.21it/s] 16%|█▋        | 28/171 [00:08<00:42,  3.33it/s] 17%|█▋        | 29/171 [00:08<00:46,  3.08it/s] 18%|█▊        | 31/171 [00:09<00:41,  3.34it/s] 19%|█▊        | 32/171 [00:09<00:46,  2.98it/s] 20%|█▉        | 34/171 [00:09<00:38,  3.59it/s] 20%|██        | 35/171 [00:10<00:39,  3.46it/s] 22%|██▏       | 37/171 [00:10<00:35,  3.82it/s] 23%|██▎       | 39/171 [00:11<00:33,  4.00it/s] 23%|██▎       | 40/171 [00:11<00:35,  3.69it/s] 25%|██▍       | 42/171 [00:11<00:30,  4.19it/s] 25%|██▌       | 43/171 [00:12<00:30,  4.23it/s] 26%|██▋       | 45/171 [00:12<00:28,  4.46it/s] 27%|██▋       | 46/171 [00:12<00:31,  4.01it/s] 28%|██▊       | 48/171 [00:13<00:29,  4.21it/s] 29%|██▊       | 49/171 [00:13<00:35,  3.44it/s] 30%|██▉       | 51/171 [00:14<00:32,  3.75it/s] 31%|███       | 53/171 [00:14<00:30,  3.81it/s] 32%|███▏      | 54/171 [00:15<00:34,  3.37it/s] 33%|███▎      | 56/171 [00:15<00:31,  3.68it/s] 33%|███▎      | 57/171 [00:16<00:35,  3.22it/s] 35%|███▍      | 59/171 [00:16<00:32,  3.45it/s] 35%|███▌      | 60/171 [00:16<00:35,  3.10it/s] 36%|███▋      | 62/171 [00:17<00:32,  3.36it/s] 37%|███▋      | 63/171 [00:17<00:35,  3.06it/s] 37%|███▋      | 64/171 [00:18<00:30,  3.47it/s]
+Traceback (most recent call last):
+  File "/home/thomasli/spherex/selfcal/selfcal_scripts/run_selfcal_synthetic.py", line 149, in <module>
+    detector_inputs = prepare_detector_inputs(frame_setting, mosaic_oversample_factor)
+  File "/home/thomasli/spherex/selfcal/selfcal_scripts/run_selfcal_synthetic.py", line 31, in prepare_detector_inputs
+    grid_chunk_map, _, _, _ = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
+                              ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                    oversample_factor=mosaic_setting_oversample, lvf_params=lvf_params)
+                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 342, in make_stripped_chunk_map
+    subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
+                                          ~~~~~~~~~~~~~~~~~~~~~~~^
+        detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        oversample_factor=oversample_factor, lvf_params=lvf_params
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 151, in make_fiducial_chunk_map
+    chunk_map, lvf_params, r_edges = make_spherex_chunk_map(
+                                     ~~~~~~~~~~~~~~~~~~~~~~^
+        BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 134, in make_spherex_chunk_map
+    chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+  0%|          | 0/171 [00:00<?, ?it/s]  1%|          | 1/171 [00:00<01:13,  2.30it/s]  1%|          | 2/171 [00:00<01:11,  2.37it/s]  2%|▏         | 4/171 [00:01<00:51,  3.26it/s]  3%|▎         | 5/171 [00:01<00:52,  3.18it/s]  4%|▍         | 7/171 [00:02<00:44,  3.68it/s]  5%|▍         | 8/171 [00:02<00:49,  3.26it/s]  6%|▌         | 10/171 [00:02<00:44,  3.59it/s]  7%|▋         | 12/171 [00:03<00:42,  3.73it/s]  8%|▊         | 13/171 [00:03<00:47,  3.32it/s]  9%|▉         | 15/171 [00:04<00:45,  3.46it/s]  9%|▉         | 16/171 [00:04<00:49,  3.14it/s] 11%|█         | 18/171 [00:05<00:45,  3.39it/s] 11%|█         | 18/171 [00:05<00:49,  3.10it/s]
+Traceback (most recent call last):
+  File "/home/thomasli/spherex/selfcal/selfcal_scripts/run_selfcal_synthetic.py", line 149, in <module>
+    detector_inputs = prepare_detector_inputs(frame_setting, mosaic_oversample_factor)
+  File "/home/thomasli/spherex/selfcal/selfcal_scripts/run_selfcal_synthetic.py", line 31, in prepare_detector_inputs
+    grid_chunk_map, _, _, _ = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
+                              ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                    oversample_factor=mosaic_setting_oversample, lvf_params=lvf_params)
+                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 342, in make_stripped_chunk_map
+    subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
+                                          ~~~~~~~~~~~~~~~~~~~~~~~^
+        detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        oversample_factor=oversample_factor, lvf_params=lvf_params
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 151, in make_fiducial_chunk_map
+    chunk_map, lvf_params, r_edges = make_spherex_chunk_map(
+                                     ~~~~~~~~~~~~~~~~~~~~~~^
+        BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/thomasli/spherex/selfcal/SelfCal/SPHERExUtility.py", line 134, in make_spherex_chunk_map
+    chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+Loaded LVF parameters from /home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params/lvf_params_D2.npy
+Computing Vertical Strip Adjacency (Filtering Arcs)...
+Found 0 vertical strip boundaries.
+Processing channel Ch10 for detector 2...
+Loading reference frame from: /data3/caoye/selfcal/outputs/nep_det2_6p2arcsec/ref.fits
+Processing 3288 items in 83 batches...
+Applying Coverage-Weighted Damping...
+Setup LSQR finished in 618.35 seconds.
+Applying column-norm preconditioning...
+Solving least squares for 68691504 unknowns with 341520267 equations.
+ 
+LSQR            Least-squares solution of  Ax = b
+The matrix A has 341520267 rows and 68691504 columns
+damp = 1.00000000000000e-03   calc_var =        0
+atol = 1.00e-06                 conlim = 1.00e+08
+btol = 1.00e-06               iter_lim =       20
+ 
+   Itn      x[0]       r1norm     r2norm   Compatible    LS      Norm A   Cond A
+     0  0.00000e+00   3.337e+02  3.337e+02    1.0e+00  3.0e-03
+     1  0.00000e+00   1.082e+02  1.082e+02    4.2e-02  6.8e-01   1.1e+00  1.0e+00
+     2  0.00000e+00   8.921e+01  8.921e+01    3.4e-02  1.1e-01   1.7e+00  2.1e+00
+     3  0.00000e+00   8.784e+01  8.784e+01    3.4e-02  3.8e-02   2.0e+00  3.1e+00
+     4  0.00000e+00   8.751e+01  8.751e+01    3.4e-02  2.1e-02   2.2e+00  4.4e+00
+     5  0.00000e+00   8.736e+01  8.736e+01    3.4e-02  1.6e-02   2.4e+00  6.0e+00
+     6  0.00000e+00   8.725e+01  8.725e+01    3.4e-02  1.2e-02   2.6e+00  8.1e+00
+     7  0.00000e+00   8.720e+01  8.720e+01    3.4e-02  7.9e-03   2.8e+00  1.0e+01
+     8  0.00000e+00   8.716e+01  8.716e+01    3.4e-02  5.6e-03   3.0e+00  1.2e+01
+     9  0.00000e+00   8.714e+01  8.714e+01    3.4e-02  3.8e-03   3.1e+00  1.4e+01
+    10  0.00000e+00   8.713e+01  8.713e+01    3.4e-02  2.4e-03   3.3e+00  1.6e+01
+    11  0.00000e+00   8.713e+01  8.713e+01    3.4e-02  1.7e-03   3.5e+00  1.7e+01
+    12  0.00000e+00   8.713e+01  8.713e+01    3.4e-02  1.3e-03   3.6e+00  1.9e+01
+    13  0.00000e+00   8.713e+01  8.713e+01    3.4e-02  1.1e-03   3.7e+00  2.1e+01
+    14  0.00000e+00   8.712e+01  8.713e+01    3.4e-02  7.7e-04   3.9e+00  2.4e+01
+    15  0.00000e+00   8.712e+01  8.713e+01    3.4e-02  5.2e-04   4.0e+00  2.6e+01
+    16  0.00000e+00   8.712e+01  8.712e+01    3.4e-02  3.6e-04   4.1e+00  2.7e+01
+    17  0.00000e+00   8.712e+01  8.712e+01    3.4e-02  2.6e-04   4.2e+00  2.9e+01
+    18  0.00000e+00   8.712e+01  8.712e+01    3.4e-02  1.8e-04   4.4e+00  3.1e+01
+    19  0.00000e+00   8.712e+01  8.712e+01    3.4e-02  1.3e-04   4.5e+00  3.3e+01
+    20  0.00000e+00   8.712e+01  8.712e+01    3.4e-02  9.8e-05   4.6e+00  3.5e+01
+ 
+LSQR finished
+The iteration limit has been reached                      
+ 
+istop =       7   r1norm = 8.7e+01   anorm = 4.6e+00   arnorm = 3.9e-02
+itn   =      20   r2norm = 8.7e+01   acond = 3.5e+01   xnorm  = 3.2e+02
+ 
+LSQR finished in 1136.29 seconds.
+Calibration saved to /data3/caoye/selfcal/outputs/nep_det2_6p2arcsec/calibration/cal_Detector2_NumSub10_NumCh17_NumCol1_Ch10fast.h5
+Loading reference frame from: /data3/caoye/selfcal/outputs/nep_det2_6p2arcsec/ref.fits
+Calibration loaded from /data3/caoye/selfcal/outputs/nep_det2_6p2arcsec/calibration/cal_Detector2_NumSub10_NumCh17_NumCol1_Ch10fast.h5
+Caching intermediate computations...
+Processing 3288 files in 83 batches...
+Cache computation finished in 343.78 seconds.
+Computing mean map...
+Processing 3288 files in 33 batches...
+Mean map computation finished in 57.34 seconds.
+Computing std map...
+Processing 3288 files in 33 batches...
+Std map computation finished in 60.46 seconds.
+Computing sigma-clipped mean map...
+Processing 3288 files in 33 batches...
+Sigma-clipped mean map computation finished in 68.57 seconds.
+Mosaic saved to /data3/caoye/selfcal/outputs/nep_det2_6p2arcsec/mosaic/mosaic_Detector2_NumSub10_NumCh17_NumCol1_Ch10fast.fits
+Finished channel Ch10 for detector 2 in 3117.88 seconds.
+--------------------------------------------------
+
