@@ -438,6 +438,16 @@ def _coadd_batch_worker(params):
         det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
         shm_handles.append(shm_aux)
 
+    if 'chunk_map_shm_name' in params:
+        shm_cm = SharedMemory(name=params['chunk_map_shm_name'])
+        params['chunk_map'] = np.ndarray(params['chunk_map_shape'], dtype=params['chunk_map_dtype'], buffer=shm_cm.buf)
+        shm_handles.append(shm_cm)
+
+    if 'gvw_shm_name' in params:
+        shm_gvw = SharedMemory(name=params['gvw_shm_name'])
+        params['grid_valid_weight'] = np.ndarray(params['gvw_shape'], dtype=params['gvw_dtype'], buffer=shm_gvw.buf)
+        shm_handles.append(shm_gvw)
+
     # 2. Initialize Mode-Specific Containers
     if mode == 'cache':
         cache_dir = params['cache_dir']
@@ -651,6 +661,28 @@ def _coadd_batch_manager(params):
             params['det_aux_shape'] = det_aux.shape
             params['det_aux'] = None
 
+        # Move chunk_map to shared memory to avoid pickling with every task
+        chunk_map = params.get('chunk_map')
+        if chunk_map is not None:
+            shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
+            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
+            shm_objects.append(shm_cm)
+            params['chunk_map_shm_name'] = shm_cm.name
+            params['chunk_map_shape'] = chunk_map.shape
+            params['chunk_map_dtype'] = chunk_map.dtype
+            params['chunk_map'] = None
+
+        # Move grid_valid_weight to shared memory
+        gvw = params.get('grid_valid_weight')
+        if gvw is not None:
+            shm_gvw = SharedMemory(create=True, size=gvw.nbytes)
+            np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm_gvw.buf)[:] = gvw
+            shm_objects.append(shm_gvw)
+            params['gvw_shm_name'] = shm_gvw.name
+            params['gvw_shape'] = gvw.shape
+            params['gvw_dtype'] = gvw.dtype
+            params['grid_valid_weight'] = None
+
         # --- Task Creation ---
         ref_shape = params['ref_shape']
         if mode != 'cache':
@@ -678,6 +710,10 @@ def _coadd_batch_manager(params):
                 aux_arr[:] = 0.0
                 shm_objects.append(shm_aux)
                 params['total_aux_sum_name'] = shm_aux.name
+
+        # Remove full lists — workers only need their batch slice
+        params.pop('file_list', None)
+        params.pop('offset_list', None)
 
         tasks = []
         for start_idx in range(0, total_files, batch_size):
