@@ -23,7 +23,7 @@ from reproject import reproject_exact
 from reproject import reproject_adaptive
 
 from scipy.sparse import coo_matrix, vstack, diags
-from scipy.sparse.linalg import lsqr
+from scipy.sparse.linalg import lsqr, lsmr
 import sys 
 import gc 
 import traceback
@@ -458,6 +458,12 @@ def _coadd_batch_worker(params):
             aux_sum_arr = np.ndarray(aux_sum_arr_shape, dtype=np.float32, buffer=shm_aux_sum.buf)
             shm_handles.append(shm_aux_sum)
 
+        # Local accumulators — each worker accumulates independently, then flushes
+        # to shared memory once at the end (single lock acquisition per batch).
+        local_data_sum = np.zeros(ref_shape, dtype=np.float32)
+        local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+        local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
+
         # Shared Memory Setup
         mean_map = None
         std_map = None
@@ -547,37 +553,42 @@ def _coadd_batch_worker(params):
 
             if mode == 'mean':
                 data_val = data_crop * weight_crop
-                aux_val = sub_aux[:, *sub_crop] * weight_crop if (aux_sum_arr is not None and sub_aux is not None) else None
-                with shared_lock:
-                    data_sum_arr[ref_crop] += data_val
-                    weight_sum_arr[ref_crop] += weight_crop
-                    if aux_val is not None:
-                        aux_sum_arr[:, *ref_crop] += aux_val
+                aux_val = sub_aux[:, *sub_crop] * weight_crop if (local_aux_sum is not None and sub_aux is not None) else None
+                local_data_sum[ref_crop] += data_val
+                local_weight_sum[ref_crop] += weight_crop
+                if aux_val is not None:
+                    local_aux_sum[:, *ref_crop] += aux_val
 
             elif mode == 'std':
                 mean_crop = mean_map[ref_crop]
                 data_val = (data_crop - mean_crop)**2 * weight_crop
-                aux_val = (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop if (aux_sum_arr is not None and sub_aux is not None) else None
-                with shared_lock:
-                    data_sum_arr[ref_crop] += data_val
-                    weight_sum_arr[ref_crop] += weight_crop
-                    if aux_val is not None:
-                        aux_sum_arr[:, *ref_crop] += aux_val
-            
+                aux_val = (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop if (local_aux_sum is not None and sub_aux is not None) else None
+                local_data_sum[ref_crop] += data_val
+                local_weight_sum[ref_crop] += weight_crop
+                if aux_val is not None:
+                    local_aux_sum[:, *ref_crop] += aux_val
+
             elif mode == 'sigma_clip':
                 mean_crop = mean_map[ref_crop]
                 std_crop = std_map[ref_crop]
                 sigma = params['sigma']
                 clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
-                
+
                 valid_data = data_crop * weight_crop * clip_mask
                 valid_weight = weight_crop * clip_mask
-                aux_val = sub_aux[:, *sub_crop] * valid_weight if (aux_sum_arr is not None and sub_aux is not None) else None
-                with shared_lock:
-                    data_sum_arr[ref_crop] += valid_data
-                    weight_sum_arr[ref_crop] += valid_weight
-                    if aux_val is not None:
-                        aux_sum_arr[:, *ref_crop] += aux_val
+                aux_val = sub_aux[:, *sub_crop] * valid_weight if (local_aux_sum is not None and sub_aux is not None) else None
+                local_data_sum[ref_crop] += valid_data
+                local_weight_sum[ref_crop] += valid_weight
+                if aux_val is not None:
+                    local_aux_sum[:, *ref_crop] += aux_val
+
+    # Flush local accumulators to shared arrays (one lock per batch instead of per file)
+    if mode != 'cache':
+        with shared_lock:
+            data_sum_arr += local_data_sum
+            weight_sum_arr += local_weight_sum
+            if local_aux_sum is not None:
+                aux_sum_arr += local_aux_sum
 
     # 5. Cleanup & Return
     for shm in shm_handles:
@@ -1201,58 +1212,102 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_frames, chunk_map):
     offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
     return skymap_coverage, offset_coverage, offset_valid_frac
 
-def apply_lsqr(A, b, ref_shape, num_frames, x0=None, 
-                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True):
-    """Applies the LSQR algorithm to solve for the sky and detector offsets.
-    
-    Optimized to use direct numpy array manipulation for preconditioning 
-    instead of sparse matrix algebra.
+def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
+                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
+                solver='lsmr', use_float32=False):
+    """Applies LSQR or LSMR to solve for the sky and detector offsets.
+
+    Parameters
+    ----------
+    solver : str, optional
+        Solver to use: 'lsmr' (default, faster convergence) or 'lsqr'.
+    use_float32 : bool, optional
+        If True, cast matrix data and b to float32 before solving.
+        Reduces memory bandwidth (~2x faster SpMV) at the cost of precision.
     """
     assert isinstance(A, coo_matrix), "A must be a scipy.sparse.coo_matrix"
     assert isinstance(b, np.ndarray), "b must be a numpy array"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
     assert isinstance(num_frames, int) and num_frames > 0, "num_frames must be a positive integer"
-    
+
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    assert (A.shape[1]-num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
+    num_cols = A.shape[1]
+    assert (num_cols - num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
+    # --- Eliminate zero columns to reduce problem size ---
+    col_nnz = np.bincount(A.col, minlength=num_cols)
+    active_mask = col_nnz > 0
+    num_active = np.sum(active_mask)
+
+    if num_active < num_cols:
+        print(f"Eliminating {num_cols - num_active} zero columns ({num_active}/{num_cols} active)...")
+        col_map = np.full(num_cols, -1, dtype=np.int32)
+        col_map[active_mask] = np.arange(num_active, dtype=np.int32)
+
+        A_data = A.data
+        A_row = A.row
+        A_col = col_map[A.col]
+        A_compressed = coo_matrix((A_data, (A_row, A_col)), shape=(A.shape[0], num_active))
+
+        if x0 is not None:
+            x0_compressed = x0[active_mask]
+        else:
+            x0_compressed = None
+    else:
+        A_compressed = A
+        x0_compressed = x0
+        active_mask = None
+
+    # --- Optional float32 downcast ---
+    if use_float32:
+        print("Downcasting to float32 for faster SpMV...")
+        A_compressed.data = A_compressed.data.astype(np.float32)
+        b = b.astype(np.float32)
+        if x0_compressed is not None:
+            x0_compressed = x0_compressed.astype(np.float32)
+
+    # --- Preconditioning ---
     if precondition:
         print("Applying column-norm preconditioning...")
-        # A.col contains the column index for every non-zero entry.
-        # weights=A.data**2 sums the squares of the values belonging to each column.
-        col_sq_norm = np.bincount(A.col, weights=A.data**2, minlength=A.shape[1])
+        col_sq_norm = np.bincount(A_compressed.col, weights=A_compressed.data**2, minlength=A_compressed.shape[1])
         col_norms = np.sqrt(col_sq_norm)
-        
-        # Handle unobserved pixels (norm 0) to avoid division by zero
-        col_norms[col_norms == 0] = 1.0 
-        
-        M_inv = col_norms # Preconditioner scaling factors
-        M = 1.0 / M_inv
-        
-        # M[A.col] maps the column scaler to every non-zero element in that column.
-        scaled_data = A.data * M[A.col]
-        
-        # Create new COO matrix reusing the structure of A
-        A_solver = coo_matrix((scaled_data, (A.row, A.col)), shape=A.shape)
-        
-        # Scale the initial guess
-        x0_solver = x0 * M_inv if x0 is not None else None
-    else:
-        A_solver = A
-        x0_solver = x0
+        col_norms[col_norms == 0] = 1.0
 
-    print(f"Solving least squares for {A.shape[1]} unknowns with {A.shape[0]} equations.")
-    
-    # Convert to CSR format for faster matrix-vector products during LSQR iterations
+        M_inv = col_norms
+        M = 1.0 / M_inv
+
+        scaled_data = A_compressed.data * M[A_compressed.col]
+        A_solver = coo_matrix((scaled_data, (A_compressed.row, A_compressed.col)), shape=A_compressed.shape)
+        x0_solver = x0_compressed * M_inv if x0_compressed is not None else None
+    else:
+        A_solver = A_compressed
+        x0_solver = x0_compressed
+        M = None
+
+    print(f"Solving least squares for {A_solver.shape[1]} unknowns with {A_solver.shape[0]} equations (solver={solver}).")
+
     A_solver = A_solver.tocsr()
-    
-    # Run LSQR
-    result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+
+    # --- Solve ---
+    if solver == 'lsmr':
+        result = lsmr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+    elif solver == 'lsqr':
+        result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+    else:
+        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
     x_solver = result[0]
 
-    # Convert the preconditioned solution back to original units: x = x_pre * M
-    x = x_solver * M if precondition else x_solver
+    # --- Undo preconditioning ---
+    if precondition:
+        x_solver = x_solver * M
+
+    # --- Expand back to full column space ---
+    if active_mask is not None:
+        x = np.zeros(num_cols, dtype=x_solver.dtype)
+        x[active_mask] = x_solver
+    else:
+        x = x_solver
 
     return x
 

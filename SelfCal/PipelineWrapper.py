@@ -140,7 +140,8 @@ class Calibrator(Reprojector):
                 weighted_damping=weighted_damping, damp_weight=damp_weight)
     
     
-    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False):
+    def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
+                   solver='lsmr', use_float32=False):
         if resume:
             if self.x is None:
                 print("No previous solution found. Starting from scratch.")
@@ -151,7 +152,8 @@ class Calibrator(Reprojector):
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
             self.x = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_frames=len(self.reproj_list),
-                                                        x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition)
+                                                        x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                                        solver=solver, use_float32=use_float32)
     
     def load_calibration(self, cal_path=None):
         if cal_path is None:
