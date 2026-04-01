@@ -16,7 +16,7 @@ from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline,
 from SelfCal.MakeMap import load_reproj_file
 
 
-def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
+def load_calibration(band, calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
     BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
     BW_files = glob.glob(os.path.join(calibration_dir, f'*BW_Band{band}.fits'))
     if len(BC_files) != 1 or len(BW_files) != 1:
@@ -211,7 +211,7 @@ def compute_mean_pixval(exp_file, chunk_map):
         data = hdul[1].data
         bitmask = hdul[2].data
 
-    valid_mask = bit_to_bool(bitmask, ignore_list=[7], invert=True)
+    valid_mask = bit_to_bool(bitmask, ignore_list=[], invert=True)
     max_chunk_id = np.max(chunk_map)
     index_range = np.arange(max_chunk_id + 1)
 
@@ -219,7 +219,7 @@ def compute_mean_pixval(exp_file, chunk_map):
     labels[~valid_mask] = -1
     mean = nd.mean(data, labels=labels, index=index_range)
     if np.isnan(mean).any():
-        print("Warning: NaN values found in mean pixel value computation, filling with 0.")
+        # print("Warning: NaN values found in mean pixel value computation, filling with 0.")
         mean = np.nan_to_num(mean, nan=0.0)
     return mean
 
@@ -336,7 +336,7 @@ def compute_subchannel_adjacency(chunk_map, num_columns):
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
                             oversample_factor=1, num_columns=1, lvf_params=None, 
-                            calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration'):
+                            calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
     
     subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
@@ -357,14 +357,20 @@ def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17,
     
     return chunk_map, lvf_params, r_edges, x_edges
 
-def make_stripped_chunk_valid_mask(ch, num_subchannels=10, num_channels=17, 
+def make_stripped_chunk_valid_mask(ch=None, subch=None, num_subchannels=10, num_channels=17, 
                                    num_columns=1, subchannel_padding=0):
     def make_chunk_valid_mask(subchannel_valid_mask, num_columns):
         chunk_valid_mask = np.zeros(len(subchannel_valid_mask)*num_columns, dtype=subchannel_valid_mask.dtype)
         for band in range(num_columns):
             chunk_valid_mask[band::num_columns] = subchannel_valid_mask
         return chunk_valid_mask
-    subchannel_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, padding=subchannel_padding)
+    if ch is not None:
+        subchannel_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, padding=subchannel_padding)
+    elif subch is not None:
+        subchannel_valid_mask = np.zeros(num_subchannels*num_channels+2, dtype=bool)
+        subchannel_valid_mask[subch] = 1
+    else:
+        raise ValueError("Either ch or subch must be provided.")
     chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask
 
