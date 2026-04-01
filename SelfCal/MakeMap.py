@@ -2,8 +2,14 @@ import os
 import h5py
 import hdf5plugin
 from tqdm import tqdm
-from multiprocessing import Pool
+from multiprocessing import Pool, Lock
 from multiprocessing.shared_memory import SharedMemory
+
+shared_lock = None
+
+def init_worker_lock(l):
+    global shared_lock
+    shared_lock = l
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import numpy as np
 
@@ -437,9 +443,21 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        data_sum = np.zeros(ref_shape, dtype=np.float32)
-        weight_sum = np.zeros(ref_shape, dtype=np.float32)
-        aux_sum = np.zeros((det_aux.shape[0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
+        shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
+        data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
+        shm_handles.append(shm_data_sum)
+
+        shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
+        weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
+        shm_handles.append(shm_weight_sum)
+
+        aux_sum_arr = None
+        if 'total_aux_sum_name' in params:
+            shm_aux_sum = SharedMemory(name=params['total_aux_sum_name'])
+            aux_sum_arr_shape = (params['det_aux_shape'][0],) + ref_shape
+            aux_sum_arr = np.ndarray(aux_sum_arr_shape, dtype=np.float32, buffer=shm_aux_sum.buf)
+            shm_handles.append(shm_aux_sum)
+
         # Shared Memory Setup
         mean_map = None
         std_map = None
@@ -528,17 +546,23 @@ def _coadd_batch_worker(params):
             weight_crop = sub_weight[sub_crop]
 
             if mode == 'mean':
-                data_sum[ref_crop] += data_crop * weight_crop
-                weight_sum[ref_crop] += weight_crop
-                if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += sub_aux[:, *sub_crop] * weight_crop
+                data_val = data_crop * weight_crop
+                aux_val = sub_aux[:, *sub_crop] * weight_crop if (aux_sum_arr is not None and sub_aux is not None) else None
+                with shared_lock:
+                    data_sum_arr[ref_crop] += data_val
+                    weight_sum_arr[ref_crop] += weight_crop
+                    if aux_val is not None:
+                        aux_sum_arr[:, *ref_crop] += aux_val
 
             elif mode == 'std':
                 mean_crop = mean_map[ref_crop]
-                data_sum[ref_crop] += (data_crop - mean_crop)**2 * weight_crop
-                weight_sum[ref_crop] += weight_crop
-                if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop
+                data_val = (data_crop - mean_crop)**2 * weight_crop
+                aux_val = (sub_aux[:, *sub_crop] - mean_crop)**2 * weight_crop if (aux_sum_arr is not None and sub_aux is not None) else None
+                with shared_lock:
+                    data_sum_arr[ref_crop] += data_val
+                    weight_sum_arr[ref_crop] += weight_crop
+                    if aux_val is not None:
+                        aux_sum_arr[:, *ref_crop] += aux_val
             
             elif mode == 'sigma_clip':
                 mean_crop = mean_map[ref_crop]
@@ -546,10 +570,14 @@ def _coadd_batch_worker(params):
                 sigma = params['sigma']
                 clip_mask = np.abs(data_crop - mean_crop) <= sigma * std_crop
                 
-                data_sum[ref_crop] += data_crop * weight_crop * clip_mask
-                weight_sum[ref_crop] += weight_crop * clip_mask
-                if aux_sum is not None and sub_aux is not None:
-                    aux_sum[:, *ref_crop] += sub_aux[:, *sub_crop] * weight_crop * clip_mask
+                valid_data = data_crop * weight_crop * clip_mask
+                valid_weight = weight_crop * clip_mask
+                aux_val = sub_aux[:, *sub_crop] * valid_weight if (aux_sum_arr is not None and sub_aux is not None) else None
+                with shared_lock:
+                    data_sum_arr[ref_crop] += valid_data
+                    weight_sum_arr[ref_crop] += valid_weight
+                    if aux_val is not None:
+                        aux_sum_arr[:, *ref_crop] += aux_val
 
     # 5. Cleanup & Return
     for shm in shm_handles:
@@ -557,7 +585,7 @@ def _coadd_batch_worker(params):
     if mode == 'cache':
         return cached_list
     else:
-        return data_sum, weight_sum, aux_sum
+        return None, None, None
 
 def _coadd_batch_manager(params):
     """
@@ -613,6 +641,33 @@ def _coadd_batch_manager(params):
             params['det_aux'] = None
 
         # --- Task Creation ---
+        ref_shape = params['ref_shape']
+        if mode != 'cache':
+            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
+            shm_data = SharedMemory(create=True, size=total_data_sum.nbytes)
+            data_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf)
+            data_arr[:] = 0.0
+            shm_objects.append(shm_data)
+
+            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+            shm_weight = SharedMemory(create=True, size=total_weight_sum.nbytes)
+            weight_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf)
+            weight_arr[:] = 0.0
+            shm_objects.append(shm_weight)
+
+            params['total_data_sum_name'] = shm_data.name
+            params['total_weight_sum_name'] = shm_weight.name
+
+            aux_arr = None
+            if det_aux is not None:
+                total_aux_shape = (params['det_aux_shape'][0],) + ref_shape
+                total_aux_sum = np.zeros(total_aux_shape, dtype=np.float32)
+                shm_aux = SharedMemory(create=True, size=total_aux_sum.nbytes)
+                aux_arr = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux.buf)
+                aux_arr[:] = 0.0
+                shm_objects.append(shm_aux)
+                params['total_aux_sum_name'] = shm_aux.name
+
         tasks = []
         for start_idx in range(0, total_files, batch_size):
             end_idx = min(start_idx + batch_size, total_files)
@@ -636,21 +691,15 @@ def _coadd_batch_manager(params):
             total_result.sort()
             return total_result
         else:
-            ref_shape = params['ref_shape']
-            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
-            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
-            total_aux_sum = np.zeros((params['det_aux_shape'][0],) + ref_shape, dtype=np.float32) if det_aux is not None else None
-
-            with Pool(processes=max_workers) as pool:
+            lock = Lock()
+            with Pool(processes=max_workers, initializer=init_worker_lock, initargs=(lock,)) as pool:
                 for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    data_part, weight_part, aux_part = res
-                    total_data_sum += data_part
-                    total_weight_sum += weight_part
-                    del data_part, weight_part
-                    if aux_part is not None:
-                        total_aux_sum += aux_part
-                        del aux_part
-            return total_data_sum, total_weight_sum, total_aux_sum
+                    pass
+            
+            final_data_sum = np.copy(data_arr)
+            final_weight_sum = np.copy(weight_arr)
+            final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
+            return final_data_sum, final_weight_sum, final_aux_sum
 
     finally:
         for shm in shm_objects:
