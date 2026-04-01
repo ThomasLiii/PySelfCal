@@ -10,6 +10,7 @@ import time
 import gc
 from functools import partial
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
@@ -143,7 +144,8 @@ if __name__ == "__main__":
         'btol': 1e-06,
         'damp': 0,
         'iter_lim': 10,
-        'precondition': True
+        'precondition': True,
+        'solver': 'lsqr',
     }
 
     mosaic_kwargs = {
@@ -165,7 +167,7 @@ if __name__ == "__main__":
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
     # Channels to process
-    chs = [[18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
+    chs = [[26], [27], [28], [29], [30], [31], [32], [33], [34]]
     # chs = [[29], [30], [31], [32], [33], [34]]
     # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
     # chs = ['Aliphatic', 'Aromatic']
@@ -214,7 +216,8 @@ if __name__ == "__main__":
             x0 = encode_x(skymap, offset)
             print(f"Initial guess offsets computed in {time.time() - t00:.2f} seconds.")
             
-            cc.apply_lsqr(x0=x0, **lsqr_kwargs)
+            with threadpool_limits(limits=8, user_api='blas'):
+                cc.apply_lsqr(x0=x0, **lsqr_kwargs)
             cal_path = cc.save_calibration(cal_file=cal_file)
 
         # ----------------------------- Mosaicking -----------------------------
