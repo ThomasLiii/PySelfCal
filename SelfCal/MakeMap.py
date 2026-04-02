@@ -538,20 +538,16 @@ def _coadd_batch_worker(params):
         
         # Path 1: Save to Cache (and stop there)
         if mode == 'cache':
-            comp_args = {
-                **hdf5plugin.Zstd(clevel=5), 
-                'shuffle': True,
-                'track_times': False}
             org_name = os.path.basename(file_path)
             cache_name = f"cached_{org_name}"
             cache_path = os.path.join(cache_dir, cache_name)
-            
+
             with h5py.File(cache_path, 'w') as hf:
-                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype)
-                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, **comp_args)
-                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, **comp_args)
+                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype, track_times=False)
+                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, track_times=False)
+                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, track_times=False)
                 if sub_aux is not None:
-                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, **comp_args)
+                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, track_times=False)
             
             cached_list.append(cache_path)
         
@@ -650,38 +646,42 @@ def _coadd_batch_manager(params):
             params['std_map_dtype'] = std_map.dtype
             params['std_map'] = None
 
-        if det_aux is not None:
-            shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
-            shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
-            shared_aux_arr[:] = det_aux[:]
-            shm_objects.append(shm_aux)
-            
-            params['det_aux_name'] = shm_aux.name
-            params['det_aux_dtype'] = det_aux.dtype
-            params['det_aux_shape'] = det_aux.shape
-            params['det_aux'] = None
+        # For cache mode with ThreadPoolExecutor, threads share address space —
+        # no need to copy arrays into SharedMemory. Only do this for coadd modes
+        # that use multiprocessing.Pool (which requires pickling).
+        if mode != 'cache':
+            if det_aux is not None:
+                shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
+                shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
+                shared_aux_arr[:] = det_aux[:]
+                shm_objects.append(shm_aux)
 
-        # Move chunk_map to shared memory to avoid pickling with every task
-        chunk_map = params.get('chunk_map')
-        if chunk_map is not None:
-            shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
-            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
-            shm_objects.append(shm_cm)
-            params['chunk_map_shm_name'] = shm_cm.name
-            params['chunk_map_shape'] = chunk_map.shape
-            params['chunk_map_dtype'] = chunk_map.dtype
-            params['chunk_map'] = None
+                params['det_aux_name'] = shm_aux.name
+                params['det_aux_dtype'] = det_aux.dtype
+                params['det_aux_shape'] = det_aux.shape
+                params['det_aux'] = None
 
-        # Move grid_valid_weight to shared memory
-        gvw = params.get('grid_valid_weight')
-        if gvw is not None:
-            shm_gvw = SharedMemory(create=True, size=gvw.nbytes)
-            np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm_gvw.buf)[:] = gvw
-            shm_objects.append(shm_gvw)
-            params['gvw_shm_name'] = shm_gvw.name
-            params['gvw_shape'] = gvw.shape
-            params['gvw_dtype'] = gvw.dtype
-            params['grid_valid_weight'] = None
+            # Move chunk_map to shared memory to avoid pickling with every task
+            chunk_map = params.get('chunk_map')
+            if chunk_map is not None:
+                shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
+                np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
+                shm_objects.append(shm_cm)
+                params['chunk_map_shm_name'] = shm_cm.name
+                params['chunk_map_shape'] = chunk_map.shape
+                params['chunk_map_dtype'] = chunk_map.dtype
+                params['chunk_map'] = None
+
+            # Move grid_valid_weight to shared memory
+            gvw = params.get('grid_valid_weight')
+            if gvw is not None:
+                shm_gvw = SharedMemory(create=True, size=gvw.nbytes)
+                np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm_gvw.buf)[:] = gvw
+                shm_objects.append(shm_gvw)
+                params['gvw_shm_name'] = shm_gvw.name
+                params['gvw_shape'] = gvw.shape
+                params['gvw_dtype'] = gvw.dtype
+                params['grid_valid_weight'] = None
 
         # --- Task Creation ---
         ref_shape = params['ref_shape']
@@ -731,10 +731,10 @@ def _coadd_batch_manager(params):
         # --- Execution ---
         if mode == 'cache':
             total_result = []
-            with Pool(processes=max_workers) as pool:
-                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    if mode == 'cache':
-                        total_result.extend(res)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
+                for future in tqdm(as_completed(futures), total=len(futures)):
+                    total_result.extend(future.result())
             total_result.sort()
             return total_result
         else:
@@ -1149,7 +1149,7 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
         
         total_rows = 0
