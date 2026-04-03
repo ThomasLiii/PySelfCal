@@ -1,15 +1,22 @@
 import os
 import h5py
 import hdf5plugin
+import threading
 from tqdm import tqdm
-from multiprocessing import Pool, Lock
+from multiprocessing import Pool
 from multiprocessing.shared_memory import SharedMemory
 
-shared_lock = None
+# Semaphore to limit concurrent HDD reads. With many workers doing random reads
+# on a RAID array, seek thrashing kills throughput. Limiting to ~8 concurrent
+# readers keeps the disk close to peak sequential bandwidth.
+_hdd_io_semaphore = None
 
-def init_worker_lock(l):
-    global shared_lock
-    shared_lock = l
+def set_hdd_io_limit(n):
+    """Set the max number of concurrent file reads from slow storage.
+    Call before any parallel processing starts.
+    """
+    global _hdd_io_semaphore
+    _hdd_io_semaphore = threading.BoundedSemaphore(n) if n and n > 0 else None
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import numpy as np
 
@@ -281,12 +288,15 @@ def load_reproj_file(file_path, fields):
 
     data = {}
     is_file_missing = False
-    
+
+    sem = _hdd_io_semaphore
+    if sem is not None:
+        sem.acquire()
     try:
-        # swmr=True allows reading while the file is being written (if supported), 
+        # swmr=True allows reading while the file is being written (if supported),
         # libver='latest' supports the newer layout used in creation.
         with h5py.File(file_path, 'r', libver='latest', swmr=True) as file:
-            
+
             for key in fields:
                 # --- CASE 1: WCS Objects (Derived from Header Attributes) ---
                 if key in ('sub_wcs', 'det_wcs'):
@@ -317,7 +327,7 @@ def load_reproj_file(file_path, fields):
                 else:
                     # Fallback for backward compatibility or missing keys
                     data[key] = None
-        
+
         # Parse indices from filename
         det_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-1])
         exp_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-3])
@@ -330,7 +340,10 @@ def load_reproj_file(file_path, fields):
             data[key] = None
         det_idx = None
         exp_idx = None
-            
+    finally:
+        if sem is not None:
+            sem.release()
+
     data['_is_missing_'] = is_file_missing
     return data
 
@@ -431,9 +444,9 @@ def _coadd_batch_worker(params):
     # Execution Flags
     use_cached = params['use_cached']
 
-    det_aux = None
     shm_handles = []
-    if 'det_aux_name' in params:
+    det_aux = params.get('det_aux')
+    if det_aux is None and 'det_aux_name' in params:
         shm_aux = SharedMemory(name=params['det_aux_name'])
         det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
         shm_handles.append(shm_aux)
@@ -453,36 +466,41 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
-        data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
-        shm_handles.append(shm_data_sum)
+        # Accumulators — direct arrays (threads) or SharedMemory (processes)
+        data_sum_arr = params.get('total_data_sum')
+        if data_sum_arr is None:
+            shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
+            data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
+            shm_handles.append(shm_data_sum)
 
-        shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
-        weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
-        shm_handles.append(shm_weight_sum)
+        weight_sum_arr = params.get('total_weight_sum')
+        if weight_sum_arr is None:
+            shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
+            weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
+            shm_handles.append(shm_weight_sum)
 
-        aux_sum_arr = None
-        if 'total_aux_sum_name' in params:
+        aux_sum_arr = params.get('total_aux_sum')
+        if aux_sum_arr is None and 'total_aux_sum_name' in params:
             shm_aux_sum = SharedMemory(name=params['total_aux_sum_name'])
             aux_sum_arr_shape = (params['det_aux_shape'][0],) + ref_shape
             aux_sum_arr = np.ndarray(aux_sum_arr_shape, dtype=np.float32, buffer=shm_aux_sum.buf)
             shm_handles.append(shm_aux_sum)
 
         # Local accumulators — each worker accumulates independently, then flushes
-        # to shared memory once at the end (single lock acquisition per batch).
+        # to shared arrays once at the end (single lock acquisition per batch).
         local_data_sum = np.zeros(ref_shape, dtype=np.float32)
         local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
-        # Shared Memory Setup
-        mean_map = None
-        std_map = None
-        if 'mean_map_name' in params:
+        # Read-only maps — direct arrays (threads) or SharedMemory (processes)
+        mean_map = params.get('mean_map')
+        if mean_map is None and 'mean_map_name' in params:
             shm_mean = SharedMemory(name=params['mean_map_name'])
             mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
             shm_handles.append(shm_mean)
-            
-        if 'std_map_name' in params:
+
+        std_map = params.get('std_map')
+        if std_map is None and 'std_map_name' in params:
             shm_std = SharedMemory(name=params['std_map_name'])
             std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
             shm_handles.append(shm_std)
@@ -590,7 +608,8 @@ def _coadd_batch_worker(params):
 
     # Flush local accumulators to shared arrays (one lock per batch instead of per file)
     if mode != 'cache':
-        with shared_lock:
+        _lock = params['_lock']
+        with _lock:
             data_sum_arr += local_data_sum
             weight_sum_arr += local_weight_sum
             if local_aux_sum is not None:
@@ -622,136 +641,61 @@ def _coadd_batch_manager(params):
         if mode == 'cache': return []
         else: return np.zeros(params['ref_shape']), np.zeros(params['ref_shape'])
 
-    # --- Shared Memory Setup (Only for Coadd mode) ---
-    shm_objects = []
-    try:
-        # Move large maps to Shared Memory if we are Coadding
-        if mean_map is not None and mode in ['std', 'sigma_clip']:
-            shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
-            shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
-            shared_mean_arr[:] = mean_map[:]
-            shm_objects.append(shm_mean)
-            
-            params['mean_map_name'] = shm_mean.name
-            params['mean_map_dtype'] = mean_map.dtype 
-            params['mean_map'] = None  # Clear ref to avoid pickling
+    # --- ThreadPoolExecutor for all modes ---
+    # Threads share address space: no fork, no CoW page faults, no TLB shootdowns.
+    # Arrays are passed directly in params (shallow-copied dicts share references).
+    ref_shape = params['ref_shape']
+    if mode != 'cache':
+        data_arr = np.zeros(ref_shape, dtype=np.float32)
+        weight_arr = np.zeros(ref_shape, dtype=np.float32)
+        params['total_data_sum'] = data_arr
+        params['total_weight_sum'] = weight_arr
 
-        if std_map is not None and mode in ['sigma_clip']:
-            shm_std = SharedMemory(create=True, size=std_map.nbytes)
-            shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
-            shared_std_arr[:] = std_map[:]
-            shm_objects.append(shm_std)
-            
-            params['std_map_name'] = shm_std.name
-            params['std_map_dtype'] = std_map.dtype
-            params['std_map'] = None
+        aux_arr = None
+        if det_aux is not None:
+            total_aux_shape = (det_aux.shape[0],) + ref_shape
+            aux_arr = np.zeros(total_aux_shape, dtype=np.float32)
+            params['total_aux_sum'] = aux_arr
+            params['det_aux_shape'] = det_aux.shape
 
-        # For cache mode with ThreadPoolExecutor, threads share address space —
-        # no need to copy arrays into SharedMemory. Only do this for coadd modes
-        # that use multiprocessing.Pool (which requires pickling).
-        if mode != 'cache':
-            if det_aux is not None:
-                shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
-                shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
-                shared_aux_arr[:] = det_aux[:]
-                shm_objects.append(shm_aux)
+        params['_lock'] = threading.Lock()
 
-                params['det_aux_name'] = shm_aux.name
-                params['det_aux_dtype'] = det_aux.dtype
-                params['det_aux_shape'] = det_aux.shape
-                params['det_aux'] = None
+    # Remove full lists — workers only need their batch slice
+    params.pop('file_list', None)
+    params.pop('offset_list', None)
 
-            # Move chunk_map to shared memory to avoid pickling with every task
-            chunk_map = params.get('chunk_map')
-            if chunk_map is not None:
-                shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
-                np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
-                shm_objects.append(shm_cm)
-                params['chunk_map_shm_name'] = shm_cm.name
-                params['chunk_map_shape'] = chunk_map.shape
-                params['chunk_map_dtype'] = chunk_map.dtype
-                params['chunk_map'] = None
+    tasks = []
+    for start_idx in range(0, total_files, batch_size):
+        end_idx = min(start_idx + batch_size, total_files)
+        task_params = params.copy()
+        task_params.update({
+            'batch_files': file_list[start_idx:end_idx],
+            'batch_indices': list(range(start_idx, end_idx)),
+            'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
+        })
+        tasks.append(task_params)
 
-            # Move grid_valid_weight to shared memory
-            gvw = params.get('grid_valid_weight')
-            if gvw is not None:
-                shm_gvw = SharedMemory(create=True, size=gvw.nbytes)
-                np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm_gvw.buf)[:] = gvw
-                shm_objects.append(shm_gvw)
-                params['gvw_shm_name'] = shm_gvw.name
-                params['gvw_shape'] = gvw.shape
-                params['gvw_dtype'] = gvw.dtype
-                params['grid_valid_weight'] = None
+    print(f"Processing {total_files} files in {len(tasks)} batches...")
 
-        # --- Task Creation ---
-        ref_shape = params['ref_shape']
-        if mode != 'cache':
-            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
-            shm_data = SharedMemory(create=True, size=total_data_sum.nbytes)
-            data_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf)
-            data_arr[:] = 0.0
-            shm_objects.append(shm_data)
+    # --- Execution ---
+    if mode == 'cache':
+        total_result = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
+            for future in tqdm(as_completed(futures), total=len(futures)):
+                total_result.extend(future.result())
+        total_result.sort()
+        return total_result
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
+            for future in tqdm(as_completed(futures), total=len(futures)):
+                future.result()  # Raises if worker threw
 
-            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
-            shm_weight = SharedMemory(create=True, size=total_weight_sum.nbytes)
-            weight_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf)
-            weight_arr[:] = 0.0
-            shm_objects.append(shm_weight)
-
-            params['total_data_sum_name'] = shm_data.name
-            params['total_weight_sum_name'] = shm_weight.name
-
-            aux_arr = None
-            if det_aux is not None:
-                total_aux_shape = (params['det_aux_shape'][0],) + ref_shape
-                total_aux_sum = np.zeros(total_aux_shape, dtype=np.float32)
-                shm_aux = SharedMemory(create=True, size=total_aux_sum.nbytes)
-                aux_arr = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux.buf)
-                aux_arr[:] = 0.0
-                shm_objects.append(shm_aux)
-                params['total_aux_sum_name'] = shm_aux.name
-
-        # Remove full lists — workers only need their batch slice
-        params.pop('file_list', None)
-        params.pop('offset_list', None)
-
-        tasks = []
-        for start_idx in range(0, total_files, batch_size):
-            end_idx = min(start_idx + batch_size, total_files)
-            task_params = params.copy()
-            task_params.update({
-                'batch_files': file_list[start_idx:end_idx],
-                'batch_indices': list(range(start_idx, end_idx)),
-                'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
-            })
-            tasks.append(task_params)
-
-        print(f"Processing {total_files} files in {len(tasks)} batches...")
-
-        # --- Execution ---
-        if mode == 'cache':
-            total_result = []
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
-                for future in tqdm(as_completed(futures), total=len(futures)):
-                    total_result.extend(future.result())
-            total_result.sort()
-            return total_result
-        else:
-            lock = Lock()
-            with Pool(processes=max_workers, initializer=init_worker_lock, initargs=(lock,)) as pool:
-                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    pass
-            
-            final_data_sum = np.copy(data_arr)
-            final_weight_sum = np.copy(weight_arr)
-            final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
-            return final_data_sum, final_weight_sum, final_aux_sum
-
-    finally:
-        for shm in shm_objects:
-            shm.close()
-            shm.unlink()
+        final_data_sum = np.copy(data_arr)
+        final_weight_sum = np.copy(weight_arr)
+        final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
+        return final_data_sum, final_weight_sum, final_aux_sum
 
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, apply_weight=True, 
