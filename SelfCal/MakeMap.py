@@ -3,20 +3,20 @@ import h5py
 import hdf5plugin
 import threading
 from tqdm import tqdm
-from multiprocessing import Pool
+from multiprocessing import Pool, BoundedSemaphore as _MPSemaphore
 from multiprocessing.shared_memory import SharedMemory
 
 # Semaphore to limit concurrent HDD reads. With many workers doing random reads
-# on a RAID array, seek thrashing kills throughput. Limiting to ~8 concurrent
-# readers keeps the disk close to peak sequential bandwidth.
+# on a RAID array, seek thrashing kills throughput. Uses multiprocessing.BoundedSemaphore
+# so it works across both threads (ThreadPoolExecutor) and forked processes (Pool).
 _hdd_io_semaphore = None
 
 def set_hdd_io_limit(n):
     """Set the max number of concurrent file reads from slow storage.
-    Call before any parallel processing starts.
+    Call before any parallel processing starts. Works across both threads and processes.
     """
     global _hdd_io_semaphore
-    _hdd_io_semaphore = threading.BoundedSemaphore(n) if n and n > 0 else None
+    _hdd_io_semaphore = _MPSemaphore(n) if n and n > 0 else None
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import numpy as np
 
@@ -641,11 +641,43 @@ def _coadd_batch_manager(params):
         if mode == 'cache': return []
         else: return np.zeros(params['ref_shape']), np.zeros(params['ref_shape'])
 
-    # --- ThreadPoolExecutor for all modes ---
-    # Threads share address space: no fork, no CoW page faults, no TLB shootdowns.
-    # Arrays are passed directly in params (shallow-copied dicts share references).
     ref_shape = params['ref_shape']
-    if mode != 'cache':
+    shm_objects = []
+
+    if mode == 'cache':
+        # Cache mode: use Pool (real processes) for true parallelism — GIL prevents
+        # threads from scaling. Move large read-only arrays to SharedMemory.
+        if det_aux is not None:
+            shm = SharedMemory(create=True, size=det_aux.nbytes)
+            np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm.buf)[:] = det_aux
+            shm_objects.append(shm)
+            params['det_aux_name'] = shm.name
+            params['det_aux_dtype'] = det_aux.dtype
+            params['det_aux_shape'] = det_aux.shape
+            params['det_aux'] = None
+
+        chunk_map = params.get('chunk_map')
+        if chunk_map is not None:
+            shm = SharedMemory(create=True, size=chunk_map.nbytes)
+            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm.buf)[:] = chunk_map
+            shm_objects.append(shm)
+            params['chunk_map_shm_name'] = shm.name
+            params['chunk_map_shape'] = chunk_map.shape
+            params['chunk_map_dtype'] = chunk_map.dtype
+            params['chunk_map'] = None
+
+        gvw = params.get('grid_valid_weight')
+        if gvw is not None:
+            shm = SharedMemory(create=True, size=gvw.nbytes)
+            np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm.buf)[:] = gvw
+            shm_objects.append(shm)
+            params['gvw_shm_name'] = shm.name
+            params['gvw_shape'] = gvw.shape
+            params['gvw_dtype'] = gvw.dtype
+            params['grid_valid_weight'] = None
+    else:
+        # Coadd modes: ThreadPoolExecutor — threads share address space directly,
+        # no fork/CoW/TLB shootdowns. Local accumulation + single lock flush.
         data_arr = np.zeros(ref_shape, dtype=np.float32)
         weight_arr = np.zeros(ref_shape, dtype=np.float32)
         params['total_data_sum'] = data_arr
@@ -678,24 +710,30 @@ def _coadd_batch_manager(params):
     print(f"Processing {total_files} files in {len(tasks)} batches...")
 
     # --- Execution ---
-    if mode == 'cache':
-        total_result = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                total_result.extend(future.result())
-        total_result.sort()
-        return total_result
-    else:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                future.result()  # Raises if worker threw
+    try:
+        if mode == 'cache':
+            # Pool: real processes bypass the GIL for full CPU parallelism
+            total_result = []
+            with Pool(processes=max_workers) as pool:
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    total_result.extend(res)
+            total_result.sort()
+            return total_result
+        else:
+            # ThreadPoolExecutor: no fork overhead, shared accumulators via threads
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_coadd_batch_worker, task) for task in tasks]
+                for future in tqdm(as_completed(futures), total=len(futures)):
+                    future.result()  # Raises if worker threw
 
-        final_data_sum = np.copy(data_arr)
-        final_weight_sum = np.copy(weight_arr)
-        final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
-        return final_data_sum, final_weight_sum, final_aux_sum
+            final_data_sum = np.copy(data_arr)
+            final_weight_sum = np.copy(weight_arr)
+            final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
+            return final_data_sum, final_weight_sum, final_aux_sum
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
 
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0, 
                       offset_list=None, apply_weight=True, 
@@ -947,39 +985,68 @@ def _prep_lsqr(task_params):
 def _prep_lsqr_batch_worker(batch_params):
     """Wrapper to process a list (batch) of subframes in a single worker process."""
     sub_tasks = batch_params['sub_tasks']
-    
-    batch_rows = []
-    batch_cols = []
-    batch_data = []
-    batch_b = []
-    batch_row_offset = 0
 
-    for task_params in sub_tasks:
-        result = _prep_lsqr(task_params)
-        
-        if result is None:
-            continue
-            
-        sub_rows, sub_cols, sub_data, sub_b, num_rows = result
-        if len(sub_b) == 0:
-            continue
-            
-        batch_rows.append(sub_rows + batch_row_offset)
-        batch_cols.append(sub_cols)
-        batch_data.append(sub_data)
-        batch_b.append(sub_b)
-        batch_row_offset += num_rows
+    # Reconstruct shared memory arrays once per batch (avoids per-file overhead)
+    shm_handles = []
+    shm_arrays = {}
 
-    if len(batch_b) == 0:
-        return None
+    if 'chunk_map_shm_name' in sub_tasks[0]:
+        shm_cm = SharedMemory(name=sub_tasks[0]['chunk_map_shm_name'])
+        shm_arrays['chunk_map'] = np.ndarray(sub_tasks[0]['chunk_map_shape'], dtype=sub_tasks[0]['chunk_map_dtype'], buffer=shm_cm.buf)
+        shm_handles.append(shm_cm)
 
-    return (
-        np.concatenate(batch_rows),
-        np.concatenate(batch_cols),
-        np.concatenate(batch_data),
-        np.concatenate(batch_b),
-        batch_row_offset
-    )
+    if 'gvw_shm_name' in sub_tasks[0]:
+        shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])
+        shm_arrays['grid_valid_weight'] = np.ndarray(sub_tasks[0]['gvw_shape'], dtype=sub_tasks[0]['gvw_dtype'], buffer=shm_gvw.buf)
+        shm_handles.append(shm_gvw)
+
+    if 'adj_shm_name_0' in sub_tasks[0]:
+        adj_parts = []
+        for idx in range(2):
+            shm = SharedMemory(name=sub_tasks[0][f'adj_shm_name_{idx}'])
+            adj_parts.append(np.ndarray(sub_tasks[0][f'adj_shape_{idx}'], dtype=sub_tasks[0][f'adj_dtype_{idx}'], buffer=shm.buf))
+            shm_handles.append(shm)
+        shm_arrays['adj_info'] = tuple(adj_parts)
+
+    try:
+        batch_rows = []
+        batch_cols = []
+        batch_data = []
+        batch_b = []
+        batch_row_offset = 0
+
+        for task_params in sub_tasks:
+            # Inject reconstructed shared memory arrays
+            task_params.update(shm_arrays)
+
+            result = _prep_lsqr(task_params)
+
+            if result is None:
+                continue
+
+            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
+            if len(sub_b) == 0:
+                continue
+
+            batch_rows.append(sub_rows + batch_row_offset)
+            batch_cols.append(sub_cols)
+            batch_data.append(sub_data)
+            batch_b.append(sub_b)
+            batch_row_offset += num_rows
+
+        if len(batch_b) == 0:
+            return None
+
+        return (
+            np.concatenate(batch_rows),
+            np.concatenate(batch_cols),
+            np.concatenate(batch_data),
+            np.concatenate(batch_b),
+            batch_row_offset
+        )
+    finally:
+        for shm in shm_handles:
+            shm.close()
 
 def setup_lsqr(file_list, ref_shape, 
                chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False, 
@@ -1073,10 +1140,42 @@ def setup_lsqr(file_list, ref_shape,
         'ref_shape': ref_shape,
         'offset_regularization': offset_regularization,
         'reg_weight': reg_weight,
-        'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
+        'adj_info': adj_info,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
     }
+
+    # Move large arrays to shared memory so forked processes can access them
+    # without pickling. Each process reconstructs numpy views in the worker.
+    shm_objects = []
+
+    if chunk_map is not None:
+        shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
+        np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
+        shm_objects.append(shm_cm)
+        common_params['chunk_map_shm_name'] = shm_cm.name
+        common_params['chunk_map_shape'] = chunk_map.shape
+        common_params['chunk_map_dtype'] = chunk_map.dtype
+        common_params['chunk_map'] = None
+
+    if grid_valid_weight is not None:
+        shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)
+        np.ndarray(grid_valid_weight.shape, dtype=grid_valid_weight.dtype, buffer=shm_gvw.buf)[:] = grid_valid_weight
+        shm_objects.append(shm_gvw)
+        common_params['gvw_shm_name'] = shm_gvw.name
+        common_params['gvw_shape'] = grid_valid_weight.shape
+        common_params['gvw_dtype'] = grid_valid_weight.dtype
+        common_params['grid_valid_weight'] = None
+
+    if adj_info is not None:
+        for idx, arr in enumerate(adj_info):
+            shm = SharedMemory(create=True, size=arr.nbytes)
+            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+            shm_objects.append(shm)
+            common_params[f'adj_shm_name_{idx}'] = shm.name
+            common_params[f'adj_shape_{idx}'] = arr.shape
+            common_params[f'adj_dtype_{idx}'] = arr.dtype
+        common_params['adj_info'] = None
 
     all_individual_tasks = []
     for index, reproj_file in enumerate(file_list):
@@ -1093,20 +1192,25 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
-        
-        total_rows = 0
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
-            result = future.result()
-            if result is None: continue
-                
-            b_rows, b_cols, b_data, b_b, b_num_rows = result
-            all_rows.append(b_rows + total_rows)
-            all_cols.append(b_cols)
-            all_data.append(b_data)
-            all_b.append(b_b)
-            total_rows += b_num_rows
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
+
+            total_rows = 0
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
+                result = future.result()
+                if result is None: continue
+
+                b_rows, b_cols, b_data, b_b, b_num_rows = result
+                all_rows.append(b_rows + total_rows)
+                all_cols.append(b_cols)
+                all_data.append(b_data)
+                all_b.append(b_b)
+                total_rows += b_num_rows
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
