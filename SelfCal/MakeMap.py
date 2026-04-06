@@ -973,9 +973,11 @@ def _prep_lsqr(task_params):
         sub_data_vec = sub_data_vec[valid_mask]
 
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
-        sub_rows = new_row_indices
+        sub_rows = new_row_indices.astype(np.int32)
+        sub_cols = sub_cols.astype(np.int32)
+        sub_data_vec = sub_data_vec.astype(np.float32)
         sub_b = sub_b[unique_rows]
-        
+
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except Exception as e:
@@ -1038,13 +1040,20 @@ def _prep_lsqr_batch_worker(batch_params):
         if len(batch_b) == 0:
             return None
 
-        return (
-            np.concatenate(batch_rows),
-            np.concatenate(batch_cols),
-            np.concatenate(batch_data),
-            np.concatenate(batch_b),
-            batch_row_offset
-        )
+        # Write results to shared memory to avoid pickle/pipe IPC overhead
+        cat_rows = np.concatenate(batch_rows)
+        cat_cols = np.concatenate(batch_cols)
+        cat_data = np.concatenate(batch_data)
+        cat_b = np.concatenate(batch_b)
+
+        result_shm = []
+        for arr in (cat_rows, cat_cols, cat_data, cat_b):
+            shm = SharedMemory(create=True, size=max(arr.nbytes, 1))
+            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+            result_shm.append((shm.name, arr.shape, arr.dtype.str))
+            shm.close()
+
+        return {'shm': result_shm, 'num_rows': batch_row_offset}
     finally:
         for shm in shm_handles:
             shm.close()
@@ -1193,21 +1202,43 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
+    def _read_shm(info):
+        """Read array from shared memory and clean up the segment."""
+        name, shape, dtype = info
+        shm = SharedMemory(name=name)
+        arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
+        shm.close()
+        shm.unlink()
+        return arr
+
     try:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
 
             total_rows = 0
+            n_collected = 0
             for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
                 result = future.result()
                 if result is None: continue
 
-                b_rows, b_cols, b_data, b_b, b_num_rows = result
-                all_rows.append(b_rows + total_rows)
+                shm_infos = result['shm']
+                b_rows = _read_shm(shm_infos[0]) + total_rows
+                b_cols = _read_shm(shm_infos[1])
+                b_data = _read_shm(shm_infos[2])
+                b_b = _read_shm(shm_infos[3])
+                all_rows.append(b_rows)
                 all_cols.append(b_cols)
                 all_data.append(b_data)
                 all_b.append(b_b)
-                total_rows += b_num_rows
+                total_rows += result['num_rows']
+
+                # Consolidate periodically to avoid memory fragmentation
+                n_collected += 1
+                if n_collected % 100 == 0:
+                    all_rows = [np.concatenate(all_rows)]
+                    all_cols = [np.concatenate(all_cols)]
+                    all_data = [np.concatenate(all_data)]
+                    all_b = [np.concatenate(all_b)]
     finally:
         for shm in shm_objects:
             shm.close()
