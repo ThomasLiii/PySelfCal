@@ -29,8 +29,9 @@ from reproject import reproject_interp
 from reproject import reproject_exact
 from reproject import reproject_adaptive
 
-from scipy.sparse import coo_matrix, vstack, diags
-from scipy.sparse.linalg import lsqr, lsmr
+from scipy.sparse import coo_matrix, csr_matrix, vstack, diags
+from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
+from threadpoolctl import threadpool_limits
 import sys 
 import gc 
 import traceback
@@ -1296,9 +1297,59 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_frames, chunk_map):
     offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
     return skymap_coverage, offset_coverage, offset_valid_frac
 
+def _partition_csr(A, n_blocks):
+    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
+    n_rows = A.shape[0]
+    boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
+    blocks = []
+    for i in range(n_blocks):
+        sr, er = int(boundaries[i]), int(boundaries[i + 1])
+        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
+        blk = csr_matrix(
+            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
+            shape=(er - sr, A.shape[1]), copy=False
+        )
+        blocks.append(blk)
+    return blocks, boundaries
+
+def _make_parallel_operator(A_csr, n_threads):
+    """Build a LinearOperator with thread-parallel matvec/rmatvec.
+
+    Pre-computes A^T as CSR and partitions both into row-blocks.
+    GIL is released during scipy CSR SpMV, enabling true thread parallelism.
+    """
+    m, n = A_csr.shape
+
+    print(f"Building parallel SpMV operator ({n_threads} threads)...")
+    AT_csr = A_csr.T.tocsr()
+
+    A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
+    AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
+
+    executor = ThreadPoolExecutor(max_workers=n_threads)
+    mv_out = np.empty(m, dtype=A_csr.dtype)
+    rmv_out = np.empty(n, dtype=A_csr.dtype)
+
+    def _matvec(x):
+        def _work(i):
+            mv_out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
+        list(executor.map(_work, range(n_threads)))
+        return mv_out.copy()
+
+    def _rmatvec(y):
+        def _work(i):
+            rmv_out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
+        list(executor.map(_work, range(n_threads)))
+        return rmv_out.copy()
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
+    op._executor = executor
+    op._AT_csr = AT_csr  # prevent GC
+    return op
+
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
-                solver='lsmr', use_float32=False):
+                solver='lsmr', use_float32=False, n_threads=32):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -1319,68 +1370,72 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
     num_cols = A.shape[1]
     assert (num_cols - num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
-    # --- Eliminate zero columns to reduce problem size ---
+    # --- Fused preprocessing: column elimination + float32 + preconditioning + CSR ---
     col_nnz = np.bincount(A.col, minlength=num_cols)
     active_mask = col_nnz > 0
-    num_active = np.sum(active_mask)
+    num_active = int(np.sum(active_mask))
 
     if num_active < num_cols:
         print(f"Eliminating {num_cols - num_active} zero columns ({num_active}/{num_cols} active)...")
-        col_map = np.full(num_cols, -1, dtype=np.int32)
-        col_map[active_mask] = np.arange(num_active, dtype=np.int32)
-
-        A_data = A.data
-        A_row = A.row
-        A_col = col_map[A.col]
-        A_compressed = coo_matrix((A_data, (A_row, A_col)), shape=(A.shape[0], num_active))
-
-        if x0 is not None:
-            x0_compressed = x0[active_mask]
-        else:
-            x0_compressed = None
+        col_map = np.full(num_cols, -1, dtype=A.col.dtype)
+        col_map[active_mask] = np.arange(num_active, dtype=A.col.dtype)
+        new_col = col_map[A.col]
+        x0_compressed = x0[active_mask] if x0 is not None else None
     else:
-        A_compressed = A
+        new_col = A.col
         x0_compressed = x0
         active_mask = None
 
-    # --- Optional float32 downcast ---
+    n_active = num_active if active_mask is not None else num_cols
+
     if use_float32:
         print("Downcasting to float32 for faster SpMV...")
-        A_compressed.data = A_compressed.data.astype(np.float32)
+        data = A.data.astype(np.float32)
         b = b.astype(np.float32)
         if x0_compressed is not None:
             x0_compressed = x0_compressed.astype(np.float32)
+    else:
+        data = A.data
 
-    # --- Preconditioning ---
     if precondition:
         print("Applying column-norm preconditioning...")
-        col_sq_norm = np.bincount(A_compressed.col, weights=A_compressed.data**2, minlength=A_compressed.shape[1])
+        col_sq_norm = np.bincount(new_col, weights=data.astype(np.float64)**2, minlength=n_active)
         col_norms = np.sqrt(col_sq_norm)
         col_norms[col_norms == 0] = 1.0
-
         M_inv = col_norms
         M = 1.0 / M_inv
-
-        scaled_data = A_compressed.data * M[A_compressed.col]
-        A_solver = coo_matrix((scaled_data, (A_compressed.row, A_compressed.col)), shape=A_compressed.shape)
-        x0_solver = x0_compressed * M_inv if x0_compressed is not None else None
+        data = data * M[new_col].astype(data.dtype)
+        x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
     else:
-        A_solver = A_compressed
-        x0_solver = x0_compressed
         M = None
+        x0_solver = x0_compressed
 
-    print(f"Solving least squares for {A_solver.shape[1]} unknowns with {A_solver.shape[0]} equations (solver={solver}).")
+    print(f"Solving least squares for {n_active} unknowns with {A.shape[0]} equations (solver={solver}).")
+    A_csr = coo_matrix((data, (A.row, new_col)), shape=(A.shape[0], n_active)).tocsr()
+    del data, new_col
 
-    A_solver = A_solver.tocsr()
-
-    # --- Solve ---
-    if solver == 'lsmr':
-        result = lsmr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-    elif solver == 'lsqr':
-        result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+    # --- Build parallel operator or use CSR directly ---
+    if n_threads > 1:
+        op = _make_parallel_operator(A_csr, n_threads)
+        try:
+            with threadpool_limits(limits=1, user_api='blas'):
+                if solver == 'lsmr':
+                    result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                elif solver == 'lsqr':
+                    result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                else:
+                    raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        finally:
+            op._executor.shutdown(wait=False)
     else:
-        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        if solver == 'lsmr':
+            result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+        elif solver == 'lsqr':
+            result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+        else:
+            raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
     x_solver = result[0]
+    del A_csr
 
     # --- Undo preconditioning ---
     if precondition:
