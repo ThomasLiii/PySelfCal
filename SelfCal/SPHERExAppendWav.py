@@ -95,6 +95,13 @@ def _wavcoadd_batch_worker(batch_indices):
             ref_coords = hf['ref_coords'][:]
             sub_data = hf['sub_data'][:]
             sub_weight = hf['sub_weight'][:]
+            # Newer cache files store a tight bbox of nonzero weight in the
+            # original (full) sub-frame coordinates. Crop sub_BC/sub_BW to that
+            # bbox so they line up with the cropped sub_data.
+            if 'sub_bbox' in hf:
+                rmin, rmax, cmin, cmax = hf['sub_bbox'][:]
+                sub_BC = sub_BC[rmin:rmax, cmin:cmax]
+                sub_BW = sub_BW[rmin:rmax, cmin:cmax]
 
         sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
         data_crop = sub_data[sub_crop]

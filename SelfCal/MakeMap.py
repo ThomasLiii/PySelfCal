@@ -567,13 +567,44 @@ def _coadd_batch_worker(params):
             cache_name = f"cached_{org_name}"
             cache_path = os.path.join(cache_dir, cache_name)
 
+            # Crop to the tight bbox of nonzero weight: typically only a small
+            # fraction of the subframe is valid (e.g., a single channel within
+            # a multi-channel detector), so this dramatically reduces I/O.
+            nz_rows = np.any(sub_weight, axis=1)
+            nz_cols = np.any(sub_weight, axis=0)
+            row_idx = np.where(nz_rows)[0]
+            col_idx = np.where(nz_cols)[0]
+            if row_idx.size > 0 and col_idx.size > 0:
+                rmin, rmax = int(row_idx[0]), int(row_idx[-1]) + 1
+                cmin, cmax = int(col_idx[0]), int(col_idx[-1]) + 1
+            else:
+                rmin = cmin = 0
+                rmax = cmax = 0
+
+            sub_data_c = sub_data[rmin:rmax, cmin:cmax]
+            sub_weight_c = sub_weight[rmin:rmax, cmin:cmax]
+            sub_aux_c = sub_aux[:, rmin:rmax, cmin:cmax] if sub_aux is not None else None
+
+            # Update ref_coords to reflect the crop in ref-frame coordinates,
+            # so compute_crop(ref_shape, ref_coords) yields the correct slices
+            # for the cropped sub_data on the consumer side.
+            y_min, y_max, x_min, x_max = ref_coords
+            new_ref_coords = np.array(
+                [y_min + rmin, y_min + rmax, x_min + cmin, x_min + cmax],
+                dtype=ref_coords.dtype,
+            )
+
             with h5py.File(cache_path, 'w') as hf:
-                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype, track_times=False)
-                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, track_times=False)
-                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, track_times=False)
-                if sub_aux is not None:
-                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, track_times=False)
-            
+                hf.create_dataset('ref_coords', data=new_ref_coords, dtype=new_ref_coords.dtype, track_times=False)
+                hf.create_dataset('sub_data', data=sub_data_c, dtype=sub_data_c.dtype, track_times=False)
+                hf.create_dataset('sub_weight', data=sub_weight_c, dtype=sub_weight_c.dtype, track_times=False)
+                if sub_aux_c is not None:
+                    hf.create_dataset('sub_aux', data=sub_aux_c, dtype=sub_aux_c.dtype, track_times=False)
+                # Bbox in the original (full) sub frame coordinates, so consumers
+                # that compute auxiliary arrays at full sub shape (e.g. wav_coadd
+                # building sub_BC/sub_BW from sub_mapping) can match the crop.
+                hf.create_dataset('sub_bbox', data=np.array([rmin, rmax, cmin, cmax], dtype=np.int32), track_times=False)
+
             cached_list.append(cache_path)
         
         # Path 2: Accumulate to Mosaic
