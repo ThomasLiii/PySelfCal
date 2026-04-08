@@ -17,6 +17,7 @@ import gc
 import glob as glob_module
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath("__file__")))
@@ -44,7 +45,7 @@ selfcal_config_tmp = PipelineWrapper.PipelineConfig(
     resolution_arcsec=6.2
 )
 
-nvme_reproj_dir = os.path.join(CACHE_DIR, 'reproj_nvme')
+nvme_reproj_dir = os.path.join(CACHE_DIR, f'reproj_nvme_{selfcal_config_tmp.run_name}')
 os.makedirs(nvme_reproj_dir, exist_ok=True)
 
 hdd_reproj_files = sorted(glob_module.glob(os.path.join(selfcal_config_tmp.reproj_dir, '*.h5')))
@@ -58,7 +59,9 @@ def copy_to_nvme(src_path):
 print(f"Copying {len(hdd_reproj_files)} reproj files to NVMe ({nvme_reproj_dir})...")
 t_copy = time.time()
 with ThreadPoolExecutor(max_workers=HDD_IO_LIMIT or 20) as executor:
-    list(executor.map(copy_to_nvme, hdd_reproj_files))
+    for _ in tqdm(executor.map(copy_to_nvme, hdd_reproj_files),
+                  total=len(hdd_reproj_files), desc="HDD->NVMe", unit="file"):
+        pass
 print(f"Reproj file copy complete in {time.time() - t_copy:.2f} seconds.")
 
 # NVMe can handle massively parallel reads — disable the HDD I/O throttle
@@ -92,12 +95,12 @@ calibration_kwargs = {
     'apply_weight': False,
     'outlier_thresh': 5.0,
     'ignore_list': [],
-    'batch_size': 10,
+    'batch_size': 20,
     'offset_regularization': True,
     'reg_weight': 0.1,
     'weighted_damping': True,
     'damp_weight': 0.1,
-    'max_workers': 20,
+    'max_workers': 32,
     'postprocess_func': None,
 }
 
@@ -117,10 +120,10 @@ mosaic_kwargs = {
     'apply_sigma_clipping': True,
     'sigma': 2.0,
     'ignore_list': [21],
-    'cache_batch_size': 10,
-    'coadd_batch_size': 20,
+    'cache_batch_size': 20,
+    'coadd_batch_size': 30,
     'cache_intermediate': True,
-    'max_workers': 50,
+    'max_workers': 32,
 }
 
 mosaic_oversample_factor = 2

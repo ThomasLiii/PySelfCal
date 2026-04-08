@@ -12,6 +12,7 @@ import glob as glob_module
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,12 +137,12 @@ if __name__ == "__main__":
         'apply_weight': False,
         'outlier_thresh': 5.0,
         'ignore_list': [],
-        'batch_size': 10,
+        'batch_size': 20,
         'offset_regularization': True,
         'reg_weight': 0.1,
         'weighted_damping': True,
         'damp_weight': 0.1,
-        'max_workers': 20,
+        'max_workers': 32,
         'postprocess_func': None, #mask_bright_pixels,
     }
 
@@ -162,15 +163,15 @@ if __name__ == "__main__":
         'sigma': 2.0,
         'ignore_list': [21],
         'cache_batch_size': 10,
-        'coadd_batch_size': 30,
+        'coadd_batch_size': 50,
         'cache_intermediate': True,
-        'max_workers': 20
+        'max_workers': 50
     }
     
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_test'
 
     # Channels to process
     # chs = [[32], [33], [34]]
@@ -184,8 +185,9 @@ if __name__ == "__main__":
 
     set_hdd_io_limit(HDD_IO_LIMIT)
 
-    # Copy reproj files from HDD to NVMe for faster I/O
-    nvme_reproj_dir = os.path.join(CACHE_DIR, 'reproj_nvme')
+    # Copy reproj files from HDD to NVMe for faster I/O.
+    # Per-run subdirectory so multiple runs can coexist without colliding.
+    nvme_reproj_dir = os.path.join(CACHE_DIR, f'reproj_nvme_{selfcal_config.run_name}')
     os.makedirs(nvme_reproj_dir, exist_ok=True)
 
     hdd_reproj_files = sorted(glob_module.glob(os.path.join(selfcal_config.reproj_dir, '*.h5')))
@@ -199,7 +201,9 @@ if __name__ == "__main__":
     print(f"Copying {len(hdd_reproj_files)} reproj files to NVMe ({nvme_reproj_dir})...")
     t_copy = time.time()
     with ThreadPoolExecutor(max_workers=HDD_IO_LIMIT or 20) as executor:
-        list(executor.map(copy_to_nvme, hdd_reproj_files))
+        for _ in tqdm(executor.map(copy_to_nvme, hdd_reproj_files),
+                      total=len(hdd_reproj_files), desc="HDD->NVMe", unit="file"):
+            pass
     print(f"Reproj file copy complete in {time.time() - t_copy:.2f} seconds.")
 
     # NVMe can handle massively parallel reads — disable the HDD I/O throttle
@@ -247,8 +251,7 @@ if __name__ == "__main__":
             
             x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, len(cc.reproj_list))
             
-            with threadpool_limits(limits=8, user_api='blas'):
-                cc.apply_lsqr(x0=x0, **lsqr_kwargs)
+            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
             nvme_list = cc.reproj_list
             cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
