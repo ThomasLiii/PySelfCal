@@ -5,8 +5,9 @@ import h5py
 from astropy.io import fits
 from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
+from scipy.ndimage import map_coordinates
 from tqdm import tqdm
-from SelfCal.MapHelper import make_linear_interp_matrix, compute_crop, check_invalid
+from SelfCal.MapHelper import compute_crop, check_invalid
 from SelfCal.MakeMap import load_reproj_file
 from SelfCal.SPHERExUtility import load_calibration
 
@@ -82,26 +83,32 @@ def _wavcoadd_batch_worker(batch_indices):
     batch_meanvar_sum = np.zeros(ref_shape, dtype=np.float32)
     
     for i in batch_indices:
+        # Load full sub_mapping from the reproj file. Most of it will be cropped
+        # away below, but we need it before we know the bbox.
         sub_mapping = load_reproj_file(reproj_list[i], fields=['sub_mapping'])['sub_mapping']
-        sub_shape = sub_mapping.shape[1:]
-        sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
-        
-        interp_matrix = make_linear_interp_matrix(sub_mapping_flat[::-1], input_shape=np.shape(det_BC))
-        det_stack_flat = np.array([det_BC.ravel(), det_BW.ravel()])
-        sub_stack_flat = (interp_matrix * det_stack_flat.T).T
-        sub_BC, sub_BW = sub_stack_flat.reshape(2, sub_shape[0], sub_shape[1])
+        H_orig, W_orig = sub_mapping.shape[1:]
 
+        # Open the cache file once and pull both the data + the bbox.
         with h5py.File(cache_list[i], 'r') as hf:
             ref_coords = hf['ref_coords'][:]
             sub_data = hf['sub_data'][:]
             sub_weight = hf['sub_weight'][:]
             # Newer cache files store a tight bbox of nonzero weight in the
-            # original (full) sub-frame coordinates. Crop sub_BC/sub_BW to that
-            # bbox so they line up with the cropped sub_data.
+            # original (full) sub-frame coordinates.
             if 'sub_bbox' in hf:
                 rmin, rmax, cmin, cmax = hf['sub_bbox'][:]
-                sub_BC = sub_BC[rmin:rmax, cmin:cmax]
-                sub_BW = sub_BW[rmin:rmax, cmin:cmax]
+            else:
+                rmin, rmax, cmin, cmax = 0, H_orig, 0, W_orig
+
+        # Crop sub_mapping to the cached bbox BEFORE the resample, so we only
+        # touch the pixels we'll actually use. Mirrors the early-bbox crop in
+        # _prep_subframe.
+        sub_mapping_cropped = sub_mapping[:, rmin:rmax, cmin:cmax]
+
+        # Direct bilinear via map_coordinates (no sparse matrix). Use the same
+        # [::-1] axis convention that the old sparse path used.
+        sub_BC = map_coordinates(det_BC, sub_mapping_cropped[::-1], order=1, output=np.float32)
+        sub_BW = map_coordinates(det_BW, sub_mapping_cropped[::-1], order=1, output=np.float32)
 
         sub_crop, ref_crop = compute_crop(ref_shape, ref_coords)
         data_crop = sub_data[sub_crop]
