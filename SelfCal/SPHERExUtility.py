@@ -8,6 +8,8 @@ from tqdm import tqdm
 import scipy.ndimage as nd
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor
+from multiprocessing.shared_memory import SharedMemory
+from multiprocessing import Pool
 
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline, griddata
@@ -206,37 +208,58 @@ def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_param
     offset_map = spl(r_mesh)
     return offset_map
 
-def compute_mean_pixval(exp_file, chunk_map):
-    with fits.open(exp_file) as hdul:
+_offset_worker_ctx = {}
+
+def _offset_worker_init(shm_name, shm_shape, shm_dtype, max_chunk_id):
+    """Attach shared memory chunk_map once per worker process."""
+    shm = SharedMemory(name=shm_name)
+    _offset_worker_ctx['chunk_map'] = np.ndarray(shm_shape, dtype=shm_dtype, buffer=shm.buf)
+    _offset_worker_ctx['shm'] = shm
+    _offset_worker_ctx['max_chunk_id'] = max_chunk_id
+
+def _offset_worker_func(reproj_file):
+    """Combined worker: HDF5 attr read -> FITS read -> bincount mean."""
+    file_path = load_reproj_file(reproj_file, fields=['file_path'])['file_path']
+
+    with fits.open(file_path) as hdul:
         data = hdul[1].data
         bitmask = hdul[2].data
 
-    valid_mask = bit_to_bool(bitmask, ignore_list=[], invert=True)
-    max_chunk_id = np.max(chunk_map)
-    index_range = np.arange(max_chunk_id + 1)
+    chunk_map = _offset_worker_ctx['chunk_map']
+    max_id = _offset_worker_ctx['max_chunk_id']
 
-    labels = chunk_map.copy()
-    labels[~valid_mask] = -1
-    mean = nd.mean(data, labels=labels, index=index_range)
-    if np.isnan(mean).any():
-        # print("Warning: NaN values found in mean pixel value computation, filling with 0.")
-        mean = np.nan_to_num(mean, nan=0.0)
+    valid = bit_to_bool(bitmask, ignore_list=[], invert=True)
+    flat_cm = chunk_map.ravel()
+    flat_data = data.ravel().astype(np.float64)
+    flat_valid = valid.ravel() & (flat_cm >= 0)
+
+    sums = np.bincount(flat_cm[flat_valid], weights=flat_data[flat_valid], minlength=max_id + 1)
+    counts = np.bincount(flat_cm[flat_valid], minlength=max_id + 1)
+    mean = np.where(counts > 0, sums / counts, 0.0)
     return mean
 
+def compute_offsets_guess(reproj_list, det_chunk_map, max_workers=16):
+    max_chunk_id = int(np.max(det_chunk_map))
 
-def compute_offsets_guess(reproj_list, det_chunk_map):
-    def _extract_file_path(reproj_file):
-        reproj_data = load_reproj_file(reproj_file, fields=['file_path'])
-        return reproj_data['file_path']
-    exp_files = [_extract_file_path(reproj_file) for reproj_file in reproj_list]
-    compute_mean_pixval_partial = partial(compute_mean_pixval, chunk_map=det_chunk_map)
+    shm = SharedMemory(create=True, size=det_chunk_map.nbytes)
+    np.ndarray(det_chunk_map.shape, dtype=det_chunk_map.dtype, buffer=shm.buf)[:] = det_chunk_map
 
-    with ProcessPoolExecutor(max_workers=20) as executor:
-        results = list(tqdm(executor.map(compute_mean_pixval_partial, exp_files), 
-                            total=len(exp_files), 
-                            desc="Calculating initial guess offsets"))
-    offset_guess = np.array(results)
-    return offset_guess
+    try:
+        with Pool(
+            processes=max_workers,
+            initializer=_offset_worker_init,
+            initargs=(shm.name, det_chunk_map.shape, det_chunk_map.dtype, max_chunk_id)
+        ) as pool:
+            results = list(tqdm(
+                pool.imap(_offset_worker_func, reproj_list, chunksize=20),
+                total=len(reproj_list),
+                desc="Calculating initial guess offsets"
+            ))
+    finally:
+        shm.close()
+        shm.unlink()
+
+    return np.array(results)
 
 
 def load_lvf_params(filename, input_dir='/home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params'):

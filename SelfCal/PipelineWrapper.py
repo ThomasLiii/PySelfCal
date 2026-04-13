@@ -150,7 +150,7 @@ class Calibrator(Reprojector):
     
     
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
-                   solver='lsmr', use_float32=False):
+                   solver='lsmr', use_float32=False, n_threads=32):
         if resume:
             if self.x is None:
                 print("No previous solution found. Starting from scratch.")
@@ -162,7 +162,7 @@ class Calibrator(Reprojector):
         with timer("LSQR"):
             self.x = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape, num_offset_groups=self.num_offset_groups,
                                                         x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                                        solver=solver, use_float32=use_float32)
+                                                        solver=solver, use_float32=use_float32, n_threads=n_threads)
     
     def load_calibration(self, cal_path=None):
         if cal_path is None:

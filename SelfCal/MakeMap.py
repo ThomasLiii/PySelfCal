@@ -1,15 +1,28 @@
 import os
 import h5py
 import hdf5plugin
+import threading
 from tqdm import tqdm
-from multiprocessing import Pool, Lock
+from multiprocessing import Pool, Lock as _MPLock, BoundedSemaphore as _MPSemaphore
 from multiprocessing.shared_memory import SharedMemory
 
-shared_lock = None
+# Semaphore to limit concurrent HDD reads. With many workers doing random reads
+# on a RAID array, seek thrashing kills throughput. Uses multiprocessing.BoundedSemaphore
+# so it works across both threads (ThreadPoolExecutor) and forked processes (Pool).
+_hdd_io_semaphore = None
+_coadd_flush_lock = None
 
-def init_worker_lock(l):
-    global shared_lock
-    shared_lock = l
+def _init_coadd_worker(lock):
+    """Pool initializer: store the multiprocessing Lock as a module global."""
+    global _coadd_flush_lock
+    _coadd_flush_lock = lock
+
+def set_hdd_io_limit(n):
+    """Set the max number of concurrent file reads from slow storage.
+    Call before any parallel processing starts. Works across both threads and processes.
+    """
+    global _hdd_io_semaphore
+    _hdd_io_semaphore = _MPSemaphore(n) if n and n > 0 else None
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import numpy as np
 
@@ -22,8 +35,9 @@ from reproject import reproject_interp
 from reproject import reproject_exact
 from reproject import reproject_adaptive
 
-from scipy.sparse import coo_matrix, vstack, diags
-from scipy.sparse.linalg import lsqr, lsmr
+from scipy.sparse import coo_matrix, csr_matrix, vstack, diags
+from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
+from threadpoolctl import threadpool_limits
 import sys 
 import gc 
 import traceback
@@ -281,12 +295,15 @@ def load_reproj_file(file_path, fields):
 
     data = {}
     is_file_missing = False
-    
+
+    sem = _hdd_io_semaphore
+    if sem is not None:
+        sem.acquire()
     try:
-        # swmr=True allows reading while the file is being written (if supported), 
+        # swmr=True allows reading while the file is being written (if supported),
         # libver='latest' supports the newer layout used in creation.
         with h5py.File(file_path, 'r', libver='latest', swmr=True) as file:
-            
+
             for key in fields:
                 # --- CASE 1: WCS Objects (Derived from Header Attributes) ---
                 if key in ('sub_wcs', 'det_wcs'):
@@ -317,7 +334,7 @@ def load_reproj_file(file_path, fields):
                 else:
                     # Fallback for backward compatibility or missing keys
                     data[key] = None
-        
+
         # Parse indices from filename
         det_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-1])
         exp_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-3])
@@ -330,7 +347,10 @@ def load_reproj_file(file_path, fields):
             data[key] = None
         det_idx = None
         exp_idx = None
-            
+    finally:
+        if sem is not None:
+            sem.release()
+
     data['_is_missing_'] = is_file_missing
     return data
 
@@ -431,9 +451,9 @@ def _coadd_batch_worker(params):
     # Execution Flags
     use_cached = params['use_cached']
 
-    det_aux = None
     shm_handles = []
-    if 'det_aux_name' in params:
+    det_aux = params.get('det_aux')
+    if det_aux is None and 'det_aux_name' in params:
         shm_aux = SharedMemory(name=params['det_aux_name'])
         det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
         shm_handles.append(shm_aux)
@@ -453,36 +473,41 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
-        data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
-        shm_handles.append(shm_data_sum)
+        # Accumulators — direct arrays (threads) or SharedMemory (processes)
+        data_sum_arr = params.get('total_data_sum')
+        if data_sum_arr is None:
+            shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
+            data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
+            shm_handles.append(shm_data_sum)
 
-        shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
-        weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
-        shm_handles.append(shm_weight_sum)
+        weight_sum_arr = params.get('total_weight_sum')
+        if weight_sum_arr is None:
+            shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
+            weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
+            shm_handles.append(shm_weight_sum)
 
-        aux_sum_arr = None
-        if 'total_aux_sum_name' in params:
+        aux_sum_arr = params.get('total_aux_sum')
+        if aux_sum_arr is None and 'total_aux_sum_name' in params:
             shm_aux_sum = SharedMemory(name=params['total_aux_sum_name'])
             aux_sum_arr_shape = (params['det_aux_shape'][0],) + ref_shape
             aux_sum_arr = np.ndarray(aux_sum_arr_shape, dtype=np.float32, buffer=shm_aux_sum.buf)
             shm_handles.append(shm_aux_sum)
 
         # Local accumulators — each worker accumulates independently, then flushes
-        # to shared memory once at the end (single lock acquisition per batch).
+        # to shared arrays once at the end (single lock acquisition per batch).
         local_data_sum = np.zeros(ref_shape, dtype=np.float32)
         local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
-        # Shared Memory Setup
-        mean_map = None
-        std_map = None
-        if 'mean_map_name' in params:
+        # Read-only maps — direct arrays (threads) or SharedMemory (processes)
+        mean_map = params.get('mean_map')
+        if mean_map is None and 'mean_map_name' in params:
             shm_mean = SharedMemory(name=params['mean_map_name'])
             mean_map = np.ndarray(ref_shape, dtype=params['mean_map_dtype'], buffer=shm_mean.buf)
             shm_handles.append(shm_mean)
-            
-        if 'std_map_name' in params:
+
+        std_map = params.get('std_map')
+        if std_map is None and 'std_map_name' in params:
             shm_std = SharedMemory(name=params['std_map_name'])
             std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
             shm_handles.append(shm_std)
@@ -538,21 +563,48 @@ def _coadd_batch_worker(params):
         
         # Path 1: Save to Cache (and stop there)
         if mode == 'cache':
-            comp_args = {
-                **hdf5plugin.Zstd(clevel=5), 
-                'shuffle': True,
-                'track_times': False}
             org_name = os.path.basename(file_path)
             cache_name = f"cached_{org_name}"
             cache_path = os.path.join(cache_dir, cache_name)
-            
+
+            # Crop to the tight bbox of nonzero weight: typically only a small
+            # fraction of the subframe is valid (e.g., a single channel within
+            # a multi-channel detector), so this dramatically reduces I/O.
+            nz_rows = np.any(sub_weight, axis=1)
+            nz_cols = np.any(sub_weight, axis=0)
+            row_idx = np.where(nz_rows)[0]
+            col_idx = np.where(nz_cols)[0]
+            if row_idx.size > 0 and col_idx.size > 0:
+                rmin, rmax = int(row_idx[0]), int(row_idx[-1]) + 1
+                cmin, cmax = int(col_idx[0]), int(col_idx[-1]) + 1
+            else:
+                rmin = cmin = 0
+                rmax = cmax = 0
+
+            sub_data_c = sub_data[rmin:rmax, cmin:cmax]
+            sub_weight_c = sub_weight[rmin:rmax, cmin:cmax]
+            sub_aux_c = sub_aux[:, rmin:rmax, cmin:cmax] if sub_aux is not None else None
+
+            # Update ref_coords to reflect the crop in ref-frame coordinates,
+            # so compute_crop(ref_shape, ref_coords) yields the correct slices
+            # for the cropped sub_data on the consumer side.
+            y_min, y_max, x_min, x_max = ref_coords
+            new_ref_coords = np.array(
+                [y_min + rmin, y_min + rmax, x_min + cmin, x_min + cmax],
+                dtype=ref_coords.dtype,
+            )
+
             with h5py.File(cache_path, 'w') as hf:
-                hf.create_dataset('ref_coords', data=ref_coords, dtype=ref_coords.dtype)
-                hf.create_dataset('sub_data', data=sub_data, dtype=sub_data.dtype, **comp_args)
-                hf.create_dataset('sub_weight', data=sub_weight, dtype=sub_weight.dtype, **comp_args)
-                if sub_aux is not None:
-                    hf.create_dataset('sub_aux', data=sub_aux, dtype=sub_aux.dtype, **comp_args)
-            
+                hf.create_dataset('ref_coords', data=new_ref_coords, dtype=new_ref_coords.dtype, track_times=False)
+                hf.create_dataset('sub_data', data=sub_data_c, dtype=sub_data_c.dtype, track_times=False)
+                hf.create_dataset('sub_weight', data=sub_weight_c, dtype=sub_weight_c.dtype, track_times=False)
+                if sub_aux_c is not None:
+                    hf.create_dataset('sub_aux', data=sub_aux_c, dtype=sub_aux_c.dtype, track_times=False)
+                # Bbox in the original (full) sub frame coordinates, so consumers
+                # that compute auxiliary arrays at full sub shape (e.g. wav_coadd
+                # building sub_BC/sub_BW from sub_mapping) can match the crop.
+                hf.create_dataset('sub_bbox', data=np.array([rmin, rmax, cmin, cmax], dtype=np.int32), track_times=False)
+
             cached_list.append(cache_path)
         
         # Path 2: Accumulate to Mosaic
@@ -594,7 +646,8 @@ def _coadd_batch_worker(params):
 
     # Flush local accumulators to shared arrays (one lock per batch instead of per file)
     if mode != 'cache':
-        with shared_lock:
+        _lock = params.get('_lock') or _coadd_flush_lock
+        with _lock:
             data_sum_arr += local_data_sum
             weight_sum_arr += local_weight_sum
             if local_aux_sum is not None:
@@ -626,128 +679,170 @@ def _coadd_batch_manager(params):
         if mode == 'cache': return []
         else: return np.zeros(params['ref_shape']), np.zeros(params['ref_shape'])
 
-    # --- Shared Memory Setup (Only for Coadd mode) ---
+    ref_shape = params['ref_shape']
     shm_objects = []
-    try:
-        # Move large maps to Shared Memory if we are Coadding
-        if mean_map is not None and mode in ['std', 'sigma_clip']:
-            shm_mean = SharedMemory(create=True, size=mean_map.nbytes)
-            shared_mean_arr = np.ndarray(mean_map.shape, dtype=mean_map.dtype, buffer=shm_mean.buf)
-            shared_mean_arr[:] = mean_map[:]
-            shm_objects.append(shm_mean)
-            
-            params['mean_map_name'] = shm_mean.name
-            params['mean_map_dtype'] = mean_map.dtype 
-            params['mean_map'] = None  # Clear ref to avoid pickling
 
-        if std_map is not None and mode in ['sigma_clip']:
-            shm_std = SharedMemory(create=True, size=std_map.nbytes)
-            shared_std_arr = np.ndarray(std_map.shape, dtype=std_map.dtype, buffer=shm_std.buf)
-            shared_std_arr[:] = std_map[:]
-            shm_objects.append(shm_std)
-            
-            params['std_map_name'] = shm_std.name
-            params['std_map_dtype'] = std_map.dtype
-            params['std_map'] = None
-
+    if mode == 'cache':
+        # Cache mode: use Pool (real processes) for true parallelism — GIL prevents
+        # threads from scaling. Move large read-only arrays to SharedMemory.
         if det_aux is not None:
-            shm_aux = SharedMemory(create=True, size=det_aux.nbytes)
-            shared_aux_arr = np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm_aux.buf)
-            shared_aux_arr[:] = det_aux[:]
-            shm_objects.append(shm_aux)
-            
-            params['det_aux_name'] = shm_aux.name
+            shm = SharedMemory(create=True, size=det_aux.nbytes)
+            np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm.buf)[:] = det_aux
+            shm_objects.append(shm)
+            params['det_aux_name'] = shm.name
             params['det_aux_dtype'] = det_aux.dtype
             params['det_aux_shape'] = det_aux.shape
             params['det_aux'] = None
 
-        # Move chunk_map to shared memory to avoid pickling with every task
         chunk_map = params.get('chunk_map')
         if chunk_map is not None:
-            shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
-            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
-            shm_objects.append(shm_cm)
-            params['chunk_map_shm_name'] = shm_cm.name
+            shm = SharedMemory(create=True, size=chunk_map.nbytes)
+            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm.buf)[:] = chunk_map
+            shm_objects.append(shm)
+            params['chunk_map_shm_name'] = shm.name
             params['chunk_map_shape'] = chunk_map.shape
             params['chunk_map_dtype'] = chunk_map.dtype
             params['chunk_map'] = None
 
-        # Move grid_valid_weight to shared memory
         gvw = params.get('grid_valid_weight')
         if gvw is not None:
-            shm_gvw = SharedMemory(create=True, size=gvw.nbytes)
-            np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm_gvw.buf)[:] = gvw
-            shm_objects.append(shm_gvw)
-            params['gvw_shm_name'] = shm_gvw.name
+            shm = SharedMemory(create=True, size=gvw.nbytes)
+            np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm.buf)[:] = gvw
+            shm_objects.append(shm)
+            params['gvw_shm_name'] = shm.name
             params['gvw_shape'] = gvw.shape
             params['gvw_dtype'] = gvw.dtype
             params['grid_valid_weight'] = None
+    else:
+        # Coadd modes: Pool (real processes) for true parallelism — same as cache mode.
+        # Accumulators and read-only maps go into SharedMemory.
+        use_cached = params.get('use_cached', False)
 
-        # --- Task Creation ---
-        ref_shape = params['ref_shape']
-        if mode != 'cache':
-            total_data_sum = np.zeros(ref_shape, dtype=np.float32)
-            shm_data = SharedMemory(create=True, size=total_data_sum.nbytes)
-            data_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf)
-            data_arr[:] = 0.0
-            shm_objects.append(shm_data)
+        # --- Accumulator arrays in SharedMemory ---
+        data_nbytes = int(np.prod(ref_shape)) * np.dtype(np.float32).itemsize
 
-            total_weight_sum = np.zeros(ref_shape, dtype=np.float32)
-            shm_weight = SharedMemory(create=True, size=total_weight_sum.nbytes)
-            weight_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf)
-            weight_arr[:] = 0.0
-            shm_objects.append(shm_weight)
+        shm_data = SharedMemory(create=True, size=data_nbytes)
+        data_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf)
+        data_arr.fill(0)
+        shm_objects.append(shm_data)
+        params['total_data_sum_name'] = shm_data.name
+        params.pop('total_data_sum', None)
 
-            params['total_data_sum_name'] = shm_data.name
-            params['total_weight_sum_name'] = shm_weight.name
+        shm_weight = SharedMemory(create=True, size=data_nbytes)
+        weight_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf)
+        weight_arr.fill(0)
+        shm_objects.append(shm_weight)
+        params['total_weight_sum_name'] = shm_weight.name
+        params.pop('total_weight_sum', None)
 
-            aux_arr = None
+        total_aux_shape = None
+        if det_aux is not None:
+            total_aux_shape = (det_aux.shape[0],) + ref_shape
+            aux_nbytes = int(np.prod(total_aux_shape)) * np.dtype(np.float32).itemsize
+            shm_aux_sum = SharedMemory(create=True, size=aux_nbytes)
+            aux_arr_shm = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux_sum.buf)
+            aux_arr_shm.fill(0)
+            shm_objects.append(shm_aux_sum)
+            params['total_aux_sum_name'] = shm_aux_sum.name
+            params['det_aux_shape'] = det_aux.shape
+            params.pop('total_aux_sum', None)
+
+        # --- Read-only maps (mean_map, std_map) in SharedMemory ---
+        if mean_map is not None:
+            shm = SharedMemory(create=True, size=mean_map.nbytes)
+            np.ndarray(ref_shape, dtype=mean_map.dtype, buffer=shm.buf)[:] = mean_map
+            shm_objects.append(shm)
+            params['mean_map_name'] = shm.name
+            params['mean_map_dtype'] = mean_map.dtype
+            params['mean_map'] = None
+
+        if std_map is not None:
+            shm = SharedMemory(create=True, size=std_map.nbytes)
+            np.ndarray(ref_shape, dtype=std_map.dtype, buffer=shm.buf)[:] = std_map
+            shm_objects.append(shm)
+            params['std_map_name'] = shm.name
+            params['std_map_dtype'] = std_map.dtype
+            params['std_map'] = None
+
+        # --- Read-only prep arrays in SharedMemory (only needed when not using cache) ---
+        if not use_cached:
             if det_aux is not None:
-                total_aux_shape = (params['det_aux_shape'][0],) + ref_shape
-                total_aux_sum = np.zeros(total_aux_shape, dtype=np.float32)
-                shm_aux = SharedMemory(create=True, size=total_aux_sum.nbytes)
-                aux_arr = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux.buf)
-                aux_arr[:] = 0.0
-                shm_objects.append(shm_aux)
-                params['total_aux_sum_name'] = shm_aux.name
+                shm = SharedMemory(create=True, size=det_aux.nbytes)
+                np.ndarray(det_aux.shape, dtype=det_aux.dtype, buffer=shm.buf)[:] = det_aux
+                shm_objects.append(shm)
+                params['det_aux_name'] = shm.name
+                params['det_aux_dtype'] = det_aux.dtype
+                params['det_aux_shape'] = det_aux.shape
 
-        # Remove full lists — workers only need their batch slice
-        params.pop('file_list', None)
-        params.pop('offset_list', None)
+            chunk_map = params.get('chunk_map')
+            if chunk_map is not None:
+                shm = SharedMemory(create=True, size=chunk_map.nbytes)
+                np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm.buf)[:] = chunk_map
+                shm_objects.append(shm)
+                params['chunk_map_shm_name'] = shm.name
+                params['chunk_map_shape'] = chunk_map.shape
+                params['chunk_map_dtype'] = chunk_map.dtype
+                params['chunk_map'] = None
 
-        tasks = []
-        for start_idx in range(0, total_files, batch_size):
-            end_idx = min(start_idx + batch_size, total_files)
-            task_params = params.copy()
-            task_params.update({
-                'batch_files': file_list[start_idx:end_idx],
-                'batch_indices': list(range(start_idx, end_idx)),
-                'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
-            })
-            tasks.append(task_params)
+            gvw = params.get('grid_valid_weight')
+            if gvw is not None:
+                shm = SharedMemory(create=True, size=gvw.nbytes)
+                np.ndarray(gvw.shape, dtype=gvw.dtype, buffer=shm.buf)[:] = gvw
+                shm_objects.append(shm)
+                params['gvw_shm_name'] = shm.name
+                params['gvw_shape'] = gvw.shape
+                params['gvw_dtype'] = gvw.dtype
+                params['grid_valid_weight'] = None
+        else:
+            # Strip large objects not needed when reading from cache
+            params['det_aux'] = None
+            params['chunk_map'] = None
+            params['grid_valid_weight'] = None
+            params['det_offset_func'] = None
+            params['preprocess_func'] = None
+            params['postprocess_func'] = None
 
-        print(f"Processing {total_files} files in {len(tasks)} batches...")
+    # Remove full lists — workers only need their batch slice
+    params.pop('file_list', None)
+    params.pop('offset_list', None)
 
-        # --- Execution ---
+    tasks = []
+    for start_idx in range(0, total_files, batch_size):
+        end_idx = min(start_idx + batch_size, total_files)
+        task_params = params.copy()
+        task_params.update({
+            'batch_files': file_list[start_idx:end_idx],
+            'batch_indices': list(range(start_idx, end_idx)),
+            'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
+        })
+        tasks.append(task_params)
+
+    print(f"Processing {total_files} files in {len(tasks)} batches...")
+
+    # --- Execution ---
+    try:
         if mode == 'cache':
+            # Pool: real processes bypass the GIL for full CPU parallelism
             total_result = []
             with Pool(processes=max_workers) as pool:
                 for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    if mode == 'cache':
-                        total_result.extend(res)
+                    total_result.extend(res)
             total_result.sort()
             return total_result
         else:
-            lock = Lock()
-            with Pool(processes=max_workers, initializer=init_worker_lock, initargs=(lock,)) as pool:
-                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
-                    pass
-            
-            final_data_sum = np.copy(data_arr)
-            final_weight_sum = np.copy(weight_arr)
-            final_aux_sum = np.copy(aux_arr) if aux_arr is not None else None
-            return final_data_sum, final_weight_sum, final_aux_sum
+            # Pool: real processes bypass the GIL for full CPU parallelism
+            mp_lock = _MPLock()
+            with Pool(processes=max_workers, initializer=_init_coadd_worker, initargs=(mp_lock,)) as pool:
+                for _ in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                    pass  # Workers flush to SharedMemory accumulators
 
+            # Read final results from SharedMemory (copy before cleanup)
+            final_data_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf).copy()
+            final_weight_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf).copy()
+            final_aux_sum = None
+            if total_aux_shape is not None:
+                final_aux_sum = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux_sum.buf).copy()
+            return final_data_sum, final_weight_sum, final_aux_sum
     finally:
         for shm in shm_objects:
             shm.close()
@@ -1013,9 +1108,11 @@ def _prep_lsqr(task_params):
         sub_data_vec = sub_data_vec[valid_mask]
 
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
-        sub_rows = new_row_indices
+        sub_rows = new_row_indices.astype(np.int32)
+        sub_cols = sub_cols.astype(np.int32)
+        sub_data_vec = sub_data_vec.astype(np.float32)
         sub_b = sub_b[unique_rows]
-        
+
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except Exception as e:
@@ -1026,39 +1123,75 @@ def _prep_lsqr(task_params):
 def _prep_lsqr_batch_worker(batch_params):
     """Wrapper to process a list (batch) of subframes in a single worker process."""
     sub_tasks = batch_params['sub_tasks']
-    
-    batch_rows = []
-    batch_cols = []
-    batch_data = []
-    batch_b = []
-    batch_row_offset = 0
 
-    for task_params in sub_tasks:
-        result = _prep_lsqr(task_params)
-        
-        if result is None:
-            continue
-            
-        sub_rows, sub_cols, sub_data, sub_b, num_rows = result
-        if len(sub_b) == 0:
-            continue
-            
-        batch_rows.append(sub_rows + batch_row_offset)
-        batch_cols.append(sub_cols)
-        batch_data.append(sub_data)
-        batch_b.append(sub_b)
-        batch_row_offset += num_rows
+    # Reconstruct shared memory arrays once per batch (avoids per-file overhead)
+    shm_handles = []
+    shm_arrays = {}
 
-    if len(batch_b) == 0:
-        return None
+    if 'chunk_map_shm_name' in sub_tasks[0]:
+        shm_cm = SharedMemory(name=sub_tasks[0]['chunk_map_shm_name'])
+        shm_arrays['chunk_map'] = np.ndarray(sub_tasks[0]['chunk_map_shape'], dtype=sub_tasks[0]['chunk_map_dtype'], buffer=shm_cm.buf)
+        shm_handles.append(shm_cm)
 
-    return (
-        np.concatenate(batch_rows),
-        np.concatenate(batch_cols),
-        np.concatenate(batch_data),
-        np.concatenate(batch_b),
-        batch_row_offset
-    )
+    if 'gvw_shm_name' in sub_tasks[0]:
+        shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])
+        shm_arrays['grid_valid_weight'] = np.ndarray(sub_tasks[0]['gvw_shape'], dtype=sub_tasks[0]['gvw_dtype'], buffer=shm_gvw.buf)
+        shm_handles.append(shm_gvw)
+
+    if 'adj_shm_name_0' in sub_tasks[0]:
+        adj_parts = []
+        for idx in range(2):
+            shm = SharedMemory(name=sub_tasks[0][f'adj_shm_name_{idx}'])
+            adj_parts.append(np.ndarray(sub_tasks[0][f'adj_shape_{idx}'], dtype=sub_tasks[0][f'adj_dtype_{idx}'], buffer=shm.buf))
+            shm_handles.append(shm)
+        shm_arrays['adj_info'] = tuple(adj_parts)
+
+    try:
+        batch_rows = []
+        batch_cols = []
+        batch_data = []
+        batch_b = []
+        batch_row_offset = 0
+
+        for task_params in sub_tasks:
+            # Inject reconstructed shared memory arrays
+            task_params.update(shm_arrays)
+
+            result = _prep_lsqr(task_params)
+
+            if result is None:
+                continue
+
+            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
+            if len(sub_b) == 0:
+                continue
+
+            batch_rows.append(sub_rows + batch_row_offset)
+            batch_cols.append(sub_cols)
+            batch_data.append(sub_data)
+            batch_b.append(sub_b)
+            batch_row_offset += num_rows
+
+        if len(batch_b) == 0:
+            return None
+
+        # Write results to shared memory to avoid pickle/pipe IPC overhead
+        cat_rows = np.concatenate(batch_rows)
+        cat_cols = np.concatenate(batch_cols)
+        cat_data = np.concatenate(batch_data)
+        cat_b = np.concatenate(batch_b)
+
+        result_shm = []
+        for arr in (cat_rows, cat_cols, cat_data, cat_b):
+            shm = SharedMemory(create=True, size=max(arr.nbytes, 1))
+            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+            result_shm.append((shm.name, arr.shape, arr.dtype.str))
+            shm.close()
+
+        return {'shm': result_shm, 'num_rows': batch_row_offset}
+    finally:
+        for shm in shm_handles:
+            shm.close()
 
 def setup_lsqr(file_list, ref_shape, 
                chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False, 
@@ -1166,13 +1299,45 @@ def setup_lsqr(file_list, ref_shape,
         'ref_shape': ref_shape,
         'offset_regularization': offset_regularization,
         'reg_weight': reg_weight,
-        'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
+        'adj_info': adj_info,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group': frame_to_group,
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
     }
+
+    # Move large arrays to shared memory so forked processes can access them
+    # without pickling. Each process reconstructs numpy views in the worker.
+    shm_objects = []
+
+    if chunk_map is not None:
+        shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
+        np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
+        shm_objects.append(shm_cm)
+        common_params['chunk_map_shm_name'] = shm_cm.name
+        common_params['chunk_map_shape'] = chunk_map.shape
+        common_params['chunk_map_dtype'] = chunk_map.dtype
+        common_params['chunk_map'] = None
+
+    if grid_valid_weight is not None:
+        shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)
+        np.ndarray(grid_valid_weight.shape, dtype=grid_valid_weight.dtype, buffer=shm_gvw.buf)[:] = grid_valid_weight
+        shm_objects.append(shm_gvw)
+        common_params['gvw_shm_name'] = shm_gvw.name
+        common_params['gvw_shape'] = grid_valid_weight.shape
+        common_params['gvw_dtype'] = grid_valid_weight.dtype
+        common_params['grid_valid_weight'] = None
+
+    if adj_info is not None:
+        for idx, arr in enumerate(adj_info):
+            shm = SharedMemory(create=True, size=arr.nbytes)
+            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+            shm_objects.append(shm)
+            common_params[f'adj_shm_name_{idx}'] = shm.name
+            common_params[f'adj_shape_{idx}'] = arr.shape
+            common_params[f'adj_dtype_{idx}'] = arr.dtype
+        common_params['adj_info'] = None
 
     all_individual_tasks = []
     for index, reproj_file in enumerate(file_list):
@@ -1189,6 +1354,7 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
@@ -1205,6 +1371,8 @@ def setup_lsqr(file_list, ref_shape,
             all_b.append(b_b)
             total_rows += b_num_rows
 =======
+=======
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
         name, shape, dtype = info
@@ -1225,7 +1393,11 @@ def setup_lsqr(file_list, ref_shape,
                 if result is None: continue
 
                 shm_infos = result['shm']
+<<<<<<< HEAD
                 b_rows = _read_shm(shm_infos[0]).astype(np.int64) + total_rows
+=======
+                b_rows = _read_shm(shm_infos[0]) + total_rows
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
                 b_cols = _read_shm(shm_infos[1])
                 b_data = _read_shm(shm_infos[2])
                 b_b = _read_shm(shm_infos[3])
@@ -1246,7 +1418,10 @@ def setup_lsqr(file_list, ref_shape,
         for shm in shm_objects:
             shm.close()
             shm.unlink()
+<<<<<<< HEAD
 >>>>>>> Stashed changes
+=======
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
@@ -1337,7 +1512,60 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups, chunk_map):
     offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
     return skymap_coverage, offset_coverage, offset_valid_frac
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
+=======
+def _partition_csr(A, n_blocks):
+    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
+    n_rows = A.shape[0]
+    boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
+    blocks = []
+    for i in range(n_blocks):
+        sr, er = int(boundaries[i]), int(boundaries[i + 1])
+        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
+        blk = csr_matrix(
+            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
+            shape=(er - sr, A.shape[1]), copy=False
+        )
+        blocks.append(blk)
+    return blocks, boundaries
+
+def _make_parallel_operator(A_csr, n_threads):
+    """Build a LinearOperator with thread-parallel matvec/rmatvec.
+
+    Pre-computes A^T as CSR and partitions both into row-blocks.
+    GIL is released during scipy CSR SpMV, enabling true thread parallelism.
+    """
+    m, n = A_csr.shape
+
+    print(f"Building parallel SpMV operator ({n_threads} threads)...")
+    AT_csr = A_csr.T.tocsr()
+
+    A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
+    AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
+
+    executor = ThreadPoolExecutor(max_workers=n_threads)
+    mv_out = np.empty(m, dtype=A_csr.dtype)
+    rmv_out = np.empty(n, dtype=A_csr.dtype)
+
+    def _matvec(x):
+        def _work(i):
+            mv_out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
+        list(executor.map(_work, range(n_threads)))
+        return mv_out.copy()
+
+    def _rmatvec(y):
+        def _work(i):
+            rmv_out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
+        list(executor.map(_work, range(n_threads)))
+        return rmv_out.copy()
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
+    op._executor = executor
+    op._AT_csr = AT_csr  # prevent GC
+    return op
+
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
 =======
 def _partition_csr(A, n_blocks):
@@ -1393,7 +1621,7 @@ def _make_parallel_operator(A_csr, n_threads):
 def apply_lsqr(A, b, ref_shape, num_offset_groups, x0=None,
 >>>>>>> Stashed changes
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
-                solver='lsmr', use_float32=False):
+                solver='lsmr', use_float32=False, n_threads=32):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -1412,68 +1640,72 @@ def apply_lsqr(A, b, ref_shape, num_offset_groups, x0=None,
     num_sky = ref_h * ref_w
     num_cols = A.shape[1]
 
-    # --- Eliminate zero columns to reduce problem size ---
+    # --- Fused preprocessing: column elimination + float32 + preconditioning + CSR ---
     col_nnz = np.bincount(A.col, minlength=num_cols)
     active_mask = col_nnz > 0
-    num_active = np.sum(active_mask)
+    num_active = int(np.sum(active_mask))
 
     if num_active < num_cols:
         print(f"Eliminating {num_cols - num_active} zero columns ({num_active}/{num_cols} active)...")
-        col_map = np.full(num_cols, -1, dtype=np.int32)
-        col_map[active_mask] = np.arange(num_active, dtype=np.int32)
-
-        A_data = A.data
-        A_row = A.row
-        A_col = col_map[A.col]
-        A_compressed = coo_matrix((A_data, (A_row, A_col)), shape=(A.shape[0], num_active))
-
-        if x0 is not None:
-            x0_compressed = x0[active_mask]
-        else:
-            x0_compressed = None
+        col_map = np.full(num_cols, -1, dtype=A.col.dtype)
+        col_map[active_mask] = np.arange(num_active, dtype=A.col.dtype)
+        new_col = col_map[A.col]
+        x0_compressed = x0[active_mask] if x0 is not None else None
     else:
-        A_compressed = A
+        new_col = A.col
         x0_compressed = x0
         active_mask = None
 
-    # --- Optional float32 downcast ---
+    n_active = num_active if active_mask is not None else num_cols
+
     if use_float32:
         print("Downcasting to float32 for faster SpMV...")
-        A_compressed.data = A_compressed.data.astype(np.float32)
+        data = A.data.astype(np.float32)
         b = b.astype(np.float32)
         if x0_compressed is not None:
             x0_compressed = x0_compressed.astype(np.float32)
+    else:
+        data = A.data
 
-    # --- Preconditioning ---
     if precondition:
         print("Applying column-norm preconditioning...")
-        col_sq_norm = np.bincount(A_compressed.col, weights=A_compressed.data**2, minlength=A_compressed.shape[1])
+        col_sq_norm = np.bincount(new_col, weights=data.astype(np.float64)**2, minlength=n_active)
         col_norms = np.sqrt(col_sq_norm)
         col_norms[col_norms == 0] = 1.0
-
         M_inv = col_norms
         M = 1.0 / M_inv
-
-        scaled_data = A_compressed.data * M[A_compressed.col]
-        A_solver = coo_matrix((scaled_data, (A_compressed.row, A_compressed.col)), shape=A_compressed.shape)
-        x0_solver = x0_compressed * M_inv if x0_compressed is not None else None
+        data = data * M[new_col].astype(data.dtype)
+        x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
     else:
-        A_solver = A_compressed
-        x0_solver = x0_compressed
         M = None
+        x0_solver = x0_compressed
 
-    print(f"Solving least squares for {A_solver.shape[1]} unknowns with {A_solver.shape[0]} equations (solver={solver}).")
+    print(f"Solving least squares for {n_active} unknowns with {A.shape[0]} equations (solver={solver}).")
+    A_csr = coo_matrix((data, (A.row, new_col)), shape=(A.shape[0], n_active)).tocsr()
+    del data, new_col
 
-    A_solver = A_solver.tocsr()
-
-    # --- Solve ---
-    if solver == 'lsmr':
-        result = lsmr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-    elif solver == 'lsqr':
-        result = lsqr(A_solver, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+    # --- Build parallel operator or use CSR directly ---
+    if n_threads > 1:
+        op = _make_parallel_operator(A_csr, n_threads)
+        try:
+            with threadpool_limits(limits=1, user_api='blas'):
+                if solver == 'lsmr':
+                    result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                elif solver == 'lsqr':
+                    result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                else:
+                    raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        finally:
+            op._executor.shutdown(wait=False)
     else:
-        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        if solver == 'lsmr':
+            result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+        elif solver == 'lsqr':
+            result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+        else:
+            raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
     x_solver = result[0]
+    del A_csr
 
     # --- Undo preconditioning ---
     if precondition:
@@ -1510,12 +1742,18 @@ def parse_x(x, ref_shape, num_offset_groups, num_chunks, num_frames=None):
 
 def encode_x(skymap, offset):
     """Utility function to encode the sky and offset components back into a single vector x."""
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     return np.concatenate([skymap.flatten(), offset.flatten()])
 =======
     return np.concatenate([skymap.flatten(), offset.flatten()])
 
 def compute_x0_from_Ab(A, b, ref_shape, num_offset_groups=None):
+=======
+    return np.concatenate([skymap.flatten(), offset.flatten()])
+
+def compute_x0_from_Ab(A, b, ref_shape, num_frames):
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
@@ -1541,5 +1779,9 @@ def compute_x0_from_Ab(A, b, ref_shape, num_offset_groups=None):
 
     x0 = np.zeros(num_cols)
     x0[num_sky:] = offsets
+<<<<<<< HEAD
     return x0
 >>>>>>> Stashed changes
+=======
+    return x0
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892

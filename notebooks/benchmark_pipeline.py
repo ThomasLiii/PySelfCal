@@ -26,7 +26,11 @@ sys.path.insert(0, parent_path)
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.SPHERExUtility import (
+<<<<<<< HEAD
     load_calibration, load_lvf_params, compute_subchannel_adjacency,
+=======
+    load_calibration, load_lvf_params, compute_column_adjacency,
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     make_spherex_stripped_offset_map, fast_vertical_dist
 )
@@ -41,7 +45,11 @@ CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
 
 selfcal_config_tmp = PipelineWrapper.PipelineConfig(
     output_dir='/mnt/md124/thomasli/selfcal/outputs/',
+<<<<<<< HEAD
     run_name=f'SPHEREx_nep_qr2_det5_6p2arcsec',
+=======
+    run_name=f'SPHEREx_nep_qr2_det1_6p2arcsec',
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     resolution_arcsec=6.2
 )
 
@@ -75,10 +83,17 @@ del selfcal_config_tmp
 
 # %% Cell 1: Settings
 frame_setting = {
+<<<<<<< HEAD
     'Detector': 5,
     'NumSub': 10,
     'NumCh': 34,
     'NumCol': 5,
+=======
+    'Detector': 1,
+    'NumSub': 10,
+    'NumCh': 34,
+    'NumCol': 3,
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 }
 
 detector = frame_setting['Detector']
@@ -153,7 +168,11 @@ det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(
     num_columns=frame_setting['NumCol'], oversample_factor=1, lvf_params=lvf_params
 )
 
+<<<<<<< HEAD
 adj_info = compute_subchannel_adjacency(det_chunk_map, frame_setting['NumCol'])
+=======
+adj_info = compute_column_adjacency(det_chunk_map, frame_setting['NumCol'])
+>>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 
 print(f"Detector inputs prepared in {time.time() - t0:.2f}s")
 
