@@ -1009,6 +1009,7 @@ def _prep_lsqr(task_params):
     frame_to_group = task_params['frame_to_group']
     scalar_col_start = task_params['scalar_col_start']
     num_scalar_cols = task_params['num_scalar_cols']
+    det_template = task_params.get('det_template')
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     group_idx = frame_to_group[index]
@@ -1057,14 +1058,21 @@ def _prep_lsqr(task_params):
         chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero()
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
         O_rows = sub_idx
-        O_cols = num_sky + (group_idx * num_chunks) + chunk_idx
-        O_data = valid_weight[sub_idx] * chunk_vals
+
+        if det_template is not None:
+            # Template mode: single alpha column per frame, weighted by template
+            O_cols = np.full(len(chunk_idx), num_sky + index, dtype=np.int64)
+            O_data = valid_weight[sub_idx] * chunk_vals * det_template[group_idx, chunk_idx]
+        else:
+            O_cols = num_sky + (group_idx * num_chunks) + chunk_idx
+            O_data = valid_weight[sub_idx] * chunk_vals
 
         sub_b = valid_vals * valid_weight
 
         # --- Spatial Regularization (Adjacency) ---
+        # Skip in template mode (single scalar per frame, no spatial structure to regularize)
         reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
-        if reg_weight > 0 and adj_info is not None and offset_regularization:
+        if reg_weight > 0 and adj_info is not None and offset_regularization and det_template is None:
             # adj_info is expected to be a tuple of (chunk_i, chunk_j) indices that are neighbors
             chunk_i, chunk_j = adj_info
             num_constraints = len(chunk_i)
@@ -1197,7 +1205,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
-               reg_weight=0.0, adj_info=None, mean_offsets=None, det_groups=None, postprocess_func=None, preprocess_func=None,
+               reg_weight=0.0, adj_info=None, mean_offsets=None, det_groups=None, det_template=None, postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
@@ -1282,8 +1290,16 @@ def setup_lsqr(file_list, ref_shape,
         num_offset_groups = num_frames
         num_scalar_cols = 0
 
-    total_cols = num_sky + num_chunks * num_offset_groups + num_scalar_cols
-    scalar_col_start = num_sky + num_chunks * num_offset_groups
+    # Template mode: fix spatial pattern, solve for per-frame amplitude
+    if det_template is not None:
+        assert det_groups is not None, "det_template requires det_groups"
+        det_template = np.asarray(det_template, dtype=np.float32)
+        total_cols = num_sky + num_frames + num_scalar_cols
+        scalar_col_start = num_sky + num_frames
+        print(f"Template mode: {num_frames} alpha unknowns (pattern fixed from template)")
+    else:
+        total_cols = num_sky + num_chunks * num_offset_groups + num_scalar_cols
+        scalar_col_start = num_sky + num_chunks * num_offset_groups
 
     common_params = {
         'chunk_map': chunk_map,
@@ -1305,6 +1321,7 @@ def setup_lsqr(file_list, ref_shape,
         'frame_to_group': frame_to_group,
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
+        'det_template': det_template,
     }
 
     # Move large arrays to shared memory so forked processes can access them
