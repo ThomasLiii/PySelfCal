@@ -911,8 +911,12 @@ def _prep_lsqr(task_params):
     reg_weight = task_params['reg_weight']
     offset_regularization = task_params['offset_regularization']
     adj_info = task_params['adj_info'] # Pre-computed adjacency (row, col) pairs
+    frame_to_group = task_params['frame_to_group']
+    scalar_col_start = task_params['scalar_col_start']
+    num_scalar_cols = task_params['num_scalar_cols']
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
+    group_idx = frame_to_group[index]
 
     try:
         # 3. Explicit Call to _prep_subframe
@@ -958,7 +962,7 @@ def _prep_lsqr(task_params):
         chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero()
         chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
         O_rows = sub_idx
-        O_cols = num_sky + (index * num_chunks) + chunk_idx
+        O_cols = num_sky + (group_idx * num_chunks) + chunk_idx
         O_data = valid_weight[sub_idx] * chunk_vals
 
         sub_b = valid_vals * valid_weight
@@ -969,7 +973,7 @@ def _prep_lsqr(task_params):
             # adj_info is expected to be a tuple of (chunk_i, chunk_j) indices that are neighbors
             chunk_i, chunk_j = adj_info
             num_constraints = len(chunk_i)
-            offset_base = num_sky + (index * num_chunks)
+            offset_base = num_sky + (group_idx * num_chunks)
             
             # Constraint: reg_weight * (O_i - O_j) = 0
             # Equations start after the data equations (num_valid_pixels)
@@ -978,10 +982,29 @@ def _prep_lsqr(task_params):
             reg_data = np.tile([reg_weight, -reg_weight], num_constraints)
             reg_b = np.zeros(num_constraints)
 
-        # Concatenate Data and Regularization
-        sub_rows = np.concatenate([S_rows, O_rows, reg_rows]) if len(reg_rows) > 0 else np.concatenate([S_rows, O_rows])
-        sub_cols = np.concatenate([S_cols, O_cols, reg_cols]) if len(reg_cols) > 0 else np.concatenate([S_cols, O_cols])
-        sub_data_vec = np.concatenate([S_data, O_data, reg_data]) if len(reg_data) > 0 else np.concatenate([S_data, O_data])
+        # Per-frame scalar term (one column per frame, applied to every valid pixel)
+        Sc_rows, Sc_cols, Sc_data = [], [], []
+        if num_scalar_cols > 0:
+            scalar_col = scalar_col_start + index
+            Sc_rows = np.arange(num_valid_pixels)
+            Sc_cols = np.full(num_valid_pixels, scalar_col, dtype=np.int64)
+            Sc_data = valid_weight
+
+        # Concatenate Data, Offset, Scalar, and Regularization
+        parts_rows = [S_rows, O_rows]
+        parts_cols = [S_cols, O_cols]
+        parts_data = [S_data, O_data]
+        if len(Sc_rows) > 0:
+            parts_rows.append(Sc_rows)
+            parts_cols.append(Sc_cols)
+            parts_data.append(Sc_data)
+        if len(reg_rows) > 0:
+            parts_rows.append(reg_rows)
+            parts_cols.append(reg_cols)
+            parts_data.append(reg_data)
+        sub_rows = np.concatenate(parts_rows)
+        sub_cols = np.concatenate(parts_cols)
+        sub_data_vec = np.concatenate(parts_data)
         sub_b = np.concatenate([sub_b, reg_b]) if len(reg_b) > 0 else sub_b
 
         valid_mask = ~check_invalid(sub_b[sub_rows]) & ~((sub_data_vec == 0) & (sub_b[sub_rows] == 0))
@@ -1041,7 +1064,7 @@ def setup_lsqr(file_list, ref_shape,
                chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False, 
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
-               reg_weight=0.0, adj_info=None, mean_offsets=None, postprocess_func=None, preprocess_func=None,
+               reg_weight=0.0, adj_info=None, mean_offsets=None, det_groups=None, postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
     Parameters
@@ -1109,11 +1132,25 @@ def setup_lsqr(file_list, ref_shape,
     #     assert test_data.shape == preprocess_func(test_data, np.ones_like(test_data))[0].shape, \
     #         "preprocess_func must return data and weight arrays of the same shape as input"
 
-    num_chunks = chunk_map.max().astype(np.int32) + 1 if chunk_map is not None else 0
+    num_chunks = int(chunk_map.max()) + 1 if chunk_map is not None else 0
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
-    total_cols = num_sky + num_chunks * num_frames
+
+    # Build group mapping for detector offset locking
+    if det_groups is not None:
+        det_groups_arr = np.asarray(det_groups)
+        unique_groups, frame_to_group = np.unique(det_groups_arr, return_inverse=True)
+        num_offset_groups = len(unique_groups)
+        num_scalar_cols = num_frames
+        print(f"Locking detector offsets: {num_frames} frames -> {num_offset_groups} groups + {num_frames} frame scalars")
+    else:
+        frame_to_group = np.arange(num_frames)
+        num_offset_groups = num_frames
+        num_scalar_cols = 0
+
+    total_cols = num_sky + num_chunks * num_offset_groups + num_scalar_cols
+    scalar_col_start = num_sky + num_chunks * num_offset_groups
 
     common_params = {
         'chunk_map': chunk_map,
@@ -1132,6 +1169,9 @@ def setup_lsqr(file_list, ref_shape,
         'adj_info': adj_info, # Pass the pre-computed neighbor pairs to workers,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
+        'frame_to_group': frame_to_group,
+        'scalar_col_start': scalar_col_start,
+        'num_scalar_cols': num_scalar_cols,
     }
 
     all_individual_tasks = []
@@ -1149,6 +1189,7 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
+<<<<<<< Updated upstream
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
         
@@ -1163,6 +1204,49 @@ def setup_lsqr(file_list, ref_shape,
             all_data.append(b_data)
             all_b.append(b_b)
             total_rows += b_num_rows
+=======
+    def _read_shm(info):
+        """Read array from shared memory and clean up the segment."""
+        name, shape, dtype = info
+        shm = SharedMemory(name=name)
+        arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
+        shm.close()
+        shm.unlink()
+        return arr
+
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
+
+            total_rows = 0
+            n_collected = 0
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
+                result = future.result()
+                if result is None: continue
+
+                shm_infos = result['shm']
+                b_rows = _read_shm(shm_infos[0]).astype(np.int64) + total_rows
+                b_cols = _read_shm(shm_infos[1])
+                b_data = _read_shm(shm_infos[2])
+                b_b = _read_shm(shm_infos[3])
+                all_rows.append(b_rows)
+                all_cols.append(b_cols)
+                all_data.append(b_data)
+                all_b.append(b_b)
+                total_rows += result['num_rows']
+
+                # Consolidate periodically to avoid memory fragmentation
+                n_collected += 1
+                if n_collected % 100 == 0:
+                    all_rows = [np.concatenate(all_rows)]
+                    all_cols = [np.concatenate(all_cols)]
+                    all_data = [np.concatenate(all_data)]
+                    all_b = [np.concatenate(all_b)]
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
+>>>>>>> Stashed changes
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
@@ -1174,6 +1258,10 @@ def setup_lsqr(file_list, ref_shape,
     all_cols = [np.concatenate(all_cols)]
     all_data = [np.concatenate(all_data)]
     all_b = [np.concatenate(all_b)]
+
+    # Ensure total_rows is a Python int to avoid numpy int32 overflow in
+    # subsequent constraint blocks that may push row counts beyond 2^31.
+    total_rows = int(total_rows)
 
     # --- MEMORY OPTIMIZED: Calculate valid pixel fractions AND coverage map ---
     # We access the combined columns via all_cols[0]
@@ -1193,7 +1281,7 @@ def setup_lsqr(file_list, ref_shape,
         
         constr_cols = []
         for i in range(num_frames):
-            offset_start = num_sky + (i * num_chunks)
+            offset_start = num_sky + (frame_to_group[i] * num_chunks)
             constr_cols.extend(np.arange(offset_start, offset_start + num_chunks))
         
         constr_data = np.ones(len(constr_cols), dtype=np.float32) * constraint_weight
@@ -1239,16 +1327,71 @@ def setup_lsqr(file_list, ref_shape,
 
     return full_A, full_b, pixel_counts
 
-def parse_pixel_counts(pixel_counts, ref_shape, num_frames, chunk_map):
+def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups, chunk_map):
     num_sky = ref_shape[0] * ref_shape[1]
+    num_chunks = int(np.max(chunk_map)) + 1
+    num_offset = num_offset_groups * num_chunks
     skymap_coverage = pixel_counts[:num_sky].reshape(ref_shape)
-    offset_coverage = pixel_counts[num_sky:].reshape(num_frames, -1)
-    num_chunks = np.max(chunk_map) + 1
+    offset_coverage = pixel_counts[num_sky:num_sky + num_offset].reshape(num_offset_groups, num_chunks)
     chunk_sizes = np.bincount(chunk_map[chunk_map >= 0].ravel(), minlength=num_chunks)
     offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
     return skymap_coverage, offset_coverage, offset_valid_frac
 
+<<<<<<< Updated upstream
 def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
+=======
+def _partition_csr(A, n_blocks):
+    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
+    n_rows = A.shape[0]
+    boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
+    blocks = []
+    for i in range(n_blocks):
+        sr, er = int(boundaries[i]), int(boundaries[i + 1])
+        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
+        blk = csr_matrix(
+            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
+            shape=(er - sr, A.shape[1]), copy=False
+        )
+        blocks.append(blk)
+    return blocks, boundaries
+
+def _make_parallel_operator(A_csr, n_threads):
+    """Build a LinearOperator with thread-parallel matvec/rmatvec.
+
+    Pre-computes A^T as CSR and partitions both into row-blocks.
+    GIL is released during scipy CSR SpMV, enabling true thread parallelism.
+    """
+    m, n = A_csr.shape
+
+    print(f"Building parallel SpMV operator ({n_threads} threads)...")
+    AT_csr = A_csr.T.tocsr()
+
+    A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
+    AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
+
+    executor = ThreadPoolExecutor(max_workers=n_threads)
+    mv_out = np.empty(m, dtype=A_csr.dtype)
+    rmv_out = np.empty(n, dtype=A_csr.dtype)
+
+    def _matvec(x):
+        def _work(i):
+            mv_out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
+        list(executor.map(_work, range(n_threads)))
+        return mv_out.copy()
+
+    def _rmatvec(y):
+        def _work(i):
+            rmv_out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
+        list(executor.map(_work, range(n_threads)))
+        return rmv_out.copy()
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
+    op._executor = executor
+    op._AT_csr = AT_csr  # prevent GC
+    return op
+
+def apply_lsqr(A, b, ref_shape, num_offset_groups, x0=None,
+>>>>>>> Stashed changes
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
                 solver='lsmr', use_float32=False):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
@@ -1264,12 +1407,10 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
     assert isinstance(A, coo_matrix), "A must be a scipy.sparse.coo_matrix"
     assert isinstance(b, np.ndarray), "b must be a numpy array"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert isinstance(num_frames, int) and num_frames > 0, "num_frames must be a positive integer"
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_cols = A.shape[1]
-    assert (num_cols - num_sky) % num_frames == 0, "The number of unknowns for detector offsets must be divisible by num_frames"
 
     # --- Eliminate zero columns to reduce problem size ---
     col_nnz = np.bincount(A.col, minlength=num_cols)
@@ -1347,14 +1488,58 @@ def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
 
     return x
 
-def parse_x(x, ref_shape, num_frames):
-    """Utility function to parse the LSQR solution vector x into sky and offset components."""
+def parse_x(x, ref_shape, num_offset_groups, num_chunks, num_frames=None):
+    """Parse the LSQR solution vector x into sky, detector offset, and frame scalar components.
+
+    Parameters
+    ----------
+    num_offset_groups : int
+        Number of offset groups (= num_frames when det_groups is not used).
+    num_chunks : int
+        Number of chunks per offset group.
+    num_frames : int or None
+        If not None, the last num_frames entries are per-frame scalars.
+    """
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    offset = x[num_sky:].reshape(num_frames, (x.shape[0]-num_sky) // num_frames)
+    num_offset = num_offset_groups * num_chunks
     skymap = x[:num_sky].reshape(ref_shape)
-    return skymap, offset
+    det_offset = x[num_sky:num_sky + num_offset].reshape(num_offset_groups, num_chunks)
+    frame_scalar = x[num_sky + num_offset:] if num_frames else np.array([])
+    return skymap, det_offset, frame_scalar
 
 def encode_x(skymap, offset):
     """Utility function to encode the sky and offset components back into a single vector x."""
+<<<<<<< Updated upstream
     return np.concatenate([skymap.flatten(), offset.flatten()])
+=======
+    return np.concatenate([skymap.flatten(), offset.flatten()])
+
+def compute_x0_from_Ab(A, b, ref_shape, num_offset_groups=None):
+    """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
+
+    This avoids re-reading all FITS files to estimate offsets — the information
+    is already encoded in the sparse matrix A and vector b from setup_lsqr.
+    """
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
+    num_cols = A.shape[1]
+
+    # Extract offset portion of A (columns num_sky onwards)
+    offset_mask = A.col >= num_sky
+    off_row = A.row[offset_mask]
+    off_col = A.col[offset_mask] - num_sky
+    off_data = A.data[offset_mask]
+
+    num_offset_cols = num_cols - num_sky
+
+    # offset_j = (A_off[:, j]^T @ b) / (A_off[:, j]^T @ A_off[:, j])
+    AtA_diag = np.bincount(off_col, weights=off_data ** 2, minlength=num_offset_cols)
+    Atb = np.bincount(off_col, weights=off_data * b[off_row], minlength=num_offset_cols)
+
+    offsets = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
+
+    x0 = np.zeros(num_cols)
+    x0[num_sky:] = offsets
+    return x0
+>>>>>>> Stashed changes

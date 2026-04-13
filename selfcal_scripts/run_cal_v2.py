@@ -18,7 +18,10 @@ sys.path.append(parent_path)
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import encode_x
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
+<<<<<<< Updated upstream
 compute_subchannel_adjacency, compute_offsets_guess, \
+=======
+>>>>>>> Stashed changes
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
 
@@ -38,14 +41,7 @@ def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
     det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
                                             oversample_factor=1, lvf_params=lvf_params)
     
-    adj_info_column = compute_column_adjacency(det_chunk_map, num_columns)
-    # adj_info_subchannel = compute_subchannel_adjacency(det_chunk_map, num_columns)
-    
-    # adj_info = (
-    #     np.concatenate([adj_info_column[0], adj_info_subchannel[0]]),
-    #     np.concatenate([adj_info_column[1], adj_info_subchannel[1]])
-    # )
-    adj_info = adj_info_column
+    adj_info = compute_column_adjacency(det_chunk_map, num_columns)
         
     return {
         'lvf_params': lvf_params,
@@ -116,7 +112,7 @@ if __name__ == "__main__":
         'Detector': 1,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 3,
+        'NumCol': 5,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -132,10 +128,15 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 100,
         'offset_regularization': True,
-        'reg_weight': 0.1,
+        'reg_weight': 0.01,
         'weighted_damping': True,
+<<<<<<< Updated upstream
         'damp_weight': 0.1,
         'max_workers': 30,
+=======
+        'damp_weight': 0.01,
+        'max_workers': 32,
+>>>>>>> Stashed changes
         'postprocess_func': None, #mask_bright_pixels,
     }
 
@@ -143,7 +144,7 @@ if __name__ == "__main__":
         'atol': 1e-06,
         'btol': 1e-06,
         'damp': 0,
-        'iter_lim': 10,
+        'iter_lim': 50,
         'precondition': True,
         'solver': 'lsqr',
     }
@@ -155,21 +156,36 @@ if __name__ == "__main__":
         'apply_sigma_clipping': True,
         'sigma': 2.0,
         'ignore_list': [21],
+<<<<<<< Updated upstream
         'cache_batch_size': 100,
         'coadd_batch_size': 200,
         'cache_intermediate': True,
         'max_workers': 30
+=======
+        'cache_batch_size': 20,
+        'coadd_batch_size': 30,
+        'cache_intermediate': True,
+        'max_workers': 32
+>>>>>>> Stashed changes
     }
     
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
+<<<<<<< Updated upstream
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
+=======
+    FILE_SUFFIX = f'_damp0p01_reg0p01_colAdjOnly_iter50_outThresh5_sigma2'
+>>>>>>> Stashed changes
 
     # Channels to process
     chs = [[26], [27], [28], [29], [30], [31], [32], [33], [34]]
     # chs = [[29], [30], [31], [32], [33], [34]]
+<<<<<<< Updated upstream
     # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
+=======
+    chs = [[4], [5], [6],]
+>>>>>>> Stashed changes
     # chs = ['Aliphatic', 'Aromatic']
     # ----------------------------- End of Settings -----------------------------
 

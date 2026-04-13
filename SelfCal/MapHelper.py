@@ -78,8 +78,12 @@ def make_weight(frame, sigma=1.4):
 
 def find_outliers(data, threshold=3):
     '''Return 1 where outlier is detected, else return 0'''
+    if np.all(np.isnan(data)):
+        return np.zeros_like(data, dtype=bool)
     median = np.nanmedian(data)
     nmad = 1.4826 * np.nanmedian(np.abs(data - median))
+    if nmad == 0:
+        return np.zeros_like(data, dtype=bool)
     z_score = (data - median)/nmad
     return np.abs(z_score) > threshold
 
