@@ -17,15 +17,20 @@ from SelfCal.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_
 load_calibration, make_spherex_offset_map, compute_offsets_guess
 from SelfCal.SPHERExAppendWav import wav_coadd
 
-DETECTOR = 5
-config = {}
-config['output_dir'] = '/mnt/md124/thomasli/selfcal/outputs/'
-config['run_name'] = f'SPHEREx_nep_qr2_det{DETECTOR}_6p2arcsec'
-config['resolution_arcsec'] = 6.2
-
+frame_setting = {
+    'Detector': 6,
+    'NumSub': 10,
+    'NumCh': 34,
+    'NumCol': 3,
+}
+selfcal_config = PipelineWrapper.PipelineConfig(
+    output_dir='/mnt/md124/thomasli/selfcal/outputs/',
+    run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
+    resolution_arcsec=6.2
+)
 qr1_dir = '/mnt/md124/SPHEREx/SPHEREx_nep_data/qr1_newgain'
 qr2_dir = '/mnt/md124/SPHEREx/SPHEREx_nep_data/qr2'
-file_pattern = f'/*/*/*/*D{DETECTOR}*.fits'
+file_pattern = f'/*/*/*/*D{frame_setting["Detector"]}*.fits'
 
 exposure_list = []
 exposure_list += glob.glob(qr1_dir+file_pattern)
@@ -46,7 +51,7 @@ print(f"Removed {len(remove_list)} exposures with poor astrometry")
 print(f"Found {len(exposure_list)} exposures")
 
 # Initialize Reprojector and run reprojection
-rr = PipelineWrapper.Reprojector(config, exposure_list=exposure_list)
+rr = PipelineWrapper.Reprojector(selfcal_config, exposure_list=exposure_list)
 # Define reference frame with padding
 rr.define_reference(padding_pixels=100, use_ext=[1])
 # Run reprojection
