@@ -21,14 +21,6 @@ sys.path.append(parent_path)
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-compute_subchannel_adjacency, compute_offsets_guess, \
-=======
->>>>>>> Stashed changes
-=======
-compute_subchannel_adjacency, \
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
 
@@ -141,17 +133,8 @@ if __name__ == "__main__":
         'offset_regularization': True,
         'reg_weight': 0.01,
         'weighted_damping': True,
-<<<<<<< Updated upstream
         'damp_weight': 0.1,
-<<<<<<< HEAD
-        'max_workers': 30,
-=======
-        'damp_weight': 0.01,
         'max_workers': 32,
->>>>>>> Stashed changes
-=======
-        'max_workers': 32,
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
         'postprocess_func': None, #mask_bright_pixels,
     }
 
@@ -171,51 +154,22 @@ if __name__ == "__main__":
         'apply_sigma_clipping': True,
         'sigma': 2.0,
         'ignore_list': [21],
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-        'cache_batch_size': 100,
-        'coadd_batch_size': 200,
-        'cache_intermediate': True,
-        'max_workers': 30
-=======
         'cache_batch_size': 20,
         'coadd_batch_size': 30,
         'cache_intermediate': True,
         'max_workers': 32
->>>>>>> Stashed changes
-=======
-        'cache_batch_size': 10,
-        'coadd_batch_size': 50,
-        'cache_intermediate': True,
-        'max_workers': 50
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     }
     
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-<<<<<<< HEAD
-<<<<<<< Updated upstream
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
-=======
-    FILE_SUFFIX = f'_damp0p01_reg0p01_colAdjOnly_iter50_outThresh5_sigma2'
->>>>>>> Stashed changes
-=======
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_test'
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 
     # Channels to process
     # chs = [[32], [33], [34]]
     # chs = [[29], [30], [31], [32], [33], [34]]
-<<<<<<< HEAD
-<<<<<<< Updated upstream
     # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
-=======
-    chs = [[4], [5], [6],]
->>>>>>> Stashed changes
-=======
-    chs = [[5], [4], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
+    chs = [[4], [5], [6]]
     # chs = ['Aliphatic', 'Aromatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
     # Tune based on RAID config: ~4-8 for most RAID arrays. Set to None to disable.

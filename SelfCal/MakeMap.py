@@ -1354,25 +1354,6 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
-        
-        total_rows = 0
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
-            result = future.result()
-            if result is None: continue
-                
-            b_rows, b_cols, b_data, b_b, b_num_rows = result
-            all_rows.append(b_rows + total_rows)
-            all_cols.append(b_cols)
-            all_data.append(b_data)
-            all_b.append(b_b)
-            total_rows += b_num_rows
-=======
-=======
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
         name, shape, dtype = info
@@ -1393,11 +1374,7 @@ def setup_lsqr(file_list, ref_shape,
                 if result is None: continue
 
                 shm_infos = result['shm']
-<<<<<<< HEAD
                 b_rows = _read_shm(shm_infos[0]).astype(np.int64) + total_rows
-=======
-                b_rows = _read_shm(shm_infos[0]) + total_rows
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
                 b_cols = _read_shm(shm_infos[1])
                 b_data = _read_shm(shm_infos[2])
                 b_b = _read_shm(shm_infos[3])
@@ -1418,10 +1395,6 @@ def setup_lsqr(file_list, ref_shape,
         for shm in shm_objects:
             shm.close()
             shm.unlink()
-<<<<<<< HEAD
->>>>>>> Stashed changes
-=======
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
@@ -1512,62 +1485,6 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups, chunk_map):
     offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
     return skymap_coverage, offset_coverage, offset_valid_frac
 
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-=======
-def _partition_csr(A, n_blocks):
-    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
-    n_rows = A.shape[0]
-    boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
-    blocks = []
-    for i in range(n_blocks):
-        sr, er = int(boundaries[i]), int(boundaries[i + 1])
-        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
-        blk = csr_matrix(
-            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
-            shape=(er - sr, A.shape[1]), copy=False
-        )
-        blocks.append(blk)
-    return blocks, boundaries
-
-def _make_parallel_operator(A_csr, n_threads):
-    """Build a LinearOperator with thread-parallel matvec/rmatvec.
-
-    Pre-computes A^T as CSR and partitions both into row-blocks.
-    GIL is released during scipy CSR SpMV, enabling true thread parallelism.
-    """
-    m, n = A_csr.shape
-
-    print(f"Building parallel SpMV operator ({n_threads} threads)...")
-    AT_csr = A_csr.T.tocsr()
-
-    A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
-    AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
-
-    executor = ThreadPoolExecutor(max_workers=n_threads)
-    mv_out = np.empty(m, dtype=A_csr.dtype)
-    rmv_out = np.empty(n, dtype=A_csr.dtype)
-
-    def _matvec(x):
-        def _work(i):
-            mv_out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
-        list(executor.map(_work, range(n_threads)))
-        return mv_out.copy()
-
-    def _rmatvec(y):
-        def _work(i):
-            rmv_out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
-        list(executor.map(_work, range(n_threads)))
-        return rmv_out.copy()
-
-    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
-    op._executor = executor
-    op._AT_csr = AT_csr  # prevent GC
-    return op
-
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
-def apply_lsqr(A, b, ref_shape, num_frames, x0=None,
-=======
 def _partition_csr(A, n_blocks):
     """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
     n_rows = A.shape[0]
@@ -1619,7 +1536,6 @@ def _make_parallel_operator(A_csr, n_threads):
     return op
 
 def apply_lsqr(A, b, ref_shape, num_offset_groups, x0=None,
->>>>>>> Stashed changes
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
                 solver='lsmr', use_float32=False, n_threads=32):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
@@ -1742,18 +1658,9 @@ def parse_x(x, ref_shape, num_offset_groups, num_chunks, num_frames=None):
 
 def encode_x(skymap, offset):
     """Utility function to encode the sky and offset components back into a single vector x."""
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-    return np.concatenate([skymap.flatten(), offset.flatten()])
-=======
     return np.concatenate([skymap.flatten(), offset.flatten()])
 
 def compute_x0_from_Ab(A, b, ref_shape, num_offset_groups=None):
-=======
-    return np.concatenate([skymap.flatten(), offset.flatten()])
-
-def compute_x0_from_Ab(A, b, ref_shape, num_frames):
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
@@ -1779,9 +1686,4 @@ def compute_x0_from_Ab(A, b, ref_shape, num_frames):
 
     x0 = np.zeros(num_cols)
     x0[num_sky:] = offsets
-<<<<<<< HEAD
     return x0
->>>>>>> Stashed changes
-=======
-    return x0
->>>>>>> 7db20449629c5560fa4ee1482e9f1be19ddc6892
