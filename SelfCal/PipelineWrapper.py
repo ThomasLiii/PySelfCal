@@ -129,23 +129,29 @@ class Calibrator(Reprojector):
         self.pixel_counts = None
         self.frame_to_group = None
         self.num_offset_groups = None
+        self.det_template = None
 
     def setup_lsqr(self, chunk_map, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20,
                    outlier_thresh=3.0, ignore_list=[], batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
-                   det_groups=None, postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
+                   det_groups=None, det_template=None, postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
         self.chunk_map = chunk_map
+        self.det_template = det_template
+        num_frames = len(self.reproj_list)
         if det_groups is not None:
             _, self.frame_to_group = np.unique(det_groups, return_inverse=True)
             self.num_offset_groups = len(np.unique(det_groups))
         else:
-            self.frame_to_group = np.arange(len(self.reproj_list))
-            self.num_offset_groups = len(self.reproj_list)
+            self.frame_to_group = np.arange(num_frames)
+            self.num_offset_groups = num_frames
+        if det_template is not None:
+            # Template mode: one alpha per frame
+            self.num_offset_groups = num_frames
         with timer("Setup LSQR"):
             self.A, self.b, self.pixel_counts = MakeMap.setup_lsqr(self.reproj_list, self.ref_shape,
                 apply_mask=apply_mask, apply_weight=apply_weight, chunk_map=chunk_map, grid_valid_weight=grid_valid_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh, ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization, reg_weight=reg_weight, adj_info=adj_info, mean_offsets=mean_offsets,
-                det_groups=det_groups, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
+                det_groups=det_groups, det_template=det_template, postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight)
     
     
@@ -175,30 +181,54 @@ class Calibrator(Reprojector):
         self.frame_to_group = np.arange(len(self.reproj_list))
         self.num_offset_groups = len(self.reproj_list)
 
+    def _parse_x_params(self):
+        """Return (num_chunks_for_parse, has_scalars) based on current mode."""
+        num_frames = len(self.reproj_list)
+        if self.det_template is not None:
+            return 1, True  # template mode: alpha per frame + frame_scalar
+        else:
+            num_chunks = int(np.max(self.chunk_map)) + 1
+            has_scalars = self.num_offset_groups != num_frames
+            return num_chunks, has_scalars
+
+    def _expand_offset(self, det_offset, frame_scalar):
+        """Expand grouped/template offsets to per-frame (num_frames, num_chunks)."""
+        if self.det_template is not None:
+            alpha = det_offset.squeeze()  # (num_frames,)
+            template = np.asarray(self.det_template)
+            offset = alpha[:, np.newaxis] * template[self.frame_to_group]
+        else:
+            offset = det_offset[self.frame_to_group]
+        if len(frame_scalar) > 0:
+            offset = offset + frame_scalar[:, np.newaxis]
+        return offset
+
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
         if cal_dir is None:
             cal_dir = self.config.cal_dir
         if not os.path.exists(cal_dir):
             os.makedirs(cal_dir)
         num_frames = len(self.reproj_list)
-        num_chunks = int(np.max(self.chunk_map)) + 1
-        has_scalars = self.num_offset_groups != num_frames
+        num_chunks_parse, has_scalars = self._parse_x_params()
 
         skymap, det_offset, frame_scalar = MakeMap.parse_x(
             self.x, ref_shape=self.ref_shape, num_offset_groups=self.num_offset_groups,
-            num_chunks=num_chunks, num_frames=num_frames if has_scalars else None)
+            num_chunks=num_chunks_parse, num_frames=num_frames if has_scalars else None)
 
-        # Expand grouped offsets to per-frame
-        offset = det_offset[self.frame_to_group]
-        if len(frame_scalar) > 0:
-            offset = offset + frame_scalar[:, np.newaxis]
+        offset = self._expand_offset(det_offset, frame_scalar)
 
-        skymap_coverage, offset_coverage, offset_coverage_frac = MakeMap.parse_pixel_counts(
-            pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
-            num_offset_groups=self.num_offset_groups, chunk_map=self.chunk_map)
-        # Expand coverage to per-frame
-        offset_coverage = offset_coverage[self.frame_to_group]
-        offset_coverage_frac = offset_coverage_frac[self.frame_to_group]
+        num_chunks = int(np.max(self.chunk_map)) + 1
+        if self.det_template is not None:
+            # Template mode: coverage is per-frame alpha, set frac to 1.0
+            skymap_coverage = self.pixel_counts[:self.ref_shape[0]*self.ref_shape[1]].reshape(self.ref_shape)
+            offset_coverage = np.ones((num_frames, num_chunks))
+            offset_coverage_frac = np.ones((num_frames, num_chunks))
+        else:
+            skymap_coverage, offset_coverage, offset_coverage_frac = MakeMap.parse_pixel_counts(
+                pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
+                num_offset_groups=self.num_offset_groups, chunk_map=self.chunk_map)
+            offset_coverage = offset_coverage[self.frame_to_group]
+            offset_coverage_frac = offset_coverage_frac[self.frame_to_group]
 
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
@@ -213,24 +243,33 @@ class Calibrator(Reprojector):
 
     def get_skymap(self):
         num_frames = len(self.reproj_list)
-        num_chunks = int(np.max(self.chunk_map)) + 1
-        has_scalars = self.num_offset_groups != num_frames
+        num_chunks_parse, has_scalars = self._parse_x_params()
         skymap, _, _ = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
-            num_offset_groups=self.num_offset_groups, num_chunks=num_chunks,
+            num_offset_groups=self.num_offset_groups, num_chunks=num_chunks_parse,
             num_frames=num_frames if has_scalars else None)
         return skymap
 
     def get_offset(self):
         num_frames = len(self.reproj_list)
+        num_chunks_parse, has_scalars = self._parse_x_params()
+        _, det_offset, frame_scalar = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
+            num_offset_groups=self.num_offset_groups, num_chunks=num_chunks_parse,
+            num_frames=num_frames if has_scalars else None)
+        return self._expand_offset(det_offset, frame_scalar)
+
+    def get_det_offset(self):
+        """Get grouped detector offsets before per-frame expansion.
+        Use as det_template for the template-amplitude step."""
+        if self.det_template is not None:
+            raise ValueError("get_det_offset() not available in template mode. "
+                             "Run in locked-offset mode (det_groups only) first.")
+        num_frames = len(self.reproj_list)
         num_chunks = int(np.max(self.chunk_map)) + 1
         has_scalars = self.num_offset_groups != num_frames
-        _, det_offset, frame_scalar = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
+        _, det_offset, _ = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
             num_offset_groups=self.num_offset_groups, num_chunks=num_chunks,
             num_frames=num_frames if has_scalars else None)
-        offset = det_offset[self.frame_to_group]
-        if len(frame_scalar) > 0:
-            offset = offset + frame_scalar[:, np.newaxis]
-        return offset
+        return det_offset  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
     def __init__(self, config: PipelineConfig, reproj_dir=None):
