@@ -1,4 +1,12 @@
-outputs/
+analysis/
 figures/
 test_dir/
 cache/
+.ipynb_checkpoints/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+SelfCal/.ipynb_checkpoints
+archive/

@@ -7,7 +7,7 @@ from scipy.sparse import coo_matrix, csr_matrix
 import cv2
 
 from mpsplines import MeanPreservingInterpolation as MPI
-from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator
+from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
 from scipy.optimize import minimize
 from scipy.ndimage import map_coordinates
 
@@ -67,9 +67,9 @@ def make_weight(frame, sigma=1.4):
     # inverse = 1/frame
     # inverse[check_invalid(inverse)] = 0
     # weight = gaussian_filter(inverse, sigma=sigma)
-    filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
-    convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
-    weight = 1.0 / (np.abs(frame) + np.abs(convolved_frame * 4) + 0.1) ** 2
+    # filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
+    # convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
+    weight = 1.0 / (np.abs(frame**2))# + np.abs(convolved_frame * 4) + 0.1) ** 2
     # abs_frame = np.abs(filled_frame)
     # filling_value = np.nanpercentile(abs_frame[abs_frame>0], 1)
     # abs_frame[abs_frame < filling_value] = filling_value
@@ -348,7 +348,6 @@ def linear_spline(x_sample, y_sample):
     return interpolator
 
 def mean_preserving_spline(x_edge, y_mean, method='cubic'):
-    #TODO apply on 2d
     """
     Generates a mean-preserving spline function f(x) based on edge
     positions x_edge and the average value y_mean in each interval.
@@ -467,3 +466,150 @@ def upscale2d(array, upscale_factor):
     result = (1 - dr) * wa + dr * wb
     
     return result
+
+def compute_chunk_adjacency(chunk_map, reg_axis='both'):
+    """
+    Computes the adjacency list for a given chunk map.
+    
+    Parameters
+    ----------
+    chunk_map : np.ndarray
+        2D array where each pixel value is the chunk ID. -1 indicates ignored pixels.
+    reg_axis : str, optional
+        'both': Horizontal and Vertical neighbors.
+        'x': Horizontal only.
+        'y': Vertical only.
+        
+    Returns
+    -------
+    tuple or None
+        (neighbors_i, neighbors_j) arrays of shape (N_pairs,), or None if no pairs found.
+    """
+    if chunk_map is None:
+        return None
+
+    print(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
+    
+    all_i_list = []
+    all_j_list = []
+
+    # 1. Horizontal neighbors (x-axis)
+    if reg_axis in ['both', 'x', 'horizontal']:
+        # Compare [:, :-1] with [:, 1:]
+        h_diff = (chunk_map[:, :-1] != -1) & \
+                 (chunk_map[:, 1:] != -1) & \
+                 (chunk_map[:, :-1] != chunk_map[:, 1:])
+                 
+        h_idx_i = chunk_map[:, :-1][h_diff]
+        h_idx_j = chunk_map[:, 1:][h_diff]
+        all_i_list.append(h_idx_i)
+        all_j_list.append(h_idx_j)
+    
+    # 2. Vertical neighbors (y-axis)
+    if reg_axis in ['both', 'y', 'vertical']:
+        # Compare [:-1, :] with [1:, :]
+        v_diff = (chunk_map[:-1, :] != -1) & \
+                 (chunk_map[1:, :] != -1) & \
+                 (chunk_map[:-1, :] != chunk_map[1:, :])
+                 
+        v_idx_i = chunk_map[:-1, :][v_diff]
+        v_idx_j = chunk_map[1:, :][v_diff]
+        all_i_list.append(v_idx_i)
+        all_j_list.append(v_idx_j)
+    
+    # Combine and remove duplicates
+    if all_i_list:
+        all_i = np.concatenate(all_i_list)
+        all_j = np.concatenate(all_j_list)
+        
+        # Ensure i < j to avoid double counting
+        mask = all_i < all_j
+        unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
+        return (unique_pairs[:, 0], unique_pairs[:, 1])
+    else:
+        print("Warning: No adjacency pairs found.")
+        return None
+    
+def mean_preserving_spline_2d(y_edges, x_edges, means, x_degree=3, y_degree=3):
+    """
+    Generates a 2D mean-preserving spline surface f(y, x).
+    
+    Parameters
+    ----------
+    y_edges : array-like
+        The edges of the y bins (length N+1).
+    x_edges : array-like
+        The edges of the x bins (length M+1).
+    means : array-like
+        The 2D array of mean offsets in each bin (shape N, M).
+        means[i, j] corresponds to interval (y[i]~y[i+1], x[j]~x[j+1]).
+    x_degree, y_degree : int
+        Degrees of the bivariate spline (3=cubic).
+        
+    Returns
+    -------
+    evaluator : function
+        A function `func(y, x)` that takes coordinates and returns 
+        the interpolated continuous offset values.
+    """
+    y_edges = np.asarray(y_edges, dtype=float)
+    x_edges = np.asarray(x_edges, dtype=float)
+    means = np.asarray(means, dtype=float)
+    
+    single_ybin = (len(y_edges) == 2)
+    single_xbin = (len(x_edges) == 2)
+
+    volume = means
+    if not single_ybin:
+        dy = np.diff(y_edges)[:, None]
+        volume = volume * dy
+        
+    if not single_xbin:
+        dx = np.diff(x_edges)[None, :]
+        volume = volume * dx
+
+    if not single_ybin:
+        # Pad Y axis with 0
+        temp = np.zeros((len(y_edges), volume.shape[1]))
+        temp[1:, :] = np.cumsum(volume, axis=0)
+        volume = temp
+    else:
+        volume = np.vstack([volume, volume])
+
+    if not single_xbin:
+        final_grid = np.zeros((volume.shape[0], len(x_edges)))
+        final_grid[:, 1:] = np.cumsum(volume, axis=1)
+        integral_surface = final_grid
+    else:
+        integral_surface = np.hstack([volume, volume])
+
+    kx_fit = 1 if single_ybin else min(y_degree, len(y_edges)-1)
+    ky_fit = 1 if single_xbin else min(x_degree, len(x_edges)-1)
+    # Note: kx parameter controls Y-axis (axis 0), ky parameter controls X-axis (axis 1)
+    F_spline = RectBivariateSpline(y_edges, x_edges, integral_surface, 
+                                   kx=kx_fit, ky=ky_fit, s=0)
+    
+    d_order_y = 0 if single_ybin else 1
+    d_order_x = 0 if single_xbin else 1
+
+    def spl(y, x):
+        y = np.atleast_1d(y)
+        x = np.atleast_1d(x)
+        
+        return F_spline(y, x, dx=d_order_y, dy=d_order_x, grid=False)
+        
+    return spl
+
+def get_valid_bounds(mask):
+    """Finds the bounding box of valid (False) data in a boolean mask."""
+    # Rows where at least one pixel is valid
+    valid_rows = np.any(~mask, axis=1)
+    # Cols where at least one pixel is valid
+    valid_cols = np.any(~mask, axis=0)
+
+    # Find indices
+    y_min, y_max = np.where(valid_rows)[0][[0, -1]]
+    x_min, x_max = np.where(valid_cols)[0][[0, -1]]
+
+    # Return slices (add +1 to max for python slicing)
+    return slice(y_min, y_max + 1), slice(x_min, x_max + 1)

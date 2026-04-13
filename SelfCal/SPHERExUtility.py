@@ -8,15 +8,17 @@ from tqdm import tqdm
 import scipy.ndimage as nd
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor
+from multiprocessing.shared_memory import SharedMemory
+from multiprocessing import Pool
 
 from skimage import measure
-from scipy.interpolate import make_smoothing_spline
+from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
-from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool
+from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
 from SelfCal.MakeMap import load_reproj_file
 
 
-def load_calibration(band, calibration_dir='/home/thomasli/spherex/spherex_calibration'):
+def load_calibration(band, calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
     BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
     BW_files = glob.glob(os.path.join(calibration_dir, f'*BW_Band{band}.fits'))
     if len(BC_files) != 1 or len(BW_files) != 1:
@@ -106,25 +108,28 @@ def fit_lvf_params(BC_map, channel_edges):
 
 def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_params=None):
     out_shape = (BC_map.shape[0]*oversample_factor, BC_map.shape[1]*oversample_factor)
-    chunk_map = np.zeros(out_shape, dtype=np.int16)
+    chunk_map = np.zeros(out_shape, dtype=np.int32)
     x_mesh, y_mesh = np.meshgrid(np.arange(out_shape[1]), np.arange(out_shape[0]))
+    
     if lvf_params is None:
-        print("Fitting LVF parameters...")
         lvf_params = fit_lvf_params(BC_map, channel_edges)
 
-    print("Making chunk map...")
+    r_edges = []
     y_bound = np.full(out_shape[1], out_shape[0]-1)
+    
     for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
         prev_y_bound = y_bound
-
         xc = lvf_params['xc']
         yc = lvf_params['yc']
+        
         if lam not in lvf_params['wave_edges']:
             R = np.interp(lam, lvf_params['wave_edges'], lvf_params['R'])
         else:
             R = lvf_params['R'][np.where(lvf_params['wave_edges'] == lam)[0][0]]
-        spl = make_arc_spline(xc, yc, R)
+        
+        r_edges.append(R)
 
+        spl = make_arc_spline(xc, yc, R)
         x_bound = np.arange(out_shape[1])
         y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
@@ -132,22 +137,29 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     else:
         prev_y_bound = y_bound
         y_bound = np.zeros_like(y_bound)
-        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i+1
-    return chunk_map, lvf_params
+        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i + 1
+    
+    return chunk_map, lvf_params, np.array(r_edges)
 
-def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, channel_file='/home/thomasli/spherex/spherex_channels.csv', 
+def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, 
+                            channel_file='/home/thomasli/spherex/spherex_channels.csv', 
                             oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
     interp_factor = num_subchannels * num_channels//17
     channel_edges = extract_spherex_channel_edges(band, channel_file=channel_file)
     fine_edges = interpolate_array(channel_edges, interp_factor=interp_factor)
-    chunk_map, lvf_params = make_spherex_chunk_map(BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params)
-    return chunk_map, lvf_params
+    
+    chunk_map, lvf_params, r_edges = make_spherex_chunk_map(
+        BC_map, fine_edges, oversample_factor=oversample_factor, lvf_params=lvf_params
+    )
+    return chunk_map, lvf_params, r_edges
 
-def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10):
+def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10, padding=0):
     chunk_valid_mask = np.zeros(num_channels*num_subchannels + 2)
-    chunk_valid_mask[np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + np.arange(num_subchannels)) + 1] = 1
+    valid_subchannels = np.hstack(((np.array(valid_channels)-1)*num_subchannels)[:, None] + \
+                                  np.arange(0-padding,num_subchannels+padding)) + 1
+    chunk_valid_mask[valid_subchannels] = 1
     return chunk_valid_mask
 
 def visualize_chunk_map(chunk_map, chunk_valid_mask):
@@ -196,37 +208,274 @@ def make_spherex_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_param
     offset_map = spl(r_mesh)
     return offset_map
 
-def compute_mean_pixval(exp_file, chunk_map):
-    with fits.open(exp_file) as hdul:
+_offset_worker_ctx = {}
+
+def _offset_worker_init(shm_name, shm_shape, shm_dtype, max_chunk_id):
+    """Attach shared memory chunk_map once per worker process."""
+    shm = SharedMemory(name=shm_name)
+    _offset_worker_ctx['chunk_map'] = np.ndarray(shm_shape, dtype=shm_dtype, buffer=shm.buf)
+    _offset_worker_ctx['shm'] = shm
+    _offset_worker_ctx['max_chunk_id'] = max_chunk_id
+
+def _offset_worker_func(reproj_file):
+    """Combined worker: HDF5 attr read -> FITS read -> bincount mean."""
+    file_path = load_reproj_file(reproj_file, fields=['file_path'])['file_path']
+
+    with fits.open(file_path) as hdul:
         data = hdul[1].data
         bitmask = hdul[2].data
 
-    valid_mask = bit_to_bool(bitmask, ignore_list=[7], invert=True)
-    max_chunk_id = np.max(chunk_map)
-    index_range = np.arange(max_chunk_id + 1)
+    chunk_map = _offset_worker_ctx['chunk_map']
+    max_id = _offset_worker_ctx['max_chunk_id']
 
-    labels = chunk_map.copy()
-    labels[~valid_mask] = -1
-    mean = nd.mean(data, labels=labels, index=index_range)
-    if np.isnan(mean).any():
-        print("Warning: NaN values found in mean pixel value computation, filling with 0.")
-        mean = np.nan_to_num(mean, nan=0.0)
+    valid = bit_to_bool(bitmask, ignore_list=[], invert=True)
+    flat_cm = chunk_map.ravel()
+    flat_data = data.ravel().astype(np.float64)
+    flat_valid = valid.ravel() & (flat_cm >= 0)
+
+    sums = np.bincount(flat_cm[flat_valid], weights=flat_data[flat_valid], minlength=max_id + 1)
+    counts = np.bincount(flat_cm[flat_valid], minlength=max_id + 1)
+    mean = np.where(counts > 0, sums / counts, 0.0)
     return mean
 
+def compute_offsets_guess(reproj_list, det_chunk_map, max_workers=16):
+    max_chunk_id = int(np.max(det_chunk_map))
 
-def compute_offsets_guess(reproj_list, det_chunk_map):
-    def _extract_file_path(reproj_file):
-        reproj_data = load_reproj_file(reproj_file, fields=['file_path'])
-        return reproj_data['file_path']
-    exp_files = [_extract_file_path(reproj_file) for reproj_file in reproj_list]
-    compute_mean_pixval_partial = partial(compute_mean_pixval, chunk_map=det_chunk_map)
+    shm = SharedMemory(create=True, size=det_chunk_map.nbytes)
+    np.ndarray(det_chunk_map.shape, dtype=det_chunk_map.dtype, buffer=shm.buf)[:] = det_chunk_map
 
-    with ProcessPoolExecutor(max_workers=20) as executor:
-        results = list(tqdm(executor.map(compute_mean_pixval_partial, exp_files), 
-                            total=len(exp_files), 
-                            desc="Calculating initial guess offsets"))
-    offset_guess = np.array(results)
-    return offset_guess
+    try:
+        with Pool(
+            processes=max_workers,
+            initializer=_offset_worker_init,
+            initargs=(shm.name, det_chunk_map.shape, det_chunk_map.dtype, max_chunk_id)
+        ) as pool:
+            results = list(tqdm(
+                pool.imap(_offset_worker_func, reproj_list, chunksize=20),
+                total=len(reproj_list),
+                desc="Calculating initial guess offsets"
+            ))
+    finally:
+        shm.close()
+        shm.unlink()
+
+    return np.array(results)
 
 
+def load_lvf_params(filename, input_dir='/home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params'):
+    input_path = os.path.join(input_dir, filename)
+    if not os.path.exists(input_path):
+        print(f"LVF parameters file {input_path} not found. Returning None.")
+        return None
+    lvf_params = np.load(input_path, allow_pickle=True).item()
+    print(f"Loaded LVF parameters from {input_path}")
+    return lvf_params
+
+def save_lvf_params(lvf_params, output_dir='/home/thomasli/spherex/selfcal/selfcal_scripts/lvf_params'):
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, lvf_params['filename'])
+    np.save(output_path, lvf_params)
+    print(f"Saved LVF parameters to {output_path}")
+
+def compute_column_adjacency(chunk_map, num_columns):
+    """
+    Generates adjacency pairs ONLY for vertical strip transitions, 
+    ignoring spectral arc transitions.
     
+    Parameters
+    ----------
+    chunk_map : np.ndarray
+        The full ID map (Subchannel * N + Band)
+    num_columns : int
+        The NUM_COLUMNS constant used to build the map.
+    """
+    print("Computing Vertical Strip Adjacency (Filtering Arcs)...")
+    
+    # 1. Get ALL horizontal transitions (Arc + Strip boundaries)
+    # Compare pixel i with i+1
+    mask = (chunk_map[:, :-1] != -1) & \
+           (chunk_map[:, 1:] != -1) & \
+           (chunk_map[:, :-1] != chunk_map[:, 1:])
+           
+    u = chunk_map[:, :-1][mask]
+    v = chunk_map[:, 1:][mask]
+    
+    # 2. Decompose IDs back into (Subchannel, Band)
+    # Formula: ID = Sub * N + Band
+    sub_u = u // num_columns
+    sub_v = v // num_columns
+    
+    # 3. FILTER: Only keep pairs that are in the SAME Subchannel
+    # This rejects the boundaries where the arc changes.
+    valid_pair_mask = (sub_u == sub_v)
+    
+    u_filtered = u[valid_pair_mask]
+    v_filtered = v[valid_pair_mask]
+    
+    # 4. Remove duplicates
+    # Sort pairs so (u,v) is same as (v,u) for unique checking
+    pairs = np.sort(np.stack([u_filtered, v_filtered], axis=1), axis=1)
+    unique_pairs = np.unique(pairs, axis=0)
+    
+    print(f"Found {len(unique_pairs)} vertical strip boundaries.")
+    return unique_pairs[:, 0], unique_pairs[:, 1]
+
+def compute_subchannel_adjacency(chunk_map, num_columns):
+    """
+    Generates adjacency pairs for vertical subchannel transitions.
+    This links chunk IDs across the boundaries of subchannels, keeping within the same column.
+    """
+    print("Computing Vertical Subchannel Adjacency...")
+    
+    # Compare pixel i with pixel i+1 vertically
+    mask = (chunk_map[:-1, :] != -1) & \
+           (chunk_map[1:, :] != -1) & \
+           (chunk_map[:-1, :] != chunk_map[1:, :])
+           
+    u = chunk_map[:-1, :][mask]
+    v = chunk_map[1:, :][mask]
+    
+    # Check that they represent different subchannels in the same column
+    sub_u = u // num_columns
+    sub_v = v // num_columns
+    col_u = u % num_columns
+    col_v = v % num_columns
+    
+    # Keep pairs that are adjacent vertically AND in the same column
+    valid_pair_mask = (np.abs(sub_u - sub_v) == 1) & (col_u == col_v)
+    
+    u_filtered = u[valid_pair_mask]
+    v_filtered = v[valid_pair_mask]
+    
+    if len(u_filtered) == 0:
+        print("Found 0 vertical subchannel boundaries.")
+        return np.array([]), np.array([])
+        
+    pairs = np.sort(np.stack([u_filtered, v_filtered], axis=1), axis=1)
+    unique_pairs = np.unique(pairs, axis=0)
+    
+    print(f"Found {len(unique_pairs)} vertical subchannel boundaries.")
+    return unique_pairs[:, 0], unique_pairs[:, 1]
+
+def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
+                            oversample_factor=1, num_columns=1, lvf_params=None, 
+                            calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
+    det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
+    
+    subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
+        detector, det_BC, num_subchannels=num_subchannels, num_channels=num_channels, 
+        oversample_factor=oversample_factor, lvf_params=lvf_params
+    )
+    
+    vertchunk_map = np.zeros_like(subchannel_map)
+    width = vertchunk_map.shape[1]
+    x_edges = np.linspace(0, width, num_columns + 1)
+    
+    for band in range(num_columns):
+        start = int(x_edges[band])
+        end = int(x_edges[band+1])
+        vertchunk_map[:, start:end] = band
+
+    chunk_map = subchannel_map * num_columns + vertchunk_map
+    
+    return chunk_map, lvf_params, r_edges, x_edges
+
+def make_stripped_chunk_valid_mask(ch=None, subch=None, num_subchannels=10, num_channels=17, 
+                                   num_columns=1, subchannel_padding=0):
+    def make_chunk_valid_mask(subchannel_valid_mask, num_columns):
+        chunk_valid_mask = np.zeros(len(subchannel_valid_mask)*num_columns, dtype=subchannel_valid_mask.dtype)
+        for band in range(num_columns):
+            chunk_valid_mask[band::num_columns] = subchannel_valid_mask
+        return chunk_valid_mask
+    if ch is not None:
+        subchannel_valid_mask = make_fiducial_chunk_mask(ch, num_subchannels=num_subchannels, num_channels=num_channels, padding=subchannel_padding)
+    elif subch is not None:
+        subchannel_valid_mask = np.zeros(num_subchannels*num_channels+2, dtype=bool)
+        subchannel_valid_mask[subch] = 1
+    else:
+        raise ValueError("Either ch or subch must be provided.")
+    chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
+    return chunk_valid_mask
+
+def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=False):
+    reshaped_offset = chunk_offset.reshape(tot_subchannels, num_columns)[1:-1]
+    reshaped_valid_mask = chunk_valid_mask.reshape(tot_subchannels, num_columns)[1:-1]
+
+    y_slice, x_slice = get_valid_bounds(~reshaped_valid_mask.astype(bool))
+
+    trimmed_offset = reshaped_offset[y_slice, x_slice]
+    if fill_invalid:
+        trimmed_offset = fill_invalid_offsets(trimmed_offset)
+    trimmed_r_edges = r_edges[y_slice.start : y_slice.stop + 1]
+    trimmed_x_edges = x_edges[x_slice.start : x_slice.stop + 1]
+
+    spl = mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, x_degree=3, y_degree=3)
+
+    xc, yc = lvf_params['xc'], lvf_params['yc']
+
+    h, w = np.shape(chunk_map)
+    oversample_factor = h // 2040
+    subpixel_shift = 0.5 / oversample_factor
+    det_size = 2040
+    increment = 1 / oversample_factor
+    x_mesh, y_mesh = np.meshgrid(np.arange(subpixel_shift, det_size+subpixel_shift, increment), np.arange(subpixel_shift, det_size+subpixel_shift, increment))
+    r_mesh = np.sqrt((y_mesh - yc)**2 + (x_mesh - xc)**2)
+    
+    offset_map = spl(r_mesh, x_mesh)
+    return offset_map
+
+def fill_invalid_offsets(data):
+    """
+    Fills zeros in a 2D array using linear interpolation for the interior
+    and nearest-neighbor for extrapolation at the edges.
+    """
+    h, w = data.shape
+    y, x = np.mgrid[0:h, 0:w]
+    
+    # 1. Mask the zeros (the "bad" data)
+    mask = (data != 0)
+    
+    # If the whole thing is zeros or there are no zeros, return as is
+    if not np.any(mask) or np.all(mask):
+        return data
+
+    # 2. Extract valid points
+    points = np.array((y[mask], x[mask])).T
+    values = data[mask]
+    
+    # 3. Interpolate the entire grid
+    # 'linear' handles the interior bilinear logic
+    # We use 'nearest' for the points griddata can't reach (extrapolation)
+    # If points are collinear (e.g. valid data in only one column), Delaunay triangulation fails.
+    # In that case, we catch the Qhull precision error and fallback to 'nearest' immediately.
+    from scipy.spatial.qhull import QhullError
+    try:
+        filled = griddata(points, values, (y, x), method='linear')
+    except QhullError:
+        filled = griddata(points, values, (y, x), method='nearest')
+    
+    # 4. Fill remaining NaNs (edges/corners) with nearest neighbor extrapolation
+    nan_mask = np.isnan(filled)
+    if np.any(nan_mask):
+        filled[nan_mask] = griddata(points, values, (y[nan_mask], x[nan_mask]), method='nearest')
+        
+    return filled
+
+def fast_vertical_dist(arr):
+    rows, cols = arr.shape
+    # Result arrays
+    dist_up = np.zeros((rows, cols), dtype=np.int32)
+    dist_down = np.zeros((rows, cols), dtype=np.int32)
+
+    # We use a running count that resets at every 0
+    # 1. Distance to zero ABOVE
+    for r in range(1, rows):
+        # If current is 1, distance is (dist of row above) + 1
+        # If current is 0, distance is 0
+        dist_up[r] = (dist_up[r-1] + 1) * (arr[r] != 0)
+
+    # 2. Distance to zero BELOW
+    for r in range(rows - 2, -1, -1):
+        dist_down[r] = (dist_down[r+1] + 1) * (arr[r] != 0)
+
+    return np.minimum(dist_up, dist_down).astype(np.float32)
