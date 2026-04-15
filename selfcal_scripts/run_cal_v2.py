@@ -112,7 +112,7 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 5,
+        'Detector': 6,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 5,
@@ -131,9 +131,9 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
-        'reg_weight': 0.01,
+        'reg_weight': 0.1,
         'weighted_damping': True,
-        'damp_weight': 0.1,
+        'damp_weight': 0.5,
         'max_workers': 32,
         'postprocess_func': None, #mask_bright_pixels,
     }
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
+    FILE_SUFFIX = f'_damp0p5_reg0p1_outThresh5_sigma2'
 
     # Channels to process
     # chs = [[32], [33], [34]]
