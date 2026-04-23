@@ -112,10 +112,10 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 6,
+        'Detector': 1,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 5,
+        'NumCol': 3,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -133,7 +133,7 @@ if __name__ == "__main__":
         'offset_regularization': True,
         'reg_weight': 0.1,
         'weighted_damping': True,
-        'damp_weight': 0.5,
+        'damp_weight': 0.1,
         'max_workers': 32,
         'postprocess_func': None, #mask_bright_pixels,
     }
@@ -163,13 +163,12 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p5_reg0p1_outThresh5_sigma2'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
     # Channels to process
-    # chs = [[32], [33], [34]]
-    # chs = [[29], [30], [31], [32], [33], [34]]
     # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
-    chs = [[4], [5], [6]]
+    # chs = [[15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
+    chs = [[14]]
     # chs = ['Aliphatic', 'Aromatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
     # Tune based on RAID config: ~4-8 for most RAID arrays. Set to None to disable.
