@@ -114,7 +114,7 @@ class Reprojector:
         self.exp_idx_list = []
         for file in tqdm(self.reproj_list):
             file_name = os.path.basename(file)
-            exp_idx, det_idx = int(file_name.split('_')[1]), int(file_name.split('_')[3].strip('.h5'))
+            exp_idx, det_idx = int(file_name.split('_')[1]), int(file_name.split('_')[3].removesuffix('.h5'))
             self.det_idx_list.append(det_idx)
             self.exp_idx_list.append(exp_idx)
         
