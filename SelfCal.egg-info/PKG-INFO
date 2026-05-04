@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: SelfCal
+Version: 0.1.0
+Summary: Self-calibration pipeline for astronomical imaging
+Requires-Python: >=3.9
