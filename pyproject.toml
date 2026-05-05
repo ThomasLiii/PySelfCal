@@ -7,6 +7,20 @@ name = "SelfCal"
 version = "0.1.0"
 description = "Self-calibration pipeline for astronomical imaging"
 requires-python = ">=3.9"
+dependencies = [
+    "astropy",
+    "h5py",
+    "hdf5plugin",
+    "matplotlib",
+    "mpsplines @ git+https://github.com/jararias/mpsplines.git",
+    "numpy",
+    "opencv-python",
+    "reproject",
+    "scikit-image",
+    "scipy",
+    "threadpoolctl",
+    "tqdm",
+]
 
 [tool.setuptools.packages.find]
 include = ["SelfCal*"]
