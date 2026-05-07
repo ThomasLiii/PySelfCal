@@ -154,7 +154,7 @@ if __name__ == "__main__":
     # Change between runs: e.g. 'before_refactor' for the baseline run on current code,
     # 'after_refactor' for the run on refactored code. Each tag produces a distinctly-named
     # cal_*.h5 so before/after files coexist for byte-equality diffing.
-    TEST_TAG = 'after_refactor'
+    TEST_TAG = 'after_commit2'
     FILE_SUFFIX = f'_baseline_{TEST_TAG}'
 
     HDD_IO_LIMIT = 20
@@ -225,7 +225,7 @@ if __name__ == "__main__":
                 **calibration_kwargs
             )
             
-            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, len(cc.reproj_list))
+            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
             
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
