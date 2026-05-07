@@ -12,10 +12,13 @@ The plan also lives at `/home/thomasli/.claude/plans/actually-forget-adding-the-
 - `~/spherex/selfcal/` — dev, branch `feat/multi-chunk-maps`, env `general`
 - `~/spherex/selfcal-stable/` — analysis, branch `stable`, env `selfcal-stable`
 
-**Current state**: **Commits 1 and 2 are done.** Three commits already pushed; Commit 2 changes are still uncommitted in the working tree pending review.
+**Current state**: **Commits 1, 2, and 3 are done.** Pushed up through Commit 2; Commit 3 changes are uncommitted in the working tree pending review.
 - `00a2892 selfcal: parameterize _prep_lsqr offset/adjacency rows by col_bases`
 - `f24c155 scripts: add baseline test driver and cal-file diff helper`
 - `610056b docs: add multi-chunk-maps design plan and progress log`
+- `cabea2b selfcal: lift K>1 multi-chunk-maps in lsqr/subframe/solution core`
+- `6c9e085 scripts: adapt drivers to trimmed compute_x0_from_Ab + add K=2 smoke test`
+- `de7431a docs: update multi-chunk-maps progress to reflect Commit 2 done`
 
 ## Done
 
@@ -43,6 +46,17 @@ The plan also lives at `/home/thomasli/.claude/plans/actually-forget-adding-the-
   - `selfcal_scripts/run_cal_baseline_test.py` and `run_cal_v2.py` updated to drop the no-longer-accepted 4th arg from `compute_x0_from_Ab`.
 - [x] **Commit 2 regression check passed.** Re-ran with `TEST_TAG='after_commit2'`; diffed against the same `before_refactor` baseline. `offset_coverage`, `offset_coverage_frac`, `skymap_coverage`, `reproj_list` byte-equal. `offset` max |diff| = **1.10e-04**; `skymap` max |diff| = **8.52e-05** — both well under the same `atol=1e-2` band that Commit 1 produced (and noticeably smaller than Commit 1's diff this time, presumably from how the new SHM packing changed batch arrival timing). Same pre-existing parallel non-determinism root cause; same fix applies.
 - [x] **K=2 smoke test added** (`selfcal_scripts/run_cal_k2_smoke_test.py`). Calls `setup_lsqr` directly with `chunk_maps=[real, dummy(1-chunk)]`, `reg_weights=[0.1, 0.1]`, `mean_offsets_list=[None, np.zeros(num_frames)]`. On a 100-frame subset: matrix shape matches `col_bases` prediction (`num_sky + 100·1026 + 100·1`), both offset blocks are populated (real 6.6M nnz, dummy 5.4M nnz), and the diagonal-LS warmstart fills both blocks. Confirms per-map SHM hand-off, per-map offset rows, and per-map mean constraint all wire end-to-end. Doesn't run LSQR — verification is plumbing-level.
+- [x] **Commit 3 — user-facing always-list API + new cal-file schema.** Touchpoints:
+  - `SelfCal/PipelineWrapper.py:Calibrator.setup_lsqr` flipped to list-form: `chunk_maps`, `reg_weights`, `adj_infos`, `mean_offsets_list`, `det_groups_list`, `det_templates`. Length-K validation up front (raises `ValueError` on mismatch). Legacy single-form mirror attrs (`self.chunk_map`, `self.num_offset_groups`, `self.det_template`, `self.frame_to_group`) dropped — callers now read from the list-form attrs.
+  - `Calibrator.save_calibration` writes the new schema: top-level `skymap`, `skymap_coverage`, `reproj_list`, plus `num_maps` attribute and `offsets/`, `offset_coverage/`, `offset_coverage_frac/`, `chunk_maps/` groups (each with one `map_m` dataset per map). Per-map offsets are saved expanded-per-frame *without* the per-frame scalar baked in; the shared `frame_scalar` is stored at the top level instead, only when any map uses `det_groups`.
+  - `Calibrator.load_calibration` reads dual schema: legacy top-level `offset` → `[f['offset'][:]]`; new schema → `[f['offsets/map_m'][:] for m]` plus `frame_scalar` if present.
+  - `Calibrator.get_offsets()` (new) returns the K-element list; `get_offset()` is the K=1 convenience that returns `get_offsets()[0]`. The shared `frame_scalar` is folded into map 0 only, matching legacy single-map subtraction behavior. `get_det_offset(m=0)` parameterized by map index.
+  - `Mosaicker.load_calibration` reads dual schema; under the new schema it pulls `offsets/map_0` plus `frame_scalar`. Multi-map mosaic application is still Commit 4 — Mosaicker still applies a single offset.
+  - `selfcal_scripts/run_cal_v2.py` and `run_cal_baseline_test.py` migrated: `chunk_maps=[det_chunk_map]`, `adj_infos=[adj_info]`, `reg_weights=[0.1]`.
+  - `selfcal_scripts/diff_cal_h5.py` rewritten as schema-aware: `_read_offset(f, m)` resolves either schema and folds `frame_scalar` into map 0; comparing legacy ↔ new schema works element-wise on the underlying arrays.
+  - `analysis/analysis_script/zodi_utils.py` adds `load_cal_offsets(path_or_file) → {m: offset_m}`; legacy → `{0: top-level offset}`, new → `{m: offsets/map_m}` with `frame_scalar` folded into map 0. `load_single_channel_offset` now uses it. Direct `f['offset'][:]` reads in `meeting_plots.py`, `meeting_plots_by_lat.py`, `plot_numcol_decomp.py`, `plot_numcol_benefit.py`, `build_multichannel_cache.py` swept to `load_cal_offsets(f)[0]`.
+- [x] **Commit 3 regression check passed.** Re-ran with `TEST_TAG='after_commit3'`; diffed via the new schema-aware `diff_cal_h5.py` against the legacy `before_refactor` baseline (which maps `offset` → `offsets/map_0` for the comparison). `skymap_coverage`, `reproj_list`, per-map `offset_coverage`/`offset_coverage_frac` byte-equal. `offset[map_0]` max |diff| = **1.64e-03**; `skymap` max |diff| = **8.05e-04** — within the same `atol=1e-2` parallel-non-determinism band as Commits 1–2.
+- [x] **New-schema sanity check passed.** Inspecting the saved file directly: `num_maps=1` attribute, top-level `skymap`/`skymap_coverage`/`reproj_list`, plus the four `(name)/map_0` group datasets (`offsets`, `offset_coverage`, `offset_coverage_frac`, `chunk_maps`). `chunk_maps/map_0` stored as `(2040, 2040) int32` — the actual `det_chunk_map`. No `frame_scalar` (this config doesn't use `det_groups`). `Mosaicker.load_calibration` reads the new schema and exposes `offset (13219, 1026)` exactly like the legacy path. `zodi_utils.load_cal_offsets` returns `{0: …}` with the same per-frame mean (0.0042) on both legacy and new files.
 
 ## How the regression test works
 
@@ -68,11 +82,7 @@ The test script:
 
 ## To do — next session pick up here
 
-### Commit 3 — user-facing always-list API + new cal schema (next)
-
-Scope: `Calibrator.setup_lsqr` accepts `chunk_maps` (list), `Calibrator.save_calibration` writes new `offsets/` group schema, `Calibrator.load_calibration` reads dual schema. Update `selfcal_scripts/run_cal_v2.py` (wrap as `[chunk_map]`). Update `analysis/analysis_script/zodi_utils.py` to read either old top-level `offset` or new `offsets/map_m`.
-
-### Commit 4 — Mosaicker multi-map application
+### Commit 4 — Mosaicker multi-map application (next)
 
 Scope: `_prep_subframe` mosaic path accumulates over maps, `coadd.compute_coadd_map` accepts `offset_lists`, `Mosaicker.make_mosaic` accepts `chunk_maps` / `det_offset_funcs` lists. Optional helpers: `make_per_partition_mean_zero(fine_map, coarse_map)` for nested-map identifiability.
 
@@ -84,10 +94,10 @@ Re-enable mosaicking in `run_cal_baseline_test.py` for Test C verification.
 2. **Verify state**:
    ```
    git branch --show-current   # → feat/multi-chunk-maps
-   git log --oneline -5        # → confirm 00a2892, f24c155, 610056b at top
+   git log --oneline -8        # → confirm Commit 3's three commits sit on top of Commit 2's three
    ```
 3. **Tell the new session**:
-   > Read `MULTI_CHUNK_MAPS_PLAN.md` and `MULTI_CHUNK_MAPS_PROGRESS.md`. Commits 1 and 2 are done. We're picking up at Commit 3 — user-facing always-list API + new cal-file schema. Start by reading [SelfCal/PipelineWrapper.py](SelfCal/PipelineWrapper.py) (`Calibrator.setup_lsqr` / `Calibrator.save_calibration` / `Calibrator.load_calibration` — these still take single-map and need to flip to lists) and [analysis/analysis_script/zodi_utils.py](analysis/analysis_script/zodi_utils.py) (analysis-side dual-schema reader).
+   > Read `MULTI_CHUNK_MAPS_PLAN.md` and `MULTI_CHUNK_MAPS_PROGRESS.md`. Commits 1, 2, and 3 are done. We're picking up at Commit 4 — Mosaicker multi-map application. Touchpoints: `coadd.compute_coadd_map` should take `offset_lists` (list of K per-frame offset arrays), `_prep_subframe`'s mosaic path should accumulate `Σ_m det_offset_funcs[m](chunk_maps[m], offsets[m])`, and `Mosaicker.make_mosaic` should accept `chunk_maps` / `det_offset_funcs` lists. After that, re-enable mosaicking in `run_cal_baseline_test.py` for Test C verification.
 4. **Verify cached state still intact** before any compute:
    ```
    ls /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_*_baseline_*.h5
