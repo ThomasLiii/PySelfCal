@@ -43,7 +43,7 @@ if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
 from SelfCal.SPHERExUtility import make_stripped_chunk_valid_mask
-from zodi_utils import data_path, fig_path
+from zodi_utils import data_path, fig_path, load_cal_offsets
 
 CAL_PATH = ('/mnt/md124/thomasli/selfcal/outputs/'
             'SPHEREx_nep_qr2_det{det}_6p2arcsec/calibration/'
@@ -57,7 +57,7 @@ TOT_SUB = NUM_SUB * NUM_CH + 2
 def load_grad(detector, channel):
     """Return per-exposure col0-col2 gradient (averaged over valid subchannels)."""
     with h5py.File(CAL_PATH.format(det=detector, ch=channel), 'r') as f:
-        off = f['offset'][:].reshape(-1, TOT_SUB, NUM_COL)
+        off = load_cal_offsets(f)[0].reshape(-1, TOT_SUB, NUM_COL)
     mask = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=NUM_SUB, num_channels=NUM_CH,
         num_columns=NUM_COL, subchannel_padding=0,

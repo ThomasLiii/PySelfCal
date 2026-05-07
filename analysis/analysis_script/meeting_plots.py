@@ -52,7 +52,7 @@ from SelfCal.SPHERExUtility import (
     make_spherex_stripped_offset_map,
     load_lvf_params,
 )
-from zodi_utils import data_path, fig_path, cal_path
+from zodi_utils import data_path, fig_path, cal_path, load_cal_offsets
 
 NUM_SUB, NUM_CH, NUM_COL = 10, 34, 3
 TOT_SUB = NUM_SUB * NUM_CH + 2
@@ -66,7 +66,7 @@ MIN_FIT_POINTS = 50
 def load_channel_offsets(detector, channel):
     """Load (offset_cube, padded_mask) for one channel."""
     with h5py.File(cal_path(detector, channel), 'r') as f:
-        off = f['offset'][:].reshape(-1, TOT_SUB, NUM_COL)
+        off = load_cal_offsets(f)[0].reshape(-1, TOT_SUB, NUM_COL)
     padded = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=NUM_SUB, num_channels=NUM_CH,
         num_columns=NUM_COL, subchannel_padding=1,

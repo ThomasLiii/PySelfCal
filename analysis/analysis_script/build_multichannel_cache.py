@@ -43,6 +43,7 @@ from zodi_utils import (
     compute_ecliptic_geometry,
     fit_sine,
     data_path,
+    load_cal_offsets,
 )
 
 NUM_SUB, NUM_CH, NUM_COL = 10, 34, 3
@@ -84,7 +85,7 @@ def _extract_header_and_pa(reproj_path):
 def _load_channel_cal(detector, channel):
     """Return offset cube + valid-subchannel index list for one channel."""
     with h5py.File(cal_path(detector, channel), 'r') as f:
-        off = f['offset'][:]                           # (N, 342*3)
+        off = load_cal_offsets(f)[0]                   # (N, 342*3)
         reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
     off = off.reshape(off.shape[0], TOT_SUB, NUM_COL)  # (N, 342, 3)
     mask = make_stripped_chunk_valid_mask(
