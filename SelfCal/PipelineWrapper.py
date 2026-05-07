@@ -127,9 +127,7 @@ class Calibrator(Reprojector):
         self.b = None
         self.x = None
         self.pixel_counts = None
-        # Multi-chunk-map state (always-list internally; K=1 for the public single-map API).
-        # Single-form attrs (self.chunk_map, self.num_offset_groups, ...) mirror
-        # element 0 for legacy callers; Commit 3 drops them with the API flip.
+        # Multi-chunk-map state — always lists, even at K=1.
         self.chunk_maps = []
         self.frame_to_groups = []
         self.num_offset_groups_list = []
@@ -137,17 +135,36 @@ class Calibrator(Reprojector):
         self.det_templates = []
         self.col_bases = None  # length K+1; col_bases[K] == scalar_col_start
         self.num_scalar_cols = 0
-        self.chunk_map = None
-        self.frame_to_group = None
-        self.num_offset_groups = None
-        self.det_template = None
 
-    def setup_lsqr(self, chunk_map, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20,
-                   outlier_thresh=3.0, ignore_list=[], batch_size=10, offset_regularization=False, reg_weight=0.0, adj_info=None, mean_offsets=None,
-                   det_groups=None, det_template=None, postprocess_func=None, preprocess_func=None, weighted_damping=False, damp_weight=0.1):
-        # Public Calibrator API stays single-map; wrap as length-1 lists for the
-        # multi-chunk-map core. Commit 3 will widen this signature to lists.
-        chunk_maps = [chunk_map]
+    def setup_lsqr(self, chunk_maps, grid_valid_weight, oversample_factor=1,
+                   apply_mask=True, apply_weight=True, max_workers=20,
+                   outlier_thresh=3.0, ignore_list=[], batch_size=10,
+                   offset_regularization=False,
+                   reg_weights=None, adj_infos=None, mean_offsets_list=None,
+                   det_groups_list=None, det_templates=None,
+                   postprocess_func=None, preprocess_func=None,
+                   weighted_damping=False, damp_weight=0.1):
+        """Build the LSQR system for K chunk maps.
+
+        ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
+        configuration arguments (``reg_weights``, ``adj_infos``,
+        ``mean_offsets_list``, ``det_groups_list``, ``det_templates``) are each
+        either ``None`` (default for every map) or length-K lists. A
+        ``ValueError`` is raised on length mismatch.
+        """
+        assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
+            "chunk_maps must be a non-empty list of ndarrays"
+        K = len(chunk_maps)
+
+        def _check_len(name, val):
+            if val is not None and len(val) != K:
+                raise ValueError(f"{name} must have length {K} (got {len(val)})")
+        _check_len('reg_weights', reg_weights)
+        _check_len('adj_infos', adj_infos)
+        _check_len('mean_offsets_list', mean_offsets_list)
+        _check_len('det_groups_list', det_groups_list)
+        _check_len('det_templates', det_templates)
+
         with timer("Setup LSQR"):
             self.A, self.b, self.pixel_counts = MakeMap.setup_lsqr(
                 self.reproj_list, self.ref_shape,
@@ -157,11 +174,10 @@ class Calibrator(Reprojector):
                 max_workers=max_workers, outlier_thresh=outlier_thresh,
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
-                reg_weights=[reg_weight],
-                adj_infos=[adj_info],
-                mean_offsets_list=[mean_offsets],
-                det_groups_list=[det_groups],
-                det_templates=[det_template],
+                reg_weights=reg_weights, adj_infos=adj_infos,
+                mean_offsets_list=mean_offsets_list,
+                det_groups_list=det_groups_list,
+                det_templates=det_templates,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight)
 
@@ -169,33 +185,45 @@ class Calibrator(Reprojector):
         # don't have to recompute frame_to_group, col_bases, etc.
         num_frames = len(self.reproj_list)
         num_sky = self.ref_shape[0] * self.ref_shape[1]
-        if det_groups is not None:
-            _, ftg = np.unique(det_groups, return_inverse=True)
-            num_offset_groups_m = len(np.unique(det_groups))
-            self.num_scalar_cols = num_frames
-        else:
-            ftg = np.arange(num_frames)
-            num_offset_groups_m = num_frames
-            self.num_scalar_cols = 0
-        if det_template is not None:
-            num_offset_groups_m = num_frames  # one alpha per frame
-            num_chunks_m = 1
-            block = num_frames
-        else:
-            num_chunks_m = int(chunk_map.max()) + 1
-            block = num_offset_groups_m * num_chunks_m
+
+        any_det_groups = det_groups_list is not None and any(g is not None for g in det_groups_list)
+        self.num_scalar_cols = num_frames if any_det_groups else 0
+
+        frame_to_groups = []
+        num_offset_groups_list = []
+        num_chunks_list = []
+        det_template_arr_list = []
+        col_bases = [num_sky]
+        for m in range(K):
+            cm = chunk_maps[m]
+            num_chunks_m = int(cm.max()) + 1
+            dgm = det_groups_list[m] if det_groups_list is not None else None
+            if dgm is not None:
+                _, ftg = np.unique(dgm, return_inverse=True)
+                num_offset_groups_m = len(np.unique(dgm))
+            else:
+                ftg = np.arange(num_frames)
+                num_offset_groups_m = num_frames
+            tmpl = det_templates[m] if det_templates is not None else None
+            if tmpl is not None:
+                num_offset_groups_m = num_frames  # one alpha per frame
+                num_chunks_m = 1
+                block = num_frames
+                tmpl = np.asarray(tmpl, dtype=np.float32)
+            else:
+                block = num_offset_groups_m * num_chunks_m
+            frame_to_groups.append(ftg)
+            num_offset_groups_list.append(num_offset_groups_m)
+            num_chunks_list.append(num_chunks_m)
+            det_template_arr_list.append(tmpl)
+            col_bases.append(col_bases[-1] + block)
 
         self.chunk_maps = chunk_maps
-        self.frame_to_groups = [ftg]
-        self.num_offset_groups_list = [num_offset_groups_m]
-        self.num_chunks_list = [num_chunks_m]
-        self.det_templates = [np.asarray(det_template, dtype=np.float32) if det_template is not None else None]
-        self.col_bases = [num_sky, num_sky + block]
-        # Legacy single-form mirrors (read by older notebooks; Commit 3 retires).
-        self.chunk_map = chunk_map
-        self.frame_to_group = ftg
-        self.num_offset_groups = num_offset_groups_m
-        self.det_template = self.det_templates[0]
+        self.frame_to_groups = frame_to_groups
+        self.num_offset_groups_list = num_offset_groups_list
+        self.num_chunks_list = num_chunks_list
+        self.det_templates = det_template_arr_list
+        self.col_bases = col_bases
 
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
                    solver='lsmr', use_float32=False, n_threads=32):
@@ -213,83 +241,125 @@ class Calibrator(Reprojector):
                                         solver=solver, use_float32=use_float32, n_threads=n_threads)
 
     def load_calibration(self, cal_path=None):
+        """Load a saved calibration (dual schema: legacy top-level ``offset``
+        or new ``offsets/map_m`` group)."""
         if cal_path is None:
             cal_path = os.path.join(self.config.cal_dir, 'cal.h5')
+        num_frames = len(self.reproj_list)
+        num_sky = self.ref_shape[0] * self.ref_shape[1]
         with h5py.File(cal_path, 'r') as f:
             skymap = f['skymap'][:]
-            offset = f['offset'][:]
-            self.x = MakeMap.encode_x(skymap, offset)
-        # Saved offsets are already expanded to per-frame
-        num_frames = len(self.reproj_list)
-        num_chunks_m = offset.shape[1]
-        num_sky = self.ref_shape[0] * self.ref_shape[1]
-        self.frame_to_groups = [np.arange(num_frames)]
-        self.num_offset_groups_list = [num_frames]
-        self.num_chunks_list = [num_chunks_m]
-        self.det_templates = [None]
-        self.num_scalar_cols = 0
-        self.col_bases = [num_sky, num_sky + num_frames * num_chunks_m]
-        # Legacy single-form mirrors
-        self.frame_to_group = self.frame_to_groups[0]
-        self.num_offset_groups = num_frames
-        self.det_template = None
-        # chunk_maps not stored on disk in legacy schema — leave as []
+            if 'offsets' in f:
+                K = int(f.attrs.get('num_maps', len(f['offsets'])))
+                offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
+                chunk_maps = ([f['chunk_maps'][f'map_{m}'][:] for m in range(K)]
+                              if 'chunk_maps' in f else [])
+                frame_scalar = f['frame_scalar'][:] if 'frame_scalar' in f else None
+            else:
+                offsets = [f['offset'][:]]
+                chunk_maps = []
+                frame_scalar = None
+        # Rebuild self.x assuming saved offsets are already per-frame expanded
+        # (which is what save_calibration writes for both schemas).
+        parts = [skymap.flatten()] + [o.flatten() for o in offsets]
+        if frame_scalar is not None:
+            parts.append(frame_scalar.flatten())
+        self.x = np.concatenate(parts)
+
+        K = len(offsets)
+        self.chunk_maps = chunk_maps
+        self.frame_to_groups = [np.arange(num_frames) for _ in range(K)]
+        self.num_offset_groups_list = [num_frames for _ in range(K)]
+        self.num_chunks_list = [int(o.shape[1]) for o in offsets]
+        self.det_templates = [None] * K
+        self.num_scalar_cols = num_frames if frame_scalar is not None else 0
+        self.col_bases = [num_sky]
+        for nc in self.num_chunks_list:
+            self.col_bases.append(self.col_bases[-1] + num_frames * nc)
 
     def _has_scalars(self):
         """Whether the solution vector includes a per-frame scalar bias block."""
         return self.num_scalar_cols > 0
 
-    def _expand_offset(self, det_offset, frame_scalar):
-        """Expand grouped/template offsets to per-frame (num_frames, num_chunks)."""
-        # K=1 single-map convenience; multi-map expansion is Commit 3+.
-        ftg = self.frame_to_groups[0]
-        if self.det_templates[0] is not None:
-            alpha = det_offset.squeeze()  # (num_frames,)
-            template = np.asarray(self.det_templates[0])
+    def _expand_offset(self, m, det_offset_m, frame_scalar=None):
+        """Expand map ``m``'s grouped/template offsets to per-frame
+        ``(num_frames, num_chunks_m)``. ``frame_scalar`` is added when
+        provided (legacy K=1 in-memory consumers); otherwise it is left out
+        and saved separately at the top of the cal file.
+        """
+        ftg = self.frame_to_groups[m]
+        if self.det_templates[m] is not None:
+            alpha = det_offset_m.squeeze()  # (num_frames,)
+            template = np.asarray(self.det_templates[m])
             offset = alpha[:, np.newaxis] * template[ftg]
         else:
-            offset = det_offset[ftg]
-        if len(frame_scalar) > 0:
+            offset = det_offset_m[ftg]
+        if frame_scalar is not None and len(frame_scalar) > 0:
             offset = offset + frame_scalar[:, np.newaxis]
         return offset
 
     def save_calibration(self, cal_dir=None, cal_file='cal.h5'):
+        """Write the calibration in the new ``offsets/map_m`` group schema.
+
+        Each map's per-frame offset is stored under ``offsets/map_m`` after
+        expansion through that map's frame_to_group / template (no per-frame
+        scalar baked in). When any map uses ``det_groups``, the shared
+        per-frame scalar bias is stored at the top level as ``frame_scalar``.
+        Per-map ``chunk_maps/map_m`` arrays are also stored so analysis can
+        recover the chunk indexing without round-tripping config.
+        """
         if cal_dir is None:
             cal_dir = self.config.cal_dir
-        if not os.path.exists(cal_dir):
-            os.makedirs(cal_dir)
+        os.makedirs(cal_dir, exist_ok=True)
         num_frames = len(self.reproj_list)
+        K = len(self.chunk_maps)
 
         skymap, det_offsets, frame_scalar = MakeMap.parse_x(
             self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None)
-        det_offset = det_offsets[0]
 
-        offset = self._expand_offset(det_offset, frame_scalar)
+        skymap_coverage, offset_coverages_layout, offset_valid_fracs_layout = MakeMap.parse_pixel_counts(
+            pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
+            num_offset_groups_list=self.num_offset_groups_list,
+            chunk_maps=self.chunk_maps)
 
-        num_chunks = int(np.max(self.chunk_maps[0])) + 1
-        if self.det_templates[0] is not None:
-            skymap_coverage = self.pixel_counts[:self.ref_shape[0] * self.ref_shape[1]].reshape(self.ref_shape)
-            offset_coverage = np.ones((num_frames, num_chunks))
-            offset_coverage_frac = np.ones((num_frames, num_chunks))
-        else:
-            skymap_coverage, offset_coverages, offset_valid_fracs = MakeMap.parse_pixel_counts(
-                pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
-                num_offset_groups_list=self.num_offset_groups_list,
-                chunk_maps=self.chunk_maps)
-            offset_coverage = offset_coverages[0][self.frame_to_groups[0]]
-            offset_coverage_frac = offset_valid_fracs[0][self.frame_to_groups[0]]
+        expanded_offsets = []
+        map_coverages = []
+        map_coverage_fracs = []
+        for m in range(K):
+            num_chunks_real = int(self.chunk_maps[m].max()) + 1
+            offset_m = self._expand_offset(m, det_offsets[m])
+            if self.det_templates[m] is not None:
+                # Template mode coverage in the layout block is shape (num_frames, 1);
+                # expand to (num_frames, num_chunks_real) trivially.
+                cov_m = np.ones((num_frames, num_chunks_real), dtype=np.int32)
+                frac_m = np.ones((num_frames, num_chunks_real), dtype=np.float32)
+            else:
+                cov_m = offset_coverages_layout[m][self.frame_to_groups[m]]
+                frac_m = offset_valid_fracs_layout[m][self.frame_to_groups[m]]
+            expanded_offsets.append(offset_m)
+            map_coverages.append(cov_m)
+            map_coverage_fracs.append(frac_m)
 
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
-            f.create_dataset('offset', data=offset, compression='gzip')
+            f.attrs['num_maps'] = K
             f.create_dataset('skymap', data=skymap, compression='gzip')
-            f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             f.create_dataset('skymap_coverage', data=skymap_coverage, compression='gzip')
-            f.create_dataset('offset_coverage', data=offset_coverage, compression='gzip')
-            f.create_dataset('offset_coverage_frac', data=offset_coverage_frac, compression='gzip')
+            f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
+            offsets_grp = f.create_group('offsets')
+            cov_grp = f.create_group('offset_coverage')
+            frac_grp = f.create_group('offset_coverage_frac')
+            cm_grp = f.create_group('chunk_maps')
+            for m in range(K):
+                offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
+                frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
+                cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
+            if self._has_scalars() and frame_scalar is not None and len(frame_scalar) > 0:
+                f.create_dataset('frame_scalar', data=frame_scalar, compression='gzip')
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
@@ -301,18 +371,34 @@ class Calibrator(Reprojector):
             num_frames=num_frames if self._has_scalars() else None)
         return skymap
 
-    def get_offset(self):
+    def get_offsets(self):
+        """Return per-frame expanded offsets, one ndarray per chunk map.
+
+        The shared per-frame scalar bias (when present) is added to map 0 only,
+        matching the legacy K=1 behavior — analysis code that subtracts a
+        single ``offset`` array against the data sees the same total bias.
+        """
         num_frames = len(self.reproj_list)
         _, det_offsets, frame_scalar = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None)
-        return self._expand_offset(det_offsets[0], frame_scalar)
+        out = []
+        for m in range(len(self.chunk_maps)):
+            scalar = frame_scalar if m == 0 else None
+            out.append(self._expand_offset(m, det_offsets[m], frame_scalar=scalar))
+        return out
 
-    def get_det_offset(self):
+    def get_offset(self):
+        """K=1 convenience: return ``get_offsets()[0]``."""
+        return self.get_offsets()[0]
+
+    def get_det_offset(self, m=0):
         """Get grouped detector offsets before per-frame expansion.
-        Use as det_template for the template-amplitude step."""
-        if self.det_templates[0] is not None:
+
+        Use as a ``det_templates[m]`` for the template-amplitude step.
+        """
+        if self.det_templates[m] is not None:
             raise ValueError("get_det_offset() not available in template mode. "
                              "Run in locked-offset mode (det_groups only) first.")
         num_frames = len(self.reproj_list)
@@ -320,7 +406,7 @@ class Calibrator(Reprojector):
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None)
-        return det_offsets[0]  # shape (num_groups, num_chunks)
+        return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
     def __init__(self, config: PipelineConfig, reproj_dir=None):
@@ -337,13 +423,27 @@ class Mosaicker(Reprojector):
         self.mean_offset = 0.0
 
     def load_calibration(self, cal_path):
+        """Load a saved calibration (dual schema).
+
+        For the new ``offsets/`` group schema, only map 0 is used here —
+        Commit 4 widens the mosaic path to multi-map accumulation. The shared
+        per-frame ``frame_scalar`` is added back into the loaded offset so
+        downstream subtraction matches the legacy single-map behavior.
+        """
         with h5py.File(cal_path, 'r') as f:
-            self.offset = f['offset'][:]
             self.skymap = f['skymap'][:]
             self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
-            self.offset_coverage_frac = f['offset_coverage_frac'][:]
             self.skymap_coverage = f['skymap_coverage'][:]
-            self.offset_coverage = f['offset_coverage'][:]
+            if 'offsets' in f:
+                self.offset = f['offsets']['map_0'][:]
+                self.offset_coverage = f['offset_coverage']['map_0'][:]
+                self.offset_coverage_frac = f['offset_coverage_frac']['map_0'][:]
+                if 'frame_scalar' in f:
+                    self.offset = self.offset + f['frame_scalar'][:][:, np.newaxis]
+            else:
+                self.offset = f['offset'][:]
+                self.offset_coverage = f['offset_coverage'][:]
+                self.offset_coverage_frac = f['offset_coverage_frac'][:]
         print(f"Calibration loaded from {cal_path}")
         self.cal_path = cal_path
 
