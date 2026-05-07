@@ -20,31 +20,35 @@ def _prep_lsqr(task_params):
     index = task_params['index']
     reproj_file = task_params['reproj_file']
 
-    # 2. Unpack Config for Logic
+    # 2. Unpack Config for Logic (per-map lists are length K; col_bases is length K+1)
     ref_shape = task_params['ref_shape']
     num_frames = task_params['num_frames']
-    num_chunks = task_params['num_chunks']
+    num_chunks_list = task_params['num_chunks_list']
     outlier_thresh = task_params['outlier_thresh']
-    reg_weight = task_params['reg_weight']
+    reg_weight_list = task_params['reg_weight_list']
     offset_regularization = task_params['offset_regularization']
-    adj_info = task_params['adj_info'] # Pre-computed adjacency (row, col) pairs
-    frame_to_group = task_params['frame_to_group']
+    adj_info_list = task_params['adj_info_list']
+    frame_to_group_list = task_params['frame_to_group_list']
+    col_bases = task_params['col_bases']
     scalar_col_start = task_params['scalar_col_start']
     num_scalar_cols = task_params['num_scalar_cols']
-    det_template = task_params.get('det_template')
+    det_template_list = task_params['det_template_list']
+    chunk_maps = task_params['chunk_maps']
+    K = len(chunk_maps)
+
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    group_idx = frame_to_group[index]
+    group_idx_list = [frame_to_group_list[m][index] for m in range(K)]
 
     try:
-        # 3. Explicit Call to _prep_subframe
-        ref_coords, sub_data, sub_weight, chunk_contrib, _ = _prep_subframe(
+        # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
+        ref_coords, sub_data, sub_weight, chunk_contribs, _ = _prep_subframe(
             file=reproj_file,
             chunk_offset=None,
             for_lsqr=True,
             det_offset_func=None,
             det_aux=None,
-            chunk_map=task_params['chunk_map'],
+            chunk_maps=chunk_maps,
             apply_weight=task_params['apply_weight'],
             apply_mask=task_params['apply_mask'],
             ignore_list=task_params['ignore_list'],
@@ -77,22 +81,9 @@ def _prep_lsqr(task_params):
         S_cols = ref_pix_indices
         S_data = valid_weight
 
-        # === Internal multi-map representation (K=1 wrapper) ===
-        # Single-form params are wrapped as length-1 lists so the offset and adjacency
-        # logic below indexes columns via col_bases. When setup_lsqr is later updated
-        # to pass K-element lists directly, drop this wrapper.
-        chunk_contribs = [chunk_contrib]
-        num_chunks_list = [num_chunks]
-        det_template_list = [det_template]
-        group_idx_list = [group_idx]
-        adj_info_list = [adj_info]
-        reg_weight_list = [reg_weight]
-        # col_bases[m] = first column of map m's offset block; col_bases[K] = scalar_col_start.
-        col_bases = [num_sky, scalar_col_start]
-
         # --- Offset rows: one block per chunk map ---
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
-        for m in range(len(chunk_contribs)):
+        for m in range(K):
             cc_m = chunk_contribs[m]
             chunk_idx_m, sub_idx_m = cc_m[:, sub_pix_indices].nonzero()
             chunk_vals_m = cc_m[:, sub_pix_indices][(chunk_idx_m, sub_idx_m)].A[0]
@@ -119,7 +110,7 @@ def _prep_lsqr(task_params):
         if offset_regularization:
             reg_rows_parts, reg_cols_parts, reg_data_parts, reg_b_parts = [], [], [], []
             reg_row_offset = num_valid_pixels
-            for m in range(len(chunk_contribs)):
+            for m in range(K):
                 if det_template_list[m] is not None:
                     continue
                 rw_m = reg_weight_list[m]
@@ -192,23 +183,38 @@ def _prep_lsqr_batch_worker(batch_params):
     shm_handles = []
     shm_arrays = {}
 
-    if 'chunk_map_shm_name' in sub_tasks[0]:
-        shm_cm = SharedMemory(name=sub_tasks[0]['chunk_map_shm_name'])
-        shm_arrays['chunk_map'] = np.ndarray(sub_tasks[0]['chunk_map_shape'], dtype=sub_tasks[0]['chunk_map_dtype'], buffer=shm_cm.buf)
-        shm_handles.append(shm_cm)
+    chunk_maps_meta = sub_tasks[0].get('chunk_maps_meta')
+    if chunk_maps_meta is not None:
+        chunk_maps = []
+        for meta in chunk_maps_meta:
+            if meta is None:
+                chunk_maps.append(None)
+            else:
+                name, shape, dtype = meta
+                shm = SharedMemory(name=name)
+                chunk_maps.append(np.ndarray(shape, dtype=dtype, buffer=shm.buf))
+                shm_handles.append(shm)
+        shm_arrays['chunk_maps'] = chunk_maps
 
     if 'gvw_shm_name' in sub_tasks[0]:
         shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])
         shm_arrays['grid_valid_weight'] = np.ndarray(sub_tasks[0]['gvw_shape'], dtype=sub_tasks[0]['gvw_dtype'], buffer=shm_gvw.buf)
         shm_handles.append(shm_gvw)
 
-    if 'adj_shm_name_0' in sub_tasks[0]:
-        adj_parts = []
-        for idx in range(2):
-            shm = SharedMemory(name=sub_tasks[0][f'adj_shm_name_{idx}'])
-            adj_parts.append(np.ndarray(sub_tasks[0][f'adj_shape_{idx}'], dtype=sub_tasks[0][f'adj_dtype_{idx}'], buffer=shm.buf))
-            shm_handles.append(shm)
-        shm_arrays['adj_info'] = tuple(adj_parts)
+    adj_metas = sub_tasks[0].get('adj_metas')
+    if adj_metas is not None:
+        adj_info_list = []
+        for per_map_meta in adj_metas:
+            if per_map_meta is None:
+                adj_info_list.append(None)
+                continue
+            adj_parts = []
+            for name, shape, dtype in per_map_meta:
+                shm = SharedMemory(name=name)
+                adj_parts.append(np.ndarray(shape, dtype=dtype, buffer=shm.buf))
+                shm_handles.append(shm)
+            adj_info_list.append(tuple(adj_parts))
+        shm_arrays['adj_info_list'] = adj_info_list
 
     try:
         batch_rows = []
@@ -258,58 +264,49 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
 
 def setup_lsqr(file_list, ref_shape,
-               chunk_map=None, grid_valid_weight=None, apply_mask=True, apply_weight=False,
+               chunk_maps=None, grid_valid_weight=None, apply_mask=True, apply_weight=False,
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
-               reg_weight=0.0, adj_info=None, mean_offsets=None, det_groups=None, det_template=None, postprocess_func=None, preprocess_func=None,
+               reg_weights=None, adj_infos=None, mean_offsets_list=None, det_groups_list=None, det_templates=None,
+               postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
+    additive offset blocks, each with its own chunk map, frame-to-group mapping,
+    template, regularization, and mean-offset constraint. The K=1 case mirrors
+    the original single-chunk-map solver bit-for-bit.
+
     Parameters
     ----------
     file_list : list
-        List of paths to the reprojected HDF5 files
+        List of paths to the reprojected HDF5 files.
     ref_shape : tuple, list
-        Shape of the reference frame (height, width)
-    chunk_map : np.ndarray, optional
-        Mapping of chunk indices to their corresponding pixel indices.
-        Must be 0 indexed and continuous!!
+        Shape of the reference frame (height, width).
+    chunk_maps : list of np.ndarray or None
+        K chunk maps (each must be 0-indexed and contiguous). All maps must
+        share the same shape. ``None`` or an empty list disables the offset
+        block entirely.
     grid_valid_weight : np.ndarray, optional
         Weight indicating valid pixels for each grid pixel.
-    apply_mask : bool, optional
-        Whether to apply masks to the data.
-        Default is True.
-    apply_weight : bool, optional
-        Whether to apply weights to the data.
-        Default is True.
-    outlier_thresh : float, optional
-        z-value threshold for outlier detection, default is 3.0.
-    max_workers : int, optional
-        Maximum number of worker processes to use for parallel processing, default is 20.
-    ignore_list : list, optional
-        List of data quality flags to ignore, default is an empty list.
-    oversample_factor : int, optional
-        Factor by which the chunk map is oversampled.
-        Default is 1.
-    batch_size : int, optional
-        Number of files to process per worker task.
-        Default is 10.
-    reg_weight : float, optional
-        Weight for spatial regularization between adjacent detector chunks.
-    adj_info : tuple or None, optional
-        Precomputed adjacency information for regularization.
-    mean_offsets : list or np.ndarray, optional
-        A list of target mean offset values for each frame (length must equal num_frames).
-        This forces the average of a frame's chunk offsets to equal the given value.
-    Returns
-    -------
-    full_A : scipy.sparse.coo_matrix
-        The sparse matrix A in COO format, shape is (num_equations, num_unknowns)
-    full_b : np.ndarray
-        The vector b, shape is (num_equations,)
+    reg_weights : list of float or None
+        Per-map adjacency regularization weights (length K). Defaults to all 0.
+    adj_infos : list of tuple or None
+        Per-map precomputed adjacency information (length K). Each entry is a
+        ``(chunk_i, chunk_j)`` tuple or ``None``.
+    mean_offsets_list : list or None
+        Per-map mean-offset constraint targets (length K). Each entry is a
+        length-num_frames array or ``None`` to disable for that map.
+    det_groups_list : list or None
+        Per-map frame→group labels (length K). Each entry is ``None`` (one
+        group per frame) or an array of length num_frames. A single per-frame
+        scalar bias column is added if any map uses det_groups.
+    det_templates : list or None
+        Per-map fixed spatial templates (length K). When set for map m, that
+        map solves only for a per-frame amplitude α[k] (block size = num_frames).
     """
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
-    assert chunk_map is None or isinstance(chunk_map, np.ndarray), "chunk_map must be a numpy array"
     assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
@@ -318,36 +315,86 @@ def setup_lsqr(file_list, ref_shape,
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
 
-    num_chunks = int(chunk_map.max()) + 1 if chunk_map is not None else 0
+    # Normalize chunk_maps and per-map arguments to length-K lists.
+    if chunk_maps is None:
+        chunk_maps = []
+    assert isinstance(chunk_maps, list), "chunk_maps must be a list"
+    for cm in chunk_maps:
+        assert isinstance(cm, np.ndarray), "every chunk_maps entry must be a numpy array"
+    K = len(chunk_maps)
+
+    def _default(x, fill):
+        return [fill] * K if x is None else x
+
+    reg_weights = _default(reg_weights, 0.0)
+    adj_infos = _default(adj_infos, None)
+    mean_offsets_list = _default(mean_offsets_list, None)
+    det_groups_list = _default(det_groups_list, None)
+    det_templates = _default(det_templates, None)
+    for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
+                      ('mean_offsets_list', mean_offsets_list),
+                      ('det_groups_list', det_groups_list),
+                      ('det_templates', det_templates)):
+        assert len(arr) == K, f"{name} must have length {K} (got {len(arr)})"
+
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
 
-    # Build group mapping for detector offset locking
-    if det_groups is not None:
-        det_groups_arr = np.asarray(det_groups)
-        unique_groups, frame_to_group = np.unique(det_groups_arr, return_inverse=True)
-        num_offset_groups = len(unique_groups)
-        num_scalar_cols = num_frames
-        print(f"Locking detector offsets: {num_frames} frames -> {num_offset_groups} groups + {num_frames} frame scalars")
-    else:
-        frame_to_group = np.arange(num_frames)
-        num_offset_groups = num_frames
-        num_scalar_cols = 0
+    # --- Per-map group mapping + template normalization ---
+    frame_to_group_list = []
+    num_offset_groups_list = []
+    num_chunks_list = []
+    det_template_arr_list = []
+    any_det_groups = any(g is not None for g in det_groups_list)
 
-    # Template mode: fix spatial pattern, solve for per-frame amplitude
-    if det_template is not None:
-        assert det_groups is not None, "det_template requires det_groups"
-        det_template = np.asarray(det_template, dtype=np.float32)
-        total_cols = num_sky + num_frames + num_scalar_cols
-        scalar_col_start = num_sky + num_frames
-        print(f"Template mode: {num_frames} alpha unknowns (pattern fixed from template)")
-    else:
-        total_cols = num_sky + num_chunks * num_offset_groups + num_scalar_cols
-        scalar_col_start = num_sky + num_chunks * num_offset_groups
+    for m in range(K):
+        cm = chunk_maps[m]
+        num_chunks_m = int(cm.max()) + 1
+        if det_groups_list[m] is not None:
+            det_groups_arr = np.asarray(det_groups_list[m])
+            unique_groups, ftg = np.unique(det_groups_arr, return_inverse=True)
+            num_offset_groups_m = len(unique_groups)
+        else:
+            ftg = np.arange(num_frames)
+            num_offset_groups_m = num_frames
+
+        if det_templates[m] is not None:
+            assert det_groups_list[m] is not None, f"det_templates[{m}] requires det_groups_list[{m}]"
+            tmpl = np.asarray(det_templates[m], dtype=np.float32)
+            # Template mode collapses (groups, chunks) into a single per-frame alpha
+            num_offset_groups_m = num_frames
+            num_chunks_m = 1
+        else:
+            tmpl = None
+
+        frame_to_group_list.append(ftg)
+        num_offset_groups_list.append(num_offset_groups_m)
+        num_chunks_list.append(num_chunks_m)
+        det_template_arr_list.append(tmpl)
+
+    num_scalar_cols = num_frames if any_det_groups else 0
+
+    # --- col_bases: per-map offset-block column starts; col_bases[K] = scalar_col_start ---
+    col_bases = [num_sky]
+    for m in range(K):
+        if det_template_arr_list[m] is not None:
+            block = num_frames  # one alpha column per frame
+        else:
+            block = num_chunks_list[m] * num_offset_groups_list[m]
+        col_bases.append(col_bases[-1] + block)
+    scalar_col_start = col_bases[K]
+    total_cols = scalar_col_start + num_scalar_cols
+
+    if any_det_groups:
+        print(f"Locking detector offsets: {num_frames} frames -> "
+              f"groups {num_offset_groups_list} + {num_frames} frame scalars")
+    if any(t is not None for t in det_template_arr_list):
+        tmpl_indices = [m for m, t in enumerate(det_template_arr_list) if t is not None]
+        print(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
 
     common_params = {
-        'chunk_map': chunk_map,
+        'chunk_maps': chunk_maps,
         'grid_valid_weight': grid_valid_weight,
         'apply_mask': apply_mask,
         'apply_weight': apply_weight,
@@ -355,32 +402,34 @@ def setup_lsqr(file_list, ref_shape,
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
         'outlier_thresh': outlier_thresh,
-        'num_chunks': num_chunks,
+        'num_chunks_list': num_chunks_list,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
         'offset_regularization': offset_regularization,
-        'reg_weight': reg_weight,
-        'adj_info': adj_info,
+        'reg_weight_list': reg_weights,
+        'adj_info_list': adj_infos,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
-        'frame_to_group': frame_to_group,
+        'frame_to_group_list': frame_to_group_list,
+        'col_bases': col_bases,
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
-        'det_template': det_template,
+        'det_template_list': det_template_arr_list,
     }
 
     # Move large arrays to shared memory so forked processes can access them
     # without pickling. Each process reconstructs numpy views in the worker.
     shm_objects = []
 
-    if chunk_map is not None:
-        shm_cm = SharedMemory(create=True, size=chunk_map.nbytes)
-        np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm_cm.buf)[:] = chunk_map
-        shm_objects.append(shm_cm)
-        common_params['chunk_map_shm_name'] = shm_cm.name
-        common_params['chunk_map_shape'] = chunk_map.shape
-        common_params['chunk_map_dtype'] = chunk_map.dtype
-        common_params['chunk_map'] = None
+    if K > 0:
+        chunk_maps_meta = []
+        for cm in chunk_maps:
+            shm_cm = SharedMemory(create=True, size=cm.nbytes)
+            np.ndarray(cm.shape, dtype=cm.dtype, buffer=shm_cm.buf)[:] = cm
+            shm_objects.append(shm_cm)
+            chunk_maps_meta.append((shm_cm.name, cm.shape, cm.dtype))
+        common_params['chunk_maps_meta'] = chunk_maps_meta
+        common_params['chunk_maps'] = None  # populated by worker from SHM
 
     if grid_valid_weight is not None:
         shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)
@@ -391,15 +440,21 @@ def setup_lsqr(file_list, ref_shape,
         common_params['gvw_dtype'] = grid_valid_weight.dtype
         common_params['grid_valid_weight'] = None
 
-    if adj_info is not None:
-        for idx, arr in enumerate(adj_info):
-            shm = SharedMemory(create=True, size=arr.nbytes)
-            np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
-            shm_objects.append(shm)
-            common_params[f'adj_shm_name_{idx}'] = shm.name
-            common_params[f'adj_shape_{idx}'] = arr.shape
-            common_params[f'adj_dtype_{idx}'] = arr.dtype
-        common_params['adj_info'] = None
+    if any(a is not None for a in adj_infos):
+        adj_metas = []
+        for adj in adj_infos:
+            if adj is None:
+                adj_metas.append(None)
+                continue
+            per_map = []
+            for arr in adj:
+                shm = SharedMemory(create=True, size=arr.nbytes)
+                np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+                shm_objects.append(shm)
+                per_map.append((shm.name, arr.shape, arr.dtype))
+            adj_metas.append(per_map)
+        common_params['adj_metas'] = adj_metas
+        common_params['adj_info_list'] = None  # populated by worker from SHM
 
     all_individual_tasks = []
     for index, reproj_file in enumerate(file_list):
@@ -480,24 +535,32 @@ def setup_lsqr(file_list, ref_shape,
     offset_pixel_counts = pixel_counts[num_sky:]
 
     # --- ADD PER-FRAME TARGET MEAN CONSTRAINT ---
+    # One block per chunk map; skipped for any map in template mode (its block
+    # is per-frame α, not per-(frame, chunk), so a per-frame mean is degenerate).
     #TODO: Pass weight from higher level instead of hardcoding here
-    if mean_offsets is not None:
-        print(f"Applying target mean offset constraints for {num_frames} frames...")
-        mean_offsets_arr = np.asarray(mean_offsets)
+    constraint_weight = 10.0
+    for m in range(K):
+        mean_off = mean_offsets_list[m]
+        if mean_off is None:
+            continue
+        if det_template_arr_list[m] is not None:
+            print(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
+            continue
+        print(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
+        mean_offsets_arr = np.asarray(mean_off)
+        nc_m = num_chunks_list[m]
+        ftg_m = frame_to_group_list[m]
 
-        constraint_weight = 10.0
-
-        constr_rows = total_rows + np.repeat(np.arange(num_frames), num_chunks)
+        constr_rows = total_rows + np.repeat(np.arange(num_frames), nc_m)
 
         constr_cols = []
         for i in range(num_frames):
-            offset_start = num_sky + (frame_to_group[i] * num_chunks)
-            constr_cols.extend(np.arange(offset_start, offset_start + num_chunks))
+            offset_start = col_bases[m] + (ftg_m[i] * nc_m)
+            constr_cols.extend(np.arange(offset_start, offset_start + nc_m))
 
         constr_data = np.ones(len(constr_cols), dtype=np.float32) * constraint_weight
-        b_constr = mean_offsets_arr.flatten() * num_chunks * constraint_weight
+        b_constr = mean_offsets_arr.flatten() * nc_m * constraint_weight
 
-        # Append directly to our existing lists
         all_rows.append(constr_rows)
         all_cols.append(np.array(constr_cols))
         all_data.append(constr_data)
@@ -538,15 +601,33 @@ def setup_lsqr(file_list, ref_shape,
     return full_A, full_b, pixel_counts
 
 
-def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups, chunk_map):
+def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps):
+    """Slice ``pixel_counts`` into per-block coverage arrays.
+
+    Returns
+    -------
+    skymap_coverage : np.ndarray
+    offset_coverages : list of np.ndarray
+        One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
+    offset_valid_fracs : list of np.ndarray
+        Each block's coverage normalized by the chunk pixel-count.
+    """
     num_sky = ref_shape[0] * ref_shape[1]
-    num_chunks = int(np.max(chunk_map)) + 1
-    num_offset = num_offset_groups * num_chunks
     skymap_coverage = pixel_counts[:num_sky].reshape(ref_shape)
-    offset_coverage = pixel_counts[num_sky:num_sky + num_offset].reshape(num_offset_groups, num_chunks)
-    chunk_sizes = np.bincount(chunk_map[chunk_map >= 0].ravel(), minlength=num_chunks)
-    offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
-    return skymap_coverage, offset_coverage, offset_valid_frac
+
+    offset_coverages = []
+    offset_valid_fracs = []
+    cursor = num_sky
+    for ng, cm in zip(num_offset_groups_list, chunk_maps):
+        num_chunks = int(np.max(cm)) + 1
+        block = ng * num_chunks
+        offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, num_chunks)
+        chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=num_chunks)
+        offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+        offset_coverages.append(offset_coverage)
+        offset_valid_fracs.append(offset_valid_frac)
+        cursor += block
+    return skymap_coverage, offset_coverages, offset_valid_fracs
 
 def _partition_csr(A, n_blocks):
     """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
@@ -598,7 +679,7 @@ def _make_parallel_operator(A_csr, n_threads):
     op._AT_csr = AT_csr  # prevent GC
     return op
 
-def apply_lsqr(A, b, ref_shape, num_offset_groups, x0=None,
+def apply_lsqr(A, b, ref_shape, x0=None,
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
                 solver='lsmr', use_float32=False, n_threads=32):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.

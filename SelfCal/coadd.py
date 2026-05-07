@@ -95,8 +95,10 @@ def _coadd_batch_worker(params):
 
     # 3. Configuration for _prep_subframe
     if not use_cached:
+        # Mosaic path is K=1 in Commit 2; Commit 4 will widen this to a list.
+        cm = params['chunk_map']
         prep_config = {
-            'chunk_map': params['chunk_map'],
+            'chunk_maps': [cm] if cm is not None else None,
             'apply_weight': params['apply_weight'],
             'apply_mask': params['apply_mask'],
             'ignore_list': params['ignore_list'],

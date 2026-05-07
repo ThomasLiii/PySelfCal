@@ -7,7 +7,7 @@ from .MapHelper import (bit_to_bool, make_weight, make_linear_interp_matrix,
                         chunk_to_det, det_to_sub, compute_chunk_contrib)
 
 
-def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
+def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                    chunk_offset=None, det_offset_func=None, ignore_list=None,
                    grid_valid_weight=None, valid_threshold=0.99,
                    for_lsqr=False, oversample_factor=1,
@@ -17,9 +17,21 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     """
     Prepares data from a single file for co-addition or lsqr.
 
-    Refactored to use explicit arguments instead of **kwargs.
+    Parameters
+    ----------
+    chunk_maps : list of np.ndarray or None
+        K chunk maps. All must share the same shape so a single
+        interpolation matrix can be reused. None or an empty list disables
+        chunk-based logic.
+
+    Returns
+    -------
+    chunk_contribs : list of scipy.sparse matrices
+        One per input chunk map (empty list when ``for_lsqr`` is False or
+        ``chunk_maps`` is empty).
     """
     if ignore_list is None: ignore_list = []
+    if chunk_maps is None: chunk_maps = []
 
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
@@ -44,17 +56,26 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
 
     # Compute bilinear interpolation matrix for mapping between chunk and subframe
     interp_matrix = None
-    if (chunk_map is not None) or (chunk_offset is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
+    interp_input_shape = None
+    if chunk_maps:
+        # All maps must share shape (single interp matrix is reused across maps)
+        shape0 = chunk_maps[0].shape
+        for cm in chunk_maps[1:]:
+            assert cm.shape == shape0, "all chunk_maps must share the same shape"
+        interp_input_shape = shape0
+    if (chunk_maps) or (chunk_offset is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
-        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
+        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=interp_input_shape)
 
-    # Apply chunk offset if provided
+    # Apply chunk offset if provided.
+    # Mosaic path is single-map for now; multi-map accumulation is deferred to Commit 4.
     if chunk_offset is not None:
+        cm0 = chunk_maps[0] if chunk_maps else None
         if det_offset_func is not None:
-            grid_offset = det_offset_func(chunk_map, chunk_offset)
+            grid_offset = det_offset_func(cm0, chunk_offset)
         else:
-            grid_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
+            grid_offset = chunk_to_det(cm0, chunk_data=chunk_offset)
         sub_offset = det_to_sub(grid_offset, interp_matrix=interp_matrix)
         sub_data -= sub_offset
 
@@ -70,9 +91,9 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     if apply_weight:
         sub_weight *= make_weight(sub_data)
 
-    chunk_contrib = None
+    chunk_contribs = []
     if for_lsqr:
-        chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
+        chunk_contribs = [compute_chunk_contrib(cm, interp_matrix) for cm in chunk_maps]
 
     if postprocess_func is not None:
         sub_data = postprocess_func(locals())
@@ -82,4 +103,4 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     sub_data[nan_mask] = 0.0
     sub_weight[nan_mask] = 0.0
 
-    return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
+    return ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux
