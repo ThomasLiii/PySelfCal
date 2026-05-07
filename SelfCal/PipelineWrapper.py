@@ -415,55 +415,92 @@ class Mosaicker(Reprojector):
         self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
         self.cal_path = None
         self.cached_list = []
-        self.offset = None
+        # Multi-chunk-map state — list-form, with K=1 the legacy single-map case.
+        self.offsets = []
+        self.offset_coverages = []
+        self.offset_coverage_fracs = []
+        self.cal_chunk_maps = []  # chunk_maps stored in the cal file (new schema only)
         self.skymap = None
+        self.skymap_coverage = None
+        self.cal_path = None
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
-        self.mean_offset = 0.0
+        self.mean_offset = 0.0  # mean of map-0 offsets over the valid mask, used in FITS header
 
     def load_calibration(self, cal_path):
-        """Load a saved calibration (dual schema).
+        """Load a saved calibration (dual schema, multi-map aware).
 
-        For the new ``offsets/`` group schema, only map 0 is used here —
-        Commit 4 widens the mosaic path to multi-map accumulation. The shared
-        per-frame ``frame_scalar`` is added back into the loaded offset so
-        downstream subtraction matches the legacy single-map behavior.
+        Populates ``self.offsets`` / ``self.offset_coverages`` /
+        ``self.offset_coverage_fracs`` as length-K lists. For the legacy
+        single-map schema, K=1 and ``self.cal_chunk_maps`` stays empty. The
+        top-level ``frame_scalar`` (when present) is folded into map 0 so a
+        single-map subtractor sees the same total bias the legacy schema
+        baked in.
         """
         with h5py.File(cal_path, 'r') as f:
             self.skymap = f['skymap'][:]
             self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
             self.skymap_coverage = f['skymap_coverage'][:]
             if 'offsets' in f:
-                self.offset = f['offsets']['map_0'][:]
-                self.offset_coverage = f['offset_coverage']['map_0'][:]
-                self.offset_coverage_frac = f['offset_coverage_frac']['map_0'][:]
+                K = int(f.attrs.get('num_maps', len(f['offsets'])))
+                self.offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
+                self.offset_coverages = [f['offset_coverage'][f'map_{m}'][:] for m in range(K)]
+                self.offset_coverage_fracs = [f['offset_coverage_frac'][f'map_{m}'][:] for m in range(K)]
+                self.cal_chunk_maps = ([f['chunk_maps'][f'map_{m}'][:] for m in range(K)]
+                                       if 'chunk_maps' in f else [])
                 if 'frame_scalar' in f:
-                    self.offset = self.offset + f['frame_scalar'][:][:, np.newaxis]
+                    self.offsets[0] = self.offsets[0] + f['frame_scalar'][:][:, np.newaxis]
             else:
-                self.offset = f['offset'][:]
-                self.offset_coverage = f['offset_coverage'][:]
-                self.offset_coverage_frac = f['offset_coverage_frac'][:]
-        print(f"Calibration loaded from {cal_path}")
+                self.offsets = [f['offset'][:]]
+                self.offset_coverages = [f['offset_coverage'][:]]
+                self.offset_coverage_fracs = [f['offset_coverage_frac'][:]]
+                self.cal_chunk_maps = []
+        print(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
 
-    def make_mosaic(self, chunk_map, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20, 
-        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[], 
-        det_offset_func=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/', 
+    def make_mosaic(self, chunk_maps, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20,
+        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[],
+        det_offset_funcs=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/',
         cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01):
-        
-        self.chunk_map = chunk_map
+        """Build coadded maps applying per-map calibration offsets.
 
-        offset_param = None
+        ``chunk_maps`` is a length-K list of (typically grid-resolution) chunk
+        maps; ``det_offset_funcs`` is the matching length-K list of
+        ``(chunk_map, chunk_offset) -> grid_offset`` callables. The
+        per-frame offsets loaded by ``load_calibration`` (one ``(num_frames,
+        num_chunks_m)`` array per map) are zeroed where the per-map
+        coverage fraction falls below ``valid_chunk_thresh``; ``mean_offset``
+        is reported on map 0 only and embedded in the FITS header by
+        ``save_mosaic`` for legacy compatibility.
+        """
+        assert isinstance(chunk_maps, list) and chunk_maps, \
+            "chunk_maps must be a non-empty list of ndarrays"
+        K = len(chunk_maps)
+        if det_offset_funcs is not None:
+            assert len(det_offset_funcs) == K, \
+                f"det_offset_funcs length must match chunk_maps ({K})"
+        self.chunk_maps = chunk_maps
+
+        offset_lists_param = None
         if apply_offset:
-            if self.offset is not None:
-                offset = self.offset.copy()
-                offset_valid_mask = (self.offset_coverage_frac >= valid_chunk_thresh)
-                self.mean_offset = np.mean(offset[offset_valid_mask])
-                if normalize_offset:
-                    offset[offset_valid_mask] = offset[offset_valid_mask] - self.mean_offset
-                offset[~offset_valid_mask] = 0.0
-                offset_param = offset
+            if self.offsets:
+                if len(self.offsets) != K:
+                    raise ValueError(
+                        f"calibration has {len(self.offsets)} maps but "
+                        f"make_mosaic was called with {K} chunk_maps")
+                offset_lists_param = []
+                for m in range(K):
+                    off = self.offsets[m].copy()
+                    valid = self.offset_coverage_fracs[m] >= valid_chunk_thresh
+                    if m == 0:
+                        # Legacy compat: report mean_offset on map 0 only.
+                        self.mean_offset = (float(np.mean(off[valid]))
+                                            if np.any(valid) else 0.0)
+                        if normalize_offset:
+                            off[valid] = off[valid] - self.mean_offset
+                    off[~valid] = 0.0
+                    offset_lists_param.append(off)
             else:
                 print("Warning: Calibration offsets not available. No offsets will be applied.")
 
@@ -471,15 +508,15 @@ class Mosaicker(Reprojector):
         common_kwargs = {
             'ref_shape': self.ref_shape,
             'file_list': self.reproj_list,
-            'offset_list': offset_param,
+            'offset_lists': offset_lists_param,
             'apply_weight': apply_weight,
             'apply_mask': apply_mask,
-            'chunk_map': chunk_map,
+            'chunk_maps': chunk_maps,
             'max_workers': max_workers,
             'grid_valid_weight': grid_valid_weight,
             'ignore_list': ignore_list,
             'oversample_factor': oversample_factor,
-            'det_offset_func': det_offset_func,
+            'det_offset_funcs': det_offset_funcs,
             'cache_dir': cache_dir,
             'use_cached': False,
             'det_aux': det_aux,

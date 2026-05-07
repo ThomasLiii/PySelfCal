@@ -39,10 +39,18 @@ def _coadd_batch_worker(params):
         det_aux = np.ndarray(params['det_aux_shape'], dtype=params['det_aux_dtype'], buffer=shm_aux.buf)
         shm_handles.append(shm_aux)
 
-    if 'chunk_map_shm_name' in params:
-        shm_cm = SharedMemory(name=params['chunk_map_shm_name'])
-        params['chunk_map'] = np.ndarray(params['chunk_map_shape'], dtype=params['chunk_map_dtype'], buffer=shm_cm.buf)
-        shm_handles.append(shm_cm)
+    chunk_maps_meta = params.get('chunk_maps_meta')
+    if chunk_maps_meta is not None:
+        chunk_maps = []
+        for meta in chunk_maps_meta:
+            if meta is None:
+                chunk_maps.append(None)
+                continue
+            name, shape, dtype = meta
+            shm = SharedMemory(name=name)
+            chunk_maps.append(np.ndarray(shape, dtype=dtype, buffer=shm.buf))
+            shm_handles.append(shm)
+        params['chunk_maps'] = chunk_maps
 
     if 'gvw_shm_name' in params:
         shm_gvw = SharedMemory(name=params['gvw_shm_name'])
@@ -93,17 +101,15 @@ def _coadd_batch_worker(params):
             std_map = np.ndarray(ref_shape, dtype=params['std_map_dtype'], buffer=shm_std.buf)
             shm_handles.append(shm_std)
 
-    # 3. Configuration for _prep_subframe
+    # 3. Configuration for _prep_subframe (multi-map: chunk_maps + det_offset_funcs are lists)
     if not use_cached:
-        # Mosaic path is K=1 in Commit 2; Commit 4 will widen this to a list.
-        cm = params['chunk_map']
         prep_config = {
-            'chunk_maps': [cm] if cm is not None else None,
+            'chunk_maps': params.get('chunk_maps'),
             'apply_weight': params['apply_weight'],
             'apply_mask': params['apply_mask'],
             'ignore_list': params['ignore_list'],
             'grid_valid_weight': params['grid_valid_weight'],
-            'det_offset_func': params['det_offset_func'],
+            'det_offset_funcs': params.get('det_offset_funcs'),
             'oversample_factor': params['oversample_factor'],
             'valid_threshold': params['valid_threshold'],
             'for_lsqr': False,
@@ -132,12 +138,16 @@ def _coadd_batch_worker(params):
                 print(f"Error loading cached file {file_path}: {e}")
                 continue
         else:
-            # Compute on the fly
-            current_offset = batch_offsets[in_index] if batch_offsets is not None else None
+            # Compute on the fly. ``batch_offsets`` is a list (length K) of
+            # per-batch slices, each of shape (batch_size, num_chunks_m).
+            if batch_offsets is not None:
+                current_offsets = [bo[in_index] for bo in batch_offsets]
+            else:
+                current_offsets = None
 
             ref_coords, sub_data, sub_weight, _, sub_aux = _prep_subframe(
                 file=file_path,
-                chunk_offset=current_offset,
+                chunk_offsets=current_offsets,
                 det_aux=det_aux,
                 **prep_config
             )
@@ -251,7 +261,7 @@ def _coadd_batch_manager(params):
     """
     mode = params['mode']
     file_list = params['file_list']
-    offset_list = params['offset_list']
+    offset_lists = params.get('offset_lists')
     max_workers = params['max_workers']
     batch_size = params['batch_size']
     mean_map = params['mean_map']
@@ -266,6 +276,21 @@ def _coadd_batch_manager(params):
     ref_shape = params['ref_shape']
     shm_objects = []
 
+    def _pack_chunk_maps_shm(maps):
+        """Move per-map chunk_maps into SHM and return the meta list (or None)."""
+        if not maps:
+            return None
+        meta = []
+        for cm in maps:
+            if cm is None:
+                meta.append(None)
+                continue
+            shm = SharedMemory(create=True, size=cm.nbytes)
+            np.ndarray(cm.shape, dtype=cm.dtype, buffer=shm.buf)[:] = cm
+            shm_objects.append(shm)
+            meta.append((shm.name, cm.shape, cm.dtype))
+        return meta
+
     if mode == 'cache':
         # Cache mode: use Pool (real processes) for true parallelism — GIL prevents
         # threads from scaling. Move large read-only arrays to SharedMemory.
@@ -278,15 +303,11 @@ def _coadd_batch_manager(params):
             params['det_aux_shape'] = det_aux.shape
             params['det_aux'] = None
 
-        chunk_map = params.get('chunk_map')
-        if chunk_map is not None:
-            shm = SharedMemory(create=True, size=chunk_map.nbytes)
-            np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm.buf)[:] = chunk_map
-            shm_objects.append(shm)
-            params['chunk_map_shm_name'] = shm.name
-            params['chunk_map_shape'] = chunk_map.shape
-            params['chunk_map_dtype'] = chunk_map.dtype
-            params['chunk_map'] = None
+        chunk_maps = params.get('chunk_maps') or []
+        meta = _pack_chunk_maps_shm(chunk_maps)
+        if meta is not None:
+            params['chunk_maps_meta'] = meta
+            params['chunk_maps'] = None
 
         gvw = params.get('grid_valid_weight')
         if gvw is not None:
@@ -358,15 +379,11 @@ def _coadd_batch_manager(params):
                 params['det_aux_dtype'] = det_aux.dtype
                 params['det_aux_shape'] = det_aux.shape
 
-            chunk_map = params.get('chunk_map')
-            if chunk_map is not None:
-                shm = SharedMemory(create=True, size=chunk_map.nbytes)
-                np.ndarray(chunk_map.shape, dtype=chunk_map.dtype, buffer=shm.buf)[:] = chunk_map
-                shm_objects.append(shm)
-                params['chunk_map_shm_name'] = shm.name
-                params['chunk_map_shape'] = chunk_map.shape
-                params['chunk_map_dtype'] = chunk_map.dtype
-                params['chunk_map'] = None
+            chunk_maps = params.get('chunk_maps') or []
+            meta = _pack_chunk_maps_shm(chunk_maps)
+            if meta is not None:
+                params['chunk_maps_meta'] = meta
+                params['chunk_maps'] = None
 
             gvw = params.get('grid_valid_weight')
             if gvw is not None:
@@ -380,24 +397,28 @@ def _coadd_batch_manager(params):
         else:
             # Strip large objects not needed when reading from cache
             params['det_aux'] = None
-            params['chunk_map'] = None
+            params['chunk_maps'] = None
             params['grid_valid_weight'] = None
-            params['det_offset_func'] = None
+            params['det_offset_funcs'] = None
             params['preprocess_func'] = None
             params['postprocess_func'] = None
 
     # Remove full lists — workers only need their batch slice
     params.pop('file_list', None)
-    params.pop('offset_list', None)
+    params.pop('offset_lists', None)
 
     tasks = []
     for start_idx in range(0, total_files, batch_size):
         end_idx = min(start_idx + batch_size, total_files)
         task_params = params.copy()
+        if offset_lists is not None:
+            batch_offsets = [ol[start_idx:end_idx] for ol in offset_lists]
+        else:
+            batch_offsets = None
         task_params.update({
             'batch_files': file_list[start_idx:end_idx],
             'batch_indices': list(range(start_idx, end_idx)),
-            'batch_offsets': offset_list[start_idx:end_idx] if offset_list is not None else None,
+            'batch_offsets': batch_offsets,
         })
         tasks.append(task_params)
 
@@ -434,67 +455,34 @@ def _coadd_batch_manager(params):
 
 
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0,
-                      offset_list=None, apply_weight=True,
-                      apply_mask=True, chunk_map=None, grid_valid_weight=None,
-                      max_workers=10, ignore_list=[], det_offset_func=None, oversample_factor=1,
+                      offset_lists=None, apply_weight=True,
+                      apply_mask=True, chunk_maps=None, grid_valid_weight=None,
+                      max_workers=10, ignore_list=[], det_offset_funcs=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
                       cache_dir='cache/', use_cached=False, det_aux=None,
                       preprocess_func=None, postprocess_func=None):
-    """
-    This function serves as a unified interface for creating mean maps, standard
-    deviation maps, and sigma-clipped mean maps in parallel.
+    """Unified mean / std / sigma-clipped-mean / cache builder, multi-chunk-map aware.
+
+    Each per-frame subframe is offset-corrected by the sum of K per-map
+    contributions ``Σ_m det_offset_funcs[m](chunk_maps[m], offset_lists[m][k])``
+    before being accumulated into the requested coadd or written to the
+    intermediate cache.
 
     Parameters
     ----------
-    mode : {'mean', 'std', 'sigma_clip'}
-        The type of computation to perform.
-        - 'mean': Computes the weighted mean map.
-        - 'std': Computes the weighted standard deviation map. Requires `mean_map`.
-        - 'sigma_clip': Computes a sigma-clipped weighted mean. Requires `mean_map` and `std_map`.
-    ref_shape : tuple, list
-        Shape of the reference frame (height, width).
-    file_list : list
-        List of paths to the reprojected HDF5 files.
-    mean_map : np.ndarray, optional
-        The pre-computed mean map. Required when `mode` is 'std' or 'sigma_clip'.
-    std_map : np.ndarray, optional
-        The pre-computed standard deviation map. Required when `mode` is 'sigma_clip'.
-    sigma : float, optional
-        The number of standard deviations for sigma clipping. Used only when `mode` is 'sigma_clip'. Default is 3.0.
-    offset_list : list, optional
-        List of offsets for each exposure, shape (num_reproj_file, num_chunks). Default is None.
-    apply_weight : bool, optional
-        Whether to apply weights to the data. Default is True.
-    apply_mask : bool, optional
-        Whether to apply masks to the data. Default is True.
-    chunk_map : dict, optional
-        Mapping of chunk indices to their corresponding pixel indices. Default is None.
-    grid_valid_weight : np.ndarray, optional
-        Weight indicating valid pixels for each grid. Default is None.
-    max_workers : int, optional
-        Maximum number of worker processes for parallel processing. Default is 10.
-    ignore_list : list, optional
-        List of data quality flags to ignore. Default is an empty list.
-    det_offset_func : callable, optional
-        Function to compute detector offsets. Default is None.
-    oversample_factor : int, optional
-        Factor by which the chunk map is oversampled. Default is 1.
-    batch_size : int, optional
-        Number of files to process per worker task. Default is 20.
-    valid_threshold : float, optional
-        Threshold for valid pixel fraction when applying detector valid mask. Default is 0.99.
-    cache_dir : str, optional
-        Directory to store or load cached intermediate results. Default is 'cache/'.
-    use_cached : bool, optional
-        If True, assume file_list contains cached intermediate results and load them instead of recomputing. Default is False.
-    det_aux : list, optional
-        Additional data that may be required for specific computations. Default is None.
-    Returns
-    -------
-    result_map : np.ndarray
-        The computed map (mean, std, or sigma-clipped mean).
-    weight_sum : np.ndarray
-        The sum of weights used in the calculation.
+    chunk_maps : list of np.ndarray or None
+        K chunk maps (must share shape). ``None`` or ``[]`` skips chunk-based
+        offset application; callers that just want to coadd raw data leave
+        all of ``chunk_maps`` / ``offset_lists`` / ``det_offset_funcs``
+        unset.
+    offset_lists : list of np.ndarray or None
+        Length-K list of per-frame, per-chunk offset arrays
+        (``(num_frames, num_chunks_m)`` each). When ``None``, no offsets are
+        applied.
+    det_offset_funcs : list of callable or None
+        Length-K list of ``(chunk_map, chunk_offset) -> grid_offset``
+        callables. ``None`` (or per-map ``None``) falls back to the standard
+        ``chunk_to_det`` per map.
     """
     # --- Common Assertions for All Modes ---
     assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
@@ -509,15 +497,19 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
-    # assert offset_list is None or (isinstance(offset_list, (list, np.ndarray)) and np.shape(offset_list) == (len(file_list), len(np.unique(chunk_map)))), \
-    #     "offset_list must be a list or array of shape (num_reproj_file, num_chunks)"
     assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
     assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
-    assert chunk_map is None or isinstance(chunk_map, (list, np.ndarray)), "chunk_map must be a list or array"
+    if chunk_maps is None:
+        chunk_maps = []
+    assert isinstance(chunk_maps, list), "chunk_maps must be a list of ndarrays"
+    K = len(chunk_maps)
+    if offset_lists is not None:
+        assert len(offset_lists) == K, f"offset_lists length must match chunk_maps ({K})"
+    if det_offset_funcs is not None:
+        assert len(det_offset_funcs) == K, f"det_offset_funcs length must match chunk_maps ({K})"
     assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
     assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
     assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
-    assert det_offset_func is None or callable(det_offset_func), "det_offset_func must be a callable function or None"
     assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
     assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
     assert use_cached & (mode == 'cache') == False, "use_cached and mode='cache' cannot both be True"
@@ -535,14 +527,14 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         'std_map': std_map,
         'det_aux': det_aux,
 
-        'offset_list': offset_list,
+        'offset_lists': offset_lists,
 
-        'chunk_map': chunk_map,
+        'chunk_maps': chunk_maps,
         'grid_valid_weight': grid_valid_weight,
         'apply_weight': apply_weight,
         'apply_mask': apply_mask,
         'ignore_list': ignore_list,
-        'det_offset_func': det_offset_func,
+        'det_offset_funcs': det_offset_funcs,
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
         'sigma': sigma,

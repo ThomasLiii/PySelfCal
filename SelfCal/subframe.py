@@ -8,7 +8,7 @@ from .MapHelper import (bit_to_bool, make_weight, make_linear_interp_matrix,
 
 
 def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
-                   chunk_offset=None, det_offset_func=None, ignore_list=None,
+                   chunk_offsets=None, det_offset_funcs=None, ignore_list=None,
                    grid_valid_weight=None, valid_threshold=0.99,
                    for_lsqr=False, oversample_factor=1,
                    # These arguments are accepted for compatibility/internal logic
@@ -23,6 +23,16 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         K chunk maps. All must share the same shape so a single
         interpolation matrix can be reused. None or an empty list disables
         chunk-based logic.
+    chunk_offsets : list of np.ndarray or None
+        Per-map per-chunk offsets to subtract from this frame (mosaic path
+        only). Length-K list aligned with ``chunk_maps``; the per-map grid
+        offsets are accumulated into a single ``total_grid_offset`` and
+        subtracted via one ``det_to_sub`` call. ``None`` skips offset
+        subtraction entirely.
+    det_offset_funcs : list of callable or None
+        Per-map ``(chunk_map, chunk_offset) -> grid_offset`` callables.
+        ``None`` (or per-map ``None``) falls back to the standard
+        ``chunk_to_det`` for that map.
 
     Returns
     -------
@@ -63,21 +73,34 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         for cm in chunk_maps[1:]:
             assert cm.shape == shape0, "all chunk_maps must share the same shape"
         interp_input_shape = shape0
-    if (chunk_maps) or (chunk_offset is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
+    if (chunk_maps) or (chunk_offsets is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=interp_input_shape)
 
-    # Apply chunk offset if provided.
-    # Mosaic path is single-map for now; multi-map accumulation is deferred to Commit 4.
-    if chunk_offset is not None:
-        cm0 = chunk_maps[0] if chunk_maps else None
-        if det_offset_func is not None:
-            grid_offset = det_offset_func(cm0, chunk_offset)
-        else:
-            grid_offset = chunk_to_det(cm0, chunk_data=chunk_offset)
-        sub_offset = det_to_sub(grid_offset, interp_matrix=interp_matrix)
-        sub_data -= sub_offset
+    # Apply per-map chunk offsets (mosaic path).
+    # Per-map grid offsets are accumulated, then a single det_to_sub call
+    # bilinear-interpolates the total once regardless of K.
+    if chunk_offsets is not None:
+        assert len(chunk_offsets) == len(chunk_maps), \
+            "chunk_offsets length must match chunk_maps"
+        total_grid_offset = None
+        for m, off_m in enumerate(chunk_offsets):
+            if off_m is None:
+                continue
+            cm = chunk_maps[m]
+            func_m = det_offset_funcs[m] if det_offset_funcs is not None else None
+            if func_m is not None:
+                grid_offset_m = func_m(cm, off_m)
+            else:
+                grid_offset_m = chunk_to_det(cm, chunk_data=off_m)
+            if total_grid_offset is None:
+                total_grid_offset = grid_offset_m
+            else:
+                total_grid_offset = total_grid_offset + grid_offset_m
+        if total_grid_offset is not None:
+            sub_offset = det_to_sub(total_grid_offset, interp_matrix=interp_matrix)
+            sub_data -= sub_offset
 
     # Apply valid weight
     if grid_valid_weight is not None:

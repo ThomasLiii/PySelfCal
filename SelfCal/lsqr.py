@@ -44,9 +44,9 @@ def _prep_lsqr(task_params):
         # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
         ref_coords, sub_data, sub_weight, chunk_contribs, _ = _prep_subframe(
             file=reproj_file,
-            chunk_offset=None,
+            chunk_offsets=None,
             for_lsqr=True,
-            det_offset_func=None,
+            det_offset_funcs=None,
             det_aux=None,
             chunk_maps=chunk_maps,
             apply_weight=task_params['apply_weight'],
