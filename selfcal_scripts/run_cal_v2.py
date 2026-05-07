@@ -265,10 +265,10 @@ if __name__ == "__main__":
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 
         maps = mm.make_mosaic(
-            chunk_map=detector_inputs['grid_chunk_map'],
+            chunk_maps=[detector_inputs['grid_chunk_map']],
             grid_valid_weight=channel_inputs['grid_valid_weight'],
             oversample_factor=mosaic_oversample_factor,
-            det_offset_func=partial_make_offset_map,
+            det_offset_funcs=[partial_make_offset_map],
             cache_dir=cache_dir,
             **mosaic_kwargs
         )
