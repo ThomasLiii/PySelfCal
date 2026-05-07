@@ -4,7 +4,7 @@ Companion to [MULTI_CHUNK_MAPS_PLAN.md](MULTI_CHUNK_MAPS_PLAN.md). This file tra
 
 The plan also lives at `/home/thomasli/.claude/plans/actually-forget-adding-the-glittery-map.md` (Claude Code's per-project plan store). The copy in this repo is the source of truth going forward — edit this one if requirements change.
 
-## Status as of 2026-05-06
+## Status as of 2026-05-07
 
 **Branch**: `feat/multi-chunk-maps` (renamed from `feat/multiplicative-corrections` — gain feature was abandoned in favor of additive multi-map). Local + remote.
 
@@ -12,7 +12,7 @@ The plan also lives at `/home/thomasli/.claude/plans/actually-forget-adding-the-
 - `~/spherex/selfcal/` — dev, branch `feat/multi-chunk-maps`, env `general`
 - `~/spherex/selfcal-stable/` — analysis, branch `stable`, env `selfcal-stable`
 
-**Current state**: **Commit 1 is done and pushed.** Three commits ahead of `main`:
+**Current state**: **Commits 1 and 2 are done.** Three commits already pushed; Commit 2 changes are still uncommitted in the working tree pending review.
 - `00a2892 selfcal: parameterize _prep_lsqr offset/adjacency rows by col_bases`
 - `f24c155 scripts: add baseline test driver and cal-file diff helper`
 - `610056b docs: add multi-chunk-maps design plan and progress log`
@@ -29,7 +29,20 @@ The plan also lives at `/home/thomasli/.claude/plans/actually-forget-adding-the-
       Hands-off after this — do not regenerate. The post-refactor run with `TEST_TAG='after_refactor'` produces a sibling file for the diff.
 - [x] **Bug noted in `lsqr.py:362`**: when `adj_info` is an empty array (happens with `NumCol=1`, where `compute_column_adjacency` returns 0 boundaries), `SharedMemory(create=True, size=0)` raises. Production typically uses `NumCol=3` or `5` so it doesn't hit. Test was bumped from `NumCol=1 → 3` to dodge it. File a separate bug fix later (don't bundle into the multi-chunk-maps refactor).
 - [x] **Commit 1 — `_prep_lsqr` parameterized by `col_bases`.** Wrapped single-form params (`chunk_contrib`, `num_chunks`, `det_template`, `group_idx`, `adj_info`, `reg_weight`) as length-1 internal lists; offset and adjacency rows now built from `col_bases` indexing. K=1 codepath is mathematically identical to the original.
-- [x] **Regression check passed.** Re-ran calibration with refactored code (`TEST_TAG='after_refactor'`); diffed against baseline. `offset_coverage`, `offset_coverage_frac`, `skymap_coverage`, `reproj_list` byte-equal. `offset` and `skymap` match within `np.allclose(rtol=0, atol=1e-2)` — median diff = 0; max abs diff 5.7e-3 on offset, 2.8e-3 on skymap. Visual diff (`figures/commit1_skymap_diff.png`, gitignored) shows scan-direction noise concentrated at survey edges, not systematic bias. Diagnosis: pre-existing parallel non-determinism in `setup_lsqr`'s `as_completed` batch ordering ([SelfCal/lsqr.py:400](SelfCal/lsqr.py#L400)), not the refactor. **Worth fixing as a separate small commit** later — collect futures into a list indexed by batch ID, concatenate in batch order — then the byte-equality bar becomes exact zero.
+- [x] **Commit 1 regression check passed.** Re-ran calibration with refactored code (`TEST_TAG='after_refactor'`); diffed against baseline. `offset_coverage`, `offset_coverage_frac`, `skymap_coverage`, `reproj_list` byte-equal. `offset` and `skymap` match within `np.allclose(rtol=0, atol=1e-2)` — median diff = 0; max abs diff 5.7e-3 on offset, 2.8e-3 on skymap. Visual diff (`figures/commit1_skymap_diff.png`, gitignored) shows scan-direction noise concentrated at survey edges, not systematic bias. Diagnosis: pre-existing parallel non-determinism in `setup_lsqr`'s `as_completed` batch ordering ([SelfCal/lsqr.py:400](SelfCal/lsqr.py#L400)), not the refactor. **Worth fixing as a separate small commit** later — collect futures into a list indexed by batch ID, concatenate in batch order — then the byte-equality bar becomes exact zero.
+- [x] **Commit 2 — lift K>1 in core.** End-to-end refactor; the K=1 wrapper inside `_prep_lsqr` is gone. Touchpoints:
+  - `SelfCal/subframe.py:_prep_subframe` takes `chunk_maps` (list); builds `interp_matrix` once (asserts shared shape) and returns `chunk_contribs` as a list (one per map).
+  - `SelfCal/lsqr.py:_prep_lsqr` reads per-map lists (`chunk_maps`, `num_chunks_list`, `det_template_list`, `frame_to_group_list`, `adj_info_list`, `reg_weight_list`, `col_bases`) directly from `task_params`.
+  - `SelfCal/lsqr.py:_prep_lsqr_batch_worker` reconstructs per-map SHM via `chunk_maps_meta` and `adj_metas` (each a length-K list of `(name, shape, dtype)` tuples or `None`).
+  - `SelfCal/lsqr.py:setup_lsqr` switched to list-form public API: `chunk_maps`, `reg_weights`, `adj_infos`, `mean_offsets_list`, `det_groups_list`, `det_templates`. Per-map SHM segments; per-map mean-offset constraint blocks; `col_bases` (length K+1, with `col_bases[K] == scalar_col_start`).
+  - `SelfCal/lsqr.py:apply_lsqr` dropped the unused `num_offset_groups` parameter (column-layout-agnostic).
+  - `SelfCal/lsqr.py:parse_pixel_counts` now returns per-map coverage / valid-fraction lists.
+  - `SelfCal/solution.py:parse_x` returns `(skymap, [det_offsets_0…], frame_scalar)`; `compute_x0_from_Ab` dropped its unused 4th arg.
+  - `SelfCal/coadd.py:_coadd_batch_worker` wraps `chunk_map → [chunk_map]` at the call site (mosaic-side multi-map accumulation is still Commit 4).
+  - `SelfCal/PipelineWrapper.py:Calibrator` keeps the **single-map external API** (`setup_lsqr(chunk_map, …)`) — wraps inputs as length-1 lists internally and stores both list-form (`self.chunk_maps`, `self.col_bases`, `self.num_offset_groups_list`, …) and legacy single-form mirrors (`self.chunk_map`, `self.num_offset_groups`, …) for older notebooks.
+  - `selfcal_scripts/run_cal_baseline_test.py` and `run_cal_v2.py` updated to drop the no-longer-accepted 4th arg from `compute_x0_from_Ab`.
+- [x] **Commit 2 regression check passed.** Re-ran with `TEST_TAG='after_commit2'`; diffed against the same `before_refactor` baseline. `offset_coverage`, `offset_coverage_frac`, `skymap_coverage`, `reproj_list` byte-equal. `offset` max |diff| = **1.10e-04**; `skymap` max |diff| = **8.52e-05** — both well under the same `atol=1e-2` band that Commit 1 produced (and noticeably smaller than Commit 1's diff this time, presumably from how the new SHM packing changed batch arrival timing). Same pre-existing parallel non-determinism root cause; same fix applies.
+- [x] **K=2 smoke test added** (`selfcal_scripts/run_cal_k2_smoke_test.py`). Calls `setup_lsqr` directly with `chunk_maps=[real, dummy(1-chunk)]`, `reg_weights=[0.1, 0.1]`, `mean_offsets_list=[None, np.zeros(num_frames)]`. On a 100-frame subset: matrix shape matches `col_bases` prediction (`num_sky + 100·1026 + 100·1`), both offset blocks are populated (real 6.6M nnz, dummy 5.4M nnz), and the diagonal-LS warmstart fills both blocks. Confirms per-map SHM hand-off, per-map offset rows, and per-map mean constraint all wire end-to-end. Doesn't run LSQR — verification is plumbing-level.
 
 ## How the regression test works
 
@@ -55,13 +68,7 @@ The test script:
 
 ## To do — next session pick up here
 
-### Commit 2 — lift K>1 in core (next)
-
-Scope per [MULTI_CHUNK_MAPS_PLAN.md](MULTI_CHUNK_MAPS_PLAN.md) "Implementation order" → "Commit 2 — Lift K>1 in core". `_prep_subframe` returns `chunk_contribs` list, `_prep_lsqr` truly handles K maps, `setup_lsqr` packs per-map SHM segments, `solution.parse_x` / `compute_x0_from_Ab` switch to list signatures. Public `Calibrator` API still single-map externally.
-
-Smoke test: pass `chunk_maps=[m, m]` (duplicate) with reg + `mean_offsets=[None, np.zeros(num_frames)]` and confirm convergence.
-
-### Commit 3 — user-facing always-list API + new cal schema
+### Commit 3 — user-facing always-list API + new cal schema (next)
 
 Scope: `Calibrator.setup_lsqr` accepts `chunk_maps` (list), `Calibrator.save_calibration` writes new `offsets/` group schema, `Calibrator.load_calibration` reads dual schema. Update `selfcal_scripts/run_cal_v2.py` (wrap as `[chunk_map]`). Update `analysis/analysis_script/zodi_utils.py` to read either old top-level `offset` or new `offsets/map_m`.
 
@@ -80,7 +87,7 @@ Re-enable mosaicking in `run_cal_baseline_test.py` for Test C verification.
    git log --oneline -5        # → confirm 00a2892, f24c155, 610056b at top
    ```
 3. **Tell the new session**:
-   > Read `MULTI_CHUNK_MAPS_PLAN.md` and `MULTI_CHUNK_MAPS_PROGRESS.md`. We're picking up at Commit 2 of that plan — lift K>1 in core. Start by re-reading [SelfCal/lsqr.py](SelfCal/lsqr.py) (the K=1 wrapper inside `_prep_lsqr` is what needs to be replaced by reading per-map params from `task_params`) and [SelfCal/subframe.py](SelfCal/subframe.py) (`_prep_subframe` needs to return `chunk_contribs` as a list and accept a `chunk_maps` list).
+   > Read `MULTI_CHUNK_MAPS_PLAN.md` and `MULTI_CHUNK_MAPS_PROGRESS.md`. Commits 1 and 2 are done. We're picking up at Commit 3 — user-facing always-list API + new cal-file schema. Start by reading [SelfCal/PipelineWrapper.py](SelfCal/PipelineWrapper.py) (`Calibrator.setup_lsqr` / `Calibrator.save_calibration` / `Calibrator.load_calibration` — these still take single-map and need to flip to lists) and [analysis/analysis_script/zodi_utils.py](analysis/analysis_script/zodi_utils.py) (analysis-side dual-schema reader).
 4. **Verify cached state still intact** before any compute:
    ```
    ls /mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_*_baseline_*.h5
