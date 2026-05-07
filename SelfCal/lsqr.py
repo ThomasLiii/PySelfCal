@@ -77,35 +77,69 @@ def _prep_lsqr(task_params):
         S_cols = ref_pix_indices
         S_data = valid_weight
 
-        chunk_idx, sub_idx = chunk_contrib[:, sub_pix_indices].nonzero()
-        chunk_vals = chunk_contrib[:, sub_pix_indices][(chunk_idx, sub_idx)].A[0]
-        O_rows = sub_idx
+        # === Internal multi-map representation (K=1 wrapper) ===
+        # Single-form params are wrapped as length-1 lists so the offset and adjacency
+        # logic below indexes columns via col_bases. When setup_lsqr is later updated
+        # to pass K-element lists directly, drop this wrapper.
+        chunk_contribs = [chunk_contrib]
+        num_chunks_list = [num_chunks]
+        det_template_list = [det_template]
+        group_idx_list = [group_idx]
+        adj_info_list = [adj_info]
+        reg_weight_list = [reg_weight]
+        # col_bases[m] = first column of map m's offset block; col_bases[K] = scalar_col_start.
+        col_bases = [num_sky, scalar_col_start]
 
-        if det_template is not None:
-            # Template mode: single alpha column per frame, weighted by template
-            O_cols = np.full(len(chunk_idx), num_sky + index, dtype=np.int64)
-            O_data = valid_weight[sub_idx] * chunk_vals * det_template[group_idx, chunk_idx]
-        else:
-            O_cols = num_sky + (group_idx * num_chunks) + chunk_idx
-            O_data = valid_weight[sub_idx] * chunk_vals
+        # --- Offset rows: one block per chunk map ---
+        O_rows_parts, O_cols_parts, O_data_parts = [], [], []
+        for m in range(len(chunk_contribs)):
+            cc_m = chunk_contribs[m]
+            chunk_idx_m, sub_idx_m = cc_m[:, sub_pix_indices].nonzero()
+            chunk_vals_m = cc_m[:, sub_pix_indices][(chunk_idx_m, sub_idx_m)].A[0]
+            O_rows_parts.append(sub_idx_m)
+            if det_template_list[m] is not None:
+                # Template mode: one alpha column per frame for this map
+                O_cols_parts.append(np.full(len(chunk_idx_m), col_bases[m] + index, dtype=np.int64))
+                O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m
+                                    * det_template_list[m][group_idx_list[m], chunk_idx_m])
+            else:
+                O_cols_parts.append(col_bases[m]
+                                    + (group_idx_list[m] * num_chunks_list[m])
+                                    + chunk_idx_m)
+                O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m)
+        O_rows = np.concatenate(O_rows_parts) if O_rows_parts else np.empty(0, dtype=np.int64)
+        O_cols = np.concatenate(O_cols_parts) if O_cols_parts else np.empty(0, dtype=np.int64)
+        O_data = np.concatenate(O_data_parts) if O_data_parts else np.empty(0, dtype=np.float64)
 
         sub_b = valid_vals * valid_weight
 
         # --- Spatial Regularization (Adjacency) ---
-        # Skip in template mode (single scalar per frame, no spatial structure to regularize)
+        # One block per map; skipped for any map in template mode.
         reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
-        if reg_weight > 0 and adj_info is not None and offset_regularization and det_template is None:
-            # adj_info is expected to be a tuple of (chunk_i, chunk_j) indices that are neighbors
-            chunk_i, chunk_j = adj_info
-            num_constraints = len(chunk_i)
-            offset_base = num_sky + (group_idx * num_chunks)
-
-            # Constraint: reg_weight * (O_i - O_j) = 0
-            # Equations start after the data equations (num_valid_pixels)
-            reg_rows = np.repeat(np.arange(num_constraints) + num_valid_pixels, 2)
-            reg_cols = np.stack([offset_base + chunk_i, offset_base + chunk_j], axis=1).flatten()
-            reg_data = np.tile([reg_weight, -reg_weight], num_constraints)
-            reg_b = np.zeros(num_constraints)
+        if offset_regularization:
+            reg_rows_parts, reg_cols_parts, reg_data_parts, reg_b_parts = [], [], [], []
+            reg_row_offset = num_valid_pixels
+            for m in range(len(chunk_contribs)):
+                if det_template_list[m] is not None:
+                    continue
+                rw_m = reg_weight_list[m]
+                if rw_m > 0 and adj_info_list[m] is not None:
+                    chunk_i, chunk_j = adj_info_list[m]
+                    num_constraints = len(chunk_i)
+                    offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
+                    # Constraint: rw_m * (O_i - O_j) = 0; rows start after data equations
+                    # plus any earlier maps' constraint rows.
+                    reg_rows_parts.append(np.repeat(np.arange(num_constraints) + reg_row_offset, 2))
+                    reg_cols_parts.append(np.stack([offset_base_m + chunk_i,
+                                                    offset_base_m + chunk_j], axis=1).flatten())
+                    reg_data_parts.append(np.tile([rw_m, -rw_m], num_constraints))
+                    reg_b_parts.append(np.zeros(num_constraints))
+                    reg_row_offset += num_constraints
+            if reg_rows_parts:
+                reg_rows = np.concatenate(reg_rows_parts)
+                reg_cols = np.concatenate(reg_cols_parts)
+                reg_data = np.concatenate(reg_data_parts)
+                reg_b = np.concatenate(reg_b_parts)
 
         # Per-frame scalar term (one column per frame, applied to every valid pixel)
         Sc_rows, Sc_cols, Sc_data = [], [], []
