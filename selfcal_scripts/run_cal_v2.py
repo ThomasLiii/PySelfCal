@@ -131,7 +131,7 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
-        'reg_weight': 0.1,
+        'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
         'max_workers': 32,
@@ -234,10 +234,10 @@ if __name__ == "__main__":
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
             cc.setup_lsqr(
-                chunk_map=detector_inputs['det_chunk_map'],
+                chunk_maps=[detector_inputs['det_chunk_map']],
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_info=detector_inputs['adj_info'],
+                adj_infos=[detector_inputs['adj_info']],
                 **calibration_kwargs
             )
             
