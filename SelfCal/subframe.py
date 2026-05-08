@@ -64,16 +64,45 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
         sub_weight *= sub_boolmask
 
-    # Compute bilinear interpolation matrix for mapping between chunk and subframe
+    # Compute bilinear interpolation matrix for mapping between chunk and subframe.
+    # Infer the detector-grid shape from whichever detector-space input is
+    # provided (chunk_maps[0], grid_valid_weight, det_aux[0]). All such inputs
+    # live on the same grid, so we cross-check that any provided shapes agree.
     interp_matrix = None
     interp_input_shape = None
+    shape_sources = []
     if chunk_maps:
-        # All maps must share shape (single interp matrix is reused across maps)
-        shape0 = chunk_maps[0].shape
+        s0 = chunk_maps[0].shape
         for cm in chunk_maps[1:]:
-            assert cm.shape == shape0, "all chunk_maps must share the same shape"
-        interp_input_shape = shape0
-    if (chunk_maps) or (chunk_offsets is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
+            assert cm.shape == s0, "all chunk_maps must share the same shape"
+        shape_sources.append(('chunk_maps[0]', s0))
+    if grid_valid_weight is not None:
+        shape_sources.append(('grid_valid_weight', grid_valid_weight.shape))
+    if det_aux is not None:
+        shape_sources.append(('det_aux[0]', np.shape(det_aux[0])))
+    if shape_sources:
+        interp_input_shape = shape_sources[0][1]
+        for name, s in shape_sources[1:]:
+            assert s == interp_input_shape, (
+                f"_prep_subframe detector-space shape mismatch: "
+                f"{shape_sources[0][0]}={interp_input_shape} vs {name}={s}")
+
+    # Build interp_matrix iff a downstream step actually needs it.
+    # for_lsqr alone with empty chunk_maps is a no-op (no chunk_contribs to
+    # build), so we don't trigger on it directly — chunk_maps non-empty is
+    # the real trigger for the LSQR path.
+    need_interp = (
+        bool(chunk_maps)
+        or chunk_offsets is not None
+        or det_aux is not None
+        or grid_valid_weight is not None
+    )
+    if need_interp:
+        if interp_input_shape is None:
+            raise ValueError(
+                "_prep_subframe needs to build an interpolation matrix but "
+                "none of chunk_maps / grid_valid_weight / det_aux was given "
+                "to infer the detector-grid shape from.")
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=interp_input_shape)
