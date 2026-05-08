@@ -113,7 +113,7 @@ if __name__ == "__main__":
         'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 3,  # NumCol=1 hits a pre-existing bug in lsqr.py:362 (empty adj_info → SHM size=0)
+        'NumCol': 3,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(

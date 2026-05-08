@@ -331,6 +331,15 @@ def setup_lsqr(file_list, ref_shape,
     mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
+
+    # Adjacency tuples with all-empty arrays (e.g. NumCol=1 from
+    # compute_column_adjacency) produce zero adjacency constraints anyway —
+    # demote to None so the SHM packing below doesn't try to create a
+    # zero-byte segment, which raises ValueError.
+    adj_infos = [
+        None if (adj is not None and all(np.asarray(a).size == 0 for a in adj)) else adj
+        for adj in adj_infos
+    ]
     for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
