@@ -489,38 +489,61 @@ def setup_lsqr(file_list, ref_shape,
         shm.unlink()
         return arr
 
+    # Per-batch results indexed by batch id. Pass 1 reads each completed
+    # future's SHM (and unlinks promptly to free OS resources) and slots the
+    # arrays here; pass 2 walks the slots in batch-id order to assign the
+    # cumulative row offsets and append to all_*. This makes the final row
+    # numbering deterministic (identical across runs given identical inputs),
+    # so the COO→CSR conversion produces a bit-identical matrix and
+    # LSQR / LSMR converge along the same path. ``as_completed`` previously
+    # assigned ``total_rows`` in completion order, which permuted rows in
+    # row-index space and changed the float32 reduction order in the
+    # transposed SpMV — that was the source of the ~1e-3 ULP noise we'd see
+    # in the regression diff against a fixed baseline.
+    batch_results = [None] * len(batched_tasks)
     try:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
-
-            total_rows = 0
-            n_collected = 0
+            futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
+                       for i, batch in enumerate(batched_tasks)}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
+                batch_id = futures[future]
                 result = future.result()
-                if result is None: continue
-
+                if result is None:
+                    continue
                 shm_infos = result['shm']
-                b_rows = _read_shm(shm_infos[0]).astype(np.int64) + total_rows
-                b_cols = _read_shm(shm_infos[1])
-                b_data = _read_shm(shm_infos[2])
-                b_b = _read_shm(shm_infos[3])
-                all_rows.append(b_rows)
-                all_cols.append(b_cols)
-                all_data.append(b_data)
-                all_b.append(b_b)
-                total_rows += result['num_rows']
-
-                # Consolidate periodically to avoid memory fragmentation
-                n_collected += 1
-                if n_collected % 100 == 0:
-                    all_rows = [np.concatenate(all_rows)]
-                    all_cols = [np.concatenate(all_cols)]
-                    all_data = [np.concatenate(all_data)]
-                    all_b = [np.concatenate(all_b)]
+                batch_results[batch_id] = {
+                    'rows': _read_shm(shm_infos[0]).astype(np.int64),
+                    'cols': _read_shm(shm_infos[1]),
+                    'data': _read_shm(shm_infos[2]),
+                    'b':    _read_shm(shm_infos[3]),
+                    'num_rows': result['num_rows'],
+                }
     finally:
         for shm in shm_objects:
             shm.close()
             shm.unlink()
+
+    total_rows = 0
+    n_collected = 0
+    for batch_id in range(len(batch_results)):
+        r = batch_results[batch_id]
+        if r is None:
+            continue
+        all_rows.append(r['rows'] + total_rows)
+        all_cols.append(r['cols'])
+        all_data.append(r['data'])
+        all_b.append(r['b'])
+        total_rows += r['num_rows']
+        # Drop our reference so per-batch arrays can be GC'd as we go
+        # (we own the only ones beyond all_*).
+        batch_results[batch_id] = None
+        # Consolidate periodically to avoid memory fragmentation.
+        n_collected += 1
+        if n_collected % 100 == 0:
+            all_rows = [np.concatenate(all_rows)]
+            all_cols = [np.concatenate(all_cols)]
+            all_data = [np.concatenate(all_data)]
+            all_b = [np.concatenate(all_b)]
 
     if len(all_b) == 0:
         print("No valid data found in any subframe.")
