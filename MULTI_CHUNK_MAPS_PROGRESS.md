@@ -103,7 +103,7 @@ The test script:
 The 4-commit refactor from [MULTI_CHUNK_MAPS_PLAN.md](MULTI_CHUNK_MAPS_PLAN.md) is complete. Pending follow-ups:
 
 - **Identifiability helpers for K≥2.** Plan section "Identifiability — required defaults" recommends `make_per_partition_mean_zero(chunk_map_fine, chunk_map_coarse)` for nested-map cases. Skipped in Commit 4 because the constraint formulation in `setup_lsqr` only supports per-frame mean-zero (one constraint per frame), not per-(frame, partition) (K_coarse constraints per frame). Wire that up if a real nested K≥2 use case lands.
-- **Stale notebook + driver scripts.** `notebooks/spherex_selfcal_demo.ipynb`, `notebooks/demo_notebook.ipynb`, `notebooks/euclid_mosaic.ipynb`, `notebooks/benchmark_pipeline.py`, `selfcal_scripts/run_selfcal_synthetic.py`, `selfcal_scripts/run_cal_synthetic copy.py` still call the legacy single-map API (`chunk_map=`, `det_offset_func=`, `cc.num_offset_groups`, etc.). Migrate when their use case comes back.
+- **Stale notebooks.** `notebooks/spherex_selfcal_demo.ipynb`, `notebooks/demo_notebook.ipynb`, `notebooks/euclid_mosaic.ipynb`, `notebooks/benchmark_pipeline.py` still call the legacy single-map API (`chunk_map=`, `det_offset_func=`, `cc.num_offset_groups`, etc.). Migrate when their use case comes back. (The `selfcal_scripts/run_selfcal_synthetic.{py,sh}` and `run_cal_synthetic copy.py` legacy scripts were deleted in the post-refactor cleanup.)
 - **Mosaicking re-enabled in `run_cal_baseline_test.py`.** Plan called for this as Test C; deferred since the K=2 mosaic smoke test (`run_mosaic_k2_smoke_test.py`) and the full end-to-end Mosaicker check on the new-schema cal file already exercise the multi-map mosaic path.
 
 ## Resuming in a fresh session — concrete steps
