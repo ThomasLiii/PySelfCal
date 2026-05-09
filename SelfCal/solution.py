@@ -3,35 +3,65 @@
 import numpy as np
 
 
-def parse_x(x, ref_shape, num_offset_groups, num_chunks, num_frames=None):
-    """Parse the LSQR solution vector x into sky, detector offset, and frame scalar components.
+def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None):
+    """Parse the LSQR solution vector x into sky, per-map detector offsets, and frame scalar.
 
     Parameters
     ----------
-    num_offset_groups : int
-        Number of offset groups (= num_frames when det_groups is not used).
-    num_chunks : int
-        Number of chunks per offset group.
+    num_offset_groups_list : list of int
+        Number of offset groups for each chunk map (= num_frames when no det_groups
+        is set, or len(unique groups), or num_frames in template mode).
+    num_chunks_list : list of int
+        Number of chunks per offset group for each chunk map (1 in template mode).
     num_frames : int or None
-        If not None, the last num_frames entries are per-frame scalars.
+        If not None, the last num_frames entries of x are per-frame scalars.
+
+    Returns
+    -------
+    skymap : np.ndarray
+        Reshaped sky map block.
+    det_offsets : list of np.ndarray
+        One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
+    frame_scalar : np.ndarray
+        Per-frame scalars (empty when num_frames is None).
     """
+    assert len(num_offset_groups_list) == len(num_chunks_list), (
+        "num_offset_groups_list and num_chunks_list must have the same length")
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    num_offset = num_offset_groups * num_chunks
     skymap = x[:num_sky].reshape(ref_shape)
-    det_offset = x[num_sky:num_sky + num_offset].reshape(num_offset_groups, num_chunks)
-    frame_scalar = x[num_sky + num_offset:] if num_frames else np.array([])
-    return skymap, det_offset, frame_scalar
 
-def encode_x(skymap, offset):
-    """Utility function to encode the sky and offset components back into a single vector x."""
-    return np.concatenate([skymap.flatten(), offset.flatten()])
+    det_offsets = []
+    cursor = num_sky
+    for ng, nc in zip(num_offset_groups_list, num_chunks_list):
+        block = ng * nc
+        det_offsets.append(x[cursor:cursor + block].reshape(ng, nc))
+        cursor += block
 
-def compute_x0_from_Ab(A, b, ref_shape, num_offset_groups=None):
+    frame_scalar = x[cursor:cursor + num_frames] if num_frames else np.array([])
+    return skymap, det_offsets, frame_scalar
+
+
+def encode_x(skymap, offsets):
+    """Concatenate sky + per-map offsets back into the solution vector.
+
+    ``offsets`` may be a single ndarray (K=1 convenience) or a list of ndarrays.
+    """
+    parts = [skymap.flatten()]
+    if isinstance(offsets, np.ndarray):
+        parts.append(offsets.flatten())
+    else:
+        parts.extend(o.flatten() for o in offsets)
+    return np.concatenate(parts)
+
+
+def compute_x0_from_Ab(A, b, ref_shape):
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
-    is already encoded in the sparse matrix A and vector b from setup_lsqr.
+    is already encoded in the sparse matrix A and vector b from setup_lsqr. The
+    diagonal LS treats every non-sky column independently, so it is agnostic to
+    the per-map column layout.
     """
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w

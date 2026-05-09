@@ -9,7 +9,6 @@ import shutil
 import time
 import gc
 import glob as glob_module
-from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from tqdm import tqdm
@@ -21,8 +20,7 @@ sys.path.append(parent_path)
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
-from SelfCal.SPHERExAppendWav import wav_coadd
+make_stripped_chunk_map, make_stripped_chunk_valid_mask, fast_vertical_dist
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -112,10 +110,10 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 2,
+        'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 1,
+        'NumCol': 3,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -147,32 +145,20 @@ if __name__ == "__main__":
         'solver': 'lsqr',
     }
 
-    mosaic_kwargs = {
-        'apply_mask': True,
-        'apply_weight': False,
-        'make_std_map': True,
-        'apply_sigma_clipping': True,
-        'sigma': 2.0,
-        'ignore_list': [21],
-        'cache_batch_size': 20,
-        'coadd_batch_size': 30,
-        'cache_intermediate': True,
-        'max_workers': 32
-    }
-    
+    # Used only by prepare_detector_inputs to build the (unused) grid_chunk_map at the same
+    # oversample factor as production. Kept for input-parity with the production script.
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
-    # Channels to process
-    # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
-    chs = [[3], [4], [5], [6], [7], [8]]
-    # chs = [[14]]
-    # chs = ['Aliphatic', 'Aromatic']
-    # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
-    # Tune based on RAID config: ~4-8 for most RAID arrays. Set to None to disable.
+    # Change between runs: e.g. 'before_refactor' for the baseline run on current code,
+    # 'after_refactor' for the run on refactored code. Each tag produces a distinctly-named
+    # cal_*.h5 so before/after files coexist for byte-equality diffing.
+    TEST_TAG = 'after_commit3'
+    FILE_SUFFIX = f'_baseline_{TEST_TAG}'
+
     HDD_IO_LIMIT = 20
+    chs = [[17]]
     # ----------------------------- End of Settings -----------------------------
 
     set_hdd_io_limit(HDD_IO_LIMIT)
@@ -221,8 +207,6 @@ if __name__ == "__main__":
 
         job_tag = f'{frame_setting_str}_{job_name}{FILE_SUFFIX}'
         cal_file = f'cal_{job_tag}.h5'
-        mos_file = f"mosaic_{job_tag}.fits"
-        cache_dir = f'{CACHE_DIR}cache_{job_tag}'
 
         # Prepare specific inputs for this channel
         channel_inputs = prepare_channel_inputs(ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
@@ -250,59 +234,17 @@ if __name__ == "__main__":
             cal_path = cc.save_calibration(cal_file=cal_file)
             cc.reproj_list = nvme_list
 
-        # ----------------------------- Mosaicking -----------------------------
-        partial_make_offset_map = partial(make_spherex_stripped_offset_map,
-                                    chunk_valid_mask=channel_inputs['chunk_valid_mask'], 
-                                    lvf_params=detector_inputs['lvf_params'], 
-                                    r_edges=detector_inputs['r_edges'], 
-                                    x_edges=detector_inputs['x_edges'], 
-                                    tot_subchannels=frame_setting['NumSub']*frame_setting['NumCh']+2, 
-                                    num_columns=frame_setting['NumCol'],
-                                    fill_invalid=True)
-        
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
-        mm.load_calibration(cal_path=cal_path)
-        mm.reproj_list = remap_to_nvme(mm.reproj_list)
+        # Mosaicking is intentionally skipped: this script tests calibration byte-equality
+        # only. Re-enable with the production run script when verifying Mosaicker changes
+        # (Commit 4 of the multi-chunk-maps feature).
 
-        maps = mm.make_mosaic(
-            chunk_maps=[detector_inputs['grid_chunk_map']],
-            grid_valid_weight=channel_inputs['grid_valid_weight'],
-            oversample_factor=mosaic_oversample_factor,
-            det_offset_funcs=[partial_make_offset_map],
-            cache_dir=cache_dir,
-            **mosaic_kwargs
-        )
-
-        # Append wavelength maps
-        print("Coadding wavelength maps...")
-        t00 = time.time()
-        wav_mean, wav_std = wav_coadd(detector_inputs['det_BC'], detector_inputs['det_BW'], 
-                                      mean_map=maps['mean_map']['data'], 
-                                      std_map=maps['std_map']['data'], 
-                                      reproj_list=mm.reproj_list, 
-                                      cache_list=mm.cached_list,
-                                      ref_shape=maps['mean_map']['data'].shape, 
-                                      sigma=mosaic_kwargs['sigma'], 
-                                      batch_size=40, max_workers=30)    
-        print(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
-
-        mm.append_maps({
-            'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
-            'wav_std_map': {'data': wav_std, 'unit': 'um'}
-        })
-
-        mm.save_mosaic(mos_file=mos_file, overwrite=True)
-         
-        # Clean up
-        del cc, mm, maps
-        if os.path.exists(cache_dir):
-            shutil.rmtree(cache_dir)
+        del cc
         gc.collect()
         
         print(f"Finished channel {job_name} for detector {frame_setting['Detector']} in {time.time() - t0:.2f} seconds.")
         print("-" * 50 + "\n")
 
-    # Cleanup NVMe reproj cache
-    if os.path.exists(nvme_reproj_dir):
-        shutil.rmtree(nvme_reproj_dir)
-        print("NVMe reproj cache cleaned up.")
+    # NVMe reproj cache intentionally NOT deleted: this test is run multiple times across
+    # different TEST_TAG values (and possibly different frame_settings). Re-copying hundreds
+    # of GB from HDD on each run is wasteful. Manually `rm -rf` when fully done testing.
+    print(f"NVMe reproj cache preserved at: {nvme_reproj_dir}")

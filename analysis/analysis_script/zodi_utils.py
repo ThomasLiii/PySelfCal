@@ -61,6 +61,36 @@ def cal_path(detector, channel):
     )
 
 
+def load_cal_offsets(path_or_file):
+    """Read per-frame offsets from a cal_*.h5, handling both schemas.
+
+    Returns ``{m: offset_m}`` where each ``offset_m`` is a per-frame
+    ``(num_frames, num_chunks_m)`` array. For the legacy single-map schema
+    this is ``{0: f['offset'][:]}``. For the multi-chunk-map schema this is
+    ``{m: f['offsets/map_m'][:]}`` for each saved map; the shared per-frame
+    scalar bias (top-level ``frame_scalar``, only written when any map uses
+    ``det_groups``) is folded into map 0 so single-map analysis code that
+    only reads ``[0]`` sees the same total bias the legacy schema baked in.
+
+    Accepts either a path-like or an already-open ``h5py.File``.
+    """
+    if isinstance(path_or_file, h5py.File):
+        return _read_cal_offsets(path_or_file)
+    with h5py.File(path_or_file, 'r') as f:
+        return _read_cal_offsets(f)
+
+
+def _read_cal_offsets(f):
+    if 'offsets' in f:
+        K = int(f.attrs.get('num_maps', len(f['offsets'])))
+        offsets = {m: f['offsets'][f'map_{m}'][:] for m in range(K)}
+        if 'frame_scalar' in f:
+            scalar = f['frame_scalar'][:][:, None]
+            offsets[0] = offsets[0] + scalar
+        return offsets
+    return {0: f['offset'][:]}
+
+
 def load_single_channel_offset(detector, channel,
                                num_subchannels=10, num_channels=34, num_columns=3):
     """Load one channel's calibration h5 and return per-exposure mean offset.
@@ -70,7 +100,8 @@ def load_single_channel_offset(detector, channel,
     mean_offset : (num_frames,)
         Per-exposure mean of the offset term over valid chunks.
     raw_offset : (num_frames, num_chunks)
-        Full per-chunk offset array from the cal file.
+        Full per-chunk offset array from the cal file (map 0 in the
+        multi-chunk-map schema, which is the standard chunk-shaped offset).
     chunk_valid_mask : (num_chunks,) bool-like
         Unpadded valid-chunk mask used to pick columns of `raw_offset`.
     reproj_list : list[str]
@@ -78,7 +109,7 @@ def load_single_channel_offset(detector, channel,
     """
     path = cal_path(detector, channel)
     with h5py.File(path, 'r') as f:
-        raw_offset = f['offset'][:]
+        raw_offset = load_cal_offsets(f)[0]
         reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
     mask = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=num_subchannels,

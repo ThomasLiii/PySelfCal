@@ -7,8 +7,8 @@ from .MapHelper import (bit_to_bool, make_weight, make_linear_interp_matrix,
                         chunk_to_det, det_to_sub, compute_chunk_contrib)
 
 
-def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
-                   chunk_offset=None, det_offset_func=None, ignore_list=None,
+def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
+                   chunk_offsets=None, det_offset_funcs=None, ignore_list=None,
                    grid_valid_weight=None, valid_threshold=0.99,
                    for_lsqr=False, oversample_factor=1,
                    # These arguments are accepted for compatibility/internal logic
@@ -17,9 +17,31 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     """
     Prepares data from a single file for co-addition or lsqr.
 
-    Refactored to use explicit arguments instead of **kwargs.
+    Parameters
+    ----------
+    chunk_maps : list of np.ndarray or None
+        K chunk maps. All must share the same shape so a single
+        interpolation matrix can be reused. None or an empty list disables
+        chunk-based logic.
+    chunk_offsets : list of np.ndarray or None
+        Per-map per-chunk offsets to subtract from this frame (mosaic path
+        only). Length-K list aligned with ``chunk_maps``; the per-map grid
+        offsets are accumulated into a single ``total_grid_offset`` and
+        subtracted via one ``det_to_sub`` call. ``None`` skips offset
+        subtraction entirely.
+    det_offset_funcs : list of callable or None
+        Per-map ``(chunk_map, chunk_offset) -> grid_offset`` callables.
+        ``None`` (or per-map ``None``) falls back to the standard
+        ``chunk_to_det`` for that map.
+
+    Returns
+    -------
+    chunk_contribs : list of scipy.sparse matrices
+        One per input chunk map (empty list when ``for_lsqr`` is False or
+        ``chunk_maps`` is empty).
     """
     if ignore_list is None: ignore_list = []
+    if chunk_maps is None: chunk_maps = []
 
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
@@ -42,21 +64,72 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
         sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
         sub_weight *= sub_boolmask
 
-    # Compute bilinear interpolation matrix for mapping between chunk and subframe
+    # Compute bilinear interpolation matrix for mapping between chunk and subframe.
+    # Infer the detector-grid shape from whichever detector-space input is
+    # provided (chunk_maps[0], grid_valid_weight, det_aux[0]). All such inputs
+    # live on the same grid, so we cross-check that any provided shapes agree.
     interp_matrix = None
-    if (chunk_map is not None) or (chunk_offset is not None) or (for_lsqr) or (det_aux is not None) or (grid_valid_weight is not None):
+    interp_input_shape = None
+    shape_sources = []
+    if chunk_maps:
+        s0 = chunk_maps[0].shape
+        for cm in chunk_maps[1:]:
+            assert cm.shape == s0, "all chunk_maps must share the same shape"
+        shape_sources.append(('chunk_maps[0]', s0))
+    if grid_valid_weight is not None:
+        shape_sources.append(('grid_valid_weight', grid_valid_weight.shape))
+    if det_aux is not None:
+        shape_sources.append(('det_aux[0]', np.shape(det_aux[0])))
+    if shape_sources:
+        interp_input_shape = shape_sources[0][1]
+        for name, s in shape_sources[1:]:
+            assert s == interp_input_shape, (
+                f"_prep_subframe detector-space shape mismatch: "
+                f"{shape_sources[0][0]}={interp_input_shape} vs {name}={s}")
+
+    # Build interp_matrix iff a downstream step actually needs it.
+    # for_lsqr alone with empty chunk_maps is a no-op (no chunk_contribs to
+    # build), so we don't trigger on it directly — chunk_maps non-empty is
+    # the real trigger for the LSQR path.
+    need_interp = (
+        bool(chunk_maps)
+        or chunk_offsets is not None
+        or det_aux is not None
+        or grid_valid_weight is not None
+    )
+    if need_interp:
+        if interp_input_shape is None:
+            raise ValueError(
+                "_prep_subframe needs to build an interpolation matrix but "
+                "none of chunk_maps / grid_valid_weight / det_aux was given "
+                "to infer the detector-grid shape from.")
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
-        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=np.shape(chunk_map))
+        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=interp_input_shape)
 
-    # Apply chunk offset if provided
-    if chunk_offset is not None:
-        if det_offset_func is not None:
-            grid_offset = det_offset_func(chunk_map, chunk_offset)
-        else:
-            grid_offset = chunk_to_det(chunk_map, chunk_data=chunk_offset)
-        sub_offset = det_to_sub(grid_offset, interp_matrix=interp_matrix)
-        sub_data -= sub_offset
+    # Apply per-map chunk offsets (mosaic path).
+    # Per-map grid offsets are accumulated, then a single det_to_sub call
+    # bilinear-interpolates the total once regardless of K.
+    if chunk_offsets is not None:
+        assert len(chunk_offsets) == len(chunk_maps), \
+            "chunk_offsets length must match chunk_maps"
+        total_grid_offset = None
+        for m, off_m in enumerate(chunk_offsets):
+            if off_m is None:
+                continue
+            cm = chunk_maps[m]
+            func_m = det_offset_funcs[m] if det_offset_funcs is not None else None
+            if func_m is not None:
+                grid_offset_m = func_m(cm, off_m)
+            else:
+                grid_offset_m = chunk_to_det(cm, chunk_data=off_m)
+            if total_grid_offset is None:
+                total_grid_offset = grid_offset_m
+            else:
+                total_grid_offset = total_grid_offset + grid_offset_m
+        if total_grid_offset is not None:
+            sub_offset = det_to_sub(total_grid_offset, interp_matrix=interp_matrix)
+            sub_data -= sub_offset
 
     # Apply valid weight
     if grid_valid_weight is not None:
@@ -70,9 +143,9 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     if apply_weight:
         sub_weight *= make_weight(sub_data)
 
-    chunk_contrib = None
+    chunk_contribs = []
     if for_lsqr:
-        chunk_contrib = compute_chunk_contrib(chunk_map, interp_matrix)
+        chunk_contribs = [compute_chunk_contrib(cm, interp_matrix) for cm in chunk_maps]
 
     if postprocess_func is not None:
         sub_data = postprocess_func(locals())
@@ -82,4 +155,4 @@ def _prep_subframe(file, chunk_map, apply_weight=False, apply_mask=False,
     sub_data[nan_mask] = 0.0
     sub_weight[nan_mask] = 0.0
 
-    return ref_coords, sub_data, sub_weight, chunk_contrib, sub_aux
+    return ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux

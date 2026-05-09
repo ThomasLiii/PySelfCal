@@ -39,7 +39,7 @@ if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
 from SelfCal.SPHERExUtility import make_stripped_chunk_valid_mask
-from zodi_utils import data_path, fig_path
+from zodi_utils import data_path, fig_path, load_cal_offsets
 
 
 CAL_PATH = ('/mnt/md124/thomasli/selfcal/outputs/'
@@ -59,7 +59,7 @@ def load_columns(detector, channel):
     """
     path = CAL_PATH.format(det=detector, ch=channel)
     with h5py.File(path, 'r') as f:
-        off = f['offset'][:]                    # (N, 342 * 3)
+        off = load_cal_offsets(f)[0]            # (N, 342 * 3)
     off3 = off.reshape(off.shape[0], TOT_SUB, NUM_COL)
 
     mask = make_stripped_chunk_valid_mask(

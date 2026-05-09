@@ -33,7 +33,7 @@ from SelfCal.SPHERExUtility import (
     make_spherex_stripped_offset_map,
     load_lvf_params,
 )
-from zodi_utils import data_path, fig_path, cal_path, sine_model, fit_sine
+from zodi_utils import data_path, fig_path, cal_path, sine_model, fit_sine, load_cal_offsets
 
 NUM_SUB, NUM_CH, NUM_COL = 10, 34, 3
 TOT_SUB = NUM_SUB * NUM_CH + 2
@@ -129,7 +129,7 @@ def analyse_bin(detector, lat_lo, lat_hi, df, channels,
         fits = {}
         for ch in channels:
             with h5py.File(cal_path(detector, ch), 'r') as f:
-                off = f['offset'][:].reshape(-1, TOT_SUB, NUM_COL)
+                off = load_cal_offsets(f)[0].reshape(-1, TOT_SUB, NUM_COL)
             off = off[sel_exp]
             fits[ch] = fits_for_subset(off, mjd_bin, padded_per_ch[ch])
         bin_kind = 'central'
@@ -152,7 +152,7 @@ def analyse_bin(detector, lat_lo, lat_hi, df, channels,
         fits = {}
         for ch in channels:
             with h5py.File(cal_path(detector, ch), 'r') as f:
-                off = f['offset'][:].reshape(-1, TOT_SUB, NUM_COL)
+                off = load_cal_offsets(f)[0].reshape(-1, TOT_SUB, NUM_COL)
             # For each (sub, col) in this channel, mask out exposures whose
             # chunk-specific lat is OUTSIDE this bin -> set the offset entry
             # to NaN there. Then fits_for_subset will use only the in-bin
