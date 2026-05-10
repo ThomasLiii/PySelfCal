@@ -19,8 +19,31 @@ sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, fast_vertical_dist
+from SelfCal.SPHERExUtility import (load_calibration, load_lvf_params, compute_column_adjacency,
+                                    compute_column_polynomial_chains,
+                                    make_stripped_chunk_map, make_stripped_chunk_valid_mask,
+                                    fast_vertical_dist)
+
+
+def build_detector_stripe_map(shape, mid_width=64, edge_width=60, dtype=np.int32):
+    """Detector-fixed chunk map: vertical stripes with narrower edge stripes.
+
+    Lays out N stripes per row so that ``edge_width + (N - 2) * mid_width
+    + edge_width == shape[1]``: the two outermost stripes are ``edge_width``
+    px wide and the interior ``N - 2`` stripes are ``mid_width`` px wide.
+    Default ``(60, 64)`` matches the layout used in earlier baseline tests
+    on a 2040-wide detector → 32 stripes (60 + 30*64 + 60 = 2040).
+    """
+    h, w = shape
+    if (w - 2 * edge_width) % mid_width != 0:
+        raise ValueError(
+            f"width {w} does not partition into 2 * {edge_width}-px edges + "
+            f"k * {mid_width}-px middles")
+    n_mid = (w - 2 * edge_width) // mid_width
+    widths = [edge_width] + [mid_width] * n_mid + [edge_width]
+    cols = np.repeat(np.arange(len(widths), dtype=dtype), widths)
+    assert cols.shape[0] == w
+    return np.broadcast_to(cols[None, :], (h, w)).copy()
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -107,9 +130,67 @@ def mask_bright_pixels(local_vars):
         
     return sub_data
 
+def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_frames):
+    """Solver-config dispatch for the named test variants.
+
+    poly_off : K=1, NumCol=3, no poly constraint (matches the multi-chunk-maps
+               regression baseline).
+    poly_k1  : K=1, NumCol=10, linear column-polynomial constraint via
+               compute_column_polynomial_chains.
+    poly_k2  : K=2; same map 0 + constraint as poly_k1, plus a detector-fixed
+               64-px-stripe map shared across frames (det_groups all-zeros);
+               map 1 chunk-mean is anchored to 0 per frame so DC stays in the
+               auto-added per-frame scalar instead of drifting between map 0
+               and map 1.
+    """
+    if variant == 'poly_off':
+        return {
+            'chunk_maps': [det_chunk_map],
+            'adj_infos': [adj_info],
+            'reg_weights': [0.1],
+            'poly_constraints_list': None,
+            'mean_offsets_list': None,
+            'det_groups_list': None,
+        }
+    if variant == 'poly_k1':
+        chains, stencil = compute_column_polynomial_chains(
+            det_chunk_map, num_columns=num_columns, degree=1)
+        return {
+            'chunk_maps': [det_chunk_map],
+            'adj_infos': [adj_info],
+            'reg_weights': [0.1],
+            'poly_constraints_list': [[
+                {'chains': chains, 'stencil': stencil, 'weight': 0.5},
+            ]],
+            'mean_offsets_list': None,
+            'det_groups_list': None,
+        }
+    if variant == 'poly_k2':
+        chains, stencil = compute_column_polynomial_chains(
+            det_chunk_map, num_columns=num_columns, degree=1)
+        stripe_map = build_detector_stripe_map(
+            det_chunk_map.shape, mid_width=64, edge_width=60,
+            dtype=det_chunk_map.dtype)
+        return {
+            'chunk_maps': [det_chunk_map, stripe_map],
+            'adj_infos': [adj_info, None],
+            'reg_weights': [0.1, 0.0],
+            'poly_constraints_list': [
+                [{'chains': chains, 'stencil': stencil, 'weight': 0.5}],
+                None,
+            ],
+            'mean_offsets_list': [None, np.zeros(num_frames)],
+            'det_groups_list': [None, np.zeros(num_frames, dtype=np.int64)],
+        }
+    raise ValueError(f"Unknown variant: {variant!r}")
+
+
+VARIANT_NUMCOL = {'poly_off': 3, 'poly_k1': 10, 'poly_k2': 10}
+
+
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
-    frame_setting = {
+    base_frame_setting = {
         'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
@@ -118,18 +199,18 @@ if __name__ == "__main__":
 
     selfcal_config = PipelineWrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
-        run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
+        run_name=f'SPHEREx_nep_qr2_det{base_frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
     )
 
-    calibration_kwargs = {
+    # Shared kwargs across variants (per-variant ones live in build_variant_config).
+    calibration_kwargs_shared = {
         'apply_mask': True,
         'apply_weight': False,
         'outlier_thresh': 5.0,
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
-        'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
         'max_workers': 32,
@@ -151,11 +232,13 @@ if __name__ == "__main__":
 
     CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
 
-    # Change between runs: e.g. 'before_refactor' for the baseline run on current code,
-    # 'after_refactor' for the run on refactored code. Each tag produces a distinctly-named
-    # cal_*.h5 so before/after files coexist for byte-equality diffing.
-    TEST_TAG = 'after_poly_off'
-    FILE_SUFFIX = f'_baseline_{TEST_TAG}'
+    # Variants run sequentially; each produces a distinctly-named cal_*.h5
+    # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the
+    # K=1, NumCol=3 regression baseline.
+    TEST_VARIANTS = ['poly_k1', 'poly_k2']
+
+    # Cap reproj files for a quick plumbing check; set to None for full runs.
+    NUM_FRAMES_LIMIT = None
 
     HDD_IO_LIMIT = 20
     chs = [[17]]
@@ -187,64 +270,81 @@ if __name__ == "__main__":
     # NVMe can handle massively parallel reads — disable the HDD I/O throttle
     set_hdd_io_limit(None)
 
-    def remap_to_nvme(file_list):
-        """Replace directory prefix with nvme_reproj_dir, keeping filenames."""
-        return [os.path.join(nvme_reproj_dir, os.path.basename(f)) for f in file_list]
+    # Iterate variants × channels. Per-variant prepare_detector_inputs is needed
+    # because det_chunk_map / adj_info depend on NumCol.
+    for variant in TEST_VARIANTS:
+        frame_setting = dict(base_frame_setting, NumCol=VARIANT_NUMCOL[variant])
+        frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
+        FILE_SUFFIX = f'_baseline_{variant}'
 
-    frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
+        print(f"\n{'=' * 70}\nVariant {variant} (NumCol={frame_setting['NumCol']})\n{'=' * 70}")
+        detector_inputs = prepare_detector_inputs(frame_setting, mosaic_oversample_factor)
 
-    # 1. Prepare overarching detector inputs
-    detector_inputs = prepare_detector_inputs(frame_setting, mosaic_oversample_factor)
+        for ch in chs:
+            if isinstance(ch, list):
+                job_name = f'Ch{"-".join(map(str, ch))}'
+            else:
+                job_name = ch
+            t0 = time.time()
+            print(f"Processing channel {job_name} for detector {frame_setting['Detector']}, "
+                  f"variant {variant}...")
 
-    # 2. Iterate through channels
-    for ch in chs:
-        if isinstance(ch, list):
-            job_name = f'Ch{"-".join(map(str, ch))}'
-        else:
-            job_name = ch
-        t0 = time.time()
-        print(f"Processing channel {job_name} for detector {frame_setting['Detector']}...")
+            job_tag = f'{frame_setting_str}_{job_name}{FILE_SUFFIX}'
+            cal_file = f'cal_{job_tag}.h5'
+            cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
 
-        job_tag = f'{frame_setting_str}_{job_name}{FILE_SUFFIX}'
-        cal_file = f'cal_{job_tag}.h5'
+            channel_inputs = prepare_channel_inputs(
+                ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
 
-        # Prepare specific inputs for this channel
-        channel_inputs = prepare_channel_inputs(ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
-        
-        # ----------------------------- Calibration -----------------------------
-        cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
-        if os.path.exists(cal_path):
-            print(f"Calibration file {cal_path} already exists. Skipping calibration.")
-        else:
-            cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
-                grid_valid_weight=channel_inputs['det_valid_mask_padded'],
-                oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                **calibration_kwargs
-            )
-            
-            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
-            
-            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
-            # Save with original HDD paths so cal file remains valid after NVMe cleanup
-            nvme_list = cc.reproj_list
-            cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
-            cal_path = cc.save_calibration(cal_file=cal_file)
-            cc.reproj_list = nvme_list
+            cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+            if NUM_FRAMES_LIMIT is not None:
+                cc.reproj_list = cc.reproj_list[:NUM_FRAMES_LIMIT]
+                print(f"NUM_FRAMES_LIMIT applied: using {len(cc.reproj_list)} frames")
 
-        # Mosaicking is intentionally skipped: this script tests calibration byte-equality
-        # only. Re-enable with the production run script when verifying Mosaicker changes
-        # (Commit 4 of the multi-chunk-maps feature).
+            if os.path.exists(cal_path):
+                print(f"Calibration file {cal_path} already exists. Skipping calibration.")
+            else:
+                num_frames = len(cc.reproj_list)
+                variant_cfg = build_variant_config(
+                    variant,
+                    det_chunk_map=detector_inputs['det_chunk_map'],
+                    adj_info=detector_inputs['adj_info'],
+                    num_columns=frame_setting['NumCol'],
+                    num_frames=num_frames,
+                )
+                print(f"K={len(variant_cfg['chunk_maps'])}, "
+                      f"poly={'on' if variant_cfg['poly_constraints_list'] else 'off'}, "
+                      f"map shapes={[m.shape for m in variant_cfg['chunk_maps']]}, "
+                      f"num_chunks={[int(m.max())+1 for m in variant_cfg['chunk_maps']]}")
 
-        del cc
-        gc.collect()
-        
-        print(f"Finished channel {job_name} for detector {frame_setting['Detector']} in {time.time() - t0:.2f} seconds.")
-        print("-" * 50 + "\n")
+                cc.setup_lsqr(
+                    chunk_maps=variant_cfg['chunk_maps'],
+                    grid_valid_weight=channel_inputs['det_valid_mask_padded'],
+                    oversample_factor=1,
+                    adj_infos=variant_cfg['adj_infos'],
+                    reg_weights=variant_cfg['reg_weights'],
+                    poly_constraints_list=variant_cfg['poly_constraints_list'],
+                    mean_offsets_list=variant_cfg['mean_offsets_list'],
+                    det_groups_list=variant_cfg['det_groups_list'],
+                    **calibration_kwargs_shared,
+                )
+
+                x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
+
+                cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
+                # Save with original HDD paths so cal file remains valid after NVMe cleanup
+                nvme_list = cc.reproj_list
+                cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
+                cal_path = cc.save_calibration(cal_file=cal_file)
+                cc.reproj_list = nvme_list
+
+            del cc
+            gc.collect()
+
+            print(f"Finished {variant}/{job_name} in {time.time() - t0:.2f} seconds.")
+            print("-" * 50 + "\n")
 
     # NVMe reproj cache intentionally NOT deleted: this test is run multiple times across
-    # different TEST_TAG values (and possibly different frame_settings). Re-copying hundreds
+    # different variants (and possibly different frame_settings). Re-copying hundreds
     # of GB from HDD on each run is wasteful. Manually `rm -rf` when fully done testing.
     print(f"NVMe reproj cache preserved at: {nvme_reproj_dir}")

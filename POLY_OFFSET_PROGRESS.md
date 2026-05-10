@@ -24,18 +24,17 @@ Nothing functional in `SelfCal/` has changed yet.
 - [x] **Test A passed** for Commit 1: full Ch17 calibration with default (`None`) ran in 2300s. Diff vs `cal_*_baseline_after_commit3.h5`: skymap/offset both clear `np.allclose(rtol=0, atol=1e-2)` with zero elements over threshold (max abs 4.49e-3 / 9.24e-3, mean 2.0e-5 / 2.9e-6). Coverage / chunk_maps / reproj_list byte-equal. Same band as the multi-chunk-maps refactor cleared (parallel-LSQR float32 reduction noise; not affected by this commit).
 - [x] **Commit 2 — SPHEREx helper + smoke test** ([SelfCal/SPHERExUtility.py](SelfCal/SPHERExUtility.py), [selfcal_scripts/run_cal_polyconstraint_smoke_test.py](selfcal_scripts/run_cal_polyconstraint_smoke_test.py)). `compute_column_polynomial_chains(chunk_map, num_columns, degree=1)` returns `(num_subchannels*(num_columns-degree-1), degree+2)` int64 chains and the `(degree+2,)` finite-difference stencil; raises if `num_columns < degree+2`. Note math correction vs. the plan's docstring template: chain length is `L = degree + 2` (3 for linear, 4 for quadratic), not `degree + 1`.
 - [x] **Smoke test passed**: helper produces the expected `(342, 3)` chains and `[1, -2, 1]` stencil for `(num_columns=3, degree=1)`; `setup_lsqr` with one chain `[[0, 1, 2]]` and weight `2.5` emits exactly one extra row at cols `(num_sky+0, +1, +2)` with values `(2.5, -5.0, 2.5)` and RHS 0. Column count unchanged.
+- [x] **Commit 3 — driver opt-in + integration check** ([selfcal_scripts/run_cal_baseline_test.py](selfcal_scripts/run_cal_baseline_test.py)). Added `TEST_VARIANTS` list (default `['poly_k1', 'poly_k2']`), `build_detector_stripe_map(shape, mid_width=64, edge_width=60)` for the K=2 detector-fixed map (32 stripes: 60 + 30×64 + 60 = 2040), and `build_variant_config(variant, ...)` that dispatches the per-variant solver config. **poly_k1**: K=1, NumCol=10, linear column-poly constraint (`weight=0.5`) + adjacency (`weight=0.1`). **poly_k2**: same map 0 + constraint, plus a detector-fixed 64-px stripe map shared across frames (`det_groups_list[1]=zeros`, mean-anchor=0).
+- [x] **poly_k1 ran in 2371s**. Test B passes: across the 4.1% of (frame, subchannel) pairs with coverage, median `nonlinearity-RMS / offset-RMS = 0.025` and 90th-percentile `0.05` — column offsets are visually linear, as the constraint demands.
+- [x] **poly_k2 ran in 2389s** and resolves a real left/right detector asymmetry into map 1: the 32 shared stripe values flip sign at chunk index 16 (~`+0.02` for chunks 0–15, ~`-0.02` for chunks 16–31). With map 1 absorbing this pattern, map 0's `max |o|` collapsed from `360.8` (k1) to `2.7` (k2) and the sky map's dynamic range tightened from `[-0.30, +0.49]` to `[-0.06, +0.07]`. Active-cols delta = 13,250 = 13219 per-frame scalars + 32 stripes − 1 (rank-deficient by global-DC degeneracy, expected). Cal files: `cal_*_baseline_poly_k1.h5`, `cal_*_baseline_poly_k2.h5`.
 
 ## To do — next session pick up here
 
-The full sequence is in [POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md) under "Implementation order — 3 commits". Summary:
-
-### Commit 3 — Driver opt-in + integration check
-
-Files:
-- `selfcal_scripts/run_cal_v2.py`: add a commented-out block showing how to enable polynomial column-linearity for SPHEREx using the helper.
-- `selfcal_scripts/run_cal_baseline_test.py`: support an optional `TEST_TAG='with_poly'` variant that turns on the constraint, so future regression tests can compare with/without.
-
-Then run a real-config calibration with the constraint enabled (`weight=0.5`, `degree=1` over column chains in each subchannel), extract the per-frame offsets, and visualize: for each subchannel, plot column index vs offset for a random sample of frames. With the constraint, lines should be visually linear; without, lines have curvature. (Or compute the second-difference RMS per subchannel as a quantitative metric.)
+Commits 1–3 from the plan are complete and pushed. Possible follow-ups:
+- Mosaic the `poly_k2` calibration (this branch only ran calibration; no mosaic yet) and inspect whether the residual structure in the sky map shrinks where map 1 isolated detector asymmetry.
+- Try a higher-degree poly constraint (`degree=2`) on the column chain and see whether map 0's nonlinearity floor (~2.5e-3 RMS) drops further.
+- Add `compute_subchannel_polynomial_chains` (cross-subchannel, fixed column) — sketched in [POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md) but not implemented.
+- Promote `stable` if the `poly_k2` skymap looks good (currently held at the pre-multi-chunk-maps commit `868ae1d`).
 
 ## How the regression test works
 
