@@ -22,16 +22,12 @@ Nothing functional in `SelfCal/` has changed yet.
 - [x] Wrote the polynomial-offset-constraint plan ([POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md)) — math, API, file touchpoints, SPHEREx helper, regression strategy, 3-commit implementation order.
 - [x] **Commit 1 — core wiring** ([SelfCal/lsqr.py](SelfCal/lsqr.py), [SelfCal/PipelineWrapper.py](SelfCal/PipelineWrapper.py)). `poly_constraints_list=None` defaults; validation in `setup_lsqr`; per-map loop in `_prep_lsqr` mirrors the adjacency-reg block (same `offset_base_m` indexing, same `reg_row_offset` arithmetic, template-mode skip, RHS=0). No SHM — chains/stencils ride along in `common_params` and pickle directly to workers.
 - [x] **Test A passed** for Commit 1: full Ch17 calibration with default (`None`) ran in 2300s. Diff vs `cal_*_baseline_after_commit3.h5`: skymap/offset both clear `np.allclose(rtol=0, atol=1e-2)` with zero elements over threshold (max abs 4.49e-3 / 9.24e-3, mean 2.0e-5 / 2.9e-6). Coverage / chunk_maps / reproj_list byte-equal. Same band as the multi-chunk-maps refactor cleared (parallel-LSQR float32 reduction noise; not affected by this commit).
+- [x] **Commit 2 — SPHEREx helper + smoke test** ([SelfCal/SPHERExUtility.py](SelfCal/SPHERExUtility.py), [selfcal_scripts/run_cal_polyconstraint_smoke_test.py](selfcal_scripts/run_cal_polyconstraint_smoke_test.py)). `compute_column_polynomial_chains(chunk_map, num_columns, degree=1)` returns `(num_subchannels*(num_columns-degree-1), degree+2)` int64 chains and the `(degree+2,)` finite-difference stencil; raises if `num_columns < degree+2`. Note math correction vs. the plan's docstring template: chain length is `L = degree + 2` (3 for linear, 4 for quadratic), not `degree + 1`.
+- [x] **Smoke test passed**: helper produces the expected `(342, 3)` chains and `[1, -2, 1]` stencil for `(num_columns=3, degree=1)`; `setup_lsqr` with one chain `[[0, 1, 2]]` and weight `2.5` emits exactly one extra row at cols `(num_sky+0, +1, +2)` with values `(2.5, -5.0, 2.5)` and RHS 0. Column count unchanged.
 
 ## To do — next session pick up here
 
 The full sequence is in [POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md) under "Implementation order — 3 commits". Summary:
-
-### Commit 2 — SPHEREx helper + plumbing smoke test
-
-Files:
-- `SelfCal/SPHERExUtility.py`: add `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)`. Returns `(chains, stencil)` where `chains` is `(num_subchannels * (num_columns - degree), degree + 1)` int32 and `stencil` is the (degree+1)-th finite-difference operator. Raises if `num_columns <= degree`.
-- `selfcal_scripts/run_cal_polyconstraint_smoke_test.py`: build a tiny synthetic problem (4 chunks, 1 frame), feed one linear-stencil constraint group, verify the produced `A` matrix has the expected extra rows with the expected column entries and values. No LSQR run.
 
 ### Commit 3 — Driver opt-in + integration check
 
