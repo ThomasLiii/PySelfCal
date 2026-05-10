@@ -28,6 +28,7 @@ def _prep_lsqr(task_params):
     reg_weight_list = task_params['reg_weight_list']
     offset_regularization = task_params['offset_regularization']
     adj_info_list = task_params['adj_info_list']
+    poly_constraint_list = task_params['poly_constraint_list']
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
     scalar_col_start = task_params['scalar_col_start']
@@ -104,7 +105,7 @@ def _prep_lsqr(task_params):
 
         sub_b = valid_vals * valid_weight
 
-        # --- Spatial Regularization (Adjacency) ---
+        # --- Spatial Regularization (Adjacency + polynomial-order constraints) ---
         # One block per map; skipped for any map in template mode.
         reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
         if offset_regularization:
@@ -113,11 +114,12 @@ def _prep_lsqr(task_params):
             for m in range(K):
                 if det_template_list[m] is not None:
                     continue
+                offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
+
                 rw_m = reg_weight_list[m]
                 if rw_m > 0 and adj_info_list[m] is not None:
                     chunk_i, chunk_j = adj_info_list[m]
                     num_constraints = len(chunk_i)
-                    offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
                     # Constraint: rw_m * (O_i - O_j) = 0; rows start after data equations
                     # plus any earlier maps' constraint rows.
                     reg_rows_parts.append(np.repeat(np.arange(num_constraints) + reg_row_offset, 2))
@@ -126,6 +128,26 @@ def _prep_lsqr(task_params):
                     reg_data_parts.append(np.tile([rw_m, -rw_m], num_constraints))
                     reg_b_parts.append(np.zeros(num_constraints))
                     reg_row_offset += num_constraints
+
+                # Polynomial-order constraints: λ · Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0
+                # per chain r. Generalizes the [1,-1] adjacency stencil to arbitrary
+                # length-L stencils on user-supplied chunk-id chains.
+                groups_m = poly_constraint_list[m]
+                if groups_m:
+                    for grp in groups_m:
+                        chains = grp['chains']
+                        stencil = grp['stencil']
+                        weight = grp['weight']
+                        if weight == 0 or chains.shape[0] == 0:
+                            continue
+                        num_chains, L = chains.shape
+                        reg_rows_parts.append(
+                            np.repeat(np.arange(num_chains) + reg_row_offset, L))
+                        reg_cols_parts.append((offset_base_m + chains).reshape(-1))
+                        reg_data_parts.append(
+                            np.tile(weight * stencil.astype(np.float64), num_chains))
+                        reg_b_parts.append(np.zeros(num_chains))
+                        reg_row_offset += num_chains
             if reg_rows_parts:
                 reg_rows = np.concatenate(reg_rows_parts)
                 reg_cols = np.concatenate(reg_cols_parts)
@@ -267,7 +289,8 @@ def setup_lsqr(file_list, ref_shape,
                chunk_maps=None, grid_valid_weight=None, apply_mask=True, apply_weight=False,
                valid_threshold=0.99,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
-               reg_weights=None, adj_infos=None, mean_offsets_list=None, det_groups_list=None, det_templates=None,
+               reg_weights=None, adj_infos=None, poly_constraints_list=None,
+               mean_offsets_list=None, det_groups_list=None, det_templates=None,
                postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
@@ -294,6 +317,14 @@ def setup_lsqr(file_list, ref_shape,
     adj_infos : list of tuple or None
         Per-map precomputed adjacency information (length K). Each entry is a
         ``(chunk_i, chunk_j)`` tuple or ``None``.
+    poly_constraints_list : list or None
+        Per-map polynomial-order constraint groups (length K). Each entry is
+        ``None`` (no poly constraints on this map) or a list of dicts, each
+        ``{'chains': (num_chains, L) int ndarray, 'stencil': (L,) float
+        ndarray, 'weight': float}``. The constraint is
+        ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` per chain r per frame.
+        Generalizes the constant-prior ``adj_infos`` (stencil=[1,-1]) to
+        arbitrary finite-difference operators. Skipped in template mode.
     mean_offsets_list : list or None
         Per-map mean-offset constraint targets (length K). Each entry is a
         length-num_frames array or ``None`` to disable for that map.
@@ -328,9 +359,35 @@ def setup_lsqr(file_list, ref_shape,
 
     reg_weights = _default(reg_weights, 0.0)
     adj_infos = _default(adj_infos, None)
+    poly_constraints_list = _default(poly_constraints_list, None)
     mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
+
+    # Normalize and validate poly-constraint groups: each entry is None or a
+    # non-empty list of dicts; each dict has matching chains.shape[1] == len(stencil).
+    # Cast chains to int64 and stencil to float64 once here so workers don't
+    # re-cast per call.
+    normalized_poly = []
+    for m, groups in enumerate(poly_constraints_list):
+        if groups is None:
+            normalized_poly.append(None)
+            continue
+        norm_groups = []
+        for g_idx, grp in enumerate(groups):
+            chains = np.asarray(grp['chains'], dtype=np.int64)
+            stencil = np.asarray(grp['stencil'], dtype=np.float64)
+            weight = float(grp['weight'])
+            assert chains.ndim == 2, \
+                f"poly_constraints_list[{m}][{g_idx}]['chains'] must be 2-D"
+            assert stencil.ndim == 1, \
+                f"poly_constraints_list[{m}][{g_idx}]['stencil'] must be 1-D"
+            assert chains.shape[1] == stencil.shape[0], \
+                (f"poly_constraints_list[{m}][{g_idx}]: chains.shape[1]="
+                 f"{chains.shape[1]} != len(stencil)={stencil.shape[0]}")
+            norm_groups.append({'chains': chains, 'stencil': stencil, 'weight': weight})
+        normalized_poly.append(norm_groups if norm_groups else None)
+    poly_constraints_list = normalized_poly
 
     # Adjacency tuples with all-empty arrays (e.g. NumCol=1 from
     # compute_column_adjacency) produce zero adjacency constraints anyway —
@@ -341,6 +398,7 @@ def setup_lsqr(file_list, ref_shape,
         for adj in adj_infos
     ]
     for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
+                      ('poly_constraints_list', poly_constraints_list),
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates)):
@@ -417,6 +475,7 @@ def setup_lsqr(file_list, ref_shape,
         'offset_regularization': offset_regularization,
         'reg_weight_list': reg_weights,
         'adj_info_list': adj_infos,
+        'poly_constraint_list': poly_constraints_list,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,

@@ -20,21 +20,12 @@ Nothing functional in `SelfCal/` has changed yet.
 
 - [x] Cleaned up branches after multi-chunk-maps merge: deleted `feat/multi-chunk-maps` (local + origin), synced local `main` to `origin/main`, created `feat/poly-offset-constraint`. Stable not advanced (deliberate — keep analysis env on the old code until you're ready to promote).
 - [x] Wrote the polynomial-offset-constraint plan ([POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md)) — math, API, file touchpoints, SPHEREx helper, regression strategy, 3-commit implementation order.
+- [x] **Commit 1 — core wiring** ([SelfCal/lsqr.py](SelfCal/lsqr.py), [SelfCal/PipelineWrapper.py](SelfCal/PipelineWrapper.py)). `poly_constraints_list=None` defaults; validation in `setup_lsqr`; per-map loop in `_prep_lsqr` mirrors the adjacency-reg block (same `offset_base_m` indexing, same `reg_row_offset` arithmetic, template-mode skip, RHS=0). No SHM — chains/stencils ride along in `common_params` and pickle directly to workers.
+- [x] **Test A passed** for Commit 1: full Ch17 calibration with default (`None`) ran in 2300s. Diff vs `cal_*_baseline_after_commit3.h5`: skymap/offset both clear `np.allclose(rtol=0, atol=1e-2)` with zero elements over threshold (max abs 4.49e-3 / 9.24e-3, mean 2.0e-5 / 2.9e-6). Coverage / chunk_maps / reproj_list byte-equal. Same band as the multi-chunk-maps refactor cleared (parallel-LSQR float32 reduction noise; not affected by this commit).
 
 ## To do — next session pick up here
 
 The full sequence is in [POLY_OFFSET_PLAN.md](POLY_OFFSET_PLAN.md) under "Implementation order — 3 commits". Summary:
-
-### Commit 1 — Core wiring (regression-equal with `poly_constraints_list=None`)
-
-Files:
-- `SelfCal/lsqr.py`
-  - `setup_lsqr`: add `poly_constraints_list=None` param; default-fill to `[None] * K`; validate length and per-entry shape (`chains.shape[1] == len(stencil)`); thread through to workers via task params.
-  - `_prep_lsqr`: inside the existing `if offset_regularization:` block, add a parallel inner loop over `poly_constraint_list[m]` (length 0..G_m). Emit `len(chains)` constraint rows per group, with column entries indexed via `col_bases[m] + group_idx_list[m] * num_chunks_list[m] + chains[r, ℓ]` and data values `weight * stencil[ℓ]`. Skip in template mode.
-  - `_prep_lsqr_batch_worker`: forward the new task param. **No SHM** (small data; pickling is fine).
-- `SelfCal/PipelineWrapper.py`:`Calibrator.setup_lsqr`: add the param; document the dict format in the docstring.
-
-Verification: run `selfcal_scripts/run_cal_baseline_test.py` with the new code and `poly_constraints_list=None` (default). Diff against the existing baseline `cal_*_baseline_before_refactor.h5` (or generate a new `cal_*_baseline_before_poly.h5` if the prior baseline is gone). Pass criterion: same `np.allclose(rtol=0, atol=1e-2)` band that the multi-chunk-maps refactor cleared.
 
 ### Commit 2 — SPHEREx helper + plumbing smoke test
 

@@ -154,7 +154,7 @@ if __name__ == "__main__":
     # Change between runs: e.g. 'before_refactor' for the baseline run on current code,
     # 'after_refactor' for the run on refactored code. Each tag produces a distinctly-named
     # cal_*.h5 so before/after files coexist for byte-equality diffing.
-    TEST_TAG = 'after_commit3'
+    TEST_TAG = 'after_poly_off'
     FILE_SUFFIX = f'_baseline_{TEST_TAG}'
 
     HDD_IO_LIMIT = 20

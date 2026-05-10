@@ -140,7 +140,8 @@ class Calibrator(Reprojector):
                    apply_mask=True, apply_weight=True, max_workers=20,
                    outlier_thresh=3.0, ignore_list=[], batch_size=10,
                    offset_regularization=False,
-                   reg_weights=None, adj_infos=None, mean_offsets_list=None,
+                   reg_weights=None, adj_infos=None, poly_constraints_list=None,
+                   mean_offsets_list=None,
                    det_groups_list=None, det_templates=None,
                    postprocess_func=None, preprocess_func=None,
                    weighted_damping=False, damp_weight=0.1):
@@ -148,9 +149,18 @@ class Calibrator(Reprojector):
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
         configuration arguments (``reg_weights``, ``adj_infos``,
-        ``mean_offsets_list``, ``det_groups_list``, ``det_templates``) are each
-        either ``None`` (default for every map) or length-K lists. A
-        ``ValueError`` is raised on length mismatch.
+        ``poly_constraints_list``, ``mean_offsets_list``, ``det_groups_list``,
+        ``det_templates``) are each either ``None`` (default for every map) or
+        length-K lists. A ``ValueError`` is raised on length mismatch.
+
+        ``poly_constraints_list[m]`` is ``None`` (no polynomial-order
+        constraints on map ``m``) or a list of constraint groups. Each group is
+        a dict ``{'chains': (num_chains, L) int ndarray, 'stencil': (L,) float
+        ndarray, 'weight': float}``. The constraint
+        ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` is added per chain ``r`` per
+        frame and generalizes adjacency reg (``stencil=[1,-1]``) to arbitrary
+        finite-difference operators. See ``SPHERExUtility.compute_column_polynomial_chains``
+        for the SPHEREx column-linearity helper.
         """
         assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
             "chunk_maps must be a non-empty list of ndarrays"
@@ -161,6 +171,7 @@ class Calibrator(Reprojector):
                 raise ValueError(f"{name} must have length {K} (got {len(val)})")
         _check_len('reg_weights', reg_weights)
         _check_len('adj_infos', adj_infos)
+        _check_len('poly_constraints_list', poly_constraints_list)
         _check_len('mean_offsets_list', mean_offsets_list)
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
@@ -175,6 +186,7 @@ class Calibrator(Reprojector):
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
+                poly_constraints_list=poly_constraints_list,
                 mean_offsets_list=mean_offsets_list,
                 det_groups_list=det_groups_list,
                 det_templates=det_templates,
