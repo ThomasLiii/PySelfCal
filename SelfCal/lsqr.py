@@ -291,6 +291,7 @@ def setup_lsqr(file_list, ref_shape,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weights=None, adj_infos=None, poly_constraints_list=None,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
+               use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
@@ -331,7 +332,14 @@ def setup_lsqr(file_list, ref_shape,
     det_groups_list : list or None
         Per-map frame→group labels (length K). Each entry is ``None`` (one
         group per frame) or an array of length num_frames. A single per-frame
-        scalar bias column is added if any map uses det_groups.
+        scalar bias column is added if any map uses det_groups (or if
+        ``use_per_frame_scalar`` is True).
+    use_per_frame_scalar : bool, optional
+        When True, add a per-frame scalar column (one per frame) even when
+        no map uses ``det_groups`` — useful for absorbing per-frame DC into
+        an explicit column so the per-frame chunk offsets only carry
+        within-frame structure. Pair with ``mean_offsets_list=[zeros]`` and
+        a zero-chunk x0 init to push DC into the scalar.
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
@@ -440,7 +448,7 @@ def setup_lsqr(file_list, ref_shape,
         num_chunks_list.append(num_chunks_m)
         det_template_arr_list.append(tmpl)
 
-    num_scalar_cols = num_frames if any_det_groups else 0
+    num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
 
     # --- col_bases: per-map offset-block column starts; col_bases[K] = scalar_col_start ---
     col_bases = [num_sky]
@@ -453,7 +461,7 @@ def setup_lsqr(file_list, ref_shape,
     scalar_col_start = col_bases[K]
     total_cols = scalar_col_start + num_scalar_cols
 
-    if any_det_groups:
+    if any_det_groups or use_per_frame_scalar:
         print(f"Locking detector offsets: {num_frames} frames -> "
               f"groups {num_offset_groups_list} + {num_frames} frame scalars")
     if any(t is not None for t in det_template_arr_list):

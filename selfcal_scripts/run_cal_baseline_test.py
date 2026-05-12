@@ -20,9 +20,10 @@ sys.path.append(parent_path)
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.SPHERExUtility import (load_calibration, load_lvf_params, compute_column_adjacency,
-                                    compute_column_polynomial_chains,
+                                    compute_column_polynomial_chains, compute_offsets_guess,
                                     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
                                     fast_vertical_dist)
+from SelfCal.solution import encode_x, compute_x0_scalar_only
 
 
 def build_detector_stripe_map(shape, mid_width=64, edge_width=60, dtype=np.int32):
@@ -133,17 +134,25 @@ def mask_bright_pixels(local_vars):
 def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_frames):
     """Solver-config dispatch for the named test variants.
 
-    poly_off : K=1, NumCol=3, no poly constraint (matches the multi-chunk-maps
-               regression baseline).
-    poly_k1  : K=1, NumCol=10, linear column-polynomial constraint via
-               compute_column_polynomial_chains.
-    poly_k2  : K=2; same map 0 + constraint as poly_k1, plus a detector-fixed
-               64-px-stripe map shared across frames (det_groups all-zeros);
-               map 1 chunk-mean is anchored to 0 per frame so DC stays in the
-               auto-added per-frame scalar instead of drifting between map 0
-               and map 1.
+    All variants except ``oldx0_off`` enable a per-frame scalar
+    (``use_per_frame_scalar=True``) and anchor each map's per-frame
+    chunk-mean to 0 (``mean_offsets_list=[zeros, ...]``). This pushes per-frame
+    DC into the explicit scalar column, so chunk offsets only carry
+    within-frame structure — fixes the post-Apr-5 ``compute_x0_from_Ab``
+    regression where low-coverage chunks were under-constrained on narrow
+    channel masks.
+
+    poly_off    : K=1, NumCol=3, no poly constraint.
+    poly_k1     : K=1, NumCol=10, linear column-polynomial constraint.
+    poly_k2     : K=2; same map 0 + constraint as poly_k1, plus a
+                  detector-fixed 64-px-stripe map shared across frames.
+    oldx0_off   : K=1, NumCol=3, no scalar — diagnostic that uses the
+                  pre-Apr-5 ``compute_offsets_guess`` x0 init instead.
+    scalar_off  : K=1, NumCol=3, alias of poly_off (kept for backwards
+                  compatibility with prior naming in this branch).
     """
-    if variant == 'poly_off':
+    if variant == 'oldx0_off':
+        # Diagnostic: pre-Apr-5 path with no scalar.
         return {
             'chunk_maps': [det_chunk_map],
             'adj_infos': [adj_info],
@@ -151,6 +160,16 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
             'poly_constraints_list': None,
             'mean_offsets_list': None,
             'det_groups_list': None,
+        }
+    if variant in ('poly_off', 'scalar_off'):
+        return {
+            'chunk_maps': [det_chunk_map],
+            'adj_infos': [adj_info],
+            'reg_weights': [0.1],
+            'poly_constraints_list': None,
+            'mean_offsets_list': [np.zeros(num_frames)],
+            'det_groups_list': None,
+            'use_per_frame_scalar': True,
         }
     if variant == 'poly_k1':
         chains, stencil = compute_column_polynomial_chains(
@@ -162,8 +181,9 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
             'poly_constraints_list': [[
                 {'chains': chains, 'stencil': stencil, 'weight': 0.5},
             ]],
-            'mean_offsets_list': None,
+            'mean_offsets_list': [np.zeros(num_frames)],
             'det_groups_list': None,
+            'use_per_frame_scalar': True,
         }
     if variant == 'poly_k2':
         chains, stencil = compute_column_polynomial_chains(
@@ -171,6 +191,10 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
         stripe_map = build_detector_stripe_map(
             det_chunk_map.shape, mid_width=64, edge_width=60,
             dtype=det_chunk_map.dtype)
+        # map 0: per-frame, mean-anchored to 0. map 1: shared across frames,
+        # mean-anchored to 0 (already present from prior K=2 config).
+        # det_groups_list[1] = zeros triggers the scalar via the existing
+        # path, but we also set use_per_frame_scalar=True for clarity.
         return {
             'chunk_maps': [det_chunk_map, stripe_map],
             'adj_infos': [adj_info, None],
@@ -179,13 +203,14 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
                 [{'chains': chains, 'stencil': stencil, 'weight': 0.5}],
                 None,
             ],
-            'mean_offsets_list': [None, np.zeros(num_frames)],
+            'mean_offsets_list': [np.zeros(num_frames), np.zeros(num_frames)],
             'det_groups_list': [None, np.zeros(num_frames, dtype=np.int64)],
+            'use_per_frame_scalar': True,
         }
     raise ValueError(f"Unknown variant: {variant!r}")
 
 
-VARIANT_NUMCOL = {'poly_off': 3, 'poly_k1': 10, 'poly_k2': 10}
+VARIANT_NUMCOL = {'poly_off': 3, 'poly_k1': 10, 'poly_k2': 10, 'oldx0_off': 3, 'scalar_off': 3}
 
 
 if __name__ == "__main__":
@@ -235,7 +260,7 @@ if __name__ == "__main__":
     # Variants run sequentially; each produces a distinctly-named cal_*.h5
     # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the
     # K=1, NumCol=3 regression baseline.
-    TEST_VARIANTS = ['poly_k1', 'poly_k2']
+    TEST_VARIANTS = ['scalar_off']
 
     # Cap reproj files for a quick plumbing check; set to None for full runs.
     NUM_FRAMES_LIMIT = None
@@ -326,10 +351,39 @@ if __name__ == "__main__":
                     poly_constraints_list=variant_cfg['poly_constraints_list'],
                     mean_offsets_list=variant_cfg['mean_offsets_list'],
                     det_groups_list=variant_cfg['det_groups_list'],
+                    use_per_frame_scalar=variant_cfg.get('use_per_frame_scalar', False),
                     **calibration_kwargs_shared,
                 )
 
-                x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
+                if variant == 'oldx0_off':
+                    # Diagnostic: pre-Apr-5 x0 init (compute_offsets_guess reads
+                    # reproj FITS files and returns per-frame per-chunk mean).
+                    # Reference behavior for the original "good" production run.
+                    print("Computing x0 from compute_offsets_guess (pre-Apr-5 path)...")
+                    offset_guess = compute_offsets_guess(
+                        reproj_list=cc.reproj_list,
+                        det_chunk_map=variant_cfg['chunk_maps'][0],
+                    )
+                    skymap_guess = np.zeros(cc.ref_shape, dtype=np.float64)
+                    x0 = encode_x(skymap_guess, offset_guess)
+                    print(f"  x0: shape={x0.shape}, "
+                          f"offset_guess nonzero frac={(offset_guess != 0).mean():.3f}")
+                elif variant_cfg.get('use_per_frame_scalar', False):
+                    # Per-frame scalar absorbs DC via compute_x0_scalar_only:
+                    # scalar = diag-LS from A/b (≈ weighted mean of valid b
+                    # per frame); chunks + sky start at 0. This is the fix
+                    # for the post-Apr-5 narrow-channel regression.
+                    print("Computing x0 from compute_x0_scalar_only...")
+                    x0 = compute_x0_scalar_only(
+                        cc.A, cc.b, cc.ref_shape,
+                        scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                    )
+                    scalar_col_start = cc.col_bases[len(cc.chunk_maps)]
+                    scalar_init = x0[scalar_col_start:]
+                    print(f"  x0: shape={x0.shape}, "
+                          f"scalar_init mean={scalar_init.mean():+.3e}, std={scalar_init.std():.3e}")
+                else:
+                    x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
 
                 cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
                 # Save with original HDD paths so cal file remains valid after NVMe cleanup

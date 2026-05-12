@@ -20,6 +20,7 @@ sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
@@ -233,16 +234,25 @@ if __name__ == "__main__":
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
+            # Per-frame scalar absorbs DC; mean-anchor on map 0 chunks forces
+            # within-frame structure only on the chunks. Required to avoid
+            # scan-stripe residuals on narrow channel masks — see PIPELINE.md.
+            num_frames_run = len(cc.reproj_list)
             cc.setup_lsqr(
                 chunk_maps=[detector_inputs['det_chunk_map']],
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
                 adj_infos=[detector_inputs['adj_info']],
+                mean_offsets_list=[np.zeros(num_frames_run)],
+                use_per_frame_scalar=True,
                 **calibration_kwargs
             )
-            
-            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
-            
+
+            x0 = compute_x0_scalar_only(
+                cc.A, cc.b, cc.ref_shape,
+                scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+            )
+
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
             nvme_list = cc.reproj_list

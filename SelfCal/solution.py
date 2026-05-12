@@ -84,3 +84,26 @@ def compute_x0_from_Ab(A, b, ref_shape):
     x0 = np.zeros(num_cols)
     x0[num_sky:] = offsets
     return x0
+
+
+def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start):
+    """x0 for the ``use_per_frame_scalar`` setup: scalar gets diag-LS, chunks
+    start at 0, sky starts at 0.
+
+    The diag-LS for a scalar column degenerates to the weighted mean of valid
+    pixel values in that frame's data (since the scalar column has constant
+    ``valid_weight`` for every valid pixel in the frame). With chunk and sky
+    init at 0, all per-frame DC is concentrated in the scalar at iter 0, and
+    LSQR's first few iterations refine the chunk offsets around it.
+
+    Parameters
+    ----------
+    scalar_col_start : int
+        Column index where the per-frame scalar block begins. For K maps,
+        this is the value Calibrator stores as ``col_bases[K]``.
+    """
+    x0 = compute_x0_from_Ab(A, b, ref_shape)
+    ref_h, ref_w = ref_shape
+    num_sky = ref_h * ref_w
+    x0[num_sky:scalar_col_start] = 0.0
+    return x0
