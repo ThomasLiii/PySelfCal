@@ -216,7 +216,7 @@ VARIANT_NUMCOL = {'poly_off': 3, 'poly_k1': 10, 'poly_k2': 10, 'oldx0_off': 3, '
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     base_frame_setting = {
-        'Detector': 3,
+        'Detector': 5,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 3,
@@ -260,13 +260,13 @@ if __name__ == "__main__":
     # Variants run sequentially; each produces a distinctly-named cal_*.h5
     # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the
     # K=1, NumCol=3 regression baseline.
-    TEST_VARIANTS = ['scalar_off']
+    TEST_VARIANTS = ['poly_off', 'poly_k1', 'poly_k2']
 
     # Cap reproj files for a quick plumbing check; set to None for full runs.
     NUM_FRAMES_LIMIT = None
 
     HDD_IO_LIMIT = 20
-    chs = [[17]]
+    chs = [[3]]
     # ----------------------------- End of Settings -----------------------------
 
     set_hdd_io_limit(HDD_IO_LIMIT)
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     for variant in TEST_VARIANTS:
         frame_setting = dict(base_frame_setting, NumCol=VARIANT_NUMCOL[variant])
         frame_setting_str = '_'.join([f'{key}{value}' for key, value in frame_setting.items()])
-        FILE_SUFFIX = f'_baseline_{variant}'
+        FILE_SUFFIX = f'_baseline_{variant}_fixed'
 
         print(f"\n{'=' * 70}\nVariant {variant} (NumCol={frame_setting['NumCol']})\n{'=' * 70}")
         detector_inputs = prepare_detector_inputs(frame_setting, mosaic_oversample_factor)

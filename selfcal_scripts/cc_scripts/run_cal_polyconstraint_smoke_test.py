@@ -28,7 +28,8 @@ import glob as glob_module
 
 import numpy as np
 
-parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Script lives at <repo>/selfcal_scripts/cc_scripts/; repo root is 3 dirs up.
+parent_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(parent_path)
 
 from SelfCal.lsqr import setup_lsqr
