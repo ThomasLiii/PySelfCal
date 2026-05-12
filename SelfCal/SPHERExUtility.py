@@ -357,7 +357,81 @@ def compute_subchannel_adjacency(chunk_map, num_columns):
     print(f"Found {len(unique_pairs)} vertical subchannel boundaries.")
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
-def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17, 
+def compute_column_polynomial_chains(chunk_map, num_columns, degree=1):
+    """Build chains and stencil for a polynomial-degree constraint along
+    columns within each subchannel of a SPHEREx stripped chunk map.
+
+    A polynomial of degree ``degree`` is annihilated by the
+    ``(degree + 1)``-th finite-difference operator, which has
+    ``L = degree + 2`` coefficients ``(-1)^k * C(degree + 1, k)`` for
+    ``k = 0..degree + 1``. Examples:
+
+    ====== === =================
+    degree  L  stencil
+    ====== === =================
+    0       2  ``[1, -1]`` (the existing constant-prior adjacency)
+    1       3  ``[1, -2, 1]`` (linear)
+    2       4  ``[1, -3, 3, -1]`` (quadratic)
+    ====== === =================
+
+    For each subchannel ``s``, sliding windows of length ``L`` over the
+    columns ``[chunk(s, 0), chunk(s, 1), ...]`` form the chains; there are
+    ``num_columns - L + 1 = num_columns - degree - 1`` windows per
+    subchannel.
+
+    Parameters
+    ----------
+    chunk_map : (det_h, det_w) int ndarray
+        Stripped chunk map produced by ``make_stripped_chunk_map``. Chunk
+        IDs are assumed to be ``subchannel * num_columns + column``;
+        ``num_subchannels`` is inferred as ``(chunk_map.max() + 1) // num_columns``.
+    num_columns : int
+        Number of column subdivisions per subchannel.
+    degree : int
+        Polynomial degree to enforce (1 = linear, 2 = quadratic, ...).
+
+    Returns
+    -------
+    chains : (num_subchannels * (num_columns - degree - 1), degree + 2) int64 ndarray
+    stencil : (degree + 2,) float64 ndarray
+
+    Raises
+    ------
+    ValueError
+        If ``degree < 0`` or ``num_columns < degree + 2`` (no length-L window fits).
+    """
+    from math import comb
+
+    if degree < 0:
+        raise ValueError(f"degree must be >= 0 (got {degree})")
+    L = degree + 2
+    if num_columns < L:
+        raise ValueError(
+            f"num_columns={num_columns} too small for degree={degree}: need "
+            f">= {L} columns per subchannel for a length-{L} chain")
+
+    num_chunks = int(chunk_map.max()) + 1
+    if num_chunks % num_columns != 0:
+        raise ValueError(
+            f"chunk_map.max()+1={num_chunks} is not divisible by "
+            f"num_columns={num_columns}; cannot infer num_subchannels")
+    num_subchannels = num_chunks // num_columns
+    num_windows = num_columns - L + 1  # = num_columns - degree - 1
+
+    sub_idx = np.arange(num_subchannels)[:, None, None]
+    win_start = np.arange(num_windows)[None, :, None]
+    offset = np.arange(L)[None, None, :]
+    chunk_ids = sub_idx * num_columns + win_start + offset
+    chains = chunk_ids.reshape(num_subchannels * num_windows, L).astype(np.int64)
+
+    stencil = np.array(
+        [(-1) ** k * comb(degree + 1, k) for k in range(L)],
+        dtype=np.float64,
+    )
+    return chains, stencil
+
+
+def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17,
                             oversample_factor=1, num_columns=1, lvf_params=None, 
                             calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)

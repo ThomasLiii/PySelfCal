@@ -140,17 +140,36 @@ class Calibrator(Reprojector):
                    apply_mask=True, apply_weight=True, max_workers=20,
                    outlier_thresh=3.0, ignore_list=[], batch_size=10,
                    offset_regularization=False,
-                   reg_weights=None, adj_infos=None, mean_offsets_list=None,
+                   reg_weights=None, adj_infos=None, poly_constraints_list=None,
+                   mean_offsets_list=None,
                    det_groups_list=None, det_templates=None,
+                   use_per_frame_scalar=False,
                    postprocess_func=None, preprocess_func=None,
                    weighted_damping=False, damp_weight=0.1):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
         configuration arguments (``reg_weights``, ``adj_infos``,
-        ``mean_offsets_list``, ``det_groups_list``, ``det_templates``) are each
-        either ``None`` (default for every map) or length-K lists. A
-        ``ValueError`` is raised on length mismatch.
+        ``poly_constraints_list``, ``mean_offsets_list``, ``det_groups_list``,
+        ``det_templates``) are each either ``None`` (default for every map) or
+        length-K lists. A ``ValueError`` is raised on length mismatch.
+
+        ``poly_constraints_list[m]`` is ``None`` (no polynomial-order
+        constraints on map ``m``) or a list of constraint groups. Each group is
+        a dict ``{'chains': (num_chains, L) int ndarray, 'stencil': (L,) float
+        ndarray, 'weight': float}``. The constraint
+        ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` is added per chain ``r`` per
+        frame and generalizes adjacency reg (``stencil=[1,-1]``) to arbitrary
+        finite-difference operators. See ``SPHERExUtility.compute_column_polynomial_chains``
+        for the SPHEREx column-linearity helper.
+
+        Set ``use_per_frame_scalar=True`` to add an explicit per-frame scalar
+        bias column. Combined with ``mean_offsets_list=[zeros]`` and a zero
+        chunk-block x0 init (see ``solution.compute_x0_scalar_only``), this
+        pushes per-frame DC into the scalar so the chunk offsets only carry
+        within-frame structure. This is the recommended setup for narrow
+        channel-mask calibrations on H2RG detectors where ``compute_x0_from_Ab``
+        alone leaves low-coverage chunks under-constrained.
         """
         assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
             "chunk_maps must be a non-empty list of ndarrays"
@@ -161,6 +180,7 @@ class Calibrator(Reprojector):
                 raise ValueError(f"{name} must have length {K} (got {len(val)})")
         _check_len('reg_weights', reg_weights)
         _check_len('adj_infos', adj_infos)
+        _check_len('poly_constraints_list', poly_constraints_list)
         _check_len('mean_offsets_list', mean_offsets_list)
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
@@ -175,9 +195,11 @@ class Calibrator(Reprojector):
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
+                poly_constraints_list=poly_constraints_list,
                 mean_offsets_list=mean_offsets_list,
                 det_groups_list=det_groups_list,
                 det_templates=det_templates,
+                use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight)
 
@@ -187,7 +209,7 @@ class Calibrator(Reprojector):
         num_sky = self.ref_shape[0] * self.ref_shape[1]
 
         any_det_groups = det_groups_list is not None and any(g is not None for g in det_groups_list)
-        self.num_scalar_cols = num_frames if any_det_groups else 0
+        self.num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
 
         frame_to_groups = []
         num_offset_groups_list = []
