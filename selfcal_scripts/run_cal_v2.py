@@ -130,12 +130,12 @@ if __name__ == "__main__":
         'apply_weight': False,
         'outlier_thresh': 5.0,
         'ignore_list': [],
-        'batch_size': 20,
+        'batch_size': 50,
         'offset_regularization': True,
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
-        'max_workers': 32,
+        'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
 
@@ -155,10 +155,10 @@ if __name__ == "__main__":
         'apply_sigma_clipping': True,
         'sigma': 2.0,
         'ignore_list': [21],
-        'cache_batch_size': 20,
-        'coadd_batch_size': 30,
+        'cache_batch_size': 50,
+        'coadd_batch_size': 50,
         'cache_intermediate': True,
-        'max_workers': 32
+        'max_workers': 48
     }
     
     mosaic_oversample_factor = 2
@@ -253,7 +253,7 @@ if __name__ == "__main__":
                 scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
             )
 
-            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
+            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
             nvme_list = cc.reproj_list
             cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
