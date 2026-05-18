@@ -255,7 +255,7 @@ if __name__ == "__main__":
     # oversample factor as production. Kept for input-parity with the production script.
     mosaic_oversample_factor = 2
 
-    CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
+    CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
 
     # Variants run sequentially; each produces a distinctly-named cal_*.h5
     # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the

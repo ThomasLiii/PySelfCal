@@ -1,4 +1,4 @@
-name: general
+name: selfcal
 channels:
   - defaults
 dependencies:

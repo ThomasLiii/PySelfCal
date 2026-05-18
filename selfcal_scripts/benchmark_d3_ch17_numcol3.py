@@ -90,8 +90,8 @@ def main():
     }
     mosaic_oversample_factor = 2
 
-    CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
-    BENCH_DIR = '/home/thomasli/spherex/selfcal/figures/benchmark/'
+    CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
+    BENCH_DIR = '/home/thomasli/selfcal-project/selfcal/figures/benchmark/'
     os.makedirs(BENCH_DIR, exist_ok=True)
     FILE_SUFFIX = '_bench_d3_ch17_numcol3'
     chs = [[17]]

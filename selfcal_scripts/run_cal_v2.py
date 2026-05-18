@@ -163,7 +163,7 @@ if __name__ == "__main__":
     
     mosaic_oversample_factor = 2
 
-    CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
+    CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
     # Channels to process
