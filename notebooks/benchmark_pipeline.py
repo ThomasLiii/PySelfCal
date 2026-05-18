@@ -37,7 +37,7 @@ HDD_IO_LIMIT = 20
 set_hdd_io_limit(HDD_IO_LIMIT)
 
 # %% Cell 0b: Copy reproj files from HDD to NVMe
-CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
+CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
 
 selfcal_config_tmp = PipelineWrapper.PipelineConfig(
     output_dir='/mnt/md124/thomasli/selfcal/outputs/',

@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     mosaic_oversample_factor = 2
 
-    CACHE_DIR = '/home/thomasli/spherex/selfcal/cache/'
+    CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
 
     # Variant => (NumCol, file_suffix) for cal/mosaic naming. The 'baseline'
     # variant targets the existing NumCol=3 regression-test cal file

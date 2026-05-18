@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 
 MOS_DIR = '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det5_6p2arcsec/mosaic/'
-FIG_DIR = '/home/thomasli/spherex/selfcal/figures/cc_figure/'
+FIG_DIR = '/home/thomasli/selfcal-project/selfcal/figures/cc_figure/'
 
 PANELS = [
     ('production',    'mosaic_Detector5_NumSub10_NumCh34_NumCol3_Ch3_damp0p1_reg0p1_outThresh5_sigma2.fits'),
