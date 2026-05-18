@@ -7,29 +7,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Two coupled efforts share this tree:
 
 1. **`SelfCal/` — the pipeline.** Sparse-LSQR self-calibration + mosaicking for SPHEREx (with Euclid helpers). Two reference docs:
-   - [SelfCal/README.md](SelfCal/README.md) — module-level **code architecture**: the data flow `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and design decisions (shared-memory worker hand-off, parallel SpMV `LinearOperator`, tight-bbox cache crops, zero-column elimination, etc.). Read this before touching anything in `SelfCal/`.
-   - [PIPELINE.md](PIPELINE.md) — **operational runbook**: tuning knobs (`NumCol`, `reg_weight`, `damp_weight`, adjacency choice), advanced solve modes (`det_groups`, `det_template`, `mean_offsets`), the NVMe staging pattern, and the on-disk schemas of `cal_*.h5`, reprojected `*.h5`, and mosaic `*.fits`. Read this when running the pipeline or working with its outputs.
-2. **`analysis/analysis_script/` — diagnostics on the calibration outputs.** Loads the per-frame, per-chunk offset terms from `cal_*.h5` files and characterizes the temporal/spatial structure (annual sine fits, residual scans, detector-fixed pattern extraction, raw-stack verification, etc.). This is where most ad-hoc plotting and analysis lives.
+   - [SelfCal/README.md](SelfCal/README.md) — module-level **code architecture**: the data flow `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and design decisions (multi-chunk-map LSQR build, shared-memory worker hand-off, parallel SpMV `LinearOperator`, tight-bbox cache crops, zero-column elimination, etc.). Read this before touching anything in `SelfCal/`.
+   - [PIPELINE.md](PIPELINE.md) — **operational runbook**: tuning knobs (`NumCol`, `reg_weights`, `damp_weight`, adjacency choice, polynomial constraints), advanced solve modes (`det_groups_list`, `det_templates`, `mean_offsets_list`, `use_per_frame_scalar`), the NVMe staging pattern, and the on-disk schemas of `cal_*.h5`, reprojected `*.h5`, and mosaic `*.fits`. Read this when running the pipeline or working with its outputs.
+2. **`analysis/analysis_script/` — diagnostics on the calibration outputs.** Loads the per-frame, per-chunk offset terms from `cal_*.h5` files via `zodi_utils.load_cal_offsets` (handles both legacy single-map and multi-chunk-map schemas) and characterizes the temporal/spatial structure (annual sine fits, residual scans, detector-fixed pattern extraction, raw-stack verification, etc.). This is where most ad-hoc plotting and analysis lives.
 
-The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol3_Ch{ch}_*.h5` files; the analysis scripts consume them.
+The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol{C}_Ch{ch}{suffix}.h5` files; the analysis scripts consume them.
 
 ## Layout
 
 | Dir | What's there |
 | --- | --- |
-| `SelfCal/` | Library code (PipelineWrapper, lsqr, coadd, SPHERExUtility, …). See [SelfCal/README.md](SelfCal/README.md). |
-| `selfcal_scripts/` | Drivers: `run_reproject.py`, `run_cal_v2.py`, `precompute_lvf_params.py`. Cached LVF params land in `selfcal_scripts/lvf_params/lvf_params_D{D}.npy`. Tuning + schema docs in [PIPELINE.md](PIPELINE.md). |
-| `analysis/analysis_script/` | Analysis scripts + caches + figures (see below). |
+| `SelfCal/` | Library code (PipelineWrapper, lsqr, coadd, subframe, solution, SPHERExUtility, …). See [SelfCal/README.md](SelfCal/README.md). |
+| `selfcal_scripts/` | Drivers: `run_reproject.py`, `run_cal_v2.py`, `run_cal_baseline_test.py` (test/regression harness with `TEST_VARIANTS`), `precompute_lvf_params.py`, `diff_cal_h5.py` (schema-aware cal-file diff), `run_cal_v2_k2_readout.py` (D5 K=2 experiment). Phase-level benchmark harness: `benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Cached LVF params land in `selfcal_scripts/lvf_params/lvf_params_D{D}.npy`. Tuning + schema docs in [PIPELINE.md](PIPELINE.md). |
+| `selfcal_scripts/cc_scripts/` | Cross-channel analysis/plotting one-offs (`plot_d5_ch3_*`, `run_mosaic_polyconstraint.py`). |
+| `analysis/analysis_script/` | Analysis scripts + caches + figures. |
 | `notebooks/` | Demos / one-offs. `spherex_selfcal_demo.ipynb` is the working demo. |
+| `figures/` | Gitignored. Per-channel analysis plots, benchmark timelines (`figures/benchmark/`), etc. |
 | `archive/` | Older analysis kept for reference; ignore unless asked. |
 
-Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det{D}_6p2arcsec/calibration/` (path is hard-coded in `analysis/analysis_script/zodi_utils.py:CAL_OUTPUT_BASE`).
+Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli/selfcal/outputs/{run_name}/calibration/` (path is hard-coded in `analysis/analysis_script/zodi_utils.py:CAL_OUTPUT_BASE`).
 
 ## Common commands
 
 Install editable: `pip install -e .` (uses `pyproject.toml`; package is just `SelfCal`).
 
-Pipeline runs are normally launched via `selfcal_scripts/run_cal_v2.py` (calibration) and `selfcal_scripts/run_reproject.py` (reprojection). Both prepend the repo root to `sys.path` and import `SelfCal.PipelineWrapper`. Edit the `frame_setting` / config block at the top, then run with `python selfcal_scripts/run_cal_v2.py`. They pin `OMP/MKL/OPENBLAS_NUM_THREADS=1` so the in-process LSQR threadpool is the only parallelism — preserve that when adding launchers.
+Pipeline runs are normally launched via `selfcal_scripts/run_cal_v2.py` (calibration + mosaic) and `selfcal_scripts/run_reproject.py` (reprojection). Both prepend the repo root to `sys.path` and import `SelfCal.PipelineWrapper`. Edit the `frame_setting` / config block at the top, then run with `python selfcal_scripts/run_cal_v2.py`. They pin `OMP/MKL/OPENBLAS_NUM_THREADS=1` so the in-process LSQR threadpool is the only parallelism — preserve that when adding launchers.
+
+**Production defaults (tuned 2026-05)**: `max_workers=48`, `batch_size=50` (cal), `cache_batch_size=50`, `coadd_batch_size=50` (mosaic), `n_threads=48` (apply_lsqr). On a 192-physical / 384-logical-core box, this is ~15% faster than the prior 32/20/30 defaults; the sweet spot is below the physical-core count because each `setup_lsqr` / `compute_coadd_map` call spawns a fresh `ProcessPoolExecutor`, and at very large worker counts the per-pool spawn time eats the parallelism gain. Full sweep + analysis: `figures/benchmark/d3_ch17_tuning_sweep.md` (gitignored).
 
 Analysis runs, all from `analysis/analysis_script/`:
 
@@ -45,7 +49,7 @@ python plot_chunkmap.py --detector D                # static; chunkmap_det{D}.pn
 # step is only the FITS reads.
 ```
 
-There is no test suite. There is no linter configured.
+There is no test suite. There is no linter configured. Regression for the pipeline is via `selfcal_scripts/run_cal_baseline_test.py` (produces named `cal_*.h5` files per `TEST_TAG` / variant) + `selfcal_scripts/diff_cal_h5.py` (element-wise dataset diff, schema-aware).
 
 For SelfCal-pipeline tuning, advanced solve modes, the NVMe staging pattern, and the on-disk schemas of the cal / reprojected / mosaic files, see [PIPELINE.md](PIPELINE.md). For module-level code architecture, see [SelfCal/README.md](SelfCal/README.md).
 
@@ -54,6 +58,7 @@ For SelfCal-pipeline tuning, advanced solve modes, the NVMe staging pattern, and
 All analysis scripts share `zodi_utils.py`:
 
 - `cal_path(detector, channel)` → the `cal_*.h5` calibration file (lives off-tree under `/mnt/md124/...`).
+- `load_cal_offsets(path_or_file)` → `{m: offset_m}` dict; handles both legacy top-level `offset` and new `offsets/map_m` schemas, folds `frame_scalar` into map 0 for legacy-compatible subtraction semantics.
 - `data_path(name)` → `analysis/analysis_script/cache/<name>` for `.pkl` / `.npz` caches.
 - `fig_path(name)` → `analysis/analysis_script/figures/<name>` for plots.
 - `sine_model`, `fit_sine` (frequency fixed at `1/SIDEREAL_YEAR_DAYS`), `compute_ecliptic_geometry`.
@@ -69,7 +74,7 @@ Scripts in this directory can be grouped by which cache they consume. `meeting_p
 
 ## Key conventions inside the analysis code
 
-- **Chunk indexing.** With `NUM_SUB=10`, `NUM_CH=34`, `NUM_COL=3`, `TOT_SUB = 10*34 + 2 = 342` (the +2 are the above-first / below-last padding subchannels). Chunk id = `subchannel * NUM_COL + column`, total `342 * 3 = 1026` chunks per detector.
+- **Chunk indexing.** With `NUM_SUB=10`, `NUM_CH=34`, `NUM_COL=3`, `TOT_SUB = 10*34 + 2 = 342` (the +2 are the above-first / below-last padding subchannels). Chunk id = `subchannel * NUM_COL + column`, total `342 * 3 = 1026` chunks per detector. (Production now also runs at `NumCol=10` for higher spatial resolution — total `342 * 10 = 3420` chunks.)
 - **Padded vs unpadded subchannels.** `make_stripped_chunk_valid_mask(..., subchannel_padding=0)` returns the strict per-channel valid set; `padding=1` extends it by one subchannel each side so adjacent channels overlap (used for stitching in `meeting_plots.py`).
 - **Smooth chunk boundaries.** The chunk map is built from circular arcs `y = -sqrt(R² − (x − xc)²) + yc` with `(xc, yc)` and `R[i]` from `lvf_params` (`r_edges` returned by `make_stripped_chunk_map`). Plot scripts that overlay chunk geometry (`plot_chunkmap.py`) draw these analytic arcs rather than per-pixel jagged edges.
 - **Reverse-rendering chunk values to the detector grid.** `make_spherex_stripped_offset_map` runs a mean-preserving 2-D spline (`x_degree=3`, `y_degree=3`) over `(r_edges, x_edges)`. Both `meeting_plots.py` (Fig 3) and `verify_stack.py` (chunkbin-vs-Fig3b comparison) call it with the *same* arguments, so values rendered on the pixel grid are directly comparable.
@@ -88,4 +93,5 @@ These were rewritten in 2026-04 / 2026-05; old commit history will not match. Co
 - Each analysis script does `sys.path.insert(0, _SELFCAL_ROOT)` so it can import from `SelfCal/` without `pip install`. If an import from `SelfCal` fails, check the script's `_PKG_DIR / _SELFCAL_ROOT` two-up logic.
 - `zodi_utils.py` hard-codes the calibration directory layout in `CAL_OUTPUT_BASE / CAL_RUN_TEMPLATE / CAL_FILE_TEMPLATE`. Changing the run name or hyperparameter suffix (`damp0p1_reg0p1_outThresh5_sigma2`) requires updating this template.
 - `find_outliers` (`MapHelper.py:79-88`) emits `RuntimeWarning: All-NaN slice encountered` for fully-masked subframes. Harmless; suppress with `warnings.filterwarnings` if it's noisy.
-- The cal-file naming pattern in `analysis/analysis_script/zodi_utils.py` still bakes in `NumCol3` from earlier production runs; if you regenerate with a different `NumCol`, update `CAL_FILE_TEMPLATE` to match.
+- The cal-file naming pattern in `analysis/analysis_script/zodi_utils.py` bakes in a specific `NumCol` value (`NumCol3` in older runs, `NumCol10` for the poly-constraint era). If you regenerate with a different `NumCol`, update `CAL_FILE_TEMPLATE` to match.
+- **Two worktrees**: `~/spherex/selfcal/` (dev, env `general`) tracks `main`; `~/spherex/selfcal-stable/` (analysis, env `selfcal-stable`) tracks `stable`. They share `.git`; advance `stable` deliberately when you want the analysis env to pick up new features.
