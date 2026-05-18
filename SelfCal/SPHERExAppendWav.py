@@ -220,7 +220,7 @@ if __name__ == "__main__":
     reproj_dir = '/mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/reprojected'
     reproj_list = sorted(glob.glob(reproj_dir + '/*.h5'))
 
-    cache_dir = '/home/thomasli/spherex/selfcal/cache'
+    cache_dir = '/home/thomasli/selfcal-project/selfcal/cache'
     cache_list = sorted(glob.glob(os.path.join(cache_dir, '*.h5')))
 
     mos_hdul = fits.open('/mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/mosaic/mosaic_34ch_det4_ch22.fits')

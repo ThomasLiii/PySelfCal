@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 CAL_DIR = '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det5_6p2arcsec/calibration/'
-FIG_DIR = '/home/thomasli/spherex/selfcal/figures/cc_figure/'
+FIG_DIR = '/home/thomasli/selfcal-project/selfcal/figures/cc_figure/'
 
 VARIANTS = [
     ('poly_off_fixed', 'cal_Detector5_NumSub10_NumCh34_NumCol3_Ch3_baseline_poly_off_fixed.h5'),
