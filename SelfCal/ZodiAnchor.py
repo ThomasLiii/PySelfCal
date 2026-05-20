@@ -180,13 +180,23 @@ def _shift_cal_file(cal_in, cal_out, C, zodi_pred, slope, intercept, r,
                     n_inliers, n_outliers,
                     clip_window_days, clip_sigma):
     """Copy cal -> cal_out (if distinct paths) and apply the shift
-    (skymap += C, frame_scalar -= C) plus record metadata as root attrs
-    + zodi_anchor_pred dataset."""
+    (skymap += C on covered pixels, frame_scalar -= C) plus record
+    metadata as root attrs + zodi_anchor_pred dataset.
+
+    The skymap shift is masked by ``skymap_coverage > 0`` so unobserved
+    pixels stay at 0 instead of being lifted to C.
+    """
     if os.path.abspath(cal_in) != os.path.abspath(cal_out):
         shutil.copyfile(cal_in, cal_out)
     with h5py.File(cal_out, 'r+') as f:
-        sky = f['skymap']
-        sky[...] = sky[...] + C
+        sky_arr = f['skymap'][...]
+        if 'skymap_coverage' in f:
+            cov = f['skymap_coverage'][...]
+            covered = cov > 0
+            sky_arr[covered] += C
+        else:
+            sky_arr += C  # legacy fallback (shouldn't trigger in current schema)
+        f['skymap'][...] = sky_arr
         fs = f['frame_scalar']
         fs[...] = fs[...] - C
         f.attrs['zodi_anchor_C'] = float(C)
@@ -210,8 +220,13 @@ def _shift_cal_file(cal_in, cal_out, C, zodi_pred, slope, intercept, r,
 
 def _shift_mosaic_file(mos_in, mos_out, C, slope, r, mean_zodi):
     """Copy mosaic -> mos_out (if distinct paths) and apply +C to
-    MEAN_MAP / SC_MEAN_MAP HDUs, stamping ZODIANCH/ZODISLOP/
-    ZODICORR/ZODIMEAN header keys."""
+    MEAN_MAP / SC_MEAN_MAP HDUs at covered pixels (weight > 0),
+    stamping ZODIANCH/ZODISLOP/ZODICORR/ZODIMEAN header keys.
+
+    Unobserved pixels (weight == 0) stay at their pre-anchor value
+    (typically 0) to avoid making the unobserved region falsely
+    appear at brightness C.
+    """
     if os.path.abspath(mos_in) != os.path.abspath(mos_out):
         shutil.copyfile(mos_in, mos_out)
     shifted = []
@@ -221,13 +236,24 @@ def _shift_mosaic_file(mos_in, mos_out, C, slope, r, mean_zodi):
         header['ZODICORR'] = (float(r), 'Pearson r of full_DC vs zodi_pred')
         header['ZODIMEAN'] = (float(mean_zodi), 'Mean predicted zodi (MJy/sr)')
     with fits.open(mos_out, mode='update') as hdul:
+        # Build EXTNAME -> HDU map so we can find the matching weight HDU.
+        ext_to_hdu = {h.header.get('EXTNAME', ''): h for h in hdul[1:]}
         stamp(hdul[0].header)
-        for hdu in hdul[1:]:
-            extname = hdu.header.get('EXTNAME', '')
-            if extname in SHIFTED_EXTNAMES and hdu.data is not None:
-                hdu.data += np.array(C, dtype=hdu.data.dtype)
-                stamp(hdu.header)
-                shifted.append(extname)
+        for extname in SHIFTED_EXTNAMES:
+            hdu = ext_to_hdu.get(extname)
+            if hdu is None or hdu.data is None:
+                continue
+            weight_hdu = ext_to_hdu.get(f'{extname}_WEIGHT')
+            data = hdu.data
+            C_typed = np.array(C, dtype=data.dtype)
+            if weight_hdu is not None and weight_hdu.data is not None:
+                covered = weight_hdu.data > 0
+                data[covered] += C_typed
+            else:
+                data += C_typed  # no weight map; shift everything (legacy fallback)
+            hdu.data = data
+            stamp(hdu.header)
+            shifted.append(extname)
     return shifted
 
 
