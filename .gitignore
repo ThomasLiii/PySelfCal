@@ -9,3 +9,4 @@ __pycache__/
 *.pyd
 *.egg-info/
 archive/
+selfcal_logs/

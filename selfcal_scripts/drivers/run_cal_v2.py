@@ -18,7 +18,8 @@ from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
+make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
+compute_column_polynomial_chains
 from SelfCal.SPHERExAppendWav import wav_coadd
 
 
@@ -109,15 +110,15 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 2,
+        'Detector': 4,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 1,
+        'NumCol': 10,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
-        run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
+        run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
     )
 
@@ -160,11 +161,14 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_polyK1'
+
+    # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
+    POLY_DEGREE = 1
+    POLY_WEIGHT = 0.5
 
     # Channels to process
-    # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
-    chs = [[3], [4], [5], [6], [7], [8]]
+    chs = [[i] for i in range(1, 35)]
     # chs = [[14]]
     # chs = ['Aliphatic', 'Aromatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
@@ -234,11 +238,20 @@ if __name__ == "__main__":
             # within-frame structure only on the chunks. Required to avoid
             # scan-stripe residuals on narrow channel masks — see PIPELINE.md.
             num_frames_run = len(cc.reproj_list)
+            poly_chains, poly_stencil = compute_column_polynomial_chains(
+                detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
+            )
+            poly_constraints_list = [[{
+                'chains': poly_chains,
+                'stencil': poly_stencil,
+                'weight': POLY_WEIGHT,
+            }]]
             cc.setup_lsqr(
                 chunk_maps=[detector_inputs['det_chunk_map']],
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
                 adj_infos=[detector_inputs['adj_info']],
+                poly_constraints_list=poly_constraints_list,
                 mean_offsets_list=[np.zeros(num_frames_run)],
                 use_per_frame_scalar=True,
                 **calibration_kwargs

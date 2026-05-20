@@ -19,7 +19,7 @@ load_calibration, make_spherex_offset_map, compute_offsets_guess
 from SelfCal.SPHERExAppendWav import wav_coadd
 
 frame_setting = {
-    'Detector': 5,
+    'Detector': 4,
     'NumSub': 10,
     'NumCh': 34,
     'NumCol': 3,
