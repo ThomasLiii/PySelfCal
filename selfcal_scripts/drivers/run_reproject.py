@@ -1,8 +1,5 @@
-import sys
 import os
 import shutil
-parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_path)
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"

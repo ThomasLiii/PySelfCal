@@ -34,7 +34,6 @@ import gc
 import glob as glob_module
 import json
 import shutil
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -46,11 +45,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import psutil
 from tqdm import tqdm
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-parent_path = os.path.dirname(_HERE)
-sys.path.append(parent_path)
-sys.path.append(_HERE)  # so we can import run_cal_baseline_test helpers
 
 from SelfCal import PipelineWrapper, MakeMap
 from SelfCal.MakeMap import set_hdd_io_limit

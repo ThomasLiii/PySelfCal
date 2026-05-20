@@ -20,7 +20,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import gc
 import glob as glob_module
 import shutil
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -28,11 +27,6 @@ import matplotlib
 matplotlib.use('Agg')
 import numpy as np
 from tqdm import tqdm
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-parent_path = os.path.dirname(_HERE)
-sys.path.append(parent_path)
-sys.path.append(_HERE)
 
 from SelfCal import PipelineWrapper, MakeMap
 from SelfCal.MakeMap import set_hdd_io_limit

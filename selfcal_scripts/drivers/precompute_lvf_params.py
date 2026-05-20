@@ -1,9 +1,4 @@
-
-
 import os
-import sys
-parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_path)
 from SelfCal.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_mask, interpolate_array, load_calibration, interp_2d_vertical, interp_1d
 import numpy as np
 
