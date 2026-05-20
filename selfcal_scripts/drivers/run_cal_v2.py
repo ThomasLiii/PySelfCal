@@ -20,6 +20,7 @@ from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
+from SelfCal.ZodiAnchor import apply_anchor_to_file
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -162,6 +163,17 @@ if __name__ == "__main__":
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
+    # Optional post-hoc zodi anchor: if a dir is set, after each
+    # channel's cal+mosaic is saved, look up the matching zodi
+    # prediction .npz (zodi_pred_<job_tag>.npz produced by
+    # selfcal_scripts/zodi_anchor/build_zodi_predictions.py) and shift
+    # cal+mosaic in-place to the absolute brightness scale. Set None to
+    # skip (default; preserves the pre-anchor output exactly).
+    ZODI_PRED_DIR = None
+    ZODI_CLIP_WINDOW_DAYS = 7.0
+    ZODI_CLIP_SIGMA = 3.0
+    ZODI_CLIP_ITERS = 2
+
     # Channels to process
     # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
     chs = [[3], [4], [5], [6], [7], [8]]
@@ -298,7 +310,27 @@ if __name__ == "__main__":
         })
 
         mm.save_mosaic(mos_file=mos_file, overwrite=True)
-         
+
+        # Optional zodi anchor: shift cal+mosaic in-place to absolute scale.
+        if ZODI_PRED_DIR is not None:
+            mos_path = os.path.join(selfcal_config.mos_dir, mos_file)
+            npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
+            if not os.path.exists(npz_path):
+                print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
+            else:
+                print(f"Applying zodi anchor in-place from {npz_path}...")
+                result = apply_anchor_to_file(
+                    cal_in=cal_path, mosaic_in=mos_path,
+                    zodi_pred_npz=npz_path,
+                    in_place=True,
+                    clip_window_days=ZODI_CLIP_WINDOW_DAYS,
+                    clip_sigma=ZODI_CLIP_SIGMA,
+                    clip_iters=ZODI_CLIP_ITERS,
+                )
+                print(f"  C={result['C']:.4g} MJy/sr, "
+                      f"slope={result['slope']:.4f}, r={result['r']:.4f}, "
+                      f"inliers={result['n_inliers']}/{result['n_inliers']+result['n_outliers']}")
+
         # Clean up
         del cc, mm, maps
         if os.path.exists(cache_dir):

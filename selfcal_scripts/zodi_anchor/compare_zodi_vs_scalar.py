@@ -16,8 +16,6 @@ validation (should be ~1 if the zodi model captures the per-frame
 variation correctly).
 """
 import argparse
-import os
-import sys
 
 import h5py
 import matplotlib
@@ -25,10 +23,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-from apply_zodi_anchor import fit_with_clip  # noqa: E402
+from SelfCal.ZodiAnchor import compute_full_dc, fit_with_clip
 
 
 def main():
@@ -42,15 +37,11 @@ def main():
     args = p.parse_args()
 
     with h5py.File(args.cal, 'r') as f:
-        fs = f['frame_scalar'][:].astype(np.float64)
+        frame_scalar = f['frame_scalar'][:].astype(np.float64)
         offsets_m0 = f['offsets/map_0'][:].astype(np.float64)
         cov_m0 = f['offset_coverage/map_0'][:].astype(np.float64)
-    N_per_frame = cov_m0.sum(axis=1)
-    safe = N_per_frame > 0
-    chunk_weighted = np.full_like(fs, np.nan)
-    chunk_weighted[safe] = (offsets_m0[safe] * cov_m0[safe]).sum(axis=1) / N_per_frame[safe]
-    full_DC = fs + chunk_weighted
-    # Replace fs with full_DC for the comparison
+    full_DC = compute_full_dc(frame_scalar, offsets_m0, cov_m0)
+    # fs is full_DC throughout the rest of this script
     fs = full_DC
     z_npz = np.load(args.zodi_pred)
     zp = z_npz['zodi_pred'].astype(np.float64)

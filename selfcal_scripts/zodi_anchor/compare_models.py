@@ -38,7 +38,7 @@ from build_zodi_predictions import (  # noqa: E402
     parse_detector_from_filename,
     save_predictions_npz,
 )
-from apply_zodi_anchor import fit_with_clip  # noqa: E402
+from SelfCal.ZodiAnchor import compute_full_dc, fit_with_clip  # noqa: E402
 
 
 def parse_args():
@@ -73,12 +73,7 @@ def full_dc_and_fit(cal_path, zodi_pred, mjds, args):
         frame_scalar = f['frame_scalar'][:].astype(np.float64)
         offsets_m0 = f['offsets/map_0'][:].astype(np.float64)
         cov_m0 = f['offset_coverage/map_0'][:].astype(np.float64)
-    N_per_frame = cov_m0.sum(axis=1)
-    safe = N_per_frame > 0
-    chunk_weighted = np.full_like(frame_scalar, np.nan)
-    chunk_weighted[safe] = (
-        (offsets_m0[safe] * cov_m0[safe]).sum(axis=1) / N_per_frame[safe])
-    full_DC = frame_scalar + chunk_weighted
+    full_DC = compute_full_dc(frame_scalar, offsets_m0, cov_m0)
     slope, intercept, r, inlier = fit_with_clip(
         zodi_pred, full_DC, mjds,
         window_days=args.clip_window_days,
