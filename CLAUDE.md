@@ -18,12 +18,14 @@ The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol{C}_Ch{ch}{suffix}.h5
 | Dir | What's there |
 | --- | --- |
 | `SelfCal/` | Library code (PipelineWrapper, lsqr, coadd, subframe, solution, SPHERExUtility, …). See [SelfCal/README.md](SelfCal/README.md). |
-| `selfcal_scripts/` | Drivers: `run_reproject.py`, `run_cal_v2.py`, `run_cal_baseline_test.py` (test/regression harness with `TEST_VARIANTS`), `precompute_lvf_params.py`, `diff_cal_h5.py` (schema-aware cal-file diff), `run_cal_v2_k2_readout.py` (D5 K=2 experiment). Phase-level benchmark harness: `benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Cached LVF params land in `selfcal_scripts/lvf_params/lvf_params_D{D}.npy`. Tuning + schema docs in [PIPELINE.md](PIPELINE.md). |
+| `selfcal_scripts/` | Top-level drivers only: `run_reproject.py`, `run_cal_v2.py`, `run_cal_baseline_test.py` (regression harness with `TEST_VARIANTS`), `precompute_lvf_params.py`, `diff_cal_h5.py` (schema-aware cal-file diff). Cached LVF params in `lvf_params/lvf_params_D{1..6}.npy`. Tuning + schema docs in [PIPELINE.md](PIPELINE.md). |
+| `selfcal_scripts/benchmarks/` | Phase-level wall/RSS/IO benchmark harness: `benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. `..._{numcol3,mid,tuned}` import `PhaseTracker` from `..._poly`; keep the 4 together. |
+| `selfcal_scripts/experiments/` | Non-mainline experiments: `run_cal_v2_k2_readout.py` (D5 K=2 readout-stripe variant). |
 | `selfcal_scripts/cc_scripts/` | Cross-channel analysis/plotting one-offs (`plot_d5_ch3_*`, `run_mosaic_polyconstraint.py`). |
-| `analysis/analysis_script/` | Analysis scripts + caches + figures. |
-| `notebooks/` | Demos / one-offs. `spherex_selfcal_demo.ipynb` is the working demo. |
+| `analysis/analysis_script/` | Canonical analysis: `meeting_plots.py`, `verify_stack.py` (deliverables) plus their cache builders `build_multichannel_cache.py`, `build_perchunk_coords.py` and the shared `zodi_utils.py`. Historical one-offs live in `analysis/analysis_script/archive/`. |
+| `notebooks/` | `spherex_selfcal_demo.ipynb` (working demo) and `euclid_mosaic.ipynb`. Older demos in `notebooks/archive/`. |
 | `figures/` | Gitignored. Per-channel analysis plots, benchmark timelines (`figures/benchmark/`), etc. |
-| `archive/` | Older analysis kept for reference; ignore unless asked. |
+| `archive/` | Gitignored top-level archive. Holds stale top-level `analysis/` notebooks/lists (`analysis.ipynb`, `aliph_arom.ipynb`, `offset_analysis.ipynb`, `euclid_mosaic_copy.ipynb`, `reproj_list_nep*.txt`, `fit_params_with_scatter_n*.json`) plus pre-split pipeline scripts. Ignore unless asked. |
 
 Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli/selfcal/outputs/{run_name}/calibration/` (path is hard-coded in `analysis/analysis_script/zodi_utils.py:CAL_OUTPUT_BASE`).
 
@@ -43,10 +45,14 @@ python build_multichannel_cache.py --detector D     # ~3 min, FITS header reads,
 python build_perchunk_coords.py --detector D        # ~3 min, WCS + ecliptic geometry per (exp, chunk)
 python meeting_plots.py --detector D                # ~50 s, fig1/2/3 + cache/meeting_det{D}_per_chunk_fits.npz
 python verify_stack.py --detector D --n-frames N    # ~5 min for full stack; --reuse-cache to re-render
-python plot_chunkmap.py --detector D                # static; chunkmap_det{D}.png
 
 # Re-running the figure with a cached stack/fits costs seconds; the heavy
 # step is only the FITS reads.
+```
+
+Archived analysis scripts (in `analysis/analysis_script/archive/`) all do `from zodi_utils import ...`. To run one, prepend `PYTHONPATH` so Python finds the shared `zodi_utils.py` from its new directory:
+```bash
+PYTHONPATH=analysis/analysis_script python analysis/analysis_script/archive/<script>.py
 ```
 
 There is no test suite. There is no linter configured. Regression for the pipeline is via `selfcal_scripts/run_cal_baseline_test.py` (produces named `cal_*.h5` files per `TEST_TAG` / variant) + `selfcal_scripts/diff_cal_h5.py` (element-wise dataset diff, schema-aware).
@@ -70,7 +76,7 @@ Per-detector cache files used by most scripts:
 - `cache/detector_templates_det{D}.pkl` — per-channel `(342, 3)` mean-removed offset templates.
 - `cache/meeting_det{D}_per_chunk_fits.npz` — output of `meeting_plots.py`; `verify_stack.py` reads its `D` array to set the diverging-colour vmax in panel (b) so the two scripts use the same scale.
 
-Scripts in this directory can be grouped by which cache they consume. `meeting_plots.py` and `verify_stack.py` are the canonical "deliverable" scripts for the current meeting set; the `task1`–`task4`, `plot_grad_*`, `plot_clean_spatial.py`, etc. are older one-off analyses.
+`meeting_plots.py` and `verify_stack.py` are the canonical "deliverable" scripts for the current meeting set. Older one-off analyses (`task1`–`task4`, `plot_grad_*`, `plot_clean_spatial.py`, `plot_numcol_*`, `meeting_plots_by_lat.py`, `analyze_zodi_spatial.py`, `build_metadata.py`, `plot_chunkmap.py`) live in `analysis/analysis_script/archive/` — see the `PYTHONPATH` note above for re-running them.
 
 ## Key conventions inside the analysis code
 
