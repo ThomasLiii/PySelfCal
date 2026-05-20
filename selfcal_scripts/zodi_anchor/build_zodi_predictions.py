@@ -47,6 +47,9 @@ except ImportError as e:
 
 DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
 DET_BC_TEMPLATE = '20250901_SSDC_BC_Band{detector}.fits'
+DEFAULT_METADATA_CACHE_TEMPLATE = (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 'cache', 'metadata_D{detector}.h5'))
 VALID_CHUNK_THRESH = 0.05
 # cov_frac noise floor: chunks outside the channel mask still get
 # tiny accidental coverage (~1e-3 per frame from interp footprint
@@ -65,39 +68,122 @@ def _decode_attr(val):
 
 
 def extract_reproj_metadata(reproj_path):
-    """Read (WCS, MJD) for one reproj h5 file.
+    """Read (det_header_str, MJD) for one reproj h5 file.
 
-    Returns dict {'wcs', 'mjd', 'error'} where error is None on success.
+    Returns dict {'det_header_str', 'mjd', 'error'}. det_header_str is
+    a FITS-header string ready for ``WCS(fits.Header.fromstring(s))``.
+    Storing the string (not the WCS object) is cache-friendly:
+    ``astropy.wcs.WCS`` is not directly pickleable and not stable
+    across astropy versions, but a header string is.
     """
     try:
         with h5py.File(reproj_path, 'r', libver='latest', swmr=True) as f:
             det_header_str = _decode_attr(f.attrs['det_header'])
             fits_path = _decode_attr(f.attrs['file_path'])
-        header = fits.Header.fromstring(det_header_str)
-        wcs = WCS(header)
         with fits.open(fits_path) as hdul:
             mjd = hdul[1].header.get('MJD-AVG')
         if mjd is None:
-            return dict(wcs=None, mjd=np.nan,
+            return dict(det_header_str='', mjd=np.nan,
                         error=f'no MJD-AVG in {fits_path}')
-        return dict(wcs=wcs, mjd=float(mjd), error=None)
+        return dict(det_header_str=det_header_str, mjd=float(mjd), error=None)
     except Exception as e:
-        return dict(wcs=None, mjd=np.nan, error=f'{reproj_path}: {e!r}')
+        return dict(det_header_str='', mjd=np.nan,
+                    error=f'{reproj_path}: {e!r}')
+
+
+def load_metadata_cache(path):
+    """Load a persistent metadata cache file.
+
+    Returns dict ``{reproj_path: {'det_header_str', 'mjd', 'error'}}``
+    or ``{}`` if the cache doesn't exist / can't be read.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with h5py.File(path, 'r') as f:
+            mjds = f['mjds'][:]
+            det_headers = f['det_headers'][:]
+            paths = f['reproj_list'][:]
+    except Exception as e:
+        print(f"WARNING: could not load metadata cache {path}: {e!r}")
+        return {}
+    out = {}
+    for p, m, h in zip(paths, mjds, det_headers):
+        p = p.decode() if isinstance(p, bytes) else p
+        h = h.decode() if isinstance(h, bytes) else h
+        out[p] = dict(det_header_str=h, mjd=float(m),
+                      error=None if np.isfinite(m) else 'cached-as-error')
+    return out
+
+
+def save_metadata_cache(path, cache_dict):
+    """Write the cache dict to disk (h5py with variable-length strings)."""
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    paths, mjds, headers = [], [], []
+    for p, r in cache_dict.items():
+        if r.get('error'):
+            continue  # don't cache errors
+        paths.append(p)
+        mjds.append(r['mjd'])
+        headers.append(r['det_header_str'])
+    str_dt = h5py.string_dtype()
+    with h5py.File(path, 'w') as f:
+        f.create_dataset('mjds', data=np.array(mjds, dtype=np.float64))
+        f.create_dataset('det_headers', data=np.array(headers, dtype=object),
+                         dtype=str_dt)
+        f.create_dataset('reproj_list', data=np.array(paths, dtype=object),
+                         dtype=str_dt)
+        f.attrs['created_iso'] = datetime.datetime.now().isoformat()
+        f.attrs['n_frames'] = len(paths)
+    print(f"  metadata cache saved: {path} ({len(paths)} frames)")
 
 
 def extract_metadata_for_reproj_list(reproj_paths, num_workers=30,
-                                     desc=None):
-    """Parallel extract (WCS, MJD) for every path in reproj_paths.
+                                     desc=None,
+                                     metadata_cache_path=None):
+    """Parallel extract (WCS, MJD) for every path in reproj_paths,
+    with optional persistent caching.
+
+    If ``metadata_cache_path`` is set, load any pre-extracted entries
+    from there and only re-extract the missing ones; update the cache
+    on disk before returning.
 
     Returns (wcs_list, mjds, errors).
     """
-    if desc:
-        print(desc)
-    with ThreadPoolExecutor(max_workers=num_workers) as ex:
-        results = list(ex.map(extract_reproj_metadata, reproj_paths))
-    wcs_list = [r['wcs'] for r in results]
-    mjds = np.array([r['mjd'] for r in results], dtype=np.float64)
-    errors = [r['error'] for r in results if r['error'] is not None]
+    cache = load_metadata_cache(metadata_cache_path)
+    if cache:
+        print(f"  metadata cache loaded: {metadata_cache_path} "
+              f"({len(cache)} frames)")
+    to_extract = [p for p in reproj_paths if p not in cache]
+    if to_extract:
+        if desc:
+            print(f"{desc}  (cache miss for {len(to_extract)} / "
+                  f"{len(reproj_paths)} frames)")
+        with ThreadPoolExecutor(max_workers=num_workers) as ex:
+            extracted = list(ex.map(extract_reproj_metadata, to_extract))
+        for p, r in zip(to_extract, extracted):
+            cache[p] = r
+        if metadata_cache_path:
+            save_metadata_cache(metadata_cache_path, cache)
+    else:
+        if cache:
+            print(f"  all {len(reproj_paths)} frames found in cache; "
+                  "skipping I/O.")
+
+    wcs_list = []
+    mjds = np.empty(len(reproj_paths), dtype=np.float64)
+    errors = []
+    for i, p in enumerate(reproj_paths):
+        r = cache[p]
+        if r.get('error'):
+            wcs_list.append(None)
+            mjds[i] = np.nan
+            errors.append(r['error'])
+        else:
+            wcs_list.append(WCS(fits.Header.fromstring(r['det_header_str'])))
+            mjds[i] = r['mjd']
     if errors:
         print(f"WARNING: {len(errors)} frames had read errors. First 3:")
         for e in errors[:3]:
@@ -296,6 +382,12 @@ def parse_args():
     p.add_argument('--out', default=None,
                    help='Output .npz path (default: zodi_pred_<tag>.npz '
                         'next to cal).')
+    p.add_argument('--metadata-cache', default=None,
+                   help='Persistent metadata cache path (per detector). '
+                        'Stores MJD + WCS header per reproj file so '
+                        'subsequent runs skip the 10-15 min per-frame '
+                        'I/O. Default: '
+                        f'{DEFAULT_METADATA_CACHE_TEMPLATE}')
     return p.parse_args()
 
 
@@ -321,12 +413,16 @@ def main():
             "Could not parse Detector from filename. "
             "Pass --detector N explicitly.")
     out_path = args.out or default_output_path(args.cal)
+    metadata_cache_path = (args.metadata_cache
+                           or DEFAULT_METADATA_CACHE_TEMPLATE.format(
+                               detector=detector))
 
     print(f"cal:        {args.cal}")
     print(f"detector:   {detector}")
     print(f"model:      {args.model}")
     print(f"grid_size:  {args.grid_size}")
     print(f"out:        {out_path}")
+    print(f"cache:      {metadata_cache_path}")
 
     with h5py.File(args.cal, 'r') as f:
         if 'frame_scalar' not in f:
@@ -339,7 +435,8 @@ def main():
     wcs_list, mjds, _ = extract_metadata_for_reproj_list(
         reproj_paths, num_workers=args.num_workers,
         desc=f"Reading {len(reproj_paths)} (reproj + source FITS) headers"
-             f" with {args.num_workers} workers...")
+             f" with {args.num_workers} workers...",
+        metadata_cache_path=metadata_cache_path)
 
     bc_path = os.path.join(
         args.calibration_dir, DET_BC_TEMPLATE.format(detector=detector))

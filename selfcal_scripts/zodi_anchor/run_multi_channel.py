@@ -39,6 +39,7 @@ if _HERE not in sys.path:
 
 from build_zodi_predictions import (  # noqa: E402
     DEFAULT_CALIBRATION_DIR,
+    DEFAULT_METADATA_CACHE_TEMPLATE,
     DET_BC_TEMPLATE,
     build_for_channel,
     extract_metadata_for_reproj_list,
@@ -82,6 +83,9 @@ def parse_args():
                         'MJD+WCS extraction and per-channel ZodiPy eval. '
                         'Useful for re-running apply+compare after code '
                         'changes to those steps.')
+    p.add_argument('--metadata-cache', default=None,
+                   help='Persistent metadata cache file (per detector). '
+                        f'Default: {DEFAULT_METADATA_CACHE_TEMPLATE}')
     return p.parse_args()
 
 
@@ -135,12 +139,16 @@ def main():
     else:
         print(f"All cals share the same {len(reproj_paths)}-frame reproj_list. "
               "Extracting MJD+WCS once...")
+        meta_cache_path = (args.metadata_cache
+                           or DEFAULT_METADATA_CACHE_TEMPLATE.format(
+                               detector=detector))
         t0 = time.time()
         wcs_list, mjds, errors = extract_metadata_for_reproj_list(
             reproj_paths, num_workers=args.num_workers,
             desc=f"Reading {len(reproj_paths)} (reproj + source FITS) "
-                 f"headers with {args.num_workers} workers...")
-        print(f"Metadata cache built in {time.time() - t0:.1f}s "
+                 f"headers with {args.num_workers} workers...",
+            metadata_cache_path=meta_cache_path)
+        print(f"Metadata stage finished in {time.time() - t0:.1f}s "
               f"({len(errors)} read errors).")
         bc_path = os.path.join(
             args.calibration_dir, DET_BC_TEMPLATE.format(detector=detector))

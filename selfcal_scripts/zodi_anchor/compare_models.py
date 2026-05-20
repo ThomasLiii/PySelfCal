@@ -32,6 +32,7 @@ if _HERE not in sys.path:
 
 from build_zodi_predictions import (  # noqa: E402
     DEFAULT_CALIBRATION_DIR,
+    DEFAULT_METADATA_CACHE_TEMPLATE,
     DET_BC_TEMPLATE,
     build_for_channel,
     extract_metadata_for_reproj_list,
@@ -59,6 +60,9 @@ def parse_args():
     p.add_argument('--skip-existing-npz', action='store_true',
                    help='Reuse zodi_pred_*.npz files in <out-dir>/<model>/ '
                         'if present (skip ZodiPy eval for that model).')
+    p.add_argument('--metadata-cache', default=None,
+                   help='Persistent metadata cache (per detector). '
+                        f'Default: {DEFAULT_METADATA_CACHE_TEMPLATE}')
     return p.parse_args()
 
 
@@ -114,10 +118,15 @@ def main():
             if not np.array_equal(reproj_paths_b, f['reproj_list'][:]):
                 raise SystemExit(f"reproj_list mismatch: {cal}")
 
-    # Single MJD+WCS extraction
-    print(f"Extracting MJD+WCS for {len(reproj_paths)} frames...")
+    # Single MJD+WCS extraction (cached per detector)
+    meta_cache_path = (args.metadata_cache
+                       or DEFAULT_METADATA_CACHE_TEMPLATE.format(
+                           detector=detector))
+    print(f"Extracting MJD+WCS for {len(reproj_paths)} frames "
+          f"(cache: {meta_cache_path})...")
     wcs_list, mjds, errors = extract_metadata_for_reproj_list(
-        reproj_paths, num_workers=args.num_workers)
+        reproj_paths, num_workers=args.num_workers,
+        metadata_cache_path=meta_cache_path)
     print(f"  ({len(errors)} errors)")
 
     bc_path = os.path.join(args.calibration_dir,
