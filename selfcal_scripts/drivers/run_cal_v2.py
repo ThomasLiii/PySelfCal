@@ -4,7 +4,6 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-import sys
 import shutil
 import time
 import gc
@@ -14,9 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
-
-parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab

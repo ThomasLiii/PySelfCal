@@ -1,25 +1,14 @@
-"""Benchmark cal+mosaic for D3 Ch17 with tuned parallelism + batch sizes.
+"""Sweet-spot benchmark: max_workers=48, batch_size=50.
 
-A/B test against benchmark_d3_ch17_numcol3.py — exact same config (NumCol=3,
-no poly, use_per_frame_scalar=True, K=1, etc.) but with the four levers from
-d3_ch17_analysis.md bumped:
+Third A/B point in the worker/batch sweep:
 
-  Param                  baseline (numcol3)   tuned (this script)
-  max_workers (cal)              32                    96
-  batch_size  (cal)              20                   100
-  max_workers (mosaic)           32                    96
-  cache_batch_size               20                   100
-  coadd_batch_size               30                   100
-  n_threads   (apply_lsqr)       32                    96
+  Config              workers   batch_cal   cache_batch   coadd_batch   n_threads
+  baseline (numcol3)     32         20           20            30           32
+  tuned                  96        100          100           100           96
+  mid (THIS)             48         50           50            50           48
 
-OMP/MKL/OPENBLAS env vars stay pinned to 1 — the BLAS-1 ops inside scipy's
-LSQR continue to run single-threaded, but the custom row-block parallel
-matvec/rmatvec gets 3x more threads.
-
-Outputs (under figures/benchmark/):
-  d3_ch17_tuned_summary.txt
-  d3_ch17_tuned_samples.json
-  d3_ch17_tuned_timeline.png
+Same NumCol=3 + no poly as numcol3 baseline so phase wall times are directly
+comparable.
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -31,7 +20,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import gc
 import glob as glob_module
 import shutil
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -39,11 +27,6 @@ import matplotlib
 matplotlib.use('Agg')
 import numpy as np
 from tqdm import tqdm
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-parent_path = os.path.dirname(_HERE)
-sys.path.append(parent_path)
-sys.path.append(_HERE)
 
 from SelfCal import PipelineWrapper, MakeMap
 from SelfCal.MakeMap import set_hdd_io_limit
@@ -59,7 +42,7 @@ def main():
         'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 3,  # match numcol3 baseline
+        'NumCol': 3,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -68,26 +51,20 @@ def main():
         resolution_arcsec=6.2,
     )
 
-    # >>> TUNED VALUES <<<
-    MAX_WORKERS_CAL = 96      # was 32
-    MAX_WORKERS_MOSAIC = 96   # was 32
-    BATCH_SIZE_CAL = 100      # was 20
-    CACHE_BATCH_SIZE = 100    # was 20
-    COADD_BATCH_SIZE = 100    # was 30
-    LSQR_N_THREADS = 96       # was 32
+    MAX_WORKERS_CAL = 48
+    MAX_WORKERS_MOSAIC = 48
+    BATCH_SIZE_CAL = 50
+    CACHE_BATCH_SIZE = 50
+    COADD_BATCH_SIZE = 50
+    LSQR_N_THREADS = 48
 
     calibration_kwargs = {
-        'apply_mask': True,
-        'apply_weight': False,
-        'outlier_thresh': 5.0,
-        'ignore_list': [],
+        'apply_mask': True, 'apply_weight': False,
+        'outlier_thresh': 5.0, 'ignore_list': [],
         'batch_size': BATCH_SIZE_CAL,
-        'offset_regularization': True,
-        'reg_weights': [0.1],
-        'weighted_damping': True,
-        'damp_weight': 0.1,
-        'max_workers': MAX_WORKERS_CAL,
-        'postprocess_func': None,
+        'offset_regularization': True, 'reg_weights': [0.1],
+        'weighted_damping': True, 'damp_weight': 0.1,
+        'max_workers': MAX_WORKERS_CAL, 'postprocess_func': None,
     }
     lsqr_kwargs = {
         'atol': 1e-06, 'btol': 1e-06, 'damp': 0,
@@ -105,7 +82,7 @@ def main():
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     BENCH_DIR = '/home/thomasli/selfcal-project/selfcal/figures/benchmark/'
     os.makedirs(BENCH_DIR, exist_ok=True)
-    FILE_SUFFIX = '_bench_d3_ch17_tuned'
+    FILE_SUFFIX = '_bench_d3_ch17_mid'
     chs = [[17]]
     HDD_IO_LIMIT = 20
 
@@ -114,16 +91,14 @@ def main():
     tracker = PhaseTracker(sample_interval_s=0.5)
     tracker.start()
     print(
-        f"[bench:tuned] config: D{frame_setting['Detector']} ch={chs[0]} NumCol={frame_setting['NumCol']} no_poly\n"
-        f"[bench:tuned]   max_workers_cal={MAX_WORKERS_CAL} batch_size_cal={BATCH_SIZE_CAL}\n"
-        f"[bench:tuned]   max_workers_mosaic={MAX_WORKERS_MOSAIC} cache_batch={CACHE_BATCH_SIZE} coadd_batch={COADD_BATCH_SIZE}\n"
-        f"[bench:tuned]   lsqr_n_threads={LSQR_N_THREADS}",
+        f"[bench:mid] config: D{frame_setting['Detector']} ch={chs[0]} NumCol={frame_setting['NumCol']} no_poly\n"
+        f"[bench:mid]   max_workers_cal={MAX_WORKERS_CAL} batch_size_cal={BATCH_SIZE_CAL}\n"
+        f"[bench:mid]   max_workers_mosaic={MAX_WORKERS_MOSAIC} cache_batch={CACHE_BATCH_SIZE} coadd_batch={COADD_BATCH_SIZE}\n"
+        f"[bench:mid]   lsqr_n_threads={LSQR_N_THREADS}",
         flush=True,
     )
 
-    nvme_reproj_dir = os.path.join(
-        CACHE_DIR, f'reproj_nvme_{selfcal_config.run_name}'
-    )
+    nvme_reproj_dir = os.path.join(CACHE_DIR, f'reproj_nvme_{selfcal_config.run_name}')
     os.makedirs(nvme_reproj_dir, exist_ok=True)
     hdd_reproj_files = sorted(glob_module.glob(os.path.join(selfcal_config.reproj_dir, '*.h5')))
 
@@ -133,9 +108,9 @@ def main():
             if os.path.exists(os.path.join(nvme_reproj_dir, os.path.basename(f)))
         )
         if n_existing == len(hdd_reproj_files):
-            print(f"[bench:tuned] NVMe cache already populated ({len(hdd_reproj_files)} files); skipping copy", flush=True)
+            print(f"[bench:mid] NVMe cache already populated ({len(hdd_reproj_files)} files); skipping copy", flush=True)
         else:
-            print(f"[bench:tuned] transferring {len(hdd_reproj_files) - n_existing} files HDD->NVMe...", flush=True)
+            print(f"[bench:mid] transferring {len(hdd_reproj_files) - n_existing} files HDD->NVMe...", flush=True)
             def copy_to_nvme(src_path):
                 dst_path = os.path.join(nvme_reproj_dir, os.path.basename(src_path))
                 if not os.path.exists(dst_path):
@@ -167,7 +142,7 @@ def main():
 
     cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
     num_frames_run = len(cc.reproj_list)
-    print(f"[bench:tuned] num_frames={num_frames_run}  num_chunks={int(det_inputs['det_chunk_map'].max())+1}", flush=True)
+    print(f"[bench:mid] num_frames={num_frames_run}  num_chunks={int(det_inputs['det_chunk_map'].max())+1}", flush=True)
 
     with tracker.phase('cal_setup_lsqr'):
         cc.setup_lsqr(
@@ -191,10 +166,7 @@ def main():
 
     with tracker.phase('cal_save'):
         nvme_list = cc.reproj_list
-        cc.reproj_list = [
-            os.path.join(selfcal_config.reproj_dir, os.path.basename(f))
-            for f in nvme_list
-        ]
+        cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
         cal_path = cc.save_calibration(cal_file=cal_file)
         cc.reproj_list = nvme_list
 
@@ -214,10 +186,7 @@ def main():
 
         with tracker.phase('mosaic_load_cal'):
             mm.load_calibration(cal_path=cal_path)
-            mm.reproj_list = [
-                os.path.join(nvme_reproj_dir, os.path.basename(f))
-                for f in mm.reproj_list
-            ]
+            mm.reproj_list = [os.path.join(nvme_reproj_dir, os.path.basename(f)) for f in mm.reproj_list]
 
         partial_make_offset_map = partial(
             make_spherex_stripped_offset_map,
@@ -247,8 +216,7 @@ def main():
             det_inputs['det_BC'], det_inputs['det_BW'],
             mean_map=maps['mean_map']['data'],
             std_map=maps['std_map']['data'],
-            reproj_list=mm.reproj_list,
-            cache_list=mm.cached_list,
+            reproj_list=mm.reproj_list, cache_list=mm.cached_list,
             ref_shape=maps['mean_map']['data'].shape,
             sigma=mosaic_kwargs['sigma'],
             batch_size=40, max_workers=30,
@@ -274,18 +242,18 @@ def main():
     print(summary, flush=True)
     print("=" * 120, flush=True)
 
-    txt_path = os.path.join(BENCH_DIR, 'd3_ch17_tuned_summary.txt')
-    json_path = os.path.join(BENCH_DIR, 'd3_ch17_tuned_samples.json')
-    png_path = os.path.join(BENCH_DIR, 'd3_ch17_tuned_timeline.png')
+    txt_path = os.path.join(BENCH_DIR, 'd3_ch17_mid_summary.txt')
+    json_path = os.path.join(BENCH_DIR, 'd3_ch17_mid_samples.json')
+    png_path = os.path.join(BENCH_DIR, 'd3_ch17_mid_timeline.png')
 
     with open(txt_path, 'w') as f:
         f.write(summary + '\n')
     tracker.save_json(json_path)
     tracker.plot_timeline(png_path)
 
-    print(f"\n[bench:tuned] wrote {txt_path}")
-    print(f"[bench:tuned] wrote {json_path}")
-    print(f"[bench:tuned] wrote {png_path}")
+    print(f"\n[bench:mid] wrote {txt_path}")
+    print(f"[bench:mid] wrote {json_path}")
+    print(f"[bench:mid] wrote {png_path}")
 
 
 if __name__ == '__main__':

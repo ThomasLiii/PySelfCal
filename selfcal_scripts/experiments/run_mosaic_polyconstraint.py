@@ -29,12 +29,10 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-# Script lives at <repo>/selfcal_scripts/cc_scripts/; the repo root is 3 dirs
-# up, and selfcal_scripts/ (one above) is needed for `import run_cal_baseline_test`.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-parent_path = os.path.dirname(os.path.dirname(_HERE))
-sys.path.append(parent_path)
-sys.path.append(os.path.dirname(_HERE))
+# Sibling `from run_cal_baseline_test import ...` lives at
+# <repo>/selfcal_scripts/benchmarks/run_cal_baseline_test.py.
+sys.path.append(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'benchmarks'))
 
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit

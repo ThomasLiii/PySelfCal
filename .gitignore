@@ -7,5 +7,5 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-SelfCal/.ipynb_checkpoints
+*.egg-info/
 archive/
