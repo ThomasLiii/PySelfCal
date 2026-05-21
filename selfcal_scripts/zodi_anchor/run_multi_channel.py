@@ -83,6 +83,12 @@ def parse_args():
                         'MJD+WCS extraction and per-channel ZodiPy eval. '
                         'Useful for re-running apply+compare after code '
                         'changes to those steps.')
+    p.add_argument('--skip-existing-npz', action='store_true',
+                   help='Per-channel: if zodi_pred_<tag>.npz already '
+                        'exists in --out-dir, skip the ZodiPy eval for '
+                        'that channel and reuse it. Useful when running '
+                        'incrementally (e.g. new cals just finished and '
+                        'you want to extend a previous build).')
     p.add_argument('--metadata-cache', default=None,
                    help='Persistent metadata cache file (per detector). '
                         f'Default: {DEFAULT_METADATA_CACHE_TEMPLATE}')

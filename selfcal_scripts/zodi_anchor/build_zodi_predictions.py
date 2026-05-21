@@ -297,20 +297,19 @@ def evaluate_zodi_per_frame(wcs_list, mjds, grid_ys, grid_xs,
     return zodi_pred, n_grid
 
 
-def build_for_channel(cal_path, wcs_list, mjds, det_BC, detector,
-                      model_name='dirbe', grid_size=1, nprocesses=20):
-    """Compute zodi_pred for one channel given pre-cached per-frame
-    (WCS, MJD). Returns a dict with everything an .npz needs."""
-    with h5py.File(cal_path, 'r') as f:
-        det_valid_mask, valid_chunks, det_chunk_map = (
-            channel_valid_mask_from_cal(f))
-        reproj_list_bytes = f['reproj_list'][:]
-
+def _build_zodi_pred_inner(det_valid_mask, det_chunk_map, det_BC,
+                           wcs_list, mjds, reproj_list_bytes,
+                           detector, model_name, grid_size, nprocesses,
+                           valid_chunks=None,
+                           valid_chunks_label=''):
+    """Shared inner: grid + wavelength + ZodiPy eval. Returns the
+    full result dict ready for ``save_predictions_npz``."""
     grid_ys, grid_xs = build_grid_points(det_valid_mask, grid_size)
     wavelength_um = wavelength_for_channel(det_BC, det_valid_mask)
-
-    print(f"  valid chunks (cov_frac > {VALID_CHUNK_THRESH}): "
-          f"{len(valid_chunks)} / {det_chunk_map.max()+1}; "
+    nvc = (len(valid_chunks) if valid_chunks is not None else
+           int(det_valid_mask.sum() and (np.unique(det_chunk_map[det_valid_mask]).size)))
+    n_chunks_total = int(det_chunk_map.max() + 1)
+    print(f"  valid chunks{valid_chunks_label}: {nvc} / {n_chunks_total}; "
           f"wavelength = {wavelength_um:.4f} um; grid = {len(grid_ys)} pt(s)")
 
     zodi_pred, n_grid_valid = evaluate_zodi_per_frame(
@@ -330,8 +329,61 @@ def build_for_channel(cal_path, wcs_list, mjds, det_BC, detector,
         grid_size=grid_size,
         model_name=model_name,
         detector=detector,
-        cal_path=os.path.abspath(cal_path),
     )
+
+
+def build_for_channel(cal_path, wcs_list, mjds, det_BC, detector,
+                      model_name='dirbe', grid_size=1, nprocesses=20):
+    """Compute zodi_pred for one channel given pre-cached per-frame
+    (WCS, MJD). Reads valid mask from the cal file's offset_coverage_frac."""
+    with h5py.File(cal_path, 'r') as f:
+        det_valid_mask, valid_chunks, det_chunk_map = (
+            channel_valid_mask_from_cal(f))
+        reproj_list_bytes = f['reproj_list'][:]
+    result = _build_zodi_pred_inner(
+        det_valid_mask=det_valid_mask, det_chunk_map=det_chunk_map,
+        det_BC=det_BC, wcs_list=wcs_list, mjds=mjds,
+        reproj_list_bytes=reproj_list_bytes,
+        detector=detector, model_name=model_name,
+        grid_size=grid_size, nprocesses=nprocesses,
+        valid_chunks=valid_chunks,
+        valid_chunks_label=f' (cov_frac > {VALID_CHUNK_THRESH})')
+    result['cal_path'] = os.path.abspath(cal_path)
+    return result
+
+
+def build_for_channel_theoretical(ch, num_subchannels, num_channels, num_columns,
+                                  wcs_list, mjds, det_BC, det_chunk_map,
+                                  reproj_list_bytes, detector,
+                                  model_name='dirbe', grid_size=1,
+                                  nprocesses=20, subchannel_padding=0):
+    """Compute zodi_pred for one channel WITHOUT a cal file.
+
+    Channel mask comes from
+    ``SelfCal.SPHERExUtility.make_stripped_chunk_valid_mask(ch=[ch], ...)``
+    — purely a function of the LVF geometry and channel number, no
+    coverage-based thresholding. Use when the cal file doesn't exist
+    yet (e.g. anchor predictions in parallel with the cal solve).
+    """
+    # Import here to keep zodi-only env paths optional; SelfCal is
+    # available in both envs.
+    from SelfCal.SPHERExUtility import make_stripped_chunk_valid_mask
+    # SPHERExUtility returns a float64 0/1 mask; cast to bool so the
+    # downstream `det_BC[det_valid_mask]` works.
+    chunk_valid_mask_1d = make_stripped_chunk_valid_mask(
+        ch=[ch], num_subchannels=num_subchannels,
+        num_channels=num_channels, num_columns=num_columns,
+        subchannel_padding=subchannel_padding).astype(bool)
+    det_valid_mask = chunk_valid_mask_1d[det_chunk_map]
+    valid_chunks = np.where(chunk_valid_mask_1d)[0]
+    return _build_zodi_pred_inner(
+        det_valid_mask=det_valid_mask, det_chunk_map=det_chunk_map,
+        det_BC=det_BC, wcs_list=wcs_list, mjds=mjds,
+        reproj_list_bytes=reproj_list_bytes,
+        detector=detector, model_name=model_name,
+        grid_size=grid_size, nprocesses=nprocesses,
+        valid_chunks=valid_chunks,
+        valid_chunks_label=f' (theoretical, padding={subchannel_padding})')
 
 
 def save_predictions_npz(out_path, result):
@@ -346,7 +398,7 @@ def save_predictions_npz(out_path, result):
         grid_size=np.int64(result['grid_size']),
         n_grid_valid=np.int64(result['n_grid_valid']),
         detector=np.int64(result['detector']),
-        cal_path=np.array(result['cal_path']),
+        cal_path=np.array(result.get('cal_path', '')),
         created_iso=np.array(datetime.datetime.now().isoformat()),
     )
 
