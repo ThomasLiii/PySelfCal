@@ -1,18 +1,27 @@
-import os
-import h5py
-import sys 
+import datetime
 import glob
-from tqdm import tqdm
-import numpy as np
-
-from . import WCSHelper
-from . import MakeMap
-
-from astropy.io import fits
+import json
+import os
+import shutil
+import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from contextlib import contextmanager
-import time
+import h5py
+import numpy as np
+from astropy.io import fits
+from tqdm import tqdm
+
+from . import MakeMap
+from . import WCSHelper
+
+# Manifest schema bump when the JSON layout changes incompatibly.
+_REPROJ_MANIFEST_SCHEMA = 1
+_REPROJ_MANIFEST_NAME = 'manifest.json'
+_REPROJ_FAILED_NAME = 'failed.jsonl'
+_REPROJ_QUARANTINE_NAME = 'quarantine'
 
 @contextmanager
 def timer(description):
@@ -55,9 +64,47 @@ class Reprojector:
         self.ref_shape = None
         self.ref_wcs = None
 
-    def define_reference(self, padding_pixels=100, use_ext=[1]):
-        '''Define the smallest WCS oriented north-up, east-left frame that can contain all exposures'''
-        if not os.path.exists(self.config.ref_path):
+    def define_reference(self, padding_pixels=100, use_ext=[1],
+                         source_ref_path=None, verify_projection=True):
+        '''Define the smallest WCS oriented north-up, east-left frame that
+        contains all exposures.
+
+        Resolution order:
+          1. If ``self.config.ref_path`` already exists, load it. When
+             ``source_ref_path`` is also given and ``verify_projection`` is
+             True, assert the loaded WCS shares the projection of the source
+             (same CTYPE/CRVAL/CDELT/PC; only CRPIX/shape may differ). This
+             guards against silently picking up an incompatible existing
+             ref.fits on rerun.
+          2. Else if ``source_ref_path`` is given, derive a new ref WCS from
+             it via ``WCSHelper.derive_reference_from`` — same projection,
+             new bbox + CRPIX sized to this run's exposures. Use this to
+             keep multiple runs on a shared pixel grid even though they
+             cover different areas.
+          3. Else compute a fresh optimal frame from the exposure list.
+        '''
+        if os.path.exists(self.config.ref_path):
+            self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
+            if source_ref_path is not None and verify_projection:
+                src_wcs, _ = WCSHelper.load_from_fits(source_ref_path)
+                if not WCSHelper.projections_match(self.ref_wcs, src_wcs):
+                    raise ValueError(
+                        f"Existing reference at {self.config.ref_path} does "
+                        f"not share projection with source_ref_path "
+                        f"{source_ref_path}. Delete the existing ref to "
+                        f"re-derive, or pass verify_projection=False to skip.")
+        elif source_ref_path is not None:
+            print(f"Reference WCS not found at {self.config.ref_path}; "
+                  f"deriving from {source_ref_path}.")
+            self.ref_wcs, self.ref_shape = WCSHelper.derive_reference_from(
+                source_ref_path=source_ref_path,
+                exposure_list=self.exposure_list,
+                padding_pixels=padding_pixels,
+                use_ext=use_ext,
+            )
+            WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
+            print(f"Reference WCS saved to {self.config.ref_path}")
+        else:
             print(f"Reference WCS not found at {self.config.ref_path}. Creating a new reference frame.")
             self.ref_wcs, self.ref_shape = WCSHelper.find_optimal_frame(
                 exposure_list=self.exposure_list,
@@ -67,44 +114,313 @@ class Reprojector:
             )
             WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             print(f"Reference WCS saved to {self.config.ref_path}")
-        else:
-            self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
         print(f'Mosaic shape: {self.ref_shape}')
         print(f'Mosaic WCS: {self.ref_wcs}')
 
-    def run_reproject(self, max_workers=50, reproj_func='exact', padding_percentage=0.05, 
+    # ---- Manifest / failed-log helpers ----
+    #
+    # Per-run state lives next to the reprojected files under reproj_dir:
+    #   reproj_dir/
+    #     manifest.json   -- intended task set for the most recent run_reproject
+    #     failed.jsonl    -- append-only worker-failure log
+    #     quarantine/     -- broken files moved here by check_reproj_files
+    #
+    # The manifest lets a re-run (after Ctrl-C / crash) know what was expected
+    # without re-globbing FITS headers, and pairs cleanly with status() to
+    # report done / pending / failed counts.
+
+    @property
+    def manifest_path(self):
+        return os.path.join(self.config.reproj_dir, _REPROJ_MANIFEST_NAME)
+
+    @property
+    def failed_log_path(self):
+        return os.path.join(self.config.reproj_dir, _REPROJ_FAILED_NAME)
+
+    @property
+    def quarantine_dir(self):
+        return os.path.join(self.config.reproj_dir, _REPROJ_QUARANTINE_NAME)
+
+    def _expected_output(self, exp_idx, det_idx, output_dir=None):
+        out = output_dir or self.config.reproj_dir
+        return os.path.join(out, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
+
+    @staticmethod
+    def _safe_mtime(path):
+        try:
+            return float(os.path.getmtime(path))
+        except OSError:
+            return None
+
+    def _build_task_records(self, sci_ext_list, dq_ext_list, exp_idx_list,
+                            det_idx_list, output_dir):
+        """Compose the per-task records (input fits + extensions + output
+        filename) the manifest and resume logic both need. Pure function of
+        the inputs — no FITS reads, no disk scans."""
+        records = []
+        for i, file_path in enumerate(self.exposure_list):
+            for j, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
+                exp_idx = int(exp_idx_list[i]) if exp_idx_list is not None else i
+                det_idx = int(det_idx_list[j]) if det_idx_list is not None else j
+                records.append({
+                    'exp_idx': exp_idx,
+                    'det_idx': det_idx,
+                    'input_fits': file_path,
+                    'input_mtime': self._safe_mtime(file_path),
+                    'sci_ext': int(sci_ext),
+                    'dq_ext': int(dq_ext),
+                    'output_h5': os.path.basename(
+                        self._expected_output(exp_idx, det_idx, output_dir)),
+                })
+        return records
+
+    def _write_manifest(self, records, output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        payload = {
+            'schema_version': _REPROJ_MANIFEST_SCHEMA,
+            'created_iso': datetime.datetime.now().isoformat(timespec='seconds'),
+            'run_name': self.config.run_name,
+            'reproj_dir': output_dir,
+            'ref_path': self.config.ref_path,
+            'ref_shape': list(self.ref_shape) if self.ref_shape is not None else None,
+            'tasks': records,
+        }
+        # Atomic write: tmp + rename so a crashed write never leaves
+        # half-baked JSON behind.
+        tmp = self.manifest_path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, self.manifest_path)
+
+    def load_manifest(self):
+        """Return the most recent run's manifest dict, or None if missing /
+        unreadable. Schema-version check raises on mismatch."""
+        if not os.path.exists(self.manifest_path):
+            return None
+        with open(self.manifest_path, 'r') as f:
+            payload = json.load(f)
+        v = payload.get('schema_version')
+        if v != _REPROJ_MANIFEST_SCHEMA:
+            raise ValueError(
+                f'Manifest schema mismatch at {self.manifest_path}: '
+                f'expected {_REPROJ_MANIFEST_SCHEMA}, found {v}.')
+        return payload
+
+    def _append_failures(self, failures):
+        if not failures:
+            return
+        os.makedirs(os.path.dirname(self.failed_log_path), exist_ok=True)
+        now = datetime.datetime.now().isoformat(timespec='seconds')
+        with open(self.failed_log_path, 'a') as f:
+            for fail in failures:
+                f.write(json.dumps({
+                    'timestamp_iso': now,
+                    'exp_idx': fail.get('exp_idx'),
+                    'det_idx': fail.get('det_idx'),
+                    'input_fits': fail.get('input_fits'),
+                    'output_h5': os.path.basename(fail.get('output_file', '')),
+                    'reason': 'worker_error',
+                    'error': fail.get('error'),
+                }) + '\n')
+
+    def status(self, output_dir=None):
+        """Report a snapshot of reprojection state for this run.
+
+        Reads the manifest (expected tasks), scans the output dir for
+        completed files, counts failed.jsonl entries and quarantined files.
+        Returns the dict it prints, so drivers can consume it too."""
+        out = output_dir or self.config.reproj_dir
+        manifest = None
+        try:
+            manifest = self.load_manifest()
+        except ValueError as e:
+            print(f'WARNING: could not load manifest: {e}')
+        expected = len(manifest['tasks']) if manifest else None
+        existing = set(os.listdir(out)) if os.path.isdir(out) else set()
+        done = pending = None
+        if manifest is not None:
+            expected_names = [t['output_h5'] for t in manifest['tasks']]
+            done = sum(1 for n in expected_names if n in existing)
+            pending = expected - done
+        failed_logged = 0
+        if os.path.exists(self.failed_log_path):
+            with open(self.failed_log_path, 'r') as f:
+                failed_logged = sum(1 for _ in f if _.strip())
+        quarantined = 0
+        if os.path.isdir(self.quarantine_dir):
+            quarantined = sum(1 for n in os.listdir(self.quarantine_dir)
+                              if n.endswith('.h5'))
+        report = {
+            'expected': expected,
+            'done': done,
+            'pending': pending,
+            'failed_logged': failed_logged,
+            'quarantined': quarantined,
+            'reproj_dir': out,
+        }
+        # Compact one-line summary, easy to grep in logs.
+        def _s(v):
+            return '?' if v is None else str(v)
+        print(f"[reproj status] expected={_s(expected)} done={_s(done)} "
+              f"pending={_s(pending)} failed_logged={failed_logged} "
+              f"quarantined={quarantined} dir={out}")
+        return report
+
+    def run_reproject(self, max_workers=50, reproj_func='exact', padding_percentage=0.05,
                       sci_ext_list=None, dq_ext_list=None, exp_idx_list=None, det_idx_list=None,
                       output_dir=None, replace_existing=False, reproject_kwargs={}):
+        """Build per-(exposure, extension) reprojection tasks, dispatch the
+        pending subset, write the run manifest, and log any worker failures.
+
+        Resume behavior: with ``replace_existing=False`` (the default), tasks
+        whose final output already exists on disk are filtered out before
+        dispatch (zero worker overhead per skipped task). The worker also
+        retains its own existing-file check as a safety net. ``self.reproj_list``
+        is set to the sorted union of pre-existing and newly-completed outputs.
+        """
         if self.ref_wcs is None or self.ref_shape is None:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
             output_dir = self.config.reproj_dir
+        os.makedirs(output_dir, exist_ok=True)
 
-        with timer("Reprojection"):
-            self.reproj_list = MakeMap.batch_reproject(
-                # Can edit
-                num_processes = max_workers, 
-                reproj_func = reproj_func,  # interp: fastest, adaptive: conserves flux, exact: most accurate
-                # Porbably don't want to edit
-                exposure_list = self.exposure_list,
-                ref_wcs = self.ref_wcs, 
-                ref_shape = self.ref_shape,
-                output_dir = output_dir, 
-                padding_percentage = padding_percentage,
-                sci_ext_list = sci_ext_list, 
-                dq_ext_list = dq_ext_list,
-                exp_idx_list = exp_idx_list,
-                det_idx_list = det_idx_list,
-                replace_existing = replace_existing,
-                reproject_kwargs = reproject_kwargs
+        records = self._build_task_records(
+            sci_ext_list=sci_ext_list, dq_ext_list=dq_ext_list,
+            exp_idx_list=exp_idx_list, det_idx_list=det_idx_list,
+            output_dir=output_dir)
+        self._write_manifest(records, output_dir)
+
+        # Partition into already-done vs pending. Pre-filtering pending saves
+        # the per-task pool dispatch overhead when most files exist (common
+        # on resume).
+        existing_paths = []
+        pending = []
+        for rec in records:
+            out_path = os.path.join(output_dir, rec['output_h5'])
+            if not replace_existing and os.path.exists(out_path):
+                existing_paths.append(out_path)
+            else:
+                pending.append(rec)
+
+        print(f'[run_reproject] manifest={len(records)} tasks, '
+              f'already_done={len(existing_paths)}, pending={len(pending)}')
+
+        new_success = []
+        failures = []
+        if pending:
+            pending_files = [r['input_fits'] for r in pending]
+            pending_exp = [r['exp_idx'] for r in pending]
+            pending_det = [r['det_idx'] for r in pending]
+            # sci/dq lists are per-extension and shared across all exposures.
+            # batch_reproject expects per-exposure iteration internally; pass
+            # the deduped per-exposure file list (one per pending task) plus
+            # length-1 sci/dq lists so the inner zip yields exactly one ext
+            # per task.
+            with timer("Reprojection"):
+                new_success, failures = MakeMap.batch_reproject(
+                    num_processes=max_workers,
+                    reproj_func=reproj_func,
+                    exposure_list=pending_files,
+                    ref_wcs=self.ref_wcs,
+                    ref_shape=self.ref_shape,
+                    output_dir=output_dir,
+                    padding_percentage=padding_percentage,
+                    sci_ext_list=[r['sci_ext'] for r in pending],
+                    dq_ext_list=[r['dq_ext'] for r in pending],
+                    exp_idx_list=pending_exp,
+                    det_idx_list=pending_det,
+                    replace_existing=replace_existing,
+                    reproject_kwargs=reproject_kwargs,
+                    per_task_extensions=True,
                 )
-            
-    def check_reproj_files(self):
-        for f in tqdm(self.reproj_list):
-            result = MakeMap.load_reproj_file(f, fields=['sub_data',])
-            if result['_is_missing_']:
-                os.remove(f)
-                print(f"Removed {f} due to missing data")
+        else:
+            print('[run_reproject] nothing to do; all outputs already exist.')
+
+        if failures:
+            self._append_failures(failures)
+            print(f'[run_reproject] logged {len(failures)} failures to '
+                  f'{self.failed_log_path}')
+
+        self.reproj_list = sorted(set(existing_paths) | set(new_success))
+        # Mirror get_reproj_files so callers always see consistent idx state.
+        self.exp_idx_list = []
+        self.det_idx_list = []
+        for path in self.reproj_list:
+            name = os.path.basename(path)
+            self.exp_idx_list.append(int(name.split('_')[1]))
+            self.det_idx_list.append(int(name.split('_')[3].removesuffix('.h5')))
+
+    def _check_one(self, path):
+        """Read sub_data from a single h5 to check if it loads. Returns
+        (path, ok, error_str)."""
+        try:
+            result = MakeMap.load_reproj_file(path, fields=['sub_data'])
+            if result['_is_missing_'] or result.get('sub_data') is None:
+                return (path, False, 'load_reproj_file _is_missing_ or sub_data is None')
+            return (path, True, None)
+        except Exception as e:
+            return (path, False, str(e))
+
+    def check_reproj_files(self, quarantine=True, max_workers=8):
+        """Verify each reprojected file loads. Broken files are quarantined
+        (moved to ``quarantine_dir``) by default, or deleted if
+        ``quarantine=False`` (legacy behavior). Failures are appended to
+        ``failed.jsonl`` either way."""
+        if not self.reproj_list:
+            print('check_reproj_files: nothing to check (reproj_list empty)')
+            return
+        broken = []
+        # Reads are I/O bound; a small ThreadPool would also work, but the
+        # existing _hdd_io_semaphore is process-local, so use ProcessPool
+        # for symmetry with batch_reproject. max_workers small to avoid HDD
+        # seek thrash when files live on the RAID.
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(self._check_one, p): p for p in self.reproj_list}
+            for fut in tqdm(as_completed(futures), total=len(futures),
+                            desc='Checking reprojected files'):
+                path, ok, err = fut.result()
+                if not ok:
+                    broken.append((path, err))
+        if not broken:
+            print(f'check_reproj_files: all {len(self.reproj_list)} files OK')
+            return
+        if quarantine:
+            os.makedirs(self.quarantine_dir, exist_ok=True)
+        records = []
+        for path, err in broken:
+            base = os.path.basename(path)
+            try:
+                if quarantine:
+                    dest = os.path.join(self.quarantine_dir, base)
+                    shutil.move(path, dest)
+                    action = f'quarantined to {dest}'
+                else:
+                    os.remove(path)
+                    action = 'deleted'
+            except OSError as e:
+                action = f'remove/move failed: {e}'
+            print(f'check_reproj_files: {base}: {err} -> {action}')
+            # parse idx from filename (best-effort; quarantined names match
+            # the exp_NNNN_det_DD.h5 pattern)
+            try:
+                exp_idx = int(base.split('_')[1])
+                det_idx = int(base.split('_')[3].removesuffix('.h5'))
+            except (IndexError, ValueError):
+                exp_idx = det_idx = None
+            records.append({
+                'exp_idx': exp_idx,
+                'det_idx': det_idx,
+                'input_fits': None,
+                'output_file': path,
+                'error': f'{err} ({action})',
+            })
+        self._append_failures(records)
+        # Drop the broken paths from reproj_list so downstream stages don't
+        # try to consume them.
+        broken_set = {p for p, _ in broken}
+        self.reproj_list = [p for p in self.reproj_list if p not in broken_set]
+        print(f'check_reproj_files: {len(broken)} broken; '
+              f'{len(self.reproj_list)} remain in reproj_list')
 
     def get_reproj_files(self, reproj_dir=None):
         if reproj_dir is None:

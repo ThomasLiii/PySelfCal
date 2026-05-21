@@ -16,26 +16,45 @@ from reproject import reproject_interp, reproject_exact, reproject_adaptive
 from .MapHelper import bit_to_bool, bool_to_bit
 
 
+def _result(task_params, output_file, success, error=None):
+    """Build the per-task result dict consumed by batch_reproject's parent."""
+    return {
+        'success': success,
+        'output_file': output_file,
+        'exp_idx': task_params['exp_idx'],
+        'det_idx': task_params['det_idx'],
+        'input_fits': task_params['file_path'],
+        'sci_ext': task_params['sci_ext'],
+        'dq_ext': task_params['dq_ext'],
+        'error': error,
+    }
+
+
 def _reproject_worker(task_params):
-    """Individual tasks called by batch_reproject's multiprocessing instances"""
-    # Unpacked arguments for clarity
-    reproj_func = task_params['reproj_func']
+    """Individual tasks called by batch_reproject's multiprocessing instances.
+
+    Writes its HDF5 atomically (``.tmp.<pid>`` then ``os.rename``) so a
+    Ctrl-C or worker crash never leaves a half-written final file. Returns
+    a dict (see ``_result``) instead of bare path/None — the parent sorts
+    successes into the file list and failures into a structured log.
+    """
     file_path = task_params['file_path']
     exp_idx = task_params['exp_idx']
     det_idx = task_params['det_idx']
     sci_ext = task_params['sci_ext']
     dq_ext = task_params['dq_ext']
+    reproj_func = task_params['reproj_func']
     ref_wcs = task_params['ref_wcs']
     sub_width = task_params['sub_width']
     output_dir = task_params['output_dir']
     replace_existing = task_params['replace_existing']
     reproject_kwargs = task_params['reproject_kwargs']
 
-    # Save to HDF5
     output_file = os.path.join(output_dir, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
     if not replace_existing and os.path.exists(output_file):
-        return output_file # Skip if file already exists and replace_existing is False
+        return _result(task_params, output_file, success=True)
 
+    tmp_file = f'{output_file}.tmp.{os.getpid()}'
     reproj_func_dict = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
 
     try:
@@ -87,7 +106,7 @@ def _reproject_worker(task_params):
         sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
         sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
 
-        with h5py.File(output_file, 'w', libver='latest') as hf:
+        with h5py.File(tmp_file, 'w', libver='latest') as hf:
 
             # CONFIG: Zstd + Shuffle
             # Zstd creates smaller files than Gzip, relieving your I/O bottleneck.
@@ -110,16 +129,22 @@ def _reproject_worker(task_params):
             hf.attrs['file_path'] = file_path
             hf.attrs['ref_coords'] = np.array([ref_y_min, ref_y_max, ref_x_min, ref_x_max], dtype=np.int32)
 
-        return output_file # Return path on success
+        os.replace(tmp_file, output_file)  # atomic publish on same FS
+        return _result(task_params, output_file, success=True)
     except Exception as e:
+        try:
+            if os.path.exists(tmp_file):
+                os.remove(tmp_file)
+        except OSError:
+            pass
         print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
-        # import traceback; traceback.print_exc() # Uncomment for detailed debugging
-        return None # Return None on failure
+        return _result(task_params, output_file, success=False, error=str(e))
 
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
                     output_dir='output/', padding_percentage=0.05, num_processes=1,
                     sci_ext_list=[], dq_ext_list=[], reproj_func='interp', exp_idx_list=None, det_idx_list=None,
-                    replace_existing=False, reproject_kwargs={}):
+                    replace_existing=False, reproject_kwargs={},
+                    per_task_extensions=False):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -153,11 +178,23 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         List of integers defining the detector index in the exposure_list, if None, will use the index of the in fits file
     replace_existing : bool, optional
         If True, will overwrite existing files in the output directory, default is False
+    per_task_extensions : bool, optional
+        If False (default), tasks = exposures x zip(sci_ext_list, dq_ext_list)
+        (cross-product, the legacy semantics — exp_idx_list is indexed per
+        exposure i, det_idx_list per extension j). If True, all of
+        ``exposure_list, sci_ext_list, dq_ext_list, exp_idx_list,
+        det_idx_list`` must have the SAME length and are zipped element-wise
+        (one task per index). The Reprojector uses the per-task mode to
+        dispatch only the pending subset of an interrupted run.
 
     Returns
     -------
-    success_file : list
-        List of path to the HDF5 files containing the reprojected data
+    success_file : list[str]
+        Sorted list of paths to the HDF5 files successfully written or
+        already present.
+    failures : list[dict]
+        Per-failed-task dicts (exp_idx, det_idx, input_fits, output_file,
+        sci_ext, dq_ext, error). Empty when everything succeeds.
     """
 
     assert isinstance(exposure_list, (list, tuple)) and exposure_list, "exposure_list must be a non-empty list or tuple"
@@ -193,36 +230,53 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     # Calculate sub_width needed to contain the diagonal of the detector frame after reprojection, plus padding
     sub_width = int(np.ceil(np.sqrt(2) * np.max(det_data_0.shape) / reso_ratio * (1 + 2 * padding_percentage)))
 
-    tasks = []
-    for i, file_path in enumerate(exposure_list): # file_idx is the overall exposure index
-        for j, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
-            exp_idx = exp_idx_list[i] if exp_idx_list is not None else i
-            det_idx = det_idx_list[j] if det_idx_list is not None else j
+    def _make_task(file_path, sci_ext, dq_ext, exp_idx, det_idx):
+        return {
+            'reproj_func': reproj_func,
+            'file_path': file_path,
+            'exp_idx': int(exp_idx),
+            'det_idx': int(det_idx),
+            'sci_ext': int(sci_ext),
+            'dq_ext': int(dq_ext),
+            'ref_wcs': ref_wcs,
+            'sub_width': sub_width,
+            'output_dir': output_dir,
+            'replace_existing': replace_existing,
+            'reproject_kwargs': reproject_kwargs,
+        }
 
-            # Create a dictionary of parameters for each task
-            task_params = {
-                'reproj_func': reproj_func,
-                'file_path': file_path,
-                'exp_idx': exp_idx,
-                'det_idx': det_idx,
-                'sci_ext': sci_ext,
-                'dq_ext': dq_ext,
-                'ref_wcs': ref_wcs,
-                'sub_width': sub_width,
-                'output_dir': output_dir,
-                'replace_existing': replace_existing,
-                'reproject_kwargs': reproject_kwargs
-            }
-            tasks.append(task_params)
+    tasks = []
+    if per_task_extensions:
+        n = len(exposure_list)
+        for name, lst in (('sci_ext_list', sci_ext_list), ('dq_ext_list', dq_ext_list),
+                         ('exp_idx_list', exp_idx_list), ('det_idx_list', det_idx_list)):
+            if lst is None or len(lst) != n:
+                raise ValueError(
+                    f'per_task_extensions=True requires {name} length == '
+                    f'len(exposure_list)={n} (got {None if lst is None else len(lst)})')
+        for i in range(n):
+            tasks.append(_make_task(exposure_list[i], sci_ext_list[i], dq_ext_list[i],
+                                    exp_idx_list[i], det_idx_list[i]))
+    else:
+        for i, file_path in enumerate(exposure_list):  # cross-product (legacy)
+            for j, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
+                exp_idx = exp_idx_list[i] if exp_idx_list is not None else i
+                det_idx = det_idx_list[j] if det_idx_list is not None else j
+                tasks.append(_make_task(file_path, sci_ext, dq_ext, exp_idx, det_idx))
 
     results = []
-    if num_processes > 1 and len(tasks) > 0 : # Ensure there are tasks for multiprocessing
+    if num_processes > 1 and len(tasks) > 0:
         with Pool(processes=num_processes) as pool:
-            results = list(tqdm(pool.imap_unordered(_reproject_worker, tasks), total=len(tasks), desc='Reprojecting frames'))
-    elif len(tasks) > 0: # Sequential execution
+            results = list(tqdm(pool.imap_unordered(_reproject_worker, tasks),
+                                total=len(tasks), desc='Reprojecting frames'))
+    elif len(tasks) > 0:
         for task in tqdm(tasks, desc='Reprojecting frames (sequentially)'):
             results.append(_reproject_worker(task))
 
-    success_file = [r for r in results if r is not None]
-    print(f'Batch reprojection completed. {len(success_file)} frames successfully processed out of {len(tasks)}.')
-    return success_file
+    # imap_unordered yields in completion order; sort for deterministic
+    # downstream behavior (chunk grouping, batch IDs, etc.).
+    success_file = sorted(r['output_file'] for r in results if r['success'])
+    failures = [r for r in results if not r['success']]
+    print(f'Batch reprojection completed. {len(success_file)} frames successfully '
+          f'processed out of {len(tasks)} ({len(failures)} failed).')
+    return success_file, failures

@@ -1,22 +1,15 @@
 import os
-import shutil
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-import time
-from astropy.io import fits
-import numpy as np
+
 import glob
-import gc
-from functools import partial
-import matplotlib.pyplot as plt
+import numpy as np
 
 from SelfCal import PipelineWrapper
-from SelfCal.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_mask, \
-load_calibration, make_spherex_offset_map, compute_offsets_guess
-from SelfCal.SPHERExAppendWav import wav_coadd
+from SelfCal.exposure_filter import filter_exposures_by_header
 
 frame_setting = {
     'Detector': 5,
@@ -29,35 +22,42 @@ selfcal_config = PipelineWrapper.PipelineConfig(
     run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
     resolution_arcsec=6.2
 )
+
+# Optional: point a new run at an existing ref.fits to share the projection
+# (same CRVAL/CDELT/CTYPE/PC) across runs that cover different areas around
+# the same center. The new run's ref_shape + CRPIX are computed from its
+# own exposure list. Leave None to fit an optimal frame from scratch.
+SOURCE_REF_PATH = None
+# e.g. '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D5_6p2arcsec/ref.fits'
+
 qr1_dir = '/mnt/md124/SPHEREx/SPHEREx_nep_data/qr1_newgain'
 qr2_dir = '/mnt/md124/SPHEREx/SPHEREx_nep_data/qr2'
 file_pattern = f'/*/*/*/*D{frame_setting["Detector"]}*.fits'
 
-exposure_list = []
-exposure_list += glob.glob(qr1_dir+file_pattern)
-exposure_list += glob.glob(qr2_dir+file_pattern)
-exposure_list = sorted(exposure_list)
+exposure_list = sorted(glob.glob(qr1_dir + file_pattern) +
+                       glob.glob(qr2_dir + file_pattern))
+print(f"Globbed {len(exposure_list)} candidate exposures")
 
-filtered_exposure_list = []
-remove_list = []
-for exp_file in exposure_list:
-    with fits.open(exp_file, memmap=False, lazy_load_hdus=True) as hdul:
-        header = hdul[1].header
-        # Check for good astrometry
-        good_astrometry = header.get('FINAST', 2)
-    if good_astrometry != 0:
-        print(f"Skipping {exp_file} due to poor astrometry (FINAST={good_astrometry})")
-        remove_list.append(exp_file)
-    else:
-        filtered_exposure_list.append(exp_file)
-exposure_list = filtered_exposure_list
-print(f"Removed {len(remove_list)} exposures with poor astrometry")
-print(f"Found {len(exposure_list)} exposures")
+# Drop poor-astrometry exposures (FINAST != 0). The (path, mtime)-keyed
+# cache reuses prior header reads on identical reruns, killing the slow
+# per-file fits.open loop. Cache lives alongside outputs; safe to delete.
+finast_cache = os.path.join(
+    selfcal_config.output_dir, '_exposure_cache',
+    f'finast_D{frame_setting["Detector"]}.json')
+exposure_list, dropped = filter_exposures_by_header(
+    exposure_list,
+    predicate=lambda h: h.get('FINAST', 2) == 0,
+    keys=['FINAST'],
+    ext=1,
+    cache_path=finast_cache,
+    max_workers=16,
+)
+print(f"Kept {len(exposure_list)} exposures, dropped {len(dropped)} for poor astrometry")
 
 # Initialize Reprojector and run reprojection
 rr = PipelineWrapper.Reprojector(selfcal_config, exposure_list=exposure_list)
-# Define reference frame with padding
-rr.define_reference(padding_pixels=100, use_ext=[1])
+rr.define_reference(padding_pixels=100, use_ext=[1],
+                    source_ref_path=SOURCE_REF_PATH)
 
 # The reproject library can also parallelize internally; keep one level of
 # parallelism to avoid oversubscription and high kernel/system CPU time.
@@ -68,16 +68,21 @@ print(
     f"reproject_kwargs.parallel={reproject_inner_parallel}"
 )
 
-# Run reprojection
-rr.run_reproject(max_workers=reproject_max_workers, # number of parallel workers for reprojection
-                 reproj_func='exact', # reprojection function, can be 'exact', 'interp', or 'adaptive' (use 'exact' for best accuracy, 'interp' for speed)
-                 padding_percentage=0.05, # percentage of padding around the footprint
-                 sci_ext_list=[1], # list of science extensions in the input fits files
-                 dq_ext_list=[2], # list of data quality extensions in the input fits files
-                 exp_idx_list=np.arange(0, len(exposure_list)), # list of exposure indices
-                 det_idx_list=[0]*len(exposure_list), # list of detector indices (0-indexed) corresponding to each exposure
-                 replace_existing=False, # whether to replace existing reprojected files
-                 reproject_kwargs={'parallel': reproject_inner_parallel} # additional kwargs for reprojection
+# run_reproject is resume-safe: it writes a manifest of the intended task
+# set, filters already-done outputs before dispatch (so a Ctrl-C + rerun
+# is cheap), writes h5 files atomically (.tmp + rename), and appends any
+# worker failures to {reproj_dir}/failed.jsonl.
+rr.run_reproject(max_workers=reproject_max_workers,
+                 reproj_func='exact',
+                 padding_percentage=0.05,
+                 sci_ext_list=[1],
+                 dq_ext_list=[2],
+                 exp_idx_list=np.arange(0, len(exposure_list)),
+                 det_idx_list=[0] * len(exposure_list),
+                 replace_existing=False,
+                 reproject_kwargs={'parallel': reproject_inner_parallel}
                 )
 
+# One-line summary of this run's reprojection state.
+rr.status()
 print("Reprojection complete")

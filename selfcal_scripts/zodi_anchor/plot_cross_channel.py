@@ -38,13 +38,35 @@ def parse_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('--anchor-dir', required=True,
-                   help='Dir produced by run_multi_channel.py (contains '
-                        'cal_*_zodianch.h5 files and summary.json).')
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument('--anchor-dir',
+                     help='Dir produced by run_multi_channel.py (contains '
+                          'cal_*_zodianch.h5 files and summary.json).')
+    src.add_argument('--cal-glob',
+                     help='Glob for in-place anchored cal_*.h5 files (any '
+                          'cals carrying zodi_anchor_C attr work). Use for '
+                          'apply_all_anchors.py output.')
+    p.add_argument('--detector', type=int, default=None,
+                   help='Detector index. Auto-parsed from filename if '
+                        'omitted.')
     p.add_argument('--calibration-dir', default=DEFAULT_CALIBRATION_DIR)
     p.add_argument('--out', default=None,
-                   help='Output PNG path (default: <anchor-dir>/cross_channel.png)')
+                   help='Output PNG path (default: cross_channel.png next '
+                        'to the cal files / in the anchor-dir).')
     return p.parse_args()
+
+
+def parse_detector_from_filename(path):
+    m = re.search(r'Detector(\d+)_', os.path.basename(path))
+    return int(m.group(1)) if m else None
+
+
+def _has_anchor_attr(cal_path):
+    try:
+        with h5py.File(cal_path, 'r') as f:
+            return 'zodi_anchor_C' in f.attrs
+    except Exception:
+        return False
 
 
 def parse_channel_from_filename(path):
@@ -64,22 +86,39 @@ def per_chunk_wavelengths(det_chunk_map, det_BC, valid_chunks):
 
 def main():
     args = parse_args()
-    out_path = args.out or os.path.join(args.anchor_dir, 'cross_channel.png')
-    summary_path = os.path.join(args.anchor_dir, 'summary.json')
-    if not os.path.exists(summary_path):
-        raise SystemExit(f"summary.json not found in {args.anchor_dir}")
-    with open(summary_path) as f:
-        summary = json.load(f)
-    detector = summary['detector']
+
+    if args.anchor_dir:
+        cal_paths = sorted(glob.glob(
+            os.path.join(args.anchor_dir, 'cal_*_zodianch.h5')))
+        out_path_default = os.path.join(args.anchor_dir, 'cross_channel.png')
+        summary_path = os.path.join(args.anchor_dir, 'summary.json')
+        if os.path.exists(summary_path):
+            with open(summary_path) as f:
+                summary = json.load(f)
+            detector = args.detector or summary.get('detector')
+        else:
+            detector = args.detector
+    else:
+        cal_paths = sorted(glob.glob(args.cal_glob))
+        # Filter to only those that actually carry zodi_anchor_C
+        cal_paths = [c for c in cal_paths
+                     if _has_anchor_attr(c)]
+        out_path_default = os.path.join(
+            os.path.dirname(cal_paths[0]) if cal_paths else '.',
+            'cross_channel.png')
+        detector = args.detector or (
+            parse_detector_from_filename(cal_paths[0]) if cal_paths else None)
+    out_path = args.out or out_path_default
+
+    if not cal_paths:
+        raise SystemExit("no anchored cal files found.")
+    if detector is None:
+        raise SystemExit("could not determine detector; pass --detector.")
     bc_path = os.path.join(
         args.calibration_dir, DET_BC_TEMPLATE.format(detector=detector))
     det_BC = fits.getdata(bc_path)
     print(f"detector: {detector}, det_BC from {bc_path}")
-
-    cal_paths = sorted(glob.glob(
-        os.path.join(args.anchor_dir, 'cal_*_zodianch.h5')))
-    if not cal_paths:
-        raise SystemExit(f"no anchored cal files in {args.anchor_dir}")
+    print(f"loading {len(cal_paths)} anchored cal files")
 
     channels = []
     for cal in cal_paths:
@@ -149,43 +188,34 @@ def main():
     chs = [c['ch'] for c in channels]
     wls = [c['wavelength_um'] for c in channels]
     Cs = [c['C'] for c in channels]
-    slopes = [c['slope'] for c in channels]
-    rs = [c['r'] for c in channels]
-    ax.plot(wls, Cs, 'o-', color='C0', label='anchor C (intercept)')
-    for w, ch, sl, rr in zip(wls, chs, slopes, rs):
-        ax.annotate(f'Ch{ch}\n(slope={sl:.2f}, r={rr:.2f})',
-                    xy=(w, Cs[chs.index(ch)]), fontsize=7,
-                    xytext=(0, 6), textcoords='offset points', ha='center')
+    ax.plot(wls, Cs, 'o-', color='C0')
     ax.set_xlabel('Channel mean wavelength (um)')
     ax.set_ylabel('Anchor C (MJy/sr)')
     ax.set_title('Per-channel anchor constant')
     ax.grid(alpha=0.3)
-    ax.legend()
 
     # (b) per-chunk mean offset vs wavelength
     ax = axes[1]
     for color, c in zip(colors, channels):
         vc = c['valid_chunks']
         ax.scatter(c['chunk_wls'][vc], c['chunk_mean_offset'][vc],
-                   s=4, alpha=0.7, color=color, label=f"Ch{c['ch']}")
+                   s=4, alpha=0.7, color=color)
     ax.axhline(0, color='gray', lw=0.5)
     ax.set_xlabel('Chunk mean wavelength (um)')
     ax.set_ylabel('mean over frames of offset (MJy/sr)')
     ax.set_title('Per-chunk mean offset across channels (should be continuous)')
     ax.grid(alpha=0.3)
-    ax.legend(loc='best', fontsize=8)
 
     # (c) per-chunk "absolute" value vs wavelength
     ax = axes[2]
     for color, c in zip(colors, channels):
         vc = c['valid_chunks']
         ax.scatter(c['chunk_wls'][vc], c['chunk_abs_value'][vc],
-                   s=4, alpha=0.7, color=color, label=f"Ch{c['ch']}")
+                   s=4, alpha=0.7, color=color)
     ax.set_xlabel('Chunk mean wavelength (um)')
     ax.set_ylabel('mean_sky + mean_offset[c] + mean_scalar_anch (MJy/sr)')
     ax.set_title('Per-chunk anchored absolute value across channels')
     ax.grid(alpha=0.3)
-    ax.legend(loc='best', fontsize=8)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=120)
