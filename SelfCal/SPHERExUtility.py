@@ -262,7 +262,15 @@ def compute_offsets_guess(reproj_list, det_chunk_map, max_workers=16):
     return np.array(results)
 
 
-def load_lvf_params(filename, input_dir='/home/thomasli/selfcal-project/selfcal/selfcal_scripts/lvf_params'):
+# lvf_params live in the repo's data/lvf_params/ directory. Resolved relative
+# to this module so the path is correct in every worktree (e.g. selfcal/ vs
+# selfcal-stable/) without depending on the cwd.
+_LVF_PARAMS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data', 'lvf_params')
+
+
+def load_lvf_params(filename, input_dir=_LVF_PARAMS_DIR):
     input_path = os.path.join(input_dir, filename)
     if not os.path.exists(input_path):
         print(f"LVF parameters file {input_path} not found. Returning None.")
@@ -271,7 +279,7 @@ def load_lvf_params(filename, input_dir='/home/thomasli/selfcal-project/selfcal/
     print(f"Loaded LVF parameters from {input_path}")
     return lvf_params
 
-def save_lvf_params(lvf_params, output_dir='/home/thomasli/selfcal-project/selfcal/selfcal_scripts/lvf_params'):
+def save_lvf_params(lvf_params, output_dir=_LVF_PARAMS_DIR):
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, lvf_params['filename'])
     np.save(output_path, lvf_params)

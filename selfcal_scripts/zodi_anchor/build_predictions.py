@@ -47,9 +47,12 @@ except ImportError as e:
 
 DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
 DET_BC_TEMPLATE = '20250901_SSDC_BC_Band{detector}.fits'
-DEFAULT_METADATA_CACHE_TEMPLATE = (
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 'cache', 'metadata_D{detector}.h5'))
+# Repo-root-relative cache: <repo>/cache/zodi_anchor/metadata_D{detector}.h5.
+# Computed from this file's path so each worktree (selfcal/, selfcal-stable/)
+# picks up its own gitignored cache.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_METADATA_CACHE_TEMPLATE = os.path.join(
+    _REPO_ROOT, 'cache', 'zodi_anchor', 'metadata_D{detector}.h5')
 VALID_CHUNK_THRESH = 0.05
 # cov_frac noise floor: chunks outside the channel mask still get
 # tiny accidental coverage (~1e-3 per frame from interp footprint
