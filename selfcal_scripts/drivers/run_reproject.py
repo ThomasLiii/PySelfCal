@@ -1,3 +1,71 @@
+"""Reprojection driver — reads raw SPHEREx FITS exposures and writes one
+HDF5 cutout per (exposure, detector) onto a common reference WCS.
+
+Customization (the knobs you'll typically change):
+  - `frame_setting['Detector']` — which SPHEREx detector (1..6).
+  - `qr1_dir` / `qr2_dir` / `file_pattern` — where to find input exposures.
+  - `SOURCE_REF_PATH` — share projection with another run (see below).
+  - `selfcal_config.run_name` / `output_dir` — where outputs live.
+
+Outputs land under
+``{output_dir}/{run_name}/`` with subdirs ``reprojected/``, plus a
+``ref.fits`` and a ``reprojected/manifest.json`` describing the run.
+
+Features (set up so you can edit, run, Ctrl-C, and re-run safely):
+
+1. **Resume after Ctrl-C / crash.** `run_reproject` writes
+   ``reprojected/manifest.json`` listing every intended (exposure,
+   extension) task. On every invocation it scans the output dir and
+   dispatches only tasks whose final h5 doesn't exist. Workers write to
+   ``output.h5.tmp.<pid>`` then ``os.replace`` — a kill never leaves
+   half-written files. **To force redo, pass ``replace_existing=True`` or
+   delete the specific h5 you want regenerated.** See
+   ``Reprojector.status()`` for a snapshot.
+
+2. **FINAST header-filter cache.** The slow ``fits.open`` loop that
+   rejects poor-astrometry exposures is cached at
+   ``{output_dir}/_exposure_cache/finast_D{N}.json`` keyed on
+   ``(path, mtime, ext, keys)``. **Identical reruns skip every FITS
+   header open.** Delete the json to force re-read.
+
+3. **Cross-run projection sharing.** Set ``SOURCE_REF_PATH`` to point at
+   another run's ``ref.fits``. The new run will load that file's
+   projection (CRVAL/CDELT/CTYPE/PC) and recompute only CRPIX + shape to
+   fit *this* run's exposure footprint. Useful when you want detectors /
+   epochs / cuts that share the same pixel grid. Set to ``None`` to fit
+   an optimal frame from scratch.
+
+   Sanity-check: if a ``ref.fits`` already exists at this run's
+   ``ref_path``, ``define_reference`` will assert it has the same
+   projection as ``SOURCE_REF_PATH`` (raises if mismatched). Pass
+   ``verify_projection=False`` to skip.
+
+4. **Failure log.** Worker errors append to
+   ``reprojected/failed.jsonl`` as JSON-per-line records with
+   ``exp_idx``, ``det_idx``, ``input_fits``, ``error``. Investigate /
+   quarantine via ``Reprojector.check_reproj_files(quarantine=True)``.
+
+5. **Determinism.** Worker outputs are sorted before being returned,
+   and ``Reprojector.reproj_list`` is always the sorted union of
+   pre-existing and newly-completed outputs.
+
+Drivers under selfcal_scripts/drivers/ pin
+``OMP/MKL/OPENBLAS_NUM_THREADS=1`` so only the in-process pool is
+parallel. Preserve that when adding launchers.
+
+Quick recipes:
+  - **First time on a new detector:** edit ``frame_setting['Detector']``
+    and run. Builds a fresh ref.fits.
+  - **Resume after Ctrl-C:** just re-run; pending tasks dispatch only.
+  - **Force re-reproject everything:** pass ``replace_existing=True`` to
+    ``rr.run_reproject(...)``, OR delete ``reprojected/`` first.
+  - **New detector that shares grid with an existing run:** set
+    ``SOURCE_REF_PATH`` to that run's ``ref.fits`` and leave the local
+    ``ref.fits`` absent — ``define_reference`` will derive a new one
+    sized to this footprint.
+  - **Audit a half-run:** ``Reprojector(cfg).status()`` (no need to
+    re-glob exposures).
+"""
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
