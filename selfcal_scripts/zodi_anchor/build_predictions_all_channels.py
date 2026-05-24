@@ -37,7 +37,7 @@ for p in (_HERE, _REPO_ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from build_zodi_predictions import (  # noqa: E402
+from build_predictions import (  # noqa: E402
     DEFAULT_CALIBRATION_DIR,
     DEFAULT_METADATA_CACHE_TEMPLATE,
     DET_BC_TEMPLATE,
