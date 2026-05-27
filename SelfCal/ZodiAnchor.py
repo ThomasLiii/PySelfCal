@@ -404,3 +404,96 @@ class Anchor:
 def load_anchor(path):
     """Load a per-detector anchor file into an Anchor consumer."""
     return Anchor(path)
+
+
+# ---------------------------------------------------------------------
+# Phase-1 repair: r-weighted smoothing of contaminated channels
+# ---------------------------------------------------------------------
+
+def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
+                            r_threshold=0.5, spline_k=3, s_factor=1.0,
+                            r_eps=1e-3):
+    """Targeted r-weighted smoothing repair of (slope, C) over wavelength.
+
+    Fits a Pearson-r-weighted smoothing spline to the CLEAN channels only
+    (``pearson_r >= r_threshold``), then REPLACES the flagged channels'
+    slope/C with that curve. Clean channels keep their raw per-channel
+    fit. Fitting clean-only (rather than down-weighting the contaminated
+    points) means a blown-up channel can never leak into the curve.
+
+    Among clean channels the weight is ``w = r^2 / (1 - r^2)`` (r clamped
+    to [0, 0.999]), so the cleanest channels dominate. The fit is done on
+    a standardized y (zero weighted-mean, unit weighted-std over the clean
+    channels) so the one knob ``s_factor`` means the same thing for slope
+    and C: ``s = s_factor * n_clean`` in standardized units —
+    ``s_factor`` ~ 0 interpolates the clean points, ~1 flattens to their
+    weighted mean; ~0.3-0.5 follows the trend while smoothing scatter.
+
+    Parameters
+    ----------
+    wavelengths, slope, intercept, pearson_r : per-channel arrays (any order)
+    r_threshold : channels with r below this are repaired (default 0.5)
+    spline_k : spline degree (default 3)
+    s_factor : smoothing strength in standardized units (default 1.0)
+    r_eps : stabilizer in the weight denominator
+
+    Returns
+    -------
+    dict with (all in INPUT order):
+      slope_final, C_final : repaired arrays (raw where clean)
+      contaminated : bool mask (r < r_threshold)
+      slope_curve, C_curve : the clean-fit spline evaluated at every channel
+                             (for plotting/inspection)
+      extrapolated : bool mask, True where a flagged channel lies outside
+                     the clean-channel wavelength span (spline extrapolated)
+    """
+    from scipy.interpolate import UnivariateSpline
+    wl = np.asarray(wavelengths, float)
+    sl = np.asarray(slope, float)
+    C = np.asarray(intercept, float)
+    r = np.asarray(pearson_r, float)
+    n = wl.size
+    order = np.argsort(wl)
+    inv = np.empty(n, int)
+    inv[order] = np.arange(n)
+    wl_s, sl_s, C_s, r_s = wl[order], sl[order], C[order], r[order]
+
+    contam_s = r_s < r_threshold
+    clean_s = ~contam_s
+    n_clean = int(clean_s.sum())
+    if n_clean < spline_k + 1:
+        raise ValueError(
+            f"only {n_clean} clean channels (r >= {r_threshold}); need "
+            f">= {spline_k + 1} for a degree-{spline_k} spline.")
+
+    rc = np.clip(r_s[clean_s], 0.0, 0.999)
+    wbase_c = rc ** 2 / (1.0 - rc ** 2 + r_eps)
+    wl_c = wl_s[clean_s]
+    wnorm_c = wbase_c / np.median(wbase_c)   # typical clean weight ~1
+
+    def _smooth(y_s):
+        y_c = y_s[clean_s]
+        ybar = np.average(y_c, weights=wbase_c)
+        yvar = np.average((y_c - ybar) ** 2, weights=wbase_c)
+        yscale = float(np.sqrt(yvar)) if yvar > 0 else 1.0
+        yp = (y_c - ybar) / yscale
+        spl = UnivariateSpline(wl_c, yp, w=wnorm_c, k=spline_k,
+                               s=s_factor * n_clean)
+        return spl(wl_s) * yscale + ybar   # evaluate at ALL sorted wl
+
+    sl_curve_s = _smooth(sl_s)
+    C_curve_s = _smooth(C_s)
+    sl_final_s = np.where(contam_s, sl_curve_s, sl_s)
+    C_final_s = np.where(contam_s, C_curve_s, C_s)
+
+    lo, hi = wl_c.min(), wl_c.max()
+    extrap_s = contam_s & ((wl_s < lo) | (wl_s > hi))
+
+    return dict(
+        slope_final=sl_final_s[inv],
+        C_final=C_final_s[inv],
+        contaminated=contam_s[inv],
+        slope_curve=sl_curve_s[inv],
+        C_curve=C_curve_s[inv],
+        extrapolated=extrap_s[inv],
+    )

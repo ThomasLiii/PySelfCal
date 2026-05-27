@@ -68,11 +68,12 @@ D1/D4/D5 before this layout was adopted.
 | [`build_predictions.py`](build_predictions.py) | Build per-frame zodi predictions for ONE cal file. Writes `zodi_pred_<tag>.npz` with arrays `zodi_pred`, `mjds`, `reproj_list`. Core module — exports `DEFAULT_CALIBRATION_DIR`, `DEFAULT_METADATA_CACHE_TEMPLATE`, `extract_metadata_for_reproj_list`, used by the other builders. |
 | [`build_predictions_all_channels.py`](build_predictions_all_channels.py) | Build predictions for all 34 channels of a detector in one go, without needing a per-channel cal file (reads exposure + LVF metadata directly). Faster than running `build_predictions.py` 34 times because the WCS/MJD extraction is shared. |
 
-### Anchor builder
+### Anchor builder + repair
 
 | Script | Purpose |
 |---|---|
 | [`build_anchor.py`](build_anchor.py) | Fit the per-channel anchor from a run's PRISTINE cals + `zodi_preds/*.npz` via `SelfCal.ZodiAnchor.fit_anchor_for_channel`; write `<run>/zodi_anchor/anchor_D{N}.h5`. No cal/mosaic mutation. Skips any channel whose cal still carries a legacy in-place anchor (run `revert_anchor.py` first). `--run-dir <run> [<run> ...]`. |
+| [`repair_anchor.py`](repair_anchor.py) | Phase-1 repair. Flags channels with `pearson_r < --r-threshold` (default 0.5; catches airglow blowouts like D1 He I Ch31-33 / OI Ch10-12 while leaving D4 PAH at r≈0.85-0.92 alone), fits a Pearson-r-weighted smoothing spline to the **clean channels only** (so a blown channel can't leak in), and overwrites just the flagged channels' `slope_final`/`C_final` with the spline value (clean channels keep their raw fit). Updates the anchor file **in-place**; raw `slope`/`intercept` are preserved. `--dry-run`/`--plot` to inspect first; `--s-factor` tunes smoothing. Core: `SelfCal.ZodiAnchor.rweighted_spline_repair`. |
 
 ### Migration
 
@@ -106,9 +107,12 @@ D1/D4/D5 before this layout was adopted.
   referenced npz. It stores the npz path + sha1 + length so a consumer can
   re-load and verify identity.
 - The fit result is repair-aware: `slope`/`intercept` are the raw
-  per-channel linfit; `slope_final`/`C_final` are what consumers apply
-  (equal to raw until a Phase-1 smoothing/repair pass overwrites them —
-  see `todo/zodi_anchor_refactor.md`).
+  per-channel linfit; `slope_final`/`C_final` are what consumers apply.
+  They equal the raw values until `repair_anchor.py` overwrites the
+  flagged channels (`contaminated_flag`, `repair_method='rweighted_spline'`,
+  root `anchor_method='rweighted_spline'`). Re-running the repair always
+  recomputes from the preserved raw values, so it's safe to re-run with a
+  different `--r-threshold` / `--s-factor`.
 - Imports between scripts: the `build_predictions*` and
   `diag_compare_models.py` scripts `from build_predictions import ...` for
   shared constants and the `extract_metadata_for_reproj_list` helper (each
