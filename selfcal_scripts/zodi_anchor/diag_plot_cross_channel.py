@@ -188,10 +188,28 @@ def main():
     chs = [c['ch'] for c in channels]
     wls = [c['wavelength_um'] for c in channels]
     Cs = [c['C'] for c in channels]
+    slopes = [c['slope'] for c in channels]
+    rs = [c['r'] for c in channels]
     ax.plot(wls, Cs, 'o-', color='C0')
+    # Per-point slope + r labels, alternating above/below to reduce overlap.
+    for i, (x, y, s, r) in enumerate(zip(wls, Cs, slopes, rs)):
+        above = (i % 2 == 0)
+        ax.annotate(
+            f's={s:.2f}\nr={r:.2f}',
+            xy=(x, y),
+            xytext=(0, 9 if above else -9),
+            textcoords='offset points',
+            fontsize=6, ha='center',
+            va='bottom' if above else 'top',
+            color='gray',
+        )
+    # Bit of vertical headroom so labels at the top/bottom don't clip.
+    ymin, ymax = ax.get_ylim()
+    pad = 0.10 * (ymax - ymin)
+    ax.set_ylim(ymin - pad, ymax + pad)
     ax.set_xlabel('Channel mean wavelength (um)')
     ax.set_ylabel('Anchor C (MJy/sr)')
-    ax.set_title('Per-channel anchor constant')
+    ax.set_title('Per-channel anchor constant (label = slope / Pearson r)')
     ax.grid(alpha=0.3)
 
     # (b) per-chunk mean offset vs wavelength
