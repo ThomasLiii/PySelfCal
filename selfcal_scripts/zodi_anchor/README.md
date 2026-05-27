@@ -4,44 +4,57 @@ Post-hoc zodiacal-light anchor for SelfCal cal files + mosaics.
 
 The core library lives in [`SelfCal/ZodiAnchor.py`](../../SelfCal/ZodiAnchor.py).
 The scripts here orchestrate building per-frame zodi predictions
-(via [zodipy](https://github.com/Cosmoglobe/zodipy)), applying the anchor
-shift to existing cal+mosaic pairs, and producing diagnostic plots.
+(via [zodipy](https://github.com/Cosmoglobe/zodipy)), fitting the per-channel
+anchor, and producing diagnostic plots.
 
-File names group by role:
-- `build_*` — produce zodi-prediction `.npz` files (one per cal file or
-  one per channel).
-- `apply_*` — read a zodi-prediction `.npz` + a cal+mosaic, write
-  anchored copies (or in-place modifications).
-- `pipeline_*` — end-to-end orchestration (build → apply → render).
-- `diag_*` — read-only diagnostics; never modify cal/mosaic files.
+## Sidecar architecture (current)
+
+The anchor is a **non-mutating** post-processing layer. SelfCal pipeline
+outputs (`cal_*.h5`, `mosaic_*.fits`) stay **pristine**. The anchor result
+is written to a per-detector **sidecar**, `<run>/zodi_anchor/anchor_D{N}.h5`
+(summary-only schema, `SIDECAR_VERSION` in `SelfCal/ZodiAnchor.py`), and
+applied to arrays **at read time** by the consumer (`load_anchor` /
+`Anchor`). Nothing on disk is rewritten.
+
+Why: the old in-place anchor edited cal/mosaic (`skymap += C`,
+`frame_scalar -= C`, mosaic `+C`), which conflated calibration with zodi
+attribution and made re-runs/analysis confusing. The sidecar split makes
+re-anchoring (different clip params, smoothing/repair variants) a
+seconds-long sidecar rebuild instead of a multi-file re-edit.
+
+File-name roles:
+- `build_*` — produce zodi-prediction `.npz` files (the expensive zodipy
+  step; one per cal file or one per channel). Cached in `zodi_preds/`.
+- `build_sidecar.py` — fit the per-channel anchor from pristine cal +
+  `zodi_pred_*.npz`, write `anchor_D{N}.h5`. No cal/mosaic mutation.
+- `diag_*` — read-only diagnostics; consume the sidecar (+ cal/npz as
+  needed). Never modify cal/mosaic files.
+- `revert_anchor.py` — one-shot migration: undo any legacy in-place anchor
+  on cal+mosaic (symmetric inverse), returning them to pristine state.
+- `apply_anchor*.py`, `pipeline_multi_channel.py` — **DEPRECATED** (legacy
+  in-place mutators; kept only for reference / reading old outputs).
 
 ## Typical workflow
 
 ```
-                        ┌─────────────────────────┐
-                        │ build_predictions.py    │
-                        │ (one cal file at a time)│
-                        └──┬──────────────────────┘
-                           │   or
-                        ┌──┴──────────────────────────────┐
-                        │ build_predictions_all_channels  │
-                        │ (all ch of a detector at once)  │
-                        └──┬──────────────────────────────┘
-                           │   produces zodi_pred_*.npz
-                           v
-                  ┌────────────────────────┐
-                  │ apply_anchor.py        │  (single)
-                  │ apply_anchor_batch.py  │  (bulk, in-place option)
-                  └──┬─────────────────────┘
-                     │   writes/updates cal+mosaic
-                     v
-              ┌──────────────────────────────┐
-              │ diag_*.py  (read-only plots) │
-              └──────────────────────────────┘
+        ┌─────────────────────────────────┐
+        │ build_predictions[_all_channels]│  (zodipy; selfcal-zodipy env)
+        └──┬──────────────────────────────┘
+           │   produces zodi_preds/zodi_pred_*.npz  (cache + env hand-off)
+           v
+        ┌────────────────────────┐
+        │ build_sidecar.py       │  (cheap linear fit; selfcal env)
+        └──┬─────────────────────┘
+           │   writes <run>/zodi_anchor/anchor_D{N}.h5   (PRISTINE cal/mosaic)
+           v
+        ┌──────────────────────────────────────────────┐
+        │ diag_*.py        (read-only; apply at runtime)│
+        │ load_anchor()    (consumer for downstream use)│
+        └──────────────────────────────────────────────┘
 ```
 
-Or use `pipeline_multi_channel.py` to chain build + apply + diagnostic
-in one call for a whole detector.
+A one-time migration (`revert_anchor.py`) was used to undo the old
+in-place anchoring on D1/D4/D5 before adopting this layout.
 
 ## Scripts
 
@@ -52,26 +65,38 @@ in one call for a whole detector.
 | [`build_predictions.py`](build_predictions.py) | Build per-frame zodi predictions for ONE cal file. Writes `zodi_pred_<tag>.npz` with arrays `zodi_pred`, `mjds`, `reproj_list`. Core module — exports `DEFAULT_CALIBRATION_DIR`, `DEFAULT_METADATA_CACHE_TEMPLATE`, `extract_metadata_for_reproj_list`, used by the other builders + pipeline. |
 | [`build_predictions_all_channels.py`](build_predictions_all_channels.py) | Build predictions for all 34 channels of a detector in one go, without needing a per-channel cal file (reads exposure + LVF metadata directly). Faster than running `build_predictions.py` 34 times because the WCS/MJD extraction is shared. |
 
-### Appliers
+### Sidecar builder
 
 | Script | Purpose |
 |---|---|
-| [`apply_anchor.py`](apply_anchor.py) | CLI wrapper around `SelfCal.ZodiAnchor.apply_anchor_to_file`. Applies one `.npz` to one cal+mosaic, fits the linear `slope * zodi_pred + intercept` with moving-MJD sigma-clip, writes anchored copies (or in-place with `--in-place`). |
-| [`apply_anchor_batch.py`](apply_anchor_batch.py) | Apply a built `.npz` set to many cal+mosaic pairs matched by tag. In-place by default; pairs `cal_<TAG>.h5` ↔ `mosaic_<TAG>.fits` automatically. |
+| [`build_sidecar.py`](build_sidecar.py) | Fit the per-channel anchor from a run's PRISTINE cals + `zodi_preds/*.npz` via `SelfCal.ZodiAnchor.fit_anchor_for_channel`; write `<run>/zodi_anchor/anchor_D{N}.h5`. No cal/mosaic mutation. Skips any channel whose cal still carries a legacy in-place anchor (run `revert_anchor.py` first). `--run-dir <run> [<run> ...]`. |
 
-### Pipeline
+### Migration
 
 | Script | Purpose |
 |---|---|
-| [`pipeline_multi_channel.py`](pipeline_multi_channel.py) | End-to-end for one detector: builds per-channel predictions, applies the anchor to each cal+mosaic, optionally writes a `compare_*.png` per channel. Common arg is `--out-dir` where the `.npz` + anchored outputs + figures land. |
+| [`revert_anchor.py`](revert_anchor.py) | Undo a legacy in-place anchor: symmetric inverse of the old `_shift_cal_file`/`_shift_mosaic_file` (skymap `-= C` on covered, `frame_scalar += C`, mosaic `MEAN_MAP`/`SC_MEAN_MAP -= C` on weighted; drops `zodi_anchor_*` attrs + `zodi_anchor_pred` dataset + `ZODIANCH*` headers; stamps `ZODIRVRT`). Idempotent. Dry-run by default; `--apply` to mutate. Round-trip-verified bit-exact. |
 
 ### Diagnostics (read-only)
 
 | Script | Purpose |
 |---|---|
-| [`diag_compare_models.py`](diag_compare_models.py) | Run multiple zodi IPD models against the same cal files; produces a side-by-side plot and a `compare_models_summary.json` of per-model slope/intercept/r per channel. |
-| [`diag_compare_zodi_vs_scalar.py`](diag_compare_zodi_vs_scalar.py) | Quick scatter: per-frame `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Quick sanity that the anchor's linear fit makes sense. |
-| [`diag_plot_cross_channel.py`](diag_plot_cross_channel.py) | Stitch the anchored `mosaic_Ch*.fits` files across all channels of a detector and plot a cross-channel continuity diagnostic — the anchor should make adjacent channels meet at the LVF boundaries. |
+| [`diag_zodi_spectrum.py`](diag_zodi_spectrum.py) | Per-detector 4-panel spectrum (mean(full_DC)/mean(zodi_pred)/slope·mean(zodi_pred), C, slope, Pearson r vs wavelength) read **entirely from the sidecar** — instant, no cal/npz I/O. `--sidecar` or `--run-dir`; `--max-ch` drops airglow-blown channels. |
+| [`diag_plot_cross_channel.py`](diag_plot_cross_channel.py) | Cross-channel continuity: loads pristine cals, applies the anchor **in-memory** from the sidecar, plots per-chunk continuity across the LVF boundaries. `--run-dir` (auto-locates sidecar) or `--cal-glob` + `--sidecar`. |
+| [`diag_compare_zodi_vs_scalar.py`](diag_compare_zodi_vs_scalar.py) | Per-channel scatter: `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Re-fits from the pristine cal + npz (matches the sidecar fit). Sanity-check that the linear fit makes sense. |
+| [`diag_compare_models.py`](diag_compare_models.py) | Run multiple zodi IPD models against the same cal files; side-by-side plot + `compare_models_summary.json` of per-model slope/intercept/r per channel. |
+
+### Deprecated (legacy in-place mutators — do not use for new work)
+
+| Script | Status |
+|---|---|
+| [`apply_anchor.py`](apply_anchor.py) | DEPRECATED. Wrote anchored copies / in-place edits of cal+mosaic. Superseded by the sidecar (`build_sidecar.py` + `load_anchor`). |
+| [`apply_anchor_batch.py`](apply_anchor_batch.py) | DEPRECATED. Bulk in-place variant of `apply_anchor.py`. |
+| [`pipeline_multi_channel.py`](pipeline_multi_channel.py) | DEPRECATED. Chained build → in-place apply → compare. Replace with `build_predictions* → build_sidecar → diag_*`. |
+
+`SelfCal.ZodiAnchor.apply_anchor_to_file` and the private
+`_shift_cal_file`/`_shift_mosaic_file` helpers are likewise legacy; the
+sidecar path uses `fit_anchor_for_channel` + `write_sidecar` + `Anchor`.
 
 ## Output locations (not in this directory)
 
@@ -79,17 +104,26 @@ in one call for a whole detector.
 |---|---|
 | Metadata cache (`metadata_D{N}.h5`) | `<repo>/cache/zodi_anchor/` (gitignored). Path is set by `DEFAULT_METADATA_CACHE_TEMPLATE` in `build_predictions.py`. |
 | Diagnostic figures | `<repo>/figures/zodi_anchor/...` (gitignored). All scripts that emit PNGs accept an `--out-dir`. |
-| `zodi_pred_<tag>.npz` files | User-chosen `--out-dir`. Typically `/mnt/md124/.../zodi_preds/` for production runs. |
-| Anchored cal+mosaic | Either alongside originals with a suffix, or in-place via `--in-place`. The driver hooks in `run_cal_v2.py` write to the same `calibration/` and `mosaic/` dirs. |
+| `zodi_pred_<tag>.npz` files | `<run>/zodi_preds/`. The expensive zodipy output; cache + cross-env hand-off (zodipy needs the `selfcal-zodipy`/numpy<2 env; the fit + consumer run in `selfcal`). Referenced by the sidecar (path + sha + len), not copied into it. |
+| Anchor sidecar (`anchor_D{N}.h5`) | `<run>/zodi_anchor/`. The fit result (summary-only, one file per detector). Cal+mosaic stay pristine. |
+| Anchored cal+mosaic | **Not written.** The shift is applied in-memory by `load_anchor()` consumers. For a materialized FITS (ds9 / publication), a separate opt-in step would write to `<run>/anchored_mosaics/` — never overwriting pipeline outputs. |
 
 ## Notes
 
-- Imports between scripts: `diag_compare_models.py`,
-  `build_predictions_all_channels.py`, and `pipeline_multi_channel.py`
-  all `from build_predictions import ...` for the shared constants and
-  the `extract_metadata_for_reproj_list` helper. The flat layout makes
-  this work without `sys.path` munging — run them with cwd anywhere; the
-  Python interpreter will pick up `build_predictions.py` from the same
-  directory because the scripts insert their dir into `sys.path[0]`.
-- The actual anchor math lives in `SelfCal.ZodiAnchor`. These scripts
-  only orchestrate I/O and CLI plumbing.
+- The anchor is **summary-only** in the sidecar; per-frame `full_DC` is
+  recomputed from the pristine cal and per-frame `zodi_pred` is read from
+  the referenced npz. The sidecar stores the npz path + sha1 + length so a
+  consumer can re-load and verify identity.
+- The fit result is repair-aware: `slope`/`intercept` are the raw
+  per-channel linfit; `slope_final`/`C_final` are what consumers apply
+  (equal to raw until a Phase-1 smoothing/repair pass overwrites them —
+  see `todo/zodi_anchor_refactor.md`).
+- Imports between scripts: the `build_*` and `diag_compare_models.py`
+  scripts `from build_predictions import ...` for shared constants and the
+  `extract_metadata_for_reproj_list` helper (each inserts its dir into
+  `sys.path[0]`, so cwd doesn't matter). `build_sidecar.py` and
+  `diag_*.py` import the anchor core from `SelfCal.ZodiAnchor` (resolved
+  via `pip install -e .`).
+- The actual anchor math lives in `SelfCal.ZodiAnchor`
+  (`fit_anchor_for_channel`, `write_sidecar`, `Anchor`/`load_anchor`).
+  These scripts only orchestrate I/O and CLI plumbing.
