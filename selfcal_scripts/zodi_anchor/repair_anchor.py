@@ -85,9 +85,10 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
     wls = wl[order]
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
 
-    def panel(ax, raw, curve, final, label, hline=None):
-        ax.plot(wls, curve[order], '-', c='tab:green', lw=1.2,
-                label='r-weighted spline', zorder=1)
+    def panel(ax, raw, final, label, curve=None, hline=None):
+        if curve is not None:
+            ax.plot(wls, curve[order], '-', c='tab:green', lw=1.2,
+                    label='r-weighted spline', zorder=1)
         ax.scatter(wl[~contam], raw[~contam], s=18, c='tab:blue',
                    label='clean (kept raw)', zorder=3)
         ax.scatter(wl[contam], raw[contam], s=30, c='tab:red', marker='x',
@@ -101,13 +102,15 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8, loc='best')
 
-    panel(axes[0], slope_raw, res['slope_curve'], res['slope_final'],
-          'slope', hline=1.0)
+    panel(axes[0], slope_raw, res['slope_final'], 'slope',
+          curve=res['slope_curve'], hline=1.0)
     axes[0].set_title(f'(a) D{det} slope: raw vs r-weighted spline '
                       f'(repaired = open red)')
-    panel(axes[1], C_raw, res['C_curve'], res['C_final'], 'C (MJy/sr)',
-          hline=0.0)
-    axes[1].set_title('(b) C: raw vs spline')
+    # C is NOT smoothed: repaired C = mean_full_dc - slope_final*mean_pred,
+    # which keeps the non-zodi/airglow content. No spline curve here.
+    panel(axes[1], C_raw, res['C_final'], 'C (MJy/sr)', hline=0.0)
+    axes[1].set_title('(b) C: raw vs recomputed from smoothed slope '
+                      '(keeps non-zodi signal; not smoothed)')
     ax = axes[2]
     ax.scatter(wl[~contam], r[~contam], s=18, c='tab:blue', label='clean')
     ax.scatter(wl[contam], r[contam], s=30, c='tab:red', marker='x',
@@ -137,9 +140,11 @@ def main():
     slope_raw = np.array([a.channels[c]['slope'] for c in chs])
     C_raw = np.array([a.channels[c]['intercept'] for c in chs])
     r = np.array([a.channels[c]['pearson_r'] for c in chs])
+    mean_full_dc = np.array([a.channels[c]['mean_full_dc'] for c in chs])
+    mean_pred = np.array([a.channels[c]['mean_pred'] for c in chs])
 
     res = rweighted_spline_repair(
-        wl, slope_raw, C_raw, r,
+        wl, slope_raw, C_raw, r, mean_full_dc, mean_pred,
         r_threshold=args.r_threshold, spline_k=args.spline_k,
         s_factor=args.s_factor)
     contam = res['contaminated']

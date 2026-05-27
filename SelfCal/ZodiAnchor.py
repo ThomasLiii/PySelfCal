@@ -411,30 +411,42 @@ def load_anchor(path):
 # ---------------------------------------------------------------------
 
 def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
+                            mean_full_dc, mean_pred,
                             r_threshold=0.5, spline_k=3, s_factor=1.0,
                             r_eps=1e-3):
-    """Targeted r-weighted smoothing repair of (slope, C) over wavelength.
+    """Targeted repair of contaminated channels: smooth the SLOPE only,
+    then recompute C consistently (do NOT smooth C).
 
-    Fits a Pearson-r-weighted smoothing spline to the CLEAN channels only
-    (``pearson_r >= r_threshold``), then REPLACES the flagged channels'
-    slope/C with that curve. Clean channels keep their raw per-channel
-    fit. Fitting clean-only (rather than down-weighting the contaminated
-    points) means a blown-up channel can never leak into the curve.
+    Rationale: ``slope`` is the multiplicative zodi-SED calibration and
+    should vary smoothly in wavelength. ``C`` is the non-zodi DC bucket
+    (CIB + DGL + airglow); it is NOT smooth and must keep real features
+    (e.g. the He I 1083 nm glow). At a contaminated channel the per-channel
+    linfit slope is garbage (airglow scatter is uncorrelated with zodi),
+    and because OLS couples them (``C = mean_full_dc - slope*mean_pred``)
+    that garbage slope also corrupts C.
 
-    Among clean channels the weight is ``w = r^2 / (1 - r^2)`` (r clamped
-    to [0, 0.999]), so the cleanest channels dominate. The fit is done on
-    a standardized y (zero weighted-mean, unit weighted-std over the clean
-    channels) so the one knob ``s_factor`` means the same thing for slope
-    and C: ``s = s_factor * n_clean`` in standardized units —
-    ``s_factor`` ~ 0 interpolates the clean points, ~1 flattens to their
-    weighted mean; ~0.3-0.5 follows the trend while smoothing scatter.
+    So for flagged (``pearson_r < r_threshold``) channels we:
+      1. set ``slope_final`` from a Pearson-r-weighted smoothing spline fit
+         to the CLEAN channels only (a blown channel can't leak in), and
+      2. set ``C_final = mean_full_dc - slope_final * mean_pred`` — the C
+         implied by the corrected slope, which KEEPS the non-zodi signal
+         (He glow etc.) and only removes the properly-calibrated zodi part.
+    Clean channels keep their raw slope/intercept.
+
+    The slope spline fits standardized y (zero weighted-mean, unit
+    weighted-std over clean channels) with weight ``w = r^2/(1-r^2)`` (r
+    clamped to [0, 0.999]) so the one knob ``s_factor`` is scale-free:
+    ``s = s_factor * n_clean`` — ~0 interpolates the clean slopes, ~1
+    flattens to their weighted mean; 1.0 follows the trend while smoothing.
 
     Parameters
     ----------
     wavelengths, slope, intercept, pearson_r : per-channel arrays (any order)
+    mean_full_dc, mean_pred : per-channel inlier means (from the anchor file),
+        used to recompute C_final for flagged channels
     r_threshold : channels with r below this are repaired (default 0.5)
-    spline_k : spline degree (default 3)
-    s_factor : smoothing strength in standardized units (default 1.0)
+    spline_k : slope-spline degree (default 3)
+    s_factor : slope-spline smoothing strength (default 1.0)
     r_eps : stabilizer in the weight denominator
 
     Returns
@@ -442,8 +454,8 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     dict with (all in INPUT order):
       slope_final, C_final : repaired arrays (raw where clean)
       contaminated : bool mask (r < r_threshold)
-      slope_curve, C_curve : the clean-fit spline evaluated at every channel
-                             (for plotting/inspection)
+      slope_curve : the clean-fit slope spline evaluated at every channel
+                    (for plotting/inspection)
       extrapolated : bool mask, True where a flagged channel lies outside
                      the clean-channel wavelength span (spline extrapolated)
     """
@@ -452,11 +464,14 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     sl = np.asarray(slope, float)
     C = np.asarray(intercept, float)
     r = np.asarray(pearson_r, float)
+    mfd = np.asarray(mean_full_dc, float)
+    mpred = np.asarray(mean_pred, float)
     n = wl.size
     order = np.argsort(wl)
     inv = np.empty(n, int)
     inv[order] = np.arange(n)
     wl_s, sl_s, C_s, r_s = wl[order], sl[order], C[order], r[order]
+    mfd_s, mpred_s = mfd[order], mpred[order]
 
     contam_s = r_s < r_threshold
     clean_s = ~contam_s
@@ -471,20 +486,19 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     wl_c = wl_s[clean_s]
     wnorm_c = wbase_c / np.median(wbase_c)   # typical clean weight ~1
 
-    def _smooth(y_s):
-        y_c = y_s[clean_s]
-        ybar = np.average(y_c, weights=wbase_c)
-        yvar = np.average((y_c - ybar) ** 2, weights=wbase_c)
-        yscale = float(np.sqrt(yvar)) if yvar > 0 else 1.0
-        yp = (y_c - ybar) / yscale
-        spl = UnivariateSpline(wl_c, yp, w=wnorm_c, k=spline_k,
-                               s=s_factor * n_clean)
-        return spl(wl_s) * yscale + ybar   # evaluate at ALL sorted wl
+    # Smooth the SLOPE only (clean-only fit, standardized).
+    sl_c = sl_s[clean_s]
+    sbar = np.average(sl_c, weights=wbase_c)
+    svar = np.average((sl_c - sbar) ** 2, weights=wbase_c)
+    sscale = float(np.sqrt(svar)) if svar > 0 else 1.0
+    spl = UnivariateSpline(wl_c, (sl_c - sbar) / sscale, w=wnorm_c,
+                           k=spline_k, s=s_factor * n_clean)
+    sl_curve_s = spl(wl_s) * sscale + sbar
 
-    sl_curve_s = _smooth(sl_s)
-    C_curve_s = _smooth(C_s)
     sl_final_s = np.where(contam_s, sl_curve_s, sl_s)
-    C_final_s = np.where(contam_s, C_curve_s, C_s)
+    # C: keep raw on clean; on flagged recompute from the corrected slope
+    # (preserves the non-zodi / airglow content of mean_full_dc).
+    C_final_s = np.where(contam_s, mfd_s - sl_final_s * mpred_s, C_s)
 
     lo, hi = wl_c.min(), wl_c.max()
     extrap_s = contam_s & ((wl_s < lo) | (wl_s > hi))
@@ -494,6 +508,5 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
         C_final=C_final_s[inv],
         contaminated=contam_s[inv],
         slope_curve=sl_curve_s[inv],
-        C_curve=C_curve_s[inv],
         extrapolated=extrap_s[inv],
     )
