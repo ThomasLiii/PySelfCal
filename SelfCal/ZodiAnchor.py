@@ -412,7 +412,7 @@ def load_anchor(path):
 
 def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
                             mean_full_dc, mean_pred,
-                            r_threshold=0.5, spline_k=3, s_factor=1.0,
+                            r_threshold=0.9, spline_k=3, s_factor=1.0,
                             r_eps=1e-3):
     """Targeted repair of contaminated channels: smooth the SLOPE only,
     then recompute C consistently (do NOT smooth C).
@@ -444,7 +444,10 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     wavelengths, slope, intercept, pearson_r : per-channel arrays (any order)
     mean_full_dc, mean_pred : per-channel inlier means (from the anchor file),
         used to recompute C_final for flagged channels
-    r_threshold : channels with r below this are repaired (default 0.5)
+    r_threshold : channels with r below this are repaired (default 0.9 —
+        de-biases the slope of moderate-r channels like PAH/OI while their
+        non-zodi C content is preserved by the recompute; lower to 0.5 to
+        repair only the hard blowouts)
     spline_k : slope-spline degree (default 3)
     s_factor : slope-spline smoothing strength (default 1.0)
     r_eps : stabilizer in the weight denominator

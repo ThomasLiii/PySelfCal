@@ -44,9 +44,9 @@ def parse_args():
                      help='Run dir; uses <run>/zodi_anchor/anchor_D{N}.h5 '
                           '(needs --detector if >1 present).')
     p.add_argument('--detector', type=int, default=None)
-    p.add_argument('--r-threshold', type=float, default=0.5,
+    p.add_argument('--r-threshold', type=float, default=0.9,
                    help='Channels with Pearson r below this are repaired '
-                        '(default 0.5).')
+                        '(default 0.9; lower to 0.5 for only hard blowouts).')
     p.add_argument('--s-factor', type=float, default=1.0,
                    help='Spline smoothing strength; ~1 targets reduced-chi^2 '
                         '1, larger = smoother (default 1.0).')
