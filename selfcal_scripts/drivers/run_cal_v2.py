@@ -164,12 +164,14 @@ if __name__ == "__main__":
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
 
-    # Optional post-hoc zodi anchor: if a dir is set, after each
-    # channel's cal+mosaic is saved, look up the matching zodi
-    # prediction .npz (zodi_pred_<job_tag>.npz produced by
-    # selfcal_scripts/zodi_anchor/build_zodi_predictions.py) and shift
-    # cal+mosaic in-place to the absolute brightness scale. Set None to
-    # skip (default; preserves the pre-anchor output exactly).
+    # Optional zodi anchor: if a dir is set, after each channel's
+    # cal+mosaic is saved, look up the matching zodi prediction .npz
+    # (zodi_pred_<job_tag>.npz produced by
+    # selfcal_scripts/zodi_anchor/build_predictions.py), fit the
+    # per-channel anchor, and record it into the per-detector anchor file
+    # <run>/zodi_anchor/anchor_D{N}.h5 (via append_anchor_channel).
+    # Cal/mosaic are NOT modified — the shift is applied at read time by
+    # SelfCal.ZodiAnchor.load_anchor. Set None to skip (default).
     ZODI_PRED_DIR = None
     ZODI_CLIP_WINDOW_DAYS = 7.0
     ZODI_CLIP_SIGMA = 3.0
