@@ -29,6 +29,7 @@ No zodipy dependency — that lives in
 the per-frame zodi-prediction ``.npz`` that this module consumes.
 """
 import datetime
+import hashlib
 import os
 import shutil
 
@@ -38,6 +39,10 @@ from astropy.io import fits
 
 
 SHIFTED_EXTNAMES = ('MEAN_MAP', 'SC_MEAN_MAP')
+
+# Sidecar schema version. Bump when the on-disk layout of anchor_D{N}.h5
+# changes in a backward-incompatible way.
+SIDECAR_VERSION = 1
 
 
 # ---------------------------------------------------------------------
@@ -357,3 +362,209 @@ def _output_path(in_path, suffix, out_dir=None):
     root, ext = os.path.splitext(base)
     os.makedirs(out_dir, exist_ok=True)
     return os.path.join(out_dir, f'{root}{suffix}{ext}')
+
+
+# ---------------------------------------------------------------------
+# Sidecar architecture: fit-only core + non-mutating consumer
+#
+# The fit core computes the anchor (slope, C, r, ...) for one channel
+# WITHOUT touching the cal/mosaic. Results are written to a per-detector
+# sidecar HDF5 (anchor_D{N}.h5) by build_sidecar.py. The consumer
+# (load_anchor / Anchor) applies the shift to arrays at read time so the
+# pipeline outputs stay pristine. See todo/zodi_anchor_refactor.md.
+# ---------------------------------------------------------------------
+
+def file_sha1(path, _bufsize=1 << 20):
+    """SHA-1 of a file's bytes (for sidecar npz-identity checks)."""
+    h = hashlib.sha1()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(_bufsize), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fit_anchor_for_channel(cal_path, zodi_pred_npz,
+                           clip_window_days=7.0, clip_sigma=3.0,
+                           clip_iters=2):
+    """Fit the per-channel anchor from a PRISTINE cal + zodi-pred npz.
+
+    Pure read + fit; never mutates cal or mosaic. This is the shared core
+    that both build_sidecar.py and (legacy) apply_anchor_to_file rely on.
+
+    Returns a dict of the per-channel summary scalars destined for the
+    sidecar Ch{c}/ group (plus npz identity fields).
+    """
+    with h5py.File(cal_path, 'r') as f:
+        if 'frame_scalar' not in f:
+            raise ValueError(
+                "anchor fit requires use_per_frame_scalar=True cal runs; "
+                f"{cal_path} lacks /frame_scalar.")
+        if ('offsets' not in f or 'map_0' not in f['offsets']
+                or 'offset_coverage' not in f
+                or 'map_0' not in f['offset_coverage']):
+            raise ValueError(
+                "anchor fit requires multi-map schema; "
+                f"{cal_path} lacks offsets/map_0 or offset_coverage/map_0.")
+        frame_scalar = f['frame_scalar'][:].astype(np.float64)
+        offsets_m0 = f['offsets/map_0'][:].astype(np.float64)
+        cov_m0 = f['offset_coverage/map_0'][:].astype(np.float64)
+        cal_reproj_list = list(f['reproj_list'][:])
+
+    zodi_pred, mjds = load_zodi_pred_npz(zodi_pred_npz, cal_reproj_list)
+    if len(zodi_pred) != len(frame_scalar):
+        raise ValueError(
+            f"zodi_pred length {len(zodi_pred)} != frame_scalar length "
+            f"{len(frame_scalar)}")
+    if mjds is not None and len(mjds) != len(frame_scalar):
+        raise ValueError(
+            f"mjds length {len(mjds)} != frame_scalar length "
+            f"{len(frame_scalar)}")
+
+    # wavelength / model name are metadata in the npz (optional).
+    with np.load(zodi_pred_npz, allow_pickle=False) as z:
+        wavelength_um = (float(z['wavelength_um'])
+                         if 'wavelength_um' in z.files else float('nan'))
+        model_name = (str(z['model_name'])
+                      if 'model_name' in z.files else '')
+
+    full_dc = compute_full_dc(frame_scalar, offsets_m0, cov_m0)
+    slope, intercept, r, inlier = fit_with_clip(
+        zodi_pred, full_dc, mjds,
+        window_days=clip_window_days, sigma=clip_sigma, iters=clip_iters)
+    n_finite = int((np.isfinite(zodi_pred) & np.isfinite(full_dc)).sum())
+    n_used = int(inlier.sum())
+    n_outl = n_finite - n_used
+
+    return dict(
+        wavelength_um=wavelength_um,
+        slope=float(slope),
+        intercept=float(intercept),       # == C
+        pearson_r=float(r),
+        n_inliers=n_used,
+        n_outliers=n_outl,
+        mean_full_dc=float(np.mean(full_dc[inlier])),
+        mean_scalar=float(np.mean(frame_scalar[inlier])),
+        mean_pred=float(np.mean(zodi_pred[inlier])),
+        clip_window_days=float(clip_window_days),
+        clip_sigma=float(clip_sigma),
+        clip_iters=int(clip_iters),
+        cal_path=os.path.abspath(cal_path),
+        zodi_pred_npz=os.path.abspath(zodi_pred_npz),
+        zodi_pred_n=int(len(zodi_pred)),
+        zodi_pred_sha=file_sha1(zodi_pred_npz),
+        model_name=model_name,
+        # repair fields default to the raw fit until a Phase-1 pass runs.
+        slope_final=float(slope),
+        C_final=float(intercept),
+        contaminated_flag=False,
+        repair_method='raw',
+    )
+
+
+# Keys written verbatim as Ch{c}/ attrs by write_sidecar (order = doc order).
+_SIDECAR_CHANNEL_KEYS = (
+    'wavelength_um', 'slope', 'intercept', 'pearson_r',
+    'n_inliers', 'n_outliers', 'mean_full_dc', 'mean_scalar', 'mean_pred',
+    'clip_window_days', 'clip_sigma', 'clip_iters',
+    'cal_path', 'zodi_pred_npz', 'zodi_pred_n', 'zodi_pred_sha', 'model_name',
+    'slope_final', 'C_final', 'contaminated_flag', 'repair_method',
+)
+
+
+def write_sidecar(out_path, detector, source_run, channel_results,
+                  clip_defaults, anchor_method='raw'):
+    """Write a per-detector sidecar HDF5 (summary-only schema).
+
+    Parameters
+    ----------
+    out_path : str
+    detector : int
+    source_run : str  (run dir basename, for provenance)
+    channel_results : dict {channel_int: fit_dict}  (fit_dict from
+        fit_anchor_for_channel, optionally with repair fields overwritten)
+    clip_defaults : dict with clip_window_days/clip_sigma/clip_iters
+    anchor_method : str  ("raw" | "rweighted_spline" | ...)
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with h5py.File(out_path, 'w') as f:
+        f.attrs['anchor_version'] = int(SIDECAR_VERSION)
+        f.attrs['source_run'] = str(source_run)
+        f.attrs['detector'] = int(detector)
+        f.attrs['created_iso'] = datetime.datetime.now().isoformat()
+        f.attrs['clip_window_days'] = float(clip_defaults['clip_window_days'])
+        f.attrs['clip_sigma'] = float(clip_defaults['clip_sigma'])
+        f.attrs['clip_iters'] = int(clip_defaults['clip_iters'])
+        f.attrs['anchor_method'] = str(anchor_method)
+        ch_grp = f.create_group('channels')
+        for ch in sorted(channel_results):
+            g = ch_grp.create_group(f'Ch{ch}')
+            res = channel_results[ch]
+            for k in _SIDECAR_CHANNEL_KEYS:
+                g.attrs[k] = res[k]
+
+
+class Anchor:
+    """Non-mutating consumer of a per-detector sidecar.
+
+    Loads anchor_D{N}.h5 and applies the (slope_final, C_final) shift to
+    arrays at read time. Never writes to cal/mosaic.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.channels = {}      # ch -> dict of attrs
+        with h5py.File(path, 'r') as f:
+            self.version = int(f.attrs.get('anchor_version', 0))
+            self.detector = int(f.attrs.get('detector', -1))
+            self.source_run = str(f.attrs.get('source_run', ''))
+            self.anchor_method = str(f.attrs.get('anchor_method', 'raw'))
+            for name, g in f['channels'].items():
+                ch = int(name[2:])  # strip "Ch"
+                d = {}
+                for k, v in g.attrs.items():
+                    d[k] = v.decode() if isinstance(v, bytes) else v
+                self.channels[ch] = d
+
+    def __repr__(self):
+        return (f"Anchor(D{self.detector}, {len(self.channels)} channels, "
+                f"method={self.anchor_method!r}, v{self.version})")
+
+    def C(self, ch):
+        """Final anchor constant for a channel (repair-aware)."""
+        return float(self.channels[ch]['C_final'])
+
+    def slope(self, ch):
+        return float(self.channels[ch]['slope_final'])
+
+    def apply_to_mosaic_array(self, data, weight, ch):
+        """Return a copy of a mosaic image with +C on covered pixels.
+
+        Mirrors _shift_mosaic_file: pixels with weight <= 0 are left
+        untouched so unobserved regions stay at their fill value.
+        """
+        out = np.array(data, copy=True)
+        C = np.array(self.C(ch), dtype=out.dtype)
+        if weight is not None:
+            out[weight > 0] += C
+        else:
+            out += C
+        return out
+
+    def apply_to_skymap_array(self, skymap, coverage, ch):
+        """Return a copy of a cal skymap with +C on covered pixels."""
+        out = np.array(skymap, copy=True)
+        C = self.C(ch)
+        if coverage is not None:
+            out[coverage > 0] += C
+        else:
+            out += C
+        return out
+
+    def apply_to_cal_scalar(self, frame_scalar, ch):
+        """Return frame_scalar shifted by -C (the anchored per-frame DC)."""
+        return np.asarray(frame_scalar, dtype=np.float64) - self.C(ch)
+
+
+def load_anchor(path):
+    """Load a per-detector sidecar into an Anchor consumer."""
+    return Anchor(path)
