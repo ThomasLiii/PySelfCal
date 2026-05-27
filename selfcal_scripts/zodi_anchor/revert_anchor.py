@@ -1,13 +1,12 @@
-"""Undo in-place zodi anchoring on cal + mosaic files.
+"""Undo a LEGACY in-place zodi anchor on cal + mosaic files.
 
-The original anchor (see SelfCal/ZodiAnchor.py:_shift_cal_file +
-_shift_mosaic_file) mutated SelfCal pipeline outputs in place:
+The old anchor (since removed) mutated SelfCal pipeline outputs in place:
 
     cal:    skymap[coverage > 0] += C
             frame_scalar          -= C
             attrs zodi_anchor_*
             dataset zodi_anchor_pred
-    mosaic: MEAN_MAP[weight > 0]    += C  (per EXTNAME in SHIFTED_EXTNAMES)
+    mosaic: MEAN_MAP[weight > 0]    += C
             SC_MEAN_MAP[weight > 0] += C
             primary + ext headers: ZODIANCH/ZODISLOP/ZODICORR/ZODIMEAN
 
@@ -15,8 +14,10 @@ This script applies the symmetric inverse so the files return to their
 pre-anchor pipeline state. It is idempotent: cals/mosaics without the
 anchor markers are skipped silently.
 
-Used as the prerequisite to the sidecar-only anchor refactor; see
-todo/zodi_anchor_refactor.md for context.
+Historical migration tool: the current anchor is non-mutating (it writes
+<run>/zodi_anchor/anchor_D{N}.h5 and applies at read time), so nothing
+produces in-place anchored files anymore. Kept in case legacy files
+resurface (e.g. from backups). See todo/zodi_anchor_refactor.md.
 
 Usage:
     python revert_anchor.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec

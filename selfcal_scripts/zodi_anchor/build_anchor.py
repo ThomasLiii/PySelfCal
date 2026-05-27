@@ -1,9 +1,9 @@
-"""Build the per-detector zodi-anchor sidecar (summary-only schema).
+"""Build the per-detector zodi anchor file (summary-only schema).
 
 Reads PRISTINE cal files + their matching zodi_pred_*.npz, fits the
 per-channel anchor (slope, C, r, ...) via
 SelfCal.ZodiAnchor.fit_anchor_for_channel, and writes one
-anchor_D{N}.h5 sidecar per detector. Never mutates cal/mosaic.
+anchor_D{N}.h5 per detector. Never mutates cal/mosaic.
 
 Default output: <run>/zodi_anchor/anchor_D{N}.h5
 (co-located with the zodi_preds/ it references).
@@ -11,7 +11,7 @@ Default output: <run>/zodi_anchor/anchor_D{N}.h5
 Runs in the selfcal env (no zodipy needed — the expensive zodipy step
 already produced the npz files; this only does the cheap linear fit).
 
-    python build_sidecar.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec
+    python build_anchor.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec
 
 See todo/zodi_anchor_refactor.md for the architecture.
 """
@@ -26,7 +26,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from SelfCal.ZodiAnchor import fit_anchor_for_channel, write_sidecar
+from SelfCal.ZodiAnchor import fit_anchor_for_channel, write_anchor
 
 
 def parse_args():
@@ -36,7 +36,7 @@ def parse_args():
     )
     p.add_argument('--run-dir', nargs='+', required=True,
                    help='Run directories (each with calibration/ + '
-                        'zodi_preds/). One sidecar written per detector.')
+                        'zodi_preds/). One anchor file written per detector.')
     p.add_argument('--out-dir', default=None,
                    help='Override output dir. Default: <run>/zodi_anchor/.')
     p.add_argument('--clip-window-days', type=float, default=7.0)
@@ -78,7 +78,7 @@ def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5'):
         return None
 
     # Sanity: warn if any cal still carries an in-place anchor (should be
-    # reverted before building a sidecar).
+    # reverted before building the anchor file).
     results = {}
     skipped = []
     for cal in cals:
@@ -113,8 +113,8 @@ def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5'):
 
     od = out_dir or os.path.join(run_dir, 'zodi_anchor')
     out_path = os.path.join(od, f'anchor_D{detector}.h5')
-    write_sidecar(out_path, detector, os.path.basename(run_dir.rstrip('/')),
-                  results, clip, anchor_method='raw')
+    write_anchor(out_path, detector, os.path.basename(run_dir.rstrip('/')),
+                 results, clip, anchor_method='raw')
     print(f"  -> wrote {out_path} ({len(results)} channels"
           + (f", skipped {len(skipped)}" if skipped else "") + ")")
     for ch, why in skipped:

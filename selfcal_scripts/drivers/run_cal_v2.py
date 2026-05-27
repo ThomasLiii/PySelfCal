@@ -1,4 +1,5 @@
 import os
+import re
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -20,7 +21,7 @@ from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
 from SelfCal.SPHERExAppendWav import wav_coadd
-from SelfCal.ZodiAnchor import apply_anchor_to_file
+from SelfCal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -311,25 +312,36 @@ if __name__ == "__main__":
 
         mm.save_mosaic(mos_file=mos_file, overwrite=True)
 
-        # Optional zodi anchor: shift cal+mosaic in-place to absolute scale.
+        # Optional zodi anchor: fit and record into the per-detector anchor
+        # file (<run>/zodi_anchor/anchor_D{N}.h5). Cal/mosaic are NOT
+        # modified — the shift is applied at read time by
+        # SelfCal.ZodiAnchor.load_anchor.
         if ZODI_PRED_DIR is not None:
-            mos_path = os.path.join(selfcal_config.mos_dir, mos_file)
             npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
+            m = re.search(r'_Ch(\d+)_', cal_file)
             if not os.path.exists(npz_path):
                 print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
+            elif m is None:
+                print(f"Zodi anchor skipped for {job_tag}: not a single-channel "
+                      f"job (cannot parse _Ch<n>_ from {cal_file}).")
             else:
-                print(f"Applying zodi anchor in-place from {npz_path}...")
-                result = apply_anchor_to_file(
-                    cal_in=cal_path, mosaic_in=mos_path,
-                    zodi_pred_npz=npz_path,
-                    in_place=True,
-                    clip_window_days=ZODI_CLIP_WINDOW_DAYS,
-                    clip_sigma=ZODI_CLIP_SIGMA,
-                    clip_iters=ZODI_CLIP_ITERS,
-                )
-                print(f"  C={result['C']:.4g} MJy/sr, "
-                      f"slope={result['slope']:.4f}, r={result['r']:.4f}, "
-                      f"inliers={result['n_inliers']}/{result['n_inliers']+result['n_outliers']}")
+                ch_int = int(m.group(1))
+                clip_defaults = dict(clip_window_days=ZODI_CLIP_WINDOW_DAYS,
+                                     clip_sigma=ZODI_CLIP_SIGMA,
+                                     clip_iters=ZODI_CLIP_ITERS)
+                print(f"Fitting zodi anchor from {npz_path}...")
+                fit = fit_anchor_for_channel(
+                    cal_path, npz_path, **clip_defaults)
+                run_dir = os.path.dirname(selfcal_config.cal_dir.rstrip('/'))
+                anchor_path = os.path.join(
+                    run_dir, 'zodi_anchor', f'anchor_D{detector}.h5')
+                append_anchor_channel(
+                    anchor_path, detector, selfcal_config.run_name, ch_int,
+                    fit, clip_defaults, anchor_method='raw')
+                print(f"  Ch{ch_int}: C={fit['intercept']:.4g} MJy/sr, "
+                      f"slope={fit['slope']:.4f}, r={fit['pearson_r']:.4f}, "
+                      f"inliers={fit['n_inliers']}/"
+                      f"{fit['n_inliers']+fit['n_outliers']}  -> {anchor_path}")
 
         # Clean up
         del cc, mm, maps
