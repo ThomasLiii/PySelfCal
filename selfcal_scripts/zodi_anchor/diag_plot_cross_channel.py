@@ -16,7 +16,6 @@ Run in selfcal env (needs matplotlib).
 """
 import argparse
 import glob
-import json
 import os
 import re
 
@@ -26,6 +25,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+
+from SelfCal.ZodiAnchor import load_anchor
 
 
 DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
@@ -39,34 +40,31 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument('--anchor-dir',
-                     help='Dir produced by run_multi_channel.py (contains '
-                          'cal_*_zodianch.h5 files and summary.json).')
+    src.add_argument('--run-dir',
+                     help='Run dir with calibration/ (pristine cal_*.h5) + '
+                          'zodi_anchor/anchor_D{N}.h5 sidecar. The anchor is '
+                          'applied in-memory from the sidecar; cal files are '
+                          'NOT modified.')
     src.add_argument('--cal-glob',
-                     help='Glob for in-place anchored cal_*.h5 files (any '
-                          'cals carrying zodi_anchor_C attr work). Use for '
-                          'apply_all_anchors.py output.')
+                     help='Glob for pristine cal_*.h5 files. Requires '
+                          '--sidecar.')
+    p.add_argument('--sidecar', default=None,
+                   help='Path to anchor_D{N}.h5 sidecar. Required with '
+                        '--cal-glob; auto-located under <run>/zodi_anchor/ '
+                        'with --run-dir.')
     p.add_argument('--detector', type=int, default=None,
                    help='Detector index. Auto-parsed from filename if '
                         'omitted.')
     p.add_argument('--calibration-dir', default=DEFAULT_CALIBRATION_DIR)
     p.add_argument('--out', default=None,
-                   help='Output PNG path (default: cross_channel.png next '
-                        'to the cal files / in the anchor-dir).')
+                   help='Output PNG path (default: cross_channel.png in '
+                        '<run>/zodi_anchor/ or next to the cal files).')
     return p.parse_args()
 
 
 def parse_detector_from_filename(path):
     m = re.search(r'Detector(\d+)_', os.path.basename(path))
     return int(m.group(1)) if m else None
-
-
-def _has_anchor_attr(cal_path):
-    try:
-        with h5py.File(cal_path, 'r') as f:
-            return 'zodi_anchor_C' in f.attrs
-    except Exception:
-        return False
 
 
 def parse_channel_from_filename(path):
@@ -87,22 +85,21 @@ def per_chunk_wavelengths(det_chunk_map, det_BC, valid_chunks):
 def main():
     args = parse_args()
 
-    if args.anchor_dir:
+    if args.run_dir:
         cal_paths = sorted(glob.glob(
-            os.path.join(args.anchor_dir, 'cal_*_zodianch.h5')))
-        out_path_default = os.path.join(args.anchor_dir, 'cross_channel.png')
-        summary_path = os.path.join(args.anchor_dir, 'summary.json')
-        if os.path.exists(summary_path):
-            with open(summary_path) as f:
-                summary = json.load(f)
-            detector = args.detector or summary.get('detector')
-        else:
-            detector = args.detector
+            os.path.join(args.run_dir, 'calibration', 'cal_*.h5')))
+        detector = args.detector or (
+            parse_detector_from_filename(cal_paths[0]) if cal_paths else None)
+        sidecar_path = args.sidecar or (
+            os.path.join(args.run_dir, 'zodi_anchor',
+                         f'anchor_D{detector}.h5') if detector else None)
+        out_path_default = os.path.join(
+            args.run_dir, 'zodi_anchor', 'cross_channel.png')
     else:
         cal_paths = sorted(glob.glob(args.cal_glob))
-        # Filter to only those that actually carry zodi_anchor_C
-        cal_paths = [c for c in cal_paths
-                     if _has_anchor_attr(c)]
+        if not args.sidecar:
+            raise SystemExit("--cal-glob requires --sidecar.")
+        sidecar_path = args.sidecar
         out_path_default = os.path.join(
             os.path.dirname(cal_paths[0]) if cal_paths else '.',
             'cross_channel.png')
@@ -111,18 +108,26 @@ def main():
     out_path = args.out or out_path_default
 
     if not cal_paths:
-        raise SystemExit("no anchored cal files found.")
+        raise SystemExit("no cal files found.")
     if detector is None:
         raise SystemExit("could not determine detector; pass --detector.")
+    if not sidecar_path or not os.path.exists(sidecar_path):
+        raise SystemExit(f"sidecar not found: {sidecar_path}")
+    anchor = load_anchor(sidecar_path)
+    print(f"loaded sidecar {sidecar_path} ({anchor})")
     bc_path = os.path.join(
         args.calibration_dir, DET_BC_TEMPLATE.format(detector=detector))
     det_BC = fits.getdata(bc_path)
     print(f"detector: {detector}, det_BC from {bc_path}")
-    print(f"loading {len(cal_paths)} anchored cal files")
+    print(f"loading {len(cal_paths)} pristine cal files "
+          f"(anchor applied in-memory from sidecar)")
 
     channels = []
     for cal in cal_paths:
         ch = parse_channel_from_filename(cal)
+        if ch not in anchor.channels:
+            print(f"  Ch{ch}: not in sidecar; skipping")
+            continue
         with h5py.File(cal, 'r') as f:
             det_chunk_map = f['chunk_maps/map_0'][:]
             cov_frac = f['offset_coverage_frac/map_0'][:]
@@ -130,10 +135,14 @@ def main():
             frame_scalar = f['frame_scalar'][:]
             skymap = f['skymap'][:]
             skymap_cov = f['skymap_coverage'][:] if 'skymap_coverage' in f else None
-            C = float(f.attrs.get('zodi_anchor_C', np.nan))
-            slope = float(f.attrs.get('zodi_anchor_slope', np.nan))
-            r = float(f.attrs.get('zodi_anchor_pearson_r', np.nan))
-            ch_wavelength = None  # we'll compute below
+        # Anchor params from the sidecar (cals are pristine; shift applied
+        # in-memory). C_final/slope_final are repair-aware.
+        C = anchor.C(ch)
+        slope = anchor.slope(ch)
+        r = float(anchor.channels[ch]['pearson_r'])
+        # Apply the anchor in-memory: skymap += C (covered), frame_scalar -= C.
+        skymap = anchor.apply_to_skymap_array(skymap, skymap_cov, ch)
+        frame_scalar = anchor.apply_to_cal_scalar(frame_scalar, ch)
         valid_chunks = np.where((cov_frac > VALID_CHUNK_THRESH).any(axis=0))[0]
         # Channel-mean wavelength (representative)
         det_valid_mask = np.isin(det_chunk_map, valid_chunks)
@@ -145,7 +154,7 @@ def main():
             chunk_mean_offset[c] = offsets[:, c].mean()
         # Per-chunk absolute "abs value":
         # = mean_pixels_in_c (sky_anch) + mean_k offset[k, c] + mean_k scalar_anch
-        # Note skymap is already anchored (+C); frame_scalar is also already anchored (-C).
+        # skymap/frame_scalar were just anchored in-memory above.
         mean_scalar_anch = float(np.mean(frame_scalar))
         chunk_abs_value = np.full_like(chunk_mean_offset, np.nan)
         # sky_in_chunk: average skymap pixels that this chunk covers (after mosaic-time det_to_sub).
