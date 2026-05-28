@@ -4,6 +4,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import sys
 import shutil
 import time
 import gc
@@ -14,6 +15,9 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
+parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_path)
+
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.solution import compute_x0_scalar_only
@@ -21,7 +25,6 @@ from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_co
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
 compute_column_polynomial_chains
 from SelfCal.SPHERExAppendWav import wav_coadd
-from SelfCal.ZodiAnchor import apply_anchor_to_file
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -111,7 +114,7 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 3,
+        'Detector': 5,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 10,
@@ -159,7 +162,7 @@ if __name__ == "__main__":
         'max_workers': 48
     }
     
-    mosaic_oversample_factor = 1
+    mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_polyK1'
@@ -168,19 +171,8 @@ if __name__ == "__main__":
     POLY_DEGREE = 1
     POLY_WEIGHT = 0.5
 
-    # Optional post-hoc zodi anchor: if a dir is set, after each
-    # channel's cal+mosaic is saved, look up the matching zodi
-    # prediction .npz (zodi_pred_<job_tag>.npz produced by
-    # selfcal_scripts/zodi_anchor/build_zodi_predictions.py) and shift
-    # cal+mosaic in-place to the absolute brightness scale. Set None to
-    # skip (default; preserves the pre-anchor output exactly).
-    ZODI_PRED_DIR = None
-    ZODI_CLIP_WINDOW_DAYS = 7.0
-    ZODI_CLIP_SIGMA = 3.0
-    ZODI_CLIP_ITERS = 2
-
     # Channels to process
-    chs = [[i] for i in range(1, 35)]
+    chs = [[i] for i in range(23, 35)]
     # chs = [[14]]
     # chs = ['Aliphatic', 'Aromatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
@@ -323,27 +315,7 @@ if __name__ == "__main__":
         })
 
         mm.save_mosaic(mos_file=mos_file, overwrite=True)
-
-        # Optional zodi anchor: shift cal+mosaic in-place to absolute scale.
-        if ZODI_PRED_DIR is not None:
-            mos_path = os.path.join(selfcal_config.mos_dir, mos_file)
-            npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
-            if not os.path.exists(npz_path):
-                print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
-            else:
-                print(f"Applying zodi anchor in-place from {npz_path}...")
-                result = apply_anchor_to_file(
-                    cal_in=cal_path, mosaic_in=mos_path,
-                    zodi_pred_npz=npz_path,
-                    in_place=True,
-                    clip_window_days=ZODI_CLIP_WINDOW_DAYS,
-                    clip_sigma=ZODI_CLIP_SIGMA,
-                    clip_iters=ZODI_CLIP_ITERS,
-                )
-                print(f"  C={result['C']:.4g} MJy/sr, "
-                      f"slope={result['slope']:.4f}, r={result['r']:.4f}, "
-                      f"inliers={result['n_inliers']}/{result['n_inliers']+result['n_outliers']}")
-
+         
         # Clean up
         del cc, mm, maps
         if os.path.exists(cache_dir):
