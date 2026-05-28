@@ -1,4 +1,4 @@
-"""Per-detector zodi spectrum diagnostic, read entirely from the sidecar.
+"""Per-detector zodi spectrum diagnostic, read entirely from the anchor file.
 
 Four panels vs channel-mean wavelength:
  (a) mean(full_DC), mean(zodi_pred), slope*mean(zodi_pred)
@@ -9,13 +9,13 @@ Four panels vs channel-mean wavelength:
  (c) fitted slope (=1 if zodipy captures the temporal shape)
  (d) Pearson r of full_DC vs zodi_pred
 
-Pure sidecar read — no cal / npz access, so it's instant. Everything is
-already stored per channel by build_sidecar.py.
+Pure anchor-file read — no cal / npz access, so it's instant. Everything
+is already stored per channel by build_anchor.py.
 
-    python diag_zodi_spectrum.py --sidecar <run>/zodi_anchor/anchor_D1.h5 \\
+    python diag_zodi_spectrum.py --anchor <run>/zodi_anchor/anchor_D1.h5 \\
         --out figures/zodi_anchor/D1_multichannel_34/D1_zodi_spectrum.png
 
-With --run-dir the sidecar + a default out path are inferred.
+With --run-dir the anchor file + a default out path are inferred.
 """
 import argparse
 import os
@@ -34,10 +34,10 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument('--sidecar', help='Path to anchor_D{N}.h5.')
+    src.add_argument('--anchor', help='Path to anchor_D{N}.h5.')
     src.add_argument('--run-dir',
                      help='Run dir; uses <run>/zodi_anchor/anchor_D{N}.h5. '
-                          'Needs --detector if >1 sidecar present.')
+                          'Needs --detector if >1 anchor file present.')
     p.add_argument('--detector', type=int, default=None)
     p.add_argument('--out', default=None)
     p.add_argument('--max-ch', type=int, default=34,
@@ -46,9 +46,9 @@ def parse_args():
     return p.parse_args()
 
 
-def resolve_sidecar(args):
-    if args.sidecar:
-        return args.sidecar
+def resolve_anchor_path(args):
+    if args.anchor:
+        return args.anchor
     import glob
     cand = sorted(glob.glob(os.path.join(args.run_dir, 'zodi_anchor',
                                          'anchor_D*.h5')))
@@ -59,14 +59,13 @@ def resolve_sidecar(args):
             return want
     if len(cand) == 1:
         return cand[0]
-    raise SystemExit(f"ambiguous/missing sidecar in {args.run_dir}: {cand}; "
-                     "pass --sidecar or --detector.")
+    raise SystemExit(f"ambiguous/missing anchor file in {args.run_dir}: "
+                     f"{cand}; pass --anchor or --detector.")
 
 
 def main():
     args = parse_args()
-    sidecar = resolve_sidecar(args)
-    anchor = load_anchor(sidecar)
+    anchor = load_anchor(resolve_anchor_path(args))
     det = anchor.detector
 
     chs = sorted(c for c in anchor.channels if c <= args.max_ch)

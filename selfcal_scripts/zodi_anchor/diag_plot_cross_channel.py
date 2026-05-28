@@ -42,16 +42,15 @@ def parse_args():
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument('--run-dir',
                      help='Run dir with calibration/ (pristine cal_*.h5) + '
-                          'zodi_anchor/anchor_D{N}.h5 sidecar. The anchor is '
-                          'applied in-memory from the sidecar; cal files are '
-                          'NOT modified.')
+                          'zodi_anchor/anchor_D{N}.h5. The anchor is applied '
+                          'in-memory; cal files are NOT modified.')
     src.add_argument('--cal-glob',
                      help='Glob for pristine cal_*.h5 files. Requires '
-                          '--sidecar.')
-    p.add_argument('--sidecar', default=None,
-                   help='Path to anchor_D{N}.h5 sidecar. Required with '
-                        '--cal-glob; auto-located under <run>/zodi_anchor/ '
-                        'with --run-dir.')
+                          '--anchor.')
+    p.add_argument('--anchor', default=None,
+                   help='Path to anchor_D{N}.h5. Required with --cal-glob; '
+                        'auto-located under <run>/zodi_anchor/ with '
+                        '--run-dir.')
     p.add_argument('--detector', type=int, default=None,
                    help='Detector index. Auto-parsed from filename if '
                         'omitted.')
@@ -90,16 +89,16 @@ def main():
             os.path.join(args.run_dir, 'calibration', 'cal_*.h5')))
         detector = args.detector or (
             parse_detector_from_filename(cal_paths[0]) if cal_paths else None)
-        sidecar_path = args.sidecar or (
+        anchor_path = args.anchor or (
             os.path.join(args.run_dir, 'zodi_anchor',
                          f'anchor_D{detector}.h5') if detector else None)
         out_path_default = os.path.join(
             args.run_dir, 'zodi_anchor', 'cross_channel.png')
     else:
         cal_paths = sorted(glob.glob(args.cal_glob))
-        if not args.sidecar:
-            raise SystemExit("--cal-glob requires --sidecar.")
-        sidecar_path = args.sidecar
+        if not args.anchor:
+            raise SystemExit("--cal-glob requires --anchor.")
+        anchor_path = args.anchor
         out_path_default = os.path.join(
             os.path.dirname(cal_paths[0]) if cal_paths else '.',
             'cross_channel.png')
@@ -111,22 +110,22 @@ def main():
         raise SystemExit("no cal files found.")
     if detector is None:
         raise SystemExit("could not determine detector; pass --detector.")
-    if not sidecar_path or not os.path.exists(sidecar_path):
-        raise SystemExit(f"sidecar not found: {sidecar_path}")
-    anchor = load_anchor(sidecar_path)
-    print(f"loaded sidecar {sidecar_path} ({anchor})")
+    if not anchor_path or not os.path.exists(anchor_path):
+        raise SystemExit(f"anchor file not found: {anchor_path}")
+    anchor = load_anchor(anchor_path)
+    print(f"loaded anchor file {anchor_path} ({anchor})")
     bc_path = os.path.join(
         args.calibration_dir, DET_BC_TEMPLATE.format(detector=detector))
     det_BC = fits.getdata(bc_path)
     print(f"detector: {detector}, det_BC from {bc_path}")
     print(f"loading {len(cal_paths)} pristine cal files "
-          f"(anchor applied in-memory from sidecar)")
+          f"(anchor applied in-memory)")
 
     channels = []
     for cal in cal_paths:
         ch = parse_channel_from_filename(cal)
         if ch not in anchor.channels:
-            print(f"  Ch{ch}: not in sidecar; skipping")
+            print(f"  Ch{ch}: not in anchor file; skipping")
             continue
         with h5py.File(cal, 'r') as f:
             det_chunk_map = f['chunk_maps/map_0'][:]
@@ -135,8 +134,8 @@ def main():
             frame_scalar = f['frame_scalar'][:]
             skymap = f['skymap'][:]
             skymap_cov = f['skymap_coverage'][:] if 'skymap_coverage' in f else None
-        # Anchor params from the sidecar (cals are pristine; shift applied
-        # in-memory). C_final/slope_final are repair-aware.
+        # Anchor params from the anchor file (cals are pristine; shift
+        # applied in-memory). C_final/slope_final are smoothing-aware.
         C = anchor.C(ch)
         slope = anchor.slope(ch)
         r = float(anchor.channels[ch]['pearson_r'])
@@ -197,10 +196,28 @@ def main():
     chs = [c['ch'] for c in channels]
     wls = [c['wavelength_um'] for c in channels]
     Cs = [c['C'] for c in channels]
+    slopes = [c['slope'] for c in channels]
+    rs = [c['r'] for c in channels]
     ax.plot(wls, Cs, 'o-', color='C0')
+    # Per-point slope + r labels, alternating above/below to reduce overlap.
+    for i, (x, y, s, r) in enumerate(zip(wls, Cs, slopes, rs)):
+        above = (i % 2 == 0)
+        ax.annotate(
+            f's={s:.2f}\nr={r:.2f}',
+            xy=(x, y),
+            xytext=(0, 9 if above else -9),
+            textcoords='offset points',
+            fontsize=6, ha='center',
+            va='bottom' if above else 'top',
+            color='gray',
+        )
+    # Bit of vertical headroom so labels at the top/bottom don't clip.
+    ymin, ymax = ax.get_ylim()
+    pad = 0.10 * (ymax - ymin)
+    ax.set_ylim(ymin - pad, ymax + pad)
     ax.set_xlabel('Channel mean wavelength (um)')
     ax.set_ylabel('Anchor C (MJy/sr)')
-    ax.set_title('Per-channel anchor constant')
+    ax.set_title('Per-channel anchor constant (label = slope / Pearson r)')
     ax.grid(alpha=0.3)
 
     # (b) per-chunk mean offset vs wavelength
