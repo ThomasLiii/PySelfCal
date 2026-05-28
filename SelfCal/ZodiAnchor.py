@@ -261,11 +261,11 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
         zodi_pred_n=int(len(zodi_pred)),
         zodi_pred_sha=file_sha1(zodi_pred_npz),
         model_name=model_name,
-        # repair fields default to the raw fit until a Phase-1 pass runs.
+        # smoothing fields default to the raw fit until a Phase-1 pass runs.
         slope_final=float(slope),
         C_final=float(intercept),
         contaminated_flag=False,
-        repair_method='raw',
+        smooth_method='raw',
     )
 
 
@@ -275,7 +275,7 @@ _ANCHOR_CHANNEL_KEYS = (
     'n_inliers', 'n_outliers', 'mean_full_dc', 'mean_scalar', 'mean_pred',
     'clip_window_days', 'clip_sigma', 'clip_iters',
     'cal_path', 'zodi_pred_npz', 'zodi_pred_n', 'zodi_pred_sha', 'model_name',
-    'slope_final', 'C_final', 'contaminated_flag', 'repair_method',
+    'slope_final', 'C_final', 'contaminated_flag', 'smooth_method',
 )
 
 
@@ -309,7 +309,7 @@ def write_anchor(out_path, detector, source_run, channel_results,
     detector : int
     source_run : str  (run dir basename, for provenance)
     channel_results : dict {channel_int: fit_dict}  (fit_dict from
-        fit_anchor_for_channel, optionally with repair fields overwritten)
+        fit_anchor_for_channel, optionally with smoothing fields overwritten)
     clip_defaults : dict with clip_window_days/clip_sigma/clip_iters
     anchor_method : str  ("raw" | "rweighted_spline" | ...)
     """
@@ -366,7 +366,7 @@ class Anchor:
                 f"method={self.anchor_method!r}, v{self.version})")
 
     def C(self, ch):
-        """Final anchor constant for a channel (repair-aware)."""
+        """Final anchor constant for a channel (smoothing-aware)."""
         return float(self.channels[ch]['C_final'])
 
     def slope(self, ch):
@@ -407,14 +407,14 @@ def load_anchor(path):
 
 
 # ---------------------------------------------------------------------
-# Phase-1 repair: r-weighted smoothing of contaminated channels
+# Phase-1 slope smoothing of contaminated channels
 # ---------------------------------------------------------------------
 
-def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
+def rweighted_slope_smooth(wavelengths, slope, intercept, pearson_r,
                             mean_full_dc, mean_pred,
                             r_threshold=0.9, spline_k=3, s_factor=1.0,
                             r_eps=1e-3):
-    """Targeted repair of contaminated channels: smooth the SLOPE only,
+    """Targeted smoothing of contaminated channels: smooth the SLOPE only,
     then recompute C consistently (do NOT smooth C).
 
     Rationale: ``slope`` is the multiplicative zodi-SED calibration and
@@ -444,10 +444,10 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     wavelengths, slope, intercept, pearson_r : per-channel arrays (any order)
     mean_full_dc, mean_pred : per-channel inlier means (from the anchor file),
         used to recompute C_final for flagged channels
-    r_threshold : channels with r below this are repaired (default 0.9 —
+    r_threshold : channels with r below this are smoothed (default 0.9 —
         de-biases the slope of moderate-r channels like PAH/OI while their
         non-zodi C content is preserved by the recompute; lower to 0.5 to
-        repair only the hard blowouts)
+        smooth only the hard blowouts)
     spline_k : slope-spline degree (default 3)
     s_factor : slope-spline smoothing strength (default 1.0)
     r_eps : stabilizer in the weight denominator
@@ -455,7 +455,7 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     Returns
     -------
     dict with (all in INPUT order):
-      slope_final, C_final : repaired arrays (raw where clean)
+      slope_final, C_final : smoothed arrays (raw where clean)
       contaminated : bool mask (r < r_threshold)
       slope_curve : the clean-fit slope spline evaluated at every channel
                     (for plotting/inspection)
@@ -515,18 +515,18 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
     )
 
 
-def repair_anchor_file(path, r_threshold=0.9, s_factor=1.0, spline_k=3,
+def smooth_anchor_file(path, r_threshold=0.9, s_factor=1.0, spline_k=3,
                        dry_run=False):
-    """Load an anchor file, compute the r-weighted slope repair, and (unless
+    """Load an anchor file, compute the r-weighted slope smoothing, and (unless
     dry_run) write ``slope_final``/``C_final``/``contaminated_flag``/
-    ``repair_method`` back in-place plus root repair-provenance attrs. The
+    ``smooth_method`` back in-place plus root smoothing-provenance attrs. The
     raw ``slope``/``intercept`` are never touched, so this is re-runnable.
 
-    Single write path shared by repair_anchor.py and build_anchor.py
-    (--repair). Reads only the anchor file — no cal/npz I/O.
+    Single write path shared by smooth_anchor.py and build_anchor.py
+    (--smooth). Reads only the anchor file — no cal/npz I/O.
 
     Returns a dict ``{chs, wl, slope, intercept, pearson_r, result}`` (the
-    raw per-channel arrays + the ``rweighted_spline_repair`` output) so the
+    raw per-channel arrays + the ``rweighted_slope_smooth`` output) so the
     caller can report/plot without recomputing.
     """
     a = load_anchor(path)
@@ -538,7 +538,7 @@ def repair_anchor_file(path, r_threshold=0.9, s_factor=1.0, spline_k=3,
     mfd = np.array([a.channels[c]['mean_full_dc'] for c in chs])
     mpred = np.array([a.channels[c]['mean_pred'] for c in chs])
 
-    res = rweighted_spline_repair(
+    res = rweighted_slope_smooth(
         wl, slope, C, r, mfd, mpred,
         r_threshold=r_threshold, spline_k=spline_k, s_factor=s_factor)
     contam = res['contaminated']
@@ -550,13 +550,13 @@ def repair_anchor_file(path, r_threshold=0.9, s_factor=1.0, spline_k=3,
                 g.attrs['slope_final'] = float(res['slope_final'][i])
                 g.attrs['C_final'] = float(res['C_final'][i])
                 g.attrs['contaminated_flag'] = bool(contam[i])
-                g.attrs['repair_method'] = ('rweighted_spline' if contam[i]
+                g.attrs['smooth_method'] = ('rweighted_spline' if contam[i]
                                             else 'raw')
             f.attrs['anchor_method'] = 'rweighted_spline'
-            f.attrs['repair_r_threshold'] = float(r_threshold)
-            f.attrs['repair_s_factor'] = float(s_factor)
-            f.attrs['repair_spline_k'] = int(spline_k)
-            f.attrs['repaired_iso'] = datetime.datetime.now().isoformat()
+            f.attrs['smooth_r_threshold'] = float(r_threshold)
+            f.attrs['smooth_s_factor'] = float(s_factor)
+            f.attrs['smooth_spline_k'] = int(spline_k)
+            f.attrs['smoothed_iso'] = datetime.datetime.now().isoformat()
 
     return dict(detector=a.detector, chs=chs, wl=wl, slope=slope,
                 intercept=C, pearson_r=r, result=res)

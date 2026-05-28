@@ -1,4 +1,4 @@
-"""Phase-1 repair: r-weighted smoothing of contaminated anchor channels.
+"""Phase-1 slope smoothing of contaminated anchor channels.
 
 Some channels' per-channel anchor fit is unreliable because a bright,
 time-variable non-zodi signal (e.g. He I 1083 nm / OI 8446 nm airglow on
@@ -15,12 +15,12 @@ back into the SAME anchor file (raw slope/intercept stay untouched;
 consumers read slope_final / C_final).
 
     # inspect first (writes a before/after plot, no file changes):
-    python repair_anchor.py --run-dir /mnt/.../D1_... --dry-run --plot
+    python smooth_anchor.py --run-dir /mnt/.../D1_... --dry-run --plot
 
     # apply in-place:
-    python repair_anchor.py --run-dir /mnt/.../D1_...
+    python smooth_anchor.py --run-dir /mnt/.../D1_...
 
-See SelfCal.ZodiAnchor.rweighted_spline_repair for the core math and
+See SelfCal.ZodiAnchor.rweighted_slope_smooth for the core math and
 todo/zodi_anchor_refactor.md for context.
 """
 import argparse
@@ -29,7 +29,7 @@ import os
 
 import numpy as np
 
-from SelfCal.ZodiAnchor import repair_anchor_file
+from SelfCal.ZodiAnchor import smooth_anchor_file
 
 
 def parse_args():
@@ -44,7 +44,7 @@ def parse_args():
                           '(needs --detector if >1 present).')
     p.add_argument('--detector', type=int, default=None)
     p.add_argument('--r-threshold', type=float, default=0.9,
-                   help='Channels with Pearson r below this are repaired '
+                   help='Channels with Pearson r below this are smoothed '
                         '(default 0.9; lower to 0.5 for only hard blowouts).')
     p.add_argument('--s-factor', type=float, default=1.0,
                    help='Spline smoothing strength; ~1 targets reduced-chi^2 '
@@ -55,7 +55,7 @@ def parse_args():
                    help='Report + plot but do not modify the anchor file.')
     p.add_argument('--plot', nargs='?', const='auto', default=None,
                    help='Write a before/after PNG. With no value, saves '
-                        'next to the anchor file as anchor_D{N}_repair.png.')
+                        'next to the anchor file as anchor_D{N}_smooth.png.')
     return p.parse_args()
 
 
@@ -94,7 +94,7 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
                    label='contaminated (raw)', zorder=3)
         ax.scatter(wl[contam], final[contam], s=40, facecolors='none',
                    edgecolors='tab:red', linewidths=1.5,
-                   label='contaminated (repaired)', zorder=4)
+                   label='contaminated (smoothed)', zorder=4)
         if hline is not None:
             ax.axhline(hline, color='k', lw=0.5, alpha=0.4)
         ax.set_ylabel(label)
@@ -104,8 +104,8 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
     panel(axes[0], slope_raw, res['slope_final'], 'slope',
           curve=res['slope_curve'], hline=1.0)
     axes[0].set_title(f'(a) D{det} slope: raw vs r-weighted spline '
-                      f'(repaired = open red)')
-    # C is NOT smoothed: repaired C = mean_full_dc - slope_final*mean_pred,
+                      f'(smoothed = open red)')
+    # C is NOT smoothed: recomputed C = mean_full_dc - slope_final*mean_pred,
     # which keeps the non-zodi/airglow content. No spline curve here.
     panel(axes[1], C_raw, res['C_final'], 'C (MJy/sr)', hline=0.0)
     axes[1].set_title('(b) C: raw vs recomputed from smoothed slope '
@@ -132,7 +132,7 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
 def main():
     args = parse_args()
     path = resolve_anchor_path(args)
-    summary = repair_anchor_file(
+    summary = smooth_anchor_file(
         path, r_threshold=args.r_threshold, s_factor=args.s_factor,
         spline_k=args.spline_k, dry_run=args.dry_run)
     chs = summary['chs']
@@ -148,7 +148,7 @@ def main():
     print(f"{path}")
     print(f"  detector D{det}, {len(chs)} channels, r_threshold="
           f"{args.r_threshold}, s_factor={args.s_factor}")
-    print(f"  {n_rep} channel(s) flagged for repair:")
+    print(f"  {n_rep} channel(s) flagged for smoothing:")
     for i, c in enumerate(chs):
         if not contam[i]:
             continue
@@ -157,16 +157,16 @@ def main():
               f"slope {slope_raw[i]:+.3f} -> {res['slope_final'][i]:+.3f}, "
               f"C {C_raw[i]:+.4g} -> {res['C_final'][i]:+.4g}{ex}")
     if res['extrapolated'].any():
-        print("  WARNING: extrapolated repair(s) above — flagged channel "
+        print("  WARNING: extrapolated smoothing(s) above — flagged channel "
               "outside the clean wavelength span; value is a spline "
               "extrapolation, inspect the plot.")
     if n_rep == 0:
-        print("  nothing to repair (all channels above threshold).")
+        print("  nothing to smooth (all channels above threshold).")
 
     if args.plot is not None:
         out_png = (args.plot if args.plot != 'auto'
                    else os.path.join(os.path.dirname(path),
-                                     f'anchor_D{det}_repair.png'))
+                                     f'anchor_D{det}_smooth.png'))
         make_plot(out_png, det, wl, slope_raw, C_raw, r, res)
 
     if args.dry_run:

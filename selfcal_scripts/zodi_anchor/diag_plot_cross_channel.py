@@ -135,7 +135,7 @@ def main():
             skymap = f['skymap'][:]
             skymap_cov = f['skymap_coverage'][:] if 'skymap_coverage' in f else None
         # Anchor params from the anchor file (cals are pristine; shift
-        # applied in-memory). C_final/slope_final are repair-aware.
+        # applied in-memory). C_final/slope_final are smoothing-aware.
         C = anchor.C(ch)
         slope = anchor.slope(ch)
         r = float(anchor.channels[ch]['pearson_r'])
