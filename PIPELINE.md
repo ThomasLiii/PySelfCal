@@ -241,6 +241,57 @@ Header keys to know:
   the value subtracted from the offsets before they were applied — add
   it back to recover absolute brightness.
 
+## Zodi anchor stage (absolute brightness)
+
+The LSQR solve leaves a global additive degeneracy (`sky += C`,
+`frame_scalar -= C` is invariant). The **zodi anchor** fixes `C` per
+channel by matching the solved per-frame DC to a Kelsall/zodipy
+prediction. It is **non-mutating**: `cal_*.h5` and `mosaic_*.fits` stay
+pristine; the fit lands in a per-detector anchor file
+`<run>/zodi_anchor/anchor_D{N}.h5` and is applied at read time. Full
+detail: [`selfcal_scripts/zodi_anchor/README.md`](selfcal_scripts/zodi_anchor/README.md).
+
+Ordering (after cal+mosaic exist):
+
+```bash
+# 1. Per-frame zodi predictions — EXPENSIVE, runs in the selfcal-zodipy
+#    env (zodipy needs numpy<2). Writes <run>/zodi_preds/zodi_pred_*.npz.
+/home/thomasli/anaconda3/envs/selfcal-zodipy/bin/python \
+    selfcal_scripts/zodi_anchor/build_predictions_all_channels.py --detector N ...
+
+# 2. Fit the anchor (cheap; selfcal env). Writes <run>/zodi_anchor/anchor_D{N}.h5.
+#    Add --smooth ONLY for atmospheric detectors (D1 He I/OI; D2) — see below.
+python selfcal_scripts/zodi_anchor/build_anchor.py --run-dir <run> [--smooth]
+
+# (alternatively, run_cal_v2.py with ZODI_PRED_DIR set writes the anchor
+#  inline per channel as the cal loop runs — step 2 then already done.)
+
+# 3. (optional) slope smoothing as a separate, inspectable step:
+python selfcal_scripts/zodi_anchor/smooth_anchor.py --run-dir <run> --dry-run --plot
+python selfcal_scripts/zodi_anchor/smooth_anchor.py --run-dir <run>
+```
+
+Consuming the anchor (pipeline outputs stay pristine):
+
+```python
+from SelfCal.ZodiAnchor import load_anchor, load_anchored_mosaic
+anchor = load_anchor('<run>/zodi_anchor/anchor_D1.h5')
+data, hdr = load_anchored_mosaic('<run>/mosaic/mosaic_..._Ch11_...fits', anchor)  # +C in memory
+# or arrays directly: anchor.C(ch), anchor.apply_to_mosaic_array(...), .apply_to_cal_scalar(...)
+```
+
+For a materialized FITS (ds9 / sharing), `materialize_anchored_mosaic.py
+--run-dir <run>` writes anchored copies to `<run>/anchored_mosaics/`
+(never overwrites the pipeline mosaic).
+
+**Slope smoothing scope:** `--smooth` / `smooth_anchor.py` smooths the
+per-channel slope across wavelength and overrides airglow-contaminated
+channels (low Pearson r). Use it ONLY for detectors with atmospheric
+contamination (D1 He I 1083 + OI 8446; D2 once mosaicked). Do NOT smooth
+D4/D5 — their low-r channels are real astrophysical features (D4 PAH at
+3.3 μm), not contamination. C is never smoothed (it carries the airglow);
+only the slope is.
+
 ## Regression testing
 
 `selfcal_scripts/run_cal_baseline_test.py` is the canonical regression harness. It defines `TEST_VARIANTS` (`poly_off`, `poly_k1`, `poly_k2`, `oldx0_off`, `scalar_off`, …) so the same script can produce side-by-side cal files for different solver configurations. Pair with `selfcal_scripts/diff_cal_h5.py` for element-wise diffs (schema-aware: legacy vs new, or new vs new).

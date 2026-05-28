@@ -61,6 +61,52 @@ def cal_path(detector, channel):
     )
 
 
+# ---------------------------------------------------------------------
+# Zodi anchor (optional). The anchor lives next to the cal files at
+# <run>/zodi_anchor/anchor_D{det}.h5 and sets the absolute level by a
+# per-channel constant C (skymap += C, frame_scalar -= C). Analysis here
+# is anchor-AWARE but opt-in: if the run has no anchor file, lookups
+# return None / 0.0 and everything proceeds on the raw (un-anchored)
+# offsets. See SelfCal/ZodiAnchor.py and PIPELINE.md (Zodi anchor stage).
+# ---------------------------------------------------------------------
+
+def anchor_path(detector):
+    """Per-detector anchor file for the run cal_path targets."""
+    return os.path.join(
+        CAL_OUTPUT_BASE,
+        CAL_RUN_TEMPLATE.format(det=detector),
+        'zodi_anchor',
+        f'anchor_D{detector}.h5',
+    )
+
+
+_ANCHOR_CACHE = {}
+
+
+def load_anchor_for(detector):
+    """Return the Anchor for this detector's run, or None if no anchor
+    file exists. Cached per detector; imports SelfCal.ZodiAnchor lazily so
+    runs without anchors don't pay the import."""
+    if detector in _ANCHOR_CACHE:
+        return _ANCHOR_CACHE[detector]
+    p = anchor_path(detector)
+    anchor = None
+    if os.path.exists(p):
+        from SelfCal.ZodiAnchor import load_anchor
+        anchor = load_anchor(p)
+    _ANCHOR_CACHE[detector] = anchor
+    return anchor
+
+
+def anchor_C(detector, channel):
+    """Final anchor C (MJy/sr) for (detector, channel), or 0.0 if the run
+    has no anchor file / channel."""
+    a = load_anchor_for(detector)
+    if a is None or channel not in a.channels:
+        return 0.0
+    return a.C(channel)
+
+
 def load_cal_offsets(path_or_file):
     """Read per-frame offsets from a cal_*.h5, handling both schemas.
 
@@ -92,8 +138,18 @@ def _read_cal_offsets(f):
 
 
 def load_single_channel_offset(detector, channel,
-                               num_subchannels=10, num_channels=34, num_columns=3):
+                               num_subchannels=10, num_channels=34, num_columns=3,
+                               apply_anchor=False):
     """Load one channel's calibration h5 and return per-exposure mean offset.
+
+    Parameters
+    ----------
+    apply_anchor : bool
+        If True, subtract the anchor C for this (detector, channel) from
+        map 0 (the frame_scalar-folded offset) so the returned offsets are
+        on the anchor's absolute zero-point — i.e. the per-frame DC the
+        solver would carry after the anchor's `frame_scalar -= C` shift.
+        No-op (with a one-line warning) if the run has no anchor file.
 
     Returns
     -------
@@ -111,6 +167,13 @@ def load_single_channel_offset(detector, channel,
     with h5py.File(path, 'r') as f:
         raw_offset = load_cal_offsets(f)[0]
         reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+    if apply_anchor:
+        if load_anchor_for(detector) is None:
+            print(f"  [zodi_utils] apply_anchor=True but no anchor file for "
+                  f"D{detector} ({anchor_path(detector)}); using raw offsets.")
+        # anchor moves a per-frame constant C out of frame_scalar (-> sky),
+        # i.e. anchored map 0 = map0 - C (C broadcast over all chunks).
+        raw_offset = raw_offset - anchor_C(detector, channel)
     mask = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=num_subchannels,
         num_channels=num_channels, num_columns=num_columns,
