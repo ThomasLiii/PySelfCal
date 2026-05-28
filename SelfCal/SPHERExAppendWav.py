@@ -164,10 +164,12 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
             ('total_meanvar_sum', ref_shape),
         ]
         
+        output_shm = {}
         for logical_name, shape in output_shapes:
             shm, unique_name, arr = create_shared_array(shape, np.float32)
-            arr.fill(0) 
+            arr.fill(0)
             shm_objects.append(shm)
+            output_shm[logical_name] = shm
             shm_info.append((unique_name, logical_name, shape, np.float32))
 
         # --- Multiprocessing ---
@@ -183,11 +185,11 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
                 list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks)))
 
         # --- Aggregate ---    
-        # We retrieve data using the saved buffer references from the main process
-        # Indices 4, 5, 6 correspond to the output arrays created above
-        BCBW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[4].buf).copy()
-        BW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[5].buf).copy()
-        meanvar_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_objects[6].buf).copy()
+        # Retrieve outputs by logical name so this stays correct regardless of
+        # the order/count of arrays appended to shm_objects.
+        BCBW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=output_shm['total_BCBW_sum'].buf).copy()
+        BW_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=output_shm['total_BW_sum'].buf).copy()
+        meanvar_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=output_shm['total_meanvar_sum'].buf).copy()
 
         # Avoid division by zero
         with np.errstate(divide='ignore', invalid='ignore'):

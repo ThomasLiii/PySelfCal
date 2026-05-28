@@ -18,7 +18,12 @@ from SelfCal.MapHelper import arc_spline, linear_spline, mean_preserving_spline,
 from SelfCal.MakeMap import load_reproj_file
 
 
-def load_calibration(band, calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
+# Canonical on-host paths for the SPHEREx spectral-calibration products.
+DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+DEFAULT_CHANNEL_FILE = '/home/thomasli/spherex/spherex_channels.csv'
+
+
+def load_calibration(band, calibration_dir=DEFAULT_CALIBRATION_DIR):
     BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
     BW_files = glob.glob(os.path.join(calibration_dir, f'*BW_Band{band}.fits'))
     if len(BC_files) != 1 or len(BW_files) != 1:
@@ -27,7 +32,7 @@ def load_calibration(band, calibration_dir='/data3/thomasli/SPHEREx_Spectral_Cal
     BW_map = fits.getdata(BW_files[0])
     return BC_map, BW_map
 
-def extract_spherex_channel_edges(band, channel_file='/home/thomasli/spherex/spherex_channels.csv'):
+def extract_spherex_channel_edges(band, channel_file=DEFAULT_CHANNEL_FILE):
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
@@ -141,8 +146,8 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     
     return chunk_map, lvf_params, np.array(r_edges)
 
-def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10, 
-                            channel_file='/home/thomasli/spherex/spherex_channels.csv', 
+def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10,
+                            channel_file=DEFAULT_CHANNEL_FILE,
                             oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
@@ -440,8 +445,8 @@ def compute_column_polynomial_chains(chunk_map, num_columns, degree=1):
 
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17,
-                            oversample_factor=1, num_columns=1, lvf_params=None, 
-                            calibration_dir='/data3/thomasli/SPHEREx_Spectral_Calibration'):
+                            oversample_factor=1, num_columns=1, lvf_params=None,
+                            calibration_dir=DEFAULT_CALIBRATION_DIR):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
     
     subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(
