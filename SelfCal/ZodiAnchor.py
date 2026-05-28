@@ -31,14 +31,20 @@ per-frame zodi-prediction ``.npz`` that this module consumes.
 import datetime
 import hashlib
 import os
+import re
 
 import h5py
 import numpy as np
+from astropy.io import fits
 
 
 # Anchor-file schema version. Bump when the on-disk layout of
 # anchor_D{N}.h5 changes in a backward-incompatible way.
 ANCHOR_VERSION = 1
+
+# Mosaic image HDUs the anchor C shift applies to (each has a sibling
+# ``<EXTNAME>_WEIGHT`` used to mask the shift to covered pixels).
+MOSAIC_MAP_EXTNAMES = ('MEAN_MAP', 'SC_MEAN_MAP')
 
 
 # ---------------------------------------------------------------------
@@ -400,10 +406,68 @@ class Anchor:
         """Return frame_scalar shifted by -C (the anchored per-frame DC)."""
         return np.asarray(frame_scalar, dtype=np.float64) - self.C(ch)
 
+    def apply_to_mosaic_hdul(self, hdul, ch):
+        """In-place: add C to the MEAN_MAP / SC_MEAN_MAP HDUs of an open
+        mosaic HDUList (covered pixels only, via the *_WEIGHT siblings),
+        and stamp a ZODIANCH header on each. Returns the shifted EXTNAMEs."""
+        ext = {h.header.get('EXTNAME', ''): h for h in hdul[1:]}
+        shifted = []
+        for name in MOSAIC_MAP_EXTNAMES:
+            hdu = ext.get(name)
+            if hdu is None or hdu.data is None:
+                continue
+            w = ext.get(f'{name}_WEIGHT')
+            hdu.data = self.apply_to_mosaic_array(
+                hdu.data, w.data if (w is not None) else None, ch)
+            hdu.header['ZODIANCH'] = (float(self.C(ch)),
+                                      'Zodi anchor C added (MJy/sr)')
+            shifted.append(name)
+        return shifted
+
 
 def load_anchor(path):
     """Load a per-detector anchor file into an Anchor consumer."""
     return Anchor(path)
+
+
+def _channel_from_filename(path):
+    m = re.search(r'_Ch(\d+)_', os.path.basename(path))
+    if m is None:
+        raise ValueError(f"cannot parse _Ch<n>_ from {os.path.basename(path)}; "
+                         "pass ch= explicitly.")
+    return int(m.group(1))
+
+
+def load_anchored_mosaic(mosaic_path, anchor, ch=None, extname='MEAN_MAP'):
+    """Open a PRISTINE mosaic and return its `extname` map with the anchor
+    C applied in memory (covered pixels only). The file on disk is NOT
+    modified.
+
+    Parameters
+    ----------
+    mosaic_path : path to the pristine mosaic FITS
+    anchor : an Anchor, or a path to an anchor_D{N}.h5
+    ch : channel int; defaults to the channel parsed from the filename
+    extname : which map to return ('MEAN_MAP' or 'SC_MEAN_MAP')
+
+    Returns
+    -------
+    (data, header) — the anchored map array and its FITS header (with WCS).
+    """
+    if isinstance(anchor, str):
+        anchor = load_anchor(anchor)
+    if ch is None:
+        ch = _channel_from_filename(mosaic_path)
+    with fits.open(mosaic_path, memmap=False) as hdul:
+        ext = {h.header.get('EXTNAME', ''): h for h in hdul[1:]}
+        if extname not in ext:
+            raise KeyError(f"{extname} not in {mosaic_path}; "
+                           f"have {sorted(ext)}")
+        hdu = ext[extname]
+        w = ext.get(f'{extname}_WEIGHT')
+        data = anchor.apply_to_mosaic_array(
+            hdu.data, w.data if (w is not None) else None, ch)
+        return data, hdu.header.copy()
 
 
 # ---------------------------------------------------------------------
