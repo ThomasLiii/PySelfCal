@@ -513,3 +513,50 @@ def rweighted_spline_repair(wavelengths, slope, intercept, pearson_r,
         slope_curve=sl_curve_s[inv],
         extrapolated=extrap_s[inv],
     )
+
+
+def repair_anchor_file(path, r_threshold=0.9, s_factor=1.0, spline_k=3,
+                       dry_run=False):
+    """Load an anchor file, compute the r-weighted slope repair, and (unless
+    dry_run) write ``slope_final``/``C_final``/``contaminated_flag``/
+    ``repair_method`` back in-place plus root repair-provenance attrs. The
+    raw ``slope``/``intercept`` are never touched, so this is re-runnable.
+
+    Single write path shared by repair_anchor.py and build_anchor.py
+    (--repair). Reads only the anchor file — no cal/npz I/O.
+
+    Returns a dict ``{chs, wl, slope, intercept, pearson_r, result}`` (the
+    raw per-channel arrays + the ``rweighted_spline_repair`` output) so the
+    caller can report/plot without recomputing.
+    """
+    a = load_anchor(path)
+    chs = sorted(a.channels)
+    wl = np.array([a.channels[c]['wavelength_um'] for c in chs])
+    slope = np.array([a.channels[c]['slope'] for c in chs])
+    C = np.array([a.channels[c]['intercept'] for c in chs])
+    r = np.array([a.channels[c]['pearson_r'] for c in chs])
+    mfd = np.array([a.channels[c]['mean_full_dc'] for c in chs])
+    mpred = np.array([a.channels[c]['mean_pred'] for c in chs])
+
+    res = rweighted_spline_repair(
+        wl, slope, C, r, mfd, mpred,
+        r_threshold=r_threshold, spline_k=spline_k, s_factor=s_factor)
+    contam = res['contaminated']
+
+    if not dry_run:
+        with h5py.File(path, 'r+') as f:
+            for i, c in enumerate(chs):
+                g = f['channels'][f'Ch{c}']
+                g.attrs['slope_final'] = float(res['slope_final'][i])
+                g.attrs['C_final'] = float(res['C_final'][i])
+                g.attrs['contaminated_flag'] = bool(contam[i])
+                g.attrs['repair_method'] = ('rweighted_spline' if contam[i]
+                                            else 'raw')
+            f.attrs['anchor_method'] = 'rweighted_spline'
+            f.attrs['repair_r_threshold'] = float(r_threshold)
+            f.attrs['repair_s_factor'] = float(s_factor)
+            f.attrs['repair_spline_k'] = int(spline_k)
+            f.attrs['repaired_iso'] = datetime.datetime.now().isoformat()
+
+    return dict(detector=a.detector, chs=chs, wl=wl, slope=slope,
+                intercept=C, pearson_r=r, result=res)

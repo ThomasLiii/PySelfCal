@@ -27,10 +27,9 @@ import argparse
 import glob
 import os
 
-import h5py
 import numpy as np
 
-from SelfCal.ZodiAnchor import load_anchor, rweighted_spline_repair
+from SelfCal.ZodiAnchor import repair_anchor_file
 
 
 def parse_args():
@@ -133,20 +132,16 @@ def make_plot(out_png, det, wl, slope_raw, C_raw, r, res):
 def main():
     args = parse_args()
     path = resolve_anchor_path(args)
-    a = load_anchor(path)
-    det = a.detector
-    chs = sorted(a.channels)
-    wl = np.array([a.channels[c]['wavelength_um'] for c in chs])
-    slope_raw = np.array([a.channels[c]['slope'] for c in chs])
-    C_raw = np.array([a.channels[c]['intercept'] for c in chs])
-    r = np.array([a.channels[c]['pearson_r'] for c in chs])
-    mean_full_dc = np.array([a.channels[c]['mean_full_dc'] for c in chs])
-    mean_pred = np.array([a.channels[c]['mean_pred'] for c in chs])
-
-    res = rweighted_spline_repair(
-        wl, slope_raw, C_raw, r, mean_full_dc, mean_pred,
-        r_threshold=args.r_threshold, spline_k=args.spline_k,
-        s_factor=args.s_factor)
+    summary = repair_anchor_file(
+        path, r_threshold=args.r_threshold, s_factor=args.s_factor,
+        spline_k=args.spline_k, dry_run=args.dry_run)
+    chs = summary['chs']
+    wl = summary['wl']
+    slope_raw = summary['slope']
+    C_raw = summary['intercept']
+    r = summary['pearson_r']
+    res = summary['result']
+    det = summary['detector']
     contam = res['contaminated']
     n_rep = int(contam.sum())
 
@@ -176,25 +171,9 @@ def main():
 
     if args.dry_run:
         print("  --dry-run: anchor file NOT modified.")
-        return
-
-    # Write back in-place: update *_final + flags per channel, root provenance.
-    with h5py.File(path, 'r+') as f:
-        for i, c in enumerate(chs):
-            g = f['channels'][f'Ch{c}']
-            g.attrs['slope_final'] = float(res['slope_final'][i])
-            g.attrs['C_final'] = float(res['C_final'][i])
-            g.attrs['contaminated_flag'] = bool(contam[i])
-            g.attrs['repair_method'] = ('rweighted_spline' if contam[i]
-                                        else 'raw')
-        f.attrs['anchor_method'] = 'rweighted_spline'
-        f.attrs['repair_r_threshold'] = float(args.r_threshold)
-        f.attrs['repair_s_factor'] = float(args.s_factor)
-        f.attrs['repair_spline_k'] = int(args.spline_k)
-        import datetime
-        f.attrs['repaired_iso'] = datetime.datetime.now().isoformat()
-    print(f"  updated {n_rep} channel(s) in-place; raw slope/intercept "
-          f"preserved. anchor_method -> rweighted_spline.")
+    else:
+        print(f"  updated {n_rep} channel(s) in-place; raw slope/intercept "
+              f"preserved. anchor_method -> rweighted_spline.")
 
 
 if __name__ == '__main__':

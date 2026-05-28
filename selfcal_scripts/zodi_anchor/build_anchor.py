@@ -13,6 +13,12 @@ already produced the npz files; this only does the cheap linear fit).
 
     python build_anchor.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec
 
+Pass --repair to also run the Phase-1 r-weighted slope repair in-place
+right after building (equivalent to a follow-up repair_anchor.py). ONLY
+for atmospheric-contaminated detectors (D1 He I/OI; D2) — NOT D4/D5:
+
+    python build_anchor.py --run-dir /mnt/.../D1_... --repair
+
 See todo/zodi_anchor_refactor.md for the architecture.
 """
 import argparse
@@ -26,7 +32,8 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from SelfCal.ZodiAnchor import fit_anchor_for_channel, write_anchor
+from SelfCal.ZodiAnchor import (fit_anchor_for_channel, write_anchor,
+                                repair_anchor_file)
 
 
 def parse_args():
@@ -44,6 +51,18 @@ def parse_args():
     p.add_argument('--clip-iters', type=int, default=2)
     p.add_argument('--cal-glob-pat', default='cal_*.h5',
                    help='Glob inside calibration/ for cal files.')
+    p.add_argument('--repair', action='store_true',
+                   help='After building, run the r-weighted slope repair '
+                        'in-place (Phase 1). ONLY for atmospheric-contaminated '
+                        'detectors (D1 He I/OI; D2) — do NOT use for D4/D5, '
+                        'whose low-r channels are real features. Equivalent '
+                        'to running repair_anchor.py afterward.')
+    p.add_argument('--repair-r-threshold', type=float, default=0.9,
+                   help='Repair: flag channels with Pearson r below this '
+                        '(default 0.9). Only used with --repair.')
+    p.add_argument('--repair-s-factor', type=float, default=1.0,
+                   help='Repair: slope-spline smoothing strength (default '
+                        '1.0). Only used with --repair.')
     return p.parse_args()
 
 
@@ -64,7 +83,8 @@ def matching_npz(cal_path, npz_dir):
     return os.path.join(npz_dir, f'zodi_pred_{tag}.npz')
 
 
-def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5'):
+def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5',
+                  repair=False, repair_r_threshold=0.9, repair_s_factor=1.0):
     cal_dir = os.path.join(run_dir, 'calibration')
     npz_dir = os.path.join(run_dir, 'zodi_preds')
     cals = sorted(glob.glob(os.path.join(cal_dir, cal_glob_pat)))
@@ -119,6 +139,20 @@ def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5'):
           + (f", skipped {len(skipped)}" if skipped else "") + ")")
     for ch, why in skipped:
         print(f"     skip Ch{ch}: {why}")
+
+    if repair:
+        summary = repair_anchor_file(
+            out_path, r_threshold=repair_r_threshold,
+            s_factor=repair_s_factor)
+        contam = summary['result']['contaminated']
+        n_rep = int(contam.sum())
+        flagged = [f"Ch{summary['chs'][i]}" for i in range(len(contam))
+                   if contam[i]]
+        print(f"  -> repaired {n_rep} channel(s) in-place "
+              f"(r<{repair_r_threshold}): {', '.join(flagged) or 'none'}")
+        if summary['result']['extrapolated'].any():
+            print("     WARNING: some repaired channels were extrapolated "
+                  "(outside clean span) — inspect with repair_anchor.py --plot.")
     return out_path
 
 
@@ -131,7 +165,10 @@ def main():
         print(f"=== {run_dir} ===")
         t0 = time.time()
         build_one_run(run_dir, args.out_dir, clip,
-                      cal_glob_pat=args.cal_glob_pat)
+                      cal_glob_pat=args.cal_glob_pat,
+                      repair=args.repair,
+                      repair_r_threshold=args.repair_r_threshold,
+                      repair_s_factor=args.repair_s_factor)
         print(f"  ({time.time() - t0:.1f}s)")
 
 
