@@ -874,43 +874,23 @@ class Mosaicker(Reprojector):
             common_kwargs['file_list'] = cached_list
             common_kwargs['use_cached'] = True
 
-        if make_std_map and det_aux is None:
-            # Fused mean+std: one pass over the (cached) subframes produces both
-            # maps instead of two separate full passes. Uses float64 moment
-            # accumulators, so the std matches the two-pass result within
-            # float32 ε. (det_aux still needs the separate passes for its own
-            # moment accumulation, so it falls through to the else branch.)
-            print("Computing mean + std maps (fused single pass)...")
-            with timer("Mean+std map computation (fused)"):
-                mean_data, std_data, weight_out = MakeMap.compute_coadd_map(
-                    mode='mean_std',
+        print("Computing mean map...")
+        with timer("Mean map computation"):
+            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
+                mode='mean', 
+                batch_size=coadd_batch_size,
+                **common_kwargs
+            )
+        
+        if make_std_map:
+            print("Computing std map...")
+            with timer("Std map computation"):
+                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
+                    mode='std', 
+                    mean_map=self.maps['mean_map']['data'], 
                     batch_size=coadd_batch_size,
                     **common_kwargs
                 )
-            self.maps['mean_map']['data'] = mean_data
-            self.maps['mean_map']['weight'] = weight_out
-            self.maps['mean_map']['aux'] = None
-            self.maps['std_map']['data'] = std_data
-            self.maps['std_map']['weight'] = weight_out
-            self.maps['std_map']['aux'] = None
-        else:
-            print("Computing mean map...")
-            with timer("Mean map computation"):
-                self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
-                    mode='mean',
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                )
-
-            if make_std_map:
-                print("Computing std map...")
-                with timer("Std map computation"):
-                    self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
-                        mode='std',
-                        mean_map=self.maps['mean_map']['data'],
-                        batch_size=coadd_batch_size,
-                        **common_kwargs
-                    )
 
         if make_std_map and apply_sigma_clipping:
             print("Computing sigma-clipped mean map...")
