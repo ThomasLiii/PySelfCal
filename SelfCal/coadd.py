@@ -62,18 +62,32 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
+        # 'mean_std' fuses the mean + std passes into one read of the data. It
+        # accumulates Σ(w·d) and Σ(w·d²) so both maps come from a single pass.
+        # The variance is then S2/Sw - mean², whose subtraction loses precision
+        # in float32 (catastrophic cancellation when std << mean). To stay
+        # within float32 ε of the original two-pass std, the accumulators and
+        # the per-term products are float64.
+        acc_dtype = np.float64 if mode == 'mean_std' else np.float32
+
         # Accumulators — direct arrays (threads) or SharedMemory (processes)
         data_sum_arr = params.get('total_data_sum')
         if data_sum_arr is None:
             shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
-            data_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data_sum.buf)
+            data_sum_arr = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_data_sum.buf)
             shm_handles.append(shm_data_sum)
 
         weight_sum_arr = params.get('total_weight_sum')
         if weight_sum_arr is None:
             shm_weight_sum = SharedMemory(name=params['total_weight_sum_name'])
-            weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
+            weight_sum_arr = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_weight_sum.buf)
             shm_handles.append(shm_weight_sum)
+
+        sq_sum_arr = None
+        if mode == 'mean_std':
+            shm_sq_sum = SharedMemory(name=params['total_sq_sum_name'])
+            sq_sum_arr = np.ndarray(ref_shape, dtype=np.float64, buffer=shm_sq_sum.buf)
+            shm_handles.append(shm_sq_sum)
 
         aux_sum_arr = params.get('total_aux_sum')
         if aux_sum_arr is None and 'total_aux_sum_name' in params:
@@ -84,8 +98,9 @@ def _coadd_batch_worker(params):
 
         # Local accumulators — each worker accumulates independently, then flushes
         # to shared arrays once at the end (single lock acquisition per batch).
-        local_data_sum = np.zeros(ref_shape, dtype=np.float32)
-        local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
+        local_data_sum = np.zeros(ref_shape, dtype=acc_dtype)
+        local_weight_sum = np.zeros(ref_shape, dtype=acc_dtype)
+        local_sq_sum = np.zeros(ref_shape, dtype=np.float64) if mode == 'mean_std' else None
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
         # Read-only maps — direct arrays (threads) or SharedMemory (processes)
@@ -206,7 +221,19 @@ def _coadd_batch_worker(params):
             data_crop = sub_data[sub_crop]
             weight_crop = sub_weight[sub_crop]
 
-            if mode == 'mean':
+            if mode == 'mean_std':
+                # Fused mean+std: accumulate Σ(w·d), Σw, Σ(w·d²) in float64.
+                # float64 per-term products keep d²w exact enough that the
+                # later S2/Sw - mean² subtraction matches the two-pass std
+                # within float32 ε even when std << mean.
+                d64 = data_crop.astype(np.float64)
+                w64 = weight_crop.astype(np.float64)
+                wd = d64 * w64
+                local_data_sum[ref_crop] += wd
+                local_weight_sum[ref_crop] += w64
+                local_sq_sum[ref_crop] += wd * d64
+
+            elif mode == 'mean':
                 data_val = data_crop * weight_crop
                 aux_val = sub_aux[:, *sub_crop] * weight_crop if (local_aux_sum is not None and sub_aux is not None) else None
                 local_data_sum[ref_crop] += data_val
@@ -243,6 +270,8 @@ def _coadd_batch_worker(params):
         with _lock:
             data_sum_arr += local_data_sum
             weight_sum_arr += local_weight_sum
+            if sq_sum_arr is not None:
+                sq_sum_arr += local_sq_sum
             if local_aux_sum is not None:
                 aux_sum_arr += local_aux_sum
 
@@ -324,21 +353,33 @@ def _coadd_batch_manager(params):
         use_cached = params.get('use_cached', False)
 
         # --- Accumulator arrays in SharedMemory ---
-        data_nbytes = int(np.prod(ref_shape)) * np.dtype(np.float32).itemsize
+        # 'mean_std' fuses mean+std and needs float64 accumulators (+ a third
+        # sum-of-squares array) for cancellation-safe variance.
+        acc_dtype = np.float64 if mode == 'mean_std' else np.float32
+        data_nbytes = int(np.prod(ref_shape)) * np.dtype(acc_dtype).itemsize
 
         shm_data = SharedMemory(create=True, size=data_nbytes)
-        data_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf)
+        data_arr = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_data.buf)
         data_arr.fill(0)
         shm_objects.append(shm_data)
         params['total_data_sum_name'] = shm_data.name
         params.pop('total_data_sum', None)
 
         shm_weight = SharedMemory(create=True, size=data_nbytes)
-        weight_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf)
+        weight_arr = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_weight.buf)
         weight_arr.fill(0)
         shm_objects.append(shm_weight)
         params['total_weight_sum_name'] = shm_weight.name
         params.pop('total_weight_sum', None)
+
+        shm_sq = None
+        if mode == 'mean_std':
+            sq_nbytes = int(np.prod(ref_shape)) * np.dtype(np.float64).itemsize
+            shm_sq = SharedMemory(create=True, size=sq_nbytes)
+            np.ndarray(ref_shape, dtype=np.float64, buffer=shm_sq.buf).fill(0)
+            shm_objects.append(shm_sq)
+            params['total_sq_sum_name'] = shm_sq.name
+            params.pop('total_sq_sum', None)
 
         total_aux_shape = None
         if det_aux is not None:
@@ -442,12 +483,15 @@ def _coadd_batch_manager(params):
                     pass  # Workers flush to SharedMemory accumulators
 
             # Read final results from SharedMemory (copy before cleanup)
-            final_data_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf).copy()
-            final_weight_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf).copy()
+            final_data_sum = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_data.buf).copy()
+            final_weight_sum = np.ndarray(ref_shape, dtype=acc_dtype, buffer=shm_weight.buf).copy()
+            final_sq_sum = None
+            if shm_sq is not None:
+                final_sq_sum = np.ndarray(ref_shape, dtype=np.float64, buffer=shm_sq.buf).copy()
             final_aux_sum = None
             if total_aux_shape is not None:
                 final_aux_sum = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux_sum.buf).copy()
-            return final_data_sum, final_weight_sum, final_aux_sum
+            return final_data_sum, final_weight_sum, final_aux_sum, final_sq_sum
     finally:
         for shm in shm_objects:
             shm.close()
@@ -485,7 +529,12 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         ``chunk_to_det`` per map.
     """
     # --- Common Assertions for All Modes ---
-    assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
+    assert mode in ['mean', 'std', 'sigma_clip', 'mean_std', 'cache'], \
+        "mode must be one of 'mean', 'std', 'sigma_clip', 'mean_std', or 'cache'"
+    if mode == 'mean_std':
+        # Fused pass returns mean + std together; aux moments are not fused
+        # (callers needing aux use the separate mean/std passes).
+        assert det_aux is None, "mean_std mode does not support det_aux"
     if mode == 'cache':
         assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
         os.makedirs(cache_dir, exist_ok=True)
@@ -552,7 +601,21 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
 
     # --- Branch 2: Co-addition (Standard or from Cache) ---
     else:
-        data_sum, weight_sum, aux_sum = _coadd_batch_manager(params)
+        data_sum, weight_sum, aux_sum, sq_sum = _coadd_batch_manager(params)
+
+        if mode == 'mean_std':
+            # Fused single pass: data_sum=Σ(w·d), sq_sum=Σ(w·d²), weight_sum=Σw,
+            # all float64. mean = S1/Sw; var = S2/Sw - mean² (cancellation-safe
+            # in float64). Clamp tiny negative variance (flat regions) to 0 — the
+            # two-pass std, a sum of squares, is also ≥ 0. Cast to float32 to
+            # match the original map dtypes.
+            mean64 = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
+            var64 = np.divide(sq_sum, weight_sum, out=np.zeros_like(sq_sum), where=weight_sum > 0) - mean64**2
+            np.maximum(var64, 0.0, out=var64)
+            mean_map_out = mean64.astype(np.float32)
+            std_map_out = np.sqrt(var64).astype(np.float32)
+            weight_out = weight_sum.astype(np.float32)
+            return mean_map_out, std_map_out, weight_out
 
         if mode == 'mean':
             result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
