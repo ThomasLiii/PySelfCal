@@ -320,17 +320,42 @@ def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
         raise ValueError("Either sub_mapping or interp_matrix must be provided.")
     return sub_data
 
-def compute_chunk_contrib(chunk_map, interp_matrix=None):
-    """Computes the sparse matrix contribution for LSQR."""
+_chunk_map_parsed_cache = {}
+
+
+def _parse_chunk_map(chunk_map):
+    """One-hot CSR ``(n_pixels, n_chunks)`` for a chunk map.
+
+    Depends only on ``chunk_map`` (constant across every frame in a batch), so
+    it is memoized by object identity. The cached entry also holds a reference
+    to the source array: that keeps its ``id`` valid (so a different array can
+    never alias a live cache key) and the ``is`` re-check makes a stale hit
+    impossible. The cache is bounded since only a handful of distinct maps
+    ever appear. Result is a pure function of ``chunk_map``, so reuse is
+    bit-identical to rebuilding.
+    """
+    key = id(chunk_map)
+    entry = _chunk_map_parsed_cache.get(key)
+    if entry is not None and entry[0] is chunk_map:
+        return entry[1]
+
     chunk_map_flat = chunk_map.ravel()
     total_rows = chunk_map_flat.size
     total_cols = chunk_map_flat.max() + 1
-
     indptr = np.arange(total_rows + 1)
     indices = chunk_map_flat
     data = np.ones(total_rows, dtype=np.float32)
-
     chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
+
+    if len(_chunk_map_parsed_cache) > 8:
+        _chunk_map_parsed_cache.clear()
+    _chunk_map_parsed_cache[key] = (chunk_map, chunk_map_parsed)
+    return chunk_map_parsed
+
+
+def compute_chunk_contrib(chunk_map, interp_matrix=None):
+    """Computes the sparse matrix contribution for LSQR."""
+    chunk_map_parsed = _parse_chunk_map(chunk_map)
     if interp_matrix is not None:
         chunk_contrib = (interp_matrix @ chunk_map_parsed).T
         return chunk_contrib
