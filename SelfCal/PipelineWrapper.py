@@ -800,8 +800,7 @@ class Mosaicker(Reprojector):
     def make_mosaic(self, chunk_maps, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20,
         make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[],
         det_offset_funcs=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/',
-        cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01,
-        use_fused_mean_std=False):
+        cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01):
         """Build coadded maps applying per-map calibration offsets.
 
         ``chunk_maps`` is a length-K list of (typically grid-resolution) chunk
@@ -812,24 +811,6 @@ class Mosaicker(Reprojector):
         coverage fraction falls below ``valid_chunk_thresh``; ``mean_offset``
         is reported on map 0 only and embedded in the FITS header by
         ``save_mosaic`` for legacy compatibility.
-
-        ``use_fused_mean_std`` (default False): when True AND ``make_std_map``
-        AND ``det_aux is None``, the mean and std maps are produced in a SINGLE
-        fused coadd pass using float32 Welford accumulators with Chan
-        parallel-combine flush, replacing two separate ``compute_coadd_map``
-        invocations. The fused path matches the two-pass std within float32 ε
-        (gated; see ``todo/sessions/welford-retry/`` for the gate evidence).
-
-        IMPORTANT: in fused mode, ``maps['mean_map']['weight']`` and
-        ``maps['std_map']['weight']`` are the SAME array object. Downstream
-        consumers that previously assumed the two weight arrays could differ at
-        the ULP level (because the two-pass code recomputes them independently)
-        now see the same buffer for both. Where the two-pass code wrote a
-        zeroed weight for pixels with no coverage and a separately-rounded weight
-        per pass, the fused code writes a single Σw. Practically the two-pass
-        weights only differ at ULP level in the same way every parallel-reduce
-        sum does, but if a consumer hashes mean weight against std weight to
-        detect inconsistency, it will now see identity instead of "near-equal".
         """
         assert isinstance(chunk_maps, list) and chunk_maps, \
             "chunk_maps must be a non-empty list of ndarrays"
@@ -893,41 +874,23 @@ class Mosaicker(Reprojector):
             common_kwargs['file_list'] = cached_list
             common_kwargs['use_cached'] = True
 
-        if make_std_map and det_aux is None and use_fused_mean_std:
-            # Fused float32-Welford mean+std (single pass over the cached
-            # subframes). See coadd.py:_coadd_batch_worker mean_std branch and
-            # the use_fused_mean_std caveat in this method's docstring.
-            print("Computing mean + std maps (fused Welford single pass)...")
-            with timer("Mean+std map computation (fused Welford)"):
-                mean_data, std_data, weight_out = MakeMap.compute_coadd_map(
-                    mode='mean_std',
+        print("Computing mean map...")
+        with timer("Mean map computation"):
+            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
+                mode='mean', 
+                batch_size=coadd_batch_size,
+                **common_kwargs
+            )
+        
+        if make_std_map:
+            print("Computing std map...")
+            with timer("Std map computation"):
+                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
+                    mode='std', 
+                    mean_map=self.maps['mean_map']['data'], 
                     batch_size=coadd_batch_size,
                     **common_kwargs
                 )
-            self.maps['mean_map']['data'] = mean_data
-            self.maps['mean_map']['weight'] = weight_out
-            self.maps['mean_map']['aux'] = None
-            self.maps['std_map']['data'] = std_data
-            self.maps['std_map']['weight'] = weight_out
-            self.maps['std_map']['aux'] = None
-        else:
-            print("Computing mean map...")
-            with timer("Mean map computation"):
-                self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
-                    mode='mean',
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                )
-
-            if make_std_map:
-                print("Computing std map...")
-                with timer("Std map computation"):
-                    self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
-                        mode='std',
-                        mean_map=self.maps['mean_map']['data'],
-                        batch_size=coadd_batch_size,
-                        **common_kwargs
-                    )
 
         if make_std_map and apply_sigma_clipping:
             print("Computing sigma-clipped mean map...")

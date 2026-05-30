@@ -62,26 +62,6 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        # 'mean_std' fuses the mean + std passes into one read of the data using
-        # **float32 Welford** accumulators with a **Chan parallel-combine** flush.
-        # Per-worker locals are (mean_w, M2_w, w_w) — all float32 ref_shape arrays
-        # (~3 × 4 B × N_pix per worker). Per-frame update is the classic
-        # Welford weighted ordering:
-        #     w_new = w + Δw
-        #     δ = d - μ
-        #     μ <- μ + (Δw / w_new) * δ
-        #     M2 <- M2 + Δw * δ * (d - μ)      # uses the UPDATED mean
-        # Per-batch flush combines local (μ_B, M2_B, w_B) into shared (μ_A, M2_A, w_A)
-        # via Chan's parallel formula (cancellation-safe centered moment merge):
-        #     w_AB = w_A + w_B
-        #     δ = μ_B - μ_A
-        #     μ_AB = (w_A μ_A + w_B μ_B) / w_AB
-        #     M2_AB = M2_A + M2_B + δ² · w_A w_B / w_AB
-        # This avoids the float64 raw-moment path that was wall-regressive
-        # (commit 5be83f5 → 0204749 revert); centered second moment never sees
-        # the catastrophic E[d²] − E[d]² cancellation.
-        is_welford = (mode == 'mean_std')
-
         # Accumulators — direct arrays (threads) or SharedMemory (processes)
         data_sum_arr = params.get('total_data_sum')
         if data_sum_arr is None:
@@ -95,16 +75,6 @@ def _coadd_batch_worker(params):
             weight_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight_sum.buf)
             shm_handles.append(shm_weight_sum)
 
-        # Welford M2 (sum of squared deviations from running mean), float32 SHM.
-        # In mean_std mode, ``data_sum_arr`` holds the WEIGHTED RUNNING MEAN
-        # (μ), not Σ(w·d). Reusing the existing SHM slot keeps the manager
-        # plumbing identical.
-        m2_sum_arr = None
-        if is_welford:
-            shm_m2_sum = SharedMemory(name=params['total_m2_sum_name'])
-            m2_sum_arr = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_m2_sum.buf)
-            shm_handles.append(shm_m2_sum)
-
         aux_sum_arr = params.get('total_aux_sum')
         if aux_sum_arr is None and 'total_aux_sum_name' in params:
             shm_aux_sum = SharedMemory(name=params['total_aux_sum_name'])
@@ -116,9 +86,6 @@ def _coadd_batch_worker(params):
         # to shared arrays once at the end (single lock acquisition per batch).
         local_data_sum = np.zeros(ref_shape, dtype=np.float32)
         local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
-        # Welford locals (float32). ``local_data_sum`` is reinterpreted as the
-        # local running mean μ_w in mean_std mode.
-        local_m2_sum = np.zeros(ref_shape, dtype=np.float32) if is_welford else None
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
         # Read-only maps — direct arrays (threads) or SharedMemory (processes)
@@ -239,39 +206,7 @@ def _coadd_batch_worker(params):
             data_crop = sub_data[sub_crop]
             weight_crop = sub_weight[sub_crop]
 
-            if mode == 'mean_std':
-                # Float32 Welford update, restricted to pixels with w_crop > 0
-                # (a frame's contribution is zero elsewhere, so a 0/0 ratio in
-                # the μ-update is avoided by masking those pixels out entirely).
-                # All temporaries are float32 — no per-frame promotion.
-                w_mask = weight_crop > 0
-                if not np.any(w_mask):
-                    continue
-                # Slice the ref-frame views to a flat 1-D view of the active
-                # pixels (faster than full-array elementwise on the cropped slab
-                # when only a fraction of pixels carry weight).
-                d_local = data_crop[w_mask]
-                w_local = weight_crop[w_mask]
-                # Pull the corresponding region of the local accumulators.
-                # ``local_data_sum[ref_crop]`` is the local running mean μ_w.
-                mu_view = local_data_sum[ref_crop]
-                m2_view = local_m2_sum[ref_crop]
-                w_view = local_weight_sum[ref_crop]
-                mu_old = mu_view[w_mask]
-                w_old = w_view[w_mask]
-                w_new = w_old + w_local
-                delta = d_local - mu_old
-                # Classic Welford weighted mean update: μ <- μ + (Δw / w_new) δ
-                mu_new = mu_old + (w_local / w_new) * delta
-                # M2 uses the UPDATED mean (canonical ordering); this is what
-                # makes it bit-stable under the parallel-combine flush below.
-                m2_inc = w_local * delta * (d_local - mu_new)
-                # Scatter back into the local accumulators.
-                mu_view[w_mask] = mu_new
-                m2_view[w_mask] = m2_view[w_mask] + m2_inc
-                w_view[w_mask] = w_new
-
-            elif mode == 'mean':
+            if mode == 'mean':
                 data_val = data_crop * weight_crop
                 aux_val = sub_aux[:, *sub_crop] * weight_crop if (local_aux_sum is not None and sub_aux is not None) else None
                 local_data_sum[ref_crop] += data_val
@@ -306,35 +241,8 @@ def _coadd_batch_worker(params):
     if mode != 'cache':
         _lock = params.get('_lock') or _state._coadd_flush_lock
         with _lock:
-            if is_welford:
-                # Chan parallel-combine: merge local (μ_B, M2_B, w_B) into
-                # shared (μ_A, M2_A, w_A) cancellation-safely.
-                # Both sides are float32. The combine is performed only where
-                # the merged weight is positive — pixels where both sides have
-                # zero weight are left untouched (still 0/0 division-free).
-                w_A = weight_sum_arr  # shared
-                mu_A = data_sum_arr   # shared (running mean)
-                M2_A = m2_sum_arr     # shared
-                w_B = local_weight_sum
-                mu_B = local_data_sum
-                M2_B = local_m2_sum
-                w_AB = w_A + w_B
-                mask = w_AB > 0
-                if np.any(mask):
-                    wA_m = w_A[mask]
-                    wB_m = w_B[mask]
-                    muA_m = mu_A[mask]
-                    muB_m = mu_B[mask]
-                    inv = 1.0 / w_AB[mask]
-                    delta = muB_m - muA_m
-                    mu_new = (wA_m * muA_m + wB_m * muB_m) * inv
-                    M2_new = M2_A[mask] + M2_B[mask] + (delta * delta) * (wA_m * wB_m * inv)
-                    mu_A[mask] = mu_new
-                    M2_A[mask] = M2_new
-                    w_A[mask] = w_AB[mask]
-            else:
-                data_sum_arr += local_data_sum
-                weight_sum_arr += local_weight_sum
+            data_sum_arr += local_data_sum
+            weight_sum_arr += local_weight_sum
             if local_aux_sum is not None:
                 aux_sum_arr += local_aux_sum
 
@@ -431,16 +339,6 @@ def _coadd_batch_manager(params):
         shm_objects.append(shm_weight)
         params['total_weight_sum_name'] = shm_weight.name
         params.pop('total_weight_sum', None)
-
-        # 'mean_std' adds a float32 M2 accumulator in SHM. ``data_arr`` becomes
-        # the running mean μ in this mode; semantics of the SHM-back-buffer
-        # name stay the same so the worker-side plumbing is untouched.
-        shm_m2 = None
-        if mode == 'mean_std':
-            shm_m2 = SharedMemory(create=True, size=data_nbytes)
-            np.ndarray(ref_shape, dtype=np.float32, buffer=shm_m2.buf).fill(0)
-            shm_objects.append(shm_m2)
-            params['total_m2_sum_name'] = shm_m2.name
 
         total_aux_shape = None
         if det_aux is not None:
@@ -546,13 +444,10 @@ def _coadd_batch_manager(params):
             # Read final results from SharedMemory (copy before cleanup)
             final_data_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_data.buf).copy()
             final_weight_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_weight.buf).copy()
-            final_m2_sum = None
-            if shm_m2 is not None:
-                final_m2_sum = np.ndarray(ref_shape, dtype=np.float32, buffer=shm_m2.buf).copy()
             final_aux_sum = None
             if total_aux_shape is not None:
                 final_aux_sum = np.ndarray(total_aux_shape, dtype=np.float32, buffer=shm_aux_sum.buf).copy()
-            return final_data_sum, final_weight_sum, final_aux_sum, final_m2_sum
+            return final_data_sum, final_weight_sum, final_aux_sum
     finally:
         for shm in shm_objects:
             shm.close()
@@ -590,13 +485,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         ``chunk_to_det`` per map.
     """
     # --- Common Assertions for All Modes ---
-    assert mode in ['mean', 'std', 'sigma_clip', 'mean_std', 'cache'], \
-        "mode must be one of 'mean', 'std', 'sigma_clip', 'mean_std', or 'cache'"
-    if mode == 'mean_std':
-        # Fused float32-Welford path returns mean + std together. aux moments
-        # would need their own Welford state, so callers needing aux fall back
-        # to the separate mean/std passes.
-        assert det_aux is None, "mean_std mode does not support det_aux"
+    assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
     if mode == 'cache':
         assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
         os.makedirs(cache_dir, exist_ok=True)
@@ -663,23 +552,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
 
     # --- Branch 2: Co-addition (Standard or from Cache) ---
     else:
-        data_sum, weight_sum, aux_sum, m2_sum = _coadd_batch_manager(params)
-
-        if mode == 'mean_std':
-            # Fused Welford output:
-            #   data_sum = weighted running mean μ (float32)
-            #   m2_sum   = weighted sum-of-squared-deviations M2 (float32)
-            #   weight_sum = Σw (float32)
-            # Match the two-pass STD mode's POPULATION variance (M2 / w).
-            # The two-pass `std` mode at L562 divides by ``weight_sum``
-            # (not ``weight_sum - 1``), so this fused path does the same.
-            variance = np.divide(m2_sum, weight_sum,
-                                 out=np.zeros_like(m2_sum), where=weight_sum > 0)
-            np.maximum(variance, 0.0, out=variance)
-            mean_map_out = data_sum.astype(np.float32, copy=False)
-            std_map_out = np.sqrt(variance).astype(np.float32)
-            # mean and std share the SAME weight array in fused mode.
-            return mean_map_out, std_map_out, weight_sum.astype(np.float32, copy=False)
+        data_sum, weight_sum, aux_sum = _coadd_batch_manager(params)
 
         if mode == 'mean':
             result_map = np.divide(data_sum, weight_sum, out=np.zeros_like(data_sum), where=weight_sum != 0)
