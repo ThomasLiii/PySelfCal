@@ -89,6 +89,11 @@ def main():
         fill_invalid=True,
     )
 
+    # Lightweight knob for the welford-retry precision gate: when
+    # SELFCAL_FUSED_MEAN_STD=1 is set in the env, run with the fused Welford
+    # mean+std path; otherwise default to the two-pass path (current main).
+    use_fused = os.environ.get('SELFCAL_FUSED_MEAN_STD', '0') == '1'
+    print(f"use_fused_mean_std={use_fused}")
     t0 = time.time()
     maps = mm.make_mosaic(
         chunk_maps=[det_inputs['grid_chunk_map']],
@@ -101,6 +106,7 @@ def main():
         ignore_list=[21],
         cache_batch_size=50, coadd_batch_size=50,
         cache_intermediate=True, max_workers=args.max_workers,
+        use_fused_mean_std=use_fused,
     )
     print(f"make_mosaic: {time.time()-t0:.2f} s")
 
