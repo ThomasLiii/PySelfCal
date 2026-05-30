@@ -9,6 +9,15 @@ compare_mosaic.py.
 
 Usage:
     python regress_mosaic.py --suffix _mos_baseline --n-frames 300
+
+WARNING: --batch-size (implicit via cache_batch_size / coadd_batch_size below)
+and --max-workers must be IDENTICAL across baseline and candidate runs for the
+ULP-level mosaic comparison to be meaningful. The defaults (50 / 48) shouldn't
+be changed unless you are deliberately re-baselining: the imap_unordered
+flush ordering in compute_coadd_map depends on batch_size and worker count,
+and shifting either of them is enough to perturb the float32 accumulators at
+the noise-floor level (see mos_baseline vs mos_baseline2 in the perf-algo
+artifact for a sense of the size of that intrinsic noise floor).
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"

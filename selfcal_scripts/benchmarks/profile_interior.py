@@ -126,7 +126,14 @@ def run_lsqr(file_list, ref_shape, det_inputs, ch_inputs):
 def run_cache(file_list, ref_shape, det_inputs, ch_inputs, cache_dir):
     """Profile the cache-mode _prep_subframe interior (mosaic coadd cache path).
     No offsets applied (offset application cost is the spline func, profiled
-    separately); this isolates load + interp + grid-weight det_to_sub + crop."""
+    separately); this isolates load + interp + grid-weight det_to_sub + crop.
+
+    WARNING: the per-frame nz_rows/nz_cols → bbox-crop logic below is
+    duplicated from coadd._coadd_batch_worker (around lines 163-199 of
+    SelfCal/coadd.py). If the production bbox-crop logic changes (e.g. a
+    different valid-weight criterion, a different padding, or a fused
+    crop+accumulate step), this profile will report stale numbers and
+    misrepresent the cache phase's actual hot lines until kept in sync."""
     import h5py
     grid_chunk_map = det_inputs['grid_chunk_map']
     prep_config = {
@@ -172,7 +179,16 @@ def run_cache(file_list, ref_shape, det_inputs, ch_inputs, cache_dir):
 
 
 def run_mean(cache_files, ref_shape):
-    """Profile the mean-mode accumulation interior over cached crops."""
+    """Profile the mean-mode accumulation interior over cached crops.
+
+    WARNING: this phase replays a simplified mean-accumulation loop. The
+    production pattern in coadd._coadd_batch_worker (around lines 240-247 of
+    SelfCal/coadd.py) accumulates into per-worker LOCAL arrays and flushes
+    them to a SHARED-memory accumulator under a single per-batch lock. That
+    pattern is NOT exercised here — this profile just adds straight into a
+    single in-process numpy array. A future opt targeting the local→shared
+    flush (lock contention, SHM bandwidth, batched-vs-streamed flush) will
+    be invisible in this profile."""
     import h5py
     data_sum = np.zeros(ref_shape, dtype=np.float32)
     weight_sum = np.zeros(ref_shape, dtype=np.float32)

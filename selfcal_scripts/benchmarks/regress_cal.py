@@ -10,6 +10,13 @@ Usage:
     python regress_cal.py --suffix _gate_optA     --n-frames 300
     python diff_cal_h5.py <cal_dir>/cal_..._gate_baseline.h5 \
                           <cal_dir>/cal_..._gate_optA.h5
+
+WARNING: --batch-size must be IDENTICAL across baseline and candidate runs for
+byte-equality. The default is 50 and shouldn't be changed unless you are
+deliberately re-baselining (cal accumulation flush ordering depends on
+batch_size, and that's enough to perturb the saved arrays at the ULP level
+even with otherwise-identical code). The same applies to --max-workers:
+holding both fixed across the pair is what the byte-equality gate assumes.
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
