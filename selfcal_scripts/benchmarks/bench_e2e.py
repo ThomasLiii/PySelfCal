@@ -7,9 +7,28 @@ the shared PhaseTracker. Same harness on the pre-change SelfCal (git checkout
 <parent> -- SelfCal/) vs the changed SelfCal gives a clean per-phase delta on
 identical machine state.
 
-Usage:
+Usage (single-shot):
     python bench_e2e.py --n-frames 4000 --label before
     python bench_e2e.py --n-frames 4000 --label after
+
+Usage (orchestrated before-vs-after with crash-safe SelfCal restore):
+    python bench_e2e.py --before-ref <sha-or-branch> --after-ref <sha-or-branch> \
+                        --n-frames 4000 --label myrun
+    # writes e2e_myrun_before_summary.txt and e2e_myrun_after_summary.txt under
+    # figures/benchmark/; restores SelfCal/ to the recorded HEAD on completion
+    # AND on SIGINT/SIGTERM/exception.
+
+Reading the per-phase RSS columns
+---------------------------------
+PhaseTracker emits two RSS columns. ``peak_rss_gb`` is the max sampled
+whole-process-tree RSS during the phase; for nested phases (mosaic_coadd_mean
+/ _std / _sigma_clip inside mosaic_make_mosaic_total) it includes carry-over
+from prior sub-phases that is still live and is therefore monotonically rising
+even when individual phases free what they allocate. ``delta_rss_gb`` is
+``peak_rss_gb - start_rss_gb`` where ``start_rss_gb`` is the RSS at phase
+entry; this is the per-phase NEW-allocation signal. When auditing whether a
+specific sub-phase allocated more memory than its baseline, read
+``delta_rss_gb``, not ``peak_rss_gb``.
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"

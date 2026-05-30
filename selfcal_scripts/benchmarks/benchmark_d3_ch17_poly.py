@@ -68,6 +68,24 @@ class PhaseTracker:
     system CPU%, n_children) at sample_interval_s. Each phase records
     start/end timestamps; peak/avg RSS over samples in the window; disk I/O
     from system disk_io_counters deltas; avg system CPU%.
+
+    Two RSS columns are reported per phase:
+
+      * ``peak_rss_gb``  — max sampled whole-process-tree RSS during the
+        phase. For nested phases (e.g. mosaic_coadd_mean / _std /
+        _sigma_clip inside mosaic_make_mosaic_total) this is *cumulative*:
+        it includes the memory allocated by prior sub-phases that is still
+        live at this sub-phase's peak. Useful as an absolute headroom number,
+        misleading as a per-phase allocation signal.
+      * ``delta_rss_gb`` — ``peak_rss_gb - start_rss_gb`` where
+        ``start_rss_gb`` is the RSS sample taken at phase entry (or a fresh
+        process-tree RSS read if no in-window sample exists yet). This is the
+        per-phase signal: how much NEW memory came online during this phase.
+        For an isolated phase that allocates and frees, this may even be
+        negative (the in-window peak is below the entry-time RSS).
+
+    Read ``delta_rss_gb`` when reasoning about per-phase allocations and
+    ``peak_rss_gb`` when reasoning about absolute process-tree headroom.
     """
 
     def __init__(self, sample_interval_s=0.5):
@@ -118,11 +136,30 @@ class PhaseTracker:
                 'n_children': n_children,
             })
 
+    def _read_process_tree_rss_gb(self):
+        """Best-effort whole-process-tree RSS in GB; matches the sampler formula."""
+        try:
+            rss = self.process.memory_info().rss
+            for c in self.process.children(recursive=True):
+                try:
+                    rss += c.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            return rss / 1e9
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return 0.0
+
     @contextlib.contextmanager
     def phase(self, name):
+        """Time + record a phase. See class docstring for peak_rss vs delta_rss."""
         t_start = time.perf_counter() - self.t0
         d0 = psutil.disk_io_counters()
-        print(f"[bench] phase {name} starting at t={t_start:.1f}s ...", flush=True)
+        # Record start RSS at phase entry. Prefer the most recent in-window
+        # sample (samples are taken every sample_interval_s); fall back to a
+        # fresh read so the very first phase doesn't get start_rss=0.
+        start_rss_gb = self._read_process_tree_rss_gb()
+        print(f"[bench] phase {name} starting at t={t_start:.1f}s "
+              f"start_rss={start_rss_gb:.2f}GB ...", flush=True)
         try:
             yield
         finally:
@@ -134,12 +171,18 @@ class PhaseTracker:
             avg_cpu = float(np.mean([s['sys_cpu_pct'] for s in samples_in])) if samples_in else 0.0
             max_children = max((s['n_children'] for s in samples_in), default=0)
             avg_children = float(np.mean([s['n_children'] for s in samples_in])) if samples_in else 0.0
+            # delta_rss = peak during phase - RSS at phase entry. This is the
+            # per-phase NEW-allocation signal; peak_rss alone is cumulative for
+            # nested phases.
+            delta_rss = peak_rss - start_rss_gb if samples_in else 0.0
             self.phases.append({
                 'name': name,
                 't_start': t_start,
                 't_end': t_end,
                 'duration_s': t_end - t_start,
                 'peak_rss_gb': peak_rss,
+                'start_rss_gb': start_rss_gb,
+                'delta_rss_gb': delta_rss,
                 'avg_rss_gb': avg_rss,
                 'disk_read_gb': (d1.read_bytes - d0.read_bytes) / 1e9,
                 'disk_write_gb': (d1.write_bytes - d0.write_bytes) / 1e9,
@@ -150,7 +193,7 @@ class PhaseTracker:
             })
             print(
                 f"[bench] phase {name} done in {t_end-t_start:.2f}s  "
-                f"peak_rss={peak_rss:.2f}GB  "
+                f"peak_rss={peak_rss:.2f}GB  delta_rss={delta_rss:+.2f}GB  "
                 f"diskR={d1.read_bytes-d0.read_bytes:.3e}B  "
                 f"diskW={d1.write_bytes-d0.write_bytes:.3e}B  "
                 f"sys_cpu={avg_cpu:.1f}%  workers~{avg_children:.1f}",
@@ -161,6 +204,7 @@ class PhaseTracker:
         rows = []
         header = (
             f"{'Phase':<32s}  {'Wall(s)':>9s}  {'Peak RSS(GB)':>13s}  "
+            f"{'Delta RSS(GB)':>14s}  "
             f"{'Disk R(GB)':>11s}  {'Disk W(GB)':>11s}  {'Sys CPU%':>9s}  "
             f"{'Workers(max/avg)':>17s}"
         )
@@ -171,9 +215,13 @@ class PhaseTracker:
         total_read = 0.0
         total_write = 0.0
         for p in self.phases:
+            # delta_rss_gb is signed; pre-existing JSON / phase dicts written
+            # by older code may lack the key — default to 0.0 for safety.
+            delta = p.get('delta_rss_gb', 0.0)
             rows.append(
                 f"{p['name']:<32s}  {p['duration_s']:>9.2f}  "
                 f"{p['peak_rss_gb']:>13.2f}  "
+                f"{delta:>+14.2f}  "
                 f"{p['disk_read_gb']:>11.2f}  {p['disk_write_gb']:>11.2f}  "
                 f"{p['avg_sys_cpu_pct']:>9.1f}  "
                 f"{p['max_children']:>8d}/{p['avg_children']:>7.1f}"
@@ -185,6 +233,7 @@ class PhaseTracker:
         rows.append("-" * len(header))
         rows.append(
             f"{'TOTAL':<32s}  {total_wall:>9.2f}  {max_peak:>13.2f}  "
+            f"{' ':>14s}  "
             f"{total_read:>11.2f}  {total_write:>11.2f}"
         )
         return "\n".join(rows)
