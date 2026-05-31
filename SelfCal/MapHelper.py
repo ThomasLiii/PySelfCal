@@ -219,19 +219,42 @@ def chunk_to_det(chunk_map, chunk_data):
     det_offset = chunk_data[chunk_map]
     return det_offset
 
-def make_linear_interp_matrix(coords, input_shape):
+def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     """
     Optimized generation of sparse interpolation matrix.
+
+    Parameters
+    ----------
+    coords : ndarray, shape (2, N_total)
+        Stacked (row_coords, col_coords) into the input grid.
+    input_shape : tuple (H, W)
+        Shape of the source detector grid.
+    valid_row_mask : ndarray of bool, shape (N_total,), optional
+        If provided, rows where this mask is False are skipped entirely:
+        no (row, col, data) entries are added to the COO output for them.
+        The output matrix still has shape (N_total, H*W) so callers see the
+        same indexing — only the structural nonzero rows differ. For rows
+        the mask keeps, the matrix entries are byte-identical to the
+        ``valid_row_mask=None`` build. Intended use is callers (e.g.
+        ``_prep_subframe``) that know a priori certain rows have zero
+        downstream weight (``sub_weight=0``) and can be omitted without
+        changing any final result.
     """
     # Coords = (y_coords, x_coords)
     H, W = input_shape
-    N_total = coords.shape[1] 
+    N_total = coords.shape[1]
 
     # 1. Identify valid inputs (removing NaNs)
     # np.isfinite is generally slightly faster than ~np.isnan
     valid_mask = np.isfinite(coords[0]) & np.isfinite(coords[1])
+    if valid_row_mask is not None:
+        # Caller-supplied row filter: drop rows whose downstream sub_weight
+        # will be zero anyway. The kept set is a (strict) subset of the
+        # finite-coord set; for kept rows the produced matrix entries are
+        # bit-identical to the unfiltered build.
+        valid_mask &= valid_row_mask
     valid_idxs = np.where(valid_mask)[0] # Indices in original array
-    
+
     # Filter coordinates immediately
     row_coords = coords[0][valid_mask]
     col_coords = coords[1][valid_mask]
