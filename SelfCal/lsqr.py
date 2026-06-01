@@ -86,8 +86,17 @@ def _prep_lsqr(task_params):
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
         for m in range(K):
             cc_m = chunk_contribs[m]
-            chunk_idx_m, sub_idx_m = cc_m[:, sub_pix_indices].nonzero()
-            chunk_vals_m = cc_m[:, sub_pix_indices][(chunk_idx_m, sub_idx_m)].A[0]
+            # Slice the chunk-contrib columns for the valid pixels ONCE, then
+            # derive (chunk_idx, sub_idx, vals) from that single COO object.
+            # The previous code built cc_m[:, sub_pix_indices] twice (once for
+            # .nonzero(), once for .A[0] value extraction). Filtering tocoo() to
+            # numerically-nonzero entries reproduces .nonzero()'s exact set, so
+            # the assembled matrix is bit-identical.
+            sliced_m = cc_m[:, sub_pix_indices].tocoo()
+            nz_m = sliced_m.data != 0
+            chunk_idx_m = sliced_m.row[nz_m]
+            sub_idx_m = sliced_m.col[nz_m]
+            chunk_vals_m = sliced_m.data[nz_m]
             O_rows_parts.append(sub_idx_m)
             if det_template_list[m] is not None:
                 # Template mode: one alpha column per frame for this map

@@ -219,19 +219,42 @@ def chunk_to_det(chunk_map, chunk_data):
     det_offset = chunk_data[chunk_map]
     return det_offset
 
-def make_linear_interp_matrix(coords, input_shape):
+def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     """
     Optimized generation of sparse interpolation matrix.
+
+    Parameters
+    ----------
+    coords : ndarray, shape (2, N_total)
+        Stacked (row_coords, col_coords) into the input grid.
+    input_shape : tuple (H, W)
+        Shape of the source detector grid.
+    valid_row_mask : ndarray of bool, shape (N_total,), optional
+        If provided, rows where this mask is False are skipped entirely:
+        no (row, col, data) entries are added to the COO output for them.
+        The output matrix still has shape (N_total, H*W) so callers see the
+        same indexing — only the structural nonzero rows differ. For rows
+        the mask keeps, the matrix entries are byte-identical to the
+        ``valid_row_mask=None`` build. Intended use is callers (e.g.
+        ``_prep_subframe``) that know a priori certain rows have zero
+        downstream weight (``sub_weight=0``) and can be omitted without
+        changing any final result.
     """
     # Coords = (y_coords, x_coords)
     H, W = input_shape
-    N_total = coords.shape[1] 
+    N_total = coords.shape[1]
 
     # 1. Identify valid inputs (removing NaNs)
     # np.isfinite is generally slightly faster than ~np.isnan
     valid_mask = np.isfinite(coords[0]) & np.isfinite(coords[1])
+    if valid_row_mask is not None:
+        # Caller-supplied row filter: drop rows whose downstream sub_weight
+        # will be zero anyway. The kept set is a (strict) subset of the
+        # finite-coord set; for kept rows the produced matrix entries are
+        # bit-identical to the unfiltered build.
+        valid_mask &= valid_row_mask
     valid_idxs = np.where(valid_mask)[0] # Indices in original array
-    
+
     # Filter coordinates immediately
     row_coords = coords[0][valid_mask]
     col_coords = coords[1][valid_mask]
@@ -320,17 +343,42 @@ def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
         raise ValueError("Either sub_mapping or interp_matrix must be provided.")
     return sub_data
 
-def compute_chunk_contrib(chunk_map, interp_matrix=None):
-    """Computes the sparse matrix contribution for LSQR."""
+_chunk_map_parsed_cache = {}
+
+
+def _parse_chunk_map(chunk_map):
+    """One-hot CSR ``(n_pixels, n_chunks)`` for a chunk map.
+
+    Depends only on ``chunk_map`` (constant across every frame in a batch), so
+    it is memoized by object identity. The cached entry also holds a reference
+    to the source array: that keeps its ``id`` valid (so a different array can
+    never alias a live cache key) and the ``is`` re-check makes a stale hit
+    impossible. The cache is bounded since only a handful of distinct maps
+    ever appear. Result is a pure function of ``chunk_map``, so reuse is
+    bit-identical to rebuilding.
+    """
+    key = id(chunk_map)
+    entry = _chunk_map_parsed_cache.get(key)
+    if entry is not None and entry[0] is chunk_map:
+        return entry[1]
+
     chunk_map_flat = chunk_map.ravel()
     total_rows = chunk_map_flat.size
     total_cols = chunk_map_flat.max() + 1
-
     indptr = np.arange(total_rows + 1)
     indices = chunk_map_flat
     data = np.ones(total_rows, dtype=np.float32)
-
     chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
+
+    if len(_chunk_map_parsed_cache) > 8:
+        _chunk_map_parsed_cache.clear()
+    _chunk_map_parsed_cache[key] = (chunk_map, chunk_map_parsed)
+    return chunk_map_parsed
+
+
+def compute_chunk_contrib(chunk_map, interp_matrix=None):
+    """Computes the sparse matrix contribution for LSQR."""
+    chunk_map_parsed = _parse_chunk_map(chunk_map)
     if interp_matrix is not None:
         chunk_contrib = (interp_matrix @ chunk_map_parsed).T
         return chunk_contrib

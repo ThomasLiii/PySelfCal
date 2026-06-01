@@ -1,6 +1,7 @@
 """Shared subframe preparation logic used by both coadd and LSQR pipelines."""
 
 import numpy as np
+from scipy.ndimage import map_coordinates
 
 from .io import load_reproj_file
 from .MapHelper import (bit_to_bool, make_weight, make_linear_interp_matrix,
@@ -105,7 +106,31 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                 "to infer the detector-grid shape from.")
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
-        interp_matrix = make_linear_interp_matrix(sub_mapping_flat_scaled[::-1], input_shape=interp_input_shape)
+        # Row-slice-first: when grid_valid_weight is available, pre-filter
+        # the rows whose bilinear sample of grid_valid_weight is zero (i.e.
+        # whose downstream sub_weight will be zero anyway). For narrow
+        # channel masks this drops ~70-90 % of rows that the current code
+        # builds and then multiplies by zero. map_coordinates with
+        # order=1, mode='constant', cval=0.0 is the exact bilinear sampler
+        # that the interp matrix implements, so dropped rows are guaranteed
+        # to be zero-contribution. coords are (row_coords, col_coords);
+        # map_coordinates wants (row_coords, col_coords) too — we pass them
+        # directly. Out-of-bounds and NaN coords both map to 0 (NaN comes
+        # out as NaN, but isfinite check guards that).
+        valid_row_mask = None
+        if grid_valid_weight is not None:
+            coords_for_filter = sub_mapping_flat_scaled[::-1]
+            sample = map_coordinates(
+                grid_valid_weight,
+                coords_for_filter,
+                order=1, mode='constant', cval=0.0,
+            )
+            valid_row_mask = np.isfinite(sample) & (sample > 0)
+        interp_matrix = make_linear_interp_matrix(
+            sub_mapping_flat_scaled[::-1],
+            input_shape=interp_input_shape,
+            valid_row_mask=valid_row_mask,
+        )
 
     # Apply per-map chunk offsets (mosaic path).
     # Per-map grid offsets are accumulated, then a single det_to_sub call
