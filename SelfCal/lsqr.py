@@ -767,20 +767,21 @@ def _make_parallel_operator(A_csr, n_threads):
     AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
 
     executor = ThreadPoolExecutor(max_workers=n_threads)
-    mv_out = np.empty(m, dtype=A_csr.dtype)
-    rmv_out = np.empty(n, dtype=A_csr.dtype)
+    dtype = A_csr.dtype
 
     def _matvec(x):
+        out = np.empty(m, dtype=dtype)
         def _work(i):
-            mv_out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
+            out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
         list(executor.map(_work, range(n_threads)))
-        return mv_out.copy()
+        return out
 
     def _rmatvec(y):
+        out = np.empty(n, dtype=dtype)
         def _work(i):
-            rmv_out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
+            out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
         list(executor.map(_work, range(n_threads)))
-        return rmv_out.copy()
+        return out
 
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
     op._executor = executor
