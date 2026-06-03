@@ -302,7 +302,7 @@ def setup_lsqr(file_list, ref_shape,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
                use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
-               weighted_damping=False, damp_weight=0.1):
+               weighted_damping=False, damp_weight=0.1, damp_offset=0.0):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
@@ -697,6 +697,35 @@ def setup_lsqr(file_list, ref_shape,
             all_b.append(b_damp)
 
             total_rows += num_damp_constraints
+
+    # --- COVERAGE-WEIGHTED OFFSET DAMPING ---
+    # Mirrors the sky-damping pattern onto the offset block. Each offset column
+    # with nonzero coverage gets a row sqrt(damp_offset * cov) * o = 0, adding
+    # an L2 penalty damp_offset * cov * o^2. This breaks the sky <-> offset
+    # null-space preference that lets spatially-correlated bright structure
+    # (e.g. PAH cirrus) flow into per-(frame, chunk) offsets and produce a
+    # bowl-around-cirrus artifact at coadd time. Scalar columns are excluded.
+    if damp_offset > 0:
+        print(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
+
+        n_offset_cols = scalar_col_start - num_sky
+        offset_block_coverage = offset_pixel_counts[:n_offset_cols]
+        valid_offset_indices = np.nonzero(offset_block_coverage)[0]
+
+        if len(valid_offset_indices) > 0:
+            damp_values_off = np.sqrt(damp_offset * offset_block_coverage[valid_offset_indices])
+            num_off_damp = len(valid_offset_indices)
+
+            damp_rows_off = total_rows + np.arange(num_off_damp)
+            damp_cols_off = valid_offset_indices + num_sky
+            b_damp_off = np.zeros(num_off_damp)
+
+            all_rows.append(damp_rows_off)
+            all_cols.append(damp_cols_off)
+            all_data.append(damp_values_off)
+            all_b.append(b_damp_off)
+
+            total_rows += num_off_damp
 
     # --- FINAL SPARSE MATRIX CONSTRUCTION ---
     # One final concatenation of the main data + new constraints
