@@ -45,11 +45,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DET_COLORS = {1: 'tab:purple', 2: 'tab:olive',
+DET_COLORS = {1: 'tab:purple', 2: 'tab:orange',
               3: 'tab:green', 4: 'tab:blue', 5: 'tab:red'}
-DET_BOUNDARIES_UM = (2.42, 3.81)
+# D1|D2 boundary is ~1.107 um (bands overlap slightly), D2|D3 ~1.65 um,
+# D3|D4 = 2.42 um, D4|D5 = 3.81 um.
+DET_BOUNDARIES_UM = (1.107, 1.65, 2.42, 3.81)
 
 DEFAULT_FEATURES = [
+    (0.8446, 'OI 8446 (airglow)'),
+    (1.083, 'He I 1083 (airglow)'),
     (2.058, 'He I'),
     (2.166, 'Br gamma'),
     (2.30, 'CO band'),

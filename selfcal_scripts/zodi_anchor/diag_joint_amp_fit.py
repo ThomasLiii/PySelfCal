@@ -42,9 +42,12 @@ from SelfCal.ZodiAnchor import compute_full_dc, load_anchor
 
 # Detector color map (matches the convention used in the cross-channel
 # overlay plots).
-DET_COLORS = {3: 'tab:green', 4: 'tab:blue', 5: 'tab:red'}
+DET_COLORS = {1: 'tab:purple', 2: 'tab:orange',
+              3: 'tab:green', 4: 'tab:blue', 5: 'tab:red'}
 # Detector wavelength boundaries to mark on the spectrum (um).
-DET_BOUNDARIES_UM = (2.42, 3.81)
+# D1|D2 boundary is ~1.107 um (bands overlap slightly), D2|D3 ~1.65 um,
+# D3|D4 = 2.42 um, D4|D5 = 3.81 um.
+DET_BOUNDARIES_UM = (1.107, 1.65, 2.42, 3.81)
 
 
 def parse_args():
@@ -146,6 +149,10 @@ def joint_amp_fit(FDC, ZP, sigma=3.0, n_iter=2):
     Y = FDC - ZP  # so Y = amp * ZP + C_c
 
     finite = np.isfinite(Y) & np.isfinite(ZP)
+    # Replace non-finite entries with 0 so that masked sums don't propagate
+    # NaN. The inlier weight matrix w (below) gates which cells contribute.
+    Y_safe = np.where(finite, Y, 0.0)
+    ZP_safe = np.where(finite, ZP, 0.0)
     inlier = finite.copy()
 
     amp = 0.0
@@ -163,17 +170,21 @@ def joint_amp_fit(FDC, ZP, sigma=3.0, n_iter=2):
         muZP = np.full(Y.shape[1], np.nan)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            muY[safe] = (Y * w).sum(axis=0)[safe] / n_per_ch[safe]
-            muZP[safe] = (ZP * w).sum(axis=0)[safe] / n_per_ch[safe]
-        Yc = Y - muY[None, :]
-        ZPc = ZP - muZP[None, :]
+            muY[safe] = (Y_safe * w).sum(axis=0)[safe] / n_per_ch[safe]
+            muZP[safe] = (ZP_safe * w).sum(axis=0)[safe] / n_per_ch[safe]
+        # For centered terms, fill the unsafe channels with 0 to avoid NaN
+        # propagation; their w==0 rows zero them anyway.
+        muY_filled = np.where(safe, muY, 0.0)
+        muZP_filled = np.where(safe, muZP, 0.0)
+        Yc = (Y_safe - muY_filled[None, :])
+        ZPc = (ZP_safe - muZP_filled[None, :])
         # amp = sum_inlier(ZPc * Yc) / sum_inlier(ZPc^2). Mask via w.
         num = (ZPc * Yc * w).sum()
         den = (ZPc * ZPc * w).sum()
         amp = float(num / den) if den > 0 else 0.0
         C = muY - amp * muZP
 
-        resid = Y - amp * ZP - C[None, :]
+        resid = Y_safe - amp * ZP_safe - np.where(safe, C, 0.0)[None, :]
         # Per-channel sigma-clip on residuals.
         new_inlier = finite.copy()
         for c in range(Y.shape[1]):
