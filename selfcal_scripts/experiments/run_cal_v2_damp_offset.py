@@ -136,8 +136,7 @@ if __name__ == "__main__":
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
-        # damp_offset reverted to default 0 — apply_weight is the actual root-cause fix.
-        # mean_anchor_coverage_weighted reverted to default False — uniform anchor + restored mean_offsets_list=[zeros] below.
+        # damp_offset reverted to 0 — hybrid test (apply_weight + damp_offset=0.1) was WORSE than applyWt alone (cirrus dark_spread widened further, dark-ring re-emerged). The two levers aren't orthogonal — both reweight toward bright/well-covered chunks. See aromatic-map-tuning session.
         'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
