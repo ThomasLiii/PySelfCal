@@ -462,7 +462,9 @@ class Calibrator(Reprojector):
                    use_per_frame_scalar=False,
                    postprocess_func=None, preprocess_func=None,
                    weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
-                   det_aux=None):
+                   det_aux=None,
+                   spectral_fit=False, line_center=None, line_sigma=None,
+                   damp_weight_line=None):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
@@ -519,7 +521,13 @@ class Calibrator(Reprojector):
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
-                damp_offset=damp_offset, det_aux=det_aux)
+                damp_offset=damp_offset, det_aux=det_aux,
+                spectral_fit=spectral_fit, line_center=line_center,
+                line_sigma=line_sigma, damp_weight_line=damp_weight_line)
+
+        # Track sky-block count so parse_x / save_calibration / get_skymap
+        # all know whether to expect a continuum-only or continuum+line layout.
+        self.num_sky_blocks = 2 if spectral_fit else 1
 
         # Mirror the layout setup_lsqr computed so parse_x / save_calibration
         # don't have to recompute frame_to_group, col_bases, etc.
@@ -533,7 +541,7 @@ class Calibrator(Reprojector):
         num_offset_groups_list = []
         num_chunks_list = []
         det_template_arr_list = []
-        col_bases = [num_sky]
+        col_bases = [self.num_sky_blocks * num_sky]
         for m in range(K):
             cm = chunk_maps[m]
             num_chunks_m = int(cm.max()) + 1
@@ -582,13 +590,16 @@ class Calibrator(Reprojector):
 
     def load_calibration(self, cal_path=None):
         """Load a saved calibration (dual schema: legacy top-level ``offset``
-        or new ``offsets/map_m`` group)."""
+        or new ``offsets/map_m`` group). Loads the optional ``skymap_line``
+        block (spectral_fit mode) when present."""
         if cal_path is None:
             cal_path = os.path.join(self.config.cal_dir, 'cal.h5')
         num_frames = len(self.reproj_list)
         num_sky = self.ref_shape[0] * self.ref_shape[1]
         with h5py.File(cal_path, 'r') as f:
             skymap = f['skymap'][:]
+            self.num_sky_blocks = int(f.attrs.get('num_sky_blocks', 1))
+            skymap_line = f['skymap_line'][:] if 'skymap_line' in f else None
             if 'offsets' in f:
                 K = int(f.attrs.get('num_maps', len(f['offsets'])))
                 offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
@@ -601,7 +612,10 @@ class Calibrator(Reprojector):
                 frame_scalar = None
         # Rebuild self.x assuming saved offsets are already per-frame expanded
         # (which is what save_calibration writes for both schemas).
-        parts = [skymap.flatten()] + [o.flatten() for o in offsets]
+        if self.num_sky_blocks == 2 and skymap_line is not None:
+            parts = [skymap.flatten(), skymap_line.flatten()] + [o.flatten() for o in offsets]
+        else:
+            parts = [skymap.flatten()] + [o.flatten() for o in offsets]
         if frame_scalar is not None:
             parts.append(frame_scalar.flatten())
         self.x = np.concatenate(parts)
@@ -613,7 +627,7 @@ class Calibrator(Reprojector):
         self.num_chunks_list = [int(o.shape[1]) for o in offsets]
         self.det_templates = [None] * K
         self.num_scalar_cols = num_frames if frame_scalar is not None else 0
-        self.col_bases = [num_sky]
+        self.col_bases = [self.num_sky_blocks * num_sky]
         for nc in self.num_chunks_list:
             self.col_bases.append(self.col_bases[-1] + num_frames * nc)
 
@@ -654,16 +668,28 @@ class Calibrator(Reprojector):
         num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
 
-        skymap, det_offsets, frame_scalar = MakeMap.parse_x(
+        parsed = MakeMap.parse_x(
             self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None)
+            num_frames=num_frames if self._has_scalars() else None,
+            num_sky_blocks=self.num_sky_blocks)
+        if self.num_sky_blocks == 2:
+            skymap, skymap_line, det_offsets, frame_scalar = parsed
+        else:
+            skymap, det_offsets, frame_scalar = parsed
+            skymap_line = None
 
-        skymap_coverage, offset_coverages_layout, offset_valid_fracs_layout = MakeMap.parse_pixel_counts(
+        parsed_pc = MakeMap.parse_pixel_counts(
             pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
-            chunk_maps=self.chunk_maps)
+            chunk_maps=self.chunk_maps,
+            num_sky_blocks=self.num_sky_blocks)
+        if self.num_sky_blocks == 2:
+            skymap_coverage, skymap_line_coverage, offset_coverages_layout, offset_valid_fracs_layout = parsed_pc
+        else:
+            skymap_coverage, offset_coverages_layout, offset_valid_fracs_layout = parsed_pc
+            skymap_line_coverage = None
 
         expanded_offsets = []
         map_coverages = []
@@ -686,8 +712,14 @@ class Calibrator(Reprojector):
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
             f.attrs['num_maps'] = K
+            f.attrs['num_sky_blocks'] = self.num_sky_blocks
             f.create_dataset('skymap', data=skymap, compression='gzip')
             f.create_dataset('skymap_coverage', data=skymap_coverage, compression='gzip')
+            if self.num_sky_blocks == 2:
+                # Spectral-fit mode: store the PAH 3.29 μm line amplitude map
+                # at the file root alongside the continuum skymap. Same shape.
+                f.create_dataset('skymap_line', data=skymap_line, compression='gzip')
+                f.create_dataset('skymap_line_coverage', data=skymap_line_coverage, compression='gzip')
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')
@@ -703,13 +735,32 @@ class Calibrator(Reprojector):
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
-    def get_skymap(self):
+    def _parse_x_helper(self):
+        """Run parse_x with the right num_sky_blocks, return (skymap, skymap_line, det_offsets, frame_scalar).
+
+        ``skymap_line`` is None for legacy single-block mode.
+        """
         num_frames = len(self.reproj_list)
-        skymap, _, _ = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
+        parsed = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None)
+            num_frames=num_frames if self._has_scalars() else None,
+            num_sky_blocks=self.num_sky_blocks)
+        if self.num_sky_blocks == 2:
+            skymap, skymap_line, det_offsets, frame_scalar = parsed
+        else:
+            skymap, det_offsets, frame_scalar = parsed
+            skymap_line = None
+        return skymap, skymap_line, det_offsets, frame_scalar
+
+    def get_skymap(self):
+        skymap, _line, _o, _s = self._parse_x_helper()
         return skymap
+
+    def get_skymap_line(self):
+        """Return the line-amplitude sky map (spectral_fit only); None otherwise."""
+        _c, skymap_line, _o, _s = self._parse_x_helper()
+        return skymap_line
 
     def get_offsets(self):
         """Return per-frame expanded offsets, one ndarray per chunk map.
@@ -718,11 +769,7 @@ class Calibrator(Reprojector):
         matching the legacy K=1 behavior — analysis code that subtracts a
         single ``offset`` array against the data sees the same total bias.
         """
-        num_frames = len(self.reproj_list)
-        _, det_offsets, frame_scalar = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
-            num_offset_groups_list=self.num_offset_groups_list,
-            num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None)
+        _c, _line, det_offsets, frame_scalar = self._parse_x_helper()
         out = []
         for m in range(len(self.chunk_maps)):
             scalar = frame_scalar if m == 0 else None
@@ -741,11 +788,7 @@ class Calibrator(Reprojector):
         if self.det_templates[m] is not None:
             raise ValueError("get_det_offset() not available in template mode. "
                              "Run in locked-offset mode (det_groups only) first.")
-        num_frames = len(self.reproj_list)
-        _, det_offsets, _ = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
-            num_offset_groups_list=self.num_offset_groups_list,
-            num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None)
+        _c, _line, det_offsets, _s = self._parse_x_helper()
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):

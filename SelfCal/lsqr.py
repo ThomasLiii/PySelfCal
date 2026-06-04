@@ -78,9 +78,40 @@ def _prep_lsqr(task_params):
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
-        S_rows = np.arange(num_valid_pixels)
-        S_cols = ref_pix_indices
-        S_data = valid_weight
+        num_sky_blocks = task_params.get('num_sky_blocks', 1)
+        if num_sky_blocks == 2:
+            # Spectral-fit mode: emit two sky nnz per data row. First nnz at
+            # column P (sky_cont) with coefficient w_i; second at column
+            # num_sky + P (sky_line) with coefficient w_i * G(λ_i).
+            # λ_i = sub_BC[valid_sub_coords] from det_aux=[BC_map].
+            # If det_aux includes BW_map, use per-pixel σ; else scalar σ.
+            line_center = task_params['line_center']
+            line_sigma_scalar = task_params['line_sigma']
+            sub_BC = sub_aux[0]
+            lambda_per = sub_BC[valid_sub_coords]
+            if len(sub_aux) >= 2:
+                # Per-pixel σ = sqrt((sub_BW/2.355)² + PAH_intrinsic²)
+                # PAH_INTRINSIC_SIGMA_UM ≈ 0.0170 → 2.89e-4
+                sub_BW = sub_aux[1]
+                obs_sigma_per = sub_BW[valid_sub_coords] / 2.355
+                sigma_per = np.sqrt(obs_sigma_per * obs_sigma_per + 2.890e-4)
+            else:
+                sigma_per = line_sigma_scalar
+            G_per = np.exp(
+                -0.5 * ((lambda_per - line_center) / sigma_per) ** 2
+            ).astype(np.float32)
+
+            S_rows = np.repeat(np.arange(num_valid_pixels, dtype=np.int32), 2)
+            S_cols = np.empty(2 * num_valid_pixels, dtype=np.int64)
+            S_cols[0::2] = ref_pix_indices
+            S_cols[1::2] = num_sky + ref_pix_indices
+            S_data = np.empty(2 * num_valid_pixels, dtype=np.float32)
+            S_data[0::2] = valid_weight
+            S_data[1::2] = valid_weight * G_per
+        else:
+            S_rows = np.arange(num_valid_pixels)
+            S_cols = ref_pix_indices
+            S_data = valid_weight
 
         # --- Offset rows: one block per chunk map ---
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
@@ -315,7 +346,9 @@ def setup_lsqr(file_list, ref_shape,
                use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
-               det_aux=None):
+               det_aux=None,
+               spectral_fit=False, line_center=None, line_sigma=None,
+               damp_weight_line=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
@@ -438,6 +471,43 @@ def setup_lsqr(file_list, ref_shape,
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
 
+    # --- Spectral-fit mode: 2-block sky (continuum + line amplitude per pixel) ---
+    # When spectral_fit is True, the sky block grows from num_sky to 2*num_sky:
+    # x[:num_sky] is the continuum sky map, x[num_sky:2*num_sky] is the line
+    # amplitude map (PAH 3.29 μm by default). The data row for one observation
+    # of ref pixel P at LVF wavelength λ_i gains a second sky nnz:
+    #
+    #   data_i = w_i * (sky_cont[P] + G(λ_i) * sky_line[P]) + offsets + scalar
+    #
+    # where G(λ) is the Gaussian line profile (peak = 1 at line_center,
+    # sigma = line_sigma). λ_i is sampled per (frame, sub-pixel) via the
+    # det_aux plumbing: BC_map must be passed as det_aux[0]. Optionally
+    # det_aux[1] = BW_map gives per-pixel σ (mixed with PAH intrinsic).
+    num_sky_blocks = 2 if spectral_fit else 1
+    if spectral_fit:
+        from SelfCal.SPHERExUtility import (
+            PAH_LINE_CENTER_UM, LINE_SIGMA_UM,
+        )
+        if line_center is None:
+            line_center = PAH_LINE_CENTER_UM
+        if line_sigma is None:
+            line_sigma = LINE_SIGMA_UM
+        if damp_weight_line is None:
+            # Decoupled damping per the spectral-fit critique: line column has
+            # smaller average coefficient than the continuum column, so it
+            # needs ~3x more Tikhonov shrinkage at the same data S/N. Tune via
+            # damp_weight_line in the driver.
+            damp_weight_line = 3.0 * damp_weight
+        if det_aux is None or len(det_aux) < 1:
+            raise ValueError(
+                "spectral_fit=True requires det_aux=[BC_map] (or [BC_map, BW_map] "
+                "for per-pixel σ). Pass BC_map loaded from "
+                "SelfCal.SPHERExUtility.load_calibration(band=detector)."
+            )
+        print(f"Spectral-fit mode ON: 2x num_sky cols ({2*num_sky} total), "
+              f"line_center={line_center} μm, line_sigma={line_sigma:.5f} μm, "
+              f"damp_weight_line={damp_weight_line}.")
+
     # --- Per-map group mapping + template normalization ---
     frame_to_group_list = []
     num_offset_groups_list = []
@@ -473,7 +543,9 @@ def setup_lsqr(file_list, ref_shape,
     num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
 
     # --- col_bases: per-map offset-block column starts; col_bases[K] = scalar_col_start ---
-    col_bases = [num_sky]
+    # When spectral_fit, sky block is 2*num_sky; col_bases[0] tracks the first
+    # column AFTER the full sky block (regardless of how many sky sub-blocks).
+    col_bases = [num_sky_blocks * num_sky]
     for m in range(K):
         if det_template_arr_list[m] is not None:
             block = num_frames  # one alpha column per frame
@@ -513,6 +585,9 @@ def setup_lsqr(file_list, ref_shape,
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
+        'num_sky_blocks': num_sky_blocks,
+        'line_center': line_center,
+        'line_sigma': line_sigma,
     }
 
     # Move large arrays to shared memory so forked processes can access them
@@ -666,10 +741,17 @@ def setup_lsqr(file_list, ref_shape,
     total_rows = int(total_rows)
 
     # --- MEMORY OPTIMIZED: Calculate valid pixel fractions AND coverage map ---
-    # We access the combined columns via all_cols[0]
+    # We access the combined columns via all_cols[0].
+    # When spectral_fit, the sky block has 2*num_sky columns: continuum first,
+    # line amplitude second. Coverage of each sub-block is sliced separately.
     pixel_counts = np.bincount(all_cols[0], minlength=total_cols)
-    sky_pixel_counts = pixel_counts[:num_sky]
-    offset_pixel_counts = pixel_counts[num_sky:]
+    num_sky_eff = num_sky_blocks * num_sky
+    sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
+    if num_sky_blocks == 2:
+        line_pixel_counts = pixel_counts[num_sky:2*num_sky]         # line amplitude coverage
+    else:
+        line_pixel_counts = None
+    offset_pixel_counts = pixel_counts[num_sky_eff:]
 
     # --- ADD PER-FRAME TARGET MEAN CONSTRAINT ---
     # One block per chunk map; skipped for any map in template mode (its block
@@ -707,7 +789,7 @@ def setup_lsqr(file_list, ref_shape,
 
     # --- COVERAGE-WEIGHTED DAMPING ---
     if weighted_damping and damp_weight > 0:
-        print("Applying Coverage-Weighted Damping...")
+        print("Applying Coverage-Weighted Damping (continuum)...")
 
         valid_pixel_indices = np.nonzero(sky_pixel_counts)[0]
 
@@ -727,6 +809,29 @@ def setup_lsqr(file_list, ref_shape,
 
             total_rows += num_damp_constraints
 
+        # --- LINE-AMPLITUDE DAMPING (spectral_fit only) ---
+        # Decoupled from continuum damping per the spectral-fit critique. The
+        # line column has a per-row coefficient G(λ_i) ≪ 1 for off-peak
+        # observations, so its natural per-pixel constraint is weaker; we
+        # compensate with damp_weight_line ≥ damp_weight (default 3x).
+        if num_sky_blocks == 2 and damp_weight_line is not None and damp_weight_line > 0:
+            print(f"Applying Coverage-Weighted Damping (line, damp={damp_weight_line})...")
+            valid_line_indices = np.nonzero(line_pixel_counts)[0]
+            if len(valid_line_indices) > 0:
+                damp_values_l = np.sqrt(damp_weight_line * line_pixel_counts[valid_line_indices])
+                num_line_damp = len(valid_line_indices)
+
+                damp_rows_l = total_rows + np.arange(num_line_damp)
+                damp_cols_l = num_sky + valid_line_indices   # line block sits at [num_sky, 2*num_sky)
+                b_damp_l = np.zeros(num_line_damp)
+
+                all_rows.append(damp_rows_l)
+                all_cols.append(damp_cols_l)
+                all_data.append(damp_values_l)
+                all_b.append(b_damp_l)
+
+                total_rows += num_line_damp
+
     # --- COVERAGE-WEIGHTED OFFSET DAMPING ---
     # Mirrors the sky-damping pattern onto the offset block. Each offset column
     # with nonzero coverage gets a row sqrt(damp_offset * cov) * o = 0, adding
@@ -737,7 +842,7 @@ def setup_lsqr(file_list, ref_shape,
     if damp_offset > 0:
         print(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
 
-        n_offset_cols = scalar_col_start - num_sky
+        n_offset_cols = scalar_col_start - num_sky_eff
         offset_block_coverage = offset_pixel_counts[:n_offset_cols]
         valid_offset_indices = np.nonzero(offset_block_coverage)[0]
 
@@ -746,7 +851,7 @@ def setup_lsqr(file_list, ref_shape,
             num_off_damp = len(valid_offset_indices)
 
             damp_rows_off = total_rows + np.arange(num_off_damp)
-            damp_cols_off = valid_offset_indices + num_sky
+            damp_cols_off = valid_offset_indices + num_sky_eff
             b_damp_off = np.zeros(num_off_damp)
 
             all_rows.append(damp_rows_off)
@@ -767,12 +872,23 @@ def setup_lsqr(file_list, ref_shape,
     return full_A, full_b, pixel_counts
 
 
-def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps):
+def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
+                       num_sky_blocks=1):
     """Slice ``pixel_counts`` into per-block coverage arrays.
+
+    When ``num_sky_blocks=2`` (spectral_fit mode), the returned
+    ``skymap_coverage`` is the *continuum* block's coverage and an additional
+    ``line_coverage`` ndarray is returned as the second element. The slicing
+    boundary between sky and offset blocks shifts to ``num_sky_blocks*num_sky``.
 
     Returns
     -------
     skymap_coverage : np.ndarray
+        Continuum sky-block coverage, shape ref_shape.
+    line_coverage : np.ndarray or None
+        Line-amplitude block coverage when num_sky_blocks==2, else None.
+        Same value as skymap_coverage in expectation (one row → one count per
+        block), but kept separate for symmetry with the parse_x API.
     offset_coverages : list of np.ndarray
         One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
     offset_valid_fracs : list of np.ndarray
@@ -780,10 +896,15 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_ma
     """
     num_sky = ref_shape[0] * ref_shape[1]
     skymap_coverage = pixel_counts[:num_sky].reshape(ref_shape)
+    if num_sky_blocks == 2:
+        line_coverage = pixel_counts[num_sky:2*num_sky].reshape(ref_shape)
+        cursor = 2 * num_sky
+    else:
+        line_coverage = None
+        cursor = num_sky
 
     offset_coverages = []
     offset_valid_fracs = []
-    cursor = num_sky
     for ng, cm in zip(num_offset_groups_list, chunk_maps):
         num_chunks = int(np.max(cm)) + 1
         block = ng * num_chunks
@@ -793,6 +914,8 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_ma
         offset_coverages.append(offset_coverage)
         offset_valid_fracs.append(offset_valid_frac)
         cursor += block
+    if num_sky_blocks == 2:
+        return skymap_coverage, line_coverage, offset_coverages, offset_valid_fracs
     return skymap_coverage, offset_coverages, offset_valid_fracs
 
 def _partition_csr(A, n_blocks):
