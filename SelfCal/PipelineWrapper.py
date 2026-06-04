@@ -461,7 +461,8 @@ class Calibrator(Reprojector):
                    det_groups_list=None, det_templates=None,
                    use_per_frame_scalar=False,
                    postprocess_func=None, preprocess_func=None,
-                   weighted_damping=False, damp_weight=0.1, damp_offset=0.0):
+                   weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
+                   det_aux=None):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
@@ -518,7 +519,7 @@ class Calibrator(Reprojector):
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
-                damp_offset=damp_offset)
+                damp_offset=damp_offset, det_aux=det_aux)
 
         # Mirror the layout setup_lsqr computed so parse_x / save_calibration
         # don't have to recompute frame_to_group, col_bases, etc.

@@ -43,12 +43,12 @@ def _prep_lsqr(task_params):
 
     try:
         # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
-        ref_coords, sub_data, sub_weight, chunk_contribs, _ = _prep_subframe(
+        ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux = _prep_subframe(
             file=reproj_file,
             chunk_offsets=None,
             for_lsqr=True,
             det_offset_funcs=None,
-            det_aux=None,
+            det_aux=task_params.get('det_aux'),
             chunk_maps=chunk_maps,
             apply_weight=task_params['apply_weight'],
             apply_mask=task_params['apply_mask'],
@@ -227,6 +227,18 @@ def _prep_lsqr_batch_worker(batch_params):
                 shm_handles.append(shm)
         shm_arrays['chunk_maps'] = chunk_maps
 
+    # det_aux: list of detector-grid float arrays (e.g. [BC_map, BW_map] for
+    # spectral-fit mode). Reconstructed from SHM mirroring chunk_maps_meta.
+    det_aux_metas = sub_tasks[0].get('det_aux_metas')
+    if det_aux_metas is not None:
+        det_aux = []
+        for meta in det_aux_metas:
+            name, shape, dtype = meta
+            shm = SharedMemory(name=name)
+            det_aux.append(np.ndarray(shape, dtype=dtype, buffer=shm.buf))
+            shm_handles.append(shm)
+        shm_arrays['det_aux'] = det_aux
+
     if 'gvw_shm_name' in sub_tasks[0]:
         shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])
         shm_arrays['grid_valid_weight'] = np.ndarray(sub_tasks[0]['gvw_shape'], dtype=sub_tasks[0]['gvw_dtype'], buffer=shm_gvw.buf)
@@ -302,7 +314,8 @@ def setup_lsqr(file_list, ref_shape,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
                use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
-               weighted_damping=False, damp_weight=0.1, damp_offset=0.0):
+               weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
+               det_aux=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
@@ -515,6 +528,22 @@ def setup_lsqr(file_list, ref_shape,
             chunk_maps_meta.append((shm_cm.name, cm.shape, cm.dtype))
         common_params['chunk_maps_meta'] = chunk_maps_meta
         common_params['chunk_maps'] = None  # populated by worker from SHM
+
+    if det_aux is not None:
+        # Pack each detector-grid array into SHM. Workers reconstruct via
+        # det_aux_metas. Mirrors the chunk_maps_meta pattern above. Used by
+        # spectral-fit mode to expose BC_map (and optionally BW_map) at row
+        # assembly time so the line-amplitude column coefficient can be
+        # evaluated per sub-pixel.
+        det_aux_metas = []
+        for arr in det_aux:
+            arr_f32 = np.ascontiguousarray(arr, dtype=np.float32)
+            shm_da = SharedMemory(create=True, size=arr_f32.nbytes)
+            np.ndarray(arr_f32.shape, dtype=arr_f32.dtype, buffer=shm_da.buf)[:] = arr_f32
+            shm_objects.append(shm_da)
+            det_aux_metas.append((shm_da.name, arr_f32.shape, arr_f32.dtype))
+        common_params['det_aux_metas'] = det_aux_metas
+        common_params['det_aux'] = None  # populated by worker from SHM
 
     if grid_valid_weight is not None:
         shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)

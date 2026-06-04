@@ -32,6 +32,55 @@ def load_calibration(band, calibration_dir=DEFAULT_CALIBRATION_DIR):
     BW_map = fits.getdata(BW_files[0])
     return BC_map, BW_map
 
+
+# --- PAH 3.29 μm aromatic emission feature defaults ------------------------
+# Used by the per-pixel spectral-fit mode in setup_lsqr (sky block split into
+# continuum + line amplitude per ref pixel; line column coefficient is the
+# Gaussian profile evaluated at each observation's LVF wavelength).
+#
+# Line center: PAH 3.29 μm C-H stretch (Tokunaga 1991; Draine & Li 2007). Fixed
+# at 3.290 μm — appropriate for galactic cirrus, biased for extragalactic.
+# Intrinsic FWHM: ~30-40 nm from literature; we use 40 nm conservatively.
+# LVF FWHM: ~94 nm median at the 3.29 arc in Band 4 BW_map. The combined
+# observed sigma uses Gaussian-convolution-of-Gaussians: sigma_obs = sqrt(
+#   (LVF_FWHM/2.355)^2 + (intrinsic_FWHM/2.355)^2 ) ≈ 0.0434 μm.
+# For best fidelity callers should sample per-pixel BW_map and recompute
+# sigma_per_pixel = sqrt((sub_BW/2.355)^2 + PAH_INTRINSIC_SIGMA_UM^2); the
+# fixed defaults below are the fallback when BW_map is not threaded.
+PAH_LINE_CENTER_UM = 3.290
+PAH_INTRINSIC_FWHM_UM = 0.040
+PAH_INTRINSIC_SIGMA_UM = PAH_INTRINSIC_FWHM_UM / 2.355  # ≈ 0.0170 μm
+LVF_FWHM_AT_PAH_UM = 0.0942  # Band 4 BW_map median where BC ∈ [3.27, 3.31]
+LINE_FWHM_UM = float(np.sqrt(LVF_FWHM_AT_PAH_UM**2 + PAH_INTRINSIC_FWHM_UM**2))  # ≈ 0.1023
+LINE_SIGMA_UM = LINE_FWHM_UM / 2.355  # ≈ 0.0434 μm
+
+
+def gaussian_line_profile(wave_um, center_um=PAH_LINE_CENTER_UM, sigma_um=LINE_SIGMA_UM):
+    """Gaussian line profile, peak = 1 at wave_um = center_um.
+
+    Used as the LSQR sky_line column coefficient in spectral-fit mode:
+    each data row's sky_line entry is `valid_weight * gaussian_line_profile(λ_i)`,
+    where λ_i is the LVF band-center wavelength at the sub-pixel that frame k
+    sees ref pixel P through (sampled via BC_map[sub_mapping]).
+
+    Parameters
+    ----------
+    wave_um : np.ndarray
+        Per-pixel wavelengths in micrometers. May be scalar or any shape.
+    center_um : float
+        Line peak wavelength. Default PAH_LINE_CENTER_UM = 3.290 μm.
+    sigma_um : float | np.ndarray
+        Gaussian σ in μm. Default LINE_SIGMA_UM ≈ 0.0434 (LVF ⊕ PAH intrinsic).
+        Pass an array (same shape as wave_um) when using per-pixel σ from
+        BW_map for higher fidelity.
+
+    Returns
+    -------
+    np.ndarray of float32, same shape as wave_um.
+    """
+    return np.exp(-0.5 * ((wave_um - center_um) / sigma_um)**2).astype(np.float32)
+
+
 def extract_spherex_channel_edges(band, channel_file=DEFAULT_CHANNEL_FILE):
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
