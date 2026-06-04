@@ -62,18 +62,21 @@ def bool_to_bit(expanded_mask, dtype=np.uint32):
     
     return bitmask
 
-def make_weight(frame, sigma=1.4):
-    '''Make weight used for weighted mean'''
-    # inverse = 1/frame
-    # inverse[check_invalid(inverse)] = 0
-    # weight = gaussian_filter(inverse, sigma=sigma)
-    # filled_frame = np.nan_to_num(frame, nan=np.nanmedian(frame))
-    # convolved_frame = gaussian_filter(filled_frame, sigma=sigma) - frame
-    weight = 1.0 / (np.abs(frame**2))# + np.abs(convolved_frame * 4) + 0.1) ** 2
-    # abs_frame = np.abs(filled_frame)
-    # filling_value = np.nanpercentile(abs_frame[abs_frame>0], 1)
-    # abs_frame[abs_frame < filling_value] = filling_value
-    # weight = 1.0 / (abs_frame) ** 2
+def make_weight(frame, sigma=1.4, floor=1e-4):
+    '''Make weight used for weighted mean / weighted-LSQR.
+
+    Poisson-optimal inverse-variance weight: w = 1/sqrt(|frame| + floor).
+    Bright pixels get down-weighted ∝ 1/sqrt(brightness), so the per-row L2
+    contribution (∝ w²) is ∝ 1/brightness — matching shot-noise variance.
+
+    Previously this used 1/frame² (assumes variance ∝ brightness⁴, ~10000x
+    suppression at bright cirrus vs dim sky) which was too aggressive and
+    ill-conditioned the solve. The Poisson form keeps ~10x dynamic range
+    between dim and bright pixel weight, enough to break the sky→offset
+    leakage that causes bowl-around-cirrus without losing solve stability.
+    '''
+    abs_frame = np.abs(frame) + floor
+    weight = 1.0 / np.sqrt(abs_frame)
     return np.nan_to_num(weight, nan=0)
 
 def find_outliers(data, threshold=3):
