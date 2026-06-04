@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     calibration_kwargs = {
         'apply_mask': True,
-        'apply_weight': False,
+        'apply_weight': True,  # NEW: enable inverse-variance brightness weighting (1/sqrt(|data|+floor), Poisson-optimal). Bright cirrus pixels contribute ~10x less to the LSQR fit than dim sky → offsets are determined mostly from dim background → no sky-leakage into offsets → no bowl-around-cirrus at apply time. See fix/offset-damping branch (Option A).
         'outlier_thresh': 5.0,
         'ignore_list': [],
         'batch_size': 50,
@@ -136,7 +136,8 @@ if __name__ == "__main__":
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
-        'damp_offset': 0.1,  # Experimental: coverage-weighted offset damping (mirrors damp_weight). Breaks sky<->offset null-space preference that produces bowl-around-cirrus. See fix/offset-damping branch.
+        # damp_offset reverted to default 0 — apply_weight is the actual root-cause fix.
+        # mean_anchor_coverage_weighted reverted to default False — uniform anchor + restored mean_offsets_list=[zeros] below.
         'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
@@ -166,7 +167,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_dampOff0p1_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
@@ -256,7 +257,7 @@ if __name__ == "__main__":
                 oversample_factor=1,
                 adj_infos=[detector_inputs['adj_info']],
                 poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],
+                mean_offsets_list=[np.zeros(num_frames_run)],  # Restore anchor; with mean_anchor_coverage_weighted=True, the constraint is pinned to coverage-weighted mean (Option 2.5).
                 use_per_frame_scalar=True,
                 **calibration_kwargs
             )
@@ -325,7 +326,11 @@ if __name__ == "__main__":
         print(f"Finished channel {job_name} for detector {frame_setting['Detector']} in {time.time() - t0:.2f} seconds.")
         print("-" * 50 + "\n")
 
-    # Cleanup NVMe reproj cache
-    if os.path.exists(nvme_reproj_dir):
+    # Cleanup NVMe reproj cache (skip when iterating — set KEEP_NVME_CACHE
+    # to avoid re-staging 327 GB from HDD on every rerun)
+    KEEP_NVME_CACHE = True
+    if not KEEP_NVME_CACHE and os.path.exists(nvme_reproj_dir):
         shutil.rmtree(nvme_reproj_dir)
         print("NVMe reproj cache cleaned up.")
+    elif KEEP_NVME_CACHE and os.path.exists(nvme_reproj_dir):
+        print(f"NVMe reproj cache preserved at {nvme_reproj_dir} (KEEP_NVME_CACHE=True).")

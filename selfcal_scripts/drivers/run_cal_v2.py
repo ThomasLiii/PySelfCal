@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     calibration_kwargs = {
         'apply_mask': True,
-        'apply_weight': False,
+        'apply_weight': True,  # Poisson inverse-variance weighting (make_weight = 1/sqrt(|data|+floor)). Bright cirrus pixels contribute ~10x less to the LSQR fit than dim sky, so the offset block is determined mostly by dim background and PAH brightness flows into sky at apply — significantly reduces the bowl-around-cirrus artifact. See fix/offset-damping branch.
         'outlier_thresh': 5.0,
         'ignore_list': [],
         'batch_size': 50,
@@ -133,6 +133,10 @@ if __name__ == "__main__":
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
+        # 'damp_offset': 0.0 (default) — optional knob added in fix/offset-damping;
+        # mirrors damp_weight onto the offset block. Off by default; tested at 0.1
+        # showed bowl reduction but created a low-coverage dark-ring artifact, so
+        # apply_weight is preferred for production. Available for experimentation.
         'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
