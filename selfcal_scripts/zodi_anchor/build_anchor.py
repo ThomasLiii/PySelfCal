@@ -19,7 +19,7 @@ for atmospheric-contaminated detectors (D1 He I/OI; D2) — NOT D4/D5:
 
     python build_anchor.py --run-dir /mnt/.../D1_... --smooth
 
-See todo/zodi_anchor_refactor.md for the architecture.
+See workspace/zodi_anchor_refactor/refactor.md for the architecture.
 """
 import argparse
 import glob

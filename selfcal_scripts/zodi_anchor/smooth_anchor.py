@@ -21,7 +21,7 @@ consumers read slope_final / C_final).
     python smooth_anchor.py --run-dir /mnt/.../D1_...
 
 See SelfCal.ZodiAnchor.rweighted_slope_smooth for the core math and
-todo/zodi_anchor_refactor.md for context.
+workspace/zodi_anchor_refactor/refactor.md for context.
 """
 import argparse
 import glob

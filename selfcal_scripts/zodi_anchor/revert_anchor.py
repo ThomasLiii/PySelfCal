@@ -17,7 +17,7 @@ anchor markers are skipped silently.
 Historical migration tool: the current anchor is non-mutating (it writes
 <run>/zodi_anchor/anchor_D{N}.h5 and applies at read time), so nothing
 produces in-place anchored files anymore. Kept in case legacy files
-resurface (e.g. from backups). See todo/zodi_anchor_refactor.md.
+resurface (e.g. from backups). See workspace/zodi_anchor_refactor/refactor.md.
 
 Usage:
     python revert_anchor.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec

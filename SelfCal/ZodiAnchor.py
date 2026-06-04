@@ -185,7 +185,7 @@ def load_zodi_pred_npz(path, cal_reproj_list=None):
 # WITHOUT touching the cal/mosaic. Results are written to a per-detector
 # anchor file (anchor_D{N}.h5) by build_anchor.py. The consumer
 # (load_anchor / Anchor) applies the shift to arrays at read time so the
-# pipeline outputs stay pristine. See todo/zodi_anchor_refactor.md.
+# pipeline outputs stay pristine. See workspace/zodi_anchor_refactor/refactor.md.
 # ---------------------------------------------------------------------
 
 def file_sha1(path, _bufsize=1 << 20):
