@@ -443,6 +443,10 @@ class Calibrator(Reprojector):
         self.b = None
         self.x = None
         self.pixel_counts = None
+        self.pixel_fisher = None
+        # If set to a non-None float, save_calibration hard-masks skymap_line
+        # at pixels where line Fisher info < threshold. Default None disables.
+        self.line_fisher_threshold = None
         # Multi-chunk-map state — always lists, even at K=1.
         self.chunk_maps = []
         self.frame_to_groups = []
@@ -505,7 +509,7 @@ class Calibrator(Reprojector):
         _check_len('det_templates', det_templates)
 
         with timer("Setup LSQR"):
-            self.A, self.b, self.pixel_counts = MakeMap.setup_lsqr(
+            self.A, self.b, self.pixel_counts, self.pixel_fisher = MakeMap.setup_lsqr(
                 self.reproj_list, self.ref_shape,
                 chunk_maps=chunk_maps,
                 grid_valid_weight=grid_valid_weight,
@@ -691,6 +695,14 @@ class Calibrator(Reprojector):
             skymap_coverage, offset_coverages_layout, offset_valid_fracs_layout = parsed_pc
             skymap_line_coverage = None
 
+        if self.pixel_fisher is not None:
+            skymap_fisher, skymap_line_fisher = MakeMap.parse_pixel_fisher(
+                pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
+                num_sky_blocks=self.num_sky_blocks)
+        else:
+            skymap_fisher = None
+            skymap_line_fisher = None
+
         expanded_offsets = []
         map_coverages = []
         map_coverage_fracs = []
@@ -709,17 +721,41 @@ class Calibrator(Reprojector):
             map_coverages.append(cov_m)
             map_coverage_fracs.append(frac_m)
 
+        # Phase 6: hard-mask skymap_line at pixels where line Fisher info is
+        # below threshold. With damp_weight_line=0 the line block has no
+        # Tikhonov anchor for low-Fisher pixels, so they take arbitrary values;
+        # we zero them out here so they don't pollute the production map.
+        skymap_line_mask = None
+        if (self.num_sky_blocks == 2 and self.line_fisher_threshold is not None
+                and skymap_line is not None and skymap_line_fisher is not None):
+            skymap_line_mask = (skymap_line_fisher < float(self.line_fisher_threshold))
+            n_masked = int(skymap_line_mask.sum())
+            n_total = int(skymap_line_mask.size)
+            print(f"Phase 6: masking {n_masked}/{n_total} ({100.0*n_masked/n_total:.2f}%) line pixels with Fisher < {self.line_fisher_threshold}")
+            skymap_line = skymap_line.copy()  # avoid mutating the parse_x output in place
+            skymap_line[skymap_line_mask] = 0.0
+
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
             f.attrs['num_maps'] = K
             f.attrs['num_sky_blocks'] = self.num_sky_blocks
             f.create_dataset('skymap', data=skymap, compression='gzip')
             f.create_dataset('skymap_coverage', data=skymap_coverage, compression='gzip')
+            if skymap_fisher is not None:
+                f.create_dataset('skymap_fisher', data=skymap_fisher.astype('float32'),
+                                 compression='gzip')
             if self.num_sky_blocks == 2:
                 # Spectral-fit mode: store the PAH 3.29 μm line amplitude map
                 # at the file root alongside the continuum skymap. Same shape.
                 f.create_dataset('skymap_line', data=skymap_line, compression='gzip')
                 f.create_dataset('skymap_line_coverage', data=skymap_line_coverage, compression='gzip')
+                if skymap_line_fisher is not None:
+                    f.create_dataset('skymap_line_fisher', data=skymap_line_fisher.astype('float32'),
+                                     compression='gzip')
+                if skymap_line_mask is not None:
+                    f.create_dataset('skymap_line_mask', data=skymap_line_mask.astype('uint8'),
+                                     compression='gzip')
+                    f.attrs['line_fisher_threshold'] = float(self.line_fisher_threshold)
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')
@@ -805,6 +841,9 @@ class Mosaicker(Reprojector):
         self.cal_chunk_maps = []  # chunk_maps stored in the cal file (new schema only)
         self.skymap = None
         self.skymap_coverage = None
+        self.skymap_fisher = None
+        self.skymap_line_fisher = None
+        self.skymap_line_mask = None
         self.cal_path = None
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
@@ -825,6 +864,9 @@ class Mosaicker(Reprojector):
             self.skymap = f['skymap'][:]
             self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
             self.skymap_coverage = f['skymap_coverage'][:]
+            self.skymap_fisher = f['skymap_fisher'][:] if 'skymap_fisher' in f else None
+            self.skymap_line_fisher = f['skymap_line_fisher'][:] if 'skymap_line_fisher' in f else None
+            self.skymap_line_mask = f['skymap_line_mask'][:].astype(bool) if 'skymap_line_mask' in f else None
             if 'offsets' in f:
                 K = int(f.attrs.get('num_maps', len(f['offsets'])))
                 self.offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]

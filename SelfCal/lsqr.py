@@ -745,6 +745,15 @@ def setup_lsqr(file_list, ref_shape,
     # When spectral_fit, the sky block has 2*num_sky columns: continuum first,
     # line amplitude second. Coverage of each sub-block is sliced separately.
     pixel_counts = np.bincount(all_cols[0], minlength=total_cols)
+    # Per-pixel Fisher information: sum of squared sparse-matrix coefficients
+    # per column (data rows only — damping is added later). For the line block
+    # the column coefficient is w_i * G(λ_i), so sum(coefficient²) is the
+    # diagonal of (A.T @ A) restricted to data rows — the correct measure of
+    # per-pixel constraint strength, in contrast to pixel_counts which is the
+    # raw observation count and ignores the Gaussian profile.
+    pixel_fisher = np.bincount(all_cols[0],
+                               weights=all_data[0].astype(np.float64) ** 2,
+                               minlength=total_cols)
     num_sky_eff = num_sky_blocks * num_sky
     sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
     if num_sky_blocks == 2:
@@ -869,7 +878,7 @@ def setup_lsqr(file_list, ref_shape,
 
     full_b = np.concatenate(all_b)
 
-    return full_A, full_b, pixel_counts
+    return full_A, full_b, pixel_counts, pixel_fisher
 
 
 def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
@@ -917,6 +926,31 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_ma
     if num_sky_blocks == 2:
         return skymap_coverage, line_coverage, offset_coverages, offset_valid_fracs
     return skymap_coverage, offset_coverages, offset_valid_fracs
+
+
+def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
+    """Slice pixel_fisher into per-block Fisher arrays.
+
+    pixel_fisher is the sum-of-squared sparse-matrix coefficients per
+    column, computed over data rows only. For the line block the
+    coefficient is w_i * G(λ_i), so this is the correct per-pixel line
+    constraint metric. For the continuum block it equals sum(w_i^2).
+
+    Returns
+    -------
+    skymap_fisher : np.ndarray
+        Continuum sky-block Fisher info, shape ref_shape.
+    line_fisher : np.ndarray or None
+        Line-amplitude block Fisher info when num_sky_blocks==2, else None.
+    """
+    num_sky = ref_shape[0] * ref_shape[1]
+    skymap_fisher = pixel_fisher[:num_sky].reshape(ref_shape)
+    if num_sky_blocks == 2:
+        line_fisher = pixel_fisher[num_sky:2*num_sky].reshape(ref_shape)
+    else:
+        line_fisher = None
+    return skymap_fisher, line_fisher
+
 
 def _partition_csr(A, n_blocks):
     """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
