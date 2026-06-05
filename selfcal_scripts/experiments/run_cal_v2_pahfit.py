@@ -72,11 +72,16 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
         elif ch == 'Aliphatic':
             subch = np.arange(249, 260)
         elif ch == 'Aromatic_PAHfit':
-            # Wider 60-subchannel range centered on PAH 3.29 μm for the
-            # in-LSQR per-pixel continuum + line amplitude joint fit.
-            # ~269 nm window (3.157-3.426 μm) gives ±3σ around line for
-            # well-posed continuum-line decoupling (G(λ_edge) ≈ 0.008).
-            subch = np.arange(200, 260)
+            # 40-subchannel range centered on PAH 3.29 μm (subch 210-250,
+            # symmetric ±20 from peak at ~subch 230) for the in-LSQR per-pixel
+            # continuum + line amplitude joint fit. ±2σ around line, G(λ_edge)
+            # ≈ 0.135 — far-edge subch contribute negligibly to line Fisher
+            # info (G² ≈ 0.02) so dropping the outer 10 subch from each side
+            # cuts matrix memory by ~33% with minimal information loss.
+            # The original 60-subch window (200-260) OOM'd at production scale
+            # (17.6k frames × 60 subch × ~300k entries → 5B nonzeros, peaked
+            # ~700 GB during the apply_lsqr A^T transpose allocation).
+            subch = np.arange(210, 250)
         else:
             raise ValueError(f"Unknown channel tag {ch!r}")
         chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
@@ -179,7 +184,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
