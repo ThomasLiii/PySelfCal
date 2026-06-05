@@ -143,7 +143,10 @@ if __name__ == "__main__":
         'apply_mask': True,
         'apply_weight': True,  # Poisson inverse-variance weighting (production fix). Off-peak PAH pixels get less weight, breaking sky→offset leakage.
         'outlier_thresh': 5.0,
-        'ignore_list': [],
+        # drop source-mask bit (match mosaic); sources participate in LSQR for source-included spectral mosaic.
+        # Verified on cirrus 1k: doubles covered pixels, raises corr(sky_total,baseline) 0.58->0.91, sky_line uncontaminated.
+        # See memory project_pahfit_ignore_list_21.md.
+        'ignore_list': [21],
         'batch_size': 50,
         'offset_regularization': True,
         'reg_weights': [0.1],
@@ -184,7 +187,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
