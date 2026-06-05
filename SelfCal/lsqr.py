@@ -952,6 +952,36 @@ def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
     return skymap_fisher, line_fisher
 
 
+def apply_line_fisher_mask(sky_line, line_fisher, threshold):
+    """Apply Phase 6 Fisher mask at READ time: zero sky_line where Fisher < threshold.
+
+    Cals saved by Calibrator.save_calibration contain RAW sky_line (no
+    destructive mask) plus the per-pixel line Fisher info. The
+    line_fisher_threshold attribute (if present) is the recommended
+    threshold, but the analyst is free to pick their own.
+
+    Parameters
+    ----------
+    sky_line : np.ndarray
+        Raw skymap_line as saved (ref grid).
+    line_fisher : np.ndarray
+        Raw skymap_line_fisher as saved (same shape).
+    threshold : float
+        Fisher threshold; pixels with line_fisher < threshold are zeroed.
+
+    Returns
+    -------
+    sky_line_masked : np.ndarray
+        Copy of sky_line with low-Fisher pixels set to 0.
+    mask : np.ndarray of bool
+        Boolean mask (True where masked-out).
+    """
+    mask = line_fisher < float(threshold)
+    out = sky_line.copy()
+    out[mask] = 0.0
+    return out, mask
+
+
 def _partition_csr(A, n_blocks):
     """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
     n_rows = A.shape[0]

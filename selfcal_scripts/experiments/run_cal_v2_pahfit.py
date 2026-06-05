@@ -179,7 +179,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_fisher10_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
@@ -288,14 +288,17 @@ if __name__ == "__main__":
             )
 
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)
-            # Phase 6: hard-mask line block pixels where Fisher info < threshold.
-            # Empirically determined from cirrus 1k A3-with-Fisher sanity: Fisher
-            # distribution is bimodal — a noise tail at Fisher<10 (low-coverage /
-            # off-peak-dominated pixels that blow up without damping) and a main
-            # peak around Fisher~100-500 (well-constrained). Threshold=10 sits in
-            # the gap, masks ~6.5% of covered pixels at sanity scale, recovers
-            # corr(line, baseline)=+0.224 (vs +0.056 unmasked). Production has
-            # ~17x more frames so most pixels will be well above threshold.
+            # Phase 6 recommended Fisher mask threshold — saved as cal attr
+            # only; not destructively applied. Use
+            # ``SelfCal.MakeMap.apply_line_fisher_mask`` at analysis time to
+            # apply the mask. Empirically determined from cirrus 1k
+            # A3-with-Fisher sanity: Fisher distribution is bimodal — a noise
+            # tail at Fisher<10 (low-coverage / off-peak-dominated pixels that
+            # blow up without damping) and a main peak around Fisher~100-500
+            # (well-constrained). Threshold=10 sits in the gap, masks ~6.5% of
+            # covered pixels at sanity scale, recovers corr(line, baseline)
+            # =+0.224 (vs +0.056 unmasked). Production has ~17x more frames so
+            # most pixels will be well above threshold.
             cc.line_fisher_threshold = 10.0
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
             nvme_list = cc.reproj_list
