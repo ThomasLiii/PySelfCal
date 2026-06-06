@@ -348,7 +348,8 @@ def setup_lsqr(file_list, ref_shape,
                weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
                det_aux=None,
                spectral_fit=False, line_center=None, line_sigma=None,
-               damp_weight_line=None):
+               damp_weight_line=None,
+               top2_compaction_enabled=True):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
@@ -658,8 +659,6 @@ def setup_lsqr(file_list, ref_shape,
 
     print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
-    all_rows, all_cols, all_data, all_b = [], [], [], []
-
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated lazily on the first batch result. This replaces the
     # post-loop full-nnz bincount (which materialized a ~50 GB float64
@@ -676,18 +675,17 @@ def setup_lsqr(file_list, ref_shape,
         shm.unlink()
         return arr
 
-    # Per-batch results indexed by batch id. Pass 1 reads each completed
-    # future's SHM (and unlinks promptly to free OS resources) and slots the
-    # arrays here; pass 2 walks the slots in batch-id order to assign the
-    # cumulative row offsets and append to all_*. This makes the final row
-    # numbering deterministic (identical across runs given identical inputs),
-    # so the COO→CSR conversion produces a bit-identical matrix and
-    # LSQR / LSMR converge along the same path. ``as_completed`` previously
-    # assigned ``total_rows`` in completion order, which permuted rows in
-    # row-index space and changed the float32 reduction order in the
-    # transposed SpMV — that was the source of the ~1e-3 ULP noise we'd see
-    # in the regression diff against a fixed baseline.
+    # ----------------------------------------------------------------
+    # Phase 1: collate worker results.
+    #
+    # We retain each batch's (rows, cols, data, b) so Phase 4 can scatter
+    # them directly into the final CSR buffers in batch-id order. Per-batch
+    # we also accumulate row_nnz_per_batch[batch_id] = bincount(local_rows)
+    # so the CSR indptr can be built without re-touching every batch's row
+    # array. pixel_counts / pixel_fisher are accumulated as before (Top 3).
+    # ----------------------------------------------------------------
     batch_results = [None] * len(batched_tasks)
+    row_nnz_per_batch = [None] * len(batched_tasks)
     try:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
@@ -699,84 +697,62 @@ def setup_lsqr(file_list, ref_shape,
                     continue
                 shm_infos = result['shm']
                 batch_results[batch_id] = {
-                    'rows': _read_shm(shm_infos[0]).astype(np.int64),
+                    'rows': _read_shm(shm_infos[0]),         # local int32 row ids
                     'cols': _read_shm(shm_infos[1]),
                     'data': _read_shm(shm_infos[2]),
                     'b':    _read_shm(shm_infos[3]),
                     'num_rows': result['num_rows'],
                 }
-                # Per-batch streaming accumulation. Avoids holding a
-                # full-nnz float64 squared-data temp later. The per-batch
-                # bincount weights temp is batch-sized (~50-200 MB), not
-                # nnz-sized.
                 _b_cols = batch_results[batch_id]['cols']
                 _b_data = batch_results[batch_id]['data']
+                _b_rows = batch_results[batch_id]['rows']
+                # Per-batch streaming accumulation. Avoids holding a
+                # full-nnz float64 squared-data temp later.
                 pixel_counts += np.bincount(_b_cols, minlength=total_cols)
                 pixel_fisher += np.bincount(
                     _b_cols,
                     weights=_b_data.astype(np.float64) ** 2,
                     minlength=total_cols,
                 )
+                # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
+                # add the global row offset in Phase 3 (cumulative across
+                # batches). Keeping this batch-local is what lets Phase 4
+                # stream-scatter without revisiting all batches twice.
+                row_nnz_per_batch[batch_id] = np.bincount(
+                    _b_rows, minlength=result['num_rows']
+                ).astype(np.int32, copy=False)
     finally:
         for shm in shm_objects:
             shm.close()
             shm.unlink()
 
-    total_rows = 0
-    n_collected = 0
-    for batch_id in range(len(batch_results)):
+    # ----------------------------------------------------------------
+    # Phase 2: compute per-batch row offsets, total_rows_data, and the
+    # data-row half of row_nnz.
+    # ----------------------------------------------------------------
+    batch_row_starts = [0] * len(batched_tasks)
+    total_rows_data = 0
+    any_kept = False
+    for batch_id in range(len(batched_tasks)):
+        batch_row_starts[batch_id] = total_rows_data
         r = batch_results[batch_id]
         if r is None:
             continue
-        all_rows.append(r['rows'] + total_rows)
-        all_cols.append(r['cols'])
-        all_data.append(r['data'])
-        all_b.append(r['b'])
-        total_rows += r['num_rows']
-        # Drop our reference so per-batch arrays can be GC'd as we go
-        # (we own the only ones beyond all_*).
-        batch_results[batch_id] = None
-        # Consolidate periodically to avoid memory fragmentation.
-        n_collected += 1
-        if n_collected % 100 == 0:
-            all_rows = [np.concatenate(all_rows)]
-            all_cols = [np.concatenate(all_cols)]
-            all_data = [np.concatenate(all_data)]
-            all_b = [np.concatenate(all_b)]
+        any_kept = True
+        total_rows_data += r['num_rows']
 
-    if len(all_b) == 0:
+    if not any_kept:
         print("No valid data found in any subframe.")
         return None, None
 
-    # Overwrite the lists with a single concatenated array
-    # This prepares them for appending and lets us access the combined cols safely
-    all_rows = [np.concatenate(all_rows)]
-    all_cols = [np.concatenate(all_cols)]
-    all_data = [np.concatenate(all_data)]
-    all_b = [np.concatenate(all_b)]
+    # Ensure Python int to avoid numpy int32 overflow on big runs.
+    total_rows_data = int(total_rows_data)
 
-    # Ensure total_rows is a Python int to avoid numpy int32 overflow in
-    # subsequent constraint blocks that may push row counts beyond 2^31.
-    total_rows = int(total_rows)
-
-    # --- MEMORY OPTIMIZED: Calculate valid pixel fractions AND coverage map ---
-    # pixel_counts and pixel_fisher are now accumulated per-batch in the
-    # worker result-collation loop above (replaces a post-loop full-nnz
-    # bincount that allocated a ~50 GB f64 squared-data temp at no-srcmask
-    # region-10k scale). Dtypes and semantics match the prior post-loop
-    # bincount:
-    #   pixel_counts (int64): raw per-column observation count
-    #   pixel_fisher (f64):   per-pixel Fisher info — sum of squared sparse
-    #                         coefficients per column (data rows only;
-    #                         damping is added later). For the line block
-    #                         the column coefficient is w_i * G(λ_i), so
-    #                         sum(coefficient^2) is the diagonal of
-    #                         (A.T @ A) restricted to data rows — the
-    #                         correct measure of per-pixel constraint
-    #                         strength, in contrast to pixel_counts which
-    #                         ignores the Gaussian profile.
-    # When spectral_fit, the sky block has 2*num_sky columns: continuum first,
-    # line amplitude second. Coverage of each sub-block is sliced separately.
+    # ----------------------------------------------------------------
+    # Phase 2b: build constraint blocks (rows-local-to-block, cols, data,
+    # b). We assemble them up front so we can pre-count their per-row nnz,
+    # finalize total_rows, and allocate the CSR buffers once.
+    # ----------------------------------------------------------------
     num_sky_eff = num_sky_blocks * num_sky
     sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
     if num_sky_blocks == 2:
@@ -785,9 +761,10 @@ def setup_lsqr(file_list, ref_shape,
         line_pixel_counts = None
     offset_pixel_counts = pixel_counts[num_sky_eff:]
 
-    # --- ADD PER-FRAME TARGET MEAN CONSTRAINT ---
-    # One block per chunk map; skipped for any map in template mode (its block
-    # is per-frame α, not per-(frame, chunk), so a per-frame mean is degenerate).
+    # Each entry is dict(rows_local, cols, data, b, nnz_per_row, num_rows)
+    constraint_blocks = []
+
+    # --- Per-frame mean-offset constraints (one block per chunk map) ---
     #TODO: Pass weight from higher level instead of hardcoding here
     constraint_weight = 10.0
     for m in range(K):
@@ -802,105 +779,315 @@ def setup_lsqr(file_list, ref_shape,
         nc_m = num_chunks_list[m]
         ftg_m = frame_to_group_list[m]
 
-        constr_rows = total_rows + np.repeat(np.arange(num_frames), nc_m)
+        constr_rows_local = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
+        # Vectorized constraint-col build: offset_start = col_bases[m] + ftg[i]*nc_m,
+        # then enumerate the nc_m chunks per frame. Avoids per-frame Python loop.
+        offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
+        constr_cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
+        constr_data = np.full(num_frames * nc_m, constraint_weight, dtype=np.float32)
+        b_constr = mean_offsets_arr.astype(np.float64).flatten() * nc_m * constraint_weight
 
-        constr_cols = []
-        for i in range(num_frames):
-            offset_start = col_bases[m] + (ftg_m[i] * nc_m)
-            constr_cols.extend(np.arange(offset_start, offset_start + nc_m))
+        constraint_blocks.append({
+            'rows_local': constr_rows_local,
+            'cols': constr_cols,
+            'data': constr_data,
+            'b': b_constr,
+            'num_rows': num_frames,
+            'nnz_per_row': nc_m,  # nc_m entries per constraint row
+        })
 
-        constr_data = np.ones(len(constr_cols), dtype=np.float32) * constraint_weight
-        b_constr = mean_offsets_arr.flatten() * nc_m * constraint_weight
-
-        all_rows.append(constr_rows)
-        all_cols.append(np.array(constr_cols))
-        all_data.append(constr_data)
-        all_b.append(b_constr)
-
-        total_rows += num_frames
-
-    # --- COVERAGE-WEIGHTED DAMPING ---
+    # --- Coverage-weighted continuum damping ---
     if weighted_damping and damp_weight > 0:
         print("Applying Coverage-Weighted Damping (continuum)...")
-
         valid_pixel_indices = np.nonzero(sky_pixel_counts)[0]
-
         if len(valid_pixel_indices) > 0:
-            damp_values = np.sqrt(damp_weight * sky_pixel_counts[valid_pixel_indices])
-            num_damp_constraints = len(valid_pixel_indices)
-
-            damp_rows = total_rows + np.arange(num_damp_constraints)
-            damp_cols = valid_pixel_indices
-            b_damp = np.zeros(num_damp_constraints)
-
-            # Append directly to our existing lists
-            all_rows.append(damp_rows)
-            all_cols.append(damp_cols)
-            all_data.append(damp_values)
-            all_b.append(b_damp)
-
-            total_rows += num_damp_constraints
+            damp_values = np.sqrt(damp_weight * sky_pixel_counts[valid_pixel_indices]).astype(np.float32)
+            num_damp = len(valid_pixel_indices)
+            constraint_blocks.append({
+                'rows_local': np.arange(num_damp, dtype=np.int64),
+                'cols': valid_pixel_indices.astype(np.int64, copy=False),
+                'data': damp_values,
+                'b': np.zeros(num_damp, dtype=np.float64),
+                'num_rows': num_damp,
+                'nnz_per_row': 1,
+            })
 
         # --- LINE-AMPLITUDE DAMPING (spectral_fit only) ---
-        # Decoupled from continuum damping per the spectral-fit critique. The
-        # line column has a per-row coefficient G(λ_i) ≪ 1 for off-peak
-        # observations, so its natural per-pixel constraint is weaker; we
-        # compensate with damp_weight_line ≥ damp_weight (default 3x).
         if num_sky_blocks == 2 and damp_weight_line is not None and damp_weight_line > 0:
             print(f"Applying Coverage-Weighted Damping (line, damp={damp_weight_line})...")
             valid_line_indices = np.nonzero(line_pixel_counts)[0]
             if len(valid_line_indices) > 0:
-                damp_values_l = np.sqrt(damp_weight_line * line_pixel_counts[valid_line_indices])
+                damp_values_l = np.sqrt(damp_weight_line * line_pixel_counts[valid_line_indices]).astype(np.float32)
                 num_line_damp = len(valid_line_indices)
+                constraint_blocks.append({
+                    'rows_local': np.arange(num_line_damp, dtype=np.int64),
+                    'cols': (num_sky + valid_line_indices).astype(np.int64, copy=False),
+                    'data': damp_values_l,
+                    'b': np.zeros(num_line_damp, dtype=np.float64),
+                    'num_rows': num_line_damp,
+                    'nnz_per_row': 1,
+                })
 
-                damp_rows_l = total_rows + np.arange(num_line_damp)
-                damp_cols_l = num_sky + valid_line_indices   # line block sits at [num_sky, 2*num_sky)
-                b_damp_l = np.zeros(num_line_damp)
-
-                all_rows.append(damp_rows_l)
-                all_cols.append(damp_cols_l)
-                all_data.append(damp_values_l)
-                all_b.append(b_damp_l)
-
-                total_rows += num_line_damp
-
-    # --- COVERAGE-WEIGHTED OFFSET DAMPING ---
-    # Mirrors the sky-damping pattern onto the offset block. Each offset column
-    # with nonzero coverage gets a row sqrt(damp_offset * cov) * o = 0, adding
-    # an L2 penalty damp_offset * cov * o^2. This breaks the sky <-> offset
-    # null-space preference that lets spatially-correlated bright structure
-    # (e.g. PAH cirrus) flow into per-(frame, chunk) offsets and produce a
-    # bowl-around-cirrus artifact at coadd time. Scalar columns are excluded.
+    # --- Coverage-weighted offset damping ---
     if damp_offset > 0:
         print(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
-
         n_offset_cols = scalar_col_start - num_sky_eff
         offset_block_coverage = offset_pixel_counts[:n_offset_cols]
         valid_offset_indices = np.nonzero(offset_block_coverage)[0]
-
         if len(valid_offset_indices) > 0:
-            damp_values_off = np.sqrt(damp_offset * offset_block_coverage[valid_offset_indices])
+            damp_values_off = np.sqrt(damp_offset * offset_block_coverage[valid_offset_indices]).astype(np.float32)
             num_off_damp = len(valid_offset_indices)
+            constraint_blocks.append({
+                'rows_local': np.arange(num_off_damp, dtype=np.int64),
+                'cols': (valid_offset_indices + num_sky_eff).astype(np.int64, copy=False),
+                'data': damp_values_off,
+                'b': np.zeros(num_off_damp, dtype=np.float64),
+                'num_rows': num_off_damp,
+                'nnz_per_row': 1,
+            })
 
-            damp_rows_off = total_rows + np.arange(num_off_damp)
-            damp_cols_off = valid_offset_indices + num_sky_eff
-            b_damp_off = np.zeros(num_off_damp)
+    # ----------------------------------------------------------------
+    # Phase 2c: finalize total_rows + build row_nnz over the entire row
+    # space (data rows first, then each constraint block).
+    # ----------------------------------------------------------------
+    constraint_row_total = sum(blk['num_rows'] for blk in constraint_blocks)
+    total_rows = total_rows_data + constraint_row_total
 
-            all_rows.append(damp_rows_off)
-            all_cols.append(damp_cols_off)
-            all_data.append(damp_values_off)
-            all_b.append(b_damp_off)
+    row_nnz = np.empty(total_rows, dtype=np.int32)
+    # Data-row half: concat per-batch row_nnz in batch-id order. None entries
+    # contribute zero rows so they simply don't appear.
+    cursor = 0
+    for batch_id in range(len(batched_tasks)):
+        rn = row_nnz_per_batch[batch_id]
+        if rn is None:
+            continue
+        row_nnz[cursor:cursor + rn.size] = rn
+        cursor += rn.size
+    assert cursor == total_rows_data, (cursor, total_rows_data)
+    # Constraint-row half: each block is uniform nnz_per_row.
+    for blk in constraint_blocks:
+        row_nnz[cursor:cursor + blk['num_rows']] = blk['nnz_per_row']
+        cursor += blk['num_rows']
+    assert cursor == total_rows
+    # Free per-batch row_nnz; no longer needed.
+    row_nnz_per_batch = None
 
-            total_rows += num_off_damp
+    # ----------------------------------------------------------------
+    # Phase 2d: build full_b (vector of right-hand-sides). Concatenated in
+    # the same order as the row scatter: per-batch b in batch-id order,
+    # then each constraint block's b.
+    # ----------------------------------------------------------------
+    b_pieces = []
+    for batch_id in range(len(batched_tasks)):
+        r = batch_results[batch_id]
+        if r is None:
+            continue
+        b_pieces.append(r['b'])
+    for blk in constraint_blocks:
+        b_pieces.append(blk['b'])
+    full_b = np.concatenate(b_pieces) if b_pieces else np.zeros(0, dtype=np.float64)
+    # Drop per-batch b refs so the streaming scatter loop holds the
+    # smallest possible footprint.
+    for batch_id in range(len(batched_tasks)):
+        r = batch_results[batch_id]
+        if r is not None:
+            r['b'] = None
+    del b_pieces
+    for blk in constraint_blocks:
+        blk['b'] = None
 
-    # --- FINAL SPARSE MATRIX CONSTRUCTION ---
-    # One final concatenation of the main data + new constraints
-    full_A = coo_matrix((np.concatenate(all_data),
-                        (np.concatenate(all_rows), np.concatenate(all_cols))),
-                        shape=(total_rows, total_cols))
+    # ----------------------------------------------------------------
+    # Phase 2e: build CSR indptr (int64) + total_nnz.
+    # ----------------------------------------------------------------
+    indptr = np.zeros(total_rows + 1, dtype=np.int64)
+    np.cumsum(row_nnz, out=indptr[1:])
+    total_nnz = int(indptr[-1])
+    # row_nnz no longer needed; we will use indptr+write_cursor for scatter.
+    del row_nnz
 
-    full_b = np.concatenate(all_b)
+    # ----------------------------------------------------------------
+    # Top 2: gated early column compaction. If no template-mode map is in
+    # use, every "active" column (pixel_counts > 0) gets compacted now so
+    # apply_lsqr can skip its full-nnz col_map gather. Template-mode runs
+    # keep the legacy uncompacted layout (apply_lsqr handles compaction).
+    # ----------------------------------------------------------------
+    top2_active = not any(t is not None for t in det_template_arr_list)
+    # Bisect/debug knob: caller can force the gated path off to compare against
+    # the legacy uncompacted-CSR layout (used when bisecting which optimization
+    # phase introduced a regression). Default True keeps prod behavior.
+    if not top2_compaction_enabled:
+        top2_active = False
+    if top2_active:
+        # Some non-template runs still want the legacy path — e.g. when the
+        # caller passes mean_offsets_list (per-frame chunk constraint rows
+        # write into specific column indices that must not be dropped).
+        # mean_offsets / damping rows already register coverage via the
+        # data rows, so columns they touch will have pixel_counts > 0.
+        # Constraint rows pointing at otherwise-uncovered cols would still
+        # need those slots; guard with a coverage check.
+        active_mask = pixel_counts > 0
+        # Verify every constraint col is "active" — otherwise gating must
+        # bail out and let apply_lsqr handle compaction.
+        all_constraint_cols_active = True
+        for blk in constraint_blocks:
+            cols_b = blk['cols']
+            if cols_b.size and not active_mask[cols_b].all():
+                all_constraint_cols_active = False
+                break
+        if not all_constraint_cols_active:
+            top2_active = False
 
+    if top2_active:
+        col_map = np.cumsum(active_mask, dtype=np.int64) - 1  # int64; mapped col fits in int32
+        n_active = int(active_mask.sum())
+        print(f"Top 2: compacting columns inline ({n_active}/{total_cols} active).")
+    else:
+        active_mask = None
+        col_map = None
+        n_active = total_cols
+
+    # ----------------------------------------------------------------
+    # Phase 3: allocate CSR buffers.
+    # ----------------------------------------------------------------
+    csr_data = np.empty(total_nnz, dtype=np.float32)
+    csr_indices = np.empty(total_nnz, dtype=np.int32)
+    write_cursor = np.zeros(total_rows, dtype=np.int32)
+
+    # ----------------------------------------------------------------
+    # Phase 4a: streaming scatter of data rows (one batch at a time;
+    # release each batch's arrays immediately after scatter so the peak
+    # footprint stays small).
+    #
+    # Within-batch row collisions are common (e.g. spectral_fit mode places
+    # 2 sky nnz + 1 offset + 1 scalar in the SAME row). A naive
+    #   slots = indptr[rows_b] + write_cursor[rows_b]
+    # would have all duplicates read the same write_cursor value and
+    # overwrite the same slot. We instead stable-sort by row and use a
+    # within-row cumcount so every entry lands in its own slot. Stable
+    # sort preserves the original col-within-row order across the batch,
+    # which matches what coo_matrix(...).tocsr() does for stable sort_by_row.
+    # ----------------------------------------------------------------
+    for batch_id in range(len(batched_tasks)):
+        batch = batch_results[batch_id]
+        if batch is None:
+            continue
+        row_offset = batch_row_starts[batch_id]
+        rows_b = batch['rows'].astype(np.int64, copy=False) + row_offset
+        cols_b = batch['cols']
+        data_b = batch['data']
+        if top2_active:
+            # int32 compact col indices (safe since n_active < 2^31).
+            cols_b = col_map[cols_b].astype(np.int32, copy=False)
+        else:
+            cols_b = cols_b.astype(np.int32, copy=False)
+
+        n_b = rows_b.shape[0]
+        if n_b > 0:
+            # Stable sort by row so duplicates are contiguous; preserves
+            # within-row col order from the worker output.
+            order = np.argsort(rows_b, kind="stable")
+            rows_s = rows_b[order]
+            cols_s = cols_b[order]
+            data_s = data_b[order]
+
+            # Within-row cumcount in sorted order.
+            is_new_group = np.empty(n_b, dtype=bool)
+            is_new_group[0] = True
+            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+            group_starts = np.flatnonzero(is_new_group)
+            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+
+            slots = indptr[rows_s] + write_cursor[rows_s] + within_row
+            csr_data[slots] = data_s
+            csr_indices[slots] = cols_s
+
+            # Update write_cursor: add the per-row count contributed by
+            # this batch.
+            unique_rows = rows_s[group_starts]
+            counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+            write_cursor[unique_rows] += counts
+        # Free the batch refs.
+        batch_results[batch_id] = None
+        del batch, rows_b, cols_b, data_b
+    batch_results = None
+
+    # ----------------------------------------------------------------
+    # Phase 4b: scatter constraint blocks at their reserved row ranges.
+    #
+    # Same row-collision concern as Phase 4a: e.g. the per-frame
+    # mean-offset block has nc_m entries per row. Use the same
+    # stable-sort + within-row cumcount pattern. write_cursor for
+    # constraint rows starts at 0 (no prior batches touched them) but
+    # we still write through write_cursor for uniformity.
+    # ----------------------------------------------------------------
+    cb_cursor = total_rows_data
+    for blk in constraint_blocks:
+        nrows = blk['num_rows']
+        nnz_per_row = blk['nnz_per_row']
+        rows_b = blk['rows_local'] + cb_cursor
+        cols_b = blk['cols']
+        data_b = blk['data']
+        if top2_active:
+            cols_b = col_map[cols_b].astype(np.int32, copy=False)
+        else:
+            cols_b = cols_b.astype(np.int32, copy=False)
+
+        n_b = rows_b.shape[0]
+        if n_b > 0:
+            if nnz_per_row == 1:
+                # Fast path: every constraint row contributes exactly one
+                # entry, so no duplicates exist and no sort is required.
+                slots = indptr[rows_b] + write_cursor[rows_b]
+                csr_data[slots] = data_b
+                csr_indices[slots] = cols_b
+                write_cursor[rows_b] += 1
+            else:
+                order = np.argsort(rows_b, kind="stable")
+                rows_s = rows_b[order]
+                cols_s = cols_b[order]
+                data_s = data_b[order]
+
+                is_new_group = np.empty(n_b, dtype=bool)
+                is_new_group[0] = True
+                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+                group_starts = np.flatnonzero(is_new_group)
+                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+
+                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
+                csr_data[slots] = data_s
+                csr_indices[slots] = cols_s
+
+                unique_rows = rows_s[group_starts]
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                write_cursor[unique_rows] += counts
+        cb_cursor += nrows
+    del write_cursor
+
+    # ----------------------------------------------------------------
+    # Phase 6: build CSR. Indices are row-grouped but NOT col-sorted within
+    # row (sufficient for LSQR/LSMR matvec/rmatvec — convergence depends
+    # only on A as a linear map). We mark has_sorted_indices=False so
+    # scipy callers that depend on it (e.g. .T → CSC view) can either
+    # tolerate or trigger sort themselves.
+    # ----------------------------------------------------------------
+    full_A = csr_matrix(
+        (csr_data, csr_indices, indptr),
+        shape=(total_rows, n_active),
+        copy=False,
+    )
+    full_A.has_sorted_indices = False
+    # Sort indices within each row in place. This is per-row qsort with no
+    # allocation peak and gives downstream code (CSC views, indices-binary
+    # search, etc.) the canonical layout. We also call sum_duplicates() as a
+    # defensive no-op (the bucket-sort build guarantees no duplicate (row,
+    # col) entries) so that downstream consumers can rely on canonical CSR.
+    full_A.sort_indices()
+    full_A.sum_duplicates()
+
+    if top2_active:
+        return full_A, full_b, pixel_counts, pixel_fisher, active_mask
     return full_A, full_b, pixel_counts, pixel_fisher
 
 
@@ -1059,23 +1246,124 @@ def _make_parallel_operator(A_csr, n_threads):
 
 def apply_lsqr(A, b, ref_shape, x0=None,
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
-                solver='lsmr', use_float32=False, n_threads=32):
+                solver='lsmr', use_float32=False, n_threads=32,
+                active_mask=None, num_cols_full=None):
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
     ----------
+    A : coo_matrix or csr_matrix
+        Sparse system matrix. When ``csr_matrix`` is passed together with an
+        ``active_mask``, setup_lsqr is assumed to have already compacted the
+        zero columns (Top 2 path); ``apply_lsqr`` skips its own column
+        elimination and uses ``active_mask`` only to expand the solution
+        back to the full column space at the end.
     solver : str, optional
         Solver to use: 'lsmr' (default, faster convergence) or 'lsqr'.
     use_float32 : bool, optional
         If True, cast matrix data and b to float32 before solving.
         Reduces memory bandwidth (~2x faster SpMV) at the cost of precision.
+    active_mask : np.ndarray of bool, optional
+        When set, marks the columns of the original (uncompacted) layout
+        that are present in the supplied compact CSR. Used to expand the
+        compact solution back to the full column space on return.
+    num_cols_full : int, optional
+        Original (uncompacted) column count. Required when ``active_mask``
+        is given. Equals ``A.shape[1]`` when no compaction happened upstream.
     """
-    assert isinstance(A, coo_matrix), "A must be a scipy.sparse.coo_matrix"
+    assert isinstance(A, (coo_matrix, csr_matrix)), \
+        "A must be a scipy.sparse.coo_matrix or csr_matrix"
     assert isinstance(b, np.ndarray), "b must be a numpy array"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
+
+    # ---- Top 2 fast path: A is already compact CSR ------------------
+    if isinstance(A, csr_matrix):
+        if active_mask is not None:
+            assert num_cols_full is not None, \
+                "num_cols_full must be supplied alongside active_mask"
+            num_cols = int(num_cols_full)
+            n_active = int(active_mask.sum())
+            assert A.shape[1] == n_active, (
+                f"A.shape[1]={A.shape[1]} != active_mask.sum()={n_active}")
+            x0_compressed = x0[active_mask] if x0 is not None else None
+        else:
+            num_cols = A.shape[1]
+            n_active = num_cols
+            x0_compressed = x0
+
+        A_shape = A.shape
+        if use_float32:
+            print("Downcasting to float32 for faster SpMV...")
+            if A.data.dtype != np.float32:
+                A.data = A.data.astype(np.float32)
+            _b_in = b
+            b = _b_in.astype(np.float32)
+            del _b_in
+            if x0_compressed is not None:
+                x0_compressed = x0_compressed.astype(np.float32)
+
+        data = A.data
+        new_col = A.indices
+
+        if precondition:
+            print("Applying column-norm preconditioning...")
+            chunk_size = 64_000_000  # ~256 MB per chunk at f32
+            col_sq_norm = np.zeros(n_active, dtype=np.float32)
+            for start in range(0, data.size, chunk_size):
+                stop = min(start + chunk_size, data.size)
+                d_chunk = data[start:stop]
+                c_chunk = new_col[start:stop]
+                col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
+            col_norms = np.sqrt(col_sq_norm)
+            col_norms[col_norms == 0] = 1.0
+            M_inv = col_norms
+            M = 1.0 / M_inv
+            for start in range(0, data.size, chunk_size):
+                stop = min(start + chunk_size, data.size)
+                data[start:stop] *= M[new_col[start:stop]].astype(data.dtype, copy=False)
+            x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
+        else:
+            M = None
+            x0_solver = x0_compressed
+
+        print(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
+        A_csr = A
+        del A
+
+        if n_threads > 1:
+            op = _make_parallel_operator(A_csr, n_threads)
+            try:
+                with threadpool_limits(limits=1, user_api='blas'):
+                    if solver == 'lsmr':
+                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                    elif solver == 'lsqr':
+                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                    else:
+                        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+            finally:
+                op._executor.shutdown(wait=False)
+        else:
+            if solver == 'lsmr':
+                result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+            elif solver == 'lsqr':
+                result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+            else:
+                raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        x_solver = result[0]
+        del A_csr
+        if precondition:
+            x_solver = x_solver * M
+        if active_mask is not None:
+            x = np.zeros(num_cols, dtype=x_solver.dtype)
+            x[active_mask] = x_solver
+        else:
+            x = x_solver
+        return x
+
+    # ---- Legacy path: A is a COO. apply_lsqr does the compaction itself.
     num_cols = A.shape[1]
 
     # --- Fused preprocessing: column elimination + float32 + preconditioning + CSR ---

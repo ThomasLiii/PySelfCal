@@ -373,13 +373,15 @@ if __name__ == "__main__":
                     x0 = compute_x0_scalar_only(
                         cc.A, cc.b, cc.ref_shape,
                         scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                        active_mask=cc.active_mask,
                     )
                     scalar_col_start = cc.col_bases[len(cc.chunk_maps)]
                     scalar_init = x0[scalar_col_start:]
                     print(f"  x0: shape={x0.shape}, "
                           f"scalar_init mean={scalar_init.mean():+.3e}, std={scalar_init.std():.3e}")
                 else:
-                    x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
+                    x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape,
+                                            active_mask=cc.active_mask)
 
                 cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
                 # Save with original HDD paths so cal file remains valid after NVMe cleanup

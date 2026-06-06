@@ -444,6 +444,14 @@ class Calibrator(Reprojector):
         self.x = None
         self.pixel_counts = None
         self.pixel_fisher = None
+        # When setup_lsqr runs the Top 2 gated path (no template-mode map),
+        # it returns a CSR matrix that has already had its zero columns
+        # eliminated. ``active_mask`` (length num_cols_full) marks which
+        # original columns survived; apply_lsqr uses it to expand the
+        # compact solution back to the full layout. Both are None in the
+        # legacy (template-mode) path.
+        self.active_mask = None
+        self.num_cols_full = None
         # If set to a non-None float, save_calibration writes it as an
         # informational ``line_fisher_threshold`` attr on the cal file. This is
         # the *recommended* read-time threshold for analysis; the saved
@@ -472,7 +480,8 @@ class Calibrator(Reprojector):
                    weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
                    det_aux=None,
                    spectral_fit=False, line_center=None, line_sigma=None,
-                   damp_weight_line=None):
+                   damp_weight_line=None,
+                   top2_compaction_enabled=True):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
@@ -513,7 +522,7 @@ class Calibrator(Reprojector):
         _check_len('det_templates', det_templates)
 
         with timer("Setup LSQR"):
-            self.A, self.b, self.pixel_counts, self.pixel_fisher = MakeMap.setup_lsqr(
+            _setup_result = MakeMap.setup_lsqr(
                 self.reproj_list, self.ref_shape,
                 chunk_maps=chunk_maps,
                 grid_valid_weight=grid_valid_weight,
@@ -531,7 +540,23 @@ class Calibrator(Reprojector):
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
                 damp_offset=damp_offset, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
-                line_sigma=line_sigma, damp_weight_line=damp_weight_line)
+                line_sigma=line_sigma, damp_weight_line=damp_weight_line,
+                top2_compaction_enabled=top2_compaction_enabled)
+            # setup_lsqr returns a 4-tuple in legacy / template-mode runs and
+            # a 5-tuple when the Top 2 inline column compaction fires.
+            if _setup_result is None or _setup_result[0] is None:
+                self.A, self.b = None, None
+                self.pixel_counts, self.pixel_fisher = None, None
+                self.active_mask, self.num_cols_full = None, None
+            elif len(_setup_result) == 5:
+                (self.A, self.b, self.pixel_counts,
+                 self.pixel_fisher, self.active_mask) = _setup_result
+                self.num_cols_full = int(self.active_mask.size)
+            else:
+                (self.A, self.b, self.pixel_counts,
+                 self.pixel_fisher) = _setup_result
+                self.active_mask = None
+                self.num_cols_full = None
 
         # Track sky-block count so parse_x / save_calibration / get_skymap
         # all know whether to expect a continuum-only or continuum+line layout.
@@ -582,7 +607,7 @@ class Calibrator(Reprojector):
         self.col_bases = col_bases
 
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
-                   solver='lsmr', use_float32=False, n_threads=32):
+                   solver='lsmr', use_float32=False, n_threads=32, keep_state=False):
         if resume:
             if self.x is None:
                 print("No previous solution found. Starting from scratch.")
@@ -595,14 +620,24 @@ class Calibrator(Reprojector):
             # Release self.A / self.b refs before calling apply_lsqr so the COO arrays
             # (~140 GB at no-srcmask region-10k scale) and the f64 b (~80 GB) can be
             # freed inside apply_lsqr after the float32 / CSR conversions complete.
+            # When keep_state=True, retain self.A/self.b/self.active_mask/self.num_cols_full
+            # so a caller can re-solve (e.g., iter_lim sweep) without rebuilding the system.
             A_local = self.A
             b_local = self.b
-            self.A = None
-            self.b = None
+            active_mask_local = getattr(self, "active_mask", None)
+            num_cols_full_local = getattr(self, "num_cols_full", None)
+            if not keep_state:
+                self.A = None
+                self.b = None
+                self.active_mask = None
             self.x = MakeMap.apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
                                         x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                        solver=solver, use_float32=use_float32, n_threads=n_threads)
-            del A_local, b_local
+                                        solver=solver, use_float32=use_float32, n_threads=n_threads,
+                                        active_mask=active_mask_local,
+                                        num_cols_full=num_cols_full_local)
+            if not keep_state:
+                self.num_cols_full = None
+                del A_local, b_local, active_mask_local
 
     def load_calibration(self, cal_path=None):
         """Load a saved calibration (dual schema: legacy top-level ``offset``

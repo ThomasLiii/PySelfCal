@@ -166,7 +166,8 @@ if __name__ == "__main__":
         'atol': 1e-06,
         'btol': 1e-06,
         'damp': 0,
-        'iter_lim': 50,
+        # 100 iters gives pearson r > 0.999 between consecutive cals at Fisher>=10 (per staircase convergence study); bulk PAH signal converged
+        'iter_lim': 100,
         'precondition': True,
         'solver': 'lsqr',
     }
@@ -187,7 +188,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_NumCol5_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_NumCol5_iter100_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
@@ -293,6 +294,7 @@ if __name__ == "__main__":
                 cc.A, cc.b, cc.ref_shape,
                 scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
                 num_sky_blocks=cc.num_sky_blocks,
+                active_mask=cc.active_mask,
             )
 
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)

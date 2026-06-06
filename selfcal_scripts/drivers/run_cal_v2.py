@@ -266,6 +266,7 @@ if __name__ == "__main__":
             x0 = compute_x0_scalar_only(
                 cc.A, cc.b, cc.ref_shape,
                 scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                active_mask=cc.active_mask,
             )
 
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)

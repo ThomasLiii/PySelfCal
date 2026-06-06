@@ -307,7 +307,8 @@ if __name__ == "__main__":
                 **calibration_kwargs,
             )
 
-            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape)
+            x0 = compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape,
+                                    active_mask=cc.active_mask)
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=32, **lsqr_kwargs)
 
             # Save with HDD paths so cal file remains valid after NVMe cleanup
