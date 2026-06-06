@@ -660,6 +660,13 @@ def setup_lsqr(file_list, ref_shape,
 
     all_rows, all_cols, all_data, all_b = [], [], [], []
 
+    # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
+    # Allocated lazily on the first batch result. This replaces the
+    # post-loop full-nnz bincount (which materialized a ~50 GB float64
+    # squared-data temp at no-srcmask region-10k scale).
+    pixel_counts = np.zeros(total_cols, dtype=np.int64)
+    pixel_fisher = np.zeros(total_cols, dtype=np.float64)
+
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
         name, shape, dtype = info
@@ -698,6 +705,18 @@ def setup_lsqr(file_list, ref_shape,
                     'b':    _read_shm(shm_infos[3]),
                     'num_rows': result['num_rows'],
                 }
+                # Per-batch streaming accumulation. Avoids holding a
+                # full-nnz float64 squared-data temp later. The per-batch
+                # bincount weights temp is batch-sized (~50-200 MB), not
+                # nnz-sized.
+                _b_cols = batch_results[batch_id]['cols']
+                _b_data = batch_results[batch_id]['data']
+                pixel_counts += np.bincount(_b_cols, minlength=total_cols)
+                pixel_fisher += np.bincount(
+                    _b_cols,
+                    weights=_b_data.astype(np.float64) ** 2,
+                    minlength=total_cols,
+                )
     finally:
         for shm in shm_objects:
             shm.close()
@@ -741,19 +760,23 @@ def setup_lsqr(file_list, ref_shape,
     total_rows = int(total_rows)
 
     # --- MEMORY OPTIMIZED: Calculate valid pixel fractions AND coverage map ---
-    # We access the combined columns via all_cols[0].
+    # pixel_counts and pixel_fisher are now accumulated per-batch in the
+    # worker result-collation loop above (replaces a post-loop full-nnz
+    # bincount that allocated a ~50 GB f64 squared-data temp at no-srcmask
+    # region-10k scale). Dtypes and semantics match the prior post-loop
+    # bincount:
+    #   pixel_counts (int64): raw per-column observation count
+    #   pixel_fisher (f64):   per-pixel Fisher info — sum of squared sparse
+    #                         coefficients per column (data rows only;
+    #                         damping is added later). For the line block
+    #                         the column coefficient is w_i * G(λ_i), so
+    #                         sum(coefficient^2) is the diagonal of
+    #                         (A.T @ A) restricted to data rows — the
+    #                         correct measure of per-pixel constraint
+    #                         strength, in contrast to pixel_counts which
+    #                         ignores the Gaussian profile.
     # When spectral_fit, the sky block has 2*num_sky columns: continuum first,
     # line amplitude second. Coverage of each sub-block is sliced separately.
-    pixel_counts = np.bincount(all_cols[0], minlength=total_cols)
-    # Per-pixel Fisher information: sum of squared sparse-matrix coefficients
-    # per column (data rows only — damping is added later). For the line block
-    # the column coefficient is w_i * G(λ_i), so sum(coefficient²) is the
-    # diagonal of (A.T @ A) restricted to data rows — the correct measure of
-    # per-pixel constraint strength, in contrast to pixel_counts which is the
-    # raw observation count and ignores the Gaussian profile.
-    pixel_fisher = np.bincount(all_cols[0],
-                               weights=all_data[0].astype(np.float64) ** 2,
-                               minlength=total_cols)
     num_sky_eff = num_sky_blocks * num_sky
     sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
     if num_sky_blocks == 2:
@@ -1075,7 +1098,12 @@ def apply_lsqr(A, b, ref_shape, x0=None,
 
     if use_float32:
         print("Downcasting to float32 for faster SpMV...")
-        data = A.data.astype(np.float32)
+        # setup_lsqr workers always emit float32 for sub_data_vec, so A.data
+        # is already f32 in production; skip the redundant ~25 GB copy.
+        if A.data.dtype == np.float32:
+            data = A.data
+        else:
+            data = A.data.astype(np.float32)
         # Drop the f64 b reference once the f32 cast exists (caller already released self.b;
         # this releases the local f64 reference, saving ~80 GB at no-srcmask region-10k scale).
         _b_in = b
@@ -1103,9 +1131,14 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         col_norms[col_norms == 0] = 1.0
         M_inv = col_norms
         M = 1.0 / M_inv
-        # In-place gather-multiply: writes M[new_col] (cast to data dtype) into data
-        # without allocating a transient nnz-sized output array (~28 GB saving).
-        np.multiply(data, M[new_col].astype(data.dtype), out=data)
+        # Chunked in-place gather-multiply: avoids two full-nnz transients
+        # (the M[new_col] gather and the .astype(data.dtype) copy together
+        # held ~52 GB at no-srcmask region-10k scale). M values are tiny
+        # (n_active entries), so per-chunk gather is cheap.
+        chunk_size = 64_000_000  # ~256 MB per chunk at f32
+        for start in range(0, data.size, chunk_size):
+            stop = min(start + chunk_size, data.size)
+            data[start:stop] *= M[new_col[start:stop]].astype(data.dtype, copy=False)
         x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
     else:
         M = None
