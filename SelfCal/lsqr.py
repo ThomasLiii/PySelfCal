@@ -998,18 +998,21 @@ def _partition_csr(A, n_blocks):
     return blocks, boundaries
 
 def _make_parallel_operator(A_csr, n_threads):
-    """Build a LinearOperator with thread-parallel matvec/rmatvec.
+    """Build a LinearOperator with thread-parallel matvec, scipy-native rmatvec.
 
-    Pre-computes A^T as CSR and partitions both into row-blocks.
-    GIL is released during scipy CSR SpMV, enabling true thread parallelism.
+    matvec: per-thread row-block partition of A_csr (GIL released during scipy CSR SpMV).
+    rmatvec: A_csr.T as a zero-copy CSC view; scipy CSC SpMV handles A.T @ y directly.
+
+    The previous version materialized AT_csr = A_csr.T.tocsr() as an explicit copy, which
+    at no-srcmask region-10k scale was ~88 GB. The CSC view shares A_csr's storage and
+    costs O(1) — scipy's CSC @ vec is fast and releases the GIL.
     """
     m, n = A_csr.shape
 
     print(f"Building parallel SpMV operator ({n_threads} threads)...")
-    AT_csr = A_csr.T.tocsr()
+    AT_view = A_csr.T  # zero-copy CSC view sharing storage with A_csr
 
     A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
-    AT_blocks, AT_bounds = _partition_csr(AT_csr, n_threads)
 
     executor = ThreadPoolExecutor(max_workers=n_threads)
     dtype = A_csr.dtype
@@ -1022,15 +1025,13 @@ def _make_parallel_operator(A_csr, n_threads):
         return out
 
     def _rmatvec(y):
-        out = np.empty(n, dtype=dtype)
-        def _work(i):
-            out[AT_bounds[i]:AT_bounds[i+1]] = AT_blocks[i] @ y
-        list(executor.map(_work, range(n_threads)))
-        return out
+        # Single scipy CSC SpMV — no per-thread slicing needed; the kernel is already
+        # vectorized and releases the GIL.
+        return AT_view @ y
 
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
     op._executor = executor
-    op._AT_csr = AT_csr  # prevent GC
+    op._AT_view = AT_view  # prevent GC
     return op
 
 def apply_lsqr(A, b, ref_shape, x0=None,
@@ -1075,7 +1076,11 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     if use_float32:
         print("Downcasting to float32 for faster SpMV...")
         data = A.data.astype(np.float32)
-        b = b.astype(np.float32)
+        # Drop the f64 b reference once the f32 cast exists (caller already released self.b;
+        # this releases the local f64 reference, saving ~80 GB at no-srcmask region-10k scale).
+        _b_in = b
+        b = _b_in.astype(np.float32)
+        del _b_in
         if x0_compressed is not None:
             x0_compressed = x0_compressed.astype(np.float32)
     else:
@@ -1083,20 +1088,40 @@ def apply_lsqr(A, b, ref_shape, x0=None,
 
     if precondition:
         print("Applying column-norm preconditioning...")
-        col_sq_norm = np.bincount(new_col, weights=data.astype(np.float64)**2, minlength=n_active)
+        # Chunked float32 accumulation of column-squared-norms.
+        # Avoids materializing the full nnz-sized f64 (data**2) temp (~56 GB at no-srcmask
+        # region-10k scale). f32 sum is safe: max per-column sum is bounded
+        # (max data ~10 from apply_weight * max ~17k contributors ~1.7M, << f32 max 3.4e38).
+        chunk_size = 64_000_000  # ~256 MB per chunk at f32
+        col_sq_norm = np.zeros(n_active, dtype=np.float32)
+        for start in range(0, data.size, chunk_size):
+            stop = min(start + chunk_size, data.size)
+            d_chunk = data[start:stop]
+            c_chunk = new_col[start:stop]
+            col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
         col_norms = np.sqrt(col_sq_norm)
         col_norms[col_norms == 0] = 1.0
         M_inv = col_norms
         M = 1.0 / M_inv
-        data = data * M[new_col].astype(data.dtype)
+        # In-place gather-multiply: writes M[new_col] (cast to data dtype) into data
+        # without allocating a transient nnz-sized output array (~28 GB saving).
+        np.multiply(data, M[new_col].astype(data.dtype), out=data)
         x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
     else:
         M = None
         x0_solver = x0_compressed
 
-    print(f"Solving least squares for {n_active} unknowns with {A.shape[0]} equations (solver={solver}).")
-    A_csr = coo_matrix((data, (A.row, new_col)), shape=(A.shape[0], n_active)).tocsr()
-    del data, new_col
+    # Bind the row array + shape locally so we can drop the COO container immediately
+    # after CSR build. Caller already released its reference (see Calibrator.apply_lsqr);
+    # this lets the (~140 GB at no-srcmask region-10k scale) COO arrays be freed as soon
+    # as CSR construction finishes. row/col are scipy properties without deleters, so we
+    # drop A itself after rebinding row locally.
+    A_row = A.row
+    A_shape = A.shape
+    del A
+    print(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
+    A_csr = coo_matrix((data, (A_row, new_col)), shape=(A_shape[0], n_active)).tocsr()
+    del data, new_col, A_row
 
     # --- Build parallel operator or use CSR directly ---
     if n_threads > 1:

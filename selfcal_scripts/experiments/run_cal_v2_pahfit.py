@@ -130,7 +130,7 @@ if __name__ == "__main__":
         'Detector': 4,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 10,
+        'NumCol': 5,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_NumCol5_outThresh5_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1

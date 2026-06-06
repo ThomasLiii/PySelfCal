@@ -592,9 +592,17 @@ class Calibrator(Reprojector):
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
-            self.x = MakeMap.apply_lsqr(self.A, self.b, ref_shape=self.ref_shape,
+            # Release self.A / self.b refs before calling apply_lsqr so the COO arrays
+            # (~140 GB at no-srcmask region-10k scale) and the f64 b (~80 GB) can be
+            # freed inside apply_lsqr after the float32 / CSR conversions complete.
+            A_local = self.A
+            b_local = self.b
+            self.A = None
+            self.b = None
+            self.x = MakeMap.apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
                                         x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                                         solver=solver, use_float32=use_float32, n_threads=n_threads)
+            del A_local, b_local
 
     def load_calibration(self, cal_path=None):
         """Load a saved calibration (dual schema: legacy top-level ``offset``
