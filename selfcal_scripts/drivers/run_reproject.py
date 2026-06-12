@@ -80,7 +80,7 @@ from SelfCal import PipelineWrapper
 from SelfCal.exposure_filter import filter_exposures_by_header
 
 frame_setting = {
-    'Detector': 5,
+    'Detector': 6,
     'NumSub': 10,
     'NumCh': 34,
     'NumCol': 3,
@@ -95,7 +95,7 @@ selfcal_config = PipelineWrapper.PipelineConfig(
 # (same CRVAL/CDELT/CTYPE/PC) across runs that cover different areas around
 # the same center. The new run's ref_shape + CRPIX are computed from its
 # own exposure list. Leave None to fit an optimal frame from scratch.
-SOURCE_REF_PATH = None
+SOURCE_REF_PATH = '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D5_6p2arcsec/ref.fits'
 # e.g. '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D5_6p2arcsec/ref.fits'
 
 qr1_dir = '/mnt/md124/SPHEREx/SPHEREx_nep_data/qr1_newgain'

@@ -11,3 +11,4 @@ __pycache__/
 archive/
 workspace/
 TODO.md
+selfcal_logs/

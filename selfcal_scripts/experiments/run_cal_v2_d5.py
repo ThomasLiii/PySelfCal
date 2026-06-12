@@ -1,10 +1,10 @@
 import os
-import re
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import sys
 import shutil
 import time
 import gc
@@ -15,6 +15,9 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
+parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_path)
+
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.solution import compute_x0_scalar_only
@@ -22,7 +25,6 @@ from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_co
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
 compute_column_polynomial_chains
 from SelfCal.SPHERExAppendWav import wav_coadd
-from SelfCal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -112,7 +114,7 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 3,
+        'Detector': 5,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 10,
@@ -126,7 +128,7 @@ if __name__ == "__main__":
 
     calibration_kwargs = {
         'apply_mask': True,
-        'apply_weight': True,  # Poisson inverse-variance weighting (make_weight = 1/sqrt(|data|+floor)). Bright cirrus pixels contribute ~10x less to the LSQR fit than dim sky, so the offset block is determined mostly by dim background and PAH brightness flows into sky at apply — significantly reduces the bowl-around-cirrus artifact. See fix/offset-damping branch.
+        'apply_weight': False,
         'outlier_thresh': 5.0,
         'ignore_list': [],
         'batch_size': 50,
@@ -134,10 +136,6 @@ if __name__ == "__main__":
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
-        # 'damp_offset': 0.0 (default) — optional knob added in fix/offset-damping;
-        # mirrors damp_weight onto the offset block. Off by default; tested at 0.1
-        # showed bowl reduction but created a low-coverage dark-ring artifact, so
-        # apply_weight is preferred for production. Available for experimentation.
         'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
@@ -164,7 +162,7 @@ if __name__ == "__main__":
         'max_workers': 48
     }
     
-    mosaic_oversample_factor = 1
+    mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
     FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_polyK1'
@@ -173,21 +171,8 @@ if __name__ == "__main__":
     POLY_DEGREE = 1
     POLY_WEIGHT = 0.5
 
-    # Optional zodi anchor: if a dir is set, after each channel's
-    # cal+mosaic is saved, look up the matching zodi prediction .npz
-    # (zodi_pred_<job_tag>.npz produced by
-    # selfcal_scripts/zodi_anchor/build_predictions.py), fit the
-    # per-channel anchor, and record it into the per-detector anchor file
-    # <run>/zodi_anchor/anchor_D{N}.h5 (via append_anchor_channel).
-    # Cal/mosaic are NOT modified — the shift is applied at read time by
-    # SelfCal.ZodiAnchor.load_anchor. Set None to skip (default).
-    ZODI_PRED_DIR = None
-    ZODI_CLIP_WINDOW_DAYS = 7.0
-    ZODI_CLIP_SIGMA = 3.0
-    ZODI_CLIP_ITERS = 2
-
     # Channels to process
-    chs = [[i] for i in range(1, 35)]
+    chs = [[i] for i in range(23, 35)]
     # chs = [[14]]
     # chs = ['Aliphatic', 'Aromatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
@@ -279,7 +264,6 @@ if __name__ == "__main__":
             x0 = compute_x0_scalar_only(
                 cc.A, cc.b, cc.ref_shape,
                 scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
-                active_mask=cc.active_mask,
             )
 
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)
@@ -331,38 +315,7 @@ if __name__ == "__main__":
         })
 
         mm.save_mosaic(mos_file=mos_file, overwrite=True)
-
-        # Optional zodi anchor: fit and record into the per-detector anchor
-        # file (<run>/zodi_anchor/anchor_D{N}.h5). Cal/mosaic are NOT
-        # modified — the shift is applied at read time by
-        # SelfCal.ZodiAnchor.load_anchor.
-        if ZODI_PRED_DIR is not None:
-            npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
-            m = re.search(r'_Ch(\d+)_', cal_file)
-            if not os.path.exists(npz_path):
-                print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
-            elif m is None:
-                print(f"Zodi anchor skipped for {job_tag}: not a single-channel "
-                      f"job (cannot parse _Ch<n>_ from {cal_file}).")
-            else:
-                ch_int = int(m.group(1))
-                clip_defaults = dict(clip_window_days=ZODI_CLIP_WINDOW_DAYS,
-                                     clip_sigma=ZODI_CLIP_SIGMA,
-                                     clip_iters=ZODI_CLIP_ITERS)
-                print(f"Fitting zodi anchor from {npz_path}...")
-                fit = fit_anchor_for_channel(
-                    cal_path, npz_path, **clip_defaults)
-                run_dir = os.path.dirname(selfcal_config.cal_dir.rstrip('/'))
-                anchor_path = os.path.join(
-                    run_dir, 'zodi_anchor', f'anchor_D{detector}.h5')
-                append_anchor_channel(
-                    anchor_path, detector, selfcal_config.run_name, ch_int,
-                    fit, clip_defaults, anchor_method='raw')
-                print(f"  Ch{ch_int}: C={fit['intercept']:.4g} MJy/sr, "
-                      f"slope={fit['slope']:.4f}, r={fit['pearson_r']:.4f}, "
-                      f"inliers={fit['n_inliers']}/"
-                      f"{fit['n_inliers']+fit['n_outliers']}  -> {anchor_path}")
-
+         
         # Clean up
         del cc, mm, maps
         if os.path.exists(cache_dir):

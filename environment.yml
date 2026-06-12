@@ -1,4 +1,4 @@
-name: selfcal
+name: selfcal-stable
 channels:
   - defaults
 dependencies:
