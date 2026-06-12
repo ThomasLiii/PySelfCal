@@ -112,7 +112,7 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 3,
+        'Detector': 4,
         'NumSub': 10,
         'NumCh': 34,
         'NumCol': 10,
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     calibration_kwargs = {
         'apply_mask': True,
         'apply_weight': False,
-        'outlier_thresh': 5.0,
+        'outlier_thresh': 1.0,
         'ignore_list': [],
         'batch_size': 50,
         'offset_regularization': True,
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 1
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh1_sigma2_polyK1'
 
     # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
     POLY_DEGREE = 1
@@ -183,9 +183,9 @@ if __name__ == "__main__":
     ZODI_CLIP_ITERS = 2
 
     # Channels to process
-    chs = [[i] for i in range(1, 35)]
+    # chs = [[i] for i in range(1, 35)]
     # chs = [[14]]
-    # chs = ['Aliphatic', 'Aromatic']
+    chs = ['Aromatic', 'Aliphatic']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
     # Tune based on RAID config: ~4-8 for most RAID arrays. Set to None to disable.
     HDD_IO_LIMIT = 20
