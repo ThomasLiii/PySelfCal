@@ -846,6 +846,7 @@ def setup_lsqr(file_list, ref_shape,
                 'nnz_per_row': 1,
             })
 
+
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row
     # space (data rows first, then each constraint block).
@@ -1035,7 +1036,9 @@ def setup_lsqr(file_list, ref_shape,
 
         n_b = rows_b.shape[0]
         if n_b > 0:
-            if nnz_per_row == 1:
+            # nnz_per_row can be a scalar (uniform) or a numpy array (varying per-row).
+            is_uniform_one = (np.ndim(nnz_per_row) == 0 and int(nnz_per_row) == 1)
+            if is_uniform_one:
                 # Fast path: every constraint row contributes exactly one
                 # entry, so no duplicates exist and no sort is required.
                 slots = indptr[rows_b] + write_cursor[rows_b]
