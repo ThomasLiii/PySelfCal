@@ -203,7 +203,7 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
     """Fit the per-channel anchor from a PRISTINE cal + zodi-pred npz.
 
     Pure read + fit; never mutates cal or mosaic. Shared by build_anchor.py
-    and the run_cal_v2.py driver hook.
+    and the run_cal.py driver hook.
 
     Returns a dict of the per-channel summary scalars destined for the
     anchor-file Ch{c}/ group (plus npz identity fields).
@@ -332,7 +332,7 @@ def append_anchor_channel(out_path, detector, source_run, channel,
     """Add/replace one channel in a per-detector anchor file, in place.
 
     Creates the file (and root attrs + channels group) if absent. Used by
-    the run_cal_v2.py driver hook, which fits channels sequentially and
+    the run_cal.py driver hook, which fits channels sequentially and
     grows the detector anchor file as each finishes. Safe to re-run for a
     channel (overwrites its group).
     """

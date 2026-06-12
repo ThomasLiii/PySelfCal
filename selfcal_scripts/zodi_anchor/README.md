@@ -29,7 +29,7 @@ File-name roles:
   `zodi_preds/`.
 - `build_anchor.py` — fit the per-channel anchor from pristine cal +
   `zodi_pred_*.npz`, write `anchor_D{N}.h5`. No cal/mosaic mutation.
-  (The `run_cal_v2.py` driver does the same per channel inline via
+  (The `run_cal.py` driver does the same per channel inline via
   `append_anchor_channel`.)
 - `diag_*` — read-only diagnostics; read the anchor file (+ cal/npz as
   needed). Never modify cal/mosaic files.

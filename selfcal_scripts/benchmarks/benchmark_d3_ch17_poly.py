@@ -5,7 +5,7 @@ and system CPU% via a 0.5s sampler thread. Mosaic sub-phases (cache, mean,
 std, sigma_clip) are instrumented by monkey-patching MakeMap.compute_coadd_map
 so each call from Mosaicker.make_mosaic gets its own phase record.
 
-Config matches production (run_cal_v2.py) with two changes:
+Config matches production (run_cal.py) with two changes:
   - frame_setting NumCol bumped from 1 -> 10
   - poly constraint added: linear polynomial along columns within each
     subchannel (compute_column_polynomial_chains, weight=0.5)
@@ -301,7 +301,7 @@ class PhaseTracker:
 
 def main():
     # ============================================================
-    # Config — bumped from production run_cal_v2.py
+    # Config — bumped from production run_cal.py
     # ============================================================
     frame_setting = {
         'Detector': 3,

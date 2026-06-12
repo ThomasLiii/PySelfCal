@@ -1,11 +1,11 @@
 """Parallel test: D4 Ch1 with stronger damping + regularization.
 
-Variant of run_cal_v2.py for a single-channel sanity check that bumps
+Variant of run_cal.py for a single-channel sanity check that bumps
 damp_weight 0.1 -> 0.5 and reg_weights 0.1 -> 0.5 while leaving everything
 else (poly weight 0.5, NumCol=10, sigma, outlier_thresh, ...) identical to
 the main run. POLY_WEIGHT stays at 0.5 to isolate the damp/reg effect.
 
-Reuses the NVMe cache copied by the main run (run_cal_v2.py) so this
+Reuses the NVMe cache copied by the main run (run_cal.py) so this
 skips the HDD->NVMe copy and the NVMe cleanup. The main run owns those.
 
 Outputs land alongside the main run's files with FILE_SUFFIX bumped from
@@ -39,9 +39,9 @@ from SelfCal.SPHERExUtility import (
 )
 from SelfCal.SPHERExAppendWav import wav_coadd
 
-# Reuse the helpers from run_cal_v2.py for input prep.
+# Reuse the helpers from run_cal.py for input prep.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_cal_v2 import prepare_detector_inputs, prepare_channel_inputs  # noqa
+from run_cal import prepare_detector_inputs, prepare_channel_inputs  # noqa
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ by casting the problem as a large, sparse linear least-squares problem, then
 builds final co-added mean / std / sigma-clipped mosaic products.
 
 The reference driver script is
-[selfcal_scripts/run_cal_v2.py](../selfcal_scripts/run_cal_v2.py). A typical
+[selfcal_scripts/run_cal.py](../selfcal_scripts/run_cal.py). A typical
 end-to-end invocation goes through the three stage classes defined in
 [PipelineWrapper.py](PipelineWrapper.py):
 
@@ -363,7 +363,7 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
 ## Using the pipeline
 
 A minimal programmatic flow mirrors
-[selfcal_scripts/run_cal_v2.py](../selfcal_scripts/run_cal_v2.py):
+[selfcal_scripts/run_cal.py](../selfcal_scripts/run_cal.py):
 
 ```python
 import numpy as np
@@ -423,7 +423,7 @@ mm.save_mosaic(mos_file='mosaic.fits', overwrite=True)
 
 For a K=2 example (LVF chunks + detector-fixed readout-channel stripes
 shared across all frames), see
-[selfcal_scripts/run_cal_v2_k2_readout.py](../selfcal_scripts/run_cal_v2_k2_readout.py).
+[selfcal_scripts/run_cal_k2_readout.py](../selfcal_scripts/run_cal_k2_readout.py).
 
 ## Dependencies
 

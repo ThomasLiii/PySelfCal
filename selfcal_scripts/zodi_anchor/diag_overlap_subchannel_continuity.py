@@ -64,7 +64,7 @@ import numpy as np
 from SelfCal.ZodiAnchor import load_anchor
 
 
-# Production constants (match selfcal_scripts/drivers/run_cal_v2.py).
+# Production constants (match selfcal_scripts/drivers/run_cal.py).
 NUM_SUB = 10
 NUM_CH = 34
 NUM_COL = 10

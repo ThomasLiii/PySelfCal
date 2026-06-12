@@ -19,13 +19,13 @@ where:
 - `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case).
 - `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (default in `run_cal_v2.py`). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (default in `run_cal.py`). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
 For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution.
 
 ## Calibration pipeline tuning
 
-`frame_setting` chunk geometry ([selfcal_scripts/run_cal_v2.py](selfcal_scripts/run_cal_v2.py)):
+`frame_setting` chunk geometry ([selfcal_scripts/run_cal.py](selfcal_scripts/run_cal.py)):
 
 - `NumSub`, `NumCh` — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
@@ -38,7 +38,7 @@ For the K=1 default case the model collapses to `sky + offset[frame, chunk] + sc
   channels (relying on the per-frame scalar + adjacency reg) or `NumCol=3-10`
   for wider channels / poly-constrained runs.
 
-`calibration_kwargs` (production defaults in `run_cal_v2.py`):
+`calibration_kwargs` (production defaults in `run_cal.py`):
 
 ```python
 {
@@ -92,7 +92,7 @@ Key knobs:
 
 `det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
 
-`run_cal_v2.py:chs` accepts three forms: a list of single-channel lists
+`run_cal.py:chs` accepts three forms: a list of single-channel lists
 (e.g. `[[14], [15]]`, one calibration run per entry), a list of
 multi-channel groups (joint solve over those channels' subchannels), or
 the strings `'Aromatic'` / `'Aliphatic'`, which select hardcoded
@@ -106,7 +106,7 @@ filenames are deterministically
 
 Beyond the default per-frame, per-chunk solve, `Calibrator.setup_lsqr`
 supports restricted-solve modes that aren't currently exercised by
-`run_cal_v2.py` but exist in the API:
+`run_cal.py` but exist in the API:
 
 - **Locked offsets via `det_groups_list[m]`.** Pass an array of length
   `num_frames` giving a group ID per frame for map `m`; frames in the same
@@ -117,7 +117,7 @@ supports restricted-solve modes that aren't currently exercised by
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — see `selfcal_scripts/run_cal_v2_k2_readout.py`).
+  stripes — see `selfcal_scripts/run_cal_k2_readout.py`).
 - **Template-amplitude mode via `det_templates[m]`.** Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
@@ -140,7 +140,7 @@ start.
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
-heads. The pattern in `run_cal_v2.py`:
+heads. The pattern in `run_cal.py`:
 
 1. `set_hdd_io_limit(20)` — throttle the initial HDD copy
 2. Copy `*.h5` to `{CACHE_DIR}/reproj_nvme_{run_name}/` via
@@ -263,7 +263,7 @@ Ordering (after cal+mosaic exist):
 #    Add --smooth ONLY for atmospheric detectors (D1 He I/OI; D2) — see below.
 python selfcal_scripts/zodi_anchor/build_anchor.py --run-dir <run> [--smooth]
 
-# (alternatively, run_cal_v2.py with ZODI_PRED_DIR set writes the anchor
+# (alternatively, run_cal.py with ZODI_PRED_DIR set writes the anchor
 #  inline per channel as the cal loop runs — step 2 then already done.)
 
 # 3. (optional) slope smoothing as a separate, inspectable step:

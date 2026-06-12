@@ -1,6 +1,6 @@
 """Build mosaic FITS files for the poly_k1 and poly_k2 calibrations.
 
-Matches the production mosaic call (``run_cal_v2.py``): the LVF chunk map
+Matches the production mosaic call (``run_cal.py``): the LVF chunk map
 goes through ``make_spherex_stripped_offset_map`` (mean-preserving spline);
 for ``poly_k2`` the second 32-stripe detector-fixed map uses the simple
 chunk_to_det broadcast (``det_offset_funcs[1] = None``). Wavelength coadd
