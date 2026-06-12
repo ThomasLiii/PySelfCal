@@ -80,7 +80,7 @@ from SelfCal import PipelineWrapper
 from SelfCal.exposure_filter import filter_exposures_by_header
 
 frame_setting = {
-    'Detector': 6,
+    'Detector': 4,
     'NumSub': 10,
     'NumCh': 34,
     'NumCol': 3,
