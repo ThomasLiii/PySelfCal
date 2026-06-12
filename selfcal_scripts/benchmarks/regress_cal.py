@@ -87,6 +87,7 @@ def main():
     x0 = compute_x0_scalar_only(
         cc.A, cc.b, cc.ref_shape,
         scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+        active_mask=cc.active_mask,
     )
     cc.apply_lsqr(x0=x0, atol=1e-06, btol=1e-06, damp=0, iter_lim=50,
                   precondition=True, solver='lsqr', use_float32=True, n_threads=args.max_workers)

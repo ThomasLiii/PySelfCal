@@ -9,4 +9,5 @@ __pycache__/
 *.pyd
 *.egg-info/
 archive/
-todo/
+workspace/
+TODO.md

@@ -32,6 +32,55 @@ def load_calibration(band, calibration_dir=DEFAULT_CALIBRATION_DIR):
     BW_map = fits.getdata(BW_files[0])
     return BC_map, BW_map
 
+
+# --- PAH 3.29 μm aromatic emission feature defaults ------------------------
+# Used by the per-pixel spectral-fit mode in setup_lsqr (sky block split into
+# continuum + line amplitude per ref pixel; line column coefficient is the
+# Gaussian profile evaluated at each observation's LVF wavelength).
+#
+# Line center: PAH 3.29 μm C-H stretch (Tokunaga 1991; Draine & Li 2007). Fixed
+# at 3.290 μm — appropriate for galactic cirrus, biased for extragalactic.
+# Intrinsic FWHM: ~30-40 nm from literature; we use 40 nm conservatively.
+# LVF FWHM: ~94 nm median at the 3.29 arc in Band 4 BW_map. The combined
+# observed sigma uses Gaussian-convolution-of-Gaussians: sigma_obs = sqrt(
+#   (LVF_FWHM/2.355)^2 + (intrinsic_FWHM/2.355)^2 ) ≈ 0.0434 μm.
+# For best fidelity callers should sample per-pixel BW_map and recompute
+# sigma_per_pixel = sqrt((sub_BW/2.355)^2 + PAH_INTRINSIC_SIGMA_UM^2); the
+# fixed defaults below are the fallback when BW_map is not threaded.
+PAH_LINE_CENTER_UM = 3.290
+PAH_INTRINSIC_FWHM_UM = 0.040
+PAH_INTRINSIC_SIGMA_UM = PAH_INTRINSIC_FWHM_UM / 2.355  # ≈ 0.0170 μm
+LVF_FWHM_AT_PAH_UM = 0.0942  # Band 4 BW_map median where BC ∈ [3.27, 3.31]
+LINE_FWHM_UM = float(np.sqrt(LVF_FWHM_AT_PAH_UM**2 + PAH_INTRINSIC_FWHM_UM**2))  # ≈ 0.1023
+LINE_SIGMA_UM = LINE_FWHM_UM / 2.355  # ≈ 0.0434 μm
+
+
+def gaussian_line_profile(wave_um, center_um=PAH_LINE_CENTER_UM, sigma_um=LINE_SIGMA_UM):
+    """Gaussian line profile, peak = 1 at wave_um = center_um.
+
+    Used as the LSQR sky_line column coefficient in spectral-fit mode:
+    each data row's sky_line entry is `valid_weight * gaussian_line_profile(λ_i)`,
+    where λ_i is the LVF band-center wavelength at the sub-pixel that frame k
+    sees ref pixel P through (sampled via BC_map[sub_mapping]).
+
+    Parameters
+    ----------
+    wave_um : np.ndarray
+        Per-pixel wavelengths in micrometers. May be scalar or any shape.
+    center_um : float
+        Line peak wavelength. Default PAH_LINE_CENTER_UM = 3.290 μm.
+    sigma_um : float | np.ndarray
+        Gaussian σ in μm. Default LINE_SIGMA_UM ≈ 0.0434 (LVF ⊕ PAH intrinsic).
+        Pass an array (same shape as wave_um) when using per-pixel σ from
+        BW_map for higher fidelity.
+
+    Returns
+    -------
+    np.ndarray of float32, same shape as wave_um.
+    """
+    return np.exp(-0.5 * ((wave_um - center_um) / sigma_um)**2).astype(np.float32)
+
+
 def extract_spherex_channel_edges(band, channel_file=DEFAULT_CHANNEL_FILE):
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
@@ -436,6 +485,80 @@ def compute_column_polynomial_chains(chunk_map, num_columns, degree=1):
     offset = np.arange(L)[None, None, :]
     chunk_ids = sub_idx * num_columns + win_start + offset
     chains = chunk_ids.reshape(num_subchannels * num_windows, L).astype(np.int64)
+
+    stencil = np.array(
+        [(-1) ** k * comb(degree + 1, k) for k in range(L)],
+        dtype=np.float64,
+    )
+    return chains, stencil
+
+
+def compute_subchannel_polynomial_chains(num_subchannels, num_columns,
+                                         degree=1, subch_lo=None, subch_hi=None):
+    """Subchannel-direction analog of ``compute_column_polynomial_chains``.
+
+    For each column ``c``, sliding windows of length ``L = degree + 2`` over
+    consecutive subchannels ``s, s+1, ..., s+L-1`` form the chains, optionally
+    restricted to a window ``[subch_lo, subch_hi]`` on ``s`` (inclusive).
+
+    The chunk-id convention matches the rest of the codebase:
+    ``chunk(s, c) = s * num_columns + c``.
+
+    Together with the FD stencil ``(-1)^k * C(degree+1, k)``, the constraint
+    ``λ · Σ_ℓ stencil[ℓ] · o[k, chains[r, ℓ]] = 0`` annihilates any polynomial
+    of degree ``≤ degree`` in ``s``, per frame ``k`` and per chain ``r``. Use
+    this to force the per-frame offset to be a low-order polynomial along the
+    subchannel axis within a spectral window — e.g. degree=3 over the PAH
+    window so anything Gaussian-shaped is pushed onto the sky_line column
+    instead of being absorbed by the offset.
+
+    Parameters
+    ----------
+    num_subchannels : int
+        Total number of subchannels in the chunk map (``TOT_SUB``).
+    num_columns : int
+        Number of columns per subchannel (``NumCol``).
+    degree : int
+        Polynomial degree to enforce (1 = linear, 2 = quadratic, ...).
+    subch_lo, subch_hi : int or None
+        Inclusive lower/upper bounds on the chain's starting subchannel ``s``
+        — i.e. the chain spans ``[s, s+L-1]``. When ``None``, defaults to the
+        full range ``[0, num_subchannels-L]``.
+
+    Returns
+    -------
+    chains : (num_chains, L) int64 ndarray
+    stencil : (L,) float64 ndarray
+    """
+    from math import comb
+
+    if degree < 0:
+        raise ValueError(f"degree must be >= 0 (got {degree})")
+    L = degree + 2
+    if num_subchannels < L:
+        raise ValueError(
+            f"num_subchannels={num_subchannels} too small for degree={degree}: "
+            f"need >= {L}")
+    s_lo = 0 if subch_lo is None else int(subch_lo)
+    s_hi_chain_start = (num_subchannels - L) if subch_hi is None else int(subch_hi) - L + 1
+    if s_lo < 0 or s_hi_chain_start > num_subchannels - L:
+        raise ValueError(
+            f"window subch_lo={subch_lo}, subch_hi={subch_hi} (chain start "
+            f"range [{s_lo}, {s_hi_chain_start}]) outside valid "
+            f"[0, {num_subchannels - L}]")
+    if s_hi_chain_start < s_lo:
+        raise ValueError(
+            f"window [{subch_lo}, {subch_hi}] yields no length-{L} chains")
+
+    s_starts = np.arange(s_lo, s_hi_chain_start + 1, dtype=np.int64)  # (n_starts,)
+    n_starts = s_starts.size
+    cols = np.arange(num_columns, dtype=np.int64)  # (num_columns,)
+    offsets = np.arange(L, dtype=np.int64)  # (L,)
+    # chains shape: (n_starts, num_columns, L)
+    # chain[i, c, l] = (s_starts[i] + l) * num_columns + cols[c]
+    chunk_ids = (s_starts[:, None, None] + offsets[None, None, :]) * num_columns \
+                + cols[None, :, None]
+    chains = chunk_ids.reshape(n_starts * num_columns, L)
 
     stencil = np.array(
         [(-1) ** k * comb(degree + 1, k) for k in range(L)],

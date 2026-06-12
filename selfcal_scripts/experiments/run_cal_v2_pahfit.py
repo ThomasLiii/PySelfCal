@@ -1,10 +1,10 @@
 import os
-import re
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import sys
 import shutil
 import time
 import gc
@@ -15,13 +15,16 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
+parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_path)
+
 from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
 from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist
+make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
+compute_column_polynomial_chains
 from SelfCal.SPHERExAppendWav import wav_coadd
-from SelfCal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
 
 
 def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
@@ -68,9 +71,22 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
             subch = np.arange(225, 236)
         elif ch == 'Aliphatic':
             subch = np.arange(249, 260)
-        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels, 
+        elif ch == 'Aromatic_PAHfit':
+            # 40-subchannel range centered on PAH 3.29 μm (subch 210-250,
+            # symmetric ±20 from peak at ~subch 230) for the in-LSQR per-pixel
+            # continuum + line amplitude joint fit. ±2σ around line, G(λ_edge)
+            # ≈ 0.135 — far-edge subch contribute negligibly to line Fisher
+            # info (G² ≈ 0.02) so dropping the outer 10 subch from each side
+            # cuts matrix memory by ~33% with minimal information loss.
+            # The original 60-subch window (200-260) OOM'd at production scale
+            # (17.6k frames × 60 subch × ~300k entries → 5B nonzeros, peaked
+            # ~700 GB during the apply_lsqr A^T transpose allocation).
+            subch = np.arange(210, 250)
+        else:
+            raise ValueError(f"Unknown channel tag {ch!r}")
+        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
                                         num_columns=num_columns, subchannel_padding=1)
-        chunk_valid_mask = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels, 
+        chunk_valid_mask = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
                                         num_columns=num_columns, subchannel_padding=0)
 
     # Pre-calculate weights safely
@@ -111,32 +127,37 @@ def mask_bright_pixels(local_vars):
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
     frame_setting = {
-        'Detector': 2,
+        'Detector': 4,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 1,
+        'NumCol': 5,
     }
 
     selfcal_config = PipelineWrapper.PipelineConfig(
-        output_dir='/mnt/md124/thomasli/selfcal/outputs/',
-        run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
+        output_dir='/data3/thomasli/selfcal/outputs/',
+        run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
     )
 
     calibration_kwargs = {
         'apply_mask': True,
-        'apply_weight': True,  # Poisson inverse-variance weighting (make_weight = 1/sqrt(|data|+floor)). Bright cirrus pixels contribute ~10x less to the LSQR fit than dim sky, so the offset block is determined mostly by dim background and PAH brightness flows into sky at apply — significantly reduces the bowl-around-cirrus artifact. See fix/offset-damping branch.
+        'apply_weight': True,  # Poisson inverse-variance weighting (production fix). Off-peak PAH pixels get less weight, breaking sky→offset leakage.
         'outlier_thresh': 5.0,
-        'ignore_list': [],
+        # drop source-mask bit (match mosaic); sources participate in LSQR for source-included spectral mosaic.
+        # Verified on cirrus 1k: doubles covered pixels, raises corr(sky_total,baseline) 0.58->0.91, sky_line uncontaminated.
+        # See memory project_pahfit_ignore_list_21.md.
+        'ignore_list': [21],
         'batch_size': 50,
         'offset_regularization': True,
         'reg_weights': [0.1],
         'weighted_damping': True,
         'damp_weight': 0.1,
-        # 'damp_offset': 0.0 (default) — optional knob added in fix/offset-damping;
-        # mirrors damp_weight onto the offset block. Off by default; tested at 0.1
-        # showed bowl reduction but created a low-coverage dark-ring artifact, so
-        # apply_weight is preferred for production. Available for experimentation.
+        # --- Spectral-fit (PAHfit) mode params: 2-block sky (continuum + line amplitude) ---
+        # det_aux + spectral_fit are wired below into the cc.setup_lsqr call,
+        # not in this dict (det_aux depends on detector_inputs which isn't
+        # available at module load time).
+        'damp_weight_line': 0.0,  # No Tikhonov damping on line block (production choice from cirrus 1k A1/A2/A3 sweep: A3 dampL0 extracts the most diffuse PAH signal without biasing toward zero; higher per-pixel coverage in production vs sanity should suppress the low-coverage edge blowup seen in the 1k sweep).
+        # damp_offset reverted to 0 — hybrid test (apply_weight + damp_offset=0.1) was WORSE than applyWt alone (cirrus dark_spread widened further, dark-ring re-emerged). The two levers aren't orthogonal — both reweight toward bright/well-covered chunks. See aromatic-map-tuning session.
         'max_workers': 48,
         'postprocess_func': None, #mask_bright_pixels,
     }
@@ -145,7 +166,8 @@ if __name__ == "__main__":
         'atol': 1e-06,
         'btol': 1e-06,
         'damp': 0,
-        'iter_lim': 50,
+        # 100 iters gives pearson r > 0.999 between consecutive cals at Fisher>=10 (per staircase convergence study); bulk PAH signal converged
+        'iter_lim': 100,
         'precondition': True,
         'solver': 'lsqr',
     }
@@ -166,26 +188,15 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_outThresh5_sigma2'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_NumCol5_iter100_outThresh5_sigma2_polyK1'
 
-    # Optional zodi anchor: if a dir is set, after each channel's
-    # cal+mosaic is saved, look up the matching zodi prediction .npz
-    # (zodi_pred_<job_tag>.npz produced by
-    # selfcal_scripts/zodi_anchor/build_predictions.py), fit the
-    # per-channel anchor, and record it into the per-detector anchor file
-    # <run>/zodi_anchor/anchor_D{N}.h5 (via append_anchor_channel).
-    # Cal/mosaic are NOT modified — the shift is applied at read time by
-    # SelfCal.ZodiAnchor.load_anchor. Set None to skip (default).
-    ZODI_PRED_DIR = None
-    ZODI_CLIP_WINDOW_DAYS = 7.0
-    ZODI_CLIP_SIGMA = 3.0
-    ZODI_CLIP_ITERS = 2
+    # Linear column constraint weight (compute_column_polynomial_chains, degree=1)
+    POLY_DEGREE = 1
+    POLY_WEIGHT = 0.5
 
-    # Channels to process
-    # chs = [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11], [12], [13], [14], [15], [16], [17], [18], [19], [20], [21], [22], [23], [24], [25], [26], [27], [28], [29], [30], [31], [32], [33], [34]]
-    chs = [[3], [4], [5], [6], [7], [8]]
-    # chs = [[14]]
-    # chs = ['Aliphatic', 'Aromatic']
+    # Channels to process — per-pixel PAH 3.29 μm continuum + line amplitude
+    # joint solve, 60-subch window (200-260) for well-posed cont/line decoupling.
+    chs = ['Aromatic_PAHfit']
     # Max concurrent HDD reads — prevents RAID thrashing when multiple instances run.
     # Tune based on RAID config: ~4-8 for most RAID arrays. Set to None to disable.
     HDD_IO_LIMIT = 20
@@ -253,23 +264,52 @@ if __name__ == "__main__":
             # within-frame structure only on the chunks. Required to avoid
             # scan-stripe residuals on narrow channel masks — see PIPELINE.md.
             num_frames_run = len(cc.reproj_list)
+            poly_chains, poly_stencil = compute_column_polynomial_chains(
+                detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
+            )
+            poly_constraints_list = [[{
+                'chains': poly_chains,
+                'stencil': poly_stencil,
+                'weight': POLY_WEIGHT,
+            }]]
             cc.setup_lsqr(
                 chunk_maps=[detector_inputs['det_chunk_map']],
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
                 adj_infos=[detector_inputs['adj_info']],
+                poly_constraints_list=poly_constraints_list,
                 mean_offsets_list=[np.zeros(num_frames_run)],
                 use_per_frame_scalar=True,
+                # --- Spectral-fit (PAHfit) mode ---
+                # 2-block sky: x = [sky_cont | sky_line | offsets | scalar].
+                # det_aux = [BC_map, BW_map] gives per-(frame, sub-pixel)
+                # wavelength and per-pixel σ. The line-amp column coefficient
+                # is the Gaussian profile G(λ_i) evaluated per row.
+                spectral_fit=True,
+                det_aux=[detector_inputs['det_BC'], detector_inputs['det_BW']],
                 **calibration_kwargs
             )
 
             x0 = compute_x0_scalar_only(
                 cc.A, cc.b, cc.ref_shape,
                 scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                num_sky_blocks=cc.num_sky_blocks,
                 active_mask=cc.active_mask,
             )
 
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)
+            # Phase 6 recommended Fisher mask threshold — saved as cal attr
+            # only; not destructively applied. Use
+            # ``SelfCal.MakeMap.apply_line_fisher_mask`` at analysis time to
+            # apply the mask. Empirically determined from cirrus 1k
+            # A3-with-Fisher sanity: Fisher distribution is bimodal — a noise
+            # tail at Fisher<10 (low-coverage / off-peak-dominated pixels that
+            # blow up without damping) and a main peak around Fisher~100-500
+            # (well-constrained). Threshold=10 sits in the gap, masks ~6.5% of
+            # covered pixels at sanity scale, recovers corr(line, baseline)
+            # =+0.224 (vs +0.056 unmasked). Production has ~17x more frames so
+            # most pixels will be well above threshold.
+            cc.line_fisher_threshold = 10.0
             # Save with original HDD paths so cal file remains valid after NVMe cleanup
             nvme_list = cc.reproj_list
             cc.reproj_list = [os.path.join(selfcal_config.reproj_dir, os.path.basename(f)) for f in nvme_list]
@@ -318,38 +358,7 @@ if __name__ == "__main__":
         })
 
         mm.save_mosaic(mos_file=mos_file, overwrite=True)
-
-        # Optional zodi anchor: fit and record into the per-detector anchor
-        # file (<run>/zodi_anchor/anchor_D{N}.h5). Cal/mosaic are NOT
-        # modified — the shift is applied at read time by
-        # SelfCal.ZodiAnchor.load_anchor.
-        if ZODI_PRED_DIR is not None:
-            npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
-            m = re.search(r'_Ch(\d+)_', cal_file)
-            if not os.path.exists(npz_path):
-                print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
-            elif m is None:
-                print(f"Zodi anchor skipped for {job_tag}: not a single-channel "
-                      f"job (cannot parse _Ch<n>_ from {cal_file}).")
-            else:
-                ch_int = int(m.group(1))
-                clip_defaults = dict(clip_window_days=ZODI_CLIP_WINDOW_DAYS,
-                                     clip_sigma=ZODI_CLIP_SIGMA,
-                                     clip_iters=ZODI_CLIP_ITERS)
-                print(f"Fitting zodi anchor from {npz_path}...")
-                fit = fit_anchor_for_channel(
-                    cal_path, npz_path, **clip_defaults)
-                run_dir = os.path.dirname(selfcal_config.cal_dir.rstrip('/'))
-                anchor_path = os.path.join(
-                    run_dir, 'zodi_anchor', f'anchor_D{detector}.h5')
-                append_anchor_channel(
-                    anchor_path, detector, selfcal_config.run_name, ch_int,
-                    fit, clip_defaults, anchor_method='raw')
-                print(f"  Ch{ch_int}: C={fit['intercept']:.4g} MJy/sr, "
-                      f"slope={fit['slope']:.4f}, r={fit['pearson_r']:.4f}, "
-                      f"inliers={fit['n_inliers']}/"
-                      f"{fit['n_inliers']+fit['n_outliers']}  -> {anchor_path}")
-
+         
         # Clean up
         del cc, mm, maps
         if os.path.exists(cache_dir):
@@ -359,7 +368,11 @@ if __name__ == "__main__":
         print(f"Finished channel {job_name} for detector {frame_setting['Detector']} in {time.time() - t0:.2f} seconds.")
         print("-" * 50 + "\n")
 
-    # Cleanup NVMe reproj cache
-    if os.path.exists(nvme_reproj_dir):
+    # Cleanup NVMe reproj cache (skip when iterating — set KEEP_NVME_CACHE
+    # to avoid re-staging 327 GB from HDD on every rerun)
+    KEEP_NVME_CACHE = True
+    if not KEEP_NVME_CACHE and os.path.exists(nvme_reproj_dir):
         shutil.rmtree(nvme_reproj_dir)
         print("NVMe reproj cache cleaned up.")
+    elif KEEP_NVME_CACHE and os.path.exists(nvme_reproj_dir):
+        print(f"NVMe reproj cache preserved at {nvme_reproj_dir} (KEEP_NVME_CACHE=True).")

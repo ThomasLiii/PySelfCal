@@ -159,6 +159,7 @@ def main():
         x0 = compute_x0_scalar_only(
             cc.A, cc.b, cc.ref_shape,
             scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+            active_mask=cc.active_mask,
         )
 
     with tracker.phase('cal_apply_lsqr'):

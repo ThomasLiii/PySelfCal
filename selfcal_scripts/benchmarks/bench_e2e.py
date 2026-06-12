@@ -134,7 +134,8 @@ def _run_once(label, n_frames, max_workers):
         )
     with tracker.phase('cal_warmstart'):
         x0 = compute_x0_scalar_only(cc.A, cc.b, cc.ref_shape,
-                                    scalar_col_start=cc.col_bases[len(cc.chunk_maps)])
+                                    scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                                    active_mask=cc.active_mask)
     with tracker.phase('cal_apply_lsqr'):
         cc.apply_lsqr(x0=x0, atol=1e-06, btol=1e-06, damp=0, iter_lim=50,
                       precondition=True, solver='lsqr', use_float32=True, n_threads=max_workers)

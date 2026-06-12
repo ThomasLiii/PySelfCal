@@ -27,7 +27,7 @@ from .reproject import batch_reproject  # noqa: F401
 from .coadd import compute_coadd_map  # noqa: F401
 
 # --- LSQR ---
-from .lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts  # noqa: F401
+from .lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts, parse_pixel_fisher, apply_line_fisher_mask  # noqa: F401
 
 # --- Solution utilities ---
 from .solution import parse_x, encode_x, compute_x0_from_Ab, compute_x0_scalar_only  # noqa: F401

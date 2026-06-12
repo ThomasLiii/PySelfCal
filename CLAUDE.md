@@ -28,7 +28,8 @@ The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol{C}_Ch{ch}{suffix}.h5
 | `cache/` | Gitignored. Caches written by drivers + helpers: `cache/zodi_anchor/metadata_D{N}.h5` (zodi prediction metadata cache, path set by `DEFAULT_METADATA_CACHE_TEMPLATE` in `zodi_anchor/build_predictions.py`), `cache/reproj_nvme_*` (NVMe staging copies), plus mosaic intermediate caches. |
 | `figures/` | Gitignored. Subdirs only: `benchmark/`, `cc_figure/`, `mosaics/`, `zodi_frames/`, `zodi_anchor/`, `misc/` (catch-all for top-level renders). |
 | `archive/` | Gitignored top-level archive. Subdirs only: `analysis_top_level/` (stale `analysis/` notebooks/lists + `fit_params_with_scatter_n*.json`), `analysis_script/` (one-off analysis scripts: task1-4, plot_grad_*, plot_clean_spatial, plot_numcol_*, meeting_plots_by_lat, analyze_zodi_spatial, build_metadata, plot_chunkmap), `notebooks/` (older demos). Ignore unless asked. |
-| `todo/` | Gitignored. Loose `.md` files capturing todo ideas / scratch plans. Read when relevant to the current task; not authoritative — treat as scratch notes, not spec. |
+| `workspace/` | Gitignored. Per-session subdirs (`workspace/<slug>/`) holding scripts, figures, reports, caches, and rerun logs for ongoing analysis / experiment work. Convention: `workspace/<slug>/{brief.md, report.md, scripts, figures/, cache/, logs/, ...}`. See `workspace/README.md`. |
+| `TODO.md` | Gitignored. Scratch todo list / planning notes (root-level). Use for ephemeral planning; substantive design docs go in `workspace/<slug>/`. |
 
 Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli/selfcal/outputs/{run_name}/calibration/` (path is hard-coded in `analysis/analysis_script/zodi_utils.py:CAL_OUTPUT_BASE`).
 
