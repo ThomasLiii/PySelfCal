@@ -9,6 +9,6 @@ __pycache__/
 *.pyd
 *.egg-info/
 archive/
-workspace/
+workspace
 TODO.md
 selfcal_logs/
