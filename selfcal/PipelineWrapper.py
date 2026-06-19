@@ -470,7 +470,7 @@ class Calibrator(Reprojector):
         self.num_scalar_cols = 0
         self.layout = None  # selfcal.layout.SystemLayout, set in setup_lsqr
 
-    def setup_lsqr(self, chunk_maps, grid_valid_weight, oversample_factor=1,
+    def setup_lsqr(self, chunk_maps=None, grid_valid_weight=None, oversample_factor=1,
                    apply_mask=True, apply_weight=True, max_workers=20,
                    outlier_thresh=3.0, ignore_list=[], batch_size=10,
                    offset_regularization=False,
@@ -483,6 +483,7 @@ class Calibrator(Reprojector):
                    det_aux=None,
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
+                   offset_model=None,
                    top2_compaction_enabled=True):
         """Build the LSQR system for K chunk maps.
 
@@ -509,8 +510,23 @@ class Calibrator(Reprojector):
         channel-mask calibrations on H2RG detectors where ``compute_x0_from_Ab``
         alone leaves low-coverage chunks under-constrained.
         """
+        # An OffsetModel bundles the per-map offset config; expanding it here to
+        # the parallel-list kwargs keeps a single downstream code path that is
+        # numerically identical to the equivalent flat-kwarg call. The flat
+        # kwargs remain the (deprecated) transitional API.
+        if offset_model is not None:
+            om = offset_model.to_setup_kwargs()
+            chunk_maps = om['chunk_maps']
+            det_groups_list = om['det_groups_list']
+            det_templates = om['det_templates']
+            reg_weights = om['reg_weights']
+            adj_infos = om['adj_infos']
+            poly_constraints_list = om['poly_constraints_list']
+            mean_offsets_list = om['mean_offsets_list']
+            use_per_frame_scalar = om['use_per_frame_scalar']
+
         assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
-            "chunk_maps must be a non-empty list of ndarrays"
+            "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)"
         K = len(chunk_maps)
 
         def _check_len(name, val):

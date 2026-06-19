@@ -47,6 +47,9 @@ def main():
     ap.add_argument('--n-frames', type=int, default=300)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--batch-size', type=int, default=50)
+    ap.add_argument('--use-offset-model', action='store_true',
+                    help='drive setup_lsqr via OffsetModel instead of flat kwargs '
+                         '(dual-path bit-identity check; must match the flat golden)')
     args = ap.parse_args()
 
     cfg = PipelineWrapper.PipelineConfig(
@@ -70,17 +73,34 @@ def main():
     cal_file = f'cal_{frame_str}_Ch17{args.suffix}.h5'
 
     t0 = time.time()
-    cc.setup_lsqr(
-        chunk_maps=[det_inputs['det_chunk_map']],
+    common = dict(
         grid_valid_weight=ch_inputs['det_valid_mask_padded'],
         oversample_factor=1,
-        adj_infos=[det_inputs['adj_info']],
-        mean_offsets_list=[np.zeros(num_frames)],
-        use_per_frame_scalar=True,
         apply_mask=True, apply_weight=False, outlier_thresh=5.0, ignore_list=[],
-        batch_size=args.batch_size, offset_regularization=True, reg_weights=[0.1],
+        batch_size=args.batch_size, offset_regularization=True,
         weighted_damping=True, damp_weight=0.1, max_workers=args.max_workers,
     )
+    if args.use_offset_model:
+        # Dual-path check: identical config expressed as an OffsetModel. Lowers
+        # to the same parallel-list kwargs, so the cal must be byte-equal to the
+        # flat-kwarg golden.
+        from SelfCal.MakeMap import OffsetModel, OffsetBlock
+        om = OffsetModel([
+            OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
+                        adj_info=det_inputs['adj_info'],
+                        reg_weight=0.1,
+                        mean_offset=np.zeros(num_frames)),
+        ], use_per_frame_scalar=True)
+        cc.setup_lsqr(offset_model=om, **common)
+    else:
+        cc.setup_lsqr(
+            chunk_maps=[det_inputs['det_chunk_map']],
+            adj_infos=[det_inputs['adj_info']],
+            mean_offsets_list=[np.zeros(num_frames)],
+            reg_weights=[0.1],
+            use_per_frame_scalar=True,
+            **common,
+        )
     t_setup = time.time() - t0
     print(f"setup_lsqr: {t_setup:.2f} s")
 

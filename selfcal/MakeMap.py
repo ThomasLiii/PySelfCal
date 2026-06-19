@@ -31,3 +31,7 @@ from .lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts, parse_pixel_fisher
 
 # --- Solution utilities ---
 from .solution import parse_x, encode_x, compute_x0_from_Ab, compute_x0_scalar_only  # noqa: F401
+
+# --- Layout + offset model (refactor/selfcal-package) ---
+from .layout import SystemLayout  # noqa: F401
+from .offset_model import OffsetModel, OffsetBlock  # noqa: F401
