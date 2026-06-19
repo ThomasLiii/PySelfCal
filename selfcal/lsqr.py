@@ -13,6 +13,7 @@ from threadpoolctl import threadpool_limits
 from .subframe import _prep_subframe
 from .MapHelper import find_outliers, check_invalid
 from .layout import SystemLayout
+from .sky_model import SkyModel
 
 
 def _prep_lsqr(task_params):
@@ -79,40 +80,42 @@ def _prep_lsqr(task_params):
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
-        num_sky_blocks = task_params.get('num_sky_blocks', 1)
-        if num_sky_blocks == 2:
-            # Spectral-fit mode: emit two sky nnz per data row. First nnz at
-            # column P (sky_cont) with coefficient w_i; second at column
-            # num_sky + P (sky_line) with coefficient w_i * G(λ_i).
-            # λ_i = sub_BC[valid_sub_coords] from det_aux=[BC_map].
-            # If det_aux includes BW_map, use per-pixel σ; else scalar σ.
-            line_center = task_params['line_center']
-            line_sigma_scalar = task_params['line_sigma']
-            sub_BC = sub_aux[0]
-            lambda_per = sub_BC[valid_sub_coords]
-            if len(sub_aux) >= 2:
-                # Per-pixel σ = sqrt((sub_BW/2.355)² + PAH_intrinsic²)
-                # PAH_INTRINSIC_SIGMA_UM ≈ 0.0170 → 2.89e-4
-                sub_BW = sub_aux[1]
-                obs_sigma_per = sub_BW[valid_sub_coords] / 2.355
-                sigma_per = np.sqrt(obs_sigma_per * obs_sigma_per + 2.890e-4)
-            else:
-                sigma_per = line_sigma_scalar
-            G_per = np.exp(
-                -0.5 * ((lambda_per - line_center) / sigma_per) ** 2
-            ).astype(np.float32)
-
-            S_rows = np.repeat(np.arange(num_valid_pixels, dtype=np.int32), 2)
-            S_cols = np.empty(2 * num_valid_pixels, dtype=np.int64)
-            S_cols[0::2] = ref_pix_indices
-            S_cols[1::2] = num_sky + ref_pix_indices
-            S_data = np.empty(2 * num_valid_pixels, dtype=np.float32)
-            S_data[0::2] = valid_weight
-            S_data[1::2] = valid_weight * G_per
+        # --- Sky rows: one nnz per sky component per data row ---
+        # SkyModel generalizes the legacy num_sky_blocks {1,2} cases. Each
+        # component j contributes a coefficient over the valid pixels:
+        #   - None  -> identity (continuum): store valid_weight directly.
+        #   - array -> e.g. line profile G(λ) (LineComponent), store w_i * coeff.
+        # J==1 with an identity coefficient takes the fast path (no interleave,
+        # no multiply). J>=2 interleaves S_cols[j::J] = j*num_sky + P and
+        # S_data[j::J]. With components [continuum] or [continuum, pah_3p29
+        # Gaussian] this reproduces the old single/two-block emission byte-for-
+        # byte (same order, same float ops, same dtypes). aux maps (BC/BW) are
+        # sampled to the valid pixels and passed by name to each component.
+        sky_components = task_params.get('sky_components')
+        if sky_components is None:
+            J = 1
+            sky_coeffs = [None]
         else:
+            J = len(sky_components)
+            aux = {}
+            if sub_aux is not None:
+                aux_keys = task_params.get('aux_keys') or []
+                for i, k in enumerate(aux_keys):
+                    aux[k] = sub_aux[i][valid_sub_coords]
+            sky_coeffs = [c.coefficients(aux) for c in sky_components]
+
+        if J == 1 and sky_coeffs[0] is None:
             S_rows = np.arange(num_valid_pixels)
             S_cols = ref_pix_indices
             S_data = valid_weight
+        else:
+            S_rows = np.repeat(np.arange(num_valid_pixels, dtype=np.int32), J)
+            S_cols = np.empty(J * num_valid_pixels, dtype=np.int64)
+            S_data = np.empty(J * num_valid_pixels, dtype=np.float32)
+            for j in range(J):
+                S_cols[j::J] = j * num_sky + ref_pix_indices
+                cj = sky_coeffs[j]
+                S_data[j::J] = valid_weight if cj is None else valid_weight * cj
 
         # --- Offset rows: one block per chunk map ---
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
@@ -510,6 +513,22 @@ def setup_lsqr(file_list, ref_shape,
               f"line_center={line_center} μm, line_sigma={line_sigma:.5f} μm, "
               f"damp_weight_line={damp_weight_line}.")
 
+    # --- Sky model: components drive the per-pixel sky row emission ---
+    # Built internally from the legacy spectral_fit flag (the public sky_model=
+    # API + deprecation shim lands in Phase 3h). The worker emits sky nnz via the
+    # SkyComponent loop: continuum-only -> J=1 identity fast path (store
+    # valid_weight directly); continuum+PAH -> J=2 interleave with G(λ). This
+    # reproduces the old num_sky_blocks {1,2} emission byte-for-byte.
+    # num_sky_blocks stays = n_blocks for the coverage/Fisher/layout code that
+    # still consumes it (generalized in later phases).
+    if spectral_fit:
+        sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
+    else:
+        sky_model = SkyModel.continuum_only()
+    assert sky_model.n_blocks == num_sky_blocks
+    # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
+    aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
+
     # --- Column layout (single source of truth: selfcal.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
     # col_bases, the per-frame scalar block, and the total column count. The
@@ -561,6 +580,8 @@ def setup_lsqr(file_list, ref_shape,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
         'num_sky_blocks': num_sky_blocks,
+        'sky_components': sky_model.components,
+        'aux_keys': aux_keys,
         'line_center': line_center,
         'line_sigma': line_sigma,
     }
