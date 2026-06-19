@@ -23,4 +23,8 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["SelfCal*"]
+# Refactor in progress (refactor/selfcal-package): code now lives in the
+# lowercase ``selfcal`` package; ``SelfCal`` is kept as a thin back-compat
+# shim package until all consumers are migrated. Both are discovered so
+# ``import selfcal`` and ``import SelfCal`` both resolve.
+include = ["selfcal*", "SelfCal*"]
