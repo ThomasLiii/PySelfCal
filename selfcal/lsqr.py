@@ -12,6 +12,7 @@ from threadpoolctl import threadpool_limits
 
 from .subframe import _prep_subframe
 from .MapHelper import find_outliers, check_invalid
+from .layout import SystemLayout
 
 
 def _prep_lsqr(task_params):
@@ -509,52 +510,25 @@ def setup_lsqr(file_list, ref_shape,
               f"line_center={line_center} μm, line_sigma={line_sigma:.5f} μm, "
               f"damp_weight_line={damp_weight_line}.")
 
-    # --- Per-map group mapping + template normalization ---
-    frame_to_group_list = []
-    num_offset_groups_list = []
-    num_chunks_list = []
-    det_template_arr_list = []
+    # --- Column layout (single source of truth: selfcal.layout.SystemLayout) ---
+    # SystemLayout computes the per-map group mapping, template normalization,
+    # col_bases, the per-frame scalar block, and the total column count. The
+    # Calibrator builds the same layout from the same inputs (see
+    # PipelineWrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
+    # column arithmetic can never drift.
     any_det_groups = any(g is not None for g in det_groups_list)
-
-    for m in range(K):
-        cm = chunk_maps[m]
-        num_chunks_m = int(cm.max()) + 1
-        if det_groups_list[m] is not None:
-            det_groups_arr = np.asarray(det_groups_list[m])
-            unique_groups, ftg = np.unique(det_groups_arr, return_inverse=True)
-            num_offset_groups_m = len(unique_groups)
-        else:
-            ftg = np.arange(num_frames)
-            num_offset_groups_m = num_frames
-
-        if det_templates[m] is not None:
-            assert det_groups_list[m] is not None, f"det_templates[{m}] requires det_groups_list[{m}]"
-            tmpl = np.asarray(det_templates[m], dtype=np.float32)
-            # Template mode collapses (groups, chunks) into a single per-frame alpha
-            num_offset_groups_m = num_frames
-            num_chunks_m = 1
-        else:
-            tmpl = None
-
-        frame_to_group_list.append(ftg)
-        num_offset_groups_list.append(num_offset_groups_m)
-        num_chunks_list.append(num_chunks_m)
-        det_template_arr_list.append(tmpl)
-
-    num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
-
-    # --- col_bases: per-map offset-block column starts; col_bases[K] = scalar_col_start ---
-    # When spectral_fit, sky block is 2*num_sky; col_bases[0] tracks the first
-    # column AFTER the full sky block (regardless of how many sky sub-blocks).
-    col_bases = [num_sky_blocks * num_sky]
-    for m in range(K):
-        if det_template_arr_list[m] is not None:
-            block = num_frames  # one alpha column per frame
-        else:
-            block = num_chunks_list[m] * num_offset_groups_list[m]
-        col_bases.append(col_bases[-1] + block)
-    scalar_col_start = col_bases[K]
-    total_cols = scalar_col_start + num_scalar_cols
+    layout = SystemLayout.build(
+        ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
+        det_groups_list=det_groups_list, det_templates=det_templates,
+        use_per_frame_scalar=use_per_frame_scalar)
+    frame_to_group_list = layout.frame_to_group_list
+    num_offset_groups_list = layout.num_offset_groups_list
+    num_chunks_list = layout.num_chunks_list
+    det_template_arr_list = layout.det_template_arr_list
+    num_scalar_cols = layout.num_scalar_cols
+    col_bases = layout.col_bases
+    scalar_col_start = layout.scalar_col_start
+    total_cols = layout.total_cols
 
     if any_det_groups or use_per_frame_scalar:
         print(f"Locking detector offsets: {num_frames} frames -> "

@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from . import MakeMap
 from . import WCSHelper
+from .layout import SystemLayout
 
 # Manifest schema bump when the JSON layout changes incompatibly.
 _REPROJ_MANIFEST_SCHEMA = 1
@@ -467,6 +468,7 @@ class Calibrator(Reprojector):
         self.det_templates = []
         self.col_bases = None  # length K+1; col_bases[K] == scalar_col_start
         self.num_scalar_cols = 0
+        self.layout = None  # selfcal.layout.SystemLayout, set in setup_lsqr
 
     def setup_lsqr(self, chunk_maps, grid_valid_weight, oversample_factor=1,
                    apply_mask=True, apply_weight=True, max_workers=20,
@@ -562,49 +564,21 @@ class Calibrator(Reprojector):
         # all know whether to expect a continuum-only or continuum+line layout.
         self.num_sky_blocks = 2 if spectral_fit else 1
 
-        # Mirror the layout setup_lsqr computed so parse_x / save_calibration
-        # don't have to recompute frame_to_group, col_bases, etc.
+        # Mirror the column layout setup_lsqr computed via the SAME SystemLayout
+        # so parse_x / save_calibration don't recompute (and can't drift from)
+        # frame_to_group, col_bases, the scalar block, etc.
         num_frames = len(self.reproj_list)
-        num_sky = self.ref_shape[0] * self.ref_shape[1]
-
-        any_det_groups = det_groups_list is not None and any(g is not None for g in det_groups_list)
-        self.num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
-
-        frame_to_groups = []
-        num_offset_groups_list = []
-        num_chunks_list = []
-        det_template_arr_list = []
-        col_bases = [self.num_sky_blocks * num_sky]
-        for m in range(K):
-            cm = chunk_maps[m]
-            num_chunks_m = int(cm.max()) + 1
-            dgm = det_groups_list[m] if det_groups_list is not None else None
-            if dgm is not None:
-                _, ftg = np.unique(dgm, return_inverse=True)
-                num_offset_groups_m = len(np.unique(dgm))
-            else:
-                ftg = np.arange(num_frames)
-                num_offset_groups_m = num_frames
-            tmpl = det_templates[m] if det_templates is not None else None
-            if tmpl is not None:
-                num_offset_groups_m = num_frames  # one alpha per frame
-                num_chunks_m = 1
-                block = num_frames
-                tmpl = np.asarray(tmpl, dtype=np.float32)
-            else:
-                block = num_offset_groups_m * num_chunks_m
-            frame_to_groups.append(ftg)
-            num_offset_groups_list.append(num_offset_groups_m)
-            num_chunks_list.append(num_chunks_m)
-            det_template_arr_list.append(tmpl)
-            col_bases.append(col_bases[-1] + block)
-
+        self.layout = SystemLayout.build(
+            self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
+            num_frames=num_frames, det_groups_list=det_groups_list,
+            det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar)
         self.chunk_maps = chunk_maps
-        self.frame_to_groups = frame_to_groups
-        self.num_offset_groups_list = num_offset_groups_list
-        self.num_chunks_list = num_chunks_list
-        self.det_templates = det_template_arr_list
-        self.col_bases = col_bases
+        self.frame_to_groups = self.layout.frame_to_group_list
+        self.num_offset_groups_list = self.layout.num_offset_groups_list
+        self.num_chunks_list = self.layout.num_chunks_list
+        self.det_templates = self.layout.det_template_arr_list
+        self.num_scalar_cols = self.layout.num_scalar_cols
+        self.col_bases = self.layout.col_bases
 
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
                    solver='lsmr', use_float32=False, n_threads=32, keep_state=False):
