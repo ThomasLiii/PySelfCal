@@ -139,7 +139,7 @@ FULL_REPROJ_DIR = '/data3/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D4_6p2arc
 # One continuous LSQR call with iter_lim=200. Tests whether the v7 staircase
 # oscillation was caused by restarted-Krylov warm-restart (would NOT appear
 # here since there's no restart) vs frame-count instability (WOULD still appear).
-SINGLESHOT_ITER_LIM = 200  # v15 production convergence
+SINGLESHOT_ITER_LIM = 400  # v15 production convergence
 # --- chunk filter: NW quadrant of full NEP (12676 x 12672) with 50 px overlap ---
 CHUNK_BBOX = (6313, 12676, 0, 6361)  # SW quadrant of D4 NEP
 
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_full_SW_iter200_subchPoly3_w100_outThresh5_sigma2_polyK1'
+    FILE_SUFFIX = f'_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_full_SW_iter400_subchPoly3_w100_outThresh5_sigma2_polyK1'
 
     # --- v14: subchannel-direction polynomial constraint inside the PAH window ---
     # Forces per-frame offset[k, :, c] to be at most a cubic in subch index s for
