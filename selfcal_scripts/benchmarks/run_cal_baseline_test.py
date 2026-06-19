@@ -255,8 +255,9 @@ if __name__ == "__main__":
 
     # Variants run sequentially; each produces a distinctly-named cal_*.h5
     # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the
-    # K=1, NumCol=3 regression baseline.
-    TEST_VARIANTS = ['poly_off', 'poly_k1', 'poly_k2']
+    # K=1, NumCol=3 regression baseline. 'oldx0_off' re-enabled as the pre-Apr-5
+    # compute_offsets_guess x0-init diagnostic (refactor regression gate).
+    TEST_VARIANTS = ['poly_off', 'poly_k1', 'poly_k2', 'oldx0_off']
 
     # Cap reproj files for a quick plumbing check; set to None for full runs.
     NUM_FRAMES_LIMIT = None

@@ -80,6 +80,21 @@ def diff(a_path, b_path):
         for k in ('skymap', 'skymap_coverage', 'reproj_list'):
             failures += _diff_array(k, A[k][...], B[k][...])
 
+        # Optional spectral-fit datasets (spectral_fit=True / num_sky_blocks==2):
+        # the line-amplitude sky block + Fisher diagnostics. Compare when present
+        # in BOTH files; flag when present in only one (a refactor that silently
+        # drops the line block must fail the gate). frame_scalar is intentionally
+        # NOT checked here — it is already folded into offset map_0 by
+        # _read_offset, and is legitimately absent from the legacy schema.
+        for k in ('skymap_line', 'skymap_line_coverage', 'skymap_line_fisher',
+                  'skymap_fisher'):
+            in_a, in_b = (k in A), (k in B)
+            if in_a and in_b:
+                failures += _diff_array(k, A[k][...], B[k][...])
+            elif in_a != in_b:
+                print(f'DIFF {k}: present in {"A" if in_a else "B"} only')
+                failures += 1
+
         # Number of maps must agree across schemas.
         K_a, K_b = _num_maps(A), _num_maps(B)
         if K_a != K_b:

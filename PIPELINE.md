@@ -297,3 +297,26 @@ only the slope is.
 `selfcal_scripts/run_cal_baseline_test.py` is the canonical regression harness. It defines `TEST_VARIANTS` (`poly_off`, `poly_k1`, `poly_k2`, `oldx0_off`, `scalar_off`, …) so the same script can produce side-by-side cal files for different solver configurations. Pair with `selfcal_scripts/diff_cal_h5.py` for element-wise diffs (schema-aware: legacy vs new, or new vs new).
 
 Phase-level wall/RSS/IO benchmarking: `selfcal_scripts/benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Each writes `figures/benchmark/d3_ch17_{variant}_{summary.txt,samples.json,timeline.png}` and is parameterized by `max_workers` / `batch_size` / `n_threads` so you can run a tuning sweep quickly.
+
+### Refactor bit-identity gate (`refactor/selfcal-package`)
+
+The package refactor (`SelfCal/` → `selfcal/`, N-component SkyModel, OffsetModel, tiled wrapper) is verified phase-by-phase against **byte-identical** golden cal files. Two fast fixed-subset gates cover the two code paths the refactor touches; both write to the production `calibration/` dir with a `_gate_*` suffix (no clobber of real cals) and both must be re-run with **identical** `--n-frames` / `--max-workers` / `--batch-size` (and `--iter-lim` for the spectral gate) across baseline and candidate — these set the float accumulation order, so changing them re-baselines.
+
+- **Continuum** — `selfcal_scripts/benchmarks/regress_cal.py` (D3 Ch17, NumCol3, K=1 + per-frame scalar, 300 frames). Needs the D3 reproj subset staged at `cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec/`.
+- **Spectral** — `selfcal_scripts/benchmarks/regress_cal_spectral.py` (D4 Aromatic_PAHfit, NumCol5, `spectral_fit=True`, per-frame scalar + linear column poly, 150 frames). Uses the already-staged `cache/reproj_nvme_pahfit_sanity_1k/`. Exercises the 2-block sky layout, per-pixel Gaussian `G(λ)` row coefficients, line-block Fisher, and the `skymap_line*` datasets.
+
+`diff_cal_h5.py` is schema-aware and now compares `skymap_line`, `skymap_line_coverage`, `skymap_line_fisher`, and `skymap_fisher` when present (and flags a line block dropped by one side). Procedure per phase:
+
+```bash
+PY=/home/thomasli/anaconda3/envs/selfcal/bin/python   # dev env (has hdf5plugin etc.)
+# Establish goldens once on the pre-refactor tip:
+$PY selfcal_scripts/benchmarks/regress_cal.py          --suffix _gate_golden
+$PY selfcal_scripts/benchmarks/regress_cal_spectral.py --suffix _gate_golden
+# After each phase, re-run with a new suffix and diff (must be ALL DATASETS BYTE-EQUAL):
+$PY selfcal_scripts/benchmarks/regress_cal.py          --suffix _gate_phaseN
+$PY selfcal_scripts/drivers/diff_cal_h5.py  <cal_dir>/cal_..._Ch17_gate_golden.h5  <cal_dir>/cal_..._Ch17_gate_phaseN.h5
+$PY selfcal_scripts/benchmarks/regress_cal_spectral.py --suffix _gate_phaseN
+$PY selfcal_scripts/drivers/diff_cal_h5.py  <cal_dir>/cal_..._AromaticPAHfit_gate_golden.h5  <cal_dir>/cal_..._AromaticPAHfit_gate_phaseN.h5
+```
+
+The full comprehensive sweep (`run_cal_baseline_test.py`, all variants × all frames) is the heavier comprehensive check; the two fast gates above are the per-phase tripwire.

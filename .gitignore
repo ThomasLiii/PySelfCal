@@ -12,3 +12,5 @@ archive/
 workspace
 TODO.md
 selfcal_logs/
+.claude/
+selfcal_scripts/drivers/chunked_NEP/logs/
