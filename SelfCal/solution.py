@@ -5,5 +5,5 @@ object as ``selfcal.solution`` (no duplicate state) so existing imports keep wor
 during the migration.
 """
 import sys as _sys
-import selfcal.solution as _m
+import selfcal.core.solution as _m
 _sys.modules[__name__] = _m

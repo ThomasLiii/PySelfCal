@@ -14,7 +14,7 @@ from multiprocessing import Pool
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
-from .MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
+from .geometry.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
 from .MakeMap import load_reproj_file
 
 

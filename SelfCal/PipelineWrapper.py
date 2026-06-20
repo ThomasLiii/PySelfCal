@@ -5,5 +5,5 @@ object as ``selfcal.PipelineWrapper`` (no duplicate state) so existing imports k
 during the migration.
 """
 import sys as _sys
-import selfcal.PipelineWrapper as _m
+import selfcal.pipeline.PipelineWrapper as _m
 _sys.modules[__name__] = _m

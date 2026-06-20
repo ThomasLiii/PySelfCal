@@ -7,8 +7,8 @@ so the Phase 3b row-assembly rewire stays byte-identical.
 """
 import numpy as np
 
-from selfcal.profiles import GaussianProfile, TemplateProfile, QuadratureSigma
-from selfcal.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
+from selfcal.models.profiles import GaussianProfile, TemplateProfile, QuadratureSigma
+from selfcal.models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
                                LineComponent)
 from selfcal.SPHERExUtility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
 

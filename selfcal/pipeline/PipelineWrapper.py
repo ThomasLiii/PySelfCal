@@ -16,10 +16,10 @@ from tqdm import tqdm
 
 import warnings
 
-from . import MakeMap
-from . import WCSHelper
-from .layout import SystemLayout
-from .sky_model import SkyModel
+from .. import MakeMap
+from ..geometry import WCSHelper
+from ..core.layout import SystemLayout
+from ..models.sky_model import SkyModel
 
 # Manifest schema bump when the JSON layout changes incompatibly.
 _REPROJ_MANIFEST_SCHEMA = 1

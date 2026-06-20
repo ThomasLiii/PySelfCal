@@ -5,5 +5,5 @@ object as ``selfcal.subframe`` (no duplicate state) so existing imports keep wor
 during the migration.
 """
 import sys as _sys
-import selfcal.subframe as _m
+import selfcal.core.subframe as _m
 _sys.modules[__name__] = _m

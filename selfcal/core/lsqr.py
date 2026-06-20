@@ -11,9 +11,9 @@ from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
 from .subframe import _prep_subframe
-from .MapHelper import find_outliers, check_invalid
+from ..geometry.MapHelper import find_outliers, check_invalid
 from .layout import SystemLayout
-from .sky_model import SkyModel
+from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block)
 

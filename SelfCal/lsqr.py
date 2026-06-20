@@ -5,5 +5,5 @@ object as ``selfcal.lsqr`` (no duplicate state) so existing imports keep working
 during the migration.
 """
 import sys as _sys
-import selfcal.lsqr as _m
+import selfcal.core.lsqr as _m
 _sys.modules[__name__] = _m

@@ -5,5 +5,5 @@ object as ``selfcal.MapHelper`` (no duplicate state) so existing imports keep wo
 during the migration.
 """
 import sys as _sys
-import selfcal.MapHelper as _m
+import selfcal.geometry.MapHelper as _m
 _sys.modules[__name__] = _m

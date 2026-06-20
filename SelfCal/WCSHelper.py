@@ -5,5 +5,5 @@ object as ``selfcal.WCSHelper`` (no duplicate state) so existing imports keep wo
 during the migration.
 """
 import sys as _sys
-import selfcal.WCSHelper as _m
+import selfcal.geometry.WCSHelper as _m
 _sys.modules[__name__] = _m

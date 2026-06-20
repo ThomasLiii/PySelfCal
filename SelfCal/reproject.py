@@ -5,5 +5,5 @@ object as ``selfcal.reproject`` (no duplicate state) so existing imports keep wo
 during the migration.
 """
 import sys as _sys
-import selfcal.reproject as _m
+import selfcal.io.reprojection as _m
 _sys.modules[__name__] = _m

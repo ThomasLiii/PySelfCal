@@ -5,5 +5,5 @@ object as ``selfcal.io`` (no duplicate state) so existing imports keep working
 during the migration.
 """
 import sys as _sys
-import selfcal.io as _m
+import selfcal.io.reproj as _m
 _sys.modules[__name__] = _m

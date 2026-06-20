@@ -14,9 +14,9 @@ import tempfile
 import h5py
 import numpy as np
 
-from selfcal.PipelineWrapper import Calibrator
-from selfcal.sky_model import SkyModel, ContinuumComponent, LineComponent
-from selfcal.profiles import GaussianProfile, TemplateProfile
+from selfcal.pipeline.PipelineWrapper import Calibrator
+from selfcal.models.sky_model import SkyModel, ContinuumComponent, LineComponent
+from selfcal.models.profiles import GaussianProfile, TemplateProfile
 
 
 def _make_stub(x, ref_shape, num_frames, num_chunks, sky_model, pixel_counts, pixel_fisher):

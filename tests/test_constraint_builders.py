@@ -9,7 +9,7 @@ Runnable as ``python tests/test_constraint_builders.py`` or under pytest.
 """
 import numpy as np
 
-from selfcal.constraint_builders import (ConstraintBlock, mean_offset_block,
+from selfcal.core.constraint_builders import (ConstraintBlock, mean_offset_block,
                                          sky_damping_block, offset_damping_block)
 
 

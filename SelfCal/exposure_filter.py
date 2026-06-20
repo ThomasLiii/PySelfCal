@@ -5,5 +5,5 @@ object as ``selfcal.exposure_filter`` (no duplicate state) so existing imports k
 during the migration.
 """
 import sys as _sys
-import selfcal.exposure_filter as _m
+import selfcal.io.exposure_filter as _m
 _sys.modules[__name__] = _m

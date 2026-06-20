@@ -5,5 +5,5 @@ object as ``selfcal.coadd`` (no duplicate state) so existing imports keep workin
 during the migration.
 """
 import sys as _sys
-import selfcal.coadd as _m
+import selfcal.core.coadd as _m
 _sys.modules[__name__] = _m

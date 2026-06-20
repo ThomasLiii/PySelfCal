@@ -6,7 +6,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from . import _state
+from .. import _state
 
 
 def load_reproj_file(file_path, fields):
