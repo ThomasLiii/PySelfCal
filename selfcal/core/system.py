@@ -192,7 +192,7 @@ def setup_lsqr(file_list, ref_shape,
             raise ValueError(
                 "A spectral SkyModel (>1 sky block) requires det_aux=[BC_map] "
                 "(or [BC_map, BW_map] for per-pixel σ). Pass BC_map from "
-                "selfcal.SPHERExUtility.load_calibration(band=detector).")
+                "selfcal.instruments.spherex.SPHERExUtility.load_calibration(band=detector).")
         print(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
               f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
     # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).

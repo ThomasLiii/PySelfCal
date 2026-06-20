@@ -5,5 +5,5 @@ object as ``selfcal.EuclidUtility`` (no duplicate state) so existing imports kee
 during the migration.
 """
 import sys as _sys
-import selfcal.EuclidUtility as _m
+import selfcal.instruments.euclid.exposures as _m
 _sys.modules[__name__] = _m

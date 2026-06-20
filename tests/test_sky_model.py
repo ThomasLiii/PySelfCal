@@ -10,7 +10,7 @@ import numpy as np
 from selfcal.models.profiles import GaussianProfile, TemplateProfile, QuadratureSigma
 from selfcal.models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
                                LineComponent)
-from selfcal.SPHERExUtility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
+from selfcal.instruments.spherex.SPHERExUtility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
 
 
 def _legacy_G_per_pixel(lam, bw, center):

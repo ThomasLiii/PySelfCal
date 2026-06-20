@@ -138,7 +138,7 @@ class SkyModel:
         QuadratureSigma(2.355, 2.890e-4) when BW is supplied, else scalar
         line_sigma — matching the legacy spectral_fit behavior exactly.
         """
-        from ..SPHERExUtility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
+        from ..instruments.spherex.SPHERExUtility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
         from .profiles import GaussianProfile, QuadratureSigma
         center = PAH_LINE_CENTER_UM if line_center is None else line_center
         sigma = LINE_SIGMA_UM if line_sigma is None else line_sigma

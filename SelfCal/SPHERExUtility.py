@@ -5,5 +5,5 @@ object as ``selfcal.SPHERExUtility`` (no duplicate state) so existing imports ke
 during the migration.
 """
 import sys as _sys
-import selfcal.SPHERExUtility as _m
+import selfcal.instruments.spherex.SPHERExUtility as _m
 _sys.modules[__name__] = _m

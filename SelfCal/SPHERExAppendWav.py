@@ -5,5 +5,5 @@ object as ``selfcal.SPHERExAppendWav`` (no duplicate state) so existing imports 
 during the migration.
 """
 import sys as _sys
-import selfcal.SPHERExAppendWav as _m
+import selfcal.instruments.spherex.wavemap as _m
 _sys.modules[__name__] = _m

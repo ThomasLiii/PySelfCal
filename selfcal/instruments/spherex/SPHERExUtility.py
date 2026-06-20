@@ -14,16 +14,23 @@ from multiprocessing import Pool
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
-from .geometry.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
-from .MakeMap import load_reproj_file
+from ...geometry.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
+from ...MakeMap import load_reproj_file
+from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
+                       ENV_SPHEREX_CHANNEL_FILE, ENV_LVF_PARAMS_DIR)
 
 
-# Canonical on-host paths for the SPHEREx spectral-calibration products.
+# Canonical on-host paths for the SPHEREx spectral-calibration products. These
+# are fallback defaults only: external users set $SELFCAL_SPHEREX_CALIB_DIR /
+# $SELFCAL_SPHEREX_CHANNEL_FILE or pass explicit paths (see selfcal.config).
 DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
 DEFAULT_CHANNEL_FILE = '/home/thomasli/spherex/spherex_channels.csv'
 
 
-def load_calibration(band, calibration_dir=DEFAULT_CALIBRATION_DIR):
+def load_calibration(band, calibration_dir=None):
+    calibration_dir = resolve_path(
+        calibration_dir, env_var=ENV_SPHEREX_CALIB_DIR,
+        default=DEFAULT_CALIBRATION_DIR, what='SPHEREx calibration dir')
     BC_files = glob.glob(os.path.join(calibration_dir, f'*BC_Band{band}.fits'))
     BW_files = glob.glob(os.path.join(calibration_dir, f'*BW_Band{band}.fits'))
     if len(BC_files) != 1 or len(BW_files) != 1:
@@ -81,7 +88,10 @@ def gaussian_line_profile(wave_um, center_um=PAH_LINE_CENTER_UM, sigma_um=LINE_S
     return np.exp(-0.5 * ((wave_um - center_um) / sigma_um)**2).astype(np.float32)
 
 
-def extract_spherex_channel_edges(band, channel_file=DEFAULT_CHANNEL_FILE):
+def extract_spherex_channel_edges(band, channel_file=None):
+    channel_file = resolve_path(
+        channel_file, env_var=ENV_SPHEREX_CHANNEL_FILE,
+        default=DEFAULT_CHANNEL_FILE, what='SPHEREx channel file')
     tbl = Table.read(channel_file)
     sub_tbl = tbl[tbl['band'] == band]
     channel_edges = np.hstack([sub_tbl['lmin'].data, sub_tbl['lmax'].data[-1:]])
@@ -196,7 +206,7 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     return chunk_map, lvf_params, np.array(r_edges)
 
 def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10,
-                            channel_file=DEFAULT_CHANNEL_FILE,
+                            channel_file=None,
                             oversample_factor=1, lvf_params=None):
     if num_channels%17 != 0:
         raise ValueError("num_channels must be a multiple of 17.")
@@ -316,15 +326,17 @@ def compute_offsets_guess(reproj_list, det_chunk_map, max_workers=16):
     return np.array(results)
 
 
-# lvf_params live in the repo's data/lvf_params/ directory. Resolved relative
-# to this module so the path is correct in every worktree (e.g. selfcal/ vs
-# selfcal-stable/) without depending on the cwd.
-_LVF_PARAMS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'data', 'lvf_params')
+# lvf_params ship with the package under instruments/spherex/data/lvf_params/.
+# Resolved relative to this module so it is correct in every worktree and in an
+# installed wheel; overridable via $SELFCAL_LVF_PARAMS_DIR or an explicit
+# input_dir/output_dir.
+_LVF_PARAMS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'data', 'lvf_params')
 
 
-def load_lvf_params(filename, input_dir=_LVF_PARAMS_DIR):
+def load_lvf_params(filename, input_dir=None):
+    input_dir = resolve_path(input_dir, env_var=ENV_LVF_PARAMS_DIR,
+                             default=_LVF_PARAMS_DIR, what='LVF params dir')
     input_path = os.path.join(input_dir, filename)
     if not os.path.exists(input_path):
         print(f"LVF parameters file {input_path} not found. Returning None.")
@@ -333,7 +345,10 @@ def load_lvf_params(filename, input_dir=_LVF_PARAMS_DIR):
     print(f"Loaded LVF parameters from {input_path}")
     return lvf_params
 
-def save_lvf_params(lvf_params, output_dir=_LVF_PARAMS_DIR):
+def save_lvf_params(lvf_params, output_dir=None):
+    output_dir = resolve_path(output_dir, env_var=ENV_LVF_PARAMS_DIR,
+                              default=_LVF_PARAMS_DIR, what='LVF params dir',
+                              must_exist=False)
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, lvf_params['filename'])
     np.save(output_path, lvf_params)
@@ -569,7 +584,7 @@ def compute_subchannel_polynomial_chains(num_subchannels, num_columns,
 
 def make_stripped_chunk_map(detector, num_subchannels=10, num_channels=17,
                             oversample_factor=1, num_columns=1, lvf_params=None,
-                            calibration_dir=DEFAULT_CALIBRATION_DIR):
+                            calibration_dir=None):
     det_BC, det_BW = load_calibration(band=detector, calibration_dir=calibration_dir)
     
     subchannel_map, lvf_params, r_edges = make_fiducial_chunk_map(

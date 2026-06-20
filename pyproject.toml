@@ -28,3 +28,7 @@ dependencies = [
 # shim package until all consumers are migrated. Both are discovered so
 # ``import selfcal`` and ``import SelfCal`` both resolve.
 include = ["selfcal*", "SelfCal*"]
+
+[tool.setuptools.package-data]
+# Ship the SPHEREx LVF arc-fit parameters with the wheel.
+"selfcal.instruments.spherex" = ["data/lvf_params/*.npy"]
