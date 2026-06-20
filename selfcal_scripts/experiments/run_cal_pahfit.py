@@ -19,7 +19,8 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
 from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from SelfCal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
+                             OffsetModel, OffsetBlock, SkyModel)
 from SelfCal.solution import compute_x0_scalar_only
 from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
@@ -149,7 +150,7 @@ if __name__ == "__main__":
         'ignore_list': [21],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.1],
+        # reg_weights moved onto the OffsetBlock built below (per-block config).
         'weighted_damping': True,
         'damp_weight': 0.1,
         # --- Spectral-fit (PAHfit) mode params: 2-block sky (continuum + line amplitude) ---
@@ -267,25 +268,33 @@ if __name__ == "__main__":
             poly_chains, poly_stencil = compute_column_polynomial_chains(
                 detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
             )
-            poly_constraints_list = [[{
+            poly_group = [{
                 'chains': poly_chains,
                 'stencil': poly_stencil,
                 'weight': POLY_WEIGHT,
-            }]]
+            }]
+            # Single offset block: per-frame scalar absorbs DC; mean-anchor on
+            # the map-0 chunks forces within-frame structure only, with a linear
+            # column poly-constraint + adjacency reg. Lowers to the exact
+            # parallel-list kwargs the flat call used.
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                            adj_info=detector_inputs['adj_info'],
+                            reg_weight=0.1,
+                            poly_constraints=poly_group,
+                            mean_offset=np.zeros(num_frames_run)),
+            ], use_per_frame_scalar=True)
             cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],
-                use_per_frame_scalar=True,
                 # --- Spectral-fit (PAHfit) mode ---
                 # 2-block sky: x = [sky_cont | sky_line | offsets | scalar].
                 # det_aux = [BC_map, BW_map] gives per-(frame, sub-pixel)
-                # wavelength and per-pixel σ. The line-amp column coefficient
-                # is the Gaussian profile G(λ_i) evaluated per row.
-                spectral_fit=True,
+                # wavelength and per-pixel σ; the line-amp column coefficient is
+                # the Gaussian profile G(λ_i) per row. continuum_plus_pah_gaussian()
+                # is byte-identical to the legacy spectral_fit=True path.
+                sky_model=SkyModel.continuum_plus_pah_gaussian(),
                 det_aux=[detector_inputs['det_BC'], detector_inputs['det_BW']],
                 **calibration_kwargs
             )

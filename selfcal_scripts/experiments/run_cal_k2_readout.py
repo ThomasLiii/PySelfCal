@@ -35,7 +35,8 @@ import numpy as np
 from tqdm import tqdm
 
 from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from SelfCal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
+                             OffsetModel, OffsetBlock)
 from SelfCal.SPHERExUtility import (load_lvf_params, compute_subchannel_adjacency,
                                     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
                                     make_spherex_stripped_offset_map, fast_vertical_dist)
@@ -187,7 +188,9 @@ if __name__ == "__main__":
     )
 
     # Map 0 gets light subchannel-adjacency reg; map 1 (readout) gets none
-    # per the test spec. mean_offsets anchors map 1 to mean-zero per frame.
+    # per the test spec. The per-block offset config (reg_weight, adjacency,
+    # det_groups, mean-anchor) now lives on the OffsetModel built below; only
+    # global solver settings stay in calibration_kwargs.
     calibration_kwargs = {
         'apply_mask': True,
         'apply_weight': False,
@@ -195,7 +198,6 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
-        'reg_weights': [0.1, 0.0],
         'weighted_damping': True,
         'damp_weight': 0.1,
         'max_workers': 32,
@@ -289,21 +291,26 @@ if __name__ == "__main__":
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
             num_frames = len(cc.reproj_list)
+            # K=2 offset model, read as two cohesive blocks:
+            #   block 0 (subchannel) — free offset per frame, light subchannel
+            #     adjacency reg (reg_weight 0.1), no mean anchor.
+            #   block 1 (readout)    — detector-fixed (det_groups all 0 → one
+            #     shared per-readout-channel offset across the exposure list),
+            #     anchored mean-zero per frame, no adjacency reg.
+            # Lowers to the exact parallel-list kwargs the flat call used.
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map_sub'],
+                            adj_info=detector_inputs['adj_info_sub'],
+                            reg_weight=0.1),
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map_ro'],
+                            det_groups=np.zeros(num_frames, dtype=int),
+                            mean_offset=np.zeros(num_frames),
+                            reg_weight=0.0),
+            ])
             cc.setup_lsqr(
-                chunk_maps=[
-                    detector_inputs['det_chunk_map_sub'],
-                    detector_inputs['det_chunk_map_ro'],
-                ],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                # Map 1 (readout) is detector-fixed: every frame → group 0,
-                # so a single per-readout-channel offset is solved across
-                # the whole exposure list.
-                det_groups_list=[None, np.zeros(num_frames, dtype=int)],
-                # Anchor map 1 to mean-zero per frame; map 0 stays free.
-                mean_offsets_list=[None, np.zeros(num_frames)],
-                # Subchannel adjacency on map 0; no reg on map 1.
-                adj_infos=[detector_inputs['adj_info_sub'], None],
                 **calibration_kwargs,
             )
 
