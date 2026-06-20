@@ -6,7 +6,6 @@ from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix, csr_matrix
 import cv2
 
-from mpsplines import MeanPreservingInterpolation as MPI
 from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
 from scipy.optimize import minimize
 from scipy.ndimage import map_coordinates

@@ -230,12 +230,15 @@ def visualize_chunk_map(chunk_map, chunk_valid_mask):
     masked_chunk_map = np.where(chunk_valid_mask[chunk_map], chunk_map, np.nan)
     plt.imshow(masked_chunk_map, cmap='viridis', interpolation='none')
 
-# https://github.com/jararias/mpsplines
-from mpsplines import MeanPreservingInterpolation as MPI
 def interp_1d(arr, method='mp', edge='extend'):
     idx = np.arange(len(arr))
     mean_idx, mean_val, edge_idx = parse_bin(arr)
     if method == 'mp_external':
+        # Optional external mean-preserving interpolator. Imported lazily so the
+        # package installs from PyPI without the git-only mpsplines dependency;
+        # the default 'mp' method below uses the in-tree scipy implementation.
+        # Install the [mpsplines] extra to use method='mp_external'.
+        from mpsplines import MeanPreservingInterpolation as MPI
         interpolator = MPI(yi=mean_val, xi=mean_idx)
     elif method == 'mp':
         interpolator = mean_preserving_spline(edge_idx, mean_val, method='cubic')
