@@ -668,3 +668,25 @@ def get_valid_bounds(mask):
 
     # Return slices (add +1 to max for python slicing)
     return slice(y_min, y_max + 1), slice(x_min, x_max + 1)
+
+def make_grid_chunk_map(det_shape, n_chunks_per_side):
+    """Regular square grid chunk map: ``n_chunks_per_side`` x ``n_chunks_per_side``
+    equal cells over ``det_shape`` (row-major chunk ids, 0..n^2-1).
+
+    Generic detector geometry (e.g. broadband imagers such as Euclid NISP). Each
+    cell is ``det_h // n`` x ``det_w // n`` px; any remainder rows/cols on the
+    high edge fall in the last cell. Mirrors the hand-rolled square-chunk helper
+    the Euclid notebook used.
+    """
+    det_h, det_w = det_shape
+    chunk_h = det_h // n_chunks_per_side
+    chunk_w = det_w // n_chunks_per_side
+    y_edges = np.arange(0, det_h + 1, chunk_h)
+    x_edges = np.arange(0, det_w + 1, chunk_w)
+    chunk_map = np.zeros(det_shape, dtype=int)
+    chunk_id = 0
+    for j in range(len(y_edges) - 1):
+        for i in range(len(x_edges) - 1):
+            chunk_map[y_edges[j]:y_edges[j + 1], x_edges[i]:x_edges[i + 1]] = chunk_id
+            chunk_id += 1
+    return chunk_map
