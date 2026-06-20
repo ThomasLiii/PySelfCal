@@ -14,6 +14,8 @@ from .subframe import _prep_subframe
 from .MapHelper import find_outliers, check_invalid
 from .layout import SystemLayout
 from .sky_model import SkyModel
+from .constraint_builders import (mean_offset_block, sky_damping_block,
+                                  offset_damping_block)
 
 
 def _prep_lsqr(task_params):
@@ -746,7 +748,9 @@ def setup_lsqr(file_list, ref_shape,
         line_pixel_counts = None
     offset_pixel_counts = pixel_counts[num_sky_eff:]
 
-    # Each entry is dict(rows_local, cols, data, b, nnz_per_row, num_rows)
+    # Global constraint blocks (see selfcal.constraint_builders). Emission order
+    # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
+    # sky damping (continuum, then line blocks) -> offset damping.
     constraint_blocks = []
 
     # --- Per-frame mean-offset constraints (one block per chunk map) ---
@@ -760,76 +764,31 @@ def setup_lsqr(file_list, ref_shape,
             print(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
             continue
         print(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
-        mean_offsets_arr = np.asarray(mean_off)
-        nc_m = num_chunks_list[m]
-        ftg_m = frame_to_group_list[m]
+        constraint_blocks.append(mean_offset_block(
+            m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
+            col_bases, weight=constraint_weight).as_dict())
 
-        constr_rows_local = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
-        # Vectorized constraint-col build: offset_start = col_bases[m] + ftg[i]*nc_m,
-        # then enumerate the nc_m chunks per frame. Avoids per-frame Python loop.
-        offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
-        constr_cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
-        constr_data = np.full(num_frames * nc_m, constraint_weight, dtype=np.float32)
-        b_constr = mean_offsets_arr.astype(np.float64).flatten() * nc_m * constraint_weight
-
-        constraint_blocks.append({
-            'rows_local': constr_rows_local,
-            'cols': constr_cols,
-            'data': constr_data,
-            'b': b_constr,
-            'num_rows': num_frames,
-            'nnz_per_row': nc_m,  # nc_m entries per constraint row
-        })
-
-    # --- Coverage-weighted continuum damping ---
+    # --- Coverage-weighted sky damping (continuum, then each line block) ---
     if weighted_damping and damp_weight > 0:
         print("Applying Coverage-Weighted Damping (continuum)...")
-        valid_pixel_indices = np.nonzero(sky_pixel_counts)[0]
-        if len(valid_pixel_indices) > 0:
-            damp_values = np.sqrt(damp_weight * sky_pixel_counts[valid_pixel_indices]).astype(np.float32)
-            num_damp = len(valid_pixel_indices)
-            constraint_blocks.append({
-                'rows_local': np.arange(num_damp, dtype=np.int64),
-                'cols': valid_pixel_indices.astype(np.int64, copy=False),
-                'data': damp_values,
-                'b': np.zeros(num_damp, dtype=np.float64),
-                'num_rows': num_damp,
-                'nnz_per_row': 1,
-            })
+        blk = sky_damping_block(0, damp_weight, sky_pixel_counts, num_sky)
+        if blk is not None:
+            constraint_blocks.append(blk.as_dict())
 
-        # --- LINE-AMPLITUDE DAMPING (spectral_fit only) ---
+        # --- LINE-AMPLITUDE DAMPING (spectral, block 1) ---
         if num_sky_blocks == 2 and damp_weight_line is not None and damp_weight_line > 0:
             print(f"Applying Coverage-Weighted Damping (line, damp={damp_weight_line})...")
-            valid_line_indices = np.nonzero(line_pixel_counts)[0]
-            if len(valid_line_indices) > 0:
-                damp_values_l = np.sqrt(damp_weight_line * line_pixel_counts[valid_line_indices]).astype(np.float32)
-                num_line_damp = len(valid_line_indices)
-                constraint_blocks.append({
-                    'rows_local': np.arange(num_line_damp, dtype=np.int64),
-                    'cols': (num_sky + valid_line_indices).astype(np.int64, copy=False),
-                    'data': damp_values_l,
-                    'b': np.zeros(num_line_damp, dtype=np.float64),
-                    'num_rows': num_line_damp,
-                    'nnz_per_row': 1,
-                })
+            blk = sky_damping_block(1, damp_weight_line, line_pixel_counts, num_sky)
+            if blk is not None:
+                constraint_blocks.append(blk.as_dict())
 
     # --- Coverage-weighted offset damping ---
     if damp_offset > 0:
         print(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
         n_offset_cols = scalar_col_start - num_sky_eff
-        offset_block_coverage = offset_pixel_counts[:n_offset_cols]
-        valid_offset_indices = np.nonzero(offset_block_coverage)[0]
-        if len(valid_offset_indices) > 0:
-            damp_values_off = np.sqrt(damp_offset * offset_block_coverage[valid_offset_indices]).astype(np.float32)
-            num_off_damp = len(valid_offset_indices)
-            constraint_blocks.append({
-                'rows_local': np.arange(num_off_damp, dtype=np.int64),
-                'cols': (valid_offset_indices + num_sky_eff).astype(np.int64, copy=False),
-                'data': damp_values_off,
-                'b': np.zeros(num_off_damp, dtype=np.float64),
-                'num_rows': num_off_damp,
-                'nnz_per_row': 1,
-            })
+        blk = offset_damping_block(damp_offset, offset_pixel_counts[:n_offset_cols], num_sky_eff)
+        if blk is not None:
+            constraint_blocks.append(blk.as_dict())
 
 
     # ----------------------------------------------------------------
