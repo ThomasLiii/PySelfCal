@@ -92,6 +92,9 @@ def main():
     ap.add_argument('--iter-lim', type=int, default=20)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--batch-size', type=int, default=50)
+    ap.add_argument('--use-sky-model', action='store_true',
+                    help='drive setup_lsqr via the explicit sky_model= API instead '
+                         'of the deprecated spectral_fit flag (dual-path check)')
     args = ap.parse_args()
 
     cfg = PipelineWrapper.PipelineConfig(
@@ -121,8 +124,7 @@ def main():
     frame_str = '_'.join(f'{k}{v}' for k, v in FRAME_SETTING.items())
     cal_file = f'cal_{frame_str}_AromaticPAHfit{args.suffix}.h5'
 
-    t0 = time.time()
-    cc.setup_lsqr(
+    common = dict(
         chunk_maps=[det_inputs['det_chunk_map']],
         grid_valid_weight=ch_inputs['det_valid_mask_padded'],
         oversample_factor=1,
@@ -130,13 +132,19 @@ def main():
         poly_constraints_list=poly_constraints_list,
         mean_offsets_list=[np.zeros(num_frames)],
         use_per_frame_scalar=True,
-        spectral_fit=True,
         det_aux=[det_inputs['det_BC'], det_inputs['det_BW']],
         apply_mask=True, apply_weight=True, outlier_thresh=5.0, ignore_list=[21],
         batch_size=args.batch_size, offset_regularization=True, reg_weights=[0.1],
         weighted_damping=True, damp_weight=0.1, damp_weight_line=0.0,
         max_workers=args.max_workers,
     )
+    t0 = time.time()
+    if args.use_sky_model:
+        # Explicit forward-looking API: must be byte-equal to the spectral_fit path.
+        from SelfCal.MakeMap import SkyModel
+        cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
+    else:
+        cc.setup_lsqr(spectral_fit=True, **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")
 
     x0 = compute_x0_scalar_only(

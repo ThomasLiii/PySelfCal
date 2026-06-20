@@ -353,6 +353,7 @@ def setup_lsqr(file_list, ref_shape,
                det_aux=None,
                spectral_fit=False, line_center=None, line_sigma=None,
                damp_weight_line=None,
+               sky_model=None,
                top2_compaction_enabled=True):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
@@ -488,44 +489,33 @@ def setup_lsqr(file_list, ref_shape,
     # sigma = line_sigma). λ_i is sampled per (frame, sub-pixel) via the
     # det_aux plumbing: BC_map must be passed as det_aux[0]. Optionally
     # det_aux[1] = BW_map gives per-pixel σ (mixed with PAH intrinsic).
-    num_sky_blocks = 2 if spectral_fit else 1
-    if spectral_fit:
-        from .SPHERExUtility import (
-            PAH_LINE_CENTER_UM, LINE_SIGMA_UM,
-        )
-        if line_center is None:
-            line_center = PAH_LINE_CENTER_UM
-        if line_sigma is None:
-            line_sigma = LINE_SIGMA_UM
+    # --- Sky model resolution ---
+    # sky_model= is the forward-looking API; the legacy spectral_fit flag (+
+    # line_center / line_sigma) is a deprecated shim that builds the equivalent
+    # SkyModel. The model's components drive the per-pixel sky row emission in the
+    # worker (continuum -> J=1 identity fast path; +line -> interleave with the
+    # profile coefficient). For sky_model=None this reproduces the old
+    # num_sky_blocks {1,2} behavior byte-for-byte.
+    if sky_model is None:
+        if spectral_fit:
+            sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
+        else:
+            sky_model = SkyModel.continuum_only()
+    num_sky_blocks = sky_model.n_blocks
+    if num_sky_blocks > 1:
+        # A spectral SkyModel (>=1 non-continuum block) needs the wavelength aux
+        # map(s) and gets decoupled line-block damping by default (the line
+        # columns have smaller average coefficients than continuum, so ~3x more
+        # Tikhonov shrinkage at the same data S/N).
         if damp_weight_line is None:
-            # Decoupled damping per the spectral-fit critique: line column has
-            # smaller average coefficient than the continuum column, so it
-            # needs ~3x more Tikhonov shrinkage at the same data S/N. Tune via
-            # damp_weight_line in the driver.
             damp_weight_line = 3.0 * damp_weight
         if det_aux is None or len(det_aux) < 1:
             raise ValueError(
-                "spectral_fit=True requires det_aux=[BC_map] (or [BC_map, BW_map] "
-                "for per-pixel σ). Pass BC_map loaded from "
-                "SelfCal.SPHERExUtility.load_calibration(band=detector)."
-            )
-        print(f"Spectral-fit mode ON: 2x num_sky cols ({2*num_sky} total), "
-              f"line_center={line_center} μm, line_sigma={line_sigma:.5f} μm, "
-              f"damp_weight_line={damp_weight_line}.")
-
-    # --- Sky model: components drive the per-pixel sky row emission ---
-    # Built internally from the legacy spectral_fit flag (the public sky_model=
-    # API + deprecation shim lands in Phase 3h). The worker emits sky nnz via the
-    # SkyComponent loop: continuum-only -> J=1 identity fast path (store
-    # valid_weight directly); continuum+PAH -> J=2 interleave with G(λ). This
-    # reproduces the old num_sky_blocks {1,2} emission byte-for-byte.
-    # num_sky_blocks stays = n_blocks for the coverage/Fisher/layout code that
-    # still consumes it (generalized in later phases).
-    if spectral_fit:
-        sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
-    else:
-        sky_model = SkyModel.continuum_only()
-    assert sky_model.n_blocks == num_sky_blocks
+                "A spectral SkyModel (>1 sky block) requires det_aux=[BC_map] "
+                "(or [BC_map, BW_map] for per-pixel σ). Pass BC_map from "
+                "selfcal.SPHERExUtility.load_calibration(band=detector).")
+        print(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
+              f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
     # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
     aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
 

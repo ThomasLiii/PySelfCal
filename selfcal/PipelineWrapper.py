@@ -14,9 +14,12 @@ import numpy as np
 from astropy.io import fits
 from tqdm import tqdm
 
+import warnings
+
 from . import MakeMap
 from . import WCSHelper
 from .layout import SystemLayout
+from .sky_model import SkyModel
 
 # Manifest schema bump when the JSON layout changes incompatibly.
 _REPROJ_MANIFEST_SCHEMA = 1
@@ -483,7 +486,7 @@ class Calibrator(Reprojector):
                    det_aux=None,
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
-                   offset_model=None,
+                   offset_model=None, sky_model=None,
                    top2_compaction_enabled=True):
         """Build the LSQR system for K chunk maps.
 
@@ -539,6 +542,25 @@ class Calibrator(Reprojector):
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
 
+        # Resolve the sky model. sky_model= is the forward-looking API; the
+        # legacy spectral_fit flag is a deprecated shim that builds the
+        # equivalent SkyModel. Passed through to setup_lsqr, which derives
+        # num_sky_blocks / line damping / det_aux requirements from it.
+        if sky_model is not None:
+            if spectral_fit:
+                warnings.warn(
+                    "spectral_fit is ignored when sky_model is given; drop spectral_fit.",
+                    DeprecationWarning, stacklevel=2)
+            self.sky_model = sky_model
+        elif spectral_fit:
+            warnings.warn(
+                "spectral_fit=True is deprecated; pass "
+                "sky_model=SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma).",
+                DeprecationWarning, stacklevel=2)
+            self.sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
+        else:
+            self.sky_model = SkyModel.continuum_only()
+
         with timer("Setup LSQR"):
             _setup_result = MakeMap.setup_lsqr(
                 self.reproj_list, self.ref_shape,
@@ -559,6 +581,7 @@ class Calibrator(Reprojector):
                 damp_offset=damp_offset, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
+                sky_model=self.sky_model,
                 top2_compaction_enabled=top2_compaction_enabled)
             # setup_lsqr returns a 4-tuple in legacy / template-mode runs and
             # a 5-tuple when the Top 2 inline column compaction fires.
@@ -577,8 +600,8 @@ class Calibrator(Reprojector):
                 self.num_cols_full = None
 
         # Track sky-block count so parse_x / save_calibration / get_skymap
-        # all know whether to expect a continuum-only or continuum+line layout.
-        self.num_sky_blocks = 2 if spectral_fit else 1
+        # all know the sky layout. Derived from the resolved sky model.
+        self.num_sky_blocks = self.sky_model.n_blocks
 
         # Mirror the column layout setup_lsqr computed via the SAME SystemLayout
         # so parse_x / save_calibration don't recompute (and can't drift from)
