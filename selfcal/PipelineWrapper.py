@@ -472,6 +472,8 @@ class Calibrator(Reprojector):
         self.col_bases = None  # length K+1; col_bases[K] == scalar_col_start
         self.num_scalar_cols = 0
         self.layout = None  # selfcal.layout.SystemLayout, set in setup_lsqr
+        self.sky_model = None  # selfcal.sky_model.SkyModel, set in setup_lsqr
+        self.sky_component_names = None  # set in load_calibration (v3)
 
     def setup_lsqr(self, chunk_maps=None, grid_valid_weight=None, oversample_factor=1,
                    apply_mask=True, apply_weight=True, max_workers=20,
@@ -653,17 +655,31 @@ class Calibrator(Reprojector):
                 del A_local, b_local, active_mask_local
 
     def load_calibration(self, cal_path=None):
-        """Load a saved calibration (dual schema: legacy top-level ``offset``
-        or new ``offsets/map_m`` group). Loads the optional ``skymap_line``
-        block (spectral_fit mode) when present."""
+        """Load a saved calibration (tri-generation schema).
+
+        v3: per-component ``sky/<name>`` groups (any number of sky blocks).
+        v2: top-level ``skymap`` + ``offsets/map_m`` (+ optional ``skymap_line``).
+        v1: legacy top-level ``offset``.
+        """
         if cal_path is None:
             cal_path = os.path.join(self.config.cal_dir, 'cal.h5')
         num_frames = len(self.reproj_list)
         num_sky = self.ref_shape[0] * self.ref_shape[1]
         with h5py.File(cal_path, 'r') as f:
-            skymap = f['skymap'][:]
-            self.num_sky_blocks = int(f.attrs.get('num_sky_blocks', 1))
-            skymap_line = f['skymap_line'][:] if 'skymap_line' in f else None
+            if 'sky' in f:
+                # v3: named per-component sky blocks, in declared order.
+                names = [n.decode() if isinstance(n, bytes) else n
+                         for n in f.attrs['sky_components']]
+                sky_maps = [f['sky'][n][:] for n in names]
+                self.sky_component_names = names
+            else:
+                # v2/v1: continuum (+ optional single line via legacy names).
+                sky_maps = [f['skymap'][:]]
+                if int(f.attrs.get('num_sky_blocks', 1)) == 2 and 'skymap_line' in f:
+                    sky_maps.append(f['skymap_line'][:])
+                self.sky_component_names = (['continuum', 'line'] if len(sky_maps) == 2
+                                            else ['continuum'])
+            self.num_sky_blocks = len(sky_maps)
             if 'offsets' in f:
                 K = int(f.attrs.get('num_maps', len(f['offsets'])))
                 offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
@@ -675,11 +691,8 @@ class Calibrator(Reprojector):
                 chunk_maps = []
                 frame_scalar = None
         # Rebuild self.x assuming saved offsets are already per-frame expanded
-        # (which is what save_calibration writes for both schemas).
-        if self.num_sky_blocks == 2 and skymap_line is not None:
-            parts = [skymap.flatten(), skymap_line.flatten()] + [o.flatten() for o in offsets]
-        else:
-            parts = [skymap.flatten()] + [o.flatten() for o in offsets]
+        # (which is what save_calibration writes for all schemas).
+        parts = [m.flatten() for m in sky_maps] + [o.flatten() for o in offsets]
         if frame_scalar is not None:
             parts.append(frame_scalar.flatten())
         self.x = np.concatenate(parts)
@@ -732,36 +745,35 @@ class Calibrator(Reprojector):
         num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
 
-        parsed = MakeMap.parse_x(
+        # Generic per-component parse (N sky blocks; block 0 = continuum).
+        sky_maps, det_offsets, frame_scalar = MakeMap.parse_x_sky(
             self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None,
             num_sky_blocks=self.num_sky_blocks)
-        if self.num_sky_blocks == 2:
-            skymap, skymap_line, det_offsets, frame_scalar = parsed
-        else:
-            skymap, det_offsets, frame_scalar = parsed
-            skymap_line = None
 
-        parsed_pc = MakeMap.parse_pixel_counts(
-            pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
-            num_offset_groups_list=self.num_offset_groups_list,
-            chunk_maps=self.chunk_maps,
-            num_sky_blocks=self.num_sky_blocks)
-        if self.num_sky_blocks == 2:
-            skymap_coverage, skymap_line_coverage, offset_coverages_layout, offset_valid_fracs_layout = parsed_pc
-        else:
-            skymap_coverage, offset_coverages_layout, offset_valid_fracs_layout = parsed_pc
-            skymap_line_coverage = None
+        sky_coverages, offset_coverages_layout, offset_valid_fracs_layout = (
+            MakeMap.parse_pixel_counts_sky(
+                pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
+                num_offset_groups_list=self.num_offset_groups_list,
+                chunk_maps=self.chunk_maps,
+                num_sky_blocks=self.num_sky_blocks))
 
         if self.pixel_fisher is not None:
-            skymap_fisher, skymap_line_fisher = MakeMap.parse_pixel_fisher(
+            sky_fishers = MakeMap.parse_pixel_fisher_sky(
                 pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
                 num_sky_blocks=self.num_sky_blocks)
         else:
-            skymap_fisher = None
-            skymap_line_fisher = None
+            sky_fishers = [None] * self.num_sky_blocks
+
+        # Sky-component names (block 0 = continuum). From the resolved sky model
+        # when available, else synthesized for a loaded/legacy calibration.
+        if getattr(self, 'sky_model', None) is not None:
+            sky_names = list(self.sky_model.names)
+        else:
+            sky_names = ['continuum'] + [f'line_{j}' for j in range(1, self.num_sky_blocks)]
+        assert len(sky_names) == self.num_sky_blocks
 
         expanded_offsets = []
         map_coverages = []
@@ -792,22 +804,37 @@ class Calibrator(Reprojector):
         with h5py.File(cal_path, 'w') as f:
             f.attrs['num_maps'] = K
             f.attrs['num_sky_blocks'] = self.num_sky_blocks
-            f.create_dataset('skymap', data=skymap, compression='gzip')
-            f.create_dataset('skymap_coverage', data=skymap_coverage, compression='gzip')
-            if skymap_fisher is not None:
-                f.create_dataset('skymap_fisher', data=skymap_fisher.astype('float32'),
-                                 compression='gzip')
-            if self.num_sky_blocks == 2:
-                # Spectral-fit mode: store the PAH 3.29 μm line amplitude map
-                # at the file root alongside the continuum skymap. Same shape.
-                # ``skymap_line`` is the RAW parse_x output (no destructive
-                # masking). Use ``apply_line_fisher_mask`` at read time to
-                # apply the Fisher-info mask.
-                f.create_dataset('skymap_line', data=skymap_line, compression='gzip')
-                f.create_dataset('skymap_line_coverage', data=skymap_line_coverage, compression='gzip')
-                if skymap_line_fisher is not None:
-                    f.create_dataset('skymap_line_fisher', data=skymap_line_fisher.astype('float32'),
-                                     compression='gzip')
+            f.attrs['schema_version'] = 3
+            f.attrs['sky_components'] = np.array(sky_names, dtype='S')
+            # --- v3: per-component sky blocks under sky/<name> (block 0 =
+            # continuum, 1.. = spectral components, each an arbitrary profile's
+            # per-pixel amplitude map). Saved RAW; the Fisher attr below is an
+            # informational read-time mask threshold, not applied destructively.
+            sky_grp = f.create_group('sky')
+            skycov_grp = f.create_group('sky_coverage')
+            skyfish_grp = f.create_group('sky_fisher')
+            for j, name in enumerate(sky_names):
+                sky_grp.create_dataset(name, data=sky_maps[j], compression='gzip')
+                skycov_grp.create_dataset(name, data=sky_coverages[j], compression='gzip')
+                if sky_fishers[j] is not None:
+                    skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
+                                               compression='gzip')
+            # --- Back-compat hard-link aliases (v2 readers resolve transparently):
+            # skymap -> continuum; skymap_line -> the single spectral block when
+            # there is exactly one. h5py resolves these on read, so
+            # f['skymap'][...] etc. return identical values without duplicating data.
+            cont = sky_names[0]
+            f['skymap'] = sky_grp[cont]
+            f['skymap_coverage'] = skycov_grp[cont]
+            if cont in skyfish_grp:
+                f['skymap_fisher'] = skyfish_grp[cont]
+            extra_names = sky_names[1:]
+            if len(extra_names) == 1:
+                ln = extra_names[0]
+                f['skymap_line'] = sky_grp[ln]
+                f['skymap_line_coverage'] = skycov_grp[ln]
+                if ln in skyfish_grp:
+                    f['skymap_line_fisher'] = skyfish_grp[ln]
             # Informational: recommended Fisher threshold for read-time masking.
             # Not a contract — analysis is free to pick any threshold.
             if self.line_fisher_threshold is not None:
@@ -827,32 +854,51 @@ class Calibrator(Reprojector):
         print(f"Calibration saved to {cal_path}")
         return cal_path
 
-    def _parse_x_helper(self):
-        """Run parse_x with the right num_sky_blocks, return (skymap, skymap_line, det_offsets, frame_scalar).
+    def _sky_names(self):
+        """Ordered sky-component names (block 0 = continuum)."""
+        if getattr(self, 'sky_model', None) is not None:
+            return list(self.sky_model.names)
+        if getattr(self, 'sky_component_names', None) is not None:
+            return list(self.sky_component_names)
+        return ['continuum'] + [f'line_{j}' for j in range(1, self.num_sky_blocks)]
 
-        ``skymap_line`` is None for legacy single-block mode.
+    def _parse_x_helper(self):
+        """Parse self.x into ``(sky_maps, det_offsets, frame_scalar)``.
+
+        ``sky_maps`` is a length-``num_sky_blocks`` list (block 0 = continuum).
         """
         num_frames = len(self.reproj_list)
-        parsed = MakeMap.parse_x(self.x, ref_shape=self.ref_shape,
+        return MakeMap.parse_x_sky(self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None,
             num_sky_blocks=self.num_sky_blocks)
-        if self.num_sky_blocks == 2:
-            skymap, skymap_line, det_offsets, frame_scalar = parsed
-        else:
-            skymap, det_offsets, frame_scalar = parsed
-            skymap_line = None
-        return skymap, skymap_line, det_offsets, frame_scalar
 
     def get_skymap(self):
-        skymap, _line, _o, _s = self._parse_x_helper()
-        return skymap
+        """Continuum sky map (block 0)."""
+        sky_maps, _o, _s = self._parse_x_helper()
+        return sky_maps[0]
 
     def get_skymap_line(self):
-        """Return the line-amplitude sky map (spectral_fit only); None otherwise."""
-        _c, skymap_line, _o, _s = self._parse_x_helper()
-        return skymap_line
+        """Back-compat: the first spectral component's map; None if continuum-only.
+
+        For N>2 components, prefer ``get_sky(name)``.
+        """
+        sky_maps, _o, _s = self._parse_x_helper()
+        return sky_maps[1] if len(sky_maps) > 1 else None
+
+    def get_sky(self, name):
+        """Return the sky map for a named component (e.g. 'continuum', 'pah_3p29')."""
+        names = self._sky_names()
+        if name not in names:
+            raise KeyError(f"sky component {name!r} not in {names}")
+        sky_maps, _o, _s = self._parse_x_helper()
+        return sky_maps[names.index(name)]
+
+    def get_skymaps(self):
+        """All sky-component maps as a name -> ndarray dict."""
+        sky_maps, _o, _s = self._parse_x_helper()
+        return dict(zip(self._sky_names(), sky_maps))
 
     def get_offsets(self):
         """Return per-frame expanded offsets, one ndarray per chunk map.
@@ -861,7 +907,7 @@ class Calibrator(Reprojector):
         matching the legacy K=1 behavior — analysis code that subtracts a
         single ``offset`` array against the data sees the same total bias.
         """
-        _c, _line, det_offsets, frame_scalar = self._parse_x_helper()
+        _sky, det_offsets, frame_scalar = self._parse_x_helper()
         out = []
         for m in range(len(self.chunk_maps)):
             scalar = frame_scalar if m == 0 else None
@@ -880,7 +926,7 @@ class Calibrator(Reprojector):
         if self.det_templates[m] is not None:
             raise ValueError("get_det_offset() not available in template mode. "
                              "Run in locked-offset mode (det_groups only) first.")
-        _c, _line, det_offsets, _s = self._parse_x_helper()
+        _sky, det_offsets, _s = self._parse_x_helper()
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):

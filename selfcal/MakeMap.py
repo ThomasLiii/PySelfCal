@@ -27,10 +27,11 @@ from .reproject import batch_reproject  # noqa: F401
 from .coadd import compute_coadd_map  # noqa: F401
 
 # --- LSQR ---
-from .lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts, parse_pixel_fisher, apply_line_fisher_mask  # noqa: F401
+from .lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts, parse_pixel_fisher,  # noqa: F401
+                   parse_pixel_counts_sky, parse_pixel_fisher_sky, apply_line_fisher_mask)  # noqa: F401
 
 # --- Solution utilities ---
-from .solution import parse_x, encode_x, compute_x0_from_Ab, compute_x0_scalar_only  # noqa: F401
+from .solution import parse_x, parse_x_sky, encode_x, compute_x0_from_Ab, compute_x0_scalar_only  # noqa: F401
 
 # --- Layout + offset model (refactor/selfcal-package) ---
 from .layout import SystemLayout  # noqa: F401

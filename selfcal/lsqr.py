@@ -1038,36 +1038,19 @@ def setup_lsqr(file_list, ref_shape,
     return full_A, full_b, pixel_counts, pixel_fisher
 
 
-def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
-                       num_sky_blocks=1):
-    """Slice ``pixel_counts`` into per-block coverage arrays.
+def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
+                           num_sky_blocks=1):
+    """Generic coverage slicing for any number of sky blocks.
 
-    When ``num_sky_blocks=2`` (spectral_fit mode), the returned
-    ``skymap_coverage`` is the *continuum* block's coverage and an additional
-    ``line_coverage`` ndarray is returned as the second element. The slicing
-    boundary between sky and offset blocks shifts to ``num_sky_blocks*num_sky``.
-
-    Returns
-    -------
-    skymap_coverage : np.ndarray
-        Continuum sky-block coverage, shape ref_shape.
-    line_coverage : np.ndarray or None
-        Line-amplitude block coverage when num_sky_blocks==2, else None.
-        Same value as skymap_coverage in expectation (one row → one count per
-        block), but kept separate for symmetry with the parse_x API.
-    offset_coverages : list of np.ndarray
-        One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
-    offset_valid_fracs : list of np.ndarray
-        Each block's coverage normalized by the chunk pixel-count.
+    Returns ``(sky_coverages, offset_coverages, offset_valid_fracs)`` where
+    ``sky_coverages`` is a length-``num_sky_blocks`` list of ``ref_shape`` arrays
+    (block 0 = continuum, 1.. = line blocks). :func:`parse_pixel_counts` is the
+    back-compat fixed-tuple wrapper for <=2 blocks.
     """
     num_sky = ref_shape[0] * ref_shape[1]
-    skymap_coverage = pixel_counts[:num_sky].reshape(ref_shape)
-    if num_sky_blocks == 2:
-        line_coverage = pixel_counts[num_sky:2*num_sky].reshape(ref_shape)
-        cursor = 2 * num_sky
-    else:
-        line_coverage = None
-        cursor = num_sky
+    sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
+                     for j in range(num_sky_blocks)]
+    cursor = num_sky_blocks * num_sky
 
     offset_coverages = []
     offset_valid_fracs = []
@@ -1080,33 +1063,44 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_ma
         offset_coverages.append(offset_coverage)
         offset_valid_fracs.append(offset_valid_frac)
         cursor += block
+    return sky_coverages, offset_coverages, offset_valid_fracs
+
+
+def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
+                       num_sky_blocks=1):
+    """Back-compat fixed-tuple coverage slicing for <=2 sky blocks.
+
+    Returns ``(skymap_coverage, offset_coverages, offset_valid_fracs)`` for 1
+    block and ``(skymap_coverage, line_coverage, offset_coverages,
+    offset_valid_fracs)`` for 2. Use :func:`parse_pixel_counts_sky` for N>2.
+    """
+    sky_coverages, offset_coverages, offset_valid_fracs = parse_pixel_counts_sky(
+        pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
+        num_sky_blocks=num_sky_blocks)
     if num_sky_blocks == 2:
-        return skymap_coverage, line_coverage, offset_coverages, offset_valid_fracs
-    return skymap_coverage, offset_coverages, offset_valid_fracs
+        return sky_coverages[0], sky_coverages[1], offset_coverages, offset_valid_fracs
+    return sky_coverages[0], offset_coverages, offset_valid_fracs
+
+
+def parse_pixel_fisher_sky(pixel_fisher, ref_shape, num_sky_blocks=1):
+    """Generic Fisher slicing: returns a length-``num_sky_blocks`` list of
+    ``ref_shape`` arrays (block 0 = continuum). See :func:`parse_pixel_counts_sky`.
+    """
+    num_sky = ref_shape[0] * ref_shape[1]
+    return [pixel_fisher[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
+            for j in range(num_sky_blocks)]
 
 
 def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
-    """Slice pixel_fisher into per-block Fisher arrays.
+    """Back-compat fixed-tuple Fisher slicing for <=2 sky blocks.
 
-    pixel_fisher is the sum-of-squared sparse-matrix coefficients per
-    column, computed over data rows only. For the line block the
-    coefficient is w_i * G(λ_i), so this is the correct per-pixel line
-    constraint metric. For the continuum block it equals sum(w_i^2).
-
-    Returns
-    -------
-    skymap_fisher : np.ndarray
-        Continuum sky-block Fisher info, shape ref_shape.
-    line_fisher : np.ndarray or None
-        Line-amplitude block Fisher info when num_sky_blocks==2, else None.
+    Returns ``(skymap_fisher, line_fisher)`` where ``line_fisher`` is None for
+    1 block. Use :func:`parse_pixel_fisher_sky` for N>2.
     """
-    num_sky = ref_shape[0] * ref_shape[1]
-    skymap_fisher = pixel_fisher[:num_sky].reshape(ref_shape)
+    sky_fishers = parse_pixel_fisher_sky(pixel_fisher, ref_shape, num_sky_blocks=num_sky_blocks)
     if num_sky_blocks == 2:
-        line_fisher = pixel_fisher[num_sky:2*num_sky].reshape(ref_shape)
-    else:
-        line_fisher = None
-    return skymap_fisher, line_fisher
+        return sky_fishers[0], sky_fishers[1]
+    return sky_fishers[0], None
 
 
 def apply_line_fisher_mask(sky_line, line_fisher, threshold):

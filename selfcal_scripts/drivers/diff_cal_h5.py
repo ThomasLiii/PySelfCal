@@ -95,6 +95,23 @@ def diff(a_path, b_path):
                 print(f'DIFF {k}: present in {"A" if in_a else "B"} only')
                 failures += 1
 
+        # v3 per-component sky blocks (sky/<name>). Compared only when BOTH files
+        # are v3 (have a 'sky' group) — this adds coverage for N>2 components.
+        # A v3-vs-v2 comparison (e.g. a new v3 cal vs an older v2 golden) is NOT
+        # flagged here: the continuum/line VALUES are already checked via the
+        # top-level hard-linked names above, so a schema-only difference is fine.
+        if 'sky' in A and 'sky' in B:
+            names_a, names_b = set(A['sky'].keys()), set(B['sky'].keys())
+            if names_a != names_b:
+                print(f'DIFF sky_components: {sorted(names_a)} vs {sorted(names_b)}')
+                failures += 1
+            for name in sorted(names_a & names_b):
+                failures += _diff_array(f'sky[{name}]', A['sky'][name][...], B['sky'][name][...])
+                for grp in ('sky_coverage', 'sky_fisher'):
+                    if name in A.get(grp, {}) and name in B.get(grp, {}):
+                        failures += _diff_array(f'{grp}[{name}]',
+                                                A[grp][name][...], B[grp][name][...])
+
         # Number of maps must agree across schemas.
         K_a, K_b = _num_maps(A), _num_maps(B)
         if K_a != K_b:
