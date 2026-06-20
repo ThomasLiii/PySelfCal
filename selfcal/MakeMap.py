@@ -37,6 +37,10 @@ from .solution import parse_x, parse_x_sky, encode_x, compute_x0_from_Ab, comput
 from .layout import SystemLayout  # noqa: F401
 from .offset_model import OffsetModel, OffsetBlock  # noqa: F401
 
-# --- Sky model + line profiles (refactor/selfcal-package, Phase 3) ---
-from .sky_model import SkyModel, SkyComponent, ContinuumComponent, LineComponent  # noqa: F401
-from .profiles import GaussianProfile, TemplateProfile, QuadratureSigma, LineProfile  # noqa: F401
+# --- Sky model + spectral profiles (refactor/selfcal-package, Phase 3) ---
+# SpectralComponent/SpectralProfile are the general names (any analytical or
+# numerical template); LineComponent/LineProfile are back-compat aliases.
+from .sky_model import (SkyModel, SkyComponent, ContinuumComponent,  # noqa: F401
+                        SpectralComponent, LineComponent)  # noqa: F401
+from .profiles import (GaussianProfile, TemplateProfile, QuadratureSigma,  # noqa: F401
+                       SpectralProfile, LineProfile)  # noqa: F401

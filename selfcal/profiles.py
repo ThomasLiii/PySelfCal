@@ -42,8 +42,15 @@ class QuadratureSigma:
         return np.sqrt(obs * obs + self.intrinsic_var_um2)
 
 
-class LineProfile:
-    """Base class / duck-typed protocol: ``evaluate(lam_um, aux) -> float32 ndarray``."""
+class SpectralProfile:
+    """Base class / duck-typed protocol for an arbitrary spectral shape.
+
+    ``evaluate(lam_um, aux) -> float32 ndarray`` returns the dimensionless
+    per-observation coefficient (template value) at each wavelength. The shape
+    can be any analytical form or numerical template; it is NOT line-specific.
+    The owning :class:`~selfcal.sky_model.SpectralComponent` solves the per-pixel
+    amplitude that multiplies this shape.
+    """
 
     #: aux-map keys this profile samples (besides the wavelength key the
     #: owning component supplies). Used to declare SHM aux requirements.
@@ -53,9 +60,13 @@ class LineProfile:
         raise NotImplementedError
 
 
+# Back-compat alias (the abstraction is general, not line-specific).
+LineProfile = SpectralProfile
+
+
 @dataclass(frozen=True)
-class GaussianProfile(LineProfile):
-    """Gaussian line shape ``exp(-0.5 * ((λ - center)/σ)**2)``.
+class GaussianProfile(SpectralProfile):
+    """Gaussian shape ``exp(-0.5 * ((λ - center)/σ)**2)`` (analytical template).
 
     ``σ`` is per-pixel from ``sigma_source`` (a :class:`QuadratureSigma`) when
     its width map is available in ``aux``; otherwise the scalar ``sigma_um``
@@ -83,12 +94,14 @@ class GaussianProfile(LineProfile):
 
 
 @dataclass(frozen=True)
-class TemplateProfile(LineProfile):
-    """Numerical line shape: linear interpolation of tabulated ``(wave_um, values)``.
+class TemplateProfile(SpectralProfile):
+    """Arbitrary numerical template: linear interpolation of tabulated
+    ``(wave_um, values)``.
 
-    Zero outside the tabulated range. Proof that the profile interface is not
-    Gaussian-specific; a Gaussian-sampled template matches GaussianProfile to
-    float32 precision (see tests).
+    Zero outside the tabulated range. Demonstrates that the profile interface is
+    not Gaussian- or line-specific — any tabulated spectral shape works; a
+    Gaussian-sampled template matches GaussianProfile to float32 precision
+    (see tests).
     """
 
     wave_um: np.ndarray

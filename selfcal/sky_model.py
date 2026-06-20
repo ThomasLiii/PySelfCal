@@ -60,10 +60,17 @@ class ContinuumComponent(SkyComponent):
 
 
 @dataclass(frozen=True)
-class LineComponent(SkyComponent):
-    """A spectral line block: coefficient = ``profile(λ)`` at each observation."""
+class SpectralComponent(SkyComponent):
+    """A spectral sky block fitting the per-pixel amplitude of an arbitrary
+    spectral template (analytical or numerical).
 
-    name: str = 'line'
+    The coefficient at each observation is ``profile(λ)`` for any
+    :class:`~selfcal.profiles.SpectralProfile` (Gaussian, numerical template,
+    Lorentzian/Voigt, ...). Not line-specific — a "line" is just the common case
+    of a peaked profile.
+    """
+
+    name: str = 'spectral'
     profile: object = None
     wavelength_key: str = 'BC'
     damp_weight: float = None
@@ -79,6 +86,10 @@ class LineComponent(SkyComponent):
 
     def coefficients(self, aux):
         return self.profile.evaluate(aux[self.wavelength_key], aux)
+
+
+# Back-compat alias (the abstraction is general, not line-specific).
+LineComponent = SpectralComponent
 
 
 @dataclass(frozen=True)
@@ -136,4 +147,4 @@ class SkyModel:
             sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355,
                                          intrinsic_var_um2=2.890e-4))
         return cls((ContinuumComponent(),
-                    LineComponent(name='pah_3p29', profile=profile, wavelength_key='BC')))
+                    SpectralComponent(name='pah_3p29', profile=profile, wavelength_key='BC')))
