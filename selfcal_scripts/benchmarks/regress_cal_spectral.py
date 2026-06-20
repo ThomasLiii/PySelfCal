@@ -10,14 +10,19 @@ PAH 3.29 um line amplitude), the per-pixel Gaussian G(lambda) row coefficients,
 the line-block Fisher accumulation, and the skymap_line* cal datasets — none of
 which the continuum gate touches.
 
+By default setup_lsqr is now driven via the explicit sky_model= object API (the
+path the routine gate exercises); it is byte-equal to the deprecated spectral_fit
+shim it replaces. Pass --flat-kwargs to run spectral_fit=True instead, as a
+legacy-path regression check that the old flag still reproduces the golden.
+
 Save BEFORE a refactor change as the baseline, then after each change diff with
 diff_cal_h5.py — the offset blocks AND skymap_line/skymap_line_fisher MUST be
 byte-equal:
 
-    python regress_cal_spectral.py --suffix _gate_golden  --n-frames 150
-    python regress_cal_spectral.py --suffix _gate_phase1  --n-frames 150
+    python regress_cal_spectral.py --suffix _gate_golden --n-frames 150   # sky_model= (default)
+    python regress_cal_spectral.py --suffix _gate_flat --flat-kwargs      # legacy spectral_fit
     python diff_cal_h5.py <cal_dir>/cal_..._gate_golden.h5 \
-                          <cal_dir>/cal_..._gate_phase1.h5
+                          <cal_dir>/cal_..._gate_flat.h5
 
 WARNING: --batch-size and --max-workers must be IDENTICAL across baseline and
 candidate runs for byte-equality (cal accumulation flush ordering depends on
@@ -92,9 +97,10 @@ def main():
     ap.add_argument('--iter-lim', type=int, default=20)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--batch-size', type=int, default=50)
-    ap.add_argument('--use-sky-model', action='store_true',
-                    help='drive setup_lsqr via the explicit sky_model= API instead '
-                         'of the deprecated spectral_fit flag (dual-path check)')
+    ap.add_argument('--flat-kwargs', action='store_true',
+                    help='drive setup_lsqr via the deprecated spectral_fit flag instead '
+                         'of the default sky_model= object (legacy-path regression '
+                         'check; must still be byte-equal to the golden)')
     args = ap.parse_args()
 
     cfg = PipelineWrapper.PipelineConfig(
@@ -139,12 +145,15 @@ def main():
         max_workers=args.max_workers,
     )
     t0 = time.time()
-    if args.use_sky_model:
-        # Explicit forward-looking API: must be byte-equal to the spectral_fit path.
+    if args.flat_kwargs:
+        # Legacy-path regression check: the deprecated spectral_fit flag. Must
+        # still be byte-equal to the golden now that sky_model= is the default.
+        cc.setup_lsqr(spectral_fit=True, **common)
+    else:
+        # Default path the gate exercises: the explicit sky_model= object API.
+        # Byte-equal to the spectral_fit shim it replaces.
         from SelfCal.MakeMap import SkyModel
         cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
-    else:
-        cc.setup_lsqr(spectral_fit=True, **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")
 
     x0 = compute_x0_scalar_only(

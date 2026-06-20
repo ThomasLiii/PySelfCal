@@ -5,11 +5,17 @@ sorted subset of the D3 Ch17 NumCol=3 NVMe-staged reproj files, with the exact
 benchmark_d3_ch17_numcol3 config. Save BEFORE a change as the baseline, then
 after each change diff with diff_cal_h5.py — opt A/B MUST be byte-equal.
 
+By default setup_lsqr is now driven via the OffsetModel object API (the path the
+refactor is migrating production toward); this is the path the routine gate
+exercises and it lowers byte-equal to the (flat-path) golden. Pass --flat-kwargs
+to run the deprecated parallel-list kwargs instead, as a legacy-path regression
+check that the old API still reproduces the golden.
+
 Usage:
-    python regress_cal.py --suffix _gate_baseline --n-frames 300
-    python regress_cal.py --suffix _gate_optA     --n-frames 300
+    python regress_cal.py --suffix _gate_baseline --n-frames 300   # OffsetModel (default)
+    python regress_cal.py --suffix _gate_flat --flat-kwargs        # legacy flat kwargs
     python diff_cal_h5.py <cal_dir>/cal_..._gate_baseline.h5 \
-                          <cal_dir>/cal_..._gate_optA.h5
+                          <cal_dir>/cal_..._gate_flat.h5
 
 WARNING: --batch-size must be IDENTICAL across baseline and candidate runs for
 byte-equality. The default is 50 and shouldn't be changed unless you are
@@ -47,9 +53,10 @@ def main():
     ap.add_argument('--n-frames', type=int, default=300)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--batch-size', type=int, default=50)
-    ap.add_argument('--use-offset-model', action='store_true',
-                    help='drive setup_lsqr via OffsetModel instead of flat kwargs '
-                         '(dual-path bit-identity check; must match the flat golden)')
+    ap.add_argument('--flat-kwargs', action='store_true',
+                    help='drive setup_lsqr via the deprecated flat *_list kwargs '
+                         'instead of the default OffsetModel object (legacy-path '
+                         'regression check; must still be byte-equal to the golden)')
     args = ap.parse_args()
 
     cfg = PipelineWrapper.PipelineConfig(
@@ -80,19 +87,10 @@ def main():
         batch_size=args.batch_size, offset_regularization=True,
         weighted_damping=True, damp_weight=0.1, max_workers=args.max_workers,
     )
-    if args.use_offset_model:
-        # Dual-path check: identical config expressed as an OffsetModel. Lowers
-        # to the same parallel-list kwargs, so the cal must be byte-equal to the
-        # flat-kwarg golden.
-        from SelfCal.MakeMap import OffsetModel, OffsetBlock
-        om = OffsetModel([
-            OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
-                        adj_info=det_inputs['adj_info'],
-                        reg_weight=0.1,
-                        mean_offset=np.zeros(num_frames)),
-        ], use_per_frame_scalar=True)
-        cc.setup_lsqr(offset_model=om, **common)
-    else:
+    if args.flat_kwargs:
+        # Legacy-path regression check: the deprecated parallel-list kwargs.
+        # Identical code to the pre-flip default; must still be byte-equal to the
+        # golden now that the object API is the default path.
         cc.setup_lsqr(
             chunk_maps=[det_inputs['det_chunk_map']],
             adj_infos=[det_inputs['adj_info']],
@@ -101,6 +99,18 @@ def main():
             use_per_frame_scalar=True,
             **common,
         )
+    else:
+        # Default path the gate exercises: the config expressed as an OffsetModel.
+        # Lowers to the same parallel-list kwargs, so the cal is byte-equal to the
+        # (flat-path) golden.
+        from SelfCal.MakeMap import OffsetModel, OffsetBlock
+        om = OffsetModel([
+            OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
+                        adj_info=det_inputs['adj_info'],
+                        reg_weight=0.1,
+                        mean_offset=np.zeros(num_frames)),
+        ], use_per_frame_scalar=True)
+        cc.setup_lsqr(offset_model=om, **common)
     t_setup = time.time() - t0
     print(f"setup_lsqr: {t_setup:.2f} s")
 
