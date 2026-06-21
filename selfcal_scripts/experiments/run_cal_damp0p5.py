@@ -39,9 +39,9 @@ from SelfCal.SPHERExUtility import (
 )
 from SelfCal.SPHERExAppendWav import wav_coadd
 
-# Reuse the helpers from run_cal.py for input prep.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_cal import prepare_detector_inputs, prepare_channel_inputs  # noqa
+# Shared input-prep helpers (single source of truth). parent_path
+# (selfcal_scripts/) is already on sys.path from the preamble above.
+from _run_cal_harness import prepare_detector_inputs, prepare_channel_inputs  # noqa
 
 
 if __name__ == "__main__":

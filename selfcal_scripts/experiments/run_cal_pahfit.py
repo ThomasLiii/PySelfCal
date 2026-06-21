@@ -22,108 +22,15 @@ from SelfCal import PipelineWrapper
 from SelfCal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
                              OffsetModel, OffsetBlock, SkyModel)
 from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
-compute_column_polynomial_chains
+from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
+# prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
+# shared from selfcal_scripts/_run_cal_harness.py (single source of truth).
+import sys as _sys
+_sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _run_cal_harness import (prepare_detector_inputs, prepare_channel_inputs,
+                              mask_bright_pixels)
 from SelfCal.SPHERExAppendWav import wav_coadd
 
-
-def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
-    detector = frame_setting['Detector']
-    num_subchannels = frame_setting['NumSub']
-    num_channels = frame_setting['NumCh']
-    num_columns = frame_setting['NumCol']
-    
-    lvf_filename = f'lvf_params_D{detector}.npy'
-    lvf_params = load_lvf_params(lvf_filename)
-
-    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
-    grid_chunk_map, _, _, _ = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
-                                                    oversample_factor=mosaic_setting_oversample, lvf_params=lvf_params)
-    det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
-                                            oversample_factor=1, lvf_params=lvf_params)
-    
-    adj_info = compute_column_adjacency(det_chunk_map, num_columns)
-        
-    return {
-        'lvf_params': lvf_params,
-        'det_BC': det_BC,
-        'det_BW': det_BW,
-        'grid_chunk_map': grid_chunk_map,
-        'det_chunk_map': det_chunk_map,
-        'r_edges': r_edges,
-        'x_edges': x_edges,
-        'adj_info': adj_info
-    }
-
-
-def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
-    num_subchannels = frame_setting['NumSub']
-    num_channels = frame_setting['NumCh']
-    num_columns = frame_setting['NumCol']
-    
-    if isinstance(ch, list) or isinstance(ch, np.ndarray):
-        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
-                                        num_columns=num_columns, subchannel_padding=1)
-        chunk_valid_mask = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
-                                        num_columns=num_columns, subchannel_padding=0)
-    elif isinstance(ch, str):
-        if ch == 'Aromatic':
-            subch = np.arange(225, 236)
-        elif ch == 'Aliphatic':
-            subch = np.arange(249, 260)
-        elif ch == 'Aromatic_PAHfit':
-            # 40-subchannel range centered on PAH 3.29 μm (subch 210-250,
-            # symmetric ±20 from peak at ~subch 230) for the in-LSQR per-pixel
-            # continuum + line amplitude joint fit. ±2σ around line, G(λ_edge)
-            # ≈ 0.135 — far-edge subch contribute negligibly to line Fisher
-            # info (G² ≈ 0.02) so dropping the outer 10 subch from each side
-            # cuts matrix memory by ~33% with minimal information loss.
-            # The original 60-subch window (200-260) OOM'd at production scale
-            # (17.6k frames × 60 subch × ~300k entries → 5B nonzeros, peaked
-            # ~700 GB during the apply_lsqr A^T transpose allocation).
-            subch = np.arange(210, 250)
-        else:
-            raise ValueError(f"Unknown channel tag {ch!r}")
-        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
-                                        num_columns=num_columns, subchannel_padding=1)
-        chunk_valid_mask = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
-                                        num_columns=num_columns, subchannel_padding=0)
-
-    # Pre-calculate weights safely
-    det_valid_mask = chunk_valid_mask[det_chunk_map]
-    det_valid_weight = fast_vertical_dist(det_valid_mask)
-    if np.max(det_valid_weight) > 0:
-        det_valid_weight /= np.max(det_valid_weight) 
-
-    det_valid_mask_padded = chunk_valid_mask_padded[det_chunk_map]
-
-
-    grid_valid_mask = chunk_valid_mask[grid_chunk_map]
-    grid_valid_weight = fast_vertical_dist(grid_valid_mask)
-    if np.max(grid_valid_weight) > 0:
-        grid_valid_weight /= np.max(grid_valid_weight) 
-
-    return {
-        'chunk_valid_mask_padded': chunk_valid_mask_padded,
-        'chunk_valid_mask': chunk_valid_mask,
-        'det_valid_mask': det_valid_mask,
-        'grid_valid_mask': grid_valid_mask,
-        'det_valid_mask_padded': det_valid_mask_padded,
-        'det_valid_weight': det_valid_weight,
-        'grid_valid_weight': grid_valid_weight
-    }
-
-def mask_bright_pixels(local_vars):
-    sub_data = local_vars['sub_data']
-    sub_weight = local_vars['sub_weight']
-    
-    valid_mask = sub_weight > 0
-    if np.sum(valid_mask) > 0:
-        threshold = np.nanpercentile(sub_data[valid_mask], 25)
-        sub_data[sub_data > threshold] = np.nan
-        
-    return sub_data
 
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
