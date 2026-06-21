@@ -1,0 +1,69 @@
+# Tiled NEP D4 PAHfit calibration (replaces drivers/chunked_NEP/run_cal_tiled_NEP.py).
+# 2x2 quadrant tiles -> per-tile PAHfit cal (dual column+subchannel poly) ->
+# Fisher-weighted stitch. No mosaic. RSS guardrail on (large per-tile peak).
+task = "tiled"
+mode = "tiled"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+# {tile} fills NW/NE/SW/SE per tile (matches the legacy per-quadrant cal names).
+suffix = "_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_full_{tile}_iter400_subchPoly3_w100_outThresh5_sigma2_polyK1"
+oversample = 2
+hdd_io_limit = 20
+apply_n_threads = 48
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 5
+subch_window = [200, 260]
+window_name = "Aromatic_PAHfit"
+
+[params]
+poly_degree = 1
+poly_weight = 0.5
+reg_weight = 0.1
+subch_poly_degree = 3
+subch_poly_weight = 100.0
+subch_poly_lo = 200
+subch_poly_hi = 259
+subch_tot = 342
+line_fisher_threshold = 10.0
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 5e-3
+max_workers = 48
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 400
+precondition = true
+solver = "lsqr"
+
+[tiled]
+ref_shape = [12676, 12672]
+grid = [2, 2]
+overlap_px = 50
+tile_names = ["NW", "NE", "SW", "SE"]
+full_reproj_dir = "/data3/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D4_6p2arcsec/reprojected"
+frame_glob = "exp_*_det_00.h5"
+frame_filter = "center"
+halo = 0
+nvme_subdir = "reproj_nvme_pahfit_region_10k"
+stitched_suffix = "_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_full_NEP_iter400_stitched"
+line = true
+rss_guardrail = true

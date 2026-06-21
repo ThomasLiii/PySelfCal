@@ -35,4 +35,38 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class Instrument(Protocol):
+    """Runner-facing instrument contract (duck-typed). The generic run engine in
+    ``selfcal_scripts.runner`` drives a calibration entirely through this surface
+    plus the ``CalMode`` interface — it never imports an instrument or names a
+    telescope. ``capabilities`` is a set of feature tags (e.g. ``"wavelength"``,
+    ``"subchannel"``) a mode can declare it ``requires``; a broadband (non-LVF)
+    instrument simply omits them. See ``spherex/adapter.py`` for the reference impl.
+    The older duck-typed reproject conventions above still hold for that stage."""
+
     name: str
+    capabilities: frozenset
+
+    def jobs(self, inst_cfg) -> list:
+        """Expand the [instrument] selection into a list of jobs (channel loop)."""
+        ...
+
+    def detector_inputs(self, inst_cfg, oversample) -> dict:
+        """Detector-level geometry built once per run (chunk maps, aux, edges).
+        Must NOT include adjacency — that is offset-structure-specific (the mode)."""
+        ...
+
+    def channel_inputs(self, inst_cfg, det_inputs, job) -> dict:
+        """Per-job geometry (valid masks + weights for the job's region)."""
+        ...
+
+    def aux(self, det_inputs) -> list | None:
+        """Per-pixel aux maps spectral modes need (SPHEREx: [BC, BW]); else None."""
+        ...
+
+    def offset_render(self, inst_cfg, det_inputs, channel_inputs):
+        """Per-(chunk_map, offset)->grid renderer for the mosaic (or None)."""
+        ...
+
+    def wavelength_append(self, det_inputs, mm, maps, sigma) -> None:
+        """Optional: append per-pixel wavelength maps after mosaicking (LVF only)."""
+        ...
