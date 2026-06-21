@@ -59,9 +59,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(_HERE)
 sys.path.append(parent_path)
 
-from SelfCal import PipelineWrapper, MakeMap
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import PipelineWrapper
+from selfcal import MakeMap
+from selfcal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from selfcal.instruments.spherex.SPHERExUtility import (
     load_calibration,
     load_lvf_params,
     compute_column_adjacency,
@@ -70,7 +71,7 @@ from SelfCal.SPHERExUtility import (
     make_spherex_stripped_offset_map,
     fast_vertical_dist,
 )
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
 
 # ============================================================

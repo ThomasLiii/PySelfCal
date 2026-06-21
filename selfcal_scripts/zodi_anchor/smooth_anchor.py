@@ -29,7 +29,7 @@ import os
 
 import numpy as np
 
-from SelfCal.ZodiAnchor import smooth_anchor_file
+from selfcal.ZodiAnchor import smooth_anchor_file
 
 
 def parse_args():

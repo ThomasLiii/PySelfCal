@@ -34,10 +34,10 @@ from functools import partial
 
 import numpy as np
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map
+from selfcal.instruments.spherex.wavemap import wav_coadd
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 FRAME_SETTING = {'Detector': 3, 'NumSub': 10, 'NumCh': 34, 'NumCol': 3}

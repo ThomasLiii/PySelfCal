@@ -17,7 +17,7 @@ NOTE: the K=2 readout driver and the tiled-NEP driver keep bespoke prepare_*
 """
 import numpy as np
 
-from SelfCal.SPHERExUtility import (load_calibration, load_lvf_params,
+from selfcal.instruments.spherex.SPHERExUtility import (load_calibration, load_lvf_params,
     compute_column_adjacency, make_stripped_chunk_map,
     make_stripped_chunk_valid_mask, fast_vertical_dist)
 

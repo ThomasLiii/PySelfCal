@@ -34,10 +34,10 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
                              OffsetModel, OffsetBlock)
-from SelfCal.SPHERExUtility import (load_lvf_params, compute_subchannel_adjacency,
+from selfcal.instruments.spherex.SPHERExUtility import (load_lvf_params, compute_subchannel_adjacency,
                                     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
                                     make_spherex_stripped_offset_map, fast_vertical_dist)
 

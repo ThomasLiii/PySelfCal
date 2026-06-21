@@ -28,16 +28,16 @@ import numpy as np
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.SPHERExUtility import (
     load_calibration, load_lvf_params, compute_column_adjacency,
     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     make_spherex_stripped_offset_map, fast_vertical_dist,
     compute_column_polynomial_chains,
 )
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
 # Shared input-prep helpers (single source of truth). parent_path
 # (selfcal_scripts/) is already on sys.path from the preamble above.

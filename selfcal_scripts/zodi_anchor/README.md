@@ -81,7 +81,7 @@ The anchor is applied **at read time** — pipeline mosaics/cals stay
 pristine. From Python:
 
 ```python
-from SelfCal.ZodiAnchor import load_anchor, load_anchored_mosaic
+from selfcal.ZodiAnchor import load_anchor, load_anchored_mosaic
 anchor = load_anchor('<run>/zodi_anchor/anchor_D1.h5')
 anchor.C(11)                                   # final C for Ch11 (repair-aware)
 data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory

@@ -46,7 +46,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from SelfCal.ZodiAnchor import compute_full_dc, load_anchor
+from selfcal.ZodiAnchor import compute_full_dc, load_anchor
 
 
 # Detector color map (matches the convention used elsewhere).

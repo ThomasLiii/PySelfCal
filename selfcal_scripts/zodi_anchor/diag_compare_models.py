@@ -39,7 +39,7 @@ from build_predictions import (  # noqa: E402
     parse_detector_from_filename,
     save_predictions_npz,
 )
-from SelfCal.ZodiAnchor import compute_full_dc, fit_with_clip  # noqa: E402
+from selfcal.ZodiAnchor import compute_full_dc, fit_with_clip  # noqa: E402
 
 
 def parse_args():

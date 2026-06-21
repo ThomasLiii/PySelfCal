@@ -370,7 +370,7 @@ def build_for_channel_theoretical(ch, num_subchannels, num_channels, num_columns
     """
     # Import here to keep zodi-only env paths optional; SelfCal is
     # available in both envs.
-    from SelfCal.SPHERExUtility import make_stripped_chunk_valid_mask
+    from selfcal.instruments.spherex.SPHERExUtility import make_stripped_chunk_valid_mask
     # SPHERExUtility returns a float64 0/1 mask; cast to bool so the
     # downstream `det_BC[det_valid_mask]` works.
     chunk_valid_mask_1d = make_stripped_chunk_valid_mask(

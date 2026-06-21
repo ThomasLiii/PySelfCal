@@ -50,7 +50,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from SelfCal.ZodiAnchor import fit_with_clip, moving_sigma_clip_mask
+from selfcal.ZodiAnchor import fit_with_clip, moving_sigma_clip_mask
 from refit_smooth_slope import load_detector, per_channel_from_anchor
 
 

@@ -15,18 +15,18 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
 # prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
 # shared from selfcal_scripts/_run_cal_harness.py (single source of truth).
 import sys as _sys
 _sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _run_cal_harness import (prepare_detector_inputs, prepare_channel_inputs,
                               mask_bright_pixels)
-from SelfCal.SPHERExAppendWav import wav_coadd
-from SelfCal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
+from selfcal.instruments.spherex.wavemap import wav_coadd
+from selfcal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
 
 
 if __name__ == "__main__":

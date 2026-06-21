@@ -32,8 +32,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage as ndi
 
-from SelfCal.MapHelper import bit_to_bool
-from SelfCal.SPHERExUtility import load_lvf_params, make_stripped_chunk_map
+from selfcal.geometry.MapHelper import bit_to_bool
+from selfcal.instruments.spherex.SPHERExUtility import load_lvf_params, make_stripped_chunk_map
 
 
 NUM_SUB = 10

@@ -30,11 +30,11 @@ from functools import partial
 
 import numpy as np
 
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.lsqr import _prep_lsqr
-from SelfCal.subframe import _prep_subframe
-from SelfCal.MapHelper import compute_crop
-from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.core.lsqr import _prep_lsqr
+from selfcal.core.subframe import _prep_subframe
+from selfcal.geometry.MapHelper import compute_crop
+from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 

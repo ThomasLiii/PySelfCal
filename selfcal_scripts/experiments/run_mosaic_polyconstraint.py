@@ -34,9 +34,9 @@ from tqdm import tqdm
 sys.path.append(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', 'benchmarks'))
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.instruments.spherex.SPHERExUtility import (
     load_calibration,
     load_lvf_params,
     make_stripped_chunk_map,

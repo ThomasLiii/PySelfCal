@@ -118,10 +118,10 @@ _REPO_ROOT = '/home/thomasli/selfcal-project/selfcal'
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import (set_hdd_io_limit, OffsetModel, OffsetBlock, SkyModel)
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import (load_calibration, load_lvf_params,
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import (set_hdd_io_limit, OffsetModel, OffsetBlock, SkyModel)
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.SPHERExUtility import (load_calibration, load_lvf_params,
     compute_column_adjacency, make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     fast_vertical_dist, compute_column_polynomial_chains,
     compute_subchannel_polynomial_chains)

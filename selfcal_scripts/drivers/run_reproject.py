@@ -76,8 +76,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import glob
 import numpy as np
 
-from SelfCal import PipelineWrapper
-from SelfCal.exposure_filter import filter_exposures_by_header
+from selfcal.pipeline import PipelineWrapper
+from selfcal.io.exposure_filter import filter_exposures_by_header
 
 frame_setting = {
     'Detector': 4,

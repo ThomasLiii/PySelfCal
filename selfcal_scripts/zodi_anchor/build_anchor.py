@@ -32,7 +32,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from SelfCal.ZodiAnchor import (fit_anchor_for_channel, write_anchor,
+from selfcal.ZodiAnchor import (fit_anchor_for_channel, write_anchor,
                                 smooth_anchor_file)
 
 

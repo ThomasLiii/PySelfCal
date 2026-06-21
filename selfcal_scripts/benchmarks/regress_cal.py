@@ -37,9 +37,9 @@ import time
 
 import numpy as np
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 FRAME_SETTING = {'Detector': 3, 'NumSub': 10, 'NumCh': 34, 'NumCol': 3}
@@ -103,7 +103,7 @@ def main():
         # Default path the gate exercises: the config expressed as an OffsetModel.
         # Lowers to the same parallel-list kwargs, so the cal is byte-equal to the
         # (flat-path) golden.
-        from SelfCal.MakeMap import OffsetModel, OffsetBlock
+        from selfcal.MakeMap import OffsetModel, OffsetBlock
         om = OffsetModel([
             OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
                         adj_info=det_inputs['adj_info'],

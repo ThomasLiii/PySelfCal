@@ -13,13 +13,13 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.SPHERExUtility import (load_calibration, load_lvf_params, compute_column_adjacency,
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from selfcal.instruments.spherex.SPHERExUtility import (load_calibration, load_lvf_params, compute_column_adjacency,
                                     compute_column_polynomial_chains, compute_offsets_guess,
                                     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
                                     fast_vertical_dist)
-from SelfCal.solution import encode_x, compute_x0_scalar_only
+from selfcal.core.solution import encode_x, compute_x0_scalar_only
 
 
 def build_detector_stripe_map(shape, mid_width=64, edge_width=60, dtype=np.int32):

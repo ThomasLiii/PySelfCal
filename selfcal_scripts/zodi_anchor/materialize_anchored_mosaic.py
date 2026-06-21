@@ -24,7 +24,7 @@ import sys
 
 from astropy.io import fits
 
-from SelfCal.ZodiAnchor import load_anchor
+from selfcal.ZodiAnchor import load_anchor
 
 
 def parse_args():

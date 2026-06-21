@@ -28,11 +28,12 @@ matplotlib.use('Agg')
 import numpy as np
 from tqdm import tqdm
 
-from SelfCal import PipelineWrapper, MakeMap
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.pipeline import PipelineWrapper
+from selfcal import MakeMap
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map
+from selfcal.instruments.spherex.wavemap import wav_coadd
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 from benchmark_d3_ch17_poly import PhaseTracker
 

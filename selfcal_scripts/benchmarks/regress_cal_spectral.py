@@ -43,10 +43,10 @@ import time
 
 import numpy as np
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import (compute_column_polynomial_chains,
+from selfcal.pipeline import PipelineWrapper
+from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.SPHERExUtility import (compute_column_polynomial_chains,
                                     make_stripped_chunk_valid_mask, fast_vertical_dist)
 from run_cal_baseline_test import prepare_detector_inputs
 
@@ -152,7 +152,7 @@ def main():
     else:
         # Default path the gate exercises: the explicit sky_model= object API.
         # Byte-equal to the spectral_fit shim it replaces.
-        from SelfCal.MakeMap import SkyModel
+        from selfcal.MakeMap import SkyModel
         cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")
 
