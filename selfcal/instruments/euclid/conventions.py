@@ -10,7 +10,7 @@ LVF / spectral machinery is touched.
 """
 import numpy as np
 
-from ...geometry.MapHelper import make_grid_chunk_map
+from ...geometry.map_helper import make_grid_chunk_map
 
 # NISP focal plane: 16 detectors, each FITS file laid out as
 # (primary, sci, ?, dq) repeating per detector -> sci at 3k+1, dq at 3k+3.

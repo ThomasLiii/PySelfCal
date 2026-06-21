@@ -30,7 +30,7 @@ Plot (3-panel):
 
 Read-only on cal/anchor/zodi_pred files. Reuses load_detector and
 per_channel_from_anchor from refit_smooth_slope.py and fit_with_clip
-from SelfCal.ZodiAnchor.
+from selfcal.zodi_anchor.
 """
 import argparse
 import os
@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
 
-from selfcal.ZodiAnchor import fit_with_clip, load_anchor
+from selfcal.zodi_anchor import fit_with_clip, load_anchor
 
 # Add this directory to path so we can reuse refit_smooth_slope helpers.
 _HERE = os.path.dirname(os.path.abspath(__file__))

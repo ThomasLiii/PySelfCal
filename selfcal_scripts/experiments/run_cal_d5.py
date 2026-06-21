@@ -18,11 +18,12 @@ from threadpoolctl import threadpool_limits
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
-                             OffsetModel, OffsetBlock)
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
+from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
 # prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
 # shared from selfcal_scripts/_run_cal_harness.py (single source of truth).
 import sys as _sys
@@ -41,7 +42,7 @@ if __name__ == "__main__":
         'NumCol': 10,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -155,7 +156,7 @@ if __name__ == "__main__":
         
         # ----------------------------- Calibration -----------------------------
         cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
@@ -207,7 +208,7 @@ if __name__ == "__main__":
                                     num_columns=frame_setting['NumCol'],
                                     fill_invalid=True)
         
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
         mm.load_calibration(cal_path=cal_path)
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 

@@ -34,9 +34,9 @@ from functools import partial
 
 import numpy as np
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit
-from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map
 from selfcal.instruments.spherex.wavemap import wav_coadd
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
@@ -55,7 +55,7 @@ def main():
     ap.add_argument('--no-wav', action='store_true')
     args = ap.parse_args()
 
-    cfg = PipelineWrapper.PipelineConfig(
+    cfg = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{FRAME_SETTING["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -71,7 +71,7 @@ def main():
     cal_path = os.path.join(cfg.cal_dir, cal_file)
     assert os.path.exists(cal_path), f"missing cal: {cal_path} (run regress_cal.py first)"
 
-    mm = PipelineWrapper.Mosaicker(cfg, reproj_dir=NVME_DIR)
+    mm = pipeline_wrapper.Mosaicker(cfg, reproj_dir=NVME_DIR)
     mm.load_calibration(cal_path=cal_path)
     files = sorted(glob_module.glob(os.path.join(NVME_DIR, '*.h5')))[:args.n_frames]
     mm.reproj_list = files

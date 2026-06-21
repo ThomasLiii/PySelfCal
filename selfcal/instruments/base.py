@@ -13,13 +13,13 @@ What an instrument typically provides (all optional except a name):
   indices per detector (e.g. Euclid ``conventions.sci_ext_list`` / ``dq_ext_list``).
 - ``default_ignore_bits() -> list[int]``  DQ bits to ignore (e.g. Euclid [11,15]).
 - ``build_chunk_map(...) -> np.ndarray``   detector→chunk-id map (SPHEREx LVF arcs
-  via ``spherex.SPHERExUtility.make_stripped_chunk_map``; a square grid via
+  via ``spherex.spherex_utility.make_stripped_chunk_map``; a square grid via
   ``conventions.chunk_map`` / ``geometry.make_grid_chunk_map``).
 - ``adjacency(chunk_map, ...)``            regularization adjacency pairs.
 - ``offset_render_func(...) -> callable``  per-map ``(chunk_map, offset)->grid``
   renderer for the mosaic step (None ⇒ block-constant via ``chunk_to_det``).
 - ``load_aux_maps(detector) -> dict``      wavelength aux maps for spectral fits
-  (SPHEREx: ``{'BC':..., 'BW':...}`` from ``spherex.SPHERExUtility.load_calibration``;
+  (SPHEREx: ``{'BC':..., 'BW':...}`` from ``spherex.spherex_utility.load_calibration``;
   broadband instruments: ``{}``).
 - ``line_catalog()``                       named spectral components / windows
   (SPHEREx only; e.g. a PAH-3.29 factory). Broadband instruments omit this and

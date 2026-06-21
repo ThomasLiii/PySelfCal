@@ -363,15 +363,15 @@ def build_for_channel_theoretical(ch, num_subchannels, num_channels, num_columns
     """Compute zodi_pred for one channel WITHOUT a cal file.
 
     Channel mask comes from
-    ``SelfCal.SPHERExUtility.make_stripped_chunk_valid_mask(ch=[ch], ...)``
+    ``selfcal.instruments.spherex.spherex_utility.make_stripped_chunk_valid_mask(ch=[ch], ...)``
     — purely a function of the LVF geometry and channel number, no
     coverage-based thresholding. Use when the cal file doesn't exist
     yet (e.g. anchor predictions in parallel with the cal solve).
     """
     # Import here to keep zodi-only env paths optional; SelfCal is
     # available in both envs.
-    from selfcal.instruments.spherex.SPHERExUtility import make_stripped_chunk_valid_mask
-    # SPHERExUtility returns a float64 0/1 mask; cast to bool so the
+    from selfcal.instruments.spherex.spherex_utility import make_stripped_chunk_valid_mask
+    # spherex_utility returns a float64 0/1 mask; cast to bool so the
     # downstream `det_BC[det_valid_mask]` works.
     chunk_valid_mask_1d = make_stripped_chunk_valid_mask(
         ch=[ch], num_subchannels=num_subchannels,

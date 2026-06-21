@@ -1,5 +1,5 @@
 import os
-from selfcal.instruments.spherex.SPHERExUtility import make_fiducial_chunk_map, make_fiducial_chunk_mask, interpolate_array, load_calibration, interp_2d_vertical, interp_1d
+from selfcal.instruments.spherex.spherex_utility import make_fiducial_chunk_map, make_fiducial_chunk_mask, interpolate_array, load_calibration, interp_2d_vertical, interp_1d
 import numpy as np
 
 def load_lvf_params(filename, input_dir='/home/thomasli/selfcal-project/selfcal/selfcal_scripts/lvf_params'):

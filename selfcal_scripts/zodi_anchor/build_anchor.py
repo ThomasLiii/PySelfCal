@@ -2,7 +2,7 @@
 
 Reads PRISTINE cal files + their matching zodi_pred_*.npz, fits the
 per-channel anchor (slope, C, r, ...) via
-SelfCal.ZodiAnchor.fit_anchor_for_channel, and writes one
+selfcal.zodi_anchor.fit_anchor_for_channel, and writes one
 anchor_D{N}.h5 per detector. Never mutates cal/mosaic.
 
 Default output: <run>/zodi_anchor/anchor_D{N}.h5
@@ -32,7 +32,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from selfcal.ZodiAnchor import (fit_anchor_for_channel, write_anchor,
+from selfcal.zodi_anchor import (fit_anchor_for_channel, write_anchor,
                                 smooth_anchor_file)
 
 

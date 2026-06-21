@@ -3,7 +3,7 @@
 Supports SPHEREx (LVF spectral) and Euclid (broadband) data. The curated names
 below are the high-level API; lower-level functions live in the submodules
 (``selfcal.core``, ``selfcal.geometry``, ``selfcal.io``) or the back-compat
-``selfcal.MakeMap`` facade.
+real submodules.
 
 Quick start::
 
@@ -26,7 +26,7 @@ Spectral / arbitrary-template fitting (any number of components)::
 __version__ = "0.1.0"
 
 from ._state import set_hdd_io_limit
-from .pipeline.PipelineWrapper import (PipelineConfig, Reprojector, Calibrator,
+from .pipeline.pipeline_wrapper import (PipelineConfig, Reprojector, Calibrator,
                                        Mosaicker)
 from .models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
                                SpectralComponent, LineComponent)

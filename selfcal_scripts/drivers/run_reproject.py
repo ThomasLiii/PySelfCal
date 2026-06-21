@@ -76,7 +76,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import glob
 import numpy as np
 
-from selfcal.pipeline import PipelineWrapper
+from selfcal.pipeline import pipeline_wrapper
 from selfcal.io.exposure_filter import filter_exposures_by_header
 
 frame_setting = {
@@ -85,7 +85,7 @@ frame_setting = {
     'NumCh': 34,
     'NumCol': 3,
 }
-selfcal_config = PipelineWrapper.PipelineConfig(
+selfcal_config = pipeline_wrapper.PipelineConfig(
     output_dir='/mnt/md124/thomasli/selfcal/outputs/',
     run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
     resolution_arcsec=6.2
@@ -123,7 +123,7 @@ exposure_list, dropped = filter_exposures_by_header(
 print(f"Kept {len(exposure_list)} exposures, dropped {len(dropped)} for poor astrometry")
 
 # Initialize Reprojector and run reprojection
-rr = PipelineWrapper.Reprojector(selfcal_config, exposure_list=exposure_list)
+rr = pipeline_wrapper.Reprojector(selfcal_config, exposure_list=exposure_list)
 rr.define_reference(padding_pixels=100, use_ext=[1],
                     source_ref_path=SOURCE_REF_PATH)
 

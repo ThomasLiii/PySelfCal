@@ -9,7 +9,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 from .. import _state
 from .subframe import _prep_subframe
-from ..geometry.MapHelper import compute_crop
+from ..geometry.map_helper import compute_crop
 
 
 def _coadd_batch_worker(params):

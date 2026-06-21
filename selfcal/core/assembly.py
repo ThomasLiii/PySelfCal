@@ -12,7 +12,7 @@ import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 
 from .subframe import _prep_subframe
-from ..geometry.MapHelper import find_outliers, check_invalid
+from ..geometry.map_helper import find_outliers, check_invalid
 
 
 def _prep_lsqr(task_params):

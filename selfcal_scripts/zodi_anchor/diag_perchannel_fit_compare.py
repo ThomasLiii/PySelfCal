@@ -36,7 +36,7 @@ from refit_smooth_slope import (  # type: ignore
     load_detector,
     per_channel_from_anchor,
 )
-from selfcal.ZodiAnchor import moving_sigma_clip_mask
+from selfcal.zodi_anchor import moving_sigma_clip_mask
 
 
 # ----------------------------------------------------------------------

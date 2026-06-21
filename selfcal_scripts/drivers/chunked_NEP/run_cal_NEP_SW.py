@@ -116,17 +116,19 @@ def _rss_checkpoint(label):
         flush=True,
     )
 
-# Resolve to the repo root so SelfCal/ + selfcal_scripts/ are importable even
+# Resolve to the repo root so selfcal/ + selfcal_scripts/ are importable even
 # though this driver lives under workspace/spectral-pah-fit/region_10k/.
 _REPO_ROOT = '/home/thomasli/selfcal-project/selfcal'
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
-                             OffsetModel, OffsetBlock, SkyModel)
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
+from selfcal.models.sky_model import SkyModel
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
+from selfcal.instruments.spherex.spherex_utility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
 compute_column_polynomial_chains, compute_subchannel_polynomial_chains
 from selfcal.instruments.spherex.wavemap import wav_coadd
@@ -270,7 +272,7 @@ if __name__ == "__main__":
         'NumCol': 5,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/data3/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -427,7 +429,7 @@ if __name__ == "__main__":
         channel_inputs = prepare_channel_inputs(ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
 
         # ----------------------------- Calibration (STAIRCASE v5) -----------------------------
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         # Override the auto-globbed reproj_list with our explicit region-10k list.
         # Calibrator.__init__ already called get_reproj_files(nvme_reproj_dir),
         # which would pick up every *.h5 sitting in the NVMe cache dir; we
@@ -506,7 +508,7 @@ if __name__ == "__main__":
         _rss_checkpoint('post-apply_lsqr (single-shot)')
 
         # Phase 6 recommended Fisher mask threshold - saved as cal attr only;
-        # apply at read time via SelfCal.MakeMap.apply_line_fisher_mask.
+        # apply at read time via selfcal.core.lsqr.apply_line_fisher_mask.
         cc.line_fisher_threshold = 10.0
 
         # Save cal. Swap reproj_list to HDD paths so cal references survive

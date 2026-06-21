@@ -14,7 +14,7 @@ import tempfile
 import h5py
 import numpy as np
 
-from selfcal.pipeline.PipelineWrapper import Calibrator
+from selfcal.pipeline.pipeline_wrapper import Calibrator
 from selfcal.models.sky_model import SkyModel, ContinuumComponent, LineComponent
 from selfcal.models.profiles import GaussianProfile, TemplateProfile
 

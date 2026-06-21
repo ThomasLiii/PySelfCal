@@ -16,8 +16,13 @@ from tqdm import tqdm
 
 import warnings
 
-from .. import MakeMap
-from ..geometry import WCSHelper
+from ..core import coadd
+from ..io.reprojection import batch_reproject
+from ..io.reproj import load_reproj_file
+from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
+                         parse_pixel_fisher_sky, apply_line_fisher_mask)
+from ..core.solution import parse_x_sky
+from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..models.sky_model import SkyModel
 
@@ -81,17 +86,17 @@ class Reprojector:
              guards against silently picking up an incompatible existing
              ref.fits on rerun.
           2. Else if ``source_ref_path`` is given, derive a new ref WCS from
-             it via ``WCSHelper.derive_reference_from`` — same projection,
+             it via ``wcs_helper.derive_reference_from`` — same projection,
              new bbox + CRPIX sized to this run's exposures. Use this to
              keep multiple runs on a shared pixel grid even though they
              cover different areas.
           3. Else compute a fresh optimal frame from the exposure list.
         '''
         if os.path.exists(self.config.ref_path):
-            self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
+            self.ref_wcs, self.ref_shape = wcs_helper.load_from_fits(self.config.ref_path)
             if source_ref_path is not None and verify_projection:
-                src_wcs, _ = WCSHelper.load_from_fits(source_ref_path)
-                if not WCSHelper.projections_match(self.ref_wcs, src_wcs):
+                src_wcs, _ = wcs_helper.load_from_fits(source_ref_path)
+                if not wcs_helper.projections_match(self.ref_wcs, src_wcs):
                     raise ValueError(
                         f"Existing reference at {self.config.ref_path} does "
                         f"not share projection with source_ref_path "
@@ -100,23 +105,23 @@ class Reprojector:
         elif source_ref_path is not None:
             print(f"Reference WCS not found at {self.config.ref_path}; "
                   f"deriving from {source_ref_path}.")
-            self.ref_wcs, self.ref_shape = WCSHelper.derive_reference_from(
+            self.ref_wcs, self.ref_shape = wcs_helper.derive_reference_from(
                 source_ref_path=source_ref_path,
                 exposure_list=self.exposure_list,
                 padding_pixels=padding_pixels,
                 use_ext=use_ext,
             )
-            WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
+            wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             print(f"Reference WCS saved to {self.config.ref_path}")
         else:
             print(f"Reference WCS not found at {self.config.ref_path}. Creating a new reference frame.")
-            self.ref_wcs, self.ref_shape = WCSHelper.find_optimal_frame(
+            self.ref_wcs, self.ref_shape = wcs_helper.find_optimal_frame(
                 exposure_list=self.exposure_list,
                 resolution_arcsec=self.config.resolution_arcsec,
                 padding_pixels=padding_pixels,
                 use_ext=use_ext
             )
-            WCSHelper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
+            wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             print(f"Reference WCS saved to {self.config.ref_path}")
         print(f'Mosaic shape: {self.ref_shape}')
         print(f'Mosaic WCS: {self.ref_wcs}')
@@ -321,7 +326,7 @@ class Reprojector:
             # length-1 sci/dq lists so the inner zip yields exactly one ext
             # per task.
             with timer("Reprojection"):
-                new_success, failures = MakeMap.batch_reproject(
+                new_success, failures = batch_reproject(
                     num_processes=max_workers,
                     reproj_func=reproj_func,
                     exposure_list=pending_files,
@@ -358,7 +363,7 @@ class Reprojector:
         """Read sub_data from a single h5 to check if it loads. Returns
         (path, ok, error_str)."""
         try:
-            result = MakeMap.load_reproj_file(path, fields=['sub_data'])
+            result = load_reproj_file(path, fields=['sub_data'])
             if result['_is_missing_'] or result.get('sub_data') is None:
                 return (path, False, 'load_reproj_file _is_missing_ or sub_data is None')
             return (path, True, None)
@@ -442,7 +447,7 @@ class Calibrator(Reprojector):
     def __init__(self, config: PipelineConfig, reproj_dir=None):
         super().__init__(config)
         self.get_reproj_files(reproj_dir)
-        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
+        self.ref_wcs, self.ref_shape = wcs_helper.load_from_fits(self.config.ref_path)
         self.A = None
         self.b = None
         self.x = None
@@ -460,7 +465,7 @@ class Calibrator(Reprojector):
         # informational ``line_fisher_threshold`` attr on the cal file. This is
         # the *recommended* read-time threshold for analysis; the saved
         # skymap_line is always raw (non-destructive). Apply the mask at read
-        # time via SelfCal.lsqr.apply_line_fisher_mask. Default None disables
+        # time via selfcal.core.lsqr.apply_line_fisher_mask. Default None disables
         # the attr write.
         self.line_fisher_threshold = None
         # Multi-chunk-map state — always lists, even at K=1.
@@ -504,7 +509,7 @@ class Calibrator(Reprojector):
         ndarray, 'weight': float}``. The constraint
         ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` is added per chain ``r`` per
         frame and generalizes adjacency reg (``stencil=[1,-1]``) to arbitrary
-        finite-difference operators. See ``SPHERExUtility.compute_column_polynomial_chains``
+        finite-difference operators. See ``spherex_utility.compute_column_polynomial_chains``
         for the SPHEREx column-linearity helper.
 
         Set ``use_per_frame_scalar=True`` to add an explicit per-frame scalar
@@ -564,7 +569,7 @@ class Calibrator(Reprojector):
             self.sky_model = SkyModel.continuum_only()
 
         with timer("Setup LSQR"):
-            _setup_result = MakeMap.setup_lsqr(
+            _setup_result = setup_lsqr(
                 self.reproj_list, self.ref_shape,
                 chunk_maps=chunk_maps,
                 grid_valid_weight=grid_valid_weight,
@@ -645,7 +650,7 @@ class Calibrator(Reprojector):
                 self.A = None
                 self.b = None
                 self.active_mask = None
-            self.x = MakeMap.apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
+            self.x = apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
                                         x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                                         solver=solver, use_float32=use_float32, n_threads=n_threads,
                                         active_mask=active_mask_local,
@@ -746,7 +751,7 @@ class Calibrator(Reprojector):
         K = len(self.chunk_maps)
 
         # Generic per-component parse (N sky blocks; block 0 = continuum).
-        sky_maps, det_offsets, frame_scalar = MakeMap.parse_x_sky(
+        sky_maps, det_offsets, frame_scalar = parse_x_sky(
             self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
@@ -754,14 +759,14 @@ class Calibrator(Reprojector):
             num_sky_blocks=self.num_sky_blocks)
 
         sky_coverages, offset_coverages_layout, offset_valid_fracs_layout = (
-            MakeMap.parse_pixel_counts_sky(
+            parse_pixel_counts_sky(
                 pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
                 num_offset_groups_list=self.num_offset_groups_list,
                 chunk_maps=self.chunk_maps,
                 num_sky_blocks=self.num_sky_blocks))
 
         if self.pixel_fisher is not None:
-            sky_fishers = MakeMap.parse_pixel_fisher_sky(
+            sky_fishers = parse_pixel_fisher_sky(
                 pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
                 num_sky_blocks=self.num_sky_blocks)
         else:
@@ -796,8 +801,8 @@ class Calibrator(Reprojector):
         # Phase 6 (non-destructive): skymap_line is saved RAW. The Fisher-info
         # threshold (self.line_fisher_threshold) is saved as an informational
         # attr only; analysis applies the mask at read time via
-        # ``SelfCal.lsqr.apply_line_fisher_mask`` (or
-        # ``SelfCal.MakeMap.apply_line_fisher_mask``). This lets analysts sweep
+        # ``selfcal.core.lsqr.apply_line_fisher_mask`` (or
+        # ``selfcal.core.lsqr.apply_line_fisher_mask``). This lets analysts sweep
         # the threshold without re-running the ~6-10 hr calibration.
 
         cal_path = os.path.join(cal_dir, cal_file)
@@ -868,7 +873,7 @@ class Calibrator(Reprojector):
         ``sky_maps`` is a length-``num_sky_blocks`` list (block 0 = continuum).
         """
         num_frames = len(self.reproj_list)
-        return MakeMap.parse_x_sky(self.x, ref_shape=self.ref_shape,
+        return parse_x_sky(self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
             num_frames=num_frames if self._has_scalars() else None,
@@ -933,7 +938,7 @@ class Mosaicker(Reprojector):
     def __init__(self, config: PipelineConfig, reproj_dir=None):
         super().__init__(config)
         self.get_reproj_files(reproj_dir)
-        self.ref_wcs, self.ref_shape = WCSHelper.load_from_fits(self.config.ref_path)
+        self.ref_wcs, self.ref_shape = wcs_helper.load_from_fits(self.config.ref_path)
         self.cal_path = None
         self.cached_list = []
         # Multi-chunk-map state — list-form, with K=1 the legacy single-map case.
@@ -1052,7 +1057,7 @@ class Mosaicker(Reprojector):
         if cache_intermediate:
             print("Caching intermediate computations...")
             with timer("Cache computation"):
-                cached_list = MakeMap.compute_coadd_map(
+                cached_list = coadd.compute_coadd_map(
                     mode='cache',
                     batch_size=cache_batch_size,
                     **common_kwargs
@@ -1063,7 +1068,7 @@ class Mosaicker(Reprojector):
 
         print("Computing mean map...")
         with timer("Mean map computation"):
-            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = MakeMap.compute_coadd_map(
+            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = coadd.compute_coadd_map(
                 mode='mean', 
                 batch_size=coadd_batch_size,
                 **common_kwargs
@@ -1072,7 +1077,7 @@ class Mosaicker(Reprojector):
         if make_std_map:
             print("Computing std map...")
             with timer("Std map computation"):
-                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = MakeMap.compute_coadd_map(
+                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = coadd.compute_coadd_map(
                     mode='std', 
                     mean_map=self.maps['mean_map']['data'], 
                     batch_size=coadd_batch_size,
@@ -1083,7 +1088,7 @@ class Mosaicker(Reprojector):
             print("Computing sigma-clipped mean map...")
             
             with timer("Sigma-clipped mean map computation"):
-                self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = MakeMap.compute_coadd_map(
+                self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = coadd.compute_coadd_map(
                     mode='sigma_clip',
                     mean_map=self.maps['mean_map']['data'],
                     std_map=self.maps['std_map']['data'],

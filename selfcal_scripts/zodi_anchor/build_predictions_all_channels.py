@@ -4,7 +4,7 @@ needing per-channel cal files.
 Useful when you want to extract predictions concurrently with the
 calibration solve: the per-channel mask is purely a function of the
 LVF geometry and channel number (via
-``SelfCal.SPHERExUtility.make_stripped_chunk_valid_mask``), so we only
+``selfcal.instruments.spherex.spherex_utility.make_stripped_chunk_valid_mask``), so we only
 need:
 
   - one canonical ``reproj_list`` (grab it from ANY existing cal —
@@ -29,7 +29,7 @@ from astropy.io import fits
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
-# Add the repo root to sys.path so SelfCal/ is importable without
+# Add the repo root to sys.path so selfcal/ is importable without
 # pip-installing it in the sidecar selfcal-zodipy env (the SelfCal
 # package's deps include reproject/zarr/opencv that bump numpy past
 # zodipy's <2.0 pin).
@@ -45,7 +45,7 @@ from build_predictions import (  # noqa: E402
     extract_metadata_for_reproj_list,
     save_predictions_npz,
 )
-from selfcal.instruments.spherex.SPHERExUtility import (  # noqa: E402
+from selfcal.instruments.spherex.spherex_utility import (  # noqa: E402
     make_stripped_chunk_map, load_lvf_params,
 )
 

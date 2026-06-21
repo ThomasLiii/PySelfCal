@@ -118,10 +118,12 @@ _REPO_ROOT = '/home/thomasli/selfcal-project/selfcal'
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import (set_hdd_io_limit, OffsetModel, OffsetBlock, SkyModel)
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
+from selfcal.models.sky_model import SkyModel
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import (load_calibration, load_lvf_params,
+from selfcal.instruments.spherex.spherex_utility import (load_calibration, load_lvf_params,
     compute_column_adjacency, make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     fast_vertical_dist, compute_column_polynomial_chains,
     compute_subchannel_polynomial_chains)
@@ -190,7 +192,7 @@ if __name__ == "__main__":
     # ----------------------------- Settings -----------------------------
     frame_setting = {'Detector': 4, 'NumSub': 10, 'NumCh': 34, 'NumCol': 5}
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/data3/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -299,7 +301,7 @@ if __name__ == "__main__":
         nvme_frame_list = sorted(os.path.join(nvme_reproj_dir, os.path.basename(f))
                                  for f in files)
 
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         cc.reproj_list = list(nvme_frame_list)
         num_frames_run = len(cc.reproj_list)
 

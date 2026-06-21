@@ -25,7 +25,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from selfcal.ZodiAnchor import load_anchor
+from selfcal.zodi_anchor import load_anchor
 
 
 def parse_args():

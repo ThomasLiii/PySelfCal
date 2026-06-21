@@ -7,9 +7,9 @@ from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
-from ...geometry.MapHelper import compute_crop, check_invalid
-from ...MakeMap import load_reproj_file
-from .SPHERExUtility import load_calibration
+from ...geometry.map_helper import compute_crop, check_invalid
+from ...io.reproj import load_reproj_file
+from .spherex_utility import load_calibration
 
 worker_context = {}
 

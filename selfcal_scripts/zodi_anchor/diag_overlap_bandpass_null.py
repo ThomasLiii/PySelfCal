@@ -59,7 +59,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from selfcal.ZodiAnchor import load_anchor
+from selfcal.zodi_anchor import load_anchor
 
 # Sibling-script import (selfcal_scripts/zodi_anchor is not a package).
 _HERE = os.path.abspath(os.path.dirname(__file__))

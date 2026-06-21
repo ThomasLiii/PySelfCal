@@ -1,6 +1,6 @@
 """Write anchored copies of mosaics for ds9 / publication / hand-off.
 
-The anchor is normally applied at read time (SelfCal.ZodiAnchor.load_anchor
+The anchor is normally applied at read time (selfcal.zodi_anchor.load_anchor
 / load_anchored_mosaic) so the pipeline mosaics stay pristine. This script
 is the OPT-IN path for when you want a materialized FITS that already has
 the anchor C baked into MEAN_MAP / SC_MEAN_MAP — e.g. to drop into ds9 or
@@ -24,7 +24,7 @@ import sys
 
 from astropy.io import fits
 
-from selfcal.ZodiAnchor import load_anchor
+from selfcal.zodi_anchor import load_anchor
 
 
 def parse_args():

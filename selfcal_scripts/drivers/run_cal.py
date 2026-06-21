@@ -15,11 +15,12 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
-                             OffsetModel, OffsetBlock)
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
+from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
 # prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
 # shared from selfcal_scripts/_run_cal_harness.py (single source of truth).
 import sys as _sys
@@ -27,7 +28,7 @@ _sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _run_cal_harness import (prepare_detector_inputs, prepare_channel_inputs,
                               mask_bright_pixels)
 from selfcal.instruments.spherex.wavemap import wav_coadd
-from selfcal.ZodiAnchor import fit_anchor_for_channel, append_anchor_channel
+from selfcal.zodi_anchor import fit_anchor_for_channel, append_anchor_channel
 
 
 if __name__ == "__main__":
@@ -39,7 +40,7 @@ if __name__ == "__main__":
         'NumCol': 10,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -101,7 +102,7 @@ if __name__ == "__main__":
     # per-channel anchor, and record it into the per-detector anchor file
     # <run>/zodi_anchor/anchor_D{N}.h5 (via append_anchor_channel).
     # Cal/mosaic are NOT modified — the shift is applied at read time by
-    # SelfCal.ZodiAnchor.load_anchor. Set None to skip (default).
+    # selfcal.zodi_anchor.load_anchor. Set None to skip (default).
     ZODI_PRED_DIR = None
     ZODI_CLIP_WINDOW_DAYS = 7.0
     ZODI_CLIP_SIGMA = 3.0
@@ -170,7 +171,7 @@ if __name__ == "__main__":
         
         # ----------------------------- Calibration -----------------------------
         cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
@@ -223,7 +224,7 @@ if __name__ == "__main__":
                                     num_columns=frame_setting['NumCol'],
                                     fill_invalid=True)
         
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
         mm.load_calibration(cal_path=cal_path)
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 
@@ -259,7 +260,7 @@ if __name__ == "__main__":
         # Optional zodi anchor: fit and record into the per-detector anchor
         # file (<run>/zodi_anchor/anchor_D{N}.h5). Cal/mosaic are NOT
         # modified — the shift is applied at read time by
-        # SelfCal.ZodiAnchor.load_anchor.
+        # selfcal.zodi_anchor.load_anchor.
         if ZODI_PRED_DIR is not None:
             npz_path = os.path.join(ZODI_PRED_DIR, f'zodi_pred_{job_tag}.npz')
             m = re.search(r'_Ch(\d+)_', cal_file)

@@ -61,7 +61,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from selfcal.ZodiAnchor import load_anchor
+from selfcal.zodi_anchor import load_anchor
 
 
 # Production constants (match selfcal_scripts/drivers/run_cal.py).

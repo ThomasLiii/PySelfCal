@@ -37,8 +37,8 @@ import time
 
 import numpy as np
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
 from selfcal.core.solution import compute_x0_scalar_only
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
@@ -59,7 +59,7 @@ def main():
                          'regression check; must still be byte-equal to the golden)')
     args = ap.parse_args()
 
-    cfg = PipelineWrapper.PipelineConfig(
+    cfg = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{FRAME_SETTING["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -70,7 +70,7 @@ def main():
     ch_inputs = prepare_channel_inputs(
         [17], FRAME_SETTING, det_inputs['det_chunk_map'], det_inputs['grid_chunk_map'])
 
-    cc = PipelineWrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
+    cc = pipeline_wrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
     files = sorted(glob_module.glob(os.path.join(NVME_DIR, '*.h5')))[:args.n_frames]
     cc.reproj_list = files
     num_frames = len(cc.reproj_list)
@@ -103,7 +103,7 @@ def main():
         # Default path the gate exercises: the config expressed as an OffsetModel.
         # Lowers to the same parallel-list kwargs, so the cal is byte-equal to the
         # (flat-path) golden.
-        from selfcal.MakeMap import OffsetModel, OffsetBlock
+        from selfcal.models.offset_model import OffsetModel, OffsetBlock
         om = OffsetModel([
             OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
                         adj_info=det_inputs['adj_info'],

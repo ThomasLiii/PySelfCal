@@ -28,10 +28,11 @@ import numpy as np
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit, OffsetModel, OffsetBlock
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import (
+from selfcal.instruments.spherex.spherex_utility import (
     load_calibration, load_lvf_params, compute_column_adjacency,
     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     make_spherex_stripped_offset_map, fast_vertical_dist,
@@ -52,7 +53,7 @@ if __name__ == "__main__":
         'NumCol': 10,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -134,7 +135,7 @@ if __name__ == "__main__":
         )
 
         cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
@@ -181,7 +182,7 @@ if __name__ == "__main__":
             fill_invalid=True,
         )
 
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
         mm.load_calibration(cal_path=cal_path)
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 

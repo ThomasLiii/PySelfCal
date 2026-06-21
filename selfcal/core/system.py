@@ -192,7 +192,7 @@ def setup_lsqr(file_list, ref_shape,
             raise ValueError(
                 "A spectral SkyModel (>1 sky block) requires det_aux=[BC_map] "
                 "(or [BC_map, BW_map] for per-pixel σ). Pass BC_map from "
-                "selfcal.instruments.spherex.SPHERExUtility.load_calibration(band=detector).")
+                "selfcal.instruments.spherex.spherex_utility.load_calibration(band=detector).")
         print(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
               f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
     # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
@@ -202,7 +202,7 @@ def setup_lsqr(file_list, ref_shape,
     # SystemLayout computes the per-map group mapping, template normalization,
     # col_bases, the per-frame scalar block, and the total column count. The
     # Calibrator builds the same layout from the same inputs (see
-    # PipelineWrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
+    # pipeline_wrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
     # column arithmetic can never drift.
     any_det_groups = any(g is not None for g in det_groups_list)
     layout = SystemLayout.build(

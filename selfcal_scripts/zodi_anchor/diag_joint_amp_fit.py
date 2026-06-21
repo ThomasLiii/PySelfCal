@@ -37,7 +37,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from selfcal.ZodiAnchor import compute_full_dc, load_anchor
+from selfcal.zodi_anchor import compute_full_dc, load_anchor
 
 
 # Detector color map (matches the convention used in the cross-channel

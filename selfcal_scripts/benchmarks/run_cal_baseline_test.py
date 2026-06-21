@@ -13,9 +13,10 @@ import numpy as np
 from tqdm import tqdm
 from threadpoolctl import threadpool_limits
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from selfcal.instruments.spherex.SPHERExUtility import (load_calibration, load_lvf_params, compute_column_adjacency,
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.instruments.spherex.spherex_utility import (load_calibration, load_lvf_params, compute_column_adjacency,
                                     compute_column_polynomial_chains, compute_offsets_guess,
                                     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
                                     fast_vertical_dist)
@@ -218,7 +219,7 @@ if __name__ == "__main__":
         'NumCol': 3,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{base_frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -318,7 +319,7 @@ if __name__ == "__main__":
             channel_inputs = prepare_channel_inputs(
                 ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
 
-            cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+            cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
             if NUM_FRAMES_LIMIT is not None:
                 cc.reproj_list = cc.reproj_list[:NUM_FRAMES_LIMIT]
                 print(f"NUM_FRAMES_LIMIT applied: using {len(cc.reproj_list)} frames")

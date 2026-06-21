@@ -43,10 +43,10 @@ import time
 
 import numpy as np
 
-from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
 from selfcal.core.solution import compute_x0_scalar_only
-from selfcal.instruments.spherex.SPHERExUtility import (compute_column_polynomial_chains,
+from selfcal.instruments.spherex.spherex_utility import (compute_column_polynomial_chains,
                                     make_stripped_chunk_valid_mask, fast_vertical_dist)
 from run_cal_baseline_test import prepare_detector_inputs
 
@@ -103,7 +103,7 @@ def main():
                          'check; must still be byte-equal to the golden)')
     args = ap.parse_args()
 
-    cfg = PipelineWrapper.PipelineConfig(
+    cfg = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{FRAME_SETTING["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -114,7 +114,7 @@ def main():
     ch_inputs = prepare_channel_inputs_pahfit(
         FRAME_SETTING, det_inputs['det_chunk_map'], det_inputs['grid_chunk_map'])
 
-    cc = PipelineWrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
+    cc = pipeline_wrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
     files = sorted(glob_module.glob(os.path.join(NVME_DIR, '*.h5')))[:args.n_frames]
     cc.reproj_list = files
     num_frames = len(cc.reproj_list)
@@ -152,7 +152,7 @@ def main():
     else:
         # Default path the gate exercises: the explicit sky_model= object API.
         # Byte-equal to the spectral_fit shim it replaces.
-        from selfcal.MakeMap import SkyModel
+        from selfcal.models.sky_model import SkyModel
         cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")
 

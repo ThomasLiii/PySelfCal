@@ -14,8 +14,8 @@ from multiprocessing import Pool
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
-from ...geometry.MapHelper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
-from ...MakeMap import load_reproj_file
+from ...geometry.map_helper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
+from ...io.reproj import load_reproj_file
 from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
                        ENV_SPHEREX_CHANNEL_FILE, ENV_LVF_PARAMS_DIR)
 

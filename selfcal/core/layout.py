@@ -13,7 +13,7 @@ where it collapses to ``num_frames`` per-frame amplitude columns.
 
 Two call sites need the exact same column arithmetic: ``setup_lsqr`` (to tell
 the worker processes their per-map column bases) and
-``PipelineWrapper.Calibrator`` (to parse the solved ``x`` back into maps in
+``pipeline_wrapper.Calibrator`` (to parse the solved ``x`` back into maps in
 ``save_calibration`` / ``parse_x``). Historically each computed it inline and
 they had to be kept in lockstep by hand. ``SystemLayout.build`` computes it once
 so they cannot drift.
