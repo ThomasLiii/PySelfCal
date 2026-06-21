@@ -5,6 +5,14 @@ dominated by the frame-averaged zodiacal light brightness. These helpers load
 that offset, pair it with per-exposure pointing and time, compute ecliptic /
 solar geometry, and provide the sinusoidal fit primitives used by the
 downstream analysis scripts.
+
+TODO(stable-advance): the analysis scripts here still import from the back-compat
+``SelfCal`` shim. The package was renamed to ``selfcal`` (selfcal_scripts/ already
+migrated). When the ``stable`` worktree advances to pick up the refactor, migrate
+these imports ``from SelfCal...`` -> the real ``selfcal`` paths (e.g.
+``SelfCal.SPHERExUtility`` -> ``selfcal.instruments.spherex.SPHERExUtility``,
+``SelfCal.MakeMap`` -> ``selfcal.MakeMap``) and drop the ``SelfCal`` shim. Until
+then the shim keeps these working unchanged. See workspace/selfcal-refactor/report.md.
 """
 import os
 import sys
