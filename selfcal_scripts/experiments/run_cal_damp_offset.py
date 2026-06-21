@@ -19,7 +19,8 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
 from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
+from selfcal.MakeMap import (set_hdd_io_limit, compute_x0_from_Ab,
+                             OffsetModel, OffsetBlock)
 from selfcal.core.solution import compute_x0_scalar_only
 from selfcal.instruments.spherex.SPHERExUtility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
 # prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
@@ -53,7 +54,7 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.1],
+        # reg_weights moved onto the OffsetBlock built below (per-block config).
         'weighted_damping': True,
         'damp_weight': 0.1,
         # damp_offset reverted to 0 — hybrid test (apply_weight + damp_offset=0.1) was WORSE than applyWt alone (cirrus dark_spread widened further, dark-ring re-emerged). The two levers aren't orthogonal — both reweight toward bright/well-covered chunks. See aromatic-map-tuning session.
@@ -165,19 +166,23 @@ if __name__ == "__main__":
             poly_chains, poly_stencil = compute_column_polynomial_chains(
                 detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
             )
-            poly_constraints_list = [[{
+            poly_group = [{
                 'chains': poly_chains,
                 'stencil': poly_stencil,
                 'weight': POLY_WEIGHT,
-            }]]
+            }]
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                            adj_info=detector_inputs['adj_info'],
+                            reg_weight=0.1,
+                            poly_constraints=poly_group,
+                            # Restore anchor; with mean_anchor_coverage_weighted=True, the constraint is pinned to coverage-weighted mean (Option 2.5).
+                            mean_offset=np.zeros(num_frames_run)),
+            ], use_per_frame_scalar=True)
             cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],  # Restore anchor; with mean_anchor_coverage_weighted=True, the constraint is pinned to coverage-weighted mean (Option 2.5).
-                use_per_frame_scalar=True,
                 **calibration_kwargs
             )
 

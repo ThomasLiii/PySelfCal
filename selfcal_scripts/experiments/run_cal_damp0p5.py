@@ -29,7 +29,7 @@ parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
 from selfcal.pipeline import PipelineWrapper
-from selfcal.MakeMap import set_hdd_io_limit
+from selfcal.MakeMap import set_hdd_io_limit, OffsetModel, OffsetBlock
 from selfcal.core.solution import compute_x0_scalar_only
 from selfcal.instruments.spherex.SPHERExUtility import (
     load_calibration, load_lvf_params, compute_column_adjacency,
@@ -65,7 +65,7 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.5],         # was 0.1
+        # reg_weights (was [0.5]) moved onto the OffsetBlock built below.
         'weighted_damping': True,
         'damp_weight': 0.5,           # was 0.1
         'max_workers': 48,
@@ -142,19 +142,22 @@ if __name__ == "__main__":
             poly_chains, poly_stencil = compute_column_polynomial_chains(
                 detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
             )
-            poly_constraints_list = [[{
+            poly_group = [{
                 'chains': poly_chains,
                 'stencil': poly_stencil,
                 'weight': POLY_WEIGHT,
-            }]]
+            }]
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                            adj_info=detector_inputs['adj_info'],
+                            reg_weight=0.5,
+                            poly_constraints=poly_group,
+                            mean_offset=np.zeros(num_frames_run)),
+            ], use_per_frame_scalar=True)
             cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],
-                use_per_frame_scalar=True,
                 **calibration_kwargs,
             )
             x0 = compute_x0_scalar_only(
