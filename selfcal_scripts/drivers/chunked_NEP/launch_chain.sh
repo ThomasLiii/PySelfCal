@@ -1,4 +1,7 @@
 #!/bin/bash
+# DEPRECATED: superseded by run_cal_tiled_NEP.py — TiledCalibration.run handles
+# the sequential per-tile dispatch + abort-on-failure (these launch_chain
+# semantics), then stitches. Kept for reference.
 # Run the 4 full-dataset chunks sequentially (NW -> NE -> SW -> SE).
 # Each chunk takes ~3-4 hr at iter=200 with ~4400-5200 frames (center-only filter).
 # Total ETA: ~14 hr. Per-chunk peak RSS ~350-495 GB (well under 642 GB guardrail).

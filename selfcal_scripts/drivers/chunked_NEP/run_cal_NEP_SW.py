@@ -1,3 +1,7 @@
+# DEPRECATED: superseded by run_cal_tiled_NEP.py — one parameterized
+# TiledCalibration driver calibrates all 4 quadrants + Fisher-stitches them.
+# Kept for reference pending archival after the tiled driver's first validated
+# production run.
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
