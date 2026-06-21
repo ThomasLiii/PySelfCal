@@ -5,11 +5,17 @@ sorted subset of the D3 Ch17 NumCol=3 NVMe-staged reproj files, with the exact
 benchmark_d3_ch17_numcol3 config. Save BEFORE a change as the baseline, then
 after each change diff with diff_cal_h5.py — opt A/B MUST be byte-equal.
 
+By default setup_lsqr is now driven via the OffsetModel object API (the path the
+refactor is migrating production toward); this is the path the routine gate
+exercises and it lowers byte-equal to the (flat-path) golden. Pass --flat-kwargs
+to run the deprecated parallel-list kwargs instead, as a legacy-path regression
+check that the old API still reproduces the golden.
+
 Usage:
-    python regress_cal.py --suffix _gate_baseline --n-frames 300
-    python regress_cal.py --suffix _gate_optA     --n-frames 300
+    python regress_cal.py --suffix _gate_baseline --n-frames 300   # OffsetModel (default)
+    python regress_cal.py --suffix _gate_flat --flat-kwargs        # legacy flat kwargs
     python diff_cal_h5.py <cal_dir>/cal_..._gate_baseline.h5 \
-                          <cal_dir>/cal_..._gate_optA.h5
+                          <cal_dir>/cal_..._gate_flat.h5
 
 WARNING: --batch-size must be IDENTICAL across baseline and candidate runs for
 byte-equality. The default is 50 and shouldn't be changed unless you are
@@ -31,9 +37,9 @@ import time
 
 import numpy as np
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 FRAME_SETTING = {'Detector': 3, 'NumSub': 10, 'NumCh': 34, 'NumCol': 3}
@@ -47,9 +53,13 @@ def main():
     ap.add_argument('--n-frames', type=int, default=300)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--batch-size', type=int, default=50)
+    ap.add_argument('--flat-kwargs', action='store_true',
+                    help='drive setup_lsqr via the deprecated flat *_list kwargs '
+                         'instead of the default OffsetModel object (legacy-path '
+                         'regression check; must still be byte-equal to the golden)')
     args = ap.parse_args()
 
-    cfg = PipelineWrapper.PipelineConfig(
+    cfg = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{FRAME_SETTING["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -60,7 +70,7 @@ def main():
     ch_inputs = prepare_channel_inputs(
         [17], FRAME_SETTING, det_inputs['det_chunk_map'], det_inputs['grid_chunk_map'])
 
-    cc = PipelineWrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
+    cc = pipeline_wrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
     files = sorted(glob_module.glob(os.path.join(NVME_DIR, '*.h5')))[:args.n_frames]
     cc.reproj_list = files
     num_frames = len(cc.reproj_list)
@@ -70,17 +80,37 @@ def main():
     cal_file = f'cal_{frame_str}_Ch17{args.suffix}.h5'
 
     t0 = time.time()
-    cc.setup_lsqr(
-        chunk_maps=[det_inputs['det_chunk_map']],
+    common = dict(
         grid_valid_weight=ch_inputs['det_valid_mask_padded'],
         oversample_factor=1,
-        adj_infos=[det_inputs['adj_info']],
-        mean_offsets_list=[np.zeros(num_frames)],
-        use_per_frame_scalar=True,
         apply_mask=True, apply_weight=False, outlier_thresh=5.0, ignore_list=[],
-        batch_size=args.batch_size, offset_regularization=True, reg_weights=[0.1],
+        batch_size=args.batch_size, offset_regularization=True,
         weighted_damping=True, damp_weight=0.1, max_workers=args.max_workers,
     )
+    if args.flat_kwargs:
+        # Legacy-path regression check: the deprecated parallel-list kwargs.
+        # Identical code to the pre-flip default; must still be byte-equal to the
+        # golden now that the object API is the default path.
+        cc.setup_lsqr(
+            chunk_maps=[det_inputs['det_chunk_map']],
+            adj_infos=[det_inputs['adj_info']],
+            mean_offsets_list=[np.zeros(num_frames)],
+            reg_weights=[0.1],
+            use_per_frame_scalar=True,
+            **common,
+        )
+    else:
+        # Default path the gate exercises: the config expressed as an OffsetModel.
+        # Lowers to the same parallel-list kwargs, so the cal is byte-equal to the
+        # (flat-path) golden.
+        from selfcal.models.offset_model import OffsetModel, OffsetBlock
+        om = OffsetModel([
+            OffsetBlock(chunk_map=det_inputs['det_chunk_map'],
+                        adj_info=det_inputs['adj_info'],
+                        reg_weight=0.1,
+                        mean_offset=np.zeros(num_frames)),
+        ], use_per_frame_scalar=True)
+        cc.setup_lsqr(offset_model=om, **common)
     t_setup = time.time() - t0
     print(f"setup_lsqr: {t_setup:.2f} s")
 

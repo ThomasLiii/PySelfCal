@@ -20,13 +20,13 @@ from astropy.time import Time
 import astropy.units as u
 from scipy.optimize import curve_fit
 
-# analysis_script/ -> analysis/ -> selfcal/ (contains SelfCal/)
+# analysis_script/ -> analysis/ -> selfcal/ (contains selfcal/)
 _SELFCAL_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
-from SelfCal.MakeMap import load_reproj_file
-from SelfCal.SPHERExUtility import make_stripped_chunk_valid_mask
+from selfcal.io.reproj import load_reproj_file
+from selfcal.instruments.spherex.spherex_utility import make_stripped_chunk_valid_mask
 
 
 CAL_OUTPUT_BASE = '/mnt/md124/thomasli/selfcal/outputs'
@@ -67,7 +67,7 @@ def cal_path(detector, channel):
 # per-channel constant C (skymap += C, frame_scalar -= C). Analysis here
 # is anchor-AWARE but opt-in: if the run has no anchor file, lookups
 # return None / 0.0 and everything proceeds on the raw (un-anchored)
-# offsets. See SelfCal/ZodiAnchor.py and PIPELINE.md (Zodi anchor stage).
+# offsets. See selfcal/zodi_anchor.py and PIPELINE.md (Zodi anchor stage).
 # ---------------------------------------------------------------------
 
 def anchor_path(detector):
@@ -85,14 +85,14 @@ _ANCHOR_CACHE = {}
 
 def load_anchor_for(detector):
     """Return the Anchor for this detector's run, or None if no anchor
-    file exists. Cached per detector; imports SelfCal.ZodiAnchor lazily so
+    file exists. Cached per detector; imports selfcal.zodi_anchor lazily so
     runs without anchors don't pay the import."""
     if detector in _ANCHOR_CACHE:
         return _ANCHOR_CACHE[detector]
     p = anchor_path(detector)
     anchor = None
     if os.path.exists(p):
-        from SelfCal.ZodiAnchor import load_anchor
+        from selfcal.zodi_anchor import load_anchor
         anchor = load_anchor(p)
     _ANCHOR_CACHE[detector] = anchor
     return anchor

@@ -7,9 +7,9 @@ from tqdm import tqdm
 from multiprocessing import Pool, Lock as _MPLock
 from multiprocessing.shared_memory import SharedMemory
 
-from . import _state
+from .. import _state
 from .subframe import _prep_subframe
-from .MapHelper import compute_crop
+from ..geometry.map_helper import compute_crop
 
 
 def _coadd_batch_worker(params):

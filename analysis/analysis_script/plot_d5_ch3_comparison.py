@@ -17,7 +17,7 @@ PANELS = [
 
 def load_mean(fp):
     with fits.open(fp, memmap=True) as hdul:
-        # PipelineWrapper.save_mosaic packs mean_map into hdul[1]
+        # pipeline_wrapper.save_mosaic packs mean_map into hdul[1]
         for hdu in hdul:
             if hdu.data is not None and hdu.data.ndim == 2:
                 return np.asarray(hdu.data, dtype=np.float32)

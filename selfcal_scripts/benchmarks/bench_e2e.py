@@ -4,7 +4,7 @@ Runs the full D3 Ch17 NumCol=3 pipeline (cal setup_lsqr + apply + mosaic
 cache/mean/std/sigma_clip + wav) on a fixed --n-frames subset of the NVMe-staged
 reproj files, with the production 48/50 config, phase-timed (wall + peak RSS) via
 the shared PhaseTracker. Same harness on the pre-change SelfCal (git checkout
-<parent> -- SelfCal/) vs the changed SelfCal gives a clean per-phase delta on
+<parent> -- selfcal/) vs the changed selfcal gives a clean per-phase delta on
 identical machine state.
 
 Usage (single-shot):
@@ -15,18 +15,18 @@ Usage (orchestrated before-vs-after with crash-safe SelfCal restore):
     python bench_e2e.py --before-ref <sha-or-branch> --after-ref <sha-or-branch> \\
                         --n-frames 4000 --label myrun
     # writes e2e_myrun_before_summary.txt and e2e_myrun_after_summary.txt under
-    # figures/benchmark/; restores SelfCal/ to the recorded HEAD on completion
+    # figures/benchmark/; restores selfcal/ to the recorded HEAD on completion
     # AND on SIGINT/SIGTERM/exception.
 
 In orchestrated mode the script:
-  1. records the current HEAD sha for SelfCal/,
+  1. records the current HEAD sha for selfcal/,
   2. installs a try/finally + SIGINT/SIGTERM handlers that always restore
-     SelfCal/ to that recorded sha,
-  3. checks out --before-ref into SelfCal/ and re-launches the same script
+     selfcal/ to that recorded sha,
+  3. checks out --before-ref into selfcal/ and re-launches the same script
      as a child subprocess (single-shot mode, label=<label>_before),
-  4. checks out --after-ref into SelfCal/ and re-launches the same script
+  4. checks out --after-ref into selfcal/ and re-launches the same script
      as a child subprocess (single-shot mode, label=<label>_after),
-  5. restores SelfCal/ to the recorded sha via the finally block.
+  5. restores selfcal/ to the recorded sha via the finally block.
 The two phases run as separate child Python processes specifically because
 in-process re-import of SelfCal cannot pick up a newly-checked-out version
 (modules are already cached in sys.modules from the orchestrator's own
@@ -69,7 +69,7 @@ def _run_once(label, n_frames, max_workers):
     """Single-shot pipeline run with the production config and PhaseTracker.
 
     Kept as a function (rather than inline in main) so the before/after
-    orchestration can subprocess-launch it twice on different SelfCal/ checkouts
+    orchestration can subprocess-launch it twice on different selfcal/ checkouts
     without colliding in module state.
     """
     # Imports inside the function so the orchestrator can parse args BEFORE
@@ -83,17 +83,18 @@ def _run_once(label, n_frames, max_workers):
     matplotlib.use('Agg')
     import numpy as np
 
-    from SelfCal import PipelineWrapper, MakeMap
-    from SelfCal.MakeMap import set_hdd_io_limit
-    from SelfCal.solution import compute_x0_scalar_only
-    from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map
-    from SelfCal.SPHERExAppendWav import wav_coadd
+    from selfcal.pipeline import pipeline_wrapper
+    from selfcal.core import coadd
+    from selfcal._state import set_hdd_io_limit
+    from selfcal.core.solution import compute_x0_scalar_only
+    from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map
+    from selfcal.instruments.spherex.wavemap import wav_coadd
     from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
     from benchmark_d3_ch17_poly import PhaseTracker
 
     os.makedirs(BENCH_DIR, exist_ok=True)
 
-    cfg = PipelineWrapper.PipelineConfig(
+    cfg = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{FRAME_SETTING["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -115,7 +116,7 @@ def _run_once(label, n_frames, max_workers):
     cal_file = f'cal_{frame_str}_Ch17{suffix}.h5'
     cache_dir = os.path.join(CACHE_ROOT, f'cache_e2e_{label}')
 
-    cc = PipelineWrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
+    cc = pipeline_wrapper.Calibrator(cfg, reproj_dir=NVME_DIR)
     cc.reproj_list = files
     num_frames = len(cc.reproj_list)
     print(f"[e2e:{label}] n_frames={num_frames}", flush=True)
@@ -145,14 +146,14 @@ def _run_once(label, n_frames, max_workers):
     gc.collect()
 
     # Instrument each compute_coadd_map call by mode
-    _orig = MakeMap.compute_coadd_map
+    _orig = coadd.compute_coadd_map
     def _instr(mode, *a, **k):
         with tracker.phase(f'mosaic_coadd_{mode}'):
             return _orig(mode, *a, **k)
-    MakeMap.compute_coadd_map = _instr
+    coadd.compute_coadd_map = _instr
 
     try:
-        mm = PipelineWrapper.Mosaicker(cfg, reproj_dir=NVME_DIR)
+        mm = pipeline_wrapper.Mosaicker(cfg, reproj_dir=NVME_DIR)
         with tracker.phase('mosaic_load_cal'):
             mm.load_calibration(cal_path=cal_path)
             mm.reproj_list = [os.path.join(NVME_DIR, os.path.basename(f)) for f in mm.reproj_list]
@@ -175,7 +176,7 @@ def _run_once(label, n_frames, max_workers):
                 cache_intermediate=True, max_workers=max_workers,
             )
     finally:
-        MakeMap.compute_coadd_map = _orig
+        coadd.compute_coadd_map = _orig
 
     with tracker.phase('mosaic_wav_coadd'):
         wav_coadd(det_inputs['det_BC'], det_inputs['det_BW'],
@@ -212,9 +213,9 @@ def _git(*args, capture=False):
 
 
 def _checkout_selfcal_to(ref):
-    """Run `git checkout <ref> -- SelfCal/` from the repo root."""
-    print(f"[orchestrator] git checkout {ref} -- SelfCal/", flush=True)
-    _git('checkout', ref, '--', 'SelfCal/')
+    """Run `git checkout <ref> -- selfcal/` from the repo root."""
+    print(f"[orchestrator] git checkout {ref} -- selfcal/", flush=True)
+    _git('checkout', ref, '--', 'selfcal/')
 
 
 def _orchestrate(before_ref, after_ref, label, n_frames, max_workers):
@@ -232,14 +233,14 @@ def _orchestrate(before_ref, after_ref, label, n_frames, max_workers):
         restored['done'] = True
         try:
             _checkout_selfcal_to(head_sha)
-            print(f"[orchestrator] SelfCal/ restored to {head_sha}", flush=True)
+            print(f"[orchestrator] selfcal/ restored to {head_sha}", flush=True)
         except Exception as e:
             # Last-ditch — we're already in an exit path, so don't re-raise.
             print(f"[orchestrator] WARNING: restore failed: {e}", file=sys.stderr, flush=True)
 
     def _sig_handler(signum, frame):  # pylint: disable=unused-argument
         sigtxt = {signal.SIGINT: 'SIGINT', signal.SIGTERM: 'SIGTERM'}.get(signum, str(signum))
-        print(f"\n[orchestrator] received {sigtxt}; restoring SelfCal/ before exit", flush=True)
+        print(f"\n[orchestrator] received {sigtxt}; restoring selfcal/ before exit", flush=True)
         restore()
         # POSIX: 128 + signal number is the conventional shell exit code.
         sys.exit(128 + signum)
@@ -276,10 +277,10 @@ def main():
     ap.add_argument('--label', required=True)
     ap.add_argument('--max-workers', type=int, default=48)
     ap.add_argument('--before-ref', default=None,
-                    help='Git ref to checkout into SelfCal/ for the BEFORE run. '
+                    help='Git ref to checkout into selfcal/ for the BEFORE run. '
                          'Requires --after-ref. Enables orchestrated mode.')
     ap.add_argument('--after-ref', default=None,
-                    help='Git ref to checkout into SelfCal/ for the AFTER run. '
+                    help='Git ref to checkout into selfcal/ for the AFTER run. '
                          'Requires --before-ref. Enables orchestrated mode.')
     args = ap.parse_args()
 

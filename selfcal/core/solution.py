@@ -4,46 +4,30 @@ import numpy as np
 from scipy.sparse import csr_matrix
 
 
-def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None,
-            num_sky_blocks=1):
-    """Parse the LSQR solution vector x into sky, per-map detector offsets, and frame scalar.
-
-    Parameters
-    ----------
-    num_offset_groups_list : list of int
-        Number of offset groups for each chunk map (= num_frames when no det_groups
-        is set, or len(unique groups), or num_frames in template mode).
-    num_chunks_list : list of int
-        Number of chunks per offset group for each chunk map (1 in template mode).
-    num_frames : int or None
-        If not None, the last num_frames entries of x are per-frame scalars.
-    num_sky_blocks : int
-        1 for the legacy single-sky-block layout. 2 for spectral_fit mode
-        (continuum sky + line amplitude sky). When 2, an additional
-        ``skymap_line`` ndarray is returned as the second element.
+def parse_x_sky(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None,
+                num_sky_blocks=1):
+    """Generic parse of the LSQR solution vector for any number of sky blocks.
 
     Returns
     -------
-    skymap : np.ndarray
-        Continuum sky-map block (shape ref_shape).
-    skymap_line : np.ndarray  (returned only when num_sky_blocks==2)
-        Line-amplitude sky-map block (shape ref_shape).
+    sky_maps : list of np.ndarray
+        Length ``num_sky_blocks``; each a ``ref_shape`` sky block (block 0 is the
+        continuum, blocks 1.. are line-amplitude maps).
     det_offsets : list of np.ndarray
         One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
     frame_scalar : np.ndarray
-        Per-frame scalars (empty when num_frames is None).
+        Per-frame scalars (empty when num_frames is None/0).
+
+    This is the N-component generalization; :func:`parse_x` is the back-compat
+    fixed-tuple wrapper for the 1- and 2-block cases.
     """
     assert len(num_offset_groups_list) == len(num_chunks_list), (
         "num_offset_groups_list and num_chunks_list must have the same length")
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
-    skymap = x[:num_sky].reshape(ref_shape)
-    if num_sky_blocks == 2:
-        skymap_line = x[num_sky:2*num_sky].reshape(ref_shape)
-        cursor = 2 * num_sky
-    else:
-        skymap_line = None
-        cursor = num_sky
+    sky_maps = [x[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
+                for j in range(num_sky_blocks)]
+    cursor = num_sky_blocks * num_sky
 
     det_offsets = []
     for ng, nc in zip(num_offset_groups_list, num_chunks_list):
@@ -52,9 +36,26 @@ def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=No
         cursor += block
 
     frame_scalar = x[cursor:cursor + num_frames] if num_frames else np.array([])
+    return sky_maps, det_offsets, frame_scalar
+
+
+def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None,
+            num_sky_blocks=1):
+    """Back-compat fixed-tuple parse for <=2 sky blocks (use parse_x_sky for N>2).
+
+    Returns ``(skymap, det_offsets, frame_scalar)`` for ``num_sky_blocks==1`` and
+    ``(skymap, skymap_line, det_offsets, frame_scalar)`` for ``num_sky_blocks==2``.
+    """
+    sky_maps, det_offsets, frame_scalar = parse_x_sky(
+        x, ref_shape, num_offset_groups_list, num_chunks_list,
+        num_frames=num_frames, num_sky_blocks=num_sky_blocks)
+    if num_sky_blocks == 1:
+        return sky_maps[0], det_offsets, frame_scalar
     if num_sky_blocks == 2:
-        return skymap, skymap_line, det_offsets, frame_scalar
-    return skymap, det_offsets, frame_scalar
+        return sky_maps[0], sky_maps[1], det_offsets, frame_scalar
+    raise ValueError(
+        f"parse_x returns fixed tuples for <=2 sky blocks (got {num_sky_blocks}); "
+        "use parse_x_sky for the N-component list form")
 
 
 def encode_x(skymap, offsets):

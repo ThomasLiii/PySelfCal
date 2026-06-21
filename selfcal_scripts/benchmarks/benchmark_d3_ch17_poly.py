@@ -2,7 +2,7 @@
 
 Tracks per-phase wall time, peak RSS (incl. child workers), system disk I/O,
 and system CPU% via a 0.5s sampler thread. Mosaic sub-phases (cache, mean,
-std, sigma_clip) are instrumented by monkey-patching MakeMap.compute_coadd_map
+std, sigma_clip) are instrumented by monkey-patching coadd.compute_coadd_map
 so each call from Mosaicker.make_mosaic gets its own phase record.
 
 Config matches production (run_cal.py) with two changes:
@@ -46,14 +46,15 @@ import numpy as np
 import psutil
 from tqdm import tqdm
 
-from SelfCal import PipelineWrapper, MakeMap
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import pipeline_wrapper
+from selfcal.core import coadd
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.spherex_utility import (
     compute_column_polynomial_chains,
     make_spherex_stripped_offset_map,
 )
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 
@@ -312,7 +313,7 @@ def main():
     POLY_DEGREE = 1
     POLY_WEIGHT = 0.5
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -433,7 +434,7 @@ def main():
     # ============================================================
     # Calibration
     # ============================================================
-    cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+    cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
     num_frames_run = len(cc.reproj_list)
     print(f"[bench] num_frames={num_frames_run}  num_chunks={int(det_inputs['det_chunk_map'].max())+1}", flush=True)
 
@@ -474,16 +475,16 @@ def main():
     # ============================================================
     # Mosaicking — patch compute_coadd_map to capture sub-phases
     # ============================================================
-    _orig_compute_coadd_map = MakeMap.compute_coadd_map
+    _orig_compute_coadd_map = coadd.compute_coadd_map
 
     def _instrumented_compute_coadd_map(mode, *args, **kwargs):
         with tracker.phase(f'mosaic_coadd_{mode}'):
             return _orig_compute_coadd_map(mode, *args, **kwargs)
 
-    MakeMap.compute_coadd_map = _instrumented_compute_coadd_map
+    coadd.compute_coadd_map = _instrumented_compute_coadd_map
 
     try:
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
 
         with tracker.phase('mosaic_load_cal'):
             mm.load_calibration(cal_path=cal_path)
@@ -514,7 +515,7 @@ def main():
                 **mosaic_kwargs,
             )
     finally:
-        MakeMap.compute_coadd_map = _orig_compute_coadd_map
+        coadd.compute_coadd_map = _orig_compute_coadd_map
 
     with tracker.phase('mosaic_wav_coadd'):
         wav_mean, wav_std = wav_coadd(

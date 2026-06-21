@@ -2,7 +2,7 @@
 
 Post-hoc zodiacal-light anchor for SelfCal cal files + mosaics.
 
-The core library lives in [`SelfCal/ZodiAnchor.py`](../../SelfCal/ZodiAnchor.py).
+The core library lives in [`selfcal/zodi_anchor.py`](../../selfcal/zodi_anchor.py).
 The scripts here orchestrate building per-frame zodi predictions
 (via [zodipy](https://github.com/Cosmoglobe/zodipy)), fitting the per-channel
 anchor, and producing diagnostic plots.
@@ -12,7 +12,7 @@ anchor, and producing diagnostic plots.
 The anchor is **non-mutating**. SelfCal pipeline outputs (`cal_*.h5`,
 `mosaic_*.fits`) stay **pristine**. The fit result is written to a
 per-detector **anchor file**, `<run>/zodi_anchor/anchor_D{N}.h5`
-(summary-only schema, `ANCHOR_VERSION` in `SelfCal/ZodiAnchor.py`), and
+(summary-only schema, `ANCHOR_VERSION` in `selfcal/zodi_anchor.py`), and
 applied to arrays **at read time** by the consumer (`load_anchor` /
 `Anchor`). Nothing on disk is rewritten.
 
@@ -72,8 +72,8 @@ D1/D4/D5 before this layout was adopted.
 
 | Script | Purpose |
 |---|---|
-| [`build_anchor.py`](build_anchor.py) | Fit the per-channel anchor from a run's PRISTINE cals + `zodi_preds/*.npz` via `SelfCal.ZodiAnchor.fit_anchor_for_channel`; write `<run>/zodi_anchor/anchor_D{N}.h5`. No cal/mosaic mutation. Skips any channel whose cal still carries a legacy in-place anchor (run `revert_anchor.py` first). `--run-dir <run> [<run> ...]`. Add **`--smooth`** to also run the Phase-1 slope smoothing in-place right after building (= a follow-up `smooth_anchor.py`; `--smooth-r-threshold`/`--smooth-s-factor` tune it) — only for atmospheric detectors (D1/D2), NOT D4/D5. |
-| [`smooth_anchor.py`](smooth_anchor.py) | Phase-1 slope smoothing, **for atmospheric-contaminated detectors only** (D1 He I 1083 + OI 8446; D2 once mosaicked). Flags channels with `pearson_r < --r-threshold` (default 0.9), smooths **only the slope** (Pearson-r-weighted spline fit to the **clean channels only**), and **recomputes C** as `mean_full_dc - slope_final*mean_pred` — C is NOT smoothed, so the airglow signal it carries is preserved; only the slope's contamination-induced bias is removed. Clean channels keep their raw fit. Updates the anchor file **in-place**; raw `slope`/`intercept` preserved (re-runnable; rebuild via `build_anchor.py` to undo). Warns on extrapolation (flagged channel outside the clean span, e.g. D1 Ch30-34). `--dry-run`/`--plot` first. **Do NOT run on D4/D5**: their low-r channels are real astrophysical features (D4 PAH at 3.3 μm), not contamination — smoothing them de-biases a real slope and notches the spectrum (the slope spline assumes a smooth/flat slope, which holds for D1 but not D4's structured SED). Core: `SelfCal.ZodiAnchor.rweighted_slope_smooth`. |
+| [`build_anchor.py`](build_anchor.py) | Fit the per-channel anchor from a run's PRISTINE cals + `zodi_preds/*.npz` via `selfcal.zodi_anchor.fit_anchor_for_channel`; write `<run>/zodi_anchor/anchor_D{N}.h5`. No cal/mosaic mutation. Skips any channel whose cal still carries a legacy in-place anchor (run `revert_anchor.py` first). `--run-dir <run> [<run> ...]`. Add **`--smooth`** to also run the Phase-1 slope smoothing in-place right after building (= a follow-up `smooth_anchor.py`; `--smooth-r-threshold`/`--smooth-s-factor` tune it) — only for atmospheric detectors (D1/D2), NOT D4/D5. |
+| [`smooth_anchor.py`](smooth_anchor.py) | Phase-1 slope smoothing, **for atmospheric-contaminated detectors only** (D1 He I 1083 + OI 8446; D2 once mosaicked). Flags channels with `pearson_r < --r-threshold` (default 0.9), smooths **only the slope** (Pearson-r-weighted spline fit to the **clean channels only**), and **recomputes C** as `mean_full_dc - slope_final*mean_pred` — C is NOT smoothed, so the airglow signal it carries is preserved; only the slope's contamination-induced bias is removed. Clean channels keep their raw fit. Updates the anchor file **in-place**; raw `slope`/`intercept` preserved (re-runnable; rebuild via `build_anchor.py` to undo). Warns on extrapolation (flagged channel outside the clean span, e.g. D1 Ch30-34). `--dry-run`/`--plot` first. **Do NOT run on D4/D5**: their low-r channels are real astrophysical features (D4 PAH at 3.3 μm), not contamination — smoothing them de-biases a real slope and notches the spectrum (the slope spline assumes a smooth/flat slope, which holds for D1 but not D4's structured SED). Core: `selfcal.zodi_anchor.rweighted_slope_smooth`. |
 
 ### Consuming the anchor
 
@@ -81,7 +81,7 @@ The anchor is applied **at read time** — pipeline mosaics/cals stay
 pristine. From Python:
 
 ```python
-from SelfCal.ZodiAnchor import load_anchor, load_anchored_mosaic
+from selfcal.zodi_anchor import load_anchor, load_anchored_mosaic
 anchor = load_anchor('<run>/zodi_anchor/anchor_D1.h5')
 anchor.C(11)                                   # final C for Ch11 (repair-aware)
 data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory
@@ -137,8 +137,8 @@ data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory
   shared constants and the `extract_metadata_for_reproj_list` helper (each
   inserts its dir into `sys.path[0]`, so cwd doesn't matter).
   `build_anchor.py` and `diag_*.py` import the anchor core from
-  `SelfCal.ZodiAnchor` (resolved via `pip install -e .`).
-- The actual anchor math lives in `SelfCal.ZodiAnchor`
+  `selfcal.zodi_anchor` (resolved via `pip install -e .`).
+- The actual anchor math lives in `selfcal.zodi_anchor`
   (`fit_anchor_for_channel`, `write_anchor` / `append_anchor_channel`,
   `Anchor`/`load_anchor`). These scripts only orchestrate I/O and CLI
   plumbing.

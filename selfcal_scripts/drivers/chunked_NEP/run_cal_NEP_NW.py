@@ -1,3 +1,7 @@
+# DEPRECATED: superseded by run_cal_tiled_NEP.py — one parameterized
+# TiledCalibration driver calibrates all 4 quadrants + Fisher-stitches them.
+# Kept for reference pending archival after the tiled driver's first validated
+# production run.
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -112,19 +116,22 @@ def _rss_checkpoint(label):
         flush=True,
     )
 
-# Resolve to the repo root so SelfCal/ + selfcal_scripts/ are importable even
+# Resolve to the repo root so selfcal/ + selfcal_scripts/ are importable even
 # though this driver lives under workspace/spectral-pah-fit/region_10k/.
 _REPO_ROOT = '/home/thomasli/selfcal-project/selfcal'
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
+from selfcal.models.sky_model import SkyModel
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.spherex_utility import load_calibration, load_lvf_params, compute_column_adjacency, \
 make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
 compute_column_polynomial_chains, compute_subchannel_polynomial_chains
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
 
 # Region-7k v6: 7000 frames closest to the 10k bbox center (radial cut).
@@ -265,7 +272,7 @@ if __name__ == "__main__":
         'NumCol': 5,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/data3/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -281,7 +288,7 @@ if __name__ == "__main__":
         'ignore_list': [21],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.1],
+        # reg_weights moved onto the OffsetBlock built below (per-block config).
         'weighted_damping': True,
         'damp_weight': 0.1,
         # --- Spectral-fit (PAHfit) mode params: 2-block sky (continuum + line amplitude) ---
@@ -422,7 +429,7 @@ if __name__ == "__main__":
         channel_inputs = prepare_channel_inputs(ch, frame_setting, detector_inputs['det_chunk_map'], detector_inputs['grid_chunk_map'])
 
         # ----------------------------- Calibration (STAIRCASE v5) -----------------------------
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         # Override the auto-globbed reproj_list with our explicit region-10k list.
         # Calibrator.__init__ already called get_reproj_files(nvme_reproj_dir),
         # which would pick up every *.h5 sitting in the NVMe cache dir; we
@@ -450,26 +457,34 @@ if __name__ == "__main__":
             f"stencil={subch_stencil.tolist()}, weight={SUBCH_POLY_WEIGHT}",
             flush=True,
         )
-        poly_constraints_list = [[
+        # Two poly-constraint groups on map 0: linear column + cubic subchannel.
+        poly_groups = [
             {'chains': poly_chains, 'stencil': poly_stencil, 'weight': POLY_WEIGHT},
             {'chains': subch_chains, 'stencil': subch_stencil, 'weight': SUBCH_POLY_WEIGHT},
-        ]]
+        ]
+        # Single offset block: per-frame scalar absorbs DC; mean-anchor +
+        # column/subchannel poly-constraints shape the within-frame structure.
+        # Lowers to the exact parallel-list kwargs the flat call used.
+        offset_model = OffsetModel([
+            OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                        adj_info=detector_inputs['adj_info'],
+                        reg_weight=0.1,
+                        poly_constraints=poly_groups,
+                        mean_offset=np.zeros(num_frames_run)),
+        ], use_per_frame_scalar=True)
 
         _rss_checkpoint('pre-setup_lsqr')
         cc.setup_lsqr(
-            chunk_maps=[detector_inputs['det_chunk_map']],
+            offset_model=offset_model,
             grid_valid_weight=channel_inputs['det_valid_mask_padded'],
             oversample_factor=1,
-            adj_infos=[detector_inputs['adj_info']],
-            poly_constraints_list=poly_constraints_list,
-            mean_offsets_list=[np.zeros(num_frames_run)],
-            use_per_frame_scalar=True,
             # --- Spectral-fit (PAHfit) mode ---
             # 2-block sky: x = [sky_cont | sky_line | offsets | scalar].
             # det_aux = [BC_map, BW_map] gives per-(frame, sub-pixel)
-            # wavelength and per-pixel sigma. The line-amp column coefficient
-            # is the Gaussian profile G(lambda_i) evaluated per row.
-            spectral_fit=True,
+            # wavelength and per-pixel sigma; the line-amp column coefficient is
+            # the Gaussian profile G(lambda_i) per row. continuum_plus_pah_gaussian()
+            # is byte-identical to the legacy spectral_fit=True path.
+            sky_model=SkyModel.continuum_plus_pah_gaussian(),
             det_aux=[detector_inputs['det_BC'], detector_inputs['det_BW']],
             **calibration_kwargs
         )
@@ -493,7 +508,7 @@ if __name__ == "__main__":
         _rss_checkpoint('post-apply_lsqr (single-shot)')
 
         # Phase 6 recommended Fisher mask threshold - saved as cal attr only;
-        # apply at read time via SelfCal.MakeMap.apply_line_fisher_mask.
+        # apply at read time via selfcal.core.lsqr.apply_line_fisher_mask.
         cc.line_fisher_threshold = 10.0
 
         # Save cal. Swap reproj_list to HDD paths so cal references survive

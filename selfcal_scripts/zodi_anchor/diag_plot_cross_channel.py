@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 
-from SelfCal.ZodiAnchor import load_anchor
+from selfcal.zodi_anchor import load_anchor
 
 
 DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'

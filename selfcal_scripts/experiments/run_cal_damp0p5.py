@@ -28,20 +28,21 @@ import numpy as np
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.spherex_utility import (
     load_calibration, load_lvf_params, compute_column_adjacency,
     make_stripped_chunk_map, make_stripped_chunk_valid_mask,
     make_spherex_stripped_offset_map, fast_vertical_dist,
     compute_column_polynomial_chains,
 )
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
-# Reuse the helpers from run_cal.py for input prep.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_cal import prepare_detector_inputs, prepare_channel_inputs  # noqa
+# Shared input-prep helpers (single source of truth). parent_path
+# (selfcal_scripts/) is already on sys.path from the preamble above.
+from _run_cal_harness import prepare_detector_inputs, prepare_channel_inputs  # noqa
 
 
 if __name__ == "__main__":
@@ -52,7 +53,7 @@ if __name__ == "__main__":
         'NumCol': 10,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -65,7 +66,7 @@ if __name__ == "__main__":
         'ignore_list': [],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.5],         # was 0.1
+        # reg_weights (was [0.5]) moved onto the OffsetBlock built below.
         'weighted_damping': True,
         'damp_weight': 0.5,           # was 0.1
         'max_workers': 48,
@@ -134,7 +135,7 @@ if __name__ == "__main__":
         )
 
         cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
@@ -142,19 +143,22 @@ if __name__ == "__main__":
             poly_chains, poly_stencil = compute_column_polynomial_chains(
                 detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
             )
-            poly_constraints_list = [[{
+            poly_group = [{
                 'chains': poly_chains,
                 'stencil': poly_stencil,
                 'weight': POLY_WEIGHT,
-            }]]
+            }]
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                            adj_info=detector_inputs['adj_info'],
+                            reg_weight=0.5,
+                            poly_constraints=poly_group,
+                            mean_offset=np.zeros(num_frames_run)),
+            ], use_per_frame_scalar=True)
             cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],
-                use_per_frame_scalar=True,
                 **calibration_kwargs,
             )
             x0 = compute_x0_scalar_only(
@@ -178,7 +182,7 @@ if __name__ == "__main__":
             fill_invalid=True,
         )
 
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
         mm.load_calibration(cal_path=cal_path)
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 

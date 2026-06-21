@@ -18,111 +18,21 @@ from threadpoolctl import threadpool_limits
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_path)
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.solution import compute_x0_scalar_only
-from SelfCal.SPHERExUtility import load_calibration, load_lvf_params, compute_column_adjacency, \
-make_stripped_chunk_map, make_stripped_chunk_valid_mask, make_spherex_stripped_offset_map, fast_vertical_dist, \
-compute_column_polynomial_chains
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.models.offset_model import OffsetModel, OffsetBlock
+from selfcal.models.sky_model import SkyModel
+from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map, compute_column_polynomial_chains
+# prepare_detector_inputs / prepare_channel_inputs / mask_bright_pixels are
+# shared from selfcal_scripts/_run_cal_harness.py (single source of truth).
+import sys as _sys
+_sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _run_cal_harness import (prepare_detector_inputs, prepare_channel_inputs,
+                              mask_bright_pixels)
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
-
-def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
-    detector = frame_setting['Detector']
-    num_subchannels = frame_setting['NumSub']
-    num_channels = frame_setting['NumCh']
-    num_columns = frame_setting['NumCol']
-    
-    lvf_filename = f'lvf_params_D{detector}.npy'
-    lvf_params = load_lvf_params(lvf_filename)
-
-    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
-    grid_chunk_map, _, _, _ = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
-                                                    oversample_factor=mosaic_setting_oversample, lvf_params=lvf_params)
-    det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(detector, num_subchannels=num_subchannels, num_channels=num_channels, num_columns=num_columns,
-                                            oversample_factor=1, lvf_params=lvf_params)
-    
-    adj_info = compute_column_adjacency(det_chunk_map, num_columns)
-        
-    return {
-        'lvf_params': lvf_params,
-        'det_BC': det_BC,
-        'det_BW': det_BW,
-        'grid_chunk_map': grid_chunk_map,
-        'det_chunk_map': det_chunk_map,
-        'r_edges': r_edges,
-        'x_edges': x_edges,
-        'adj_info': adj_info
-    }
-
-
-def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
-    num_subchannels = frame_setting['NumSub']
-    num_channels = frame_setting['NumCh']
-    num_columns = frame_setting['NumCol']
-    
-    if isinstance(ch, list) or isinstance(ch, np.ndarray):
-        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
-                                        num_columns=num_columns, subchannel_padding=1)
-        chunk_valid_mask = make_stripped_chunk_valid_mask(ch=ch, num_subchannels=num_subchannels, num_channels=num_channels, 
-                                        num_columns=num_columns, subchannel_padding=0)
-    elif isinstance(ch, str):
-        if ch == 'Aromatic':
-            subch = np.arange(225, 236)
-        elif ch == 'Aliphatic':
-            subch = np.arange(249, 260)
-        elif ch == 'Aromatic_PAHfit':
-            # 40-subchannel range centered on PAH 3.29 μm (subch 210-250,
-            # symmetric ±20 from peak at ~subch 230) for the in-LSQR per-pixel
-            # continuum + line amplitude joint fit. ±2σ around line, G(λ_edge)
-            # ≈ 0.135 — far-edge subch contribute negligibly to line Fisher
-            # info (G² ≈ 0.02) so dropping the outer 10 subch from each side
-            # cuts matrix memory by ~33% with minimal information loss.
-            # The original 60-subch window (200-260) OOM'd at production scale
-            # (17.6k frames × 60 subch × ~300k entries → 5B nonzeros, peaked
-            # ~700 GB during the apply_lsqr A^T transpose allocation).
-            subch = np.arange(210, 250)
-        else:
-            raise ValueError(f"Unknown channel tag {ch!r}")
-        chunk_valid_mask_padded = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
-                                        num_columns=num_columns, subchannel_padding=1)
-        chunk_valid_mask = make_stripped_chunk_valid_mask(subch=subch, num_subchannels=num_subchannels, num_channels=num_channels,
-                                        num_columns=num_columns, subchannel_padding=0)
-
-    # Pre-calculate weights safely
-    det_valid_mask = chunk_valid_mask[det_chunk_map]
-    det_valid_weight = fast_vertical_dist(det_valid_mask)
-    if np.max(det_valid_weight) > 0:
-        det_valid_weight /= np.max(det_valid_weight) 
-
-    det_valid_mask_padded = chunk_valid_mask_padded[det_chunk_map]
-
-
-    grid_valid_mask = chunk_valid_mask[grid_chunk_map]
-    grid_valid_weight = fast_vertical_dist(grid_valid_mask)
-    if np.max(grid_valid_weight) > 0:
-        grid_valid_weight /= np.max(grid_valid_weight) 
-
-    return {
-        'chunk_valid_mask_padded': chunk_valid_mask_padded,
-        'chunk_valid_mask': chunk_valid_mask,
-        'det_valid_mask': det_valid_mask,
-        'grid_valid_mask': grid_valid_mask,
-        'det_valid_mask_padded': det_valid_mask_padded,
-        'det_valid_weight': det_valid_weight,
-        'grid_valid_weight': grid_valid_weight
-    }
-
-def mask_bright_pixels(local_vars):
-    sub_data = local_vars['sub_data']
-    sub_weight = local_vars['sub_weight']
-    
-    valid_mask = sub_weight > 0
-    if np.sum(valid_mask) > 0:
-        threshold = np.nanpercentile(sub_data[valid_mask], 25)
-        sub_data[sub_data > threshold] = np.nan
-        
-    return sub_data
 
 if __name__ == "__main__":
     # ----------------------------- Start of Settings -----------------------------
@@ -133,7 +43,7 @@ if __name__ == "__main__":
         'NumCol': 5,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/data3/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_NEP_2026W17_D{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2
@@ -149,7 +59,7 @@ if __name__ == "__main__":
         'ignore_list': [21],
         'batch_size': 50,
         'offset_regularization': True,
-        'reg_weights': [0.1],
+        # reg_weights moved onto the OffsetBlock built below (per-block config).
         'weighted_damping': True,
         'damp_weight': 0.1,
         # --- Spectral-fit (PAHfit) mode params: 2-block sky (continuum + line amplitude) ---
@@ -256,7 +166,7 @@ if __name__ == "__main__":
         
         # ----------------------------- Calibration -----------------------------
         cal_path = os.path.join(selfcal_config.cal_dir, cal_file)
-        cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+        cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
@@ -267,25 +177,33 @@ if __name__ == "__main__":
             poly_chains, poly_stencil = compute_column_polynomial_chains(
                 detector_inputs['det_chunk_map'], frame_setting['NumCol'], degree=POLY_DEGREE,
             )
-            poly_constraints_list = [[{
+            poly_group = [{
                 'chains': poly_chains,
                 'stencil': poly_stencil,
                 'weight': POLY_WEIGHT,
-            }]]
+            }]
+            # Single offset block: per-frame scalar absorbs DC; mean-anchor on
+            # the map-0 chunks forces within-frame structure only, with a linear
+            # column poly-constraint + adjacency reg. Lowers to the exact
+            # parallel-list kwargs the flat call used.
+            offset_model = OffsetModel([
+                OffsetBlock(chunk_map=detector_inputs['det_chunk_map'],
+                            adj_info=detector_inputs['adj_info'],
+                            reg_weight=0.1,
+                            poly_constraints=poly_group,
+                            mean_offset=np.zeros(num_frames_run)),
+            ], use_per_frame_scalar=True)
             cc.setup_lsqr(
-                chunk_maps=[detector_inputs['det_chunk_map']],
+                offset_model=offset_model,
                 grid_valid_weight=channel_inputs['det_valid_mask_padded'],
                 oversample_factor=1,
-                adj_infos=[detector_inputs['adj_info']],
-                poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=[np.zeros(num_frames_run)],
-                use_per_frame_scalar=True,
                 # --- Spectral-fit (PAHfit) mode ---
                 # 2-block sky: x = [sky_cont | sky_line | offsets | scalar].
                 # det_aux = [BC_map, BW_map] gives per-(frame, sub-pixel)
-                # wavelength and per-pixel σ. The line-amp column coefficient
-                # is the Gaussian profile G(λ_i) evaluated per row.
-                spectral_fit=True,
+                # wavelength and per-pixel σ; the line-amp column coefficient is
+                # the Gaussian profile G(λ_i) per row. continuum_plus_pah_gaussian()
+                # is byte-identical to the legacy spectral_fit=True path.
+                sky_model=SkyModel.continuum_plus_pah_gaussian(),
                 det_aux=[detector_inputs['det_BC'], detector_inputs['det_BW']],
                 **calibration_kwargs
             )
@@ -300,7 +218,7 @@ if __name__ == "__main__":
             cc.apply_lsqr(x0=x0, use_float32=True, n_threads=48, **lsqr_kwargs)
             # Phase 6 recommended Fisher mask threshold — saved as cal attr
             # only; not destructively applied. Use
-            # ``SelfCal.MakeMap.apply_line_fisher_mask`` at analysis time to
+            # ``selfcal.core.lsqr.apply_line_fisher_mask`` at analysis time to
             # apply the mask. Empirically determined from cirrus 1k
             # A3-with-Fisher sanity: Fisher distribution is bimodal — a noise
             # tail at Fisher<10 (low-coverage / off-peak-dominated pixels that
@@ -326,7 +244,7 @@ if __name__ == "__main__":
                                     num_columns=frame_setting['NumCol'],
                                     fill_invalid=True)
         
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
         mm.load_calibration(cal_path=cal_path)
         mm.reproj_list = remap_to_nvme(mm.reproj_list)
 

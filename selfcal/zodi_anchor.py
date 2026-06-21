@@ -1,4 +1,4 @@
-"""Post-hoc zodiacal-light anchor for SelfCal.
+"""Post-hoc zodiacal-light anchor for selfcal.
 
 The LSQR solve has one global additive degeneracy:
 ``sky -> sky + C`` and ``scalar[k] -> scalar[k] - C`` leaves the data
@@ -18,7 +18,7 @@ variation accurately).
 A moving sigma-clip in MJD space iteratively rejects bright-source
 outliers before refitting.
 
-The anchor is **non-mutating**: SelfCal pipeline outputs (cal/mosaic)
+The anchor is **non-mutating**: selfcal pipeline outputs (cal/mosaic)
 stay pristine. The fit result is written to a per-detector anchor file
 ``<run>/zodi_anchor/anchor_D{N}.h5`` (``fit_anchor_for_channel`` +
 ``write_anchor`` / ``append_anchor_channel``) and applied to arrays at

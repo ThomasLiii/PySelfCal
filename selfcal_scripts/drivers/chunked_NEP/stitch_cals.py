@@ -1,4 +1,8 @@
 """
+DEPRECATED: superseded by selfcal.pipeline.tiled.stitch (TiledCalibration.stitch),
+driven by run_cal_tiled_NEP.py. The package stitcher is byte-equal to this on the
+same inputs (gated by cache/refactor_gate/verify_stitch.py). Kept for reference.
+
 Stitch 4 disjoint-frame quadrant cal h5 files (NW/NE/SW/SE) into a single
 cal-shaped h5 with Fisher-weighted inverse-variance averages.
 

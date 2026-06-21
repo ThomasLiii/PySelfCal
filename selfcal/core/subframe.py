@@ -3,8 +3,8 @@
 import numpy as np
 from scipy.ndimage import map_coordinates
 
-from .io import load_reproj_file
-from .MapHelper import (bit_to_bool, make_weight, make_linear_interp_matrix,
+from ..io.reproj import load_reproj_file
+from ..geometry.map_helper import (bit_to_bool, make_weight, make_linear_interp_matrix,
                         chunk_to_det, det_to_sub, compute_chunk_contrib)
 
 

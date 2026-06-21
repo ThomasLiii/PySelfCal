@@ -20,7 +20,7 @@ consumers read slope_final / C_final).
     # apply in-place:
     python smooth_anchor.py --run-dir /mnt/.../D1_...
 
-See SelfCal.ZodiAnchor.rweighted_slope_smooth for the core math and
+See selfcal.zodi_anchor.rweighted_slope_smooth for the core math and
 workspace/zodi_anchor_refactor/refactor.md for context.
 """
 import argparse
@@ -29,7 +29,7 @@ import os
 
 import numpy as np
 
-from SelfCal.ZodiAnchor import smooth_anchor_file
+from selfcal.zodi_anchor import smooth_anchor_file
 
 
 def parse_args():

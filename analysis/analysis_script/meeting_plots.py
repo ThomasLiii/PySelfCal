@@ -46,7 +46,7 @@ _SELFCAL_ROOT = os.path.dirname(os.path.dirname(_PKG_DIR))
 if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
-from SelfCal.SPHERExUtility import (
+from selfcal.instruments.spherex.spherex_utility import (
     make_stripped_chunk_map,
     make_stripped_chunk_valid_mask,
     make_spherex_stripped_offset_map,

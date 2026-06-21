@@ -13,7 +13,7 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 
 from reproject import reproject_interp, reproject_exact, reproject_adaptive
 
-from .MapHelper import bit_to_bool, bool_to_bit
+from ..geometry.map_helper import bit_to_bool, bool_to_bit
 
 
 def _result(task_params, output_file, success, error=None):

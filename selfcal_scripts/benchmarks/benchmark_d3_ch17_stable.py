@@ -59,9 +59,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(_HERE)
 sys.path.append(parent_path)
 
-from SelfCal import PipelineWrapper, MakeMap
-from SelfCal.MakeMap import set_hdd_io_limit, compute_x0_from_Ab
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import pipeline_wrapper
+from selfcal.core import coadd
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.solution import compute_x0_from_Ab
+from selfcal.instruments.spherex.spherex_utility import (
     load_calibration,
     load_lvf_params,
     compute_column_adjacency,
@@ -70,7 +72,7 @@ from SelfCal.SPHERExUtility import (
     make_spherex_stripped_offset_map,
     fast_vertical_dist,
 )
-from SelfCal.SPHERExAppendWav import wav_coadd
+from selfcal.instruments.spherex.wavemap import wav_coadd
 
 
 # ============================================================
@@ -334,7 +336,7 @@ def main():
         'NumCol': 3,
     }
 
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -424,7 +426,7 @@ def main():
     mos_file = f'mosaic_{job_tag}.fits'
     cache_dir = os.path.join(CACHE_DIR, f'cache_{job_tag}')
 
-    cc = PipelineWrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
+    cc = pipeline_wrapper.Calibrator(selfcal_config, reproj_dir=nvme_reproj_dir)
     num_frames_run = len(cc.reproj_list)
     print(f"[bench:stable] num_frames={num_frames_run}  num_chunks={int(det_inputs['det_chunk_map'].max())+1}", flush=True)
 
@@ -456,16 +458,16 @@ def main():
     gc.collect()
 
     # Patch compute_coadd_map to capture cache/mean/std/sigma_clip sub-phases.
-    _orig_compute_coadd_map = MakeMap.compute_coadd_map
+    _orig_compute_coadd_map = coadd.compute_coadd_map
 
     def _instrumented_compute_coadd_map(mode, *args, **kwargs):
         with tracker.phase(f'mosaic_coadd_{mode}'):
             return _orig_compute_coadd_map(mode, *args, **kwargs)
 
-    MakeMap.compute_coadd_map = _instrumented_compute_coadd_map
+    coadd.compute_coadd_map = _instrumented_compute_coadd_map
 
     try:
-        mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+        mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
 
         with tracker.phase('mosaic_load_cal'):
             mm.load_calibration(cal_path=cal_path)
@@ -495,7 +497,7 @@ def main():
                 **mosaic_kwargs,
             )
     finally:
-        MakeMap.compute_coadd_map = _orig_compute_coadd_map
+        coadd.compute_coadd_map = _orig_compute_coadd_map
 
     with tracker.phase('mosaic_wav_coadd'):
         wav_mean, wav_std = wav_coadd(

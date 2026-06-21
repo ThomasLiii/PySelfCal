@@ -34,9 +34,9 @@ from tqdm import tqdm
 sys.path.append(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', 'benchmarks'))
 
-from SelfCal import PipelineWrapper
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.SPHERExUtility import (
+from selfcal.pipeline import pipeline_wrapper
+from selfcal._state import set_hdd_io_limit
+from selfcal.instruments.spherex.spherex_utility import (
     load_calibration,
     load_lvf_params,
     make_stripped_chunk_map,
@@ -105,7 +105,7 @@ if __name__ == "__main__":
         'NumCh': 34,
         'NumCol': 3,
     }
-    selfcal_config = PipelineWrapper.PipelineConfig(
+    selfcal_config = pipeline_wrapper.PipelineConfig(
         output_dir='/mnt/md124/thomasli/selfcal/outputs/',
         run_name=f'SPHEREx_nep_qr2_det{base_frame_setting["Detector"]}_6p2arcsec',
         resolution_arcsec=6.2,
@@ -219,7 +219,7 @@ if __name__ == "__main__":
                   f"map shapes={[m.shape for m in chunk_maps]}; "
                   f"num_chunks={[int(m.max())+1 for m in chunk_maps]}")
 
-            mm = PipelineWrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
+            mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme_reproj_dir)
             mm.load_calibration(cal_path=cal_path)
             mm.reproj_list = remap_to_nvme(mm.reproj_list)
 
