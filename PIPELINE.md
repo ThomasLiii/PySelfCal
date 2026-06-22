@@ -1,10 +1,10 @@
 # SelfCal pipeline runbook
 
 Operational + on-disk-schema reference for the SelfCal calibration /
-mosaicking pipeline. Companion to [SelfCal/README.md](SelfCal/README.md),
+mosaicking pipeline. Companion to [selfcal/README.md](selfcal/README.md),
 which documents the *code architecture* (module layout, shared-memory
 hand-off, parallel SpMV, `_prep_subframe`, etc.). Read that first when
-modifying anything inside `SelfCal/`. Read this file when running the
+modifying anything inside `selfcal/`. Read this file when running the
 pipeline, tuning hyperparameters, or working with its outputs.
 
 ## Running
@@ -108,7 +108,7 @@ Key knobs:
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
 
-- **`poly_constraints_list[m]`** (optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [SelfCal/SPHERExUtility.py](SelfCal/SPHERExUtility.py).
+- **`poly_constraints_list[m]`** (optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
 - **`mean_offsets_list[m]`** — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `lsqr.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
 
@@ -162,10 +162,10 @@ but exist in the API (the `k2_readout` mode uses `det_groups_list`):
   pulling each frame's chunk-offset mean toward the target. Constraint
   weight is hardcoded at 10.0 in `lsqr.py`. For K≥2 the mean-anchor on
   maps 1..K-1 is how you break the K-1 shift degeneracy (see
-  [SelfCal/README.md](SelfCal/README.md)).
+  [selfcal/README.md](selfcal/README.md)).
 
 `compute_x0_scalar_only(A, b, ref_shape, scalar_col_start)` (in
-`SelfCal/solution.py`) returns a warm-start `x0` with sky+offsets=0 and
+`selfcal/core/solution.py`) returns a warm-start `x0` with sky+offsets=0 and
 the per-frame scalar block seeded from the diagonal-LS estimate. Use
 this whenever `use_per_frame_scalar=True`. For runs without the scalar,
 `compute_x0_from_Ab(A, b, ref_shape)` is the older full-offset warm
@@ -187,7 +187,7 @@ top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
 6. `shutil.rmtree(nvme_reproj_dir)` at the end
 
 `set_hdd_io_limit(n)` installs a `multiprocessing.BoundedSemaphore` in
-`SelfCal/_state.py:_hdd_io_semaphore`, which both `ThreadPoolExecutor`
+`selfcal/_state.py:_hdd_io_semaphore`, which both `ThreadPoolExecutor`
 workers and forked `Pool` workers acquire inside `load_reproj_file`. So
 the throttle works regardless of which parallelism mode the consumer
 uses, and `set_hdd_io_limit(None)` takes effect immediately for any
@@ -215,7 +215,7 @@ varies by `num_maps`:
 **Legacy schema (pre-multi-chunk-maps, still readable):**
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
 
-`selfcal_scripts/diff_cal_h5.py` understands both schemas — pass a legacy file and a new file and it compares the underlying arrays correctly.
+`selfcal_scripts/drivers/diff_cal_h5.py` understands both schemas — pass a legacy file and a new file and it compares the underlying arrays correctly.
 
 ## Reprojected `*.h5` schema
 
@@ -309,7 +309,7 @@ python selfcal_scripts/zodi_anchor/smooth_anchor.py --run-dir <run>
 Consuming the anchor (pipeline outputs stay pristine):
 
 ```python
-from SelfCal.ZodiAnchor import load_anchor, load_anchored_mosaic
+from selfcal.zodi_anchor import load_anchor, load_anchored_mosaic
 anchor = load_anchor('<run>/zodi_anchor/anchor_D1.h5')
 data, hdr = load_anchored_mosaic('<run>/mosaic/mosaic_..._Ch11_...fits', anchor)  # +C in memory
 # or arrays directly: anchor.C(ch), anchor.apply_to_mosaic_array(...), .apply_to_cal_scalar(...)
@@ -329,9 +329,9 @@ only the slope is.
 
 ## Regression testing
 
-`selfcal_scripts/run_cal_baseline_test.py` is the canonical regression harness. It defines `TEST_VARIANTS` (`poly_off`, `poly_k1`, `poly_k2`, `oldx0_off`, `scalar_off`, …) so the same script can produce side-by-side cal files for different solver configurations. Pair with `selfcal_scripts/diff_cal_h5.py` for element-wise diffs (schema-aware: legacy vs new, or new vs new).
+`selfcal_scripts/benchmarks/run_cal_baseline_test.py` is the canonical regression harness. It defines `TEST_VARIANTS` (`poly_off`, `poly_k1`, `poly_k2`, `oldx0_off`, `scalar_off`, …) so the same script can produce side-by-side cal files for different solver configurations. Pair with `selfcal_scripts/drivers/diff_cal_h5.py` for element-wise diffs (schema-aware: legacy vs new, or new vs new).
 
-Phase-level wall/RSS/IO benchmarking: `selfcal_scripts/benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Each writes `figures/benchmark/d3_ch17_{variant}_{summary.txt,samples.json,timeline.png}` and is parameterized by `max_workers` / `batch_size` / `n_threads` so you can run a tuning sweep quickly.
+Phase-level wall/RSS/IO benchmarking: `selfcal_scripts/benchmarks/benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Each writes `figures/benchmark/d3_ch17_{variant}_{summary.txt,samples.json,timeline.png}` and is parameterized by `max_workers` / `batch_size` / `n_threads` so you can run a tuning sweep quickly.
 
 ### Refactor bit-identity gate (`refactor/selfcal-package`)
 

@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Two coupled efforts share this tree:
 
-1. **`SelfCal/` — the pipeline.** Sparse-LSQR self-calibration + mosaicking for SPHEREx (with Euclid helpers). Two reference docs:
-   - [SelfCal/README.md](SelfCal/README.md) — module-level **code architecture**: the data flow `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and design decisions (multi-chunk-map LSQR build, shared-memory worker hand-off, parallel SpMV `LinearOperator`, tight-bbox cache crops, zero-column elimination, etc.). Read this before touching anything in `SelfCal/`.
+1. **`selfcal/` — the pipeline.** Sparse-LSQR self-calibration + mosaicking for SPHEREx (with Euclid helpers). Two reference docs:
+   - [selfcal/README.md](selfcal/README.md) — module-level **code architecture**: the data flow `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and design decisions (multi-chunk-map LSQR build, shared-memory worker hand-off, parallel SpMV `LinearOperator`, tight-bbox cache crops, zero-column elimination, etc.). Read this before touching anything in `selfcal/`.
    - [PIPELINE.md](PIPELINE.md) — **operational runbook**: tuning knobs (`NumCol`, `reg_weights`, `damp_weight`, adjacency choice, polynomial constraints), advanced solve modes (`det_groups_list`, `det_templates`, `mean_offsets_list`, `use_per_frame_scalar`), the NVMe staging pattern, and the on-disk schemas of `cal_*.h5`, reprojected `*.h5`, and mosaic `*.fits`. Read this when running the pipeline or working with its outputs.
 2. **`analysis/analysis_script/` — diagnostics on the calibration outputs.** Loads the per-frame, per-chunk offset terms from `cal_*.h5` files via `zodi_utils.load_cal_offsets` (handles both legacy single-map and multi-chunk-map schemas) and characterizes the temporal/spatial structure (annual sine fits, residual scans, detector-fixed pattern extraction, raw-stack verification, etc.). This is where most ad-hoc plotting and analysis lives.
 
@@ -17,13 +17,13 @@ The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol{C}_Ch{ch}{suffix}.h5
 
 | Dir | What's there |
 | --- | --- |
-| `SelfCal/` | Library code (PipelineWrapper, lsqr, coadd, subframe, solution, SPHERExUtility, …). See [SelfCal/README.md](SelfCal/README.md). |
+| `selfcal/` | Installed library package: `pipeline/` (pipeline_wrapper, tiled), `core/` (lsqr split into assembly/system/solve, coadd, subframe, solution, layout), `models/` (sky_model, profiles, offset_model), `geometry/`, `io/`, `instruments/` (spherex, euclid), `zodi_anchor`. See [selfcal/README.md](selfcal/README.md). |
 | `selfcal_scripts/run.py` + `run.sh` + `configs/` + `launch/` | **Generic runner entry.** `./selfcal_scripts/run.sh selfcal_scripts/configs/<run>.toml` (or `python -m selfcal_scripts.run --config <toml>`, or `selfcal_scripts/launch/<run>.sh`). One TOML config per run — no editing Python. `configs/` has one file per former driver (d4_aromatic, d5, damp0p5, damp_offset, pahfit, k2_readout, tiled_nep, reproject_d4, precompute). See [`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md). |
 | `selfcal_scripts/runner/` | The run engine (instrument- and mode-agnostic): `config.py` (TOML→`RunConfig` + `get_instrument`), `pipelines.py` (`run_calibration`/`run_tiled`/`run_reprojection`/`run_precompute`), `modes/` (extensible `@register_mode` registry: `continuum`/`pahfit`/`k2_readout`/`tiled`; each mode owns its offset model incl. adjacency), `staging.py` (NVMe staging + RSS guardrail), `postprocess.py`. The engine talks only to the `Instrument` interface (`selfcal.instruments.base`) + the `CalMode` interface — never to a telescope or variant by name. |
 | `selfcal_scripts/drivers/` | `diff_cal_h5.py` (schema-aware cal-file diff). The per-variant `run_cal*.py` / `run_reproject.py` / `precompute_lvf_params.py` / `chunked_NEP/` drivers were replaced by the runner + configs (git history preserves them). |
 | `selfcal_scripts/benchmarks/` | Phase-level wall/RSS/IO benchmark harness: `benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py` (the `..._{numcol3,mid,tuned}` import `PhaseTracker` from `..._poly`; keep the 4 together). Plus `run_cal_baseline_test.py` — the regression harness with `TEST_VARIANTS` (self-contained `prepare_*` helpers), and `regress_cal.py` / `regress_cal_spectral.py` — the byte-equality golden generators. |
 | `selfcal_scripts/experiments/` | `run_mosaic_polyconstraint.py` — a benchmark-coupled diagnostic remosaic (imports `run_cal_baseline_test`'s variant table); not migrated to the runner. |
-| `selfcal_scripts/zodi_anchor/` | Post-hoc zodi anchor. **Non-mutating**: cal/mosaic stay pristine; the fit lands in a per-detector anchor file `<run>/zodi_anchor/anchor_D{N}.h5` and is applied at read time. `build_predictions*` (zodipy → `zodi_preds/*.npz`), `build_anchor.py` (per-channel fit → anchor file; `run_cal.py` does the same inline via `append_anchor_channel`), `diag_*` (read-only plots; apply the anchor in-memory via `load_anchor`), `revert_anchor.py` (historical undo of legacy in-place anchoring). See [`selfcal_scripts/zodi_anchor/README.md`](selfcal_scripts/zodi_anchor/README.md). Core math + anchor-file I/O + consumer in `SelfCal/ZodiAnchor.py` (`fit_anchor_for_channel`, `write_anchor`/`append_anchor_channel`, `Anchor`/`load_anchor`). |
+| `selfcal_scripts/zodi_anchor/` | Post-hoc zodi anchor. **Non-mutating**: cal/mosaic stay pristine; the fit lands in a per-detector anchor file `<run>/zodi_anchor/anchor_D{N}.h5` and is applied at read time. `build_predictions*` (zodipy → `zodi_preds/*.npz`), `build_anchor.py` (per-channel fit → anchor file; the cal runner does the same inline when `[zodi].pred_dir` is set, via `append_anchor_channel`), `diag_*` (read-only plots; apply the anchor in-memory via `load_anchor`), `revert_anchor.py` (historical undo of legacy in-place anchoring). See [`selfcal_scripts/zodi_anchor/README.md`](selfcal_scripts/zodi_anchor/README.md). Core math + anchor-file I/O + consumer in `selfcal/zodi_anchor.py` (`fit_anchor_for_channel`, `write_anchor`/`append_anchor_channel`, `Anchor`/`load_anchor`). |
 | `selfcal/instruments/spherex/data/lvf_params/` | Cached LVF params, `lvf_params_D{1..6}.npy` (shipped as package data); generated by the `precompute` runner config. Path is resolved package-relative by `selfcal.instruments.spherex.spherex_utility.load_lvf_params` (override with `$SELFCAL_LVF_PARAMS_DIR`). |
 | `analysis/analysis_script/` | Canonical analysis: `meeting_plots.py`, `verify_stack.py` (deliverables), their cache builders `build_multichannel_cache.py` / `build_perchunk_coords.py`, the cross-channel plot helpers `plot_d5_ch3_*.py`, and the shared `zodi_utils.py`. Historical one-offs are in `archive/analysis_script/` (see below). |
 | `notebooks/` | `spherex_selfcal_demo.ipynb` (working demo) and `euclid_mosaic.ipynb`. Older notebooks in `archive/notebooks/`. |
@@ -37,7 +37,7 @@ Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli
 
 ## Common commands
 
-Install editable: `pip install -e .` (uses `pyproject.toml`; package is just `SelfCal`).
+Install editable: `pip install -e .` (uses `pyproject.toml`; package is `selfcal`).
 
 Pipeline runs are launched via the **generic runner** — pick/edit a TOML config, run a `.sh` (no editing Python):
 
@@ -71,7 +71,7 @@ PYTHONPATH=analysis/analysis_script python archive/analysis_script/<script>.py
 
 There is no test suite. There is no linter configured. Regression for the pipeline is via `selfcal_scripts/benchmarks/run_cal_baseline_test.py` (produces named `cal_*.h5` files per `TEST_TAG` / variant) + `selfcal_scripts/drivers/diff_cal_h5.py` (element-wise dataset diff, schema-aware). The runner itself is byte-equality-gated against the same goldens: `cache/refactor_gate/gate_continuum.toml` + `gate_spectral.toml` (run via `run.py`, diff vs `cache/refactor_gate/goldens/`) and `verify_runner_lowering.py` (k2/tiled offset-model lowering); the mosaic+wav path is verified equivalent within the coadd's own run-to-run non-determinism (legacy-vs-legacy ≈ runner-vs-legacy).
 
-For SelfCal-pipeline tuning, advanced solve modes, the NVMe staging pattern, and the on-disk schemas of the cal / reprojected / mosaic files, see [PIPELINE.md](PIPELINE.md). For module-level code architecture, see [SelfCal/README.md](SelfCal/README.md).
+For SelfCal-pipeline tuning, advanced solve modes, the NVMe staging pattern, and the on-disk schemas of the cal / reprojected / mosaic files, see [PIPELINE.md](PIPELINE.md). For module-level code architecture, see [selfcal/README.md](selfcal/README.md).
 
 ## How `analysis/analysis_script/` is wired
 
@@ -110,7 +110,7 @@ These were rewritten in 2026-04 / 2026-05; old commit history will not match. Co
 ## Path / environment quirks worth knowing
 
 - Calibration files live on `/mnt/md124` (RAID). They're large; never `git add` anything from `cal_*.h5`.
-- Each analysis script does `sys.path.insert(0, _SELFCAL_ROOT)` so it can import from `SelfCal/` without `pip install`. If an import from `SelfCal` fails, check the script's `_PKG_DIR / _SELFCAL_ROOT` two-up logic.
+- Each analysis script does `sys.path.insert(0, _SELFCAL_ROOT)` so it can import from `selfcal/` without `pip install`. If an import from `selfcal` fails, check the script's `_PKG_DIR / _SELFCAL_ROOT` two-up logic.
 - `zodi_utils.py` hard-codes the calibration directory layout in `CAL_OUTPUT_BASE / CAL_RUN_TEMPLATE / CAL_FILE_TEMPLATE`. Changing the run name or hyperparameter suffix (`damp0p1_reg0p1_outThresh5_sigma2`) requires updating this template.
 - `find_outliers` (`MapHelper.py:79-88`) emits `RuntimeWarning: All-NaN slice encountered` for fully-masked subframes. Harmless; suppress with `warnings.filterwarnings` if it's noisy.
 - The cal-file naming pattern in `analysis/analysis_script/zodi_utils.py` bakes in a specific `NumCol` value (`NumCol3` in older runs, `NumCol10` for the poly-constraint era). If you regenerate with a different `NumCol`, update `CAL_FILE_TEMPLATE` to match.
