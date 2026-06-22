@@ -1,0 +1,34 @@
+# NEP D4 reprojection (replaces drivers/run_reproject.py).
+# Reads raw SPHEREx FITS, drops poor-astrometry (FINAST != 0) exposures, writes
+# one HDF5 cutout per (exposure, detector) onto a shared reference WCS.
+task = "reproject"
+
+output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 3
+
+[reproject]
+input_dirs = [
+    "/mnt/md124/SPHEREx/SPHEREx_nep_data/qr1_newgain",
+    "/mnt/md124/SPHEREx/SPHEREx_nep_data/qr2",
+]
+file_pattern = "/*/*/*/*D{detector}*.fits"
+# Share the D5 projection grid; set to "" / omit to fit a fresh optimal frame.
+source_ref_path = "/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D5_6p2arcsec/ref.fits"
+padding_pixels = 100
+use_ext = [1]
+header_filter_workers = 16
+max_workers = 50
+inner_parallel = 1
+reproj_func = "exact"
+padding_percentage = 0.05
+sci_ext_list = [1]
+dq_ext_list = [2]
+replace_existing = false

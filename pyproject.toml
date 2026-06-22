@@ -3,16 +3,15 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "SelfCal"
+name = "selfcal"
 version = "0.1.0"
-description = "Self-calibration pipeline for astronomical imaging"
+description = "Self-calibration pipeline for astronomical imaging (SPHEREx, Euclid)"
 requires-python = ">=3.9"
 dependencies = [
     "astropy",
     "h5py",
     "hdf5plugin",
     "matplotlib",
-    "mpsplines @ git+https://github.com/jararias/mpsplines.git",
     "numpy",
     "opencv-python",
     "reproject",
@@ -22,5 +21,18 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+# mpsplines is git-only (not on PyPI), so it cannot be a core dependency. It is
+# needed only for the optional external mean-preserving interpolator
+# (interp_1d(method='mp_external')); the default offset rendering uses the
+# in-tree scipy implementation. Imported lazily, so the core package installs
+# and imports without it.
+mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
+dev = ["pytest"]
+
 [tool.setuptools.packages.find]
-include = ["SelfCal*"]
+include = ["selfcal*"]
+
+[tool.setuptools.package-data]
+# Ship the SPHEREx LVF arc-fit parameters with the wheel.
+"selfcal.instruments.spherex" = ["data/lvf_params/*.npy"]

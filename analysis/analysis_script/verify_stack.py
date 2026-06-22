@@ -37,8 +37,8 @@ _SELFCAL_ROOT = os.path.dirname(os.path.dirname(_PKG_DIR))
 if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
-from SelfCal.MakeMap import load_reproj_file
-from SelfCal.SPHERExUtility import (
+from selfcal.io.reproj import load_reproj_file
+from selfcal.instruments.spherex.spherex_utility import (
     make_stripped_chunk_map,
     make_spherex_stripped_offset_map,
     load_lvf_params,

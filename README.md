@@ -17,5 +17,5 @@ conda-friendly [`environment.yml`](environment.yml).
 - [`CLAUDE.md`](CLAUDE.md) — repo layout and conventions. Read first.
 - [`PIPELINE.md`](PIPELINE.md) — operational runbook (tuning knobs,
   on-disk schemas, NVMe staging pattern).
-- [`SelfCal/README.md`](SelfCal/README.md) — module-level code architecture.
+- [`selfcal/README.md`](selfcal/README.md) — module-level code architecture.
 - [`notebooks/spherex_selfcal_demo.ipynb`](notebooks/spherex_selfcal_demo.ipynb) — working demo.

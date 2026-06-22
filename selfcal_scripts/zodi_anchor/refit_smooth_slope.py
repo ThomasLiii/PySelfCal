@@ -44,7 +44,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from SelfCal.ZodiAnchor import (
+from selfcal.zodi_anchor import (
     compute_full_dc,
     load_anchor,
     moving_sigma_clip_mask,

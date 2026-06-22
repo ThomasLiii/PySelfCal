@@ -30,11 +30,11 @@ from functools import partial
 
 import numpy as np
 
-from SelfCal.MakeMap import set_hdd_io_limit
-from SelfCal.lsqr import _prep_lsqr
-from SelfCal.subframe import _prep_subframe
-from SelfCal.MapHelper import compute_crop
-from SelfCal.SPHERExUtility import make_spherex_stripped_offset_map
+from selfcal._state import set_hdd_io_limit
+from selfcal.core.lsqr import _prep_lsqr
+from selfcal.core.subframe import _prep_subframe
+from selfcal.geometry.map_helper import compute_crop
+from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map
 from run_cal_baseline_test import prepare_detector_inputs, prepare_channel_inputs
 
 
@@ -130,7 +130,7 @@ def run_cache(file_list, ref_shape, det_inputs, ch_inputs, cache_dir):
 
     WARNING: the per-frame nz_rows/nz_cols → bbox-crop logic below is
     duplicated from coadd._coadd_batch_worker (around lines 163-199 of
-    SelfCal/coadd.py). If the production bbox-crop logic changes (e.g. a
+    selfcal/core/coadd.py). If the production bbox-crop logic changes (e.g. a
     different valid-weight criterion, a different padding, or a fused
     crop+accumulate step), this profile will report stale numbers and
     misrepresent the cache phase's actual hot lines until kept in sync."""
@@ -183,7 +183,7 @@ def run_mean(cache_files, ref_shape):
 
     WARNING: this phase replays a simplified mean-accumulation loop. The
     production pattern in coadd._coadd_batch_worker (around lines 240-247 of
-    SelfCal/coadd.py) accumulates into per-worker LOCAL arrays and flushes
+    selfcal/core/coadd.py) accumulates into per-worker LOCAL arrays and flushes
     them to a SHARED-memory accumulator under a single per-batch lock. That
     pattern is NOT exercised here — this profile just adds straight into a
     single in-process numpy array. A future opt targeting the local→shared

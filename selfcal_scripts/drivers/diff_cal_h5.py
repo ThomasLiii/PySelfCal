@@ -80,6 +80,38 @@ def diff(a_path, b_path):
         for k in ('skymap', 'skymap_coverage', 'reproj_list'):
             failures += _diff_array(k, A[k][...], B[k][...])
 
+        # Optional spectral-fit datasets (spectral_fit=True / num_sky_blocks==2):
+        # the line-amplitude sky block + Fisher diagnostics. Compare when present
+        # in BOTH files; flag when present in only one (a refactor that silently
+        # drops the line block must fail the gate). frame_scalar is intentionally
+        # NOT checked here — it is already folded into offset map_0 by
+        # _read_offset, and is legitimately absent from the legacy schema.
+        for k in ('skymap_line', 'skymap_line_coverage', 'skymap_line_fisher',
+                  'skymap_fisher'):
+            in_a, in_b = (k in A), (k in B)
+            if in_a and in_b:
+                failures += _diff_array(k, A[k][...], B[k][...])
+            elif in_a != in_b:
+                print(f'DIFF {k}: present in {"A" if in_a else "B"} only')
+                failures += 1
+
+        # v3 per-component sky blocks (sky/<name>). Compared only when BOTH files
+        # are v3 (have a 'sky' group) — this adds coverage for N>2 components.
+        # A v3-vs-v2 comparison (e.g. a new v3 cal vs an older v2 golden) is NOT
+        # flagged here: the continuum/line VALUES are already checked via the
+        # top-level hard-linked names above, so a schema-only difference is fine.
+        if 'sky' in A and 'sky' in B:
+            names_a, names_b = set(A['sky'].keys()), set(B['sky'].keys())
+            if names_a != names_b:
+                print(f'DIFF sky_components: {sorted(names_a)} vs {sorted(names_b)}')
+                failures += 1
+            for name in sorted(names_a & names_b):
+                failures += _diff_array(f'sky[{name}]', A['sky'][name][...], B['sky'][name][...])
+                for grp in ('sky_coverage', 'sky_fisher'):
+                    if name in A.get(grp, {}) and name in B.get(grp, {}):
+                        failures += _diff_array(f'{grp}[{name}]',
+                                                A[grp][name][...], B[grp][name][...])
+
         # Number of maps must agree across schemas.
         K_a, K_b = _num_maps(A), _num_maps(B)
         if K_a != K_b:

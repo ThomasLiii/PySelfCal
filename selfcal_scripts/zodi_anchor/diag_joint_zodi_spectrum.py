@@ -55,7 +55,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from SelfCal.ZodiAnchor import (
+from selfcal.zodi_anchor import (
     compute_full_dc,
     fit_with_clip,
     load_anchor,

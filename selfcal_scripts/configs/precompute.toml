@@ -1,0 +1,11 @@
+# Precompute per-detector LVF arc-fit params (replaces drivers/precompute_lvf_params.py).
+# Writes lvf_params_D{N}.npy into the canonical package data dir (override with
+# [instrument].lvf_output_dir or $SELFCAL_LVF_PARAMS_DIR).
+task = "precompute"
+
+[instrument]
+name = "spherex"
+detectors = [1, 2, 3, 4, 5, 6]
+num_sub = 10
+num_ch = 34
+calib_dir = "/home/thomasli/spherex/SPHEREx_Spectral_Calibration"
