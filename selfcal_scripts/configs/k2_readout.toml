@@ -1,0 +1,60 @@
+# D5 K=2 readout-stripe test (replaces experiments/run_cal_k2_readout.py).
+# Block 0: fiducial subchannel offsets (NumCol=1, subchannel adjacency).
+# Block 1: detector-fixed per-readout-channel offsets (mean-anchored).
+# Mean-map-only mosaic (no std / sigma-clip / wavelength). NVMe kept for re-runs.
+task = "cal"
+mode = "k2_readout"
+
+output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_nep_qr2_det{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_k2_readout_test"
+oversample = 2
+staging = "copy"
+keep_nvme = true
+hdd_io_limit = 20
+apply_n_threads = 32
+
+[instrument]
+name = "spherex"
+detector = 5
+num_sub = 10
+num_ch = 34
+num_col = 1
+channels = [[3]]
+
+[params]
+reg_weight = 0.1
+readout_reg_weight = 0.0
+
+[calibration]
+apply_mask = true
+apply_weight = false
+outlier_thresh = 5.0
+ignore_list = []
+batch_size = 20
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+max_workers = 32
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 50
+precondition = true
+solver = "lsqr"
+
+[mosaic]
+apply_mask = true
+apply_weight = false
+make_std_map = false
+apply_sigma_clipping = false
+sigma = 2.0
+ignore_list = [21]
+cache_batch_size = 20
+coadd_batch_size = 30
+cache_intermediate = false
+max_workers = 32

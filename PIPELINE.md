@@ -7,6 +7,34 @@ hand-off, parallel SpMV, `_prep_subframe`, etc.). Read that first when
 modifying anything inside `SelfCal/`. Read this file when running the
 pipeline, tuning hyperparameters, or working with its outputs.
 
+## Running
+
+Runs are driven by a **TOML config + the generic runner** — no editing Python:
+
+```bash
+./selfcal_scripts/run.sh selfcal_scripts/configs/<run>.toml          # or launch/<run>.sh
+./selfcal_scripts/run.sh selfcal_scripts/configs/<run>.toml --dry-run  # resolve jobs+mode only
+```
+
+The knobs documented below still exist — they moved from dict literals at the top
+of a driver into TOML tables:
+
+| Was (driver dict / literal) | Now (TOML) |
+| --- | --- |
+| `frame_setting` (Detector / NumSub / NumCh / NumCol) | `[instrument]` |
+| `chs` (channel / window selection) | `[instrument]` `windows` / `channels` / `channel_range` / `subch_window` |
+| `calibration_kwargs` | `[calibration]` + per-block knobs in `[params]` (`reg_weight`, `poly_degree`/`poly_weight`) |
+| `lsqr_kwargs` | `[lsqr]` |
+| `mosaic_kwargs` | `[mosaic]` |
+| `FILE_SUFFIX`, oversample, NVMe staging | top-level `suffix` / `oversample` / `staging` / `keep_nvme` |
+| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal_scripts/runner/modes/`) |
+
+The offset-model *structure* (which adjacency, poly groups, K=2 readout block) is
+chosen by the **mode**, not a flat kwarg — that is the one conceptual change. The
+schema + how to add a mode/instrument is in
+[`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md). The rest
+of this file explains what each knob *does*; the names match the TOML keys.
+
 ## Calibration model
 
 The selfcal model is per-pixel:
@@ -19,13 +47,13 @@ where:
 - `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case).
 - `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (default in `run_cal.py`). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / pahfit / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
 For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution.
 
 ## Calibration pipeline tuning
 
-`frame_setting` chunk geometry ([selfcal_scripts/run_cal.py](selfcal_scripts/run_cal.py)):
+Chunk geometry (the `[instrument]` TOML table):
 
 - `NumSub`, `NumCh` — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
@@ -38,20 +66,26 @@ For the K=1 default case the model collapses to `sky + offset[frame, chunk] + sc
   channels (relying on the per-frame scalar + adjacency reg) or `NumCol=3-10`
   for wider channels / poly-constrained runs.
 
-`calibration_kwargs` (production defaults in `run_cal.py`):
+`[calibration]` (production defaults, e.g. the `d4_aromatic` config) — passed
+verbatim as `setup_lsqr` kwargs. Per-block knobs (`reg_weight`, `poly_degree`/
+`poly_weight`) live in `[params]` and the mode lowers them onto the `OffsetBlock`:
 
-```python
-{
-  'apply_mask': True, 'apply_weight': False,
-  'outlier_thresh': 5.0, 'ignore_list': [],
-  'batch_size': 50,           # tuned 2026-05 from 20
-  'offset_regularization': True,
-  'reg_weights': [0.1],       # list — one per chunk map (K-element)
-  'weighted_damping': True,
-  'damp_weight': 0.1,
-  'max_workers': 48,          # tuned 2026-05 from 32
-  'postprocess_func': None,
-}
+```toml
+[calibration]
+apply_mask = true
+apply_weight = true          # d4_aromatic/pahfit use Poisson weighting; d5/k2 false
+outlier_thresh = 5.0
+ignore_list = []             # [21] for pahfit/tiled (drop source-mask bit)
+batch_size = 50              # tuned 2026-05 from 20
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+max_workers = 48             # tuned 2026-05 from 32
+
+[params]
+reg_weight = 0.1             # adjacency-smoothness weight (per chunk map)
+poly_degree = 1              # omit poly_weight to disable the column poly-constraint
+poly_weight = 0.5
 ```
 
 Plus the always-list `setup_lsqr` arguments:
@@ -92,21 +126,21 @@ Key knobs:
 
 `det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
 
-`run_cal.py:chs` accepts three forms: a list of single-channel lists
-(e.g. `[[14], [15]]`, one calibration run per entry), a list of
-multi-channel groups (joint solve over those channels' subchannels), or
-the strings `'Aromatic'` / `'Aliphatic'`, which select hardcoded
-subchannel ranges 225–235 / 249–259 covering the PAH bands.
-`frame_setting_str` is auto-built as
-`'_'.join(f'{k}{v}' for k,v in frame_setting.items())`, so calibration
-filenames are deterministically
-`cal_Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}_Ch{ch}{FILE_SUFFIX}.h5`.
+**Channel / window selection** lives in `[instrument]` (de-mixed into typed keys,
+one per run): `channels = [[14],[15]]` (one calibration run per entry),
+`channel_range = [23, 35]` (expands to single-channel jobs), `windows =
+["Aromatic","Aliphatic"]` (named subchannel ranges 225–235 / 249–259 covering the
+PAH bands, registry in the SPHEREx adapter), or `subch_window = [lo, hi]` +
+`window_name` (an explicit subchannel range, e.g. the PAHfit 210–250 / 200–260
+windows). The instrument's `frame_tag` is `Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}`,
+so cal filenames are deterministically
+`cal_{frame_tag}_{job}{suffix}.h5` (job = `Ch<n>` or the window name).
 
 ## Advanced Calibrator solve modes
 
 Beyond the default per-frame, per-chunk solve, `Calibrator.setup_lsqr`
-supports restricted-solve modes that aren't currently exercised by
-`run_cal.py` but exist in the API:
+supports restricted-solve modes that the mainline `continuum` mode does not use
+but exist in the API (the `k2_readout` mode uses `det_groups_list`):
 
 - **Locked offsets via `det_groups_list[m]`.** Pass an array of length
   `num_frames` giving a group ID per frame for map `m`; frames in the same
@@ -117,7 +151,7 @@ supports restricted-solve modes that aren't currently exercised by
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — see `selfcal_scripts/run_cal_k2_readout.py`).
+  stripes — the `k2_readout` mode / `configs/k2_readout.toml`).
 - **Template-amplitude mode via `det_templates[m]`.** Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
@@ -140,7 +174,8 @@ start.
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
-heads. The pattern in `run_cal.py`:
+heads. The pattern (in `selfcal_scripts/runner/staging.py`, driven by the
+top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
 
 1. `set_hdd_io_limit(20)` — throttle the initial HDD copy
 2. Copy `*.h5` to `{CACHE_DIR}/reproj_nvme_{run_name}/` via
@@ -263,7 +298,7 @@ Ordering (after cal+mosaic exist):
 #    Add --smooth ONLY for atmospheric detectors (D1 He I/OI; D2) — see below.
 python selfcal_scripts/zodi_anchor/build_anchor.py --run-dir <run> [--smooth]
 
-# (alternatively, run_cal.py with ZODI_PRED_DIR set writes the anchor
+# (alternatively, a cal config with [zodi].pred_dir set writes the anchor
 #  inline per channel as the cal loop runs — step 2 then already done.)
 
 # 3. (optional) slope smoothing as a separate, inspectable step:

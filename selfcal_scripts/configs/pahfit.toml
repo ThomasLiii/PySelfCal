@@ -1,0 +1,63 @@
+# D4 PAHfit spectral calibration (replaces experiments/run_cal_pahfit.py).
+# Continuum + PAH 3.29um line amplitude; 40-subch window (210-250); NumCol=5;
+# 100 LSQR iters; outputs to /data3, keeps the NVMe cache.
+task = "cal"
+mode = "pahfit"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_damp0p1_reg0p1_applyWt_PAHfit_dampL0_subch40_nosrcmask_NumCol5_iter100_outThresh5_sigma2_polyK1"
+oversample = 2
+staging = "copy"
+keep_nvme = true
+hdd_io_limit = 20
+apply_n_threads = 48
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 5
+subch_window = [210, 250]
+window_name = "Aromatic_PAHfit"
+
+[params]
+poly_degree = 1
+poly_weight = 0.5
+reg_weight = 0.1
+line_fisher_threshold = 10.0
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 0.0
+max_workers = 48
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 100
+precondition = true
+solver = "lsqr"
+
+[mosaic]
+apply_mask = true
+apply_weight = false
+make_std_map = true
+apply_sigma_clipping = true
+sigma = 2.0
+ignore_list = [21]
+cache_batch_size = 50
+coadd_batch_size = 50
+cache_intermediate = true
+max_workers = 48
