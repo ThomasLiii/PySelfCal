@@ -8,4 +8,4 @@ name = "spherex"
 detectors = [1, 2, 3, 4, 5, 6]
 num_sub = 10
 num_ch = 34
-calib_dir = "/home/thomasli/spherex/SPHEREx_Spectral_Calibration"
+calib_dir = "/data3/SPHEREx/SpecCal_202509/ParameterFiles"

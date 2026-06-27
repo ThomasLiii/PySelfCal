@@ -29,7 +29,7 @@ from astropy.io import fits
 from selfcal.zodi_anchor import load_anchor
 
 
-DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+DEFAULT_CALIBRATION_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 DET_BC_TEMPLATE = '20250901_SSDC_BC_Band{detector}.fits'
 VALID_CHUNK_THRESH = 0.05
 

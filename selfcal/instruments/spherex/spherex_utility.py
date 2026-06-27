@@ -23,7 +23,7 @@ from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
 # Canonical on-host paths for the SPHEREx spectral-calibration products. These
 # are fallback defaults only: external users set $SELFCAL_SPHEREX_CALIB_DIR /
 # $SELFCAL_SPHEREX_CHANNEL_FILE or pass explicit paths (see selfcal.config).
-DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+DEFAULT_CALIBRATION_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 DEFAULT_CHANNEL_FILE = '/home/thomasli/spherex/spherex_channels.csv'
 
 

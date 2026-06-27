@@ -251,7 +251,7 @@ def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
     lvf_params = load_lvf_params(f'lvf_params_D{detector}.npy')
     det_BC, det_BW = load_calibration(
         band=detector,
-        calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration',
+        calibration_dir='/data3/SPHEREx/SpecCal_202509/ParameterFiles',
     )
     grid_chunk_map, _, _, _ = make_stripped_chunk_map(
         detector, num_subchannels=num_subchannels, num_channels=num_channels,

@@ -27,7 +27,7 @@ from .spherex_utility import (
 from .wavemap import wav_coadd
 
 # SPHEREx per-band spectral calibration (BC/BW maps) default location.
-SPHEREX_CALIB_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+SPHEREX_CALIB_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 
 # Named subchannel windows -> (inclusive-low, exclusive-high) subch index range.
 # Aromatic/Aliphatic are stable; the PAH-fit window VARIES per run (pahfit uses

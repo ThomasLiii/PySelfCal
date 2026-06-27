@@ -45,7 +45,7 @@ except ImportError as e:
         f"({e})")
 
 
-DEFAULT_CALIBRATION_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+DEFAULT_CALIBRATION_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 DET_BC_TEMPLATE = '20250901_SSDC_BC_Band{detector}.fits'
 # Repo-root-relative cache: <repo>/cache/zodi_anchor/metadata_D{detector}.h5.
 # Computed from this file's path so each worktree (selfcal/, selfcal-stable/)

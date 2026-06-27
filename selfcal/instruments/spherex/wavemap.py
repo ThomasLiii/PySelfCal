@@ -217,7 +217,7 @@ if __name__ == "__main__":
     max_workers = 40
     sigma = 3.0
 
-    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
+    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/data3/SPHEREx/SpecCal_202509/ParameterFiles')
 
     reproj_dir = '/mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/reprojected'
     reproj_list = sorted(glob.glob(reproj_dir + '/*.h5'))
