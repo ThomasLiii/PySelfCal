@@ -738,13 +738,13 @@ class Calibrator(Reprojector):
         """
         pb = self._poly_basis_for(m)
         if pb is not None:
-            from ..models.offset_basis import cheb_shape_basis
-            D = int(pb['degree']); ncol = int(pb['num_col'])
+            from ..models.offset_basis import eval_offset_basis, n_coef
+            ncol = int(pb['num_col']); ncf = n_coef(pb)
             num_chunks_real = int(self.chunk_maps[m].max()) + 1
             num_subch = num_chunks_real // ncol
-            coeffs = np.asarray(det_offset_m).reshape(-1, ncol, D)          # (nf, ncol, D)
-            B = cheb_shape_basis(np.arange(num_subch), D, pb['subch_lo'], pb['subch_hi'])  # (S, D)
-            offset = np.einsum('fcd,sd->fsc', coeffs, B).reshape(coeffs.shape[0], num_subch * ncol)
+            coeffs = np.asarray(det_offset_m).reshape(-1, ncol, ncf)        # (nf, ncol, ncf)
+            B = eval_offset_basis(np.arange(num_subch), pb)                 # (S, ncf)
+            offset = np.einsum('fck,sk->fsc', coeffs, B).reshape(coeffs.shape[0], num_subch * ncol)
             if frame_scalar is not None and len(frame_scalar) > 0:
                 offset = offset + frame_scalar[:, np.newaxis]
             return offset

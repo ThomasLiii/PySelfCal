@@ -98,9 +98,10 @@ class SystemLayout:
                 # chunk machinery: num_chunks := num_col*degree, one group/frame.
                 assert det_groups_list[m] is None and det_templates[m] is None, \
                     f"poly_basis[{m}] is incompatible with det_groups/det_templates"
+                from ..models.offset_basis import n_coef as _n_coef
                 ftg = np.arange(num_frames)
                 num_offset_groups_m = num_frames
-                num_chunks_m = int(pb['num_col']) * int(pb['degree'])
+                num_chunks_m = int(pb['num_col']) * _n_coef(pb)
                 tmpl = None
                 frame_to_group_list.append(ftg)
                 num_offset_groups_list.append(num_offset_groups_m)

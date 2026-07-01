@@ -13,7 +13,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, check_invalid
-from ..models.offset_basis import cheb_shape_basis
+from ..models.offset_basis import eval_offset_basis, n_coef
 
 
 def _prep_lsqr(task_params):
@@ -145,17 +145,17 @@ def _prep_lsqr(task_params):
                 # nnz into coeff columns a[frame, col, d], coefficient
                 # w * chunk_val * B_d(subch). "chunk" id for coeff (col,d) = col*D + d.
                 pb = poly_basis_list[m]
-                D = int(pb['degree']); ncol = int(pb['num_col'])
+                ncol = int(pb['num_col']); ncf = n_coef(pb)
                 subch = chunk_idx_m // ncol
                 col = chunk_idx_m % ncol
-                B = cheb_shape_basis(subch, D, pb['subch_lo'], pb['subch_hi'])  # (n, D)
+                B = eval_offset_basis(subch, pb)                                 # (n, ncf)
                 w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
-                base = col_bases[m] + (group_idx_list[m] * (ncol * D))
-                coeff_chunk = col * D                                            # + d below
-                for d in range(D):
+                base = col_bases[m] + (group_idx_list[m] * (ncol * ncf))
+                coeff_chunk = col * ncf                                          # + k below
+                for k in range(ncf):
                     O_rows_parts.append(sub_idx_m)
-                    O_cols_parts.append(base + coeff_chunk + d)
-                    O_data_parts.append(w_cv * B[:, d])
+                    O_cols_parts.append(base + coeff_chunk + k)
+                    O_data_parts.append(w_cv * B[:, k])
             else:
                 O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(col_bases[m]
