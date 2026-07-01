@@ -193,6 +193,15 @@ def run_tiled(cfg):
     ref_shape = tuple(t['ref_shape'])
     tiles = make_tile_grid(ref_shape, t['grid'][0], t['grid'][1],
                            overlap_px=t['overlap_px'], names=t['tile_names'])
+    # Optional partial run: build the full grid (so each tile's bbox is correct),
+    # then restrict the run to a subset of tile names. A partial run skips the
+    # stitch (a single tile is already a full cal-shaped h5 over its region).
+    only_tiles = t.get('only_tiles')
+    if only_tiles:
+        tiles = [tile for tile in tiles if tile.name in only_tiles]
+        if not tiles:
+            raise ValueError(f"only_tiles={only_tiles} matched no tile in {t['tile_names']}")
+        print(f"[tiled] only_tiles={only_tiles}: partial run, stitch skipped.", flush=True)
     print("[tiled] tiles:", flush=True)
     for tile in tiles:
         print(f"    {tile.name}: bbox={tile.bbox}", flush=True)
@@ -268,6 +277,11 @@ def run_tiled(cfg):
         return cal_path
 
     cal_paths = tiled.run(run_tile, sequential=True)
+    if only_tiles:
+        print(f"[tiled] partial run complete ({only_tiles}); per-tile cals: {cal_paths}. "
+              f"Stitch skipped — re-run without only_tiles to build + stitch all tiles.",
+              flush=True)
+        return
     stitched = os.path.join(selfcal_config.cal_dir,
                             f'cal_{frame_tag}_{job.name}{t["stitched_suffix"]}.h5')
     print(f"\n[tiled] stitching {len(cal_paths)} tile cals -> {stitched}", flush=True)

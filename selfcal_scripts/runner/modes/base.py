@@ -89,8 +89,11 @@ def _single_col_poly_block(cfg, inst, det_inputs, n_frames):
     adj = inst.column_adjacency(cm, ncol)
     poly_group = None
     if p.get('poly_weight') is not None:
-        pc, ps = inst.column_poly_chains(cm, ncol, degree=p.get('poly_degree', 1))
-        poly_group = [{'chains': pc, 'stencil': ps, 'weight': p['poly_weight']}]
+        deg = p.get('poly_degree', 1)
+        if ncol >= deg + 2:
+            pc, ps = inst.column_poly_chains(cm, ncol, degree=deg)
+            poly_group = [{'chains': pc, 'stencil': ps, 'weight': p['poly_weight']}]
+        # else: column poly needs >= degree+2 columns; vacuous at this NumCol -> skip.
     return OffsetModel([
         OffsetBlock(chunk_map=cm, adj_info=adj, reg_weight=p.get('reg_weight', 0.1),
                     poly_constraints=poly_group, mean_offset=np.zeros(n_frames)),

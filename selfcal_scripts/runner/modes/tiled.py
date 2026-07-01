@@ -20,15 +20,21 @@ class Tiled(PAHfit):
         p = cfg.params
         ncol = cfg.instrument_cfg['num_col']
         cm = det_inputs['det_chunk_map']
-        adj = inst.column_adjacency(cm, ncol)
-        pc, ps = inst.column_poly_chains(cm, ncol, degree=p.get('poly_degree', 1))
+        adj = inst.column_adjacency(cm, ncol)  # empty -> None at NumCol=1
+        col_deg = p.get('poly_degree', 1)
+        poly_groups = []
+        # Column poly-constraint needs >= degree+2 columns; vacuous (and would
+        # raise) at small NumCol -> skip it, keep the subchannel poly.
+        if ncol >= col_deg + 2:
+            pc, ps = inst.column_poly_chains(cm, ncol, degree=col_deg)
+            poly_groups.append({'chains': pc, 'stencil': ps, 'weight': p.get('poly_weight', 0.5)})
+        else:
+            print(f"[tiled] NumCol={ncol} < degree+2={col_deg + 2}: skipping the (vacuous) "
+                  f"column poly-constraint; subchannel poly only.")
         scn, sst = inst.subchannel_poly_chains(
             p['subch_tot'], ncol, p['subch_poly_degree'],
             p['subch_poly_lo'], p['subch_poly_hi'])
-        poly_groups = [
-            {'chains': pc, 'stencil': ps, 'weight': p.get('poly_weight', 0.5)},
-            {'chains': scn, 'stencil': sst, 'weight': p['subch_poly_weight']},
-        ]
+        poly_groups.append({'chains': scn, 'stencil': sst, 'weight': p['subch_poly_weight']})
         return OffsetModel([
             OffsetBlock(chunk_map=cm, adj_info=adj, reg_weight=p.get('reg_weight', 0.1),
                         poly_constraints=poly_groups, mean_offset=np.zeros(n_frames)),
