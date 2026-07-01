@@ -42,6 +42,7 @@ class SystemLayout:
     frame_to_group_list: list
     num_scalar_cols: int
     col_bases: list  # length K+1; col_bases[K] == scalar_col_start
+    poly_basis_list: list = None  # per-map hard-poly spec or None
 
     # Derived (filled in __post_init__).
     num_sky: int = field(init=False)
@@ -61,19 +62,27 @@ class SystemLayout:
 
     @classmethod
     def build(cls, ref_shape, chunk_maps, *, num_sky_blocks, num_frames,
-              det_groups_list=None, det_templates=None, use_per_frame_scalar=False):
+              det_groups_list=None, det_templates=None, use_per_frame_scalar=False,
+              poly_basis_list=None):
         """Compute the column layout from the setup inputs.
 
-        ``det_groups_list`` / ``det_templates`` may be ``None`` (default for
-        every map) or length-K lists. The result is independent of how the
-        caller spelled the defaults, so the parent process and the Calibrator
-        get identical layouts from equivalent inputs.
+        ``det_groups_list`` / ``det_templates`` / ``poly_basis_list`` may be
+        ``None`` (default for every map) or length-K lists. The result is
+        independent of how the caller spelled the defaults, so the parent
+        process and the Calibrator get identical layouts from equivalent inputs.
+
+        A map with ``poly_basis_list[m]`` set is a **hard polynomial-basis**
+        offset: its columns are the coefficients ``a[frame, col, d=1..D]``, so
+        the block reuses the chunk machinery with ``num_chunks := num_col * D``
+        and one group per frame (no det_groups / template).
         """
         K = len(chunk_maps)
         if det_groups_list is None:
             det_groups_list = [None] * K
         if det_templates is None:
             det_templates = [None] * K
+        if poly_basis_list is None:
+            poly_basis_list = [None] * K
 
         any_det_groups = any(g is not None for g in det_groups_list)
 
@@ -83,6 +92,21 @@ class SystemLayout:
         det_template_arr_list = []
         for m in range(K):
             cm = chunk_maps[m]
+            pb = poly_basis_list[m]
+            if pb is not None:
+                # Hard poly-basis: columns are a[frame, col, d] coeffs. Reuse the
+                # chunk machinery: num_chunks := num_col*degree, one group/frame.
+                assert det_groups_list[m] is None and det_templates[m] is None, \
+                    f"poly_basis[{m}] is incompatible with det_groups/det_templates"
+                ftg = np.arange(num_frames)
+                num_offset_groups_m = num_frames
+                num_chunks_m = int(pb['num_col']) * int(pb['degree'])
+                tmpl = None
+                frame_to_group_list.append(ftg)
+                num_offset_groups_list.append(num_offset_groups_m)
+                num_chunks_list.append(num_chunks_m)
+                det_template_arr_list.append(tmpl)
+                continue
             num_chunks_m = int(cm.max()) + 1
             if det_groups_list[m] is not None:
                 det_groups_arr = np.asarray(det_groups_list[m])
@@ -128,6 +152,7 @@ class SystemLayout:
             frame_to_group_list=frame_to_group_list,
             num_scalar_cols=num_scalar_cols,
             col_bases=col_bases,
+            poly_basis_list=list(poly_basis_list),
         )
 
     # --- column-slice helpers (used by parsing; safe convenience accessors) ---

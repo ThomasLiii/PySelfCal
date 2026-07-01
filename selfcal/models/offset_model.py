@@ -60,6 +60,16 @@ class OffsetBlock:
     mean_offset : object or None
         Per-frame mean-anchor target for this block (``mean_offsets_list[m]``),
         typically ``np.zeros(num_frames)``.
+    poly_basis : dict or None
+        Hard polynomial-basis offset (replaces the soft ``poly_constraints``
+        subchannel penalty). When set, this block does NOT solve a free offset
+        per chunk; instead the per-frame offset IS a degree-D Chebyshev
+        polynomial in subchannel, per column, solved for its coefficients
+        ``a[frame, col, d]`` (d=1..D; the per-frame scalar owns the DC). Dict
+        keys: ``degree`` (int D), ``num_col`` (int), ``subch_lo``/``subch_hi``
+        (window). When set, ``adj_info``/``reg_weight``/``poly_constraints`` for
+        this block are ignored (the polynomial is exact, no weight knob). See
+        :mod:`selfcal.models.offset_basis`.
     """
 
     chunk_map: np.ndarray
@@ -69,6 +79,7 @@ class OffsetBlock:
     adj_info: object = None
     poly_constraints: object = None
     mean_offset: object = None
+    poly_basis: object = None
 
 
 @dataclass(frozen=True)
@@ -110,5 +121,6 @@ class OffsetModel:
             'adj_infos': [b.adj_info for b in self.blocks],
             'poly_constraints_list': [b.poly_constraints for b in self.blocks],
             'mean_offsets_list': [b.mean_offset for b in self.blocks],
+            'poly_basis_list': [b.poly_basis for b in self.blocks],
             'use_per_frame_scalar': self.use_per_frame_scalar,
         }

@@ -13,6 +13,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, check_invalid
+from ..models.offset_basis import cheb_shape_basis
 
 
 def _prep_lsqr(task_params):
@@ -30,6 +31,7 @@ def _prep_lsqr(task_params):
     offset_regularization = task_params['offset_regularization']
     adj_info_list = task_params['adj_info_list']
     poly_constraint_list = task_params['poly_constraint_list']
+    poly_basis_list = task_params.get('poly_basis_list') or [None] * len(task_params['chunk_maps'])
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
     scalar_col_start = task_params['scalar_col_start']
@@ -131,13 +133,31 @@ def _prep_lsqr(task_params):
             chunk_idx_m = sliced_m.row[nz_m]
             sub_idx_m = sliced_m.col[nz_m]
             chunk_vals_m = sliced_m.data[nz_m]
-            O_rows_parts.append(sub_idx_m)
             if det_template_list[m] is not None:
                 # Template mode: one alpha column per frame for this map
+                O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(np.full(len(chunk_idx_m), col_bases[m] + index, dtype=np.int64))
                 O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m
                                     * det_template_list[m][group_idx_list[m], chunk_idx_m])
+            elif poly_basis_list[m] is not None:
+                # Hard poly-basis: the offset is a degree-D Chebyshev polynomial in
+                # subchannel, per column. Each (chunk-contrib, obs) entry emits D
+                # nnz into coeff columns a[frame, col, d], coefficient
+                # w * chunk_val * B_d(subch). "chunk" id for coeff (col,d) = col*D + d.
+                pb = poly_basis_list[m]
+                D = int(pb['degree']); ncol = int(pb['num_col'])
+                subch = chunk_idx_m // ncol
+                col = chunk_idx_m % ncol
+                B = cheb_shape_basis(subch, D, pb['subch_lo'], pb['subch_hi'])  # (n, D)
+                w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
+                base = col_bases[m] + (group_idx_list[m] * (ncol * D))
+                coeff_chunk = col * D                                            # + d below
+                for d in range(D):
+                    O_rows_parts.append(sub_idx_m)
+                    O_cols_parts.append(base + coeff_chunk + d)
+                    O_data_parts.append(w_cv * B[:, d])
             else:
+                O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(col_bases[m]
                                     + (group_idx_list[m] * num_chunks_list[m])
                                     + chunk_idx_m)
@@ -156,6 +176,10 @@ def _prep_lsqr(task_params):
             reg_row_offset = num_valid_pixels
             for m in range(K):
                 if det_template_list[m] is not None:
+                    continue
+                if poly_basis_list[m] is not None:
+                    # Hard poly-basis carries no per-chunk adjacency/penalty rows —
+                    # the polynomial is exact (no weight knob).
                     continue
                 offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
 

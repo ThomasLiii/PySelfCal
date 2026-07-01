@@ -717,12 +717,37 @@ class Calibrator(Reprojector):
         """Whether the solution vector includes a per-frame scalar bias block."""
         return self.num_scalar_cols > 0
 
+    def _poly_basis_for(self, m):
+        """Return the hard-poly-basis spec for map ``m`` if this solve used one
+        (only set on the setup/save side; ``None`` on the load/analysis side,
+        where the saved cal already holds per-chunk offsets)."""
+        L = getattr(self, 'layout', None)
+        pbl = getattr(L, 'poly_basis_list', None) if L is not None else None
+        return pbl[m] if pbl is not None else None
+
     def _expand_offset(self, m, det_offset_m, frame_scalar=None):
         """Expand map ``m``'s grouped/template offsets to per-frame
         ``(num_frames, num_chunks_m)``. ``frame_scalar`` is added when
         provided (legacy K=1 in-memory consumers); otherwise it is left out
         and saved separately at the top of the cal file.
+
+        Hard poly-basis maps: ``det_offset_m`` holds the per-frame Chebyshev
+        coefficients ``a[frame, col*D + d]`` — reconstruct the per-chunk offset
+        ``Σ_d a[frame, col, d]·B_d(subch)`` (chunk = subch*num_col + col) so the
+        saved cal + all downstream apply/analysis stay in the standard schema.
         """
+        pb = self._poly_basis_for(m)
+        if pb is not None:
+            from ..models.offset_basis import cheb_shape_basis
+            D = int(pb['degree']); ncol = int(pb['num_col'])
+            num_chunks_real = int(self.chunk_maps[m].max()) + 1
+            num_subch = num_chunks_real // ncol
+            coeffs = np.asarray(det_offset_m).reshape(-1, ncol, D)          # (nf, ncol, D)
+            B = cheb_shape_basis(np.arange(num_subch), D, pb['subch_lo'], pb['subch_hi'])  # (S, D)
+            offset = np.einsum('fcd,sd->fsc', coeffs, B).reshape(coeffs.shape[0], num_subch * ncol)
+            if frame_scalar is not None and len(frame_scalar) > 0:
+                offset = offset + frame_scalar[:, np.newaxis]
+            return offset
         ftg = self.frame_to_groups[m]
         if self.det_templates[m] is not None:
             alpha = det_offset_m.squeeze()  # (num_frames,)
@@ -786,9 +811,12 @@ class Calibrator(Reprojector):
         for m in range(K):
             num_chunks_real = int(self.chunk_maps[m].max()) + 1
             offset_m = self._expand_offset(m, det_offsets[m])
-            if self.det_templates[m] is not None:
-                # Template mode coverage in the layout block is shape (num_frames, 1);
-                # expand to (num_frames, num_chunks_real) trivially.
+            if self.det_templates[m] is not None or self._poly_basis_for(m) is not None:
+                # Template mode has one alpha/frame; hard poly-basis has coeff
+                # columns (num_col*D), not per-chunk — the layout coverage block
+                # doesn't match num_chunks_real. Use a trivial per-chunk coverage
+                # here (v1: the poly offset is a smooth function of subchannel, so
+                # per-chunk coverage is a refinement, not load-bearing for the fit).
                 cov_m = np.ones((num_frames, num_chunks_real), dtype=np.int32)
                 frac_m = np.ones((num_frames, num_chunks_real), dtype=np.float32)
             else:

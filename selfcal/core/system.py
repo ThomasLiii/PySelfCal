@@ -26,6 +26,7 @@ def setup_lsqr(file_list, ref_shape,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weights=None, adj_infos=None, poly_constraints_list=None,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
+               poly_basis_list=None,
                use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
@@ -111,6 +112,7 @@ def setup_lsqr(file_list, ref_shape,
     mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
+    poly_basis_list = _default(poly_basis_list, None)
 
     # Normalize and validate poly-constraint groups: each entry is None or a
     # non-empty list of dicts; each dict has matching chains.shape[1] == len(stencil).
@@ -149,7 +151,8 @@ def setup_lsqr(file_list, ref_shape,
                       ('poly_constraints_list', poly_constraints_list),
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
-                      ('det_templates', det_templates)):
+                      ('det_templates', det_templates),
+                      ('poly_basis_list', poly_basis_list)):
         assert len(arr) == K, f"{name} must have length {K} (got {len(arr)})"
 
     ref_h, ref_w = ref_shape
@@ -208,7 +211,7 @@ def setup_lsqr(file_list, ref_shape,
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar)
+        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
@@ -241,6 +244,7 @@ def setup_lsqr(file_list, ref_shape,
         'reg_weight_list': reg_weights,
         'adj_info_list': adj_infos,
         'poly_constraint_list': poly_constraints_list,
+        'poly_basis_list': poly_basis_list,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
@@ -439,6 +443,9 @@ def setup_lsqr(file_list, ref_shape,
             continue
         if det_template_arr_list[m] is not None:
             print(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
+            continue
+        if poly_basis_list[m] is not None:
+            print(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
             continue
         print(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
         constraint_blocks.append(mean_offset_block(
