@@ -875,11 +875,12 @@ class Calibrator(Reprojector):
             # pixels that blow up under LSQR semi-convergence. Mask at read
             # time via selfcal.core.lsqr.apply_line_separability_mask.
             if (getattr(self, 'pixel_cross', None) is not None
-                    and self.num_sky_blocks == 2 and self.pixel_fisher is not None):
+                    and self.num_sky_blocks >= 2 and self.pixel_fisher is not None):
                 sep = parse_line_separability(
-                    self.pixel_cross, self.pixel_fisher, self.ref_shape)
+                    self.pixel_cross, self.pixel_fisher, self.ref_shape,
+                    num_sky_blocks=self.num_sky_blocks)
                 f.create_group('sky_separability').create_dataset(
-                    sky_names[1], data=sep.astype('float32'), compression='gzip')
+                    sky_names[-1], data=sep.astype('float32'), compression='gzip')
             # --- Back-compat hard-link aliases (v2 readers resolve transparently):
             # skymap -> continuum; skymap_line -> the single spectral block when
             # there is exactly one. h5py resolves these on read, so
@@ -890,8 +891,11 @@ class Calibrator(Reprojector):
             if cont in skyfish_grp:
                 f['skymap_fisher'] = skyfish_grp[cont]
             extra_names = sky_names[1:]
-            if len(extra_names) == 1:
-                ln = extra_names[0]
+            if extra_names:
+                # Alias the LAST spectral block (the line; earlier extras are
+                # nuisance shapes like a continuum slope). Single-extra cals
+                # keep the exact v2 aliasing behavior.
+                ln = extra_names[-1]
                 f['skymap_line'] = sky_grp[ln]
                 f['skymap_line_coverage'] = skycov_grp[ln]
                 if ln in skyfish_grp:

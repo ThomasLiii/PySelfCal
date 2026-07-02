@@ -345,14 +345,21 @@ def setup_lsqr(file_list, ref_shape,
     # squared-data temp at no-srcmask region-10k scale).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
-    # Per-pixel cont x line cross moment Σ a0·a1 (a0 = w, a1 = w·G per data
-    # row). Together with pixel_fisher's per-block diagonals (Σ w², Σ w²G²)
-    # this gives the per-pixel 2x2 Schur complement — the true cont/line
-    # SEPARABILITY I_P = Σw²G² − (Σw²G)²/Σw² — which line-Fisher (a magnitude,
-    # not a diversity, metric) cannot measure. Accumulated for 2-block sky
-    # models only; computed batch-streaming from the A triplets, so it never
-    # touches the workers or the A/b bytes.
-    pixel_cross = np.zeros(num_sky, dtype=np.float64) if num_sky_blocks == 2 else None
+    # Per-pixel sky-block cross moments Σ a_i·a_j per pair (i, j), i < j
+    # (a_0 = w for the continuum, a_j = w·coeff_j for spectral blocks).
+    # Together with pixel_fisher's per-block diagonals these give the per-pixel
+    # J x J normal-matrix block, whose LAST-block Schur complement is the true
+    # line SEPARABILITY I_P — which line-Fisher (a magnitude, not a diversity,
+    # metric) cannot measure. Accumulated for multi-block sky models; computed
+    # batch-streaming from the A triplets, so it never touches the workers or
+    # the A/b bytes. Returned as a bare (num_sky,) array for the 2-block case
+    # (pair (0,1)), a {(i,j): array} dict for J >= 3.
+    if num_sky_blocks >= 2:
+        _cross_pairs = [(i, j) for i in range(num_sky_blocks)
+                        for j in range(i + 1, num_sky_blocks)]
+        pixel_cross = {p: np.zeros(num_sky, dtype=np.float64) for p in _cross_pairs}
+    else:
+        pixel_cross = None
 
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
@@ -403,19 +410,26 @@ def setup_lsqr(file_list, ref_shape,
                     minlength=total_cols,
                 )
                 if pixel_cross is not None:
-                    # Pair each data row's cont entry (col < num_sky, value w)
-                    # with its line entry (num_sky <= col < 2*num_sky, value
-                    # w·G) through the shared local row id -> Σ w²G per pixel.
-                    _m_c = _b_cols < num_sky
-                    _m_l = (_b_cols >= num_sky) & (_b_cols < 2 * num_sky)
-                    _w_row = np.zeros(result['num_rows'], dtype=np.float64)
-                    _w_row[_b_rows[_m_c]] = _b_data[_m_c]
-                    pixel_cross += np.bincount(
-                        _b_cols[_m_l] - num_sky,
-                        weights=_b_data[_m_l].astype(np.float64)
-                                * _w_row[_b_rows[_m_l]],
-                        minlength=num_sky,
-                    )
+                    # Pair each data row's block-i entry with its block-j entry
+                    # through the shared local row id -> Σ a_i·a_j per pixel.
+                    # Every data row has exactly one entry per sky block (the
+                    # J-interleave in assembly), so a per-row scatter of block
+                    # i's values indexes cleanly from block j's entries.
+                    _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
+                              for jj in range(num_sky_blocks)]
+                    _rowvals = []
+                    for jj in range(num_sky_blocks):
+                        _v = np.zeros(result['num_rows'], dtype=np.float64)
+                        _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
+                        _rowvals.append(_v)
+                    for (ii, jj) in _cross_pairs:
+                        _m_j = _masks[jj]
+                        pixel_cross[(ii, jj)] += np.bincount(
+                            _b_cols[_m_j] - jj * num_sky,
+                            weights=_b_data[_m_j].astype(np.float64)
+                                    * _rowvals[ii][_b_rows[_m_j]],
+                            minlength=num_sky,
+                        )
                 # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
                 # add the global row offset in Phase 3 (cumulative across
                 # batches). Keeping this batch-local is what lets Phase 4
@@ -493,29 +507,37 @@ def setup_lsqr(file_list, ref_shape,
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 
-        # --- LINE-AMPLITUDE DAMPING (spectral, block 1) ---
-        if num_sky_blocks == 2 and damp_weight_line is not None and damp_weight_line > 0:
-            print(f"Applying Coverage-Weighted Damping (line, damp={damp_weight_line})...")
-            blk = sky_damping_block(1, damp_weight_line, line_pixel_counts, num_sky)
+        # --- SPECTRAL-BLOCK DAMPING (blocks 1..J-1) ---
+        # Each spectral component is damped by its own ``damp_weight`` when the
+        # component sets one, else by the shared ``damp_weight_line`` (the
+        # legacy 2-block behavior, byte-identical for J == 2).
+        for j in range(1, num_sky_blocks):
+            comp = sky_model.components[j]
+            w_j = getattr(comp, 'damp_weight', None)
+            if w_j is None:
+                w_j = damp_weight_line
+            if w_j is None or w_j <= 0:
+                continue
+            print(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
+            blk = sky_damping_block(
+                j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
 
-    # --- Separability water-filling line damping (spectral, block 1) ---
-    # Per-pixel: lam_P² = max(0, τ² − I_P) with I_P the cont/line Schur
-    # complement, so effective information ≥ τ² everywhere. Diversity-rich
-    # pixels get lam = 0 (no bias); the small-σ tail that drives LSQR
-    # semi-convergence blowup is lifted to σ ≥ τ. τ² = ``line_sep_floor``
-    # (absolute, information units) or the ``line_sep_floor_quantile``
-    # quantile of covered pixels' I_P.
+    # --- Separability water-filling line damping (last spectral block) ---
+    # Per-pixel: lam_P² = max(0, τ² − I_P) with I_P the line block's Schur
+    # complement against ALL other sky blocks, so effective information ≥ τ²
+    # everywhere. Diversity-rich pixels get lam = 0 (no bias); the small-σ
+    # tail that drives LSQR semi-convergence blowup is lifted to σ ≥ τ.
+    # τ² = ``line_sep_floor`` (absolute, information units) or the
+    # ``line_sep_floor_quantile`` quantile of covered pixels' I_P.
     if (pixel_cross is not None
             and ((line_sep_floor is not None and line_sep_floor > 0)
                  or line_sep_floor_quantile is not None)):
-        fisher_cont = pixel_fisher[:num_sky]
-        fisher_line = pixel_fisher[num_sky:2 * num_sky]
-        I_P = fisher_line - np.where(
-            fisher_cont > 0, pixel_cross ** 2 / np.maximum(fisher_cont, 1e-300), 0.0)
-        I_P = np.maximum(I_P, 0.0)
-        covered = line_pixel_counts > 0
+        I_P = _separability_from_moments(
+            pixel_fisher, pixel_cross, num_sky, num_sky_blocks)
+        covered = pixel_counts[(num_sky_blocks - 1) * num_sky:
+                               num_sky_blocks * num_sky] > 0
         if line_sep_floor is not None and line_sep_floor > 0:
             tau2 = float(line_sep_floor)
         else:
@@ -525,7 +547,7 @@ def setup_lsqr(file_list, ref_shape,
         n_lift = int((lam > 0).sum())
         print(f"Applying separability water-filling line damping: tau2={tau2:.6g} "
               f"-> lifting {n_lift:,}/{int(covered.sum()):,} covered pixels", flush=True)
-        blk = line_separability_block(1, lam, num_sky)
+        blk = line_separability_block(num_sky_blocks - 1, lam, num_sky)
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 
@@ -780,6 +802,10 @@ def setup_lsqr(file_list, ref_shape,
     full_A.sort_indices()
     full_A.sum_duplicates()
 
+    # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
+    # compatibility; J >= 3 returns the {(i, j): array} dict.
+    if pixel_cross is not None and num_sky_blocks == 2:
+        pixel_cross = pixel_cross[(0, 1)]
     if top2_active:
         return full_A, full_b, pixel_counts, pixel_fisher, active_mask, pixel_cross
     return full_A, full_b, pixel_counts, pixel_fisher, pixel_cross
@@ -866,24 +892,56 @@ def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
     return sky_fishers[0], None
 
 
-def parse_line_separability(pixel_cross, pixel_fisher, ref_shape):
-    """Per-pixel cont/line separability map ``I_P = Σw²G² − (Σw²G)²/Σw²``
-    (the Schur complement of the per-pixel 2x2 normal-matrix block).
+def _separability_from_moments(pixel_fisher, pixel_cross, num_sky, num_sky_blocks):
+    """Last-sky-block separability ``I_P`` from the streamed per-pixel moments.
 
-    ``pixel_cross`` is the length-num_sky cross moment from ``setup_lsqr``
-    (2-block sky models); ``pixel_fisher`` the full accumulator (cont diag in
-    block 0, line diag in block 1). Unlike the line Fisher (Σw²G², a magnitude
-    metric), I_P measures wavelength DIVERSITY: a pixel observed many times at
-    a single BC has large Fisher but I_P = 0 — exactly the degenerate pixels
-    that blow up under LSQR semi-convergence. Mask on I_P, not Fisher.
+    ``I_P`` is the Schur complement of the last block against all other sky
+    blocks in the per-pixel J x J normal-matrix block. J == 2 gives the closed
+    form ``Σw²G² − (Σw²G)²/Σw²``; J == 3 uses the 2x2 nuisance inverse (cont +
+    slope) with a tiny ridge for pixels where the nuisance pair is collinear
+    (e.g. single-BC pixels: t constant → cont/slope degenerate — the ridge
+    slightly *underestimates* I there, i.e. errs toward more damping).
+    ``pixel_cross`` may be the bare pair-(0,1) array (J == 2) or the pair dict.
+    """
+    L = num_sky_blocks - 1
+    F = [pixel_fisher[j * num_sky:(j + 1) * num_sky] for j in range(num_sky_blocks)]
+    if not isinstance(pixel_cross, dict):
+        pixel_cross = {(0, 1): np.asarray(pixel_cross)}
+    if num_sky_blocks == 2:
+        c = pixel_cross[(0, 1)]
+        I_P = F[1] - np.where(F[0] > 0, c ** 2 / np.maximum(F[0], 1e-300), 0.0)
+        return np.maximum(I_P, 0.0)
+    if num_sky_blocks == 3:
+        c01 = pixel_cross[(0, 1)]
+        s0, s1 = pixel_cross[(0, 2)], pixel_cross[(1, 2)]
+        # Diagonal ridge (not a det ridge): keeps the rank-deficient case
+        # (e.g. single-BC pixels, where cont/slope are exactly collinear)
+        # numerically stable — det >= r*(F0+F1) so the 0/0 cancellation never
+        # happens, and the O(r) bias shrinks I (more damping = safe direction).
+        r = 1e-8 * (F[0] + F[1] + 1.0)
+        F0r, F1r = F[0] + r, F[1] + r
+        det = np.maximum(F0r * F1r - c01 ** 2, 1e-300)
+        # s^T M'^{-1} s with M' = [[F0+r, c01], [c01, F1+r]]
+        quad = (F1r * s0 ** 2 - 2.0 * c01 * s0 * s1 + F0r * s1 ** 2) / det
+        return np.maximum(F[2] - quad, 0.0)
+    raise NotImplementedError(
+        f"separability implemented for 2 or 3 sky blocks, got {num_sky_blocks}")
+
+
+def parse_line_separability(pixel_cross, pixel_fisher, ref_shape, num_sky_blocks=2):
+    """Per-pixel line separability map ``I_P`` (see
+    :func:`_separability_from_moments`) reshaped to ``ref_shape``.
+
+    ``pixel_cross`` is the cross-moment return from ``setup_lsqr`` (bare array
+    for 2-block models, pair dict for 3); ``pixel_fisher`` the full accumulator.
+    Unlike the line Fisher (Σw²G², a magnitude metric), I_P measures wavelength
+    DIVERSITY: a pixel observed many times at a single BC has large Fisher but
+    I_P = 0 — exactly the degenerate pixels that blow up under LSQR
+    semi-convergence. Mask on I_P, not Fisher.
     """
     num_sky = ref_shape[0] * ref_shape[1]
-    fisher_cont = pixel_fisher[:num_sky]
-    fisher_line = pixel_fisher[num_sky:2 * num_sky]
-    I_P = fisher_line - np.where(
-        fisher_cont > 0,
-        np.asarray(pixel_cross) ** 2 / np.maximum(fisher_cont, 1e-300), 0.0)
-    return np.maximum(I_P, 0.0).reshape(ref_shape)
+    return _separability_from_moments(
+        pixel_fisher, pixel_cross, num_sky, num_sky_blocks).reshape(ref_shape)
 
 
 def apply_line_separability_mask(sky_line, separability, threshold):

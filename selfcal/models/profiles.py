@@ -94,6 +94,27 @@ class GaussianProfile(SpectralProfile):
 
 
 @dataclass(frozen=True)
+class LinearProfile(SpectralProfile):
+    """Normalized linear ramp ``t = (λ − center_um) / halfwidth_um``.
+
+    The coefficient of a spectrally-SLOPED continuum block: sky(P, λ) =
+    cont0[P] + cont_slope[P]·t(λ). ``t`` spans [-1, 1] over the fit window when
+    ``halfwidth_um`` is the window half-width, so cont_slope is in the same
+    units as cont0 (amplitude at the window edge). Not clipped — mildly
+    extrapolates outside the window.
+    """
+
+    center_um: float
+    halfwidth_um: float
+
+    aux_requirements: tuple = ()
+
+    def evaluate(self, lam_um, aux):
+        return ((np.asarray(lam_um, dtype=np.float64) - self.center_um)
+                / self.halfwidth_um).astype(np.float32)
+
+
+@dataclass(frozen=True)
 class TemplateProfile(SpectralProfile):
     """Arbitrary numerical template: linear interpolation of tabulated
     ``(wave_um, values)``.
