@@ -20,7 +20,8 @@ from ..core import coadd
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file
 from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
-                         parse_pixel_fisher_sky, apply_line_fisher_mask)
+                         parse_pixel_fisher_sky, apply_line_fisher_mask,
+                         parse_line_separability)
 from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
@@ -453,6 +454,9 @@ class Calibrator(Reprojector):
         self.x = None
         self.pixel_counts = None
         self.pixel_fisher = None
+        # Per-pixel cont x line cross moment (2-block sky models). Enables the
+        # separability map I_P = Σw²G² − (Σw²G)²/Σw² saved by save_calibration.
+        self.pixel_cross = None
         # When setup_lsqr runs the Top 2 gated path (no template-mode map),
         # it returns a CSR matrix that has already had its zero columns
         # eliminated. ``active_mask`` (length num_cols_full) marks which
@@ -485,7 +489,7 @@ class Calibrator(Reprojector):
                    outlier_thresh=3.0, ignore_list=[], batch_size=10,
                    offset_regularization=False,
                    reg_weights=None, adj_infos=None, poly_constraints_list=None,
-                   mean_offsets_list=None,
+                   mean_offsets_list=None, poly_basis_list=None,
                    det_groups_list=None, det_templates=None,
                    use_per_frame_scalar=False,
                    postprocess_func=None, preprocess_func=None,
@@ -493,6 +497,7 @@ class Calibrator(Reprojector):
                    det_aux=None,
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
+                   line_sep_floor=None, line_sep_floor_quantile=None,
                    offset_model=None, sky_model=None,
                    top2_compaction_enabled=True):
         """Build the LSQR system for K chunk maps.
@@ -533,6 +538,7 @@ class Calibrator(Reprojector):
             adj_infos = om['adj_infos']
             poly_constraints_list = om['poly_constraints_list']
             mean_offsets_list = om['mean_offsets_list']
+            poly_basis_list = om['poly_basis_list']
             use_per_frame_scalar = om['use_per_frame_scalar']
 
         assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
@@ -580,6 +586,7 @@ class Calibrator(Reprojector):
                 reg_weights=reg_weights, adj_infos=adj_infos,
                 poly_constraints_list=poly_constraints_list,
                 mean_offsets_list=mean_offsets_list,
+                poly_basis_list=poly_basis_list,
                 det_groups_list=det_groups_list,
                 det_templates=det_templates,
                 use_per_frame_scalar=use_per_frame_scalar,
@@ -588,21 +595,27 @@ class Calibrator(Reprojector):
                 damp_offset=damp_offset, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
+                line_sep_floor=line_sep_floor,
+                line_sep_floor_quantile=line_sep_floor_quantile,
                 sky_model=self.sky_model,
                 top2_compaction_enabled=top2_compaction_enabled)
-            # setup_lsqr returns a 4-tuple in legacy / template-mode runs and
-            # a 5-tuple when the Top 2 inline column compaction fires.
+            # setup_lsqr returns a 5-tuple in legacy / template-mode runs and
+            # a 6-tuple when the Top 2 inline column compaction fires. The
+            # last element is always pixel_cross (per-pixel cont x line cross
+            # moment; None for non-2-block sky models).
             if _setup_result is None or _setup_result[0] is None:
                 self.A, self.b = None, None
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
-            elif len(_setup_result) == 5:
+                self.pixel_cross = None
+            elif len(_setup_result) == 6:
                 (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher, self.active_mask) = _setup_result
+                 self.pixel_fisher, self.active_mask,
+                 self.pixel_cross) = _setup_result
                 self.num_cols_full = int(self.active_mask.size)
             else:
                 (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher) = _setup_result
+                 self.pixel_fisher, self.pixel_cross) = _setup_result
                 self.active_mask = None
                 self.num_cols_full = None
 
@@ -617,7 +630,8 @@ class Calibrator(Reprojector):
         self.layout = SystemLayout.build(
             self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
             num_frames=num_frames, det_groups_list=det_groups_list,
-            det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar)
+            det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar,
+            poly_basis_list=poly_basis_list)
         self.chunk_maps = chunk_maps
         self.frame_to_groups = self.layout.frame_to_group_list
         self.num_offset_groups_list = self.layout.num_offset_groups_list
@@ -739,12 +753,13 @@ class Calibrator(Reprojector):
         pb = self._poly_basis_for(m)
         if pb is not None:
             from ..models.offset_basis import eval_offset_basis, n_coef
-            ncol = int(pb['num_col']); ncf = n_coef(pb)
-            num_chunks_real = int(self.chunk_maps[m].max()) + 1
-            num_subch = num_chunks_real // ncol
-            coeffs = np.asarray(det_offset_m).reshape(-1, ncol, ncf)        # (nf, ncol, ncf)
-            B = eval_offset_basis(np.arange(num_subch), pb)                 # (S, ncf)
-            offset = np.einsum('fck,sk->fsc', coeffs, B).reshape(coeffs.shape[0], num_subch * ncol)
+            ng = int(pb['num_groups']); ncf = n_coef(pb)
+            coeffs = np.asarray(det_offset_m).reshape(-1, ng, ncf)         # (nf, num_groups, ncf)
+            chunk_group = np.asarray(pb['chunk_group'])                    # (num_chunks,)
+            B = eval_offset_basis(np.asarray(pb['chunk_coord']), pb)       # (num_chunks, ncf)
+            # offset[frame, chunk] = Σ_k coeffs[frame, group(chunk), k] · B[chunk, k]
+            sel = coeffs[:, chunk_group, :]                                # (nf, num_chunks, ncf)
+            offset = np.einsum('fck,ck->fc', sel, B)                       # (nf, num_chunks)
             if frame_scalar is not None and len(frame_scalar) > 0:
                 offset = offset + frame_scalar[:, np.newaxis]
             return offset
@@ -788,7 +803,8 @@ class Calibrator(Reprojector):
                 pixel_counts=self.pixel_counts, ref_shape=self.ref_shape,
                 num_offset_groups_list=self.num_offset_groups_list,
                 chunk_maps=self.chunk_maps,
-                num_sky_blocks=self.num_sky_blocks))
+                num_sky_blocks=self.num_sky_blocks,
+                num_chunks_list=self.num_chunks_list))
 
         if self.pixel_fisher is not None:
             sky_fishers = parse_pixel_fisher_sky(
@@ -852,6 +868,18 @@ class Calibrator(Reprojector):
                 if sky_fishers[j] is not None:
                     skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
                                                compression='gzip')
+            # Per-pixel cont/line SEPARABILITY I_P = Σw²G² − (Σw²G)²/Σw² for
+            # 2-block spectral cals. Unlike the line Fisher (a magnitude
+            # metric), I_P measures wavelength diversity — the quantity that
+            # bounds per-pixel line variance and identifies the degenerate
+            # pixels that blow up under LSQR semi-convergence. Mask at read
+            # time via selfcal.core.lsqr.apply_line_separability_mask.
+            if (getattr(self, 'pixel_cross', None) is not None
+                    and self.num_sky_blocks == 2 and self.pixel_fisher is not None):
+                sep = parse_line_separability(
+                    self.pixel_cross, self.pixel_fisher, self.ref_shape)
+                f.create_group('sky_separability').create_dataset(
+                    sky_names[1], data=sep.astype('float32'), compression='gzip')
             # --- Back-compat hard-link aliases (v2 readers resolve transparently):
             # skymap -> continuum; skymap_line -> the single spectral block when
             # there is exactly one. h5py resolves these on read, so

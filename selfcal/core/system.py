@@ -16,7 +16,7 @@ from scipy.sparse import coo_matrix, csr_matrix
 from .layout import SystemLayout
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
-                                  offset_damping_block)
+                                  offset_damping_block, line_separability_block)
 from .assembly import _prep_lsqr_batch_worker
 
 
@@ -33,6 +33,7 @@ def setup_lsqr(file_list, ref_shape,
                det_aux=None,
                spectral_fit=False, line_center=None, line_sigma=None,
                damp_weight_line=None,
+               line_sep_floor=None, line_sep_floor_quantile=None,
                sky_model=None,
                top2_compaction_enabled=True):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
@@ -84,6 +85,17 @@ def setup_lsqr(file_list, ref_shape,
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
+    line_sep_floor, line_sep_floor_quantile : float, optional
+        Separability "water-filling" line damping (2-block sky models only).
+        Per-pixel Tikhonov rows lift the cont/line separability
+        ``I_P = Σw²G² − (Σw²G)²/Σw²`` up to a floor ``τ²``:
+        ``lam_P = sqrt(max(0, τ² − I_P))``. ``line_sep_floor`` gives τ²
+        directly (information units); ``line_sep_floor_quantile`` sets τ² to
+        that quantile of the covered pixels' I_P. Diversity-rich pixels get
+        zero damping (no bias); the small-σ tail that drives the LSQR
+        semi-convergence blowup is lifted to σ ≥ τ, making the solve stable
+        under extra iterations. Both None (default) disables the block —
+        byte-identical to the historical system.
     """
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
@@ -333,6 +345,14 @@ def setup_lsqr(file_list, ref_shape,
     # squared-data temp at no-srcmask region-10k scale).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
+    # Per-pixel cont x line cross moment Σ a0·a1 (a0 = w, a1 = w·G per data
+    # row). Together with pixel_fisher's per-block diagonals (Σ w², Σ w²G²)
+    # this gives the per-pixel 2x2 Schur complement — the true cont/line
+    # SEPARABILITY I_P = Σw²G² − (Σw²G)²/Σw² — which line-Fisher (a magnitude,
+    # not a diversity, metric) cannot measure. Accumulated for 2-block sky
+    # models only; computed batch-streaming from the A triplets, so it never
+    # touches the workers or the A/b bytes.
+    pixel_cross = np.zeros(num_sky, dtype=np.float64) if num_sky_blocks == 2 else None
 
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
@@ -382,6 +402,20 @@ def setup_lsqr(file_list, ref_shape,
                     weights=_b_data.astype(np.float64) ** 2,
                     minlength=total_cols,
                 )
+                if pixel_cross is not None:
+                    # Pair each data row's cont entry (col < num_sky, value w)
+                    # with its line entry (num_sky <= col < 2*num_sky, value
+                    # w·G) through the shared local row id -> Σ w²G per pixel.
+                    _m_c = _b_cols < num_sky
+                    _m_l = (_b_cols >= num_sky) & (_b_cols < 2 * num_sky)
+                    _w_row = np.zeros(result['num_rows'], dtype=np.float64)
+                    _w_row[_b_rows[_m_c]] = _b_data[_m_c]
+                    pixel_cross += np.bincount(
+                        _b_cols[_m_l] - num_sky,
+                        weights=_b_data[_m_l].astype(np.float64)
+                                * _w_row[_b_rows[_m_l]],
+                        minlength=num_sky,
+                    )
                 # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
                 # add the global row offset in Phase 3 (cumulative across
                 # batches). Keeping this batch-local is what lets Phase 4
@@ -465,6 +499,35 @@ def setup_lsqr(file_list, ref_shape,
             blk = sky_damping_block(1, damp_weight_line, line_pixel_counts, num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
+
+    # --- Separability water-filling line damping (spectral, block 1) ---
+    # Per-pixel: lam_P² = max(0, τ² − I_P) with I_P the cont/line Schur
+    # complement, so effective information ≥ τ² everywhere. Diversity-rich
+    # pixels get lam = 0 (no bias); the small-σ tail that drives LSQR
+    # semi-convergence blowup is lifted to σ ≥ τ. τ² = ``line_sep_floor``
+    # (absolute, information units) or the ``line_sep_floor_quantile``
+    # quantile of covered pixels' I_P.
+    if (pixel_cross is not None
+            and ((line_sep_floor is not None and line_sep_floor > 0)
+                 or line_sep_floor_quantile is not None)):
+        fisher_cont = pixel_fisher[:num_sky]
+        fisher_line = pixel_fisher[num_sky:2 * num_sky]
+        I_P = fisher_line - np.where(
+            fisher_cont > 0, pixel_cross ** 2 / np.maximum(fisher_cont, 1e-300), 0.0)
+        I_P = np.maximum(I_P, 0.0)
+        covered = line_pixel_counts > 0
+        if line_sep_floor is not None and line_sep_floor > 0:
+            tau2 = float(line_sep_floor)
+        else:
+            tau2 = float(np.quantile(I_P[covered], float(line_sep_floor_quantile)))
+        lam = np.zeros(num_sky, dtype=np.float64)
+        lam[covered] = np.sqrt(np.maximum(tau2 - I_P[covered], 0.0))
+        n_lift = int((lam > 0).sum())
+        print(f"Applying separability water-filling line damping: tau2={tau2:.6g} "
+              f"-> lifting {n_lift:,}/{int(covered.sum()):,} covered pixels", flush=True)
+        blk = line_separability_block(1, lam, num_sky)
+        if blk is not None:
+            constraint_blocks.append(blk.as_dict())
 
     # --- Coverage-weighted offset damping ---
     if damp_offset > 0:
@@ -718,18 +781,27 @@ def setup_lsqr(file_list, ref_shape,
     full_A.sum_duplicates()
 
     if top2_active:
-        return full_A, full_b, pixel_counts, pixel_fisher, active_mask
-    return full_A, full_b, pixel_counts, pixel_fisher
+        return full_A, full_b, pixel_counts, pixel_fisher, active_mask, pixel_cross
+    return full_A, full_b, pixel_counts, pixel_fisher, pixel_cross
 
 
 def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
-                           num_sky_blocks=1):
+                           num_sky_blocks=1, num_chunks_list=None):
     """Generic coverage slicing for any number of sky blocks.
 
     Returns ``(sky_coverages, offset_coverages, offset_valid_fracs)`` where
     ``sky_coverages`` is a length-``num_sky_blocks`` list of ``ref_shape`` arrays
     (block 0 = continuum, 1.. = line blocks). :func:`parse_pixel_counts` is the
     back-compat fixed-tuple wrapper for <=2 blocks.
+
+    ``num_chunks_list`` (optional) is the *layout* column count per map — the
+    number of offset columns actually allocated in ``pixel_counts``. For an
+    ordinary per-chunk map this equals ``cm.max()+1`` (default when ``None``), so
+    behavior is byte-identical. For template / hard-poly-basis maps the offset
+    columns are amplitudes / polynomial coefficients, NOT one-per-chunk, so the
+    layout count must be used to slice + advance the cursor correctly; the caller
+    (``save_calibration``) overrides the coverage for those maps, so a
+    shape-correct placeholder frac is returned rather than a per-chunk division.
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -738,12 +810,19 @@ def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chun
 
     offset_coverages = []
     offset_valid_fracs = []
-    for ng, cm in zip(num_offset_groups_list, chunk_maps):
-        num_chunks = int(np.max(cm)) + 1
-        block = ng * num_chunks
-        offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, num_chunks)
-        chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=num_chunks)
-        offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+    for m, (ng, cm) in enumerate(zip(num_offset_groups_list, chunk_maps)):
+        real_chunks = int(np.max(cm)) + 1
+        nchk = real_chunks if num_chunks_list is None else int(num_chunks_list[m])
+        block = ng * nchk
+        offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, nchk)
+        if nchk == real_chunks:
+            chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=real_chunks)
+            offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+        else:
+            # Layout columns are not one-per-chunk (template alpha / poly-basis
+            # coeffs); the caller overrides this map's coverage, so a shape-correct
+            # placeholder avoids an ill-defined per-chunk division.
+            offset_valid_frac = offset_coverage.astype(np.float64)
         offset_coverages.append(offset_coverage)
         offset_valid_fracs.append(offset_valid_frac)
         cursor += block
@@ -785,6 +864,36 @@ def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
     if num_sky_blocks == 2:
         return sky_fishers[0], sky_fishers[1]
     return sky_fishers[0], None
+
+
+def parse_line_separability(pixel_cross, pixel_fisher, ref_shape):
+    """Per-pixel cont/line separability map ``I_P = Σw²G² − (Σw²G)²/Σw²``
+    (the Schur complement of the per-pixel 2x2 normal-matrix block).
+
+    ``pixel_cross`` is the length-num_sky cross moment from ``setup_lsqr``
+    (2-block sky models); ``pixel_fisher`` the full accumulator (cont diag in
+    block 0, line diag in block 1). Unlike the line Fisher (Σw²G², a magnitude
+    metric), I_P measures wavelength DIVERSITY: a pixel observed many times at
+    a single BC has large Fisher but I_P = 0 — exactly the degenerate pixels
+    that blow up under LSQR semi-convergence. Mask on I_P, not Fisher.
+    """
+    num_sky = ref_shape[0] * ref_shape[1]
+    fisher_cont = pixel_fisher[:num_sky]
+    fisher_line = pixel_fisher[num_sky:2 * num_sky]
+    I_P = fisher_line - np.where(
+        fisher_cont > 0,
+        np.asarray(pixel_cross) ** 2 / np.maximum(fisher_cont, 1e-300), 0.0)
+    return np.maximum(I_P, 0.0).reshape(ref_shape)
+
+
+def apply_line_separability_mask(sky_line, separability, threshold):
+    """Read-time mask on the separability map: NaN where ``I_P < threshold``.
+
+    Non-destructive analog of :func:`apply_line_fisher_mask`, but on the metric
+    that actually bounds the per-pixel line variance (Var ∝ 1/I_P)."""
+    out = np.asarray(sky_line, dtype=np.float32).copy()
+    out[np.asarray(separability) < threshold] = np.nan
+    return out
 
 
 def apply_line_fisher_mask(sky_line, line_fisher, threshold):

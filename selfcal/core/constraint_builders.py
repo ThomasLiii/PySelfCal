@@ -78,6 +78,30 @@ def sky_damping_block(block_index, weight, coverage, num_sky):
                            np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
 
 
+def line_separability_block(block_index, lam, num_sky):
+    """Per-pixel Tikhonov rows on sky block ``block_index`` with EXPLICIT
+    per-pixel amplitudes ``lam`` (one row per pixel with ``lam > 0``,
+    ``data = lam[pixel]``).
+
+    Used by the separability "water-filling" line damping: with per-pixel
+    cont/line separability ``I_P`` (the Schur complement of the per-pixel 2x2
+    normal-matrix block), ``lam[P] = sqrt(max(0, tau2 - I_P))`` tops the
+    effective information up to ``I_P + lam^2 >= tau2``. Pixels with plenty of
+    wavelength diversity get lam = 0 (NO bias — unlike a uniform line damping);
+    diversity-poor pixels get lifted off the LSQR 1/sigma noise-amplification
+    floor, which removes the semi-convergence cliff. Returns None if no pixel
+    needs lifting.
+    """
+    valid = np.nonzero(lam > 0)[0]
+    if len(valid) == 0:
+        return None
+    data = lam[valid].astype(np.float32)
+    n = len(valid)
+    cols = (block_index * num_sky + valid).astype(np.int64, copy=False)
+    return ConstraintBlock(np.arange(n, dtype=np.int64), cols, data,
+                           np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
+
+
 def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
     """Coverage-weighted damping on the offset columns (``damp_offset``).
 
