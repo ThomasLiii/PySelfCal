@@ -2,17 +2,27 @@
 
 Replaces the soft ``subch_poly`` penalty (a weight ``λ`` on finite-difference
 rows that pull a free per-chunk offset toward a degree-D polynomial) with the
-offset *being* a degree-D polynomial in subchannel by construction: the solve
-carries the polynomial coefficients directly, so there is **no weight knob** and
-the null space that let the offset grow a spurious PAH bump (see
-``project_spectral_fit_lvf_branch``) is gone.
+offset *being* a degree-D polynomial in an abstract 1-D **coordinate** by
+construction: the solve carries the polynomial coefficients directly, so there
+is **no weight knob** and the null space that let the offset grow a spurious PAH
+bump (see ``project_spectral_fit_lvf_branch``) is gone.
+
+Instrument-agnostic by design. The coordinate and the independent-polynomial
+grouping are supplied *per chunk* by the instrument/mode via the ``poly_basis``
+spec (``chunk_coord`` / ``chunk_group`` / ``num_groups`` / ``coord_lo,hi``); this
+module never assumes what the coordinate physically is. For SPHEREx the mode maps
+``chunk_coord = subchannel`` and ``chunk_group = column``, so the offset is a
+polynomial along the dispersion direction, independent per column — but a
+different mapping fits a polynomial along *any* ordered path through the chunks
+without touching this module (a chunk-sequence coordinate, not a 2-D pixel
+direction).
 
 Design (chosen 2026-07-01):
-  * offset[frame, subch, col] = scalar[frame] + Σ_{d=1..D} a[frame, col, d] · B_d(subch)
-  * B_d = Chebyshev T_d on x = 2·(subch−lo)/(hi−lo) − 1 ∈ [−1,1], **mean-subtracted
+  * offset[frame, chunk] = scalar[frame] + Σ_{d=1..D} a[frame, group, d] · B_d(coord)
+  * B_d = Chebyshev T_d on x = 2·(coord−lo)/(hi−lo) − 1 ∈ [−1,1], **mean-subtracted
     over the window grid** so each B_d is orthogonal to the constant → the per-frame
     scalar owns the DC and the polynomial is shape-only (d starts at 1, no constant).
-  * independent polynomial per column (a[frame, col, d] free in col).
+  * independent polynomial per group (a[frame, group, d] free in group).
   * Chebyshev (not raw x^d) for conditioning at D ≥ 3.
 
 This module is the single source of truth for B_d, used both by the row assembly
@@ -100,32 +110,19 @@ def n_coef(pb):
     return int(N.shape[1]) if N is not None else int(pb['degree'])
 
 
-def eval_offset_basis(subch, pb):
-    """Offset basis evaluated at ``subch`` for a poly_basis spec: the mean-zero
-    Chebyshev basis, optionally reduced to the ⊥-line subspace via ``ortho_N``.
-    Returns ``(len(subch), n_coef(pb))``. Single source of truth for both the
-    row assembly and the save-time reconstruction."""
-    B = cheb_shape_basis(subch, int(pb['degree']), pb['subch_lo'], pb['subch_hi'])
+def eval_offset_basis(coord, pb):
+    """Offset basis evaluated at coordinate values ``coord`` for a poly_basis
+    spec: the mean-zero Chebyshev basis over the coordinate window
+    ``[coord_lo, coord_hi]``, optionally reduced to the ⊥-line subspace via
+    ``ortho_N``. Returns ``(len(coord), n_coef(pb))``. Single source of truth
+    for both the row assembly and the save-time reconstruction.
+
+    Instrument-agnostic: ``coord`` is an abstract polynomial coordinate (the
+    instrument decides what it means, e.g. SPHEREx subchannel via
+    ``pb['chunk_coord']``); this module never assumes a chunk encoding."""
+    B = cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
     N = pb.get('ortho_N')
     return B if N is None else B @ np.asarray(N, dtype=np.float64)
-
-
-def reconstruct_offset_map(coeffs, num_subch, num_col, degree, lo, hi, scalar=None):
-    """Evaluate coefficients → per-chunk offset for one frame (for save/apply).
-
-    ``coeffs`` is ``(num_col, degree)`` (a[col, d=1..D]); returns a length
-    ``num_subch*num_col`` vector indexed by chunk = subch*num_col + col, matching
-    the chunk-id convention. Subchannels outside ``[lo, hi]`` are clamped by
-    ``cheb_shape_basis`` (x clipped), but in practice only in-window chunks carry
-    data. Adds the per-frame ``scalar`` (DC) to every chunk if given.
-    """
-    subs = np.arange(num_subch)
-    B = cheb_shape_basis(subs, degree, lo, hi)           # (num_subch, degree)
-    per_subch_col = B @ np.asarray(coeffs).T              # (num_subch, num_col)
-    if scalar is not None:
-        per_subch_col = per_subch_col + float(scalar)
-    # chunk = subch*num_col + col
-    return per_subch_col.reshape(num_subch * num_col)
 
 
 if __name__ == "__main__":  # quick self-test

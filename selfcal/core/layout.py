@@ -101,7 +101,7 @@ class SystemLayout:
                 from ..models.offset_basis import n_coef as _n_coef
                 ftg = np.arange(num_frames)
                 num_offset_groups_m = num_frames
-                num_chunks_m = int(pb['num_col']) * _n_coef(pb)
+                num_chunks_m = int(pb['num_groups']) * _n_coef(pb)
                 tmpl = None
                 frame_to_group_list.append(ftg)
                 num_offset_groups_list.append(num_offset_groups_m)

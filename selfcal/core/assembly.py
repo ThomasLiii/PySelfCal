@@ -140,21 +140,23 @@ def _prep_lsqr(task_params):
                 O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m
                                     * det_template_list[m][group_idx_list[m], chunk_idx_m])
             elif poly_basis_list[m] is not None:
-                # Hard poly-basis: the offset is a degree-D Chebyshev polynomial in
-                # subchannel, per column. Each (chunk-contrib, obs) entry emits D
-                # nnz into coeff columns a[frame, col, d], coefficient
-                # w * chunk_val * B_d(subch). "chunk" id for coeff (col,d) = col*D + d.
+                # Hard poly-basis: the offset is a polynomial in an abstract
+                # per-chunk COORDINATE (``chunk_coord``), independent per per-chunk
+                # GROUP (``chunk_group``, ``num_groups`` of them) — the instrument
+                # supplies both, so this core is encoding-agnostic. Each
+                # (chunk-contrib, obs) entry emits n_coef nnz into coeff columns
+                # a[frame, group, k], coefficient w * chunk_val * B_k(coord).
                 pb = poly_basis_list[m]
-                ncol = int(pb['num_col']); ncf = n_coef(pb)
-                subch = chunk_idx_m // ncol
-                col = chunk_idx_m % ncol
-                B = eval_offset_basis(subch, pb)                                 # (n, ncf)
+                ng = int(pb['num_groups']); ncf = n_coef(pb)
+                coord = np.asarray(pb['chunk_coord'])[chunk_idx_m]
+                grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
+                B = eval_offset_basis(coord, pb)                                 # (n, ncf)
                 w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
-                base = col_bases[m] + (group_idx_list[m] * (ncol * ncf))
-                coeff_chunk = col * ncf                                          # + k below
+                base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
+                coeff_base = grp * ncf                                           # + k below
                 for k in range(ncf):
                     O_rows_parts.append(sub_idx_m)
-                    O_cols_parts.append(base + coeff_chunk + k)
+                    O_cols_parts.append(base + coeff_base + k)
                     O_data_parts.append(w_cv * B[:, k])
             else:
                 O_rows_parts.append(sub_idx_m)
