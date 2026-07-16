@@ -498,6 +498,8 @@ class Calibrator(Reprojector):
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
                    line_sep_floor=None, line_sep_floor_quantile=None,
+                   line_spatial_floor=None, line_spatial_floor_quantile=None,
+                   offset_line_downweight=0.0,
                    offset_model=None, sky_model=None,
                    top2_compaction_enabled=True):
         """Build the LSQR system for K chunk maps.
@@ -597,6 +599,9 @@ class Calibrator(Reprojector):
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 line_sep_floor=line_sep_floor,
                 line_sep_floor_quantile=line_sep_floor_quantile,
+                line_spatial_floor=line_spatial_floor,
+                line_spatial_floor_quantile=line_spatial_floor_quantile,
+                offset_line_downweight=offset_line_downweight,
                 sky_model=self.sky_model,
                 top2_compaction_enabled=top2_compaction_enabled)
             # setup_lsqr returns a 5-tuple in legacy / template-mode runs and
@@ -868,19 +873,24 @@ class Calibrator(Reprojector):
                 if sky_fishers[j] is not None:
                     skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
                                                compression='gzip')
-            # Per-pixel cont/line SEPARABILITY I_P = Σw²G² − (Σw²G)²/Σw² for
-            # 2-block spectral cals. Unlike the line Fisher (a magnitude
-            # metric), I_P measures wavelength diversity — the quantity that
-            # bounds per-pixel line variance and identifies the degenerate
-            # pixels that blow up under LSQR semi-convergence. Mask at read
-            # time via selfcal.core.lsqr.apply_line_separability_mask.
+            # Per-pixel SEPARABILITY I_P (each spectral block's Schur
+            # complement against all other sky blocks). Unlike the block's
+            # Fisher (a magnitude metric), I_P measures wavelength diversity —
+            # the quantity that bounds per-pixel amplitude variance and
+            # identifies the degenerate pixels that blow up under LSQR
+            # semi-convergence. Mask at read time via
+            # selfcal.core.lsqr.apply_line_separability_mask. One dataset per
+            # spectral block, sky_separability/<name>; for 2-block cals this is
+            # the single legacy dataset, byte-identical.
             if (getattr(self, 'pixel_cross', None) is not None
                     and self.num_sky_blocks >= 2 and self.pixel_fisher is not None):
-                sep = parse_line_separability(
-                    self.pixel_cross, self.pixel_fisher, self.ref_shape,
-                    num_sky_blocks=self.num_sky_blocks)
-                f.create_group('sky_separability').create_dataset(
-                    sky_names[-1], data=sep.astype('float32'), compression='gzip')
+                sep_grp = f.create_group('sky_separability')
+                for j in range(1, self.num_sky_blocks):
+                    sep = parse_line_separability(
+                        self.pixel_cross, self.pixel_fisher, self.ref_shape,
+                        num_sky_blocks=self.num_sky_blocks, block=j)
+                    sep_grp.create_dataset(
+                        sky_names[j], data=sep.astype('float32'), compression='gzip')
             # --- Back-compat hard-link aliases (v2 readers resolve transparently):
             # skymap -> continuum; skymap_line -> the single spectral block when
             # there is exactly one. h5py resolves these on read, so

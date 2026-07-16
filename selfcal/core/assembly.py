@@ -32,6 +32,7 @@ def _prep_lsqr(task_params):
     adj_info_list = task_params['adj_info_list']
     poly_constraint_list = task_params['poly_constraint_list']
     poly_basis_list = task_params.get('poly_basis_list') or [None] * len(task_params['chunk_maps'])
+    offset_line_downweight = float(task_params.get('offset_line_downweight', 0.0) or 0.0)
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
     scalar_col_start = task_params['scalar_col_start']
@@ -118,6 +119,19 @@ def _prep_lsqr(task_params):
                 cj = sky_coeffs[j]
                 S_data[j::J] = valid_weight if cj is None else valid_weight * cj
 
+        # --- Offset line-emission downweight (approach #2) ---
+        # Fit the per-frame offset from LINE-FREE observations: scale each offset
+        # row's contribution by (1 - rho*G), where G = the (peak-normalized) line
+        # coefficient of the last spectral sky block at that observation. Near the
+        # line peak (G~1) the offset is ~ignored and the polynomial interpolates
+        # through from the wings (G~0), so the offset stays a clean zodi estimate
+        # and cannot absorb the PAH. rho=0 (default) => factor 1 => byte-identical.
+        _off_dw = None
+        if offset_line_downweight > 0.0 and J >= 2 and sky_coeffs[-1] is not None:
+            _off_dw = 1.0 - offset_line_downweight * np.clip(
+                np.asarray(sky_coeffs[-1], dtype=np.float64), 0.0, None)
+            np.clip(_off_dw, 0.0, 1.0, out=_off_dw)
+
         # --- Offset rows: one block per chunk map ---
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
         for m in range(K):
@@ -152,6 +166,8 @@ def _prep_lsqr(task_params):
                 grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
                 B = eval_offset_basis(coord, pb)                                 # (n, ncf)
                 w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
+                if _off_dw is not None:
+                    w_cv = w_cv * _off_dw[sub_idx_m]
                 base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
                 coeff_base = grp * ncf                                           # + k below
                 for k in range(ncf):
@@ -159,11 +175,14 @@ def _prep_lsqr(task_params):
                     O_cols_parts.append(base + coeff_base + k)
                     O_data_parts.append(w_cv * B[:, k])
             else:
+                _fw = valid_weight[sub_idx_m] * chunk_vals_m
+                if _off_dw is not None:
+                    _fw = _fw * _off_dw[sub_idx_m]
                 O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(col_bases[m]
                                     + (group_idx_list[m] * num_chunks_list[m])
                                     + chunk_idx_m)
-                O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m)
+                O_data_parts.append(_fw)
         O_rows = np.concatenate(O_rows_parts) if O_rows_parts else np.empty(0, dtype=np.int64)
         O_cols = np.concatenate(O_cols_parts) if O_cols_parts else np.empty(0, dtype=np.int64)
         O_data = np.concatenate(O_data_parts) if O_data_parts else np.empty(0, dtype=np.float64)

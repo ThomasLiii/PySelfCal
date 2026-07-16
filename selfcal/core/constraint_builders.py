@@ -102,6 +102,44 @@ def line_separability_block(block_index, lam, num_sky):
                            np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
 
 
+def line_spatial_coherence_block(block_index, lam_edge_h, lam_edge_v, num_sky):
+    """Diversity-adaptive SPATIAL-COHERENCE prior on sky block ``block_index``.
+
+    Tikhonov difference rows ``lam * (x[P] - x[Q]) = 0`` for ref-grid neighbor
+    pairs: horizontal pairs weighted by ``lam_edge_h`` (shape (H, W-1), pair
+    (y,x)-(y,x+1)) and vertical by ``lam_edge_v`` (shape (H-1, W), pair
+    (y,x)-(y+1,x)). Rows are emitted only where lam > 0.
+
+    Unlike amplitude damping (pull toward ZERO), this pulls a
+    wavelength-diversity-poor pixel toward its NEIGHBORS' value, so the
+    ill-constrained cont/line split at low-I_P pixels borrows constraint from
+    better-sampled neighbors with no amplitude bias. Because the sampling
+    diversity oscillates spatially (survey-geometry pattern), neighbor pairs
+    straddle the pattern's phases and the prior cancels the pattern-scale
+    differential rather than imprinting it. Returns None if no edge.
+    """
+    yh, xh = np.nonzero(lam_edge_h > 0)
+    yv, xv = np.nonzero(lam_edge_v > 0)
+    W = lam_edge_v.shape[1]
+    ph = yh * W + xh
+    pv = yv * W + xv
+    lam = np.concatenate([lam_edge_h[yh, xh], lam_edge_v[yv, xv]]).astype(np.float32)
+    n = lam.size
+    if n == 0:
+        return None
+    pcol = np.concatenate([ph, pv]).astype(np.int64)
+    qcol = np.concatenate([ph + 1, pv + W]).astype(np.int64)
+    rows_local = np.repeat(np.arange(n, dtype=np.int64), 2)
+    cols = np.empty(2 * n, dtype=np.int64)
+    cols[0::2] = block_index * num_sky + pcol
+    cols[1::2] = block_index * num_sky + qcol
+    data = np.empty(2 * n, dtype=np.float32)
+    data[0::2] = lam
+    data[1::2] = -lam
+    return ConstraintBlock(rows_local, cols, data, np.zeros(n, dtype=np.float64),
+                           num_rows=n, nnz_per_row=2)
+
+
 def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
     """Coverage-weighted damping on the offset columns (``damp_offset``).
 
