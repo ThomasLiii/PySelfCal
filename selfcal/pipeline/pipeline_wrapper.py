@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -660,60 +660,71 @@ class Calibrator(Reprojector):
 
         Returns the spill dir (str) or None if there was nothing to spill.
         Override the location with $SELFCAL_SPILL_DIR (default: tempfile dir).
+        Spilling only triggers above $SELFCAL_SPILL_MIN_GB (default 4 GB) so
+        small runs pay zero I/O; at production tile scale the round trip is
+        ~1 min against a ~6 h solve. Saves/loads run in parallel threads.
         """
         if self.pixel_counts is None and self.pixel_fisher is None \
                 and self.pixel_cross is None:
             return None
-        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
-        spill_dir = tempfile.mkdtemp(prefix='selfcal_pixel_spill_', dir=base)
         n_bytes = sum(a.nbytes for a in (self.pixel_counts, self.pixel_fisher)
                       if a is not None)
         if isinstance(self.pixel_cross, dict):
             n_bytes += sum(a.nbytes for a in self.pixel_cross.values())
         elif self.pixel_cross is not None:
             n_bytes += self.pixel_cross.nbytes
+        min_gb = float(os.environ.get('SELFCAL_SPILL_MIN_GB', 4.0))
+        if n_bytes < min_gb * 2**30:
+            return None
+        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
+        spill_dir = tempfile.mkdtemp(prefix='selfcal_pixel_spill_', dir=base)
         print(f"Spilling pixel state ({n_bytes/2**30:.1f} GB) to {spill_dir} "
               f"for the solve...", flush=True)
+        jobs = []
         if self.pixel_counts is not None:
-            np.save(os.path.join(spill_dir, 'pixel_counts.npy'),
-                    self.pixel_counts, allow_pickle=False)
+            jobs.append(('pixel_counts.npy', self.pixel_counts))
             self.pixel_counts = None
         if self.pixel_fisher is not None:
-            np.save(os.path.join(spill_dir, 'pixel_fisher.npy'),
-                    self.pixel_fisher, allow_pickle=False)
+            jobs.append(('pixel_fisher.npy', self.pixel_fisher))
             self.pixel_fisher = None
         if self.pixel_cross is not None:
             if isinstance(self.pixel_cross, dict):
                 keys = list(self.pixel_cross.keys())
-                np.save(os.path.join(spill_dir, 'pixel_cross_keys.npy'),
-                        np.asarray(keys, dtype=np.int64), allow_pickle=False)
-                for n, k in enumerate(keys):
-                    np.save(os.path.join(spill_dir, f'pixel_cross_{n}.npy'),
-                            self.pixel_cross[k], allow_pickle=False)
+                jobs.append(('pixel_cross_keys.npy',
+                             np.asarray(keys, dtype=np.int64)))
+                jobs.extend((f'pixel_cross_{n}.npy', self.pixel_cross[k])
+                            for n, k in enumerate(keys))
             else:
-                np.save(os.path.join(spill_dir, 'pixel_cross.npy'),
-                        self.pixel_cross, allow_pickle=False)
+                jobs.append(('pixel_cross.npy', self.pixel_cross))
             self.pixel_cross = None
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            list(ex.map(lambda j: np.save(os.path.join(spill_dir, j[0]), j[1],
+                                          allow_pickle=False), jobs))
         return spill_dir
 
     def _restore_pixel_state(self, spill_dir):
         """Reload the arrays spilled by _spill_pixel_state and remove the dir."""
-        p = os.path.join(spill_dir, 'pixel_counts.npy')
-        if os.path.exists(p):
-            self.pixel_counts = np.load(p)
-        p = os.path.join(spill_dir, 'pixel_fisher.npy')
-        if os.path.exists(p):
-            self.pixel_fisher = np.load(p)
-        pk = os.path.join(spill_dir, 'pixel_cross_keys.npy')
-        p = os.path.join(spill_dir, 'pixel_cross.npy')
-        if os.path.exists(pk):
-            keys = np.load(pk)
-            self.pixel_cross = {
-                tuple(int(v) for v in k):
-                    np.load(os.path.join(spill_dir, f'pixel_cross_{n}.npy'))
-                for n, k in enumerate(keys)}
-        elif os.path.exists(p):
-            self.pixel_cross = np.load(p)
+        def _load(name):
+            p = os.path.join(spill_dir, name)
+            return np.load(p) if os.path.exists(p) else None
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            f_counts = ex.submit(_load, 'pixel_counts.npy')
+            f_fisher = ex.submit(_load, 'pixel_fisher.npy')
+            keys = _load('pixel_cross_keys.npy')
+            if keys is not None:
+                f_cross = list(ex.map(_load, [f'pixel_cross_{n}.npy'
+                                              for n in range(len(keys))]))
+                self.pixel_cross = {
+                    tuple(int(v) for v in k): arr
+                    for k, arr in zip(keys, f_cross)}
+            else:
+                cross = _load('pixel_cross.npy')
+                if cross is not None:
+                    self.pixel_cross = cross
+            if f_counts.result() is not None:
+                self.pixel_counts = f_counts.result()
+            if f_fisher.result() is not None:
+                self.pixel_fisher = f_fisher.result()
         shutil.rmtree(spill_dir, ignore_errors=True)
 
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,

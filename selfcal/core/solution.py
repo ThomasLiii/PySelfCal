@@ -101,6 +101,13 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
         the returned ``x0`` has length ``A.shape[1]`` and the sky/offset
         boundary is ``num_sky_eff`` on the supplied ``A``.
     """
+    from .blockcsr import BlockCSR
+    if isinstance(A, BlockCSR):
+        raise TypeError(
+            "compute_x0_from_Ab does not support BlockCSR input (emitted by "
+            "setup_lsqr once total nnz >= SELFCAL_BLOCK_NNZ); use "
+            "compute_x0_scalar_only, or raise the threshold for this run")
+
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_sky_eff = num_sky_blocks * num_sky
@@ -204,7 +211,8 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
         elimination. The returned ``x0`` is expanded back to the FULL
         (uncompacted) layout — same convention as ``compute_x0_from_Ab``.
     """
-    if not isinstance(A, csr_matrix):
+    from .blockcsr import BlockCSR
+    if not isinstance(A, (csr_matrix, BlockCSR)):
         # Legacy COO callers: keep the original (memory-heavy) path.
         x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
                                 active_mask=active_mask)
@@ -229,39 +237,48 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
             "active_mask does not match A")
     num_scalar_cols = num_cols - scalar_boundary
 
-    indptr = A.indptr
-    indices = A.indices
-    data = A.data
-    n_rows = A.shape[0]
-
     # ~64M entries per chunk keeps per-chunk transients at a few hundred MB.
     # (_chunk_target_entries is exposed only so tests can force many chunks on
-    # small matrices; the result is bit-independent of the chunking.)
+    # small matrices; the result is bit-independent of the chunking — chunks
+    # and blocks are concatenated in global row order before the single
+    # bincount, so the addition tree never changes.)
     target_entries = _chunk_target_entries
-    entries_per_row = max(1, int(A.nnz // max(1, n_rows)))
+    n_rows_total = A.shape[0]
+    entries_per_row = max(1, int(A.nnz // max(1, n_rows_total)))
     chunk_rows = max(1, target_entries // entries_per_row)
 
+    if isinstance(A, csr_matrix):
+        block_iter = [(A, 0)]
+    else:  # BlockCSR: blocks in global row order
+        block_iter = [(blk, int(A.row_bounds[i]))
+                      for i, blk in enumerate(A.blocks)]
+
     sel_cols, sel_w2, sel_wb = [], [], []
-    for r0 in range(0, n_rows, chunk_rows):
-        r1 = min(r0 + chunk_rows, n_rows)
-        s0, s1 = int(indptr[r0]), int(indptr[r1])
-        if s0 == s1:
-            continue
-        cols_c = indices[s0:s1]
-        keep = cols_c >= scalar_boundary
-        if not keep.any():
-            continue
-        d = data[s0:s1][keep]
-        sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
-                                                               copy=False))
-        # Square in the data's own dtype (f32 in production) — the legacy path
-        # squared BEFORE bincount's exact cast to f64, so the f32 rounding of
-        # d*d is part of the byte-equal contract.
-        sel_w2.append(d * d)
-        counts = np.diff(indptr[r0:r1 + 1])
-        bvals = np.repeat(b[r0:r1], counts)[keep]
-        # Same dtype-promotion as the legacy `off_data * b[off_row]`.
-        sel_wb.append(d * bvals)
+    for blk, row_off in block_iter:
+        indptr = blk.indptr
+        indices = blk.indices
+        data = blk.data
+        n_rows = blk.shape[0]
+        for r0 in range(0, n_rows, chunk_rows):
+            r1 = min(r0 + chunk_rows, n_rows)
+            s0, s1 = int(indptr[r0]), int(indptr[r1])
+            if s0 == s1:
+                continue
+            cols_c = indices[s0:s1]
+            keep = cols_c >= scalar_boundary
+            if not keep.any():
+                continue
+            d = data[s0:s1][keep]
+            sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
+                                                                   copy=False))
+            # Square in the data's own dtype (f32 in production) — the legacy
+            # path squared BEFORE bincount's exact cast to f64, so the f32
+            # rounding of d*d is part of the byte-equal contract.
+            sel_w2.append(d * d)
+            counts = np.diff(indptr[r0:r1 + 1])
+            bvals = np.repeat(b[row_off + r0:row_off + r1], counts)[keep]
+            # Same dtype-promotion as the legacy `off_data * b[off_row]`.
+            sel_wb.append(d * bvals)
 
     if sel_cols:
         cat_cols = np.concatenate(sel_cols)

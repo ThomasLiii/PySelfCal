@@ -7,6 +7,8 @@ assembly (selfcal.core.assembly) across a process pool, appends the global
 constraint blocks (selfcal.core.constraint_builders), assembles the CSR, and
 applies the Top-2 column compaction. Also the post-solve coverage/Fisher parsers.
 """
+import os
+
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -841,20 +843,47 @@ def setup_lsqr(file_list, ref_shape,
     # only on A as a linear map). We mark has_sorted_indices=False so
     # scipy callers that depend on it (e.g. .T → CSC view) can either
     # tolerate or trigger sort themselves.
+    #
+    # Once total nnz reaches 2**31, the unified csr_matrix constructor would
+    # upcast-COPY the int32 csr_indices to int64 (indptr's dtype wins) —
+    # +nnz*8 alloc at handoff and +nnz*4 held permanently, plus 50% more
+    # index bytes streamed per SpMV. In that regime we emit a BlockCSR
+    # instead: int32 index VIEWS sliced per row-block, each block's nnz kept
+    # below 2**31. Per-row index sorting is row-local, so sorting each block
+    # is bit-identical to sorting the unified matrix. The global int64
+    # indptr is released (blocks carry shifted int32 copies).
+    # SELFCAL_BLOCK_NNZ overrides the activation threshold AND per-block
+    # target (tests force small blocks with it); production default splits
+    # only when int64 would otherwise be forced.
     # ----------------------------------------------------------------
-    full_A = csr_matrix(
-        (csr_data, csr_indices, indptr),
-        shape=(total_rows, n_active),
-        copy=False,
-    )
-    full_A.has_sorted_indices = False
-    # Sort indices within each row in place. This is per-row qsort with no
-    # allocation peak and gives downstream code (CSC views, indices-binary
-    # search, etc.) the canonical layout. We also call sum_duplicates() as a
-    # defensive no-op (the bucket-sort build guarantees no duplicate (row,
-    # col) entries) so that downstream consumers can rely on canonical CSR.
-    full_A.sort_indices()
-    full_A.sum_duplicates()
+    _block_thr = int(os.environ.get('SELFCAL_BLOCK_NNZ', 2**31))
+    total_nnz = int(indptr[-1])
+    if total_nnz >= _block_thr:
+        from .blockcsr import build_block_csr
+        target = max(1, min(2**30, _block_thr))
+        full_A = build_block_csr(csr_data, csr_indices, indptr,
+                                 (total_rows, n_active), target)
+        del csr_data, csr_indices, indptr
+        print(f"Phase 6: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+              f"(nnz={total_nnz}).")
+        for _blk in full_A.blocks:
+            _blk.has_sorted_indices = False
+            _blk.sort_indices()
+            _blk.sum_duplicates()
+    else:
+        full_A = csr_matrix(
+            (csr_data, csr_indices, indptr),
+            shape=(total_rows, n_active),
+            copy=False,
+        )
+        full_A.has_sorted_indices = False
+        # Sort indices within each row in place. This is per-row qsort with no
+        # allocation peak and gives downstream code (CSC views, indices-binary
+        # search, etc.) the canonical layout. We also call sum_duplicates() as a
+        # defensive no-op (the bucket-sort build guarantees no duplicate (row,
+        # col) entries) so that downstream consumers can rely on canonical CSR.
+        full_A.sort_indices()
+        full_A.sum_duplicates()
 
     # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
     # compatibility; J >= 3 returns the {(i, j): array} dict.
