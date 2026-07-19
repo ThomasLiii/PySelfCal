@@ -13,17 +13,30 @@ from threadpoolctl import threadpool_limits
 
 
 def _partition_csr(A, n_blocks):
-    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
+    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy).
+
+    The blocks are assembled by direct attribute assignment rather than the
+    ``csr_matrix((data, indices, indptr), ...)`` constructor: that constructor
+    runs scipy's index-dtype unification with ``check_contents=True``, and when
+    the parent has int64 indices (forced whenever total nnz > 2^31) every
+    block's contents fit int32, so it silently downcast-COPIES all indices —
+    ~nnz*4 bytes of duplicates held for the whole solve (~89 GiB at full-NEP
+    tile scale; verified on scipy 1.15/1.16). Attribute assignment keeps true
+    views of the parent's data/indices; only the per-block shifted indptr is a
+    fresh (small) array. Index dtype does not enter the float arithmetic, so
+    matvec results are bit-identical either way.
+    """
     n_rows = A.shape[0]
     boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
     blocks = []
     for i in range(n_blocks):
         sr, er = int(boundaries[i]), int(boundaries[i + 1])
-        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
-        blk = csr_matrix(
-            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
-            shape=(er - sr, A.shape[1]), copy=False
-        )
+        nnz_s = A.indptr[sr]
+        blk = csr_matrix.__new__(csr_matrix)
+        blk._shape = (er - sr, int(A.shape[1]))
+        blk.data = A.data[A.indptr[sr]:A.indptr[er]]
+        blk.indices = A.indices[A.indptr[sr]:A.indptr[er]]
+        blk.indptr = A.indptr[sr:er + 1] - nnz_s
         blocks.append(blk)
     return blocks, boundaries
 
@@ -113,6 +126,10 @@ def apply_lsqr(A, b, ref_shape, x0=None,
             num_cols = A.shape[1]
             n_active = num_cols
             x0_compressed = x0
+        # Drop this frame's ref to the full-layout x0 (the caller released its
+        # own via the ownership hand-off) so the f64 original can be freed once
+        # x0_compressed is cast to float32 below.
+        x0 = None
 
         A_shape = A.shape
         if use_float32:
@@ -201,6 +218,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         new_col = A.col
         x0_compressed = x0
         active_mask = None
+    x0 = None  # release the full-layout x0 (see fast-path comment)
 
     n_active = num_active if active_mask is not None else num_cols
 

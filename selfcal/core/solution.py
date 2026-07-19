@@ -165,7 +165,7 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
 
 
 def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
-                           active_mask=None):
+                           active_mask=None, _chunk_target_entries=64_000_000):
     """x0 for the ``use_per_frame_scalar`` setup: scalar gets diag-LS, chunks
     start at 0, sky starts at 0.
 
@@ -174,6 +174,20 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
     ``valid_weight`` for every valid pixel in the frame). With chunk and sky
     init at 0, all per-frame DC is concentrated in the scalar at iter 0, and
     LSQR's first few iterations refine the chunk offsets around it.
+
+    For CSR input this walks the matrix directly and touches ONLY the scalar
+    columns. The legacy implementation went through
+    ``compute_x0_from_Ab`` — ``A.tocoo()`` (an nnz-sized row array) plus
+    offset-block extraction copies (~25 B/nnz transient, several hundred GB at
+    full-NEP tile scale) — to compute values that were then zeroed for every
+    column except the scalars. Bit-equality with that path is preserved
+    because ``np.bincount`` accumulates strictly in element order and
+    restricting the selection to ``col >= scalar_boundary`` keeps each scalar
+    column's entries in the same (row-major) order, so every per-column sum
+    sees the same addends in the same sequence. The selected entries are
+    gathered chunk-by-chunk but CONCATENATED before a single global bincount —
+    per-chunk partial sums would change the addition tree and break bitwise
+    equality.
 
     Parameters
     ----------
@@ -190,13 +204,95 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
         elimination. The returned ``x0`` is expanded back to the FULL
         (uncompacted) layout — same convention as ``compute_x0_from_Ab``.
     """
-    x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
-                            active_mask=active_mask)
-    ref_h, ref_w = ref_shape
-    num_sky_eff = num_sky_blocks * ref_h * ref_w
-    # x0 is in the FULL layout iff active_mask was supplied; either way the
-    # chunk-block slice [num_sky_eff:scalar_col_start] addresses the same
-    # original columns. The scatter through active_mask leaves zero-coverage
-    # original columns at 0, so this zeroing is still correct.
-    x0[num_sky_eff:scalar_col_start] = 0.0
-    return x0
+    if not isinstance(A, csr_matrix):
+        # Legacy COO callers: keep the original (memory-heavy) path.
+        x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
+                                active_mask=active_mask)
+        ref_h, ref_w = ref_shape
+        num_sky_eff = num_sky_blocks * ref_h * ref_w
+        x0[num_sky_eff:scalar_col_start] = 0.0
+        return x0
+
+    num_cols = A.shape[1]
+    if active_mask is not None:
+        if active_mask.size < scalar_col_start:
+            raise ValueError(
+                f"active_mask.size={active_mask.size} smaller than "
+                f"scalar_col_start={scalar_col_start}")
+        # Compact-space index where the scalar block begins.
+        scalar_boundary = int(active_mask[:scalar_col_start].sum())
+    else:
+        scalar_boundary = int(scalar_col_start)
+    if num_cols < scalar_boundary:
+        raise ValueError(
+            f"A.shape[1]={num_cols} < scalar boundary={scalar_boundary}; "
+            "active_mask does not match A")
+    num_scalar_cols = num_cols - scalar_boundary
+
+    indptr = A.indptr
+    indices = A.indices
+    data = A.data
+    n_rows = A.shape[0]
+
+    # ~64M entries per chunk keeps per-chunk transients at a few hundred MB.
+    # (_chunk_target_entries is exposed only so tests can force many chunks on
+    # small matrices; the result is bit-independent of the chunking.)
+    target_entries = _chunk_target_entries
+    entries_per_row = max(1, int(A.nnz // max(1, n_rows)))
+    chunk_rows = max(1, target_entries // entries_per_row)
+
+    sel_cols, sel_w2, sel_wb = [], [], []
+    for r0 in range(0, n_rows, chunk_rows):
+        r1 = min(r0 + chunk_rows, n_rows)
+        s0, s1 = int(indptr[r0]), int(indptr[r1])
+        if s0 == s1:
+            continue
+        cols_c = indices[s0:s1]
+        keep = cols_c >= scalar_boundary
+        if not keep.any():
+            continue
+        d = data[s0:s1][keep]
+        sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
+                                                               copy=False))
+        # Square in the data's own dtype (f32 in production) — the legacy path
+        # squared BEFORE bincount's exact cast to f64, so the f32 rounding of
+        # d*d is part of the byte-equal contract.
+        sel_w2.append(d * d)
+        counts = np.diff(indptr[r0:r1 + 1])
+        bvals = np.repeat(b[r0:r1], counts)[keep]
+        # Same dtype-promotion as the legacy `off_data * b[off_row]`.
+        sel_wb.append(d * bvals)
+
+    if sel_cols:
+        cat_cols = np.concatenate(sel_cols)
+        del sel_cols
+        cat_w2 = np.concatenate(sel_w2)
+        del sel_w2
+        cat_wb = np.concatenate(sel_wb)
+        del sel_wb
+        AtA_diag = np.bincount(cat_cols, weights=cat_w2,
+                               minlength=num_scalar_cols)
+        del cat_w2
+        Atb = np.bincount(cat_cols, weights=cat_wb,
+                          minlength=num_scalar_cols)
+        del cat_cols, cat_wb
+        scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
+    else:
+        scalars = np.zeros(num_scalar_cols)
+
+    if active_mask is None:
+        x0 = np.zeros(num_cols)
+        x0[scalar_boundary:] = scalars
+        return x0
+
+    # Expand to the FULL layout: active scalar columns, in order, correspond
+    # to compact columns scalar_boundary..num_cols-1.
+    x0_full = np.zeros(int(active_mask.size))
+    scalar_full_idx = np.flatnonzero(active_mask[scalar_col_start:])
+    if scalar_full_idx.size != num_scalar_cols:
+        raise ValueError(
+            f"active scalar columns ({scalar_full_idx.size}) != compact scalar "
+            f"block width ({num_scalar_cols}); active_mask/scalar_col_start "
+            "inconsistent with A")
+    x0_full[scalar_full_idx + scalar_col_start] = scalars
+    return x0_full

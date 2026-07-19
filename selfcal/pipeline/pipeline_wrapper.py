@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -645,6 +646,76 @@ class Calibrator(Reprojector):
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
 
+    def _spill_pixel_state(self):
+        """Spill pixel_counts / pixel_fisher / pixel_cross to scratch disk.
+
+        These are write-once setup products consumed only by save_calibration,
+        but they otherwise sit in RAM through the entire LSQR solve (~18 GB at
+        full-NEP multiline J=4 scale). np.save/np.load round-trips int64 /
+        float64 arrays losslessly, so restoring after the solve is
+        byte-identical to never having spilled. The pixel_cross dict's
+        insertion order is recorded and reproduced exactly — save-time
+        consumers iterate over items(), and float accumulation order must not
+        change.
+
+        Returns the spill dir (str) or None if there was nothing to spill.
+        Override the location with $SELFCAL_SPILL_DIR (default: tempfile dir).
+        """
+        if self.pixel_counts is None and self.pixel_fisher is None \
+                and self.pixel_cross is None:
+            return None
+        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
+        spill_dir = tempfile.mkdtemp(prefix='selfcal_pixel_spill_', dir=base)
+        n_bytes = sum(a.nbytes for a in (self.pixel_counts, self.pixel_fisher)
+                      if a is not None)
+        if isinstance(self.pixel_cross, dict):
+            n_bytes += sum(a.nbytes for a in self.pixel_cross.values())
+        elif self.pixel_cross is not None:
+            n_bytes += self.pixel_cross.nbytes
+        print(f"Spilling pixel state ({n_bytes/2**30:.1f} GB) to {spill_dir} "
+              f"for the solve...", flush=True)
+        if self.pixel_counts is not None:
+            np.save(os.path.join(spill_dir, 'pixel_counts.npy'),
+                    self.pixel_counts, allow_pickle=False)
+            self.pixel_counts = None
+        if self.pixel_fisher is not None:
+            np.save(os.path.join(spill_dir, 'pixel_fisher.npy'),
+                    self.pixel_fisher, allow_pickle=False)
+            self.pixel_fisher = None
+        if self.pixel_cross is not None:
+            if isinstance(self.pixel_cross, dict):
+                keys = list(self.pixel_cross.keys())
+                np.save(os.path.join(spill_dir, 'pixel_cross_keys.npy'),
+                        np.asarray(keys, dtype=np.int64), allow_pickle=False)
+                for n, k in enumerate(keys):
+                    np.save(os.path.join(spill_dir, f'pixel_cross_{n}.npy'),
+                            self.pixel_cross[k], allow_pickle=False)
+            else:
+                np.save(os.path.join(spill_dir, 'pixel_cross.npy'),
+                        self.pixel_cross, allow_pickle=False)
+            self.pixel_cross = None
+        return spill_dir
+
+    def _restore_pixel_state(self, spill_dir):
+        """Reload the arrays spilled by _spill_pixel_state and remove the dir."""
+        p = os.path.join(spill_dir, 'pixel_counts.npy')
+        if os.path.exists(p):
+            self.pixel_counts = np.load(p)
+        p = os.path.join(spill_dir, 'pixel_fisher.npy')
+        if os.path.exists(p):
+            self.pixel_fisher = np.load(p)
+        pk = os.path.join(spill_dir, 'pixel_cross_keys.npy')
+        p = os.path.join(spill_dir, 'pixel_cross.npy')
+        if os.path.exists(pk):
+            keys = np.load(pk)
+            self.pixel_cross = {
+                tuple(int(v) for v in k):
+                    np.load(os.path.join(spill_dir, f'pixel_cross_{n}.npy'))
+                for n, k in enumerate(keys)}
+        elif os.path.exists(p):
+            self.pixel_cross = np.load(p)
+        shutil.rmtree(spill_dir, ignore_errors=True)
+
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
                    solver='lsmr', use_float32=False, n_threads=32, keep_state=False):
         if resume:
@@ -656,27 +727,47 @@ class Calibrator(Reprojector):
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
-            # Release self.A / self.b refs before calling apply_lsqr so the COO arrays
-            # (~140 GB at no-srcmask region-10k scale) and the f64 b (~80 GB) can be
-            # freed inside apply_lsqr after the float32 / CSR conversions complete.
-            # When keep_state=True, retain self.A/self.b/self.active_mask/self.num_cols_full
-            # so a caller can re-solve (e.g., iter_lim sweep) without rebuilding the system.
-            A_local = self.A
-            b_local = self.b
+            # When keep_state=False, hand A / b / x0 to apply_lsqr WITHOUT keeping
+            # any reference in this frame: a plain `A_local = self.A` local would
+            # pin the arrays for the entire solve (the f64 b alone is ~22 GB at
+            # full-NEP tile scale, a COO A ~140 GB at no-srcmask region-10k
+            # scale), defeating the release that apply_lsqr's internal
+            # `del`/rebinds are meant to enable. The list-pop idiom transfers
+            # ownership: after the pops, the callee's parameters hold the only
+            # references, so the f64 b really is freed right after its float32
+            # cast and the full-layout x0 right after its active_mask compress.
+            # When keep_state=True, retain self.A/self.b/self.active_mask/
+            # self.num_cols_full so a caller can re-solve (e.g., iter_lim sweep)
+            # without rebuilding the system.
             active_mask_local = getattr(self, "active_mask", None)
             num_cols_full_local = getattr(self, "num_cols_full", None)
             if not keep_state:
+                _owned = [self.A, self.b, x0]
                 self.A = None
                 self.b = None
                 self.active_mask = None
-            self.x = apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
-                                        x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                        solver=solver, use_float32=use_float32, n_threads=n_threads,
-                                        active_mask=active_mask_local,
-                                        num_cols_full=num_cols_full_local)
-            if not keep_state:
+                del x0
+                # Spill setup products unused during the solve; restored (byte
+                # identically) in the finally so save_calibration and any
+                # post-solve consumer see unchanged state even on error.
+                _spill_dir = self._spill_pixel_state()
+                try:
+                    self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
+                                                x0=_owned.pop(0), atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                                solver=solver, use_float32=use_float32, n_threads=n_threads,
+                                                active_mask=active_mask_local,
+                                                num_cols_full=num_cols_full_local)
+                finally:
+                    if _spill_dir is not None:
+                        self._restore_pixel_state(_spill_dir)
                 self.num_cols_full = None
-                del A_local, b_local, active_mask_local
+                del active_mask_local
+            else:
+                self.x = apply_lsqr(self.A, self.b, ref_shape=self.ref_shape,
+                                            x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                            solver=solver, use_float32=use_float32, n_threads=n_threads,
+                                            active_mask=active_mask_local,
+                                            num_cols_full=num_cols_full_local)
 
     def load_calibration(self, cal_path=None):
         """Load a saved calibration (tri-generation schema).
