@@ -112,6 +112,9 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
     num_sky = ref_h * ref_w
     num_sky_eff = num_sky_blocks * num_sky
     num_cols = A.shape[1]
+    # f32 b (exact values, see setup Phase 2d) -> upcast so off_data * b
+    # products stay f64 as in the legacy path. No-op for f64 b.
+    b = b.astype(np.float64, copy=False)
 
     # setup_lsqr now returns a csr_matrix (post Top 1 refactor); the original
     # COO path is preserved for callers that still pass a coo_matrix. We need
@@ -276,8 +279,12 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
             # rounding of d*d is part of the byte-equal contract.
             sel_w2.append(d * d)
             counts = np.diff(indptr[r0:r1 + 1])
-            bvals = np.repeat(b[row_off + r0:row_off + r1], counts)[keep]
-            # Same dtype-promotion as the legacy `off_data * b[off_row]`.
+            # Upcast b to f64 BEFORE the product: setup may now emit f32 b
+            # (exactly-representable values only), and f32*f64 -> f64 is what
+            # the legacy f64-b path computed. No-op (view) when b is f64.
+            bvals = np.repeat(
+                b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
+                counts)[keep]
             sel_wb.append(d * bvals)
 
     if sel_cols:

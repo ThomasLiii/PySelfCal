@@ -217,6 +217,12 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
 
+    # Setup may emit f32 b (exactly-f32-representable values only). For
+    # use_float32 solves that's the wanted dtype already; for f64 solves,
+    # upcast reproduces the legacy f64 array bit-for-bit (exact conversion).
+    if not use_float32 and b.dtype == np.float32:
+        b = b.astype(np.float64)
+
     # ---- Top 2 fast path: A is already compact CSR (or int32 blocks) ----
     if isinstance(A, (csr_matrix, BlockCSR)):
         is_block = isinstance(A, BlockCSR)

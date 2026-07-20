@@ -102,6 +102,7 @@ def run_calibration(cfg):
                 oversample_factor=1,
                 sky_model=sky_model,
                 det_aux=det_aux,
+                batch_spill_dir=cfg.cache_dir,
                 **cal_kwargs)
             # List-pop hand-off: keeping a plain `x0` local would pin the
             # full-layout f64 vector for the entire solve (see Calibrator.apply_lsqr).
@@ -260,6 +261,7 @@ def run_tiled(cfg):
             oversample_factor=1,
             sky_model=sky_model,
             det_aux=det_aux,
+            batch_spill_dir=cfg.cache_dir,
             **cal_kwargs)
         staging.rss_checkpoint(f'{tile.name} post-setup_lsqr')
         # List-pop hand-off: keeping a plain `x0` local would pin the

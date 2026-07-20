@@ -502,7 +502,8 @@ class Calibrator(Reprojector):
                    line_spatial_floor=None, line_spatial_floor_quantile=None,
                    offset_line_downweight=0.0,
                    offset_model=None, sky_model=None,
-                   top2_compaction_enabled=True):
+                   top2_compaction_enabled=True,
+                   batch_spill_dir=None):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
@@ -604,7 +605,8 @@ class Calibrator(Reprojector):
                 line_spatial_floor_quantile=line_spatial_floor_quantile,
                 offset_line_downweight=offset_line_downweight,
                 sky_model=self.sky_model,
-                top2_compaction_enabled=top2_compaction_enabled)
+                top2_compaction_enabled=top2_compaction_enabled,
+                batch_spill_dir=batch_spill_dir)
             # setup_lsqr returns a 5-tuple in legacy / template-mode runs and
             # a 6-tuple when the Top 2 inline column compaction fires. The
             # last element is always pixel_cross (per-pixel cont x line cross
