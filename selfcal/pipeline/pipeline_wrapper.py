@@ -26,6 +26,7 @@ from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
 from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
+from ..core.spill import spill_pixel_state, restore_pixel_state
 from ..models.sky_model import SkyModel
 
 # Manifest schema bump when the JSON layout changes incompatibly.
@@ -649,85 +650,26 @@ class Calibrator(Reprojector):
         self.col_bases = self.layout.col_bases
 
     def _spill_pixel_state(self):
-        """Spill pixel_counts / pixel_fisher / pixel_cross to scratch disk.
+        """Park pixel_counts/fisher/cross on scratch disk for the solve.
 
-        These are write-once setup products consumed only by save_calibration,
-        but they otherwise sit in RAM through the entire LSQR solve (~18 GB at
-        full-NEP multiline J=4 scale). np.save/np.load round-trips int64 /
-        float64 arrays losslessly, so restoring after the solve is
-        byte-identical to never having spilled. The pixel_cross dict's
-        insertion order is recorded and reproduced exactly — save-time
-        consumers iterate over items(), and float accumulation order must not
-        change.
-
-        Returns the spill dir (str) or None if there was nothing to spill.
-        Override the location with $SELFCAL_SPILL_DIR (default: tempfile dir).
-        Spilling only triggers above $SELFCAL_SPILL_MIN_GB (default 4 GB) so
-        small runs pay zero I/O; at production tile scale the round trip is
-        ~1 min against a ~6 h solve. Saves/loads run in parallel threads.
+        They are write-once setup products read again only by
+        save_calibration, but they otherwise sit in RAM through the whole
+        LSQR solve (~17 GB at full-NEP J=4). setup_lsqr does the same round
+        trip across the CSR build; see selfcal.core.spill for why this is
+        byte-identical. Returns the spill dir, or None if nothing was
+        spilled (below the size threshold).
         """
-        if self.pixel_counts is None and self.pixel_fisher is None \
-                and self.pixel_cross is None:
-            return None
-        n_bytes = sum(a.nbytes for a in (self.pixel_counts, self.pixel_fisher)
-                      if a is not None)
-        if isinstance(self.pixel_cross, dict):
-            n_bytes += sum(a.nbytes for a in self.pixel_cross.values())
-        elif self.pixel_cross is not None:
-            n_bytes += self.pixel_cross.nbytes
-        min_gb = float(os.environ.get('SELFCAL_SPILL_MIN_GB', 4.0))
-        if n_bytes < min_gb * 2**30:
-            return None
-        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
-        spill_dir = tempfile.mkdtemp(prefix='selfcal_pixel_spill_', dir=base)
-        print(f"Spilling pixel state ({n_bytes/2**30:.1f} GB) to {spill_dir} "
-              f"for the solve...", flush=True)
-        jobs = []
-        if self.pixel_counts is not None:
-            jobs.append(('pixel_counts.npy', self.pixel_counts))
-            self.pixel_counts = None
-        if self.pixel_fisher is not None:
-            jobs.append(('pixel_fisher.npy', self.pixel_fisher))
-            self.pixel_fisher = None
-        if self.pixel_cross is not None:
-            if isinstance(self.pixel_cross, dict):
-                keys = list(self.pixel_cross.keys())
-                jobs.append(('pixel_cross_keys.npy',
-                             np.asarray(keys, dtype=np.int64)))
-                jobs.extend((f'pixel_cross_{n}.npy', self.pixel_cross[k])
-                            for n, k in enumerate(keys))
-            else:
-                jobs.append(('pixel_cross.npy', self.pixel_cross))
-            self.pixel_cross = None
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            list(ex.map(lambda j: np.save(os.path.join(spill_dir, j[0]), j[1],
-                                          allow_pickle=False), jobs))
+        spill_dir, _ = spill_pixel_state(self.pixel_counts, self.pixel_fisher,
+                                         self.pixel_cross,
+                                         label='for the solve')
+        if spill_dir is not None:
+            self.pixel_counts = self.pixel_fisher = self.pixel_cross = None
         return spill_dir
 
     def _restore_pixel_state(self, spill_dir):
-        """Reload the arrays spilled by _spill_pixel_state and remove the dir."""
-        def _load(name):
-            p = os.path.join(spill_dir, name)
-            return np.load(p) if os.path.exists(p) else None
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            f_counts = ex.submit(_load, 'pixel_counts.npy')
-            f_fisher = ex.submit(_load, 'pixel_fisher.npy')
-            keys = _load('pixel_cross_keys.npy')
-            if keys is not None:
-                f_cross = list(ex.map(_load, [f'pixel_cross_{n}.npy'
-                                              for n in range(len(keys))]))
-                self.pixel_cross = {
-                    tuple(int(v) for v in k): arr
-                    for k, arr in zip(keys, f_cross)}
-            else:
-                cross = _load('pixel_cross.npy')
-                if cross is not None:
-                    self.pixel_cross = cross
-            if f_counts.result() is not None:
-                self.pixel_counts = f_counts.result()
-            if f_fisher.result() is not None:
-                self.pixel_fisher = f_fisher.result()
-        shutil.rmtree(spill_dir, ignore_errors=True)
+        """Reload what _spill_pixel_state wrote and remove the scratch dir."""
+        (self.pixel_counts, self.pixel_fisher,
+         self.pixel_cross) = restore_pixel_state(spill_dir)
 
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
                    solver='lsmr', use_float32=False, n_threads=32, keep_state=False):

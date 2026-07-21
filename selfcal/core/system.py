@@ -18,6 +18,7 @@ from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .layout import SystemLayout
+from .spill import spill_pixel_state, restore_pixel_state
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block, line_separability_block,
@@ -777,6 +778,22 @@ def setup_lsqr(file_list, ref_shape,
         n_active = total_cols
 
     # ----------------------------------------------------------------
+    # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
+    # last read by the Phase-2 constraint builders and the Top-2 compaction
+    # just above; nothing between here and the return touches them, yet at
+    # J=4 production scale they are ~17 GB sitting on top of the ALL-TIME
+    # PEAK (measured: the Phase-6 BlockCSR window, 174.6 GB on M04). A round
+    # trip through scratch disk removes them from that peak; the arrays come
+    # back bit-identical (np.save/np.load of int64/float64), and
+    # Calibrator.apply_lsqr spills them again for the solve.
+    # ----------------------------------------------------------------
+    _pix_spill_dir, _ = spill_pixel_state(pixel_counts, pixel_fisher,
+                                          pixel_cross,
+                                          label='for the CSR build')
+    if _pix_spill_dir is not None:
+        pixel_counts = pixel_fisher = pixel_cross = None
+
+    # ----------------------------------------------------------------
     # Phase 3: allocate CSR buffers.
     # ----------------------------------------------------------------
     csr_data = np.empty(total_nnz, dtype=np.float32)
@@ -970,6 +987,10 @@ def setup_lsqr(file_list, ref_shape,
         # col) entries) so that downstream consumers can rely on canonical CSR.
         full_A.sort_indices()
         full_A.sum_duplicates()
+
+    if _pix_spill_dir is not None:
+        pixel_counts, pixel_fisher, pixel_cross = restore_pixel_state(
+            _pix_spill_dir)
 
     # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
     # compatibility; J >= 3 returns the {(i, j): array} dict.
