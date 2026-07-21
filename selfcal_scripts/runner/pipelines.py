@@ -102,9 +102,12 @@ def run_calibration(cfg):
                 oversample_factor=1,
                 sky_model=sky_model,
                 det_aux=det_aux,
+                batch_spill_dir=cfg.cache_dir,
                 **cal_kwargs)
-            x0 = mode.x0(cfg, cc)
-            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
+            # List-pop hand-off: keeping a plain `x0` local would pin the
+            # full-layout f64 vector for the entire solve (see Calibrator.apply_lsqr).
+            _x0_owned = [mode.x0(cfg, cc)]
+            cc.apply_lsqr(x0=_x0_owned.pop(), use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
             mode.configure(cfg, cc)
             # Save with original HDD paths so the cal stays valid after NVMe cleanup.
             nvme_list = cc.reproj_list
@@ -258,11 +261,14 @@ def run_tiled(cfg):
             oversample_factor=1,
             sky_model=sky_model,
             det_aux=det_aux,
+            batch_spill_dir=cfg.cache_dir,
             **cal_kwargs)
         staging.rss_checkpoint(f'{tile.name} post-setup_lsqr')
-        x0 = mode.x0(cfg, cc)
+        # List-pop hand-off: keeping a plain `x0` local would pin the
+        # full-layout f64 vector for the entire solve (see Calibrator.apply_lsqr).
+        _x0_owned = [mode.x0(cfg, cc)]
         staging.rss_checkpoint(f'{tile.name} pre-apply_lsqr')
-        cc.apply_lsqr(x0=x0, use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
+        cc.apply_lsqr(x0=_x0_owned.pop(), use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
         staging.rss_checkpoint(f'{tile.name} post-apply_lsqr')
         mode.configure(cfg, cc)
 

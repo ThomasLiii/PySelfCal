@@ -6,6 +6,7 @@ sparse rows (sky components, offsets, per-frame scalar, per-frame constraints);
 and assembles that batch's rows. ``selfcal.core.system.setup_lsqr`` dispatches
 ``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor.
 """
+import os
 import traceback
 
 import numpy as np
@@ -338,12 +339,32 @@ def _prep_lsqr_batch_worker(batch_params):
             adj_info_list.append(tuple(adj_parts))
         shm_arrays['adj_info_list'] = adj_info_list
 
+    spill_dir = batch_params.get('spill_dir')
+    batch_id = batch_params.get('batch_id', 0)
+    spill_paths = None
+    spill_fhs = None
     try:
+        if spill_dir is not None:
+            # Stream the bulk COO arrays straight to files, one append per
+            # subframe: no per-batch list retention, no concatenate copy,
+            # no bulk SharedMemory copy (worker holds ~1x one subframe's
+            # arrays instead of ~3x the whole batch). Byte-identical to the
+            # concatenate path: same arrays, same order, raw dtype bytes.
+            # Row/col/data dtypes are uniform across subframes
+            # (int32/int32/float32, see _prep_lsqr's final casts); b's dtype
+            # varies (f32/f64 with reg rows) so it stays on the SHM path.
+            spill_paths = [os.path.join(spill_dir,
+                                        f'b{batch_id:05d}_{k}.bin')
+                           for k in ('rows', 'cols', 'data')]
+            spill_fhs = [open(p, 'wb', buffering=8 * 1024 * 1024)
+                         for p in spill_paths]
+
         batch_rows = []
         batch_cols = []
         batch_data = []
         batch_b = []
         batch_row_offset = 0
+        n_entries = 0
 
         for task_params in sub_tasks:
             # Inject reconstructed shared memory arrays
@@ -358,14 +379,41 @@ def _prep_lsqr_batch_worker(batch_params):
             if len(sub_b) == 0:
                 continue
 
-            batch_rows.append(sub_rows + batch_row_offset)
-            batch_cols.append(sub_cols)
-            batch_data.append(sub_data)
-            batch_b.append(sub_b)
+            if spill_fhs is not None:
+                (sub_rows + batch_row_offset).tofile(spill_fhs[0])
+                sub_cols.tofile(spill_fhs[1])
+                sub_data.tofile(spill_fhs[2])
+                n_entries += sub_cols.shape[0]
+            else:
+                batch_rows.append(sub_rows + batch_row_offset)
+                batch_cols.append(sub_cols)
+                batch_data.append(sub_data)
+                batch_b.append(sub_b)
+            if spill_fhs is not None:
+                batch_b.append(sub_b)
             batch_row_offset += num_rows
 
         if len(batch_b) == 0:
+            if spill_fhs is not None:
+                for fh in spill_fhs:
+                    fh.close()
+                for p in spill_paths:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
             return None
+
+        if spill_fhs is not None:
+            for fh in spill_fhs:
+                fh.close()
+            cat_b = np.concatenate(batch_b)
+            shm = SharedMemory(create=True, size=max(cat_b.nbytes, 1))
+            np.ndarray(cat_b.shape, dtype=cat_b.dtype, buffer=shm.buf)[:] = cat_b
+            b_meta = (shm.name, cat_b.shape, cat_b.dtype.str)
+            shm.close()
+            return {'files': spill_paths, 'shm': [b_meta],
+                    'num_rows': batch_row_offset, 'n_entries': n_entries}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)

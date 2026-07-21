@@ -4,8 +4,9 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -25,6 +26,7 @@ from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
 from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
+from ..core.spill import spill_pixel_state, restore_pixel_state
 from ..models.sky_model import SkyModel
 
 # Manifest schema bump when the JSON layout changes incompatibly.
@@ -457,6 +459,9 @@ class Calibrator(Reprojector):
         # Per-pixel cont x line cross moment (2-block sky models). Enables the
         # separability map I_P = Σw²G² − (Σw²G)²/Σw² saved by save_calibration.
         self.pixel_cross = None
+        # Set when setup_lsqr parked the pixel state on scratch disk; the
+        # arrays are materialised on first use (save_calibration).
+        self._pixel_spill = None
         # When setup_lsqr runs the Top 2 gated path (no template-mode map),
         # it returns a CSR matrix that has already had its zero columns
         # eliminated. ``active_mask`` (length num_cols_full) marks which
@@ -501,7 +506,8 @@ class Calibrator(Reprojector):
                    line_spatial_floor=None, line_spatial_floor_quantile=None,
                    offset_line_downweight=0.0,
                    offset_model=None, sky_model=None,
-                   top2_compaction_enabled=True):
+                   top2_compaction_enabled=True,
+                   batch_spill_dir=None):
         """Build the LSQR system for K chunk maps.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
@@ -603,26 +609,29 @@ class Calibrator(Reprojector):
                 line_spatial_floor_quantile=line_spatial_floor_quantile,
                 offset_line_downweight=offset_line_downweight,
                 sky_model=self.sky_model,
-                top2_compaction_enabled=top2_compaction_enabled)
-            # setup_lsqr returns a 5-tuple in legacy / template-mode runs and
-            # a 6-tuple when the Top 2 inline column compaction fires. The
-            # last element is always pixel_cross (per-pixel cont x line cross
-            # moment; None for non-2-block sky models).
-            if _setup_result is None or _setup_result[0] is None:
+                top2_compaction_enabled=top2_compaction_enabled,
+                batch_spill_dir=batch_spill_dir)
+            # setup_lsqr returns a SetupResult (named, so no arity branching).
+            # When it parked the pixel state on scratch, the three arrays come
+            # back as None and `pixel_spill` carries the handle; we leave them
+            # there until save_calibration asks for them, so they never sit
+            # alongside the CSR and apply_lsqr has nothing to spill.
+            if _setup_result is None or _setup_result.A is None:
                 self.A, self.b = None, None
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
                 self.pixel_cross = None
-            elif len(_setup_result) == 6:
-                (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher, self.active_mask,
-                 self.pixel_cross) = _setup_result
-                self.num_cols_full = int(self.active_mask.size)
+                self._pixel_spill = None
             else:
-                (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher, self.pixel_cross) = _setup_result
-                self.active_mask = None
-                self.num_cols_full = None
+                r = _setup_result
+                self.A, self.b = r.A, r.b
+                self.pixel_counts = r.pixel_counts
+                self.pixel_fisher = r.pixel_fisher
+                self.pixel_cross = r.pixel_cross
+                self.active_mask = r.active_mask
+                self.num_cols_full = (int(r.active_mask.size)
+                                      if r.active_mask is not None else None)
+                self._pixel_spill = r.pixel_spill
 
         # Track sky-block count so parse_x / save_calibration / get_skymap
         # all know the sky layout. Derived from the resolved sky model.
@@ -645,6 +654,46 @@ class Calibrator(Reprojector):
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
 
+    def _materialize_pixel_state(self):
+        """Load pixel_counts/fisher/cross if they are parked on scratch disk."""
+        if getattr(self, '_pixel_spill', None) is None:
+            return
+        (self.pixel_counts, self.pixel_fisher,
+         self.pixel_cross) = self._pixel_spill.restore()
+        self._pixel_spill = None
+
+    def __del__(self):
+        # A Calibrator dropped without ever saving (an aborted tile, a failed
+        # solve) would otherwise leave its ~17 GB of parked arrays behind.
+        try:
+            spill = getattr(self, '_pixel_spill', None)
+            if spill is not None:
+                spill.discard()
+        except Exception:
+            pass
+
+    def _spill_pixel_state(self):
+        """Park pixel_counts/fisher/cross on scratch disk for the solve.
+
+        They are write-once setup products read again only by
+        save_calibration, but they otherwise sit in RAM through the whole
+        LSQR solve (~17 GB at full-NEP J=4). setup_lsqr does the same round
+        trip across the CSR build; see selfcal.core.spill for why this is
+        byte-identical. Returns the spill dir, or None if nothing was
+        spilled (below the size threshold).
+        """
+        spill_dir, _ = spill_pixel_state(self.pixel_counts, self.pixel_fisher,
+                                         self.pixel_cross,
+                                         label='for the solve')
+        if spill_dir is not None:
+            self.pixel_counts = self.pixel_fisher = self.pixel_cross = None
+        return spill_dir
+
+    def _restore_pixel_state(self, spill_dir):
+        """Reload what _spill_pixel_state wrote and remove the scratch dir."""
+        (self.pixel_counts, self.pixel_fisher,
+         self.pixel_cross) = restore_pixel_state(spill_dir)
+
     def apply_lsqr(self, x0=None, atol=1e-06, btol=1e-06, damp=1e-2, iter_lim=300, precondition=True, resume=False,
                    solver='lsmr', use_float32=False, n_threads=32, keep_state=False):
         if resume:
@@ -656,27 +705,47 @@ class Calibrator(Reprojector):
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
-            # Release self.A / self.b refs before calling apply_lsqr so the COO arrays
-            # (~140 GB at no-srcmask region-10k scale) and the f64 b (~80 GB) can be
-            # freed inside apply_lsqr after the float32 / CSR conversions complete.
-            # When keep_state=True, retain self.A/self.b/self.active_mask/self.num_cols_full
-            # so a caller can re-solve (e.g., iter_lim sweep) without rebuilding the system.
-            A_local = self.A
-            b_local = self.b
+            # When keep_state=False, hand A / b / x0 to apply_lsqr WITHOUT keeping
+            # any reference in this frame: a plain `A_local = self.A` local would
+            # pin the arrays for the entire solve (the f64 b alone is ~22 GB at
+            # full-NEP tile scale, a COO A ~140 GB at no-srcmask region-10k
+            # scale), defeating the release that apply_lsqr's internal
+            # `del`/rebinds are meant to enable. The list-pop idiom transfers
+            # ownership: after the pops, the callee's parameters hold the only
+            # references, so the f64 b really is freed right after its float32
+            # cast and the full-layout x0 right after its active_mask compress.
+            # When keep_state=True, retain self.A/self.b/self.active_mask/
+            # self.num_cols_full so a caller can re-solve (e.g., iter_lim sweep)
+            # without rebuilding the system.
             active_mask_local = getattr(self, "active_mask", None)
             num_cols_full_local = getattr(self, "num_cols_full", None)
             if not keep_state:
+                _owned = [self.A, self.b, x0]
                 self.A = None
                 self.b = None
                 self.active_mask = None
-            self.x = apply_lsqr(A_local, b_local, ref_shape=self.ref_shape,
-                                        x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                        solver=solver, use_float32=use_float32, n_threads=n_threads,
-                                        active_mask=active_mask_local,
-                                        num_cols_full=num_cols_full_local)
-            if not keep_state:
+                del x0
+                # Spill setup products unused during the solve; restored (byte
+                # identically) in the finally so save_calibration and any
+                # post-solve consumer see unchanged state even on error.
+                _spill_dir = self._spill_pixel_state()
+                try:
+                    self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
+                                                x0=_owned.pop(0), atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                                solver=solver, use_float32=use_float32, n_threads=n_threads,
+                                                active_mask=active_mask_local,
+                                                num_cols_full=num_cols_full_local)
+                finally:
+                    if _spill_dir is not None:
+                        self._restore_pixel_state(_spill_dir)
                 self.num_cols_full = None
-                del A_local, b_local, active_mask_local
+                del active_mask_local
+            else:
+                self.x = apply_lsqr(self.A, self.b, ref_shape=self.ref_shape,
+                                            x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                            solver=solver, use_float32=use_float32, n_threads=n_threads,
+                                            active_mask=active_mask_local,
+                                            num_cols_full=num_cols_full_local)
 
     def load_calibration(self, cal_path=None):
         """Load a saved calibration (tri-generation schema).
@@ -792,6 +861,10 @@ class Calibrator(Reprojector):
         if cal_dir is None:
             cal_dir = self.config.cal_dir
         os.makedirs(cal_dir, exist_ok=True)
+        # Materialise the pixel state if setup parked it on scratch. This is
+        # its first and only read: it stayed on disk across the CSR build and
+        # the whole solve, so it never coexisted with either.
+        self._materialize_pixel_state()
         num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
 

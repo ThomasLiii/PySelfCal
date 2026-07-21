@@ -7,6 +7,12 @@ assembly (selfcal.core.assembly) across a process pool, appends the global
 constraint blocks (selfcal.core.constraint_builders), assembles the CSR, and
 applies the Top-2 column compaction. Also the post-solve coverage/Fisher parsers.
 """
+import os
+import shutil
+import tempfile
+
+from typing import NamedTuple
+
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -14,6 +20,29 @@ from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .layout import SystemLayout
+from .spill import spill_pixel_state, PixelSpill
+
+
+class SetupResult(NamedTuple):
+    """What :func:`setup_lsqr` hands back.
+
+    Named rather than positional because the tuple used to be 5 elements in
+    legacy/template runs and 6 when Top-2 compaction fired, so callers had to
+    branch on ``len()`` — fragile, and it would only get worse now that the
+    pixel-state spill handle rides along too.
+
+    ``pixel_counts`` / ``pixel_fisher`` / ``pixel_cross`` are None exactly
+    when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
+    caller restores them (once) when it needs them. ``active_mask`` is None
+    unless Top-2 compaction ran.
+    """
+    A: object
+    b: object
+    pixel_counts: object
+    pixel_fisher: object
+    pixel_cross: object
+    active_mask: object = None
+    pixel_spill: object = None
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block, line_separability_block,
@@ -38,8 +67,20 @@ def setup_lsqr(file_list, ref_shape,
                line_spatial_floor=None, line_spatial_floor_quantile=None,
                offset_line_downweight=0.0,
                sky_model=None,
-               top2_compaction_enabled=True):
+               top2_compaction_enabled=True,
+               batch_spill_dir=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``batch_spill_dir``: when set, workers stream each batch's bulk COO
+    arrays (rows/cols/data, 12 B per entry — the dominant setup-phase
+    resident) to files under this directory instead of SharedMemory, and
+    the main process reads them back as read-only memmaps. The bytes and
+    every accumulation order are identical (byte-equal outputs); the
+    difference is that the ~12 B/nnz batch payload becomes page cache —
+    reclaimable under memory pressure — instead of anonymous RAM + tmpfs.
+    Files are deleted as each batch is scattered. ``b`` stays on the
+    SharedMemory path (its dtype varies per batch and it is ~25x smaller).
+    Default None keeps the pure-SharedMemory behavior.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
     additive offset blocks, each with its own chunk map, frame-to-group mapping,
@@ -355,9 +396,18 @@ def setup_lsqr(file_list, ref_shape,
         task_params.update(common_params)
         all_individual_tasks.append(task_params)
 
+    _spill_run_dir = None
+    if batch_spill_dir is not None:
+        os.makedirs(batch_spill_dir, exist_ok=True)
+        _spill_run_dir = tempfile.mkdtemp(prefix='batch_spill_',
+                                          dir=batch_spill_dir)
+        print(f"Batch COO spill -> {_spill_run_dir} (page-cache backed).")
+
     batched_tasks = []
     for i in range(0, len(all_individual_tasks), batch_size):
-        batch = {'sub_tasks': all_individual_tasks[i : i + batch_size]}
+        batch = {'sub_tasks': all_individual_tasks[i : i + batch_size],
+                 'batch_id': i // batch_size,
+                 'spill_dir': _spill_run_dir}
         batched_tasks.append(batch)
 
     print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
@@ -414,13 +464,26 @@ def setup_lsqr(file_list, ref_shape,
                 if result is None:
                     continue
                 shm_infos = result['shm']
-                batch_results[batch_id] = {
-                    'rows': _read_shm(shm_infos[0]),         # local int32 row ids
-                    'cols': _read_shm(shm_infos[1]),
-                    'data': _read_shm(shm_infos[2]),
-                    'b':    _read_shm(shm_infos[3]),
-                    'num_rows': result['num_rows'],
-                }
+                if 'files' in result:
+                    # Spill path: bulk arrays live in files; read-only
+                    # memmaps expose identical bytes through page cache.
+                    fr, fc, fd = result['files']
+                    batch_results[batch_id] = {
+                        'rows': np.memmap(fr, dtype=np.int32, mode='r'),
+                        'cols': np.memmap(fc, dtype=np.int32, mode='r'),
+                        'data': np.memmap(fd, dtype=np.float32, mode='r'),
+                        'b':    _read_shm(shm_infos[0]),
+                        'num_rows': result['num_rows'],
+                        'files': result['files'],
+                    }
+                else:
+                    batch_results[batch_id] = {
+                        'rows': _read_shm(shm_infos[0]),     # local int32 row ids
+                        'cols': _read_shm(shm_infos[1]),
+                        'data': _read_shm(shm_infos[2]),
+                        'b':    _read_shm(shm_infos[3]),
+                        'num_rows': result['num_rows'],
+                    }
                 _b_cols = batch_results[batch_id]['cols']
                 _b_data = batch_results[batch_id]['data']
                 _b_rows = batch_results[batch_id]['rows']
@@ -653,7 +716,25 @@ def setup_lsqr(file_list, ref_shape,
         b_pieces.append(r['b'])
     for blk in constraint_blocks:
         b_pieces.append(blk['b'])
-    full_b = np.concatenate(b_pieces) if b_pieces else np.zeros(0, dtype=np.float64)
+    # Emit float32 b when EVERY value is exactly float32-representable
+    # (data-row b is a product of f32s; f64-ness normally enters only via
+    # constraint-block zeros / mean-offset targets). Consumers restore the
+    # old bit-exact arithmetic by upcasting where f64 mattered:
+    # compute_x0_* upcast b before their products, and apply_lsqr upcasts
+    # back to f64 for use_float32=False solves. Any non-representable
+    # value (e.g. arbitrary mean-offset targets) falls back to f64.
+    _can_f32 = all(
+        (p.dtype == np.float32
+         or p.size == 0
+         or np.array_equal(p, p.astype(np.float32).astype(np.float64)))
+        for p in b_pieces)
+    if b_pieces and _can_f32:
+        full_b = np.concatenate(
+            [p.astype(np.float32, copy=False) for p in b_pieces])
+    elif b_pieces:
+        full_b = np.concatenate(b_pieces)
+    else:
+        full_b = np.zeros(0, dtype=np.float64)
     # Drop per-batch b refs so the streaming scatter loop holds the
     # smallest possible footprint.
     for batch_id in range(len(batched_tasks)):
@@ -706,13 +787,35 @@ def setup_lsqr(file_list, ref_shape,
             top2_active = False
 
     if top2_active:
-        col_map = np.cumsum(active_mask, dtype=np.int64) - 1  # int64; mapped col fits in int32
         n_active = int(active_mask.sum())
+        assert n_active < 2**31, (
+            f"n_active={n_active} overflows int32 column ids")
+        # int32 halves both the map itself (total_cols entries) and every
+        # per-batch col_map[cols_b] gather output in Phase 4. Values are
+        # exact (cumsum <= n_active < 2^31).
+        col_map = np.cumsum(active_mask, dtype=np.int32)
+        col_map -= 1
         print(f"Top 2: compacting columns inline ({n_active}/{total_cols} active).")
     else:
         active_mask = None
         col_map = None
         n_active = total_cols
+
+    # ----------------------------------------------------------------
+    # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
+    # last read by the Phase-2 constraint builders and the Top-2 compaction
+    # just above; nothing between here and the return touches them, yet at
+    # J=4 production scale they are ~17 GB sitting on top of the ALL-TIME
+    # PEAK (measured: the Phase-6 BlockCSR window, 174.6 GB on M04). A round
+    # trip through scratch disk removes them from that peak; the arrays come
+    # back bit-identical (np.save/np.load of int64/float64), and
+    # Calibrator.apply_lsqr spills them again for the solve.
+    # ----------------------------------------------------------------
+    _pix_spill_dir, _ = spill_pixel_state(pixel_counts, pixel_fisher,
+                                          pixel_cross,
+                                          label='for the CSR build')
+    if _pix_spill_dir is not None:
+        pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
     # Phase 3: allocate CSR buffers.
@@ -735,50 +838,76 @@ def setup_lsqr(file_list, ref_shape,
     # sort preserves the original col-within-row order across the batch,
     # which matches what coo_matrix(...).tocsr() does for stable sort_by_row.
     # ----------------------------------------------------------------
+    # The scatter runs over SUB-SLICES of each batch (in original entry
+    # order) rather than the whole batch at once: the sort/cumcount
+    # machinery allocates ~45 B per entry of transients, which at full
+    # batch width (~4e8 entries) is ~18-23 GB sitting exactly on the
+    # setup peak. Sub-slicing divides that by the slice count.
+    # Slot assignment is IDENTICAL: for entries of the same row split
+    # across slices, earlier slices write first and advance write_cursor,
+    # so later slices continue at the updated cursor — the concatenation
+    # of per-slice stable-sort orders over a row equals the whole-batch
+    # stable-sort order (stable sort preserves original order within
+    # equal keys; slice boundaries preserve original order across
+    # slices). Hence byte-identical csr_data/csr_indices.
+    scatter_chunk = 64_000_000
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
         row_offset = batch_row_starts[batch_id]
-        rows_b = batch['rows'].astype(np.int64, copy=False) + row_offset
-        cols_b = batch['cols']
-        data_b = batch['data']
-        if top2_active:
-            # int32 compact col indices (safe since n_active < 2^31).
-            cols_b = col_map[cols_b].astype(np.int32, copy=False)
-        else:
-            cols_b = cols_b.astype(np.int32, copy=False)
+        n_batch = batch['rows'].shape[0]
+        for s0 in range(0, n_batch, scatter_chunk):
+            s1 = min(s0 + scatter_chunk, n_batch)
+            rows_b = batch['rows'][s0:s1].astype(np.int64, copy=False) + row_offset
+            if top2_active:
+                # int32 compact col indices (col_map is int32; gather emits
+                # int32 directly, astype is a no-op).
+                cols_b = col_map[batch['cols'][s0:s1]].astype(np.int32, copy=False)
+            else:
+                cols_b = batch['cols'][s0:s1].astype(np.int32, copy=False)
+            data_b = batch['data'][s0:s1]
 
-        n_b = rows_b.shape[0]
-        if n_b > 0:
-            # Stable sort by row so duplicates are contiguous; preserves
-            # within-row col order from the worker output.
-            order = np.argsort(rows_b, kind="stable")
-            rows_s = rows_b[order]
-            cols_s = cols_b[order]
-            data_s = data_b[order]
+            n_b = rows_b.shape[0]
+            if n_b > 0:
+                # Stable sort by row so duplicates are contiguous; preserves
+                # within-row col order from the worker output.
+                order = np.argsort(rows_b, kind="stable")
+                rows_s = rows_b[order]
+                cols_s = cols_b[order]
+                data_s = data_b[order]
 
-            # Within-row cumcount in sorted order.
-            is_new_group = np.empty(n_b, dtype=bool)
-            is_new_group[0] = True
-            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-            group_starts = np.flatnonzero(is_new_group)
-            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+                # Within-row cumcount in sorted order.
+                is_new_group = np.empty(n_b, dtype=bool)
+                is_new_group[0] = True
+                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+                group_starts = np.flatnonzero(is_new_group)
+                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
 
-            slots = indptr[rows_s] + write_cursor[rows_s] + within_row
-            csr_data[slots] = data_s
-            csr_indices[slots] = cols_s
+                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
+                csr_data[slots] = data_s
+                csr_indices[slots] = cols_s
 
-            # Update write_cursor: add the per-row count contributed by
-            # this batch.
-            unique_rows = rows_s[group_starts]
-            counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
-            write_cursor[unique_rows] += counts
-        # Free the batch refs.
+                # Update write_cursor: add the per-row count contributed by
+                # this slice (carries the running count to later slices).
+                unique_rows = rows_s[group_starts]
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                write_cursor[unique_rows] += counts
+            del rows_b, cols_b, data_b
+        # Free the batch refs (and its spill files, if any).
+        _files = batch.get('files')
         batch_results[batch_id] = None
-        del batch, rows_b, cols_b, data_b
+        del batch
+        if _files:
+            for _p in _files:
+                try:
+                    os.remove(_p)
+                except OSError:
+                    pass
     batch_results = None
+    if _spill_run_dir is not None:
+        shutil.rmtree(_spill_run_dir, ignore_errors=True)
 
     # ----------------------------------------------------------------
     # Phase 4b: scatter constraint blocks at their reserved row ranges.
@@ -841,28 +970,67 @@ def setup_lsqr(file_list, ref_shape,
     # only on A as a linear map). We mark has_sorted_indices=False so
     # scipy callers that depend on it (e.g. .T → CSC view) can either
     # tolerate or trigger sort themselves.
+    #
+    # Once total nnz reaches 2**31, the unified csr_matrix constructor would
+    # upcast-COPY the int32 csr_indices to int64 (indptr's dtype wins) —
+    # +nnz*8 alloc at handoff and +nnz*4 held permanently, plus 50% more
+    # index bytes streamed per SpMV. In that regime we emit a BlockCSR
+    # instead: int32 index VIEWS sliced per row-block, each block's nnz kept
+    # below 2**31. Per-row index sorting is row-local, so sorting each block
+    # is bit-identical to sorting the unified matrix. The global int64
+    # indptr is released (blocks carry shifted int32 copies).
+    # SELFCAL_BLOCK_NNZ overrides the activation threshold AND per-block
+    # target (tests force small blocks with it); production default splits
+    # only when int64 would otherwise be forced.
     # ----------------------------------------------------------------
-    full_A = csr_matrix(
-        (csr_data, csr_indices, indptr),
-        shape=(total_rows, n_active),
-        copy=False,
-    )
-    full_A.has_sorted_indices = False
-    # Sort indices within each row in place. This is per-row qsort with no
-    # allocation peak and gives downstream code (CSC views, indices-binary
-    # search, etc.) the canonical layout. We also call sum_duplicates() as a
-    # defensive no-op (the bucket-sort build guarantees no duplicate (row,
-    # col) entries) so that downstream consumers can rely on canonical CSR.
-    full_A.sort_indices()
-    full_A.sum_duplicates()
+    _block_thr = int(os.environ.get('SELFCAL_BLOCK_NNZ', 2**31))
+    total_nnz = int(indptr[-1])
+    if total_nnz >= _block_thr:
+        from .blockcsr import build_block_csr
+        target = max(1, min(2**30, _block_thr))
+        full_A = build_block_csr(csr_data, csr_indices, indptr,
+                                 (total_rows, n_active), target)
+        del csr_data, csr_indices, indptr
+        print(f"Phase 6: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+              f"(nnz={total_nnz}).")
+        for _blk in full_A.blocks:
+            _blk.has_sorted_indices = False
+            _blk.sort_indices()
+            _blk.sum_duplicates()
+    else:
+        full_A = csr_matrix(
+            (csr_data, csr_indices, indptr),
+            shape=(total_rows, n_active),
+            copy=False,
+        )
+        full_A.has_sorted_indices = False
+        # Sort indices within each row in place. This is per-row qsort with no
+        # allocation peak and gives downstream code (CSC views, indices-binary
+        # search, etc.) the canonical layout. We also call sum_duplicates() as a
+        # defensive no-op (the bucket-sort build guarantees no duplicate (row,
+        # col) entries) so that downstream consumers can rely on canonical CSR.
+        full_A.sort_indices()
+        full_A.sum_duplicates()
 
+    # NOTE: the pixel state is deliberately NOT restored here. Restoring it
+    # before returning would re-inflate it right alongside the finished CSR —
+    # i.e. exactly at the peak we just spilled it to avoid (measured: the peak
+    # sample of the M04 run landed mid-restore) — and Calibrator.apply_lsqr
+    # would immediately write it back out again. Instead the spill directory
+    # travels to the caller, which keeps the arrays parked until
+    # save_calibration actually needs them.
+    #
     # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
-    # compatibility; J >= 3 returns the {(i, j): array} dict.
+    # compatibility; J >= 3 returns the {(i, j): array} dict. When spilled,
+    # that reshaping happens on restore instead (see PixelSpill.restore).
     if pixel_cross is not None and num_sky_blocks == 2:
         pixel_cross = pixel_cross[(0, 1)]
-    if top2_active:
-        return full_A, full_b, pixel_counts, pixel_fisher, active_mask, pixel_cross
-    return full_A, full_b, pixel_counts, pixel_fisher, pixel_cross
+    return SetupResult(A=full_A, b=full_b,
+                       pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                       pixel_cross=pixel_cross,
+                       active_mask=active_mask if top2_active else None,
+                       pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
+                                    if _pix_spill_dir is not None else None))
 
 
 def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,

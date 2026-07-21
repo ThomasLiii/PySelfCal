@@ -7,23 +7,38 @@ of the assembly/system halves (operates on the returned A, b).
 """
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix, _sparsetools
 from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
+from .blockcsr import BlockCSR, _csr_shell
+
 
 def _partition_csr(A, n_blocks):
-    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy)."""
+    """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy).
+
+    The blocks are assembled by direct attribute assignment rather than the
+    ``csr_matrix((data, indices, indptr), ...)`` constructor: that constructor
+    runs scipy's index-dtype unification with ``check_contents=True``, and when
+    the parent has int64 indices (forced whenever total nnz > 2^31) every
+    block's contents fit int32, so it silently downcast-COPIES all indices —
+    ~nnz*4 bytes of duplicates held for the whole solve (~89 GiB at full-NEP
+    tile scale; verified on scipy 1.15/1.16). Attribute assignment keeps true
+    views of the parent's data/indices; only the per-block shifted indptr is a
+    fresh (small) array. Index dtype does not enter the float arithmetic, so
+    matvec results are bit-identical either way.
+    """
     n_rows = A.shape[0]
     boundaries = np.linspace(0, n_rows, n_blocks + 1, dtype=int)
     blocks = []
     for i in range(n_blocks):
         sr, er = int(boundaries[i]), int(boundaries[i + 1])
-        nnz_s, nnz_e = A.indptr[sr], A.indptr[er]
-        blk = csr_matrix(
-            (A.data[nnz_s:nnz_e], A.indices[nnz_s:nnz_e], A.indptr[sr:er+1] - nnz_s),
-            shape=(er - sr, A.shape[1]), copy=False
-        )
+        nnz_s = A.indptr[sr]
+        blk = csr_matrix.__new__(csr_matrix)
+        blk._shape = (er - sr, int(A.shape[1]))
+        blk.data = A.data[A.indptr[sr]:A.indptr[er]]
+        blk.indices = A.indices[A.indptr[sr]:A.indptr[er]]
+        blk.indptr = A.indptr[sr:er + 1] - nnz_s
         blocks.append(blk)
     return blocks, boundaries
 
@@ -64,6 +79,109 @@ def _make_parallel_operator(A_csr, n_threads):
     op._AT_view = AT_view  # prevent GC
     return op
 
+
+def _iter_global_entry_chunks(blocks, chunk_size):
+    """Yield (data, cols) pairs cut at GLOBAL entry-stream boundaries.
+
+    The preconditioner accumulates float32 partial sums per chunk, so the
+    chunk CUTS are part of the byte-equal contract: they must fall at the
+    same multiples of ``chunk_size`` over the logical concatenation of all
+    blocks that the unified-matrix loop would use. A chunk that straddles a
+    block boundary is therefore CONCATENATED (small copy, <= chunk_size)
+    rather than split — splitting would change the partial-sum tree.
+    """
+    buf_d, buf_c, buf_n = [], [], 0
+    for blk in blocks:
+        pos, size = 0, blk.data.size
+        while pos < size:
+            take = min(size - pos, chunk_size - buf_n)
+            buf_d.append(blk.data[pos:pos + take])
+            buf_c.append(blk.indices[pos:pos + take])
+            buf_n += take
+            pos += take
+            if buf_n == chunk_size:
+                yield ((buf_d[0], buf_c[0]) if len(buf_d) == 1
+                       else (np.concatenate(buf_d), np.concatenate(buf_c)))
+                buf_d, buf_c, buf_n = [], [], 0
+    if buf_n:
+        yield ((buf_d[0], buf_c[0]) if len(buf_d) == 1
+               else (np.concatenate(buf_d), np.concatenate(buf_c)))
+
+
+def _make_parallel_operator_blocks(bcsr, n_threads):
+    """Thread-parallel matvec + bit-exact rmatvec for a BlockCSR.
+
+    matvec: rows are cut at the union of storage-block boundaries and an
+    ``n_threads``-way linspace; each piece is a zero-copy shell into one
+    storage block. A row's dot product depends only on its own entries, so
+    ANY row partition is bit-identical.
+
+    rmatvec: A^T @ y must reproduce the unified CSC scatter's per-element
+    addition ORDER, so blocks are scattered SEQUENTIALLY into one shared
+    output via scipy's raw ``csc_matvec`` kernel (a CSR block reinterpreted
+    as CSC is its transpose, and the kernel accumulates with ``+=``): the
+    same C loop as the one-matrix product, split at row boundaries.
+    Single-threaded, like the unified path's CSC-view rmatvec.
+    """
+    m, n = bcsr.shape
+    dtype = bcsr.dtype
+    print(f"Building parallel SpMV operator ({n_threads} threads, "
+          f"{len(bcsr.blocks)} int32 storage blocks)...")
+    thread_cuts = np.linspace(0, m, max(1, n_threads) + 1, dtype=np.int64)
+    bounds = np.unique(np.concatenate((bcsr.row_bounds, thread_cuts)))
+    pieces = []
+    for r0, r1 in zip(bounds[:-1], bounds[1:]):
+        bi = int(np.searchsorted(bcsr.row_bounds, r0, side='right') - 1)
+        blk = bcsr.blocks[bi]
+        lr0 = int(r0 - bcsr.row_bounds[bi])
+        lr1 = int(r1 - bcsr.row_bounds[bi])
+        s0, s1 = int(blk.indptr[lr0]), int(blk.indptr[lr1])
+        shell = _csr_shell(blk.data[s0:s1], blk.indices[s0:s1],
+                           blk.indptr[lr0:lr1 + 1] - blk.indptr[lr0],
+                           (lr1 - lr0, n))
+        pieces.append((int(r0), int(r1), shell))
+
+    executor = ThreadPoolExecutor(max_workers=max(1, n_threads))
+
+    # Dtype mimicry of the unified path (bit-equal contract): at n_threads>1
+    # the unified custom operator allocates its matvec output in A's dtype
+    # (mixed-dtype products get truncated on assignment), while at
+    # n_threads<=1 scipy wraps the raw matrix and PROMOTES. Production runs
+    # use_float32=True where both agree; we reproduce each regime exactly.
+    promote_matvec = n_threads <= 1
+
+    def _matvec(x):
+        od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
+        out = np.empty(m, dtype=od)
+        def _work(i):
+            r0, r1, shell = pieces[i]
+            out[r0:r1] = shell @ x
+        list(executor.map(_work, range(len(pieces))))
+        return out
+
+    def _rmatvec(y):
+        # Match scipy's own mixed-dtype coercion (e.g. f32 data x f64 y in
+        # non-float32 runs): products and accumulation in the promoted dtype,
+        # same as the unified CSC-view path, so bits are unchanged. In
+        # production (use_float32=True) everything is f32 and no copy happens.
+        out_dtype = np.promote_types(dtype, y.dtype)
+        out = np.zeros(n, dtype=out_dtype)
+        y = np.ascontiguousarray(y, dtype=out_dtype)
+        for bi, blk in enumerate(bcsr.blocks):
+            sr = int(bcsr.row_bounds[bi])
+            er = int(bcsr.row_bounds[bi + 1])
+            bd = (blk.data if blk.data.dtype == out_dtype
+                  else blk.data.astype(out_dtype))
+            _sparsetools.csc_matvec(n, er - sr, blk.indptr, blk.indices,
+                                    bd, y[sr:er], out)
+        return out
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
+    op._executor = executor
+    op._pieces = pieces
+    op._bcsr = bcsr  # prevent GC of the storage blocks
+    return op
+
 def apply_lsqr(A, b, ref_shape, x0=None,
                 atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
                 solver='lsmr', use_float32=False, n_threads=32,
@@ -91,16 +209,23 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         Original (uncompacted) column count. Required when ``active_mask``
         is given. Equals ``A.shape[1]`` when no compaction happened upstream.
     """
-    assert isinstance(A, (coo_matrix, csr_matrix)), \
-        "A must be a scipy.sparse.coo_matrix or csr_matrix"
+    assert isinstance(A, (coo_matrix, csr_matrix, BlockCSR)), \
+        "A must be a scipy.sparse.coo_matrix, csr_matrix, or BlockCSR"
     assert isinstance(b, np.ndarray), "b must be a numpy array"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
 
-    # ---- Top 2 fast path: A is already compact CSR ------------------
-    if isinstance(A, csr_matrix):
+    # Setup may emit f32 b (exactly-f32-representable values only). For
+    # use_float32 solves that's the wanted dtype already; for f64 solves,
+    # upcast reproduces the legacy f64 array bit-for-bit (exact conversion).
+    if not use_float32 and b.dtype == np.float32:
+        b = b.astype(np.float64)
+
+    # ---- Top 2 fast path: A is already compact CSR (or int32 blocks) ----
+    if isinstance(A, (csr_matrix, BlockCSR)):
+        is_block = isinstance(A, BlockCSR)
         if active_mask is not None:
             assert num_cols_full is not None, \
                 "num_cols_full must be supplied alongside active_mask"
@@ -113,37 +238,54 @@ def apply_lsqr(A, b, ref_shape, x0=None,
             num_cols = A.shape[1]
             n_active = num_cols
             x0_compressed = x0
+        # Drop this frame's ref to the full-layout x0 (the caller released its
+        # own via the ownership hand-off) so the f64 original can be freed once
+        # x0_compressed is cast to float32 below.
+        x0 = None
 
         A_shape = A.shape
         if use_float32:
             print("Downcasting to float32 for faster SpMV...")
-            if A.data.dtype != np.float32:
-                A.data = A.data.astype(np.float32)
+            for _blk in (A.blocks if is_block else (A,)):
+                if _blk.data.dtype != np.float32:
+                    _blk.data = _blk.data.astype(np.float32)
             _b_in = b
             b = _b_in.astype(np.float32)
             del _b_in
             if x0_compressed is not None:
                 x0_compressed = x0_compressed.astype(np.float32)
 
-        data = A.data
-        new_col = A.indices
-
         if precondition:
             print("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
             col_sq_norm = np.zeros(n_active, dtype=np.float32)
-            for start in range(0, data.size, chunk_size):
-                stop = min(start + chunk_size, data.size)
-                d_chunk = data[start:stop]
-                c_chunk = new_col[start:stop]
-                col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
+            if is_block:
+                # Same GLOBAL chunk cuts as the unified loop below (the
+                # float32 partial-sum tree is part of the byte-equal
+                # contract); straddling chunks are concatenated inside the
+                # iterator, never split.
+                for d_chunk, c_chunk in _iter_global_entry_chunks(A.blocks, chunk_size):
+                    col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
+            else:
+                data = A.data
+                new_col = A.indices
+                for start in range(0, data.size, chunk_size):
+                    stop = min(start + chunk_size, data.size)
+                    d_chunk = data[start:stop]
+                    c_chunk = new_col[start:stop]
+                    col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
             col_norms = np.sqrt(col_sq_norm)
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
-            for start in range(0, data.size, chunk_size):
-                stop = min(start + chunk_size, data.size)
-                data[start:stop] *= M[new_col[start:stop]].astype(data.dtype, copy=False)
+            # Elementwise in-place scaling: chunk boundaries are free here
+            # (no cross-entry accumulation), so the block path scales each
+            # block's arrays directly.
+            for _blk in (A.blocks if is_block else (A,)):
+                _bd, _bc = _blk.data, _blk.indices
+                for start in range(0, _bd.size, chunk_size):
+                    stop = min(start + chunk_size, _bd.size)
+                    _bd[start:stop] *= M[_bc[start:stop]].astype(_bd.dtype, copy=False)
             x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
         else:
             M = None
@@ -153,7 +295,19 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         A_csr = A
         del A
 
-        if n_threads > 1:
+        if is_block:
+            op = _make_parallel_operator_blocks(A_csr, n_threads)
+            try:
+                with threadpool_limits(limits=1, user_api='blas'):
+                    if solver == 'lsmr':
+                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                    elif solver == 'lsqr':
+                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                    else:
+                        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+            finally:
+                op._executor.shutdown(wait=False)
+        elif n_threads > 1:
             op = _make_parallel_operator(A_csr, n_threads)
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
@@ -201,6 +355,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         new_col = A.col
         x0_compressed = x0
         active_mask = None
+    x0 = None  # release the full-layout x0 (see fast-path comment)
 
     n_active = num_active if active_mask is not None else num_cols
 
