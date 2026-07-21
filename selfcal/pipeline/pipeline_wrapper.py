@@ -459,6 +459,9 @@ class Calibrator(Reprojector):
         # Per-pixel cont x line cross moment (2-block sky models). Enables the
         # separability map I_P = Σw²G² − (Σw²G)²/Σw² saved by save_calibration.
         self.pixel_cross = None
+        # Set when setup_lsqr parked the pixel state on scratch disk; the
+        # arrays are materialised on first use (save_calibration).
+        self._pixel_spill = None
         # When setup_lsqr runs the Top 2 gated path (no template-mode map),
         # it returns a CSR matrix that has already had its zero columns
         # eliminated. ``active_mask`` (length num_cols_full) marks which
@@ -608,25 +611,27 @@ class Calibrator(Reprojector):
                 sky_model=self.sky_model,
                 top2_compaction_enabled=top2_compaction_enabled,
                 batch_spill_dir=batch_spill_dir)
-            # setup_lsqr returns a 5-tuple in legacy / template-mode runs and
-            # a 6-tuple when the Top 2 inline column compaction fires. The
-            # last element is always pixel_cross (per-pixel cont x line cross
-            # moment; None for non-2-block sky models).
-            if _setup_result is None or _setup_result[0] is None:
+            # setup_lsqr returns a SetupResult (named, so no arity branching).
+            # When it parked the pixel state on scratch, the three arrays come
+            # back as None and `pixel_spill` carries the handle; we leave them
+            # there until save_calibration asks for them, so they never sit
+            # alongside the CSR and apply_lsqr has nothing to spill.
+            if _setup_result is None or _setup_result.A is None:
                 self.A, self.b = None, None
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
                 self.pixel_cross = None
-            elif len(_setup_result) == 6:
-                (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher, self.active_mask,
-                 self.pixel_cross) = _setup_result
-                self.num_cols_full = int(self.active_mask.size)
+                self._pixel_spill = None
             else:
-                (self.A, self.b, self.pixel_counts,
-                 self.pixel_fisher, self.pixel_cross) = _setup_result
-                self.active_mask = None
-                self.num_cols_full = None
+                r = _setup_result
+                self.A, self.b = r.A, r.b
+                self.pixel_counts = r.pixel_counts
+                self.pixel_fisher = r.pixel_fisher
+                self.pixel_cross = r.pixel_cross
+                self.active_mask = r.active_mask
+                self.num_cols_full = (int(r.active_mask.size)
+                                      if r.active_mask is not None else None)
+                self._pixel_spill = r.pixel_spill
 
         # Track sky-block count so parse_x / save_calibration / get_skymap
         # all know the sky layout. Derived from the resolved sky model.
@@ -648,6 +653,24 @@ class Calibrator(Reprojector):
         self.det_templates = self.layout.det_template_arr_list
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
+
+    def _materialize_pixel_state(self):
+        """Load pixel_counts/fisher/cross if they are parked on scratch disk."""
+        if getattr(self, '_pixel_spill', None) is None:
+            return
+        (self.pixel_counts, self.pixel_fisher,
+         self.pixel_cross) = self._pixel_spill.restore()
+        self._pixel_spill = None
+
+    def __del__(self):
+        # A Calibrator dropped without ever saving (an aborted tile, a failed
+        # solve) would otherwise leave its ~17 GB of parked arrays behind.
+        try:
+            spill = getattr(self, '_pixel_spill', None)
+            if spill is not None:
+                spill.discard()
+        except Exception:
+            pass
 
     def _spill_pixel_state(self):
         """Park pixel_counts/fisher/cross on scratch disk for the solve.
@@ -838,6 +861,10 @@ class Calibrator(Reprojector):
         if cal_dir is None:
             cal_dir = self.config.cal_dir
         os.makedirs(cal_dir, exist_ok=True)
+        # Materialise the pixel state if setup parked it on scratch. This is
+        # its first and only read: it stayed on disk across the CSR build and
+        # the whole solve, so it never coexisted with either.
+        self._materialize_pixel_state()
         num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
 

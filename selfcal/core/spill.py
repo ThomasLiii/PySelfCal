@@ -73,6 +73,43 @@ def spill_pixel_state(counts, fisher, cross, label='', min_gb=None):
     return spill_dir, n_bytes
 
 
+class PixelSpill:
+    """Handle to pixel state parked on disk, restored on first demand.
+
+    Lets ``setup_lsqr`` hand the arrays off WITHOUT materialising them: they
+    stay on scratch until ``save_calibration`` actually reads them, so they
+    never sit alongside the finished CSR (the measured peak) and are not
+    written out a second time by ``apply_lsqr``.
+
+    ``num_sky_blocks`` is carried so the J==2 convention — ``pixel_cross``
+    collapses from the ``{(i, j): array}`` dict to the bare pair-(0,1) array —
+    is applied on restore exactly as ``setup_lsqr`` used to apply it inline.
+    """
+
+    __slots__ = ('spill_dir', 'num_sky_blocks')
+
+    def __init__(self, spill_dir, num_sky_blocks):
+        self.spill_dir = spill_dir
+        self.num_sky_blocks = int(num_sky_blocks)
+
+    def restore(self):
+        """→ (pixel_counts, pixel_fisher, pixel_cross); removes the scratch dir."""
+        counts, fisher, cross = restore_pixel_state(self.spill_dir)
+        if isinstance(cross, dict) and self.num_sky_blocks == 2:
+            cross = cross[(0, 1)]
+        self.spill_dir = None
+        return counts, fisher, cross
+
+    def discard(self):
+        """Drop the scratch dir without reading it (caller never needed it)."""
+        if self.spill_dir is not None:
+            shutil.rmtree(self.spill_dir, ignore_errors=True)
+            self.spill_dir = None
+
+    def __repr__(self):
+        return f"<PixelSpill {self.spill_dir!r} J={self.num_sky_blocks}>"
+
+
 def restore_pixel_state(spill_dir, cleanup=True):
     """Reload what :func:`spill_pixel_state` wrote → (counts, fisher, cross).
 

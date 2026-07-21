@@ -11,6 +11,8 @@ import os
 import shutil
 import tempfile
 
+from typing import NamedTuple
+
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -18,7 +20,29 @@ from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .layout import SystemLayout
-from .spill import spill_pixel_state, restore_pixel_state
+from .spill import spill_pixel_state, PixelSpill
+
+
+class SetupResult(NamedTuple):
+    """What :func:`setup_lsqr` hands back.
+
+    Named rather than positional because the tuple used to be 5 elements in
+    legacy/template runs and 6 when Top-2 compaction fired, so callers had to
+    branch on ``len()`` — fragile, and it would only get worse now that the
+    pixel-state spill handle rides along too.
+
+    ``pixel_counts`` / ``pixel_fisher`` / ``pixel_cross`` are None exactly
+    when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
+    caller restores them (once) when it needs them. ``active_mask`` is None
+    unless Top-2 compaction ran.
+    """
+    A: object
+    b: object
+    pixel_counts: object
+    pixel_fisher: object
+    pixel_cross: object
+    active_mask: object = None
+    pixel_spill: object = None
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block, line_separability_block,
@@ -988,17 +1012,25 @@ def setup_lsqr(file_list, ref_shape,
         full_A.sort_indices()
         full_A.sum_duplicates()
 
-    if _pix_spill_dir is not None:
-        pixel_counts, pixel_fisher, pixel_cross = restore_pixel_state(
-            _pix_spill_dir)
-
+    # NOTE: the pixel state is deliberately NOT restored here. Restoring it
+    # before returning would re-inflate it right alongside the finished CSR —
+    # i.e. exactly at the peak we just spilled it to avoid (measured: the peak
+    # sample of the M04 run landed mid-restore) — and Calibrator.apply_lsqr
+    # would immediately write it back out again. Instead the spill directory
+    # travels to the caller, which keeps the arrays parked until
+    # save_calibration actually needs them.
+    #
     # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
-    # compatibility; J >= 3 returns the {(i, j): array} dict.
+    # compatibility; J >= 3 returns the {(i, j): array} dict. When spilled,
+    # that reshaping happens on restore instead (see PixelSpill.restore).
     if pixel_cross is not None and num_sky_blocks == 2:
         pixel_cross = pixel_cross[(0, 1)]
-    if top2_active:
-        return full_A, full_b, pixel_counts, pixel_fisher, active_mask, pixel_cross
-    return full_A, full_b, pixel_counts, pixel_fisher, pixel_cross
+    return SetupResult(A=full_A, b=full_b,
+                       pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                       pixel_cross=pixel_cross,
+                       active_mask=active_mask if top2_active else None,
+                       pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
+                                    if _pix_spill_dir is not None else None))
 
 
 def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
