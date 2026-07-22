@@ -45,8 +45,7 @@ class SetupResult(NamedTuple):
     pixel_spill: object = None
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
-                                  offset_damping_block, line_separability_block,
-                                  line_spatial_coherence_block)
+                                  offset_damping_block)
 from .assembly import _prep_lsqr_batch_worker
 
 
@@ -63,9 +62,6 @@ def setup_lsqr(file_list, ref_shape,
                det_aux=None,
                spectral_fit=False, line_center=None, line_sigma=None,
                damp_weight_line=None,
-               line_sep_floor=None, line_sep_floor_quantile=None,
-               line_spatial_floor=None, line_spatial_floor_quantile=None,
-               offset_line_downweight=0.0,
                sky_model=None,
                top2_compaction_enabled=True,
                batch_spill_dir=None):
@@ -129,36 +125,6 @@ def setup_lsqr(file_list, ref_shape,
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
-    offset_line_downweight : float, optional
-        Line-emission downweight for the offset fit (default 0 = off, byte-
-        identical). Scales every offset row's contribution by ``1 - rho*G``,
-        where ``rho`` is this value and ``G`` the peak-normalized coefficient of
-        the last spectral sky block at that observation. The per-frame offset is
-        then determined by line-free (wing) observations and interpolates through
-        the line region, so it stays a clean zodi estimate and cannot absorb the
-        line (which otherwise corrupts the offset and leaves survey-scan fringes).
-        ``rho=1`` fully ignores the line-peak observations when fitting the offset.
-    line_sep_floor, line_sep_floor_quantile : float, optional
-        Separability "water-filling" line damping (2-block sky models only).
-        Per-pixel Tikhonov rows lift the cont/line separability
-        ``I_P = Σw²G² − (Σw²G)²/Σw²`` up to a floor ``τ²``:
-        ``lam_P = sqrt(max(0, τ² − I_P))``. ``line_sep_floor`` gives τ²
-        directly (information units); ``line_sep_floor_quantile`` sets τ² to
-        that quantile of the covered pixels' I_P. Diversity-rich pixels get
-        zero damping (no bias); the small-σ tail that drives the LSQR
-        semi-convergence blowup is lifted to σ ≥ τ, making the solve stable
-        under extra iterations. Both None (default) disables the block —
-        byte-identical to the historical system.
-    line_spatial_floor, line_spatial_floor_quantile : float, optional
-        Diversity-adaptive SPATIAL-COHERENCE prior on the last spectral block.
-        Tikhonov difference rows ``lam*(x[P]-x[Q])=0`` for ref-grid neighbor
-        pairs with ``lam = sqrt(max(0, tau2 - min(I_P, I_Q)))`` — the
-        water-filling deficit, but pulling diversity-poor pixels toward their
-        NEIGHBORS (no amplitude bias) instead of toward zero. Edges between two
-        diversity-rich pixels get lam = 0 (no smoothing, no resolution loss).
-        ``line_spatial_floor`` gives tau2 directly; the quantile variant sets it
-        from the covered pixels' I_P distribution. Both None (default) disables
-        the block — byte-identical to the historical system.
     """
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
@@ -320,7 +286,6 @@ def setup_lsqr(file_list, ref_shape,
         'adj_info_list': adj_infos,
         'poly_constraint_list': poly_constraints_list,
         'poly_basis_list': poly_basis_list,
-        'offset_line_downweight': offset_line_downweight,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
@@ -609,64 +574,6 @@ def setup_lsqr(file_list, ref_shape,
                 j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
-
-    # --- Separability water-filling line damping (last spectral block) ---
-    # Per-pixel: lam_P² = max(0, τ² − I_P) with I_P the line block's Schur
-    # complement against ALL other sky blocks, so effective information ≥ τ²
-    # everywhere. Diversity-rich pixels get lam = 0 (no bias); the small-σ
-    # tail that drives LSQR semi-convergence blowup is lifted to σ ≥ τ.
-    # τ² = ``line_sep_floor`` (absolute, information units) or the
-    # ``line_sep_floor_quantile`` quantile of covered pixels' I_P.
-    if (pixel_cross is not None
-            and ((line_sep_floor is not None and line_sep_floor > 0)
-                 or line_sep_floor_quantile is not None)):
-        I_P = _separability_from_moments(
-            pixel_fisher, pixel_cross, num_sky, num_sky_blocks)
-        covered = pixel_counts[(num_sky_blocks - 1) * num_sky:
-                               num_sky_blocks * num_sky] > 0
-        if line_sep_floor is not None and line_sep_floor > 0:
-            tau2 = float(line_sep_floor)
-        else:
-            tau2 = float(np.quantile(I_P[covered], float(line_sep_floor_quantile)))
-        lam = np.zeros(num_sky, dtype=np.float64)
-        lam[covered] = np.sqrt(np.maximum(tau2 - I_P[covered], 0.0))
-        n_lift = int((lam > 0).sum())
-        print(f"Applying separability water-filling line damping: tau2={tau2:.6g} "
-              f"-> lifting {n_lift:,}/{int(covered.sum()):,} covered pixels", flush=True)
-        blk = line_separability_block(num_sky_blocks - 1, lam, num_sky)
-        if blk is not None:
-            constraint_blocks.append(blk.as_dict())
-
-    # --- Diversity-adaptive spatial coherence on the last spectral block ---
-    # lam_edge = sqrt(max(0, tau2 - min(I_P, I_Q))) = max(lam_px[P], lam_px[Q]):
-    # any neighbor pair containing a diversity-deficient pixel is tied together;
-    # rich-rich pairs get 0 (no smoothing). Emitted only where BOTH pixels are
-    # line-covered so uncovered zeros are never pulled into the map.
-    if (pixel_cross is not None
-            and ((line_spatial_floor is not None and line_spatial_floor > 0)
-                 or line_spatial_floor_quantile is not None)):
-        I_sp = _separability_from_moments(
-            pixel_fisher, pixel_cross, num_sky, num_sky_blocks)
-        cov_sp = pixel_counts[(num_sky_blocks - 1) * num_sky:
-                              num_sky_blocks * num_sky] > 0
-        if line_spatial_floor is not None and line_spatial_floor > 0:
-            tau2_sp = float(line_spatial_floor)
-        else:
-            tau2_sp = float(np.quantile(I_sp[cov_sp], float(line_spatial_floor_quantile)))
-        lam_px = np.zeros(num_sky, dtype=np.float64)
-        lam_px[cov_sp] = np.sqrt(np.maximum(tau2_sp - I_sp[cov_sp], 0.0))
-        H_sp, W_sp = int(ref_shape[0]), int(ref_shape[1])
-        Lm = lam_px.reshape(H_sp, W_sp)
-        Cm = cov_sp.reshape(H_sp, W_sp)
-        lam_h = np.where(Cm[:, :-1] & Cm[:, 1:], np.maximum(Lm[:, :-1], Lm[:, 1:]), 0.0)
-        lam_v = np.where(Cm[:-1, :] & Cm[1:, :], np.maximum(Lm[:-1, :], Lm[1:, :]), 0.0)
-        n_e = int((lam_h > 0).sum() + (lam_v > 0).sum())
-        print(f"Applying diversity-adaptive spatial coherence (line block): "
-              f"tau2={tau2_sp:.6g} -> {n_e:,} neighbor-difference rows", flush=True)
-        blk = line_spatial_coherence_block(num_sky_blocks - 1, lam_h, lam_v, num_sky)
-        if blk is not None:
-            constraint_blocks.append(blk.as_dict())
-        del I_sp, lam_px, Lm, Cm, lam_h, lam_v
 
     # --- Coverage-weighted offset damping ---
     if damp_offset > 0:
@@ -1198,16 +1105,6 @@ def parse_line_separability(pixel_cross, pixel_fisher, ref_shape, num_sky_blocks
     return _separability_from_moments(
         pixel_fisher, pixel_cross, num_sky, num_sky_blocks,
         block=block).reshape(ref_shape)
-
-
-def apply_line_separability_mask(sky_line, separability, threshold):
-    """Read-time mask on the separability map: NaN where ``I_P < threshold``.
-
-    Non-destructive analog of :func:`apply_line_fisher_mask`, but on the metric
-    that actually bounds the per-pixel line variance (Var ∝ 1/I_P)."""
-    out = np.asarray(sky_line, dtype=np.float32).copy()
-    out[np.asarray(separability) < threshold] = np.nan
-    return out
 
 
 def apply_line_fisher_mask(sky_line, line_fisher, threshold):

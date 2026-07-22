@@ -502,9 +502,6 @@ class Calibrator(Reprojector):
                    det_aux=None,
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
-                   line_sep_floor=None, line_sep_floor_quantile=None,
-                   line_spatial_floor=None, line_spatial_floor_quantile=None,
-                   offset_line_downweight=0.0,
                    offset_model=None, sky_model=None,
                    top2_compaction_enabled=True,
                    batch_spill_dir=None):
@@ -603,11 +600,6 @@ class Calibrator(Reprojector):
                 damp_offset=damp_offset, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
-                line_sep_floor=line_sep_floor,
-                line_sep_floor_quantile=line_sep_floor_quantile,
-                line_spatial_floor=line_spatial_floor,
-                line_spatial_floor_quantile=line_spatial_floor_quantile,
-                offset_line_downweight=offset_line_downweight,
                 sky_model=self.sky_model,
                 top2_compaction_enabled=top2_compaction_enabled,
                 batch_spill_dir=batch_spill_dir)
@@ -951,8 +943,7 @@ class Calibrator(Reprojector):
             # Fisher (a magnitude metric), I_P measures wavelength diversity —
             # the quantity that bounds per-pixel amplitude variance and
             # identifies the degenerate pixels that blow up under LSQR
-            # semi-convergence. Mask at read time via
-            # selfcal.core.lsqr.apply_line_separability_mask. One dataset per
+            # semi-convergence. Kept as a read-time diagnostic. One dataset per
             # spectral block, sky_separability/<name>; for 2-block cals this is
             # the single legacy dataset, byte-identical.
             if (getattr(self, 'pixel_cross', None) is not None

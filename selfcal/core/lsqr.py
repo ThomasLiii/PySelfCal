@@ -8,6 +8,6 @@ from .assembly import _prep_lsqr, _prep_lsqr_batch_worker  # noqa: F401
 from .system import (  # noqa: F401
     setup_lsqr, parse_pixel_counts, parse_pixel_fisher,
     parse_pixel_counts_sky, parse_pixel_fisher_sky, apply_line_fisher_mask,
-    parse_line_separability, apply_line_separability_mask,
+    parse_line_separability,
 )
 from .solve import apply_lsqr, _partition_csr, _make_parallel_operator  # noqa: F401
