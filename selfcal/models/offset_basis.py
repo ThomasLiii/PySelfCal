@@ -71,58 +71,21 @@ def cheb_shape_basis(subch, degree, lo, hi):
     return B
 
 
-def line_ortho_matrix(degree, lo, hi, g_grid):
-    """Reduce the degree-D mean-zero Chebyshev basis to the (D-1)-dim subspace of
-    polynomials ORTHOGONAL to the line profile ``g`` over the window grid.
-
-    The offset must not be able to represent the line, else a smooth polynomial
-    (e.g. a bowl centered on the line) absorbs it. We restrict the offset to
-    ``{ mean-zero degree-D polynomials } ∩ { ⊥ g }``: an offset built as
-    ``cheb_shape_basis(subch, degree, lo, hi) @ N`` is then guaranteed ⊥ g.
-
-    Parameters
-    ----------
-    g_grid : (S,) array
-        The line coefficient ``G(BC(subch))`` at each window subchannel
-        ``lo..hi`` (S = hi-lo+1). Mean-removed internally (the DC is the scalar).
-
-    Returns
-    -------
-    N : (degree, degree-1) float64
-        Columns span the coefficient vectors ``c`` with ``(cheb@c) ⊥ g``.
-    """
-    grid = np.arange(int(lo), int(hi) + 1)
-    Bg = cheb_shape_basis(grid, degree, lo, hi)          # (S, D) on the window grid
-    g = np.asarray(g_grid, dtype=np.float64).ravel()
-    g = g - g.mean()                                     # mean-zero (shape space)
-    v = Bg.T @ g                                         # (D,) = <T_d, g>_grid
-    nv = np.linalg.norm(v)
-    if nv < 1e-300:                                      # g ⊥ every basis already
-        return np.eye(degree)[:, :degree - 1] if degree > 1 else np.zeros((degree, 0))
-    # null space of v^T (1×D): last D-1 right singular vectors.
-    _, _, Vt = np.linalg.svd(v.reshape(1, -1))
-    return Vt[1:].T                                      # (D, D-1), columns ⊥ v
-
-
 def n_coef(pb):
     """Number of solved coefficients per column for a poly_basis spec."""
-    N = pb.get('ortho_N')
-    return int(N.shape[1]) if N is not None else int(pb['degree'])
+    return int(pb['degree'])
 
 
 def eval_offset_basis(coord, pb):
     """Offset basis evaluated at coordinate values ``coord`` for a poly_basis
     spec: the mean-zero Chebyshev basis over the coordinate window
-    ``[coord_lo, coord_hi]``, optionally reduced to the ⊥-line subspace via
-    ``ortho_N``. Returns ``(len(coord), n_coef(pb))``. Single source of truth
-    for both the row assembly and the save-time reconstruction.
+    ``[coord_lo, coord_hi]``. Returns ``(len(coord), n_coef(pb))``. Single source
+    of truth for both the row assembly and the save-time reconstruction.
 
     Instrument-agnostic: ``coord`` is an abstract polynomial coordinate (the
     instrument decides what it means, e.g. SPHEREx subchannel via
     ``pb['chunk_coord']``); this module never assumes a chunk encoding."""
-    B = cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
-    N = pb.get('ortho_N')
-    return B if N is None else B @ np.asarray(N, dtype=np.float64)
+    return cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
 
 
 if __name__ == "__main__":  # quick self-test
