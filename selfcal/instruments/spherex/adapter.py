@@ -182,6 +182,25 @@ class SPHERExInstrument:
             num_subchannels=num_subchannels, num_columns=num_columns,
             degree=degree, subch_lo=lo, subch_hi=hi)
 
+    def subchannel_poly_basis(self, det_chunk_map, num_columns, degree, lo, hi):
+        """Hard poly-basis descriptor for a per-column subchannel polynomial
+        offset (the ``poly_basis`` dict consumed by the instrument-agnostic core
+        in ``selfcal.models.offset_basis``). This is the ONLY place the SPHEREx
+        chunk encoding ``chunk = subchannel*num_col + column`` is inverted:
+        ``chunk_coord`` = subchannel (the polynomial coordinate), ``chunk_group``
+        = column (one independent polynomial per column). The core sees only the
+        abstract coord/group arrays. Used by spectral modes whose offset is a
+        degree-``degree`` Chebyshev in subchannel over the window ``[lo, hi]``."""
+        n_chunks = int(det_chunk_map.max()) + 1
+        chunk_ids = np.arange(n_chunks)
+        return {
+            'degree': int(degree),
+            'num_groups': int(num_columns),
+            'coord_lo': int(lo), 'coord_hi': int(hi),
+            'chunk_coord': chunk_ids // int(num_columns),
+            'chunk_group': chunk_ids % int(num_columns),
+        }
+
     # ---- readout-channel geometry (k2 mode) --------------------------------
     def readout_chunk_map(self, det_shape, col_start=60, col_width=64):
         return make_readout_chunk_map(det_shape, col_start=col_start, col_width=col_width)

@@ -194,16 +194,30 @@ def run_tiled(cfg):
         staging.rss_checkpoint('startup')
 
     ref_shape = tuple(t['ref_shape'])
-    tiles = make_tile_grid(ref_shape, t['grid'][0], t['grid'][1],
-                           overlap_px=t['overlap_px'], names=t['tile_names'])
+    # Two tiling modes:
+    #  - a uniform grid: `grid` = [n_y, n_x] with `overlap_px` (make_tile_grid);
+    #  - explicit tiles: `tiles` = list of {name, bbox=[y0,y1,x0,x1]}, arbitrary
+    #    and possibly OVERLAPPING (the adaptive-overlap layout used to restore
+    #    per-pixel wavelength diversity at seams for spectral fits). Overlapping
+    #    bboxes share any frame whose footprint center lands in the overlap
+    #    (frame_filter='center'); the Fisher stitch is tile-shape-agnostic.
+    from selfcal.pipeline.tiled import TileSpec
+    if t.get('tiles'):
+        tiles = [TileSpec(name=spec['name'], bbox=tuple(spec['bbox']))
+                 for spec in t['tiles']]
+        print(f"[tiled] {len(tiles)} explicit tiles (from [tiled].tiles)", flush=True)
+    else:
+        tiles = make_tile_grid(ref_shape, t['grid'][0], t['grid'][1],
+                               overlap_px=t['overlap_px'], names=t['tile_names'])
     # Optional partial run: build the full grid (so each tile's bbox is correct),
     # then restrict the run to a subset of tile names. A partial run skips the
     # stitch (a single tile is already a full cal-shaped h5 over its region).
     only_tiles = t.get('only_tiles')
     if only_tiles:
+        all_names = [tile.name for tile in tiles]
         tiles = [tile for tile in tiles if tile.name in only_tiles]
         if not tiles:
-            raise ValueError(f"only_tiles={only_tiles} matched no tile in {t['tile_names']}")
+            raise ValueError(f"only_tiles={only_tiles} matched no tile in {all_names}")
         print(f"[tiled] only_tiles={only_tiles}: partial run, stitch skipped.", flush=True)
     print("[tiled] tiles:", flush=True)
     for tile in tiles:

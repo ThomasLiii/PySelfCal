@@ -34,5 +34,5 @@ dev = ["pytest"]
 include = ["selfcal*"]
 
 [tool.setuptools.package-data]
-# Ship the SPHEREx LVF arc-fit parameters with the wheel.
-"selfcal.instruments.spherex" = ["data/lvf_params/*.npy"]
+# Ship the SPHEREx LVF arc-fit parameters + multi-line spectral templates.
+"selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz"]
