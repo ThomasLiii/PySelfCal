@@ -5,6 +5,8 @@ lsqr/lsmr against a thread-parallel SpMV ``LinearOperator``, with Jacobi
 column-norm preconditioning and Top-2 column-compaction expansion. Independent
 of the assembly/system halves (operates on the returned A, b).
 """
+import os
+
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from scipy.sparse import coo_matrix, csr_matrix, _sparsetools
@@ -108,6 +110,113 @@ def _iter_global_entry_chunks(blocks, chunk_size):
                else (np.concatenate(buf_d), np.concatenate(buf_c)))
 
 
+def parallel_rmatvec_threads():
+    """Thread count for the parallel rmatvec; 0 = off (the default).
+
+    ``A^T @ y`` is a scatter (every matrix row adds into scattered output
+    columns), so unlike matvec it cannot be threaded without changing the
+    order in which each output column's contributions are summed. The
+    sequential kernel is therefore the default, and it dominates the solve:
+    matvec runs on many threads while this runs on one, so on the full-NEP
+    D4 M04 tile the LSQR solve spends most of its per-iteration time here.
+
+    Enabling ``SELFCAL_PARALLEL_RMATVEC=<n>`` gives each thread a private
+    output buffer and reduces them afterwards — race-free and DETERMINISTIC
+    (a fixed thread count always yields the same bytes). Two consequences,
+    both measured on the M04 tile, both the reason this is opt-in:
+
+    * NOT bit-identical to the sequential kernel. Per-column sums become a
+      tree instead of one chain, a float32 reassociation of ~1.5e-6 L2 in
+      rmatvec (median exactly 0) that propagates to ~1e-4 of each converged
+      sky map's own scatter (Pearson 1.0 vs the sequential cal; well inside
+      the solver's atol/btol=1e-6). Scientifically equivalent, but the
+      byte-equality goldens must be regenerated once to adopt it, and the
+      output then depends on the thread count (a different ``n`` -> a
+      different partition -> different bytes at the ~1e-6 level).
+    * The real speedup is modest. rmatvec is memory-bandwidth-bound at
+      production scale, so parallelising it gives ~1.5x per LSQR iteration
+      and ~1.3x on the whole tile (8994 -> 6812 s on M04) — not the larger
+      figure an isolated-kernel microbenchmark suggests (its smaller matrix
+      fits cache; the real one does not). 8 threads is the sweet spot; past
+      that the per-thread-buffer reduction costs more than it saves.
+    """
+    try:
+        n = int(os.environ.get('SELFCAL_PARALLEL_RMATVEC', '0'))
+    except ValueError:
+        n = 0
+    return max(0, n)
+
+
+def _row_pieces(bcsr, n_pieces):
+    """Split the rows into ``n_pieces`` contiguous chunks of storage shells.
+
+    Each piece is a list of (block, local_start, local_end) covering one
+    contiguous global row range, so a thread can scatter its own rows without
+    touching another thread's.
+    """
+    m = bcsr.shape[0]
+    cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
+    pieces = []
+    for r0, r1 in zip(cuts[:-1], cuts[1:]):
+        r0, r1 = int(r0), int(r1)
+        if r1 <= r0:
+            continue
+        spans = []
+        for bi, blk in enumerate(bcsr.blocks):
+            b0 = int(bcsr.row_bounds[bi])
+            b1 = int(bcsr.row_bounds[bi + 1])
+            lo, hi = max(r0, b0), min(r1, b1)
+            if lo < hi:
+                spans.append((blk, b0, lo, hi))
+        if spans:
+            pieces.append((r0, r1, spans))
+    return pieces
+
+
+def _make_parallel_rmatvec(bcsr, n_threads, out_n, dtype):
+    """Parallel scatter rmatvec: private per-thread buffers + reduction.
+
+    Each thread scatters a disjoint row range with scipy's own C kernel (which
+    releases the GIL) into a buffer it alone owns, so no numba and no locking.
+    The buffers are allocated ONCE per operator, not per call.
+
+    Determinism: the row partition and the reduction order are both fixed at
+    construction, so repeated calls on the same input return identical bytes.
+    """
+    pieces = _row_pieces(bcsr, n_threads)
+    bufs = [np.zeros(out_n, dtype=dtype) for _ in pieces]
+    ex = ThreadPoolExecutor(max_workers=len(pieces))
+    print(f"  rmatvec: PARALLEL scatter over {len(pieces)} threads "
+          f"(+{len(pieces) * out_n * np.dtype(dtype).itemsize / 2**30:.2f} GB "
+          f"of private buffers) — NOT bit-identical to the sequential kernel.")
+
+    def _rmatvec(y):
+        y = np.ascontiguousarray(y, dtype=dtype)
+
+        def _work(i):
+            r0, r1, spans = pieces[i]
+            buf = bufs[i]
+            buf[:] = 0
+            for blk, b0, lo, hi in spans:
+                l0, l1 = lo - b0, hi - b0
+                s0 = int(blk.indptr[l0])
+                _sparsetools.csc_matvec(
+                    out_n, hi - lo,
+                    blk.indptr[l0:l1 + 1] - blk.indptr[l0],
+                    blk.indices[s0:int(blk.indptr[l1])],
+                    blk.data[s0:int(blk.indptr[l1])],
+                    y[lo:hi], buf)
+
+        list(ex.map(_work, range(len(pieces))))
+        out = bufs[0].copy()
+        for i in range(1, len(bufs)):        # fixed order => deterministic
+            out += bufs[i]
+        return out
+
+    return _rmatvec, ex
+
+
+
 def _make_parallel_operator_blocks(bcsr, n_threads):
     """Thread-parallel matvec + bit-exact rmatvec for a BlockCSR.
 
@@ -159,7 +268,7 @@ def _make_parallel_operator_blocks(bcsr, n_threads):
         list(executor.map(_work, range(len(pieces))))
         return out
 
-    def _rmatvec(y):
+    def _rmatvec_sequential(y):
         # Match scipy's own mixed-dtype coercion (e.g. f32 data x f64 y in
         # non-float32 runs): products and accumulation in the promoted dtype,
         # same as the unified CSC-view path, so bits are unchanged. In
@@ -176,8 +285,23 @@ def _make_parallel_operator_blocks(bcsr, n_threads):
                                     bd, y[sr:er], out)
         return out
 
+    # Opt-in parallel scatter. Only for the all-one-dtype case: the private
+    # buffers are typed at construction, so a y of a different dtype would
+    # change the promotion and is left to the sequential kernel.
+    _par_threads = parallel_rmatvec_threads()
+    _rmatvec_parallel, _par_ex = (
+        _make_parallel_rmatvec(bcsr, _par_threads, n, dtype)
+        if _par_threads > 1 else (None, None))
+
+    def _rmatvec(y):
+        if (_rmatvec_parallel is not None
+                and np.promote_types(dtype, y.dtype) == dtype):
+            return _rmatvec_parallel(y)
+        return _rmatvec_sequential(y)
+
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
     op._executor = executor
+    op._rmatvec_executor = _par_ex
     op._pieces = pieces
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
@@ -307,6 +431,8 @@ def apply_lsqr(A, b, ref_shape, x0=None,
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
                 op._executor.shutdown(wait=False)
+                if getattr(op, '_rmatvec_executor', None) is not None:
+                    op._rmatvec_executor.shutdown(wait=False)
         elif n_threads > 1:
             op = _make_parallel_operator(A_csr, n_threads)
             try:
@@ -319,6 +445,10 @@ def apply_lsqr(A, b, ref_shape, x0=None,
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
                 op._executor.shutdown(wait=False)
+            if getattr(op, '_rmatvec_executor', None) is not None:
+                op._rmatvec_executor.shutdown(wait=False)
+                if getattr(op, '_rmatvec_executor', None) is not None:
+                    op._rmatvec_executor.shutdown(wait=False)
         else:
             if solver == 'lsmr':
                 result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
@@ -432,6 +562,8 @@ def apply_lsqr(A, b, ref_shape, x0=None,
                     raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
         finally:
             op._executor.shutdown(wait=False)
+            if getattr(op, '_rmatvec_executor', None) is not None:
+                op._rmatvec_executor.shutdown(wait=False)
     else:
         if solver == 'lsmr':
             result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
