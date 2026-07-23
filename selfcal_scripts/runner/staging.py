@@ -1,9 +1,10 @@
 """NVMe staging + the RSS guardrail — generic, instrument/mode-agnostic.
 
-The cal drivers all copy the HDD reproj files to a per-run NVMe scratch dir for
-fast parallel reads, remap cal/mosaic file lists onto it, and (optionally) clean
-it up. The tiled driver additionally needs the OOM guardrail. Both behaviors live
-here so the engine stays readable.
+Calibration runs copy the HDD reproj files to a per-run NVMe scratch dir for
+fast parallel reads, remap the cal/mosaic file lists onto it, and (optionally)
+clean it up afterward. Tiled runs additionally use the RSS guardrail below
+(their per-tile peak can approach machine memory). Both behaviors live here so
+the engine stays readable.
 """
 import glob as glob_module
 import os
@@ -91,9 +92,10 @@ def cleanup_nvme(cfg, nvme_reproj_dir):
 
 
 # --------------------------------------------------------------------------
-# RSS guardrail — poll VmRSS, force a clean os._exit before the kernel OOM-kills
-# mid-allocation with no traceback. Used by the tiled build (large per-tile peak).
-# Verbatim behavior from run_cal_tiled_NEP.py.
+# RSS guardrail — polls VmRSS every RSS_POLL_SEC (15 s) and forces os._exit(2)
+# once RSS reaches RSS_ABORT_FRACTION (85%) of MemTotal: a clean, logged exit
+# instead of a kernel OOM-kill mid-allocation with no traceback. Used by the
+# tiled build (large per-tile peak).
 # --------------------------------------------------------------------------
 RSS_POLL_SEC = 15.0
 RSS_ABORT_FRACTION = 0.85

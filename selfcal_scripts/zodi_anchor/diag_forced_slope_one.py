@@ -1,10 +1,12 @@
 """Forced-slope=1 per-channel zodi anchor fit diagnostic.
 
 The per-channel anchor (``fit_anchor_for_channel``) lets slope vary freely
-in wavelength. A few-percent slope inflation eats ~10-15 mMJy/sr from C
-(because ``C = mean(fdc) - slope*mean(zp)``), and the slope distribution
-is systematically different on different detectors. That produces visible
-discontinuities in C at the D3->D4 and D4->D5 boundaries.
+in wavelength, and slope trades off against C via
+``C = mean(fdc) - slope*mean(zp)``. In the NEP 2026-W17 anchor fits the
+free slopes ran a few percent above 1, shifting C by roughly
+slope_excess * mean(zp) — ~10-15 mMJy/sr there — by different amounts
+per detector, which produced visible discontinuities in C at the D3->D4
+and D4->D5 boundaries.
 
 This diagnostic tests the alternative: lock slope to exactly 1.0 per
 channel and recompute C from the inlier means. The fit follows
@@ -21,10 +23,12 @@ in-memory (fdc, zp, mjds) and resid_std_free is directly comparable to
 resid_std_locked.
 
 Outputs:
-  * 4-panel figure: (a) C_free vs C_locked vs lambda for D3/D4/D5
+  * 4-panel figure: (a) C_free vs C_locked vs lambda for each loaded
+                        detector
                     (b) resid_std_free vs resid_std_locked vs lambda
                     (c) ratio_chi2 vs lambda
-                    (d) zoom on D3-D4 and D4-D5 boundaries: C_free vs C_locked
+                    (d) zoom on each adjacent-detector boundary:
+                        C_free vs C_locked
   * .npz with all per-channel arrays.
   * stdout table per channel.
 
@@ -107,7 +111,8 @@ def fit_locked_slope_one(zp, fs, mjds, window_days, sigma, iters):
       * recomputes C from inlier means at each refit
 
     Returns (C, inlier_mask). For slope=1 the OLS-optimal intercept on
-    inliers IS mean(fs[inlier]) - mean(zp[inlier]), matching the task spec.
+    the inliers is exactly mean(fs[inlier]) - mean(zp[inlier]), so no
+    iterative slope/intercept update is needed.
     """
     slope = 1.0
     inlier = np.isfinite(zp) & np.isfinite(fs)
@@ -201,8 +206,11 @@ def main():
         wls = det_data['WL']
         n_ch = len(chs)
         anchor_per_ch = per_channel_from_anchor(det_data['anchor_path'])
-        # Build a lookup ch -> (slope, C) from the anchor file. anchor_method
-        # is 'raw' for these runs so slope_final == slope, C_final == C.
+        # Build a lookup ch -> (slope, C) from the anchor file's
+        # slope_final/C_final. The sanity check below compares them to a
+        # fit_with_clip re-run, which reproduces the RAW per-channel fit —
+        # so expect [warn] mismatches whenever anchor_method != 'raw'
+        # (post-fit slope smoothing overwrote slope_final/C_final).
         anchor_lut = {int(c): (float(s), float(C)) for c, s, C in zip(
             anchor_per_ch['channels'],
             anchor_per_ch['slope'],

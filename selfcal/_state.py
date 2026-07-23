@@ -1,4 +1,4 @@
-"""Module-level mutable state shared across SelfCal submodules."""
+"""Module-level mutable state shared across selfcal submodules."""
 
 from multiprocessing import Lock as _MPLock, BoundedSemaphore as _MPSemaphore
 

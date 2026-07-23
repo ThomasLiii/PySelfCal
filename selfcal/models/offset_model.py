@@ -6,19 +6,22 @@ the same map index ``m``::
     chunk_maps, det_groups_list, det_templates, reg_weights,
     adj_infos, poly_constraints_list, mean_offsets_list
 
-Keeping those in lockstep by hand is exactly where the K=2 readout and
-chunked-NEP dual-poly configs get error-prone (e.g. matching ``[None, zeros]``
-in one list against ``[None, target]`` in another). ``OffsetModel`` bundles each
-map's configuration into one :class:`OffsetBlock` so a multi-map setup reads as
-cohesive blocks.
+Keeping those in lockstep by hand is error-prone in any multi-map
+configuration — e.g. a two-map setup must pair ``det_groups_list=[None, zeros]``
+in one list with ``mean_offsets_list=[None, target]`` in another (see the
+``k2_readout`` runner mode for a real two-map instance). ``OffsetModel`` bundles
+each map's configuration into one :class:`OffsetBlock` so a multi-map setup
+reads as cohesive blocks.
 
 This is a thin bundling/lowering layer: :meth:`OffsetModel.to_setup_kwargs`
 expands back to the exact parallel-list kwargs ``setup_lsqr`` already consumes,
 so driving ``setup_lsqr`` via an ``OffsetModel`` is numerically identical to
-calling it with the equivalent flat kwargs (verified byte-equal by the gate).
-The flat kwargs remain supported as a deprecated transitional API; ``OffsetModel``
-is the forward-looking spelling and is slated to become the sole API once all
-drivers migrate.
+calling it with the equivalent flat kwargs (verified byte-equal: rerunning a
+reference config through both spellings produces identical ``cal_*.h5`` output;
+regression harness in ``selfcal_scripts/benchmarks/run_cal_baseline_test.py`` +
+``selfcal_scripts/drivers/diff_cal_h5.py``). The flat parallel-list kwargs
+remain supported but are deprecated; new code should construct an
+``OffsetModel``.
 
 Per-block (lives on ``OffsetBlock``): chunk map, frame grouping, template,
 adjacency + its weight, polynomial-chain constraints, mean-offset anchor.
@@ -44,7 +47,8 @@ class OffsetBlock:
     det_groups : np.ndarray or None
         Per-frame group labels (length num_frames). ``None`` (default) solves a
         free offset per frame. ``np.zeros(num_frames)`` locks all frames to one
-        shared offset vector (the K=2 detector-fixed readout-stripe pattern).
+        shared offset vector (a detector-fixed pattern — e.g. a readout
+        stripe — as in the ``k2_readout`` runner mode).
     template : np.ndarray or None
         Fixed spatial pattern; when set, the block solves only a per-frame
         amplitude. Requires ``det_groups`` to be set (matches setup_lsqr).
@@ -60,6 +64,19 @@ class OffsetBlock:
     mean_offset : object or None
         Per-frame mean-anchor target for this block (``mean_offsets_list[m]``),
         typically ``np.zeros(num_frames)``.
+    poly_basis : dict or None
+        Hard polynomial-basis offset (replaces the soft ``poly_constraints``
+        subchannel penalty). When set, this block does NOT solve a free offset
+        per chunk; instead the per-frame offset IS a degree-D Chebyshev
+        polynomial in an abstract per-chunk coordinate, independent per group
+        (for SPHEREx: coordinate = subchannel, group = column), solved for its
+        coefficients ``a[frame, group, d]`` (d=1..D; the per-frame scalar owns
+        the DC). Dict keys (see :mod:`selfcal.models.offset_basis`): ``degree``
+        (int D), ``num_groups`` (number of independent polynomials),
+        ``coord_lo``/``coord_hi`` (coordinate window), ``chunk_coord``/
+        ``chunk_group`` (per-chunk coordinate / group-index arrays). When set,
+        ``adj_info``/``reg_weight``/``poly_constraints`` for this block are
+        ignored (the polynomial is exact, no weight knob).
     """
 
     chunk_map: np.ndarray
@@ -69,6 +86,7 @@ class OffsetBlock:
     adj_info: object = None
     poly_constraints: object = None
     mean_offset: object = None
+    poly_basis: object = None
 
 
 @dataclass(frozen=True)
@@ -110,5 +128,6 @@ class OffsetModel:
             'adj_infos': [b.adj_info for b in self.blocks],
             'poly_constraints_list': [b.poly_constraints for b in self.blocks],
             'mean_offsets_list': [b.mean_offset for b in self.blocks],
+            'poly_basis_list': [b.poly_basis for b in self.blocks],
             'use_per_frame_scalar': self.use_per_frame_scalar,
         }

@@ -1,6 +1,8 @@
 """Joint per-detector amplification + per-channel C anchor fit diagnostic.
 
-The current anchor fits ``full_DC[k, c] = slope_c * zodi_pred[k, c] + C_c``
+The production per-channel anchor (``build_anchor.py`` /
+``selfcal.zodi_anchor.fit_anchor_for_channel``) fits
+``full_DC[k, c] = slope_c * zodi_pred[k, c] + C_c``
 independently per channel. This diagnostic fits a joint model that shares
 ONE amplification across all 34 channels of a detector::
 
@@ -40,8 +42,9 @@ import numpy as np
 from selfcal.zodi_anchor import compute_full_dc, load_anchor
 
 
-# Detector color map (matches the convention used in the cross-channel
-# overlay plots).
+# Detector color map (same D->color convention as the sibling diagnostics
+# diag_resid_features.py / diag_perchannel_fit_compare.py /
+# diag_overlap_subchannel_continuity.py).
 DET_COLORS = {1: 'tab:purple', 2: 'tab:orange',
               3: 'tab:green', 4: 'tab:blue', 5: 'tab:red'}
 # Detector wavelength boundaries to mark on the spectrum (um).

@@ -1,4 +1,5 @@
-"""Phase-1 slope smoothing of contaminated anchor channels.
+"""Slope-only smoothing of contaminated anchor channels (r-weighted
+spline over slope(λ); C recomputed, never splined).
 
 Some channels' per-channel anchor fit is unreliable because a bright,
 time-variable non-zodi signal (e.g. He I 1083 nm / OI 8446 nm airglow on
@@ -6,11 +7,13 @@ D1) overwhelms the zodi correlation: low Pearson r, wild slope, and a C
 blown far off the smooth trend. Leaving those C values in place puts a
 large wrong uniform offset into the affected channels' mosaics.
 
-This script fits a Pearson-r-weighted smoothing spline over slope(λ) and
-C(λ) across a detector's channels (contaminated channels carry ~zero
-weight, so the curve follows the clean trend), then REPLACES only the
-flagged (r < --r-threshold) channels' slope_final / C_final with the
-spline value. Clean channels keep their raw fit. The result is written
+This script fits a Pearson-r-weighted smoothing spline over slope(λ)
+across a detector's channels (contaminated channels carry ~zero weight,
+so the curve follows the clean trend), then REPLACES only the flagged
+(r < --r-threshold) channels' slope_final with the spline value and
+recomputes their C_final from the smoothed slope (C itself is never
+splined, so real non-zodi features survive). Clean channels keep their
+raw fit. The result is written
 back into the SAME anchor file (raw slope/intercept stay untouched;
 consumers read slope_final / C_final).
 
@@ -21,7 +24,8 @@ consumers read slope_final / C_final).
     python smooth_anchor.py --run-dir /mnt/.../D1_...
 
 See selfcal.zodi_anchor.rweighted_slope_smooth for the core math and
-workspace/zodi_anchor_refactor/refactor.md for context.
+selfcal_scripts/zodi_anchor/README.md for when to use this
+(atmospheric-contaminated detectors only).
 """
 import argparse
 import glob

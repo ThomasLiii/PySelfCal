@@ -1,21 +1,23 @@
-"""Fixed-subset SPECTRAL cal generator for the refactor bit-identity gate.
+"""Fixed-subset SPECTRAL cal generator for byte-equality regression testing of
+the spectral cal path.
 
 Companion to ``regress_cal.py`` (continuum). Runs the real spectral_fit=True
 path — Calibrator.setup_lsqr(spectral_fit=True, det_aux=[BC, BW]) + apply_lsqr +
-save_calibration — on a fixed, sorted subset of the already-staged D4 NEP
-PAHfit sanity NVMe cache, with the run_cal_pahfit config (NumCol=5,
-Aromatic_PAHfit window subch 210-250, per-frame scalar, linear column poly,
-damp_weight_line=0.0). This exercises the 2-block sky layout (continuum +
+save_calibration — on a fixed, sorted subset of the NVMe-staged D4 NEP reproj
+cache (see NVME_DIR below), with the production PAHfit config
+(selfcal_scripts/configs/pahfit.toml: NumCol=5, Aromatic_PAHfit window subch
+210-250, per-frame scalar, linear column poly, damp_weight_line=0.0). This exercises the 2-block sky layout (continuum +
 PAH 3.29 um line amplitude), the per-pixel Gaussian G(lambda) row coefficients,
 the line-block Fisher accumulation, and the skymap_line* cal datasets — none of
 which the continuum gate touches.
 
-By default setup_lsqr is now driven via the explicit sky_model= object API (the
-path the routine gate exercises); it is byte-equal to the deprecated spectral_fit
-shim it replaces. Pass --flat-kwargs to run spectral_fit=True instead, as a
-legacy-path regression check that the old flag still reproduces the golden.
+By default setup_lsqr is driven via the explicit sky_model= object API (the
+path the standing byte-equality regression check exercises); it is byte-equal
+to the deprecated spectral_fit shim it replaces. Pass --flat-kwargs to run
+spectral_fit=True instead, as a legacy-path check that the old flag still
+reproduces the baseline cal.
 
-Save BEFORE a refactor change as the baseline, then after each change diff with
+Save BEFORE a change as the baseline, then after each change diff with
 diff_cal_h5.py — the offset blocks AND skymap_line/skymap_line_fisher MUST be
 byte-equal:
 
@@ -52,16 +54,22 @@ from run_cal_baseline_test import prepare_detector_inputs
 
 FRAME_SETTING = {'Detector': 4, 'NumSub': 10, 'NumCh': 34, 'NumCol': 5}
 MOSAIC_OVERSAMPLE = 2
-# Already-staged D4 NEP PAHfit sanity cache (1000 frames, det 4).
+# NVMe-staged copy of 1000 reprojected D4 NEP frames (run
+# SPHEREx_NEP_2026W17_D4_6p2arcsec); if absent, re-stage by copying reproj *.h5
+# from that run's reproj_dir (the same frame subset is required for
+# byte-equality).
 NVME_DIR = '/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_pahfit_sanity_1k'
-# PAH 3.29 um window: 40 subchannels centered on the line (matches run_cal_pahfit).
+# PAH 3.29 um window: 40 subchannels centered on the line (matches the
+# production PAHfit config, selfcal_scripts/configs/pahfit.toml).
 PAH_SUBCH = np.arange(210, 250)
 POLY_DEGREE = 1
 POLY_WEIGHT = 0.5
 
 
 def prepare_channel_inputs_pahfit(frame_setting, det_chunk_map, grid_chunk_map):
-    """Aromatic_PAHfit valid masks / weights (mirrors run_cal_pahfit's str branch)."""
+    """Aromatic_PAHfit valid masks / weights — same computation as
+    prepare_channel_inputs's string-channel branch in run_cal_baseline_test.py,
+    applied to the 40-subchannel PAH window."""
     nsub = frame_setting['NumSub']
     nch = frame_setting['NumCh']
     ncol = frame_setting['NumCol']
@@ -147,11 +155,12 @@ def main():
     t0 = time.time()
     if args.flat_kwargs:
         # Legacy-path regression check: the deprecated spectral_fit flag. Must
-        # still be byte-equal to the golden now that sky_model= is the default.
+        # be byte-equal to the baseline generated via the default sky_model= path.
         cc.setup_lsqr(spectral_fit=True, **common)
     else:
-        # Default path the gate exercises: the explicit sky_model= object API.
-        # Byte-equal to the spectral_fit shim it replaces.
+        # Default path the standing byte-equality regression check exercises:
+        # the explicit sky_model= object API. Byte-equal to the spectral_fit
+        # shim it replaces.
         from selfcal.models.sky_model import SkyModel
         cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")

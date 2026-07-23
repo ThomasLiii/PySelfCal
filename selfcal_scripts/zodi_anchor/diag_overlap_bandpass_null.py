@@ -6,17 +6,19 @@ for every adjacent channel pair (c, c+1) sharing 20 physical chunks under
 
     emp_dC(c, c+1) = < off_{c+1}[k, q] - off_c[k, q] >_{q, k in inlier}
 
-and finds residuals 3-8 mMJy/sr per pair that survive subtracting
-``anchor_dC = intercept_c - intercept_{c+1}``.
+and, on the NEP 2026-W17 production runs both scripts default to
+(``DEFAULT_RUN_TEMPLATE``), finds residuals of ~3-8 mMJy/sr per pair
+that survive subtracting ``anchor_dC = intercept_c - intercept_{c+1}``.
 
-The verifier (rightly) noted that ``emp_dC`` is NOT a pure
-C-difference. The two channels' independent LSQR solves write the same
+Caveat: ``emp_dC`` is NOT a pure C-difference. The two channels'
+independent LSQR solves write the same
 data through different gauge fixings, so at a shared physical pixel:
 
     fdc_c[k, q]   = sky(lambda_c, pixel_q, t_k) + scalar_c[k] + off_c[k,q]
     fdc_{c+1}[..] = sky(lambda_{c+1}, ..)      + scalar_{c+1}[k] + off_{c+1}[..]
 
-Differencing chunks ONLY (which is what diag does) gives::
+Differencing chunks ONLY (which is what
+``diag_overlap_subchannel_continuity.py`` measures) gives::
 
     < off_{c+1} - off_c >  =
         - (anchor_C_c - anchor_C_{c+1})              # anchor delta
@@ -230,8 +232,9 @@ def main():
         # chunk-difference equation is
         #   < off_{c+1} - off_c > = (scalar_c - scalar_{c+1})
         #                         + (sky_c - sky_{c+1}).
-        # phys_unx = emp - bandpass - scalar  -- if this is small, the
-        # original diag's "anchor residual" was actually scalar+bandpass.
+        # phys_unx = emp - bandpass - scalar -- if this is small, the
+        # residual that diag_overlap_subchannel_continuity.py attributes
+        # to the anchor was actually scalar+bandpass.
         phys_unx = np.full(n_pairs, np.nan, dtype=np.float64)
 
         print(f"\n=== D{D}: {n_pairs} adjacent-channel pairs "
@@ -279,7 +282,8 @@ def main():
         print(f"    scalar drift : mean={sc_m*1e3:+6.2f}  std={sc_s*1e3:5.2f}")
         print(f"    unexp +anc   : mean={unx_m*1e3:+6.2f}  std={unx_s*1e3:5.2f}"
               f"  max|.|={unx_max*1e3:5.2f}  "
-              f"(emp - anchor - bandpass - scalar; matches task spec)")
+              f"(emp - anchor - bandpass - scalar; variant that "
+              f"additionally subtracts the anchor delta)")
         print(f"    unexp phys   : mean={phys_m*1e3:+6.2f}  std={phys_s*1e3:5.2f}"
               f"  max|.|={phys_max*1e3:5.2f}  "
               f"(emp - bandpass - scalar; chunks are NOT anchor-mutated)")
@@ -292,7 +296,7 @@ def main():
         print(f"    Verdict (phys budget): |unexp_phys mean| = "
               f"{abs(phys_m)*1e3:.2f} mMJy/sr vs threshold "
               f"{pass_thresh*1e3:.2f} -> {verdict_phys}")
-        print(f"    Verdict (task budget): |unexp_+anc mean| = "
+        print(f"    Verdict (anchor-subtracted budget): |unexp_+anc mean| = "
               f"{abs(unx_m)*1e3:.2f} mMJy/sr vs threshold "
               f"{pass_thresh*1e3:.2f} -> {verdict_task}")
         print(f"    Bandpass-sky absorbs {bp_m*1e3:+.2f} mMJy/sr (mean) of the "
@@ -345,7 +349,7 @@ def main():
                label='frame-scalar drift <fs_c - fs_{c+1}>',
                color=bar_colors['scalar'], alpha=0.85)
         ax.bar(x + 1.5 * bar_w, r['unx'] * scale, bar_w,
-               label='unexplained (task) = emp - anchor - bp - scalar',
+               label='unexplained (anchor-subtracted) = emp - anchor - bp - scalar',
                color=bar_colors['unx_task'], alpha=0.9)
         ax.bar(x + 2.5 * bar_w, r['phys_unx'] * scale, bar_w,
                label='unexplained (phys) = emp - bp - scalar  '
@@ -366,7 +370,7 @@ def main():
             f'bp={r["bp_m"]*1e3:+.2f}, scalar={r["sc_m"]*1e3:+.2f}; '
             f'PHYS unx mean={r["phys_m"]*1e3:+.2f} std={r["phys_s"]*1e3:.2f}'
             f' -> {r["verdict_phys"]} ; '
-            f'TASK unx mean={r["unx_m"]*1e3:+.2f} std={r["unx_s"]*1e3:.2f}'
+            f'ANCHOR-SUBTR unx mean={r["unx_m"]*1e3:+.2f} std={r["unx_s"]*1e3:.2f}'
             f' -> {r["verdict_task"]}    (mMJy/sr)'
         )
         ax.grid(alpha=0.25)
@@ -399,7 +403,7 @@ def main():
               f"scalar={r['sc_m']*1e3:+.2f}  PHYS_unx mean="
               f"{r['phys_m']*1e3:+.2f} std={r['phys_s']*1e3:.2f} max="
               f"{r['phys_max']*1e3:.2f}  -> {r['verdict_phys']}  "
-              f"(task-spec budget: anchor={r['ach_m']*1e3:+.2f}, "
+              f"(anchor-subtracted budget: anchor={r['ach_m']*1e3:+.2f}, "
               f"unx mean={r['unx_m']*1e3:+.2f} -> {r['verdict_task']})  "
               f"[mMJy/sr]")
 

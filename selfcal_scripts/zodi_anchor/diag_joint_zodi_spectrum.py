@@ -16,8 +16,9 @@ Stacked 5-panel comparison (sharex on channel mean wavelength in um):
         resid_std = std(full_DC[inlier] - (slope_fit * zp[inlier] + C_fit))
 
       Uses the re-fitted slope/C from ``fit_with_clip`` (which reproduces
-      the anchor's raw slope/intercept exactly, including for D1/D2 where
-      ``slope_final``/``C_final`` were later overwritten by smoothing).
+      the anchor's raw slope/intercept exactly, including for anchors
+      where ``slope_final``/``C_final`` differ from the raw fit because
+      post-fit smoothing was applied, i.e. ``anchor_method != 'raw'``).
       This guarantees the residual std is the inlier scatter the solver
       actually anchored against.
 
@@ -32,7 +33,7 @@ Outputs (overwritten):
   figures/zodi_anchor/zodi_spectrum_all_detectors.png
   figures/zodi_anchor/zodi_spectrum_all_detectors.npz
 
-Read-only on cal / anchor / zodi-pred files; no commits; no mosaic render.
+Read-only on cal / anchor / zodi-pred files.
 
 Example::
 

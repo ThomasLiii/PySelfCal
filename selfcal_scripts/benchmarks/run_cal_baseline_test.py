@@ -29,8 +29,8 @@ def build_detector_stripe_map(shape, mid_width=64, edge_width=60, dtype=np.int32
     Lays out N stripes per row so that ``edge_width + (N - 2) * mid_width
     + edge_width == shape[1]``: the two outermost stripes are ``edge_width``
     px wide and the interior ``N - 2`` stripes are ``mid_width`` px wide.
-    Default ``(60, 64)`` matches the layout used in earlier baseline tests
-    on a 2040-wide detector → 32 stripes (60 + 30*64 + 60 = 2040).
+    Default ``(60, 64)`` partitions a 2040-px-wide detector into 32 stripes
+    (60 + 30*64 + 60 = 2040).
     """
     h, w = shape
     if (w - 2 * edge_width) % mid_width != 0:
@@ -135,21 +135,24 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
     (``use_per_frame_scalar=True``) and anchor each map's per-frame
     chunk-mean to 0 (``mean_offsets_list=[zeros, ...]``). This pushes per-frame
     DC into the explicit scalar column, so chunk offsets only carry
-    within-frame structure — fixes the post-Apr-5 ``compute_x0_from_Ab``
-    regression where low-coverage chunks were under-constrained on narrow
-    channel masks.
+    within-frame structure — avoiding the failure mode of initializing with
+    ``compute_x0_from_Ab``, which leaves low-coverage chunks under-constrained
+    on narrow channel masks.
 
     poly_off    : K=1, NumCol=3, no poly constraint.
     poly_k1     : K=1, NumCol=10, linear column-polynomial constraint.
     poly_k2     : K=2; same map 0 + constraint as poly_k1, plus a
                   detector-fixed 64-px-stripe map shared across frames.
-    oldx0_off   : K=1, NumCol=3, no scalar — diagnostic that uses the
-                  pre-Apr-5 ``compute_offsets_guess`` x0 init instead.
-    scalar_off  : K=1, NumCol=3, alias of poly_off (kept for backwards
-                  compatibility with prior naming in this branch).
+    oldx0_off   : K=1, NumCol=3, no scalar — diagnostic that seeds x0 from
+                  ``compute_offsets_guess`` (per-frame, per-chunk data means —
+                  the legacy initialization used by early production runs)
+                  instead of ``compute_x0_scalar_only``.
+    scalar_off  : K=1, NumCol=3, alias of poly_off (older cal_*.h5 files were
+                  produced under this variant name; kept so those filenames
+                  can be regenerated).
     """
     if variant == 'oldx0_off':
-        # Diagnostic: pre-Apr-5 path with no scalar.
+        # Diagnostic: legacy x0 init (compute_offsets_guess), no per-frame scalar.
         return {
             'chunk_maps': [det_chunk_map],
             'adj_infos': [adj_info],
@@ -188,10 +191,10 @@ def build_variant_config(variant, det_chunk_map, adj_info, num_columns, num_fram
         stripe_map = build_detector_stripe_map(
             det_chunk_map.shape, mid_width=64, edge_width=60,
             dtype=det_chunk_map.dtype)
-        # map 0: per-frame, mean-anchored to 0. map 1: shared across frames,
-        # mean-anchored to 0 (already present from prior K=2 config).
-        # det_groups_list[1] = zeros triggers the scalar via the existing
-        # path, but we also set use_per_frame_scalar=True for clarity.
+        # map 0: per-frame offsets, mean-anchored to 0. map 1: one offset set
+        # shared by all frames (det_groups_list[1]=zeros puts every frame in
+        # group 0), mean-anchored to 0. A det-grouped map alone would enable
+        # the per-frame scalar; use_per_frame_scalar=True makes it explicit.
         return {
             'chunk_maps': [det_chunk_map, stripe_map],
             'adj_infos': [adj_info, None],
@@ -248,16 +251,21 @@ if __name__ == "__main__":
         'solver': 'lsqr',
     }
 
-    # Used only by prepare_detector_inputs to build the (unused) grid_chunk_map at the same
-    # oversample factor as production. Kept for input-parity with the production script.
+    # Used only by prepare_detector_inputs to build grid_chunk_map at the mosaic
+    # oversample factor. Kept so this harness builds the same inputs as a
+    # production cal run, which constructs grid_chunk_map at that factor
+    # (the map itself is unused here).
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
 
     # Variants run sequentially; each produces a distinctly-named cal_*.h5
-    # (FILE_SUFFIX = f'_baseline_{variant}'). Add 'poly_off' to also rerun the
-    # K=1, NumCol=3 regression baseline. 'oldx0_off' re-enabled as the pre-Apr-5
-    # compute_offsets_guess x0-init diagnostic (refactor regression gate).
+    # (FILE_SUFFIX = f'_baseline_{variant}_fixed'; the trailing '_fixed' marks
+    # files regenerated after a bug fix, distinguishing them from a superseded
+    # earlier batch). Add 'poly_off' to also rerun the K=1, NumCol=3 regression
+    # baseline. 'oldx0_off' is a diagnostic that reproduces the legacy
+    # compute_offsets_guess x0 init used by early production runs, for
+    # regression comparison against the scalar-based init.
     TEST_VARIANTS = ['poly_off', 'poly_k1', 'poly_k2', 'oldx0_off']
 
     # Cap reproj files for a quick plumbing check; set to None for full runs.
@@ -354,9 +362,10 @@ if __name__ == "__main__":
                 )
 
                 if variant == 'oldx0_off':
-                    # Diagnostic: pre-Apr-5 x0 init (compute_offsets_guess reads
-                    # reproj FITS files and returns per-frame per-chunk mean).
-                    # Reference behavior for the original "good" production run.
+                    # Diagnostic: legacy x0 init — compute_offsets_guess reads
+                    # the reproj files and seeds each (frame, chunk) offset with
+                    # its data mean; sky starts at 0. Reproduces the
+                    # initialization used by early production runs.
                     print("Computing x0 from compute_offsets_guess (pre-Apr-5 path)...")
                     offset_guess = compute_offsets_guess(
                         reproj_list=cc.reproj_list,
@@ -369,8 +378,10 @@ if __name__ == "__main__":
                 elif variant_cfg.get('use_per_frame_scalar', False):
                     # Per-frame scalar absorbs DC via compute_x0_scalar_only:
                     # scalar = diag-LS from A/b (≈ weighted mean of valid b
-                    # per frame); chunks + sky start at 0. This is the fix
-                    # for the post-Apr-5 narrow-channel regression.
+                    # per frame); chunks + sky start at 0. This avoids
+                    # compute_x0_from_Ab's failure mode on narrow channel
+                    # masks, where low-coverage chunks are left
+                    # under-constrained.
                     print("Computing x0 from compute_x0_scalar_only...")
                     x0 = compute_x0_scalar_only(
                         cc.A, cc.b, cc.ref_shape,

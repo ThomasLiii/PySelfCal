@@ -1,7 +1,10 @@
 """Boundary jackknives for the slope-smoothness refit.
 
-Question: do the residual ``smooth-poly`` boundary jumps at the four
-SPHEREx detector seams (D1->D2 ~ 1.10 um, D2->D3 ~ 1.65 um,
+Question: do the residual ``smooth-poly`` boundary jumps — the jumps in
+C(lambda) that remain after the smooth-slope refit (the ``smooth``
+variant of refit_smooth_slope.py: slope(lambda) constrained to one
+global degree-K polynomial across detectors, C free per channel) — at
+the four SPHEREx detector seams (D1->D2 ~ 1.10 um, D2->D3 ~ 1.65 um,
 D3->D4 ~ 2.42 um, D4->D5 ~ 3.81 um) come from a handful of dichroic-seam
 channels (Ch1-3 / Ch32-34 on each side), or are they a bulk continuum
 mismatch?
@@ -58,6 +61,10 @@ from refit_smooth_slope import (  # noqa: E402
 # Drop specs (default; overridable via --drop-spec)
 # ----------------------------------------------------------------------
 
+# Spec names encode <seam>_b(oundary)_<n>ea = drop the n outermost edge
+# channels on EAch side of that seam; e.g. D12_b_2ea drops D1 Ch33-34 and
+# D2 Ch1-2. These names appear verbatim in the summary table, plot
+# legends, and npz keys.
 DEFAULT_DROP_SPECS = [
     ('baseline',  {}),
     # D1-D2 seam only
@@ -76,7 +83,11 @@ DEFAULT_DROP_SPECS = [
     ('D45_b_1ea', {4: {34},          5: {1}}),
     ('D45_b_2ea', {4: {33, 34},      5: {1, 2}}),
     ('D45_b_3ea', {4: {32, 33, 34},  5: {1, 2, 3}}),
-    # All four seams together
+    # All four seams together. 'BOTH' is historical naming (originally
+    # only the D3-D4 and D4-D5 seams were jackknifed); these specs now
+    # drop edge channels at all four seams. The name is load-bearing:
+    # the verdict grouping below does name.startswith('BOTH'), and it
+    # appears in the npz keys, so it is kept for output stability.
     ('BOTH_2ea',  {1: {33, 34},
                    2: {1, 2, 33, 34},
                    3: {1, 2, 33, 34},
@@ -260,8 +271,10 @@ def main():
         orig_wl_max[d['detector']] = float(np.nanmax(wl_finite))
         orig_wl_min[d['detector']] = float(np.nanmin(wl_finite))
 
-    # Original boundary midpoints (these are what the original
-    # smooth-poly test reported jumps at: ~2.42 um, ~3.81 um).
+    # Original boundary midpoints: the fixed seam wavelengths (e.g.
+    # ~2.42 um for D3->D4, ~3.81 um for D4->D5) at which every drop
+    # spec's extrapolated jump is evaluated, so values stay comparable
+    # across specs even as edge channels are dropped.
     boundary_pairs = []  # (dA, dB, lam_mid)
     for i in range(len(det_ids) - 1):
         dA = det_ids[i]

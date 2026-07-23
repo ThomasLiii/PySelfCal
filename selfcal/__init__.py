@@ -2,8 +2,9 @@
 
 Supports SPHEREx (LVF spectral) and Euclid (broadband) data. The curated names
 below are the high-level API; lower-level functions live in the submodules
-(``selfcal.core``, ``selfcal.geometry``, ``selfcal.io``) or the back-compat
-real submodules.
+(``selfcal.core``, ``selfcal.geometry``, ``selfcal.io``, ``selfcal.models``);
+``selfcal.core.lsqr`` remains as a back-compat re-export of the split
+assembly/system/solve modules.
 
 Quick start::
 

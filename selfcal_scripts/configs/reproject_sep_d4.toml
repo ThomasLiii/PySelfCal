@@ -1,0 +1,33 @@
+# SEP D4 reprojection — raw SPHEREx SEP FITS (the dataset is entirely detector 4)
+# -> reprojected HDF5 cutouts on a FRESH optimal SEP reference grid. Feeds the
+# PAH 3.29um spectral-fit cal on SEP (parallels the NEP D4 PAH work).
+# Drops poor-astrometry exposures (FINAST != 0).
+task = "reproject"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 5
+
+[reproject]
+input_dirs = ["/data3/SPHEREx/SPHEREx_sep_data"]
+file_pattern = "/*/*/*/*D{detector}*.fits"
+# OMITTED on purpose -> fit a fresh optimal reference frame from the SEP
+# exposures (SEP is a different sky region than NEP, so we cannot share the NEP
+# grid). NOTE: must be absent, not "" — an empty string is treated as a filename.
+padding_pixels = 100
+use_ext = [1]
+header_filter_workers = 16
+max_workers = 50
+inner_parallel = 1
+reproj_func = "exact"
+padding_percentage = 0.05
+sci_ext_list = [1]
+dq_ext_list = [2]
+replace_existing = false

@@ -35,8 +35,8 @@ def _reproject_worker(task_params):
 
     Writes its HDF5 atomically (``.tmp.<pid>`` then ``os.rename``) so a
     Ctrl-C or worker crash never leaves a half-written final file. Returns
-    a dict (see ``_result``) instead of bare path/None — the parent sorts
-    successes into the file list and failures into a structured log.
+    a per-task result dict (see ``_result``) — the parent sorts successes
+    into the file list and failures into a structured log.
     """
     file_path = task_params['file_path']
     exp_idx = task_params['exp_idx']
@@ -108,9 +108,10 @@ def _reproject_worker(task_params):
 
         with h5py.File(tmp_file, 'w', libver='latest') as hf:
 
-            # CONFIG: Zstd + Shuffle
-            # Zstd creates smaller files than Gzip, relieving your I/O bottleneck.
-            # **hdf5plugin.Zstd() automatically handles the filter setup.
+            # Compression: Zstd(clevel=5) + byte-shuffle — smaller files than
+            # gzip at comparable speed, reducing disk I/O when the many
+            # per-frame files are re-read downstream. hdf5plugin.Zstd()
+            # expands to the HDF5 filter kwargs.
             comp_args = {
                 **hdf5plugin.Zstd(clevel=5),
                 'shuffle': True,

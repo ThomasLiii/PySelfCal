@@ -156,9 +156,7 @@ def save_to_fits(wcs, shape, filename):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     header = wcs.to_header()
-    # header['NAXIS'] = 2
-    # header['NAXIS1'] = shape[1]
-    # header['NAXIS2'] = shape[0]
+    # NAXIS/NAXIS1/NAXIS2 are set automatically by PrimaryHDU from the data shape.
     hdu_0 = fits.PrimaryHDU(header=header, data=np.zeros(shape))
     hdul = fits.HDUList([hdu_0])
     hdul.writeto(filename, overwrite=True)

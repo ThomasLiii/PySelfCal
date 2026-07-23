@@ -9,8 +9,10 @@ need:
 
   - one canonical ``reproj_list`` (grab it from ANY existing cal —
     all channels of one detector share the same exposure set), AND
-  - ``lvf_params`` for that detector (already cached as
-    ``selfcal_scripts/lvf_params/lvf_params_D{D}.npy``).
+  - ``lvf_params`` for that detector (shipped as package data in
+    ``selfcal/instruments/spherex/data/lvf_params/lvf_params_D{D}.npy``;
+    override the location with ``$SELFCAL_LVF_PARAMS_DIR`` or
+    ``--lvf-params-dir``).
 
 Runs in the sidecar `selfcal-zodipy` env. Saves zodi_pred_<tag>.npz
 per channel where ``<tag>`` matches the cal/mosaic naming the rest of
@@ -81,9 +83,11 @@ def parse_args():
                         "default is 0 (strict). Use 1 to match LSQR's "
                         'padded mask.')
     p.add_argument('--calibration-dir', default=DEFAULT_CALIBRATION_DIR)
-    p.add_argument('--lvf-params-dir', default=os.path.join(
-        os.path.dirname(_HERE), 'lvf_params'),
-        help='Dir with lvf_params_D{detector}.npy.')
+    p.add_argument('--lvf-params-dir', default=None,
+                   help='Override dir containing lvf_params_D{detector}.npy. '
+                        'Default: the packaged '
+                        'selfcal/instruments/spherex/data/lvf_params/ '
+                        '(or $SELFCAL_LVF_PARAMS_DIR).')
     p.add_argument('--metadata-cache', default=None,
                    help='Persistent metadata cache (per detector). '
                         f'Default: {DEFAULT_METADATA_CACHE_TEMPLATE}')
@@ -136,13 +140,14 @@ def main():
     print(f"{len(reproj_paths)} reproj files in reference cal.")
 
     # lvf_params + det_BC + det_chunk_map (all derivable; no cal data needed).
-    lvf_path = os.path.join(args.lvf_params_dir,
-                            f'lvf_params_D{args.detector}.npy')
-    if not os.path.exists(lvf_path):
-        raise SystemExit(f"lvf_params file not found: {lvf_path}")
+    # input_dir=None resolves to the packaged
+    # selfcal/instruments/spherex/data/lvf_params/ (or $SELFCAL_LVF_PARAMS_DIR).
     lvf_params = load_lvf_params(f'lvf_params_D{args.detector}.npy',
                                  input_dir=args.lvf_params_dir)
-    print(f"lvf_params:    {lvf_path}")
+    if lvf_params is None:
+        raise SystemExit(
+            f"lvf_params_D{args.detector}.npy not found "
+            f"(--lvf-params-dir={args.lvf_params_dir or 'packaged default'})")
     det_chunk_map, _, _, _ = make_stripped_chunk_map(
         args.detector, num_subchannels=args.num_subchannels,
         num_channels=args.num_channels, num_columns=args.num_columns,

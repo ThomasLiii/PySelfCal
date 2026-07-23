@@ -26,6 +26,7 @@ a telescope or a specific calibration variant by name.
 | `pahfit` | cal / pahfit | `experiments/run_cal_pahfit.py` |
 | `k2_readout` | cal / k2_readout | `experiments/run_cal_k2_readout.py` |
 | `tiled_nep` | tiled / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
+| `multiline_nep` | tiled / multiline | (workspace `spectral-pah-fit` campaign) |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
 | `precompute` | precompute | `drivers/precompute_lvf_params.py` |
 
@@ -49,13 +50,21 @@ no staging), `postprocess` (named subframe hook).
 `poly_weight` (omit `poly_weight` to disable the column poly-constraint),
 `line_fisher_threshold` (pahfit). k2_readout: `reg_weight`, `readout_reg_weight`.
 tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
-`subch_poly_hi`/`subch_tot`.
+`subch_poly_hi`/`subch_tot`. multiline: `subch_poly_degree`/`subch_poly_lo`/
+`subch_poly_hi` (hard poly-basis offset), `line_fisher_threshold`, and one
+`[[params.lines]]` table per spectral block — each with `name`, a profile
+(`template_npz` = realistic peak-normalized template, or `center_um` [+`sigma_um`
+| `intrinsic_var_um2`] for an analytic Gaussian), and optional per-line
+`damp_weight` (falls back to `[calibration].damp_weight_line`).
 
 **Stage tables** — passed through verbatim as kwargs: `[calibration]` →
 `setup_lsqr`, `[lsqr]` → `apply_lsqr`, `[mosaic]` → `make_mosaic`,
 `[zodi]` (optional; set `pred_dir` to enable the post-cal anchor),
-`[reproject]` (reproject task), `[tiled]` (tiled task: `ref_shape`, `grid`,
-`overlap_px`, `tile_names`, `full_reproj_dir`, `nvme_subdir`, `stitched_suffix`).
+`[reproject]` (reproject task), `[tiled]` (tiled task: `ref_shape`,
+`full_reproj_dir`, `nvme_subdir`, `stitched_suffix`, and the tile geometry —
+EITHER a uniform grid `grid = [n_y, n_x]` + `overlap_px` + `tile_names`, OR an
+explicit `tiles = [{name, bbox=[y0,y1,x0,x1]}, ...]` list of arbitrary/overlapping
+tiles for the adaptive-overlap layout; `line` toggles the spectral-block stitch).
 
 ## Adding a calibration variant (mode)
 

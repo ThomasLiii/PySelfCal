@@ -1,6 +1,8 @@
 """Per-frame interior profiler for the cal setup_lsqr and coadd hot paths.
 
-Step-1 tool for the perf/algo-optimizations work. Runs the per-frame interior
+In-process cProfile harness for the per-frame hot paths: run it before and
+after a code change to localize where the time went (bench_e2e.py measures the
+end-to-end wall/RSS effect of the same change). Runs the per-frame interior
 *in-process* (single process, no pool) so cProfile actually sees the work, on a
 fixed, sorted subset of the D3 Ch17 run. Use the SAME --n-frames / --detector /
 --channel before and after a change to read the delta.

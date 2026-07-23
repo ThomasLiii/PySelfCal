@@ -62,7 +62,9 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        # Accumulators — direct arrays (threads) or SharedMemory (processes)
+        # Accumulators: attach to the SharedMemory blocks the manager created
+        # (workers run in a multiprocessing.Pool); the direct-array fallback
+        # covers callers that pass arrays in params.
         data_sum_arr = params.get('total_data_sum')
         if data_sum_arr is None:
             shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
@@ -88,7 +90,8 @@ def _coadd_batch_worker(params):
         local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
-        # Read-only maps — direct arrays (threads) or SharedMemory (processes)
+        # Read-only maps (mean/std): taken directly from params if present,
+        # otherwise attached from the manager's SharedMemory blocks.
         mean_map = params.get('mean_map')
         if mean_map is None and 'mean_map_name' in params:
             shm_mean = SharedMemory(name=params['mean_map_name'])
@@ -487,7 +490,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
     # --- Common Assertions for All Modes ---
     assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
     if mode == 'cache':
-        assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
+        assert cache_dir is not None, "cache_dir must be provided when mode='cache'"
         os.makedirs(cache_dir, exist_ok=True)
     if mode == 'std':
         assert mean_map is not None, "mean_map must be provided for 'std' mode"

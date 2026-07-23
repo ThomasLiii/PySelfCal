@@ -7,7 +7,9 @@ run_cal_baseline_test.py).
 Config matches benchmark_d3_ch17_numcol3.py on main as closely as the stable
 API permits:
   - NumCol=3, no poly constraint (poly didn't exist yet anyway)
-  - K=1 (the only K stable supports)
+  - single offset chunk-map per frame (stable predates the multi-chunk-map
+    solve on main, where several maps — e.g. an extra readout-pattern map —
+    are fit jointly)
   - column adjacency reg, weight=0.1
   - weighted_damping=True, damp_weight=0.1
   - outlier_thresh=5.0, batch_size=20, max_workers=32
@@ -26,8 +28,8 @@ Differences from main (forced by API):
 Reads NVMe cache shared with main at:
   /home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec/
 
-Writes outputs into main's figures/benchmark/ so all three benchmarks live
-side-by-side:
+Writes outputs into the main worktree's figures/benchmark/ so they sit
+beside the main-branch benchmark_d3_ch17_* outputs in one directory:
   /home/thomasli/selfcal-project/selfcal/figures/benchmark/d3_ch17_stable_*.{txt,json,png}
 """
 import os
@@ -76,7 +78,10 @@ from selfcal.instruments.spherex.wavemap import wav_coadd
 
 
 # ============================================================
-# PhaseTracker (copy of benchmark_d3_ch17_poly.PhaseTracker for self-containment)
+# PhaseTracker — inlined so this script runs standalone on the stable
+# worktree (stable lacks the benchmark modules). Snapshot of
+# benchmark_d3_ch17_poly.PhaseTracker that may lag the main-branch version;
+# notably it has no start/delta-RSS columns.
 # ============================================================
 
 class PhaseTracker:
@@ -349,6 +354,10 @@ def main():
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
+        # single-form: scalar, not a list — stable's API predates main's
+        # multi-chunk-map lists (reg_weights=[...]). The same tag below marks
+        # chunk_map / adj_info / det_offset_func, which main takes as
+        # chunk_maps / adj_infos / det_offset_funcs lists.
         'reg_weight': 0.1,         # single-form
         'weighted_damping': True,
         'damp_weight': 0.1,
@@ -369,7 +378,8 @@ def main():
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    # Write outputs to main's figures dir so the three benchmarks coexist.
+    # Write outputs to the main worktree's figures/benchmark/ so this run's
+    # tables/plots sit beside the main-branch benchmark_d3_ch17_* outputs.
     BENCH_DIR = '/home/thomasli/selfcal-project/selfcal/figures/benchmark/'
     os.makedirs(BENCH_DIR, exist_ok=True)
     FILE_SUFFIX = '_bench_d3_ch17_stable'

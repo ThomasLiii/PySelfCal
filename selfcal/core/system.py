@@ -1,12 +1,20 @@
 """LSQR system assembly: parent-side orchestration.
 
-Split out of the former monolithic lsqr.py. ``setup_lsqr`` builds the sparse
-design matrix + RHS for K offset blocks and N sky components: it resolves the
-sky model + column layout, stages shared memory, dispatches the per-batch row
-assembly (selfcal.core.assembly) across a process pool, appends the global
-constraint blocks (selfcal.core.constraint_builders), assembles the CSR, and
-applies the Top-2 column compaction. Also the post-solve coverage/Fisher parsers.
+``setup_lsqr`` builds the sparse design matrix + RHS for K offset blocks and
+N sky components: it resolves the sky model + column layout, stages shared
+memory, dispatches the per-batch row assembly (selfcal.core.assembly) across
+a process pool, appends the global constraint blocks
+(selfcal.core.constraint_builders), assembles the CSR, and drops
+zero-coverage columns (early column compaction). The solver stage that
+consumes the result lives in selfcal.core.solve. Also home to the post-solve
+coverage/Fisher parsers.
 """
+import os
+import shutil
+import tempfile
+
+from typing import NamedTuple
+
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -14,10 +22,33 @@ from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .layout import SystemLayout
+from .spill import spill_pixel_state, PixelSpill
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block)
 from .assembly import _prep_lsqr_batch_worker
+
+
+class SetupResult(NamedTuple):
+    """What :func:`setup_lsqr` hands back.
+
+    Named fields (rather than a positional tuple) so that optional results
+    are simply ``None`` instead of changing the tuple length — callers unpack
+    by name and never branch on ``len()``.
+
+    ``pixel_counts`` / ``pixel_fisher`` / ``pixel_cross`` are None exactly
+    when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
+    caller restores them (once) when it needs them. ``active_mask`` is None
+    unless the early zero-coverage-column compaction ran (see
+    ``compact_zero_columns`` in :func:`setup_lsqr`).
+    """
+    A: object
+    b: object
+    pixel_counts: object
+    pixel_fisher: object
+    pixel_cross: object
+    active_mask: object = None
+    pixel_spill: object = None
 
 
 def setup_lsqr(file_list, ref_shape,
@@ -26,6 +57,7 @@ def setup_lsqr(file_list, ref_shape,
                outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weights=None, adj_infos=None, poly_constraints_list=None,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
+               poly_basis_list=None,
                use_per_frame_scalar=False,
                postprocess_func=None, preprocess_func=None,
                weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
@@ -33,13 +65,31 @@ def setup_lsqr(file_list, ref_shape,
                spectral_fit=False, line_center=None, line_sigma=None,
                damp_weight_line=None,
                sky_model=None,
-               top2_compaction_enabled=True):
+               compact_zero_columns=True,
+               batch_spill_dir=None):
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``batch_spill_dir``: when set, workers stream each batch's bulk COO
+    arrays (rows/cols/data, 12 B per entry — the dominant setup-phase
+    resident) to files under this directory instead of SharedMemory, and
+    the main process reads them back as read-only memmaps. The bytes and
+    every accumulation order are identical (byte-equal outputs); the
+    difference is that the ~12 B/nnz batch payload becomes page cache —
+    reclaimable under memory pressure — instead of anonymous RAM + tmpfs.
+    Files are deleted as each batch is scattered. ``b`` stays on the
+    SharedMemory path (its dtype varies per batch and it is ~25x smaller).
+    Default None keeps the pure-SharedMemory behavior.
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
     additive offset blocks, each with its own chunk map, frame-to-group mapping,
-    template, regularization, and mean-offset constraint. The K=1 case mirrors
-    the original single-chunk-map solver bit-for-bit.
+    template, regularization, and mean-offset constraint. With K=1 the
+    multi-map machinery reduces exactly to a plain single-chunk-map solve
+    with no extra terms.
+
+    Build phases (the numbered comment sections in the function body):
+    1 collate worker batch results; 2a–2e row bookkeeping, constraint blocks,
+    b, indptr; 3 allocate the CSR buffers; 4a/4b scatter data + constraint
+    rows into them; 5 finalize the CSR / BlockCSR.
 
     Parameters
     ----------
@@ -83,6 +133,14 @@ def setup_lsqr(file_list, ref_shape,
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
+    compact_zero_columns : bool, optional
+        Enable the early drop of zero-coverage columns from the assembled
+        CSR (default True); ``apply_lsqr`` then skips its own full-nnz
+        column elimination. Automatically skipped when any map uses template
+        mode, or when a constraint row touches an otherwise-uncovered
+        column. Set False to keep the uncompacted column layout and let
+        ``apply_lsqr`` compact instead (debug aid for isolating a suspected
+        regression to the compaction step).
     """
     assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
     assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
@@ -111,6 +169,7 @@ def setup_lsqr(file_list, ref_shape,
     mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
+    poly_basis_list = _default(poly_basis_list, None)
 
     # Normalize and validate poly-constraint groups: each entry is None or a
     # non-empty list of dicts; each dict has matching chains.shape[1] == len(stencil).
@@ -149,7 +208,8 @@ def setup_lsqr(file_list, ref_shape,
                       ('poly_constraints_list', poly_constraints_list),
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
-                      ('det_templates', det_templates)):
+                      ('det_templates', det_templates),
+                      ('poly_basis_list', poly_basis_list)):
         assert len(arr) == K, f"{name} must have length {K} (got {len(arr)})"
 
     ref_h, ref_w = ref_shape
@@ -169,12 +229,12 @@ def setup_lsqr(file_list, ref_shape,
     # det_aux plumbing: BC_map must be passed as det_aux[0]. Optionally
     # det_aux[1] = BW_map gives per-pixel σ (mixed with PAH intrinsic).
     # --- Sky model resolution ---
-    # sky_model= is the forward-looking API; the legacy spectral_fit flag (+
-    # line_center / line_sigma) is a deprecated shim that builds the equivalent
-    # SkyModel. The model's components drive the per-pixel sky row emission in the
-    # worker (continuum -> J=1 identity fast path; +line -> interleave with the
-    # profile coefficient). For sky_model=None this reproduces the old
-    # num_sky_blocks {1,2} behavior byte-for-byte.
+    # sky_model= is the forward-looking API; the spectral_fit flag (+
+    # line_center / line_sigma) is a deprecated shim that lowers to the
+    # equivalent SkyModel, so callers using the flags get an identical system
+    # to passing that model explicitly. The model's components drive the
+    # per-pixel sky row emission in the worker (continuum -> J=1 identity
+    # fast path; +line -> interleave with the profile coefficient).
     if sky_model is None:
         if spectral_fit:
             sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
@@ -198,7 +258,7 @@ def setup_lsqr(file_list, ref_shape,
     # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
     aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
 
-    # --- Column layout (single source of truth: selfcal.layout.SystemLayout) ---
+    # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
     # col_bases, the per-frame scalar block, and the total column count. The
     # Calibrator builds the same layout from the same inputs (see
@@ -208,7 +268,7 @@ def setup_lsqr(file_list, ref_shape,
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar)
+        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
@@ -241,6 +301,7 @@ def setup_lsqr(file_list, ref_shape,
         'reg_weight_list': reg_weights,
         'adj_info_list': adj_infos,
         'poly_constraint_list': poly_constraints_list,
+        'poly_basis_list': poly_basis_list,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
@@ -316,19 +377,44 @@ def setup_lsqr(file_list, ref_shape,
         task_params.update(common_params)
         all_individual_tasks.append(task_params)
 
+    _spill_run_dir = None
+    if batch_spill_dir is not None:
+        os.makedirs(batch_spill_dir, exist_ok=True)
+        _spill_run_dir = tempfile.mkdtemp(prefix='batch_spill_',
+                                          dir=batch_spill_dir)
+        print(f"Batch COO spill -> {_spill_run_dir} (page-cache backed).")
+
     batched_tasks = []
     for i in range(0, len(all_individual_tasks), batch_size):
-        batch = {'sub_tasks': all_individual_tasks[i : i + batch_size]}
+        batch = {'sub_tasks': all_individual_tasks[i : i + batch_size],
+                 'batch_id': i // batch_size,
+                 'spill_dir': _spill_run_dir}
         batched_tasks.append(batch)
 
     print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
-    # Allocated lazily on the first batch result. This replaces the
-    # post-loop full-nnz bincount (which materialized a ~50 GB float64
-    # squared-data temp at no-srcmask region-10k scale).
+    # Allocated up front and accumulated batch-by-batch as worker results
+    # arrive, so no full-nnz temporary is ever materialized (a post-loop
+    # bincount would need a full-nnz float64 squared-data temp — 8 B per
+    # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
+    # Per-pixel sky-block cross moments Σ a_i·a_j per pair (i, j), i < j
+    # (a_0 = w for the continuum, a_j = w·coeff_j for spectral blocks).
+    # Together with pixel_fisher's per-block diagonals these give the per-pixel
+    # J x J normal-matrix block, whose LAST-block Schur complement is the true
+    # line SEPARABILITY I_P — which line-Fisher (a magnitude, not a diversity,
+    # metric) cannot measure. Accumulated for multi-block sky models; computed
+    # batch-streaming from the A triplets, so it never touches the workers or
+    # the A/b bytes. Returned as a bare (num_sky,) array for the 2-block case
+    # (pair (0,1)), a {(i,j): array} dict for J >= 3.
+    if num_sky_blocks >= 2:
+        _cross_pairs = [(i, j) for i in range(num_sky_blocks)
+                        for j in range(i + 1, num_sky_blocks)]
+        pixel_cross = {p: np.zeros(num_sky, dtype=np.float64) for p in _cross_pairs}
+    else:
+        pixel_cross = None
 
     def _read_shm(info):
         """Read array from shared memory and clean up the segment."""
@@ -346,7 +432,8 @@ def setup_lsqr(file_list, ref_shape,
     # them directly into the final CSR buffers in batch-id order. Per-batch
     # we also accumulate row_nnz_per_batch[batch_id] = bincount(local_rows)
     # so the CSR indptr can be built without re-touching every batch's row
-    # array. pixel_counts / pixel_fisher are accumulated as before (Top 3).
+    # array. pixel_counts / pixel_fisher / pixel_cross are accumulated
+    # batch-streaming as each result arrives (allocation and rationale above).
     # ----------------------------------------------------------------
     batch_results = [None] * len(batched_tasks)
     row_nnz_per_batch = [None] * len(batched_tasks)
@@ -360,13 +447,26 @@ def setup_lsqr(file_list, ref_shape,
                 if result is None:
                     continue
                 shm_infos = result['shm']
-                batch_results[batch_id] = {
-                    'rows': _read_shm(shm_infos[0]),         # local int32 row ids
-                    'cols': _read_shm(shm_infos[1]),
-                    'data': _read_shm(shm_infos[2]),
-                    'b':    _read_shm(shm_infos[3]),
-                    'num_rows': result['num_rows'],
-                }
+                if 'files' in result:
+                    # Spill path: bulk arrays live in files; read-only
+                    # memmaps expose identical bytes through page cache.
+                    fr, fc, fd = result['files']
+                    batch_results[batch_id] = {
+                        'rows': np.memmap(fr, dtype=np.int32, mode='r'),
+                        'cols': np.memmap(fc, dtype=np.int32, mode='r'),
+                        'data': np.memmap(fd, dtype=np.float32, mode='r'),
+                        'b':    _read_shm(shm_infos[0]),
+                        'num_rows': result['num_rows'],
+                        'files': result['files'],
+                    }
+                else:
+                    batch_results[batch_id] = {
+                        'rows': _read_shm(shm_infos[0]),     # local int32 row ids
+                        'cols': _read_shm(shm_infos[1]),
+                        'data': _read_shm(shm_infos[2]),
+                        'b':    _read_shm(shm_infos[3]),
+                        'num_rows': result['num_rows'],
+                    }
                 _b_cols = batch_results[batch_id]['cols']
                 _b_data = batch_results[batch_id]['data']
                 _b_rows = batch_results[batch_id]['rows']
@@ -378,6 +478,27 @@ def setup_lsqr(file_list, ref_shape,
                     weights=_b_data.astype(np.float64) ** 2,
                     minlength=total_cols,
                 )
+                if pixel_cross is not None:
+                    # Pair each data row's block-i entry with its block-j entry
+                    # through the shared local row id -> Σ a_i·a_j per pixel.
+                    # Every data row has exactly one entry per sky block (the
+                    # J-interleave in assembly), so a per-row scatter of block
+                    # i's values indexes cleanly from block j's entries.
+                    _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
+                              for jj in range(num_sky_blocks)]
+                    _rowvals = []
+                    for jj in range(num_sky_blocks):
+                        _v = np.zeros(result['num_rows'], dtype=np.float64)
+                        _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
+                        _rowvals.append(_v)
+                    for (ii, jj) in _cross_pairs:
+                        _m_j = _masks[jj]
+                        pixel_cross[(ii, jj)] += np.bincount(
+                            _b_cols[_m_j] - jj * num_sky,
+                            weights=_b_data[_m_j].astype(np.float64)
+                                    * _rowvals[ii][_b_rows[_m_j]],
+                            minlength=num_sky,
+                        )
                 # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
                 # add the global row offset in Phase 3 (cumulative across
                 # batches). Keeping this batch-local is what lets Phase 4
@@ -440,6 +561,9 @@ def setup_lsqr(file_list, ref_shape,
         if det_template_arr_list[m] is not None:
             print(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
             continue
+        if poly_basis_list[m] is not None:
+            print(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
+            continue
         print(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
         constraint_blocks.append(mean_offset_block(
             m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
@@ -452,10 +576,20 @@ def setup_lsqr(file_list, ref_shape,
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 
-        # --- LINE-AMPLITUDE DAMPING (spectral, block 1) ---
-        if num_sky_blocks == 2 and damp_weight_line is not None and damp_weight_line > 0:
-            print(f"Applying Coverage-Weighted Damping (line, damp={damp_weight_line})...")
-            blk = sky_damping_block(1, damp_weight_line, line_pixel_counts, num_sky)
+        # --- SPECTRAL-BLOCK DAMPING (blocks 1..J-1) ---
+        # Each spectral component is damped by its own ``damp_weight`` when the
+        # component sets one, else by the shared ``damp_weight_line`` (for
+        # J == 2 this reduces exactly to the single shared ``damp_weight_line``).
+        for j in range(1, num_sky_blocks):
+            comp = sky_model.components[j]
+            w_j = getattr(comp, 'damp_weight', None)
+            if w_j is None:
+                w_j = damp_weight_line
+            if w_j is None or w_j <= 0:
+                continue
+            print(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
+            blk = sky_damping_block(
+                j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
 
@@ -507,7 +641,25 @@ def setup_lsqr(file_list, ref_shape,
         b_pieces.append(r['b'])
     for blk in constraint_blocks:
         b_pieces.append(blk['b'])
-    full_b = np.concatenate(b_pieces) if b_pieces else np.zeros(0, dtype=np.float64)
+    # Emit float32 b when EVERY value is exactly float32-representable
+    # (data-row b is a product of f32s; f64-ness normally enters only via
+    # constraint-block zeros / mean-offset targets). Consumers restore the
+    # old bit-exact arithmetic by upcasting where f64 mattered:
+    # compute_x0_* upcast b before their products, and apply_lsqr upcasts
+    # back to f64 for use_float32=False solves. Any non-representable
+    # value (e.g. arbitrary mean-offset targets) falls back to f64.
+    _can_f32 = all(
+        (p.dtype == np.float32
+         or p.size == 0
+         or np.array_equal(p, p.astype(np.float32).astype(np.float64)))
+        for p in b_pieces)
+    if b_pieces and _can_f32:
+        full_b = np.concatenate(
+            [p.astype(np.float32, copy=False) for p in b_pieces])
+    elif b_pieces:
+        full_b = np.concatenate(b_pieces)
+    else:
+        full_b = np.zeros(0, dtype=np.float64)
     # Drop per-batch b refs so the streaming scatter loop holds the
     # smallest possible footprint.
     for batch_id in range(len(batched_tasks)):
@@ -528,20 +680,20 @@ def setup_lsqr(file_list, ref_shape,
     del row_nnz
 
     # ----------------------------------------------------------------
-    # Top 2: gated early column compaction. If no template-mode map is in
-    # use, every "active" column (pixel_counts > 0) gets compacted now so
-    # apply_lsqr can skip its full-nnz col_map gather. Template-mode runs
-    # keep the legacy uncompacted layout (apply_lsqr handles compaction).
+    # Early column compaction. If no template-mode map is in use, every
+    # "active" column (pixel_counts > 0) gets compacted now so apply_lsqr
+    # can skip its full-nnz col_map gather. Template-mode runs keep the
+    # uncompacted layout (apply_lsqr handles compaction itself).
     # ----------------------------------------------------------------
-    top2_active = not any(t is not None for t in det_template_arr_list)
-    # Bisect/debug knob: caller can force the gated path off to compare against
-    # the legacy uncompacted-CSR layout (used when bisecting which optimization
-    # phase introduced a regression). Default True keeps prod behavior.
-    if not top2_compaction_enabled:
-        top2_active = False
-    if top2_active:
-        # Some non-template runs still want the legacy path — e.g. when the
-        # caller passes mean_offsets_list (per-frame chunk constraint rows
+    compaction_active = not any(t is not None for t in det_template_arr_list)
+    # Debug knob: caller can force compaction off to compare against the
+    # uncompacted-CSR layout — useful for isolating a suspected regression
+    # to the compaction step itself. Default True is the production path.
+    if not compact_zero_columns:
+        compaction_active = False
+    if compaction_active:
+        # Some non-template runs still need the uncompacted path — e.g. when
+        # the caller passes mean_offsets_list (per-frame chunk constraint rows
         # write into specific column indices that must not be dropped).
         # mean_offsets / damping rows already register coverage via the
         # data rows, so columns they touch will have pixel_counts > 0.
@@ -557,16 +709,40 @@ def setup_lsqr(file_list, ref_shape,
                 all_constraint_cols_active = False
                 break
         if not all_constraint_cols_active:
-            top2_active = False
+            compaction_active = False
 
-    if top2_active:
-        col_map = np.cumsum(active_mask, dtype=np.int64) - 1  # int64; mapped col fits in int32
+    if compaction_active:
         n_active = int(active_mask.sum())
-        print(f"Top 2: compacting columns inline ({n_active}/{total_cols} active).")
+        assert n_active < 2**31, (
+            f"n_active={n_active} overflows int32 column ids")
+        # int32 halves both the map itself (total_cols entries) and every
+        # per-batch col_map[cols_b] gather output in Phase 4. Values are
+        # exact (cumsum <= n_active < 2^31).
+        col_map = np.cumsum(active_mask, dtype=np.int32)
+        col_map -= 1
+        print(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
     else:
         active_mask = None
         col_map = None
         n_active = total_cols
+
+    # ----------------------------------------------------------------
+    # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
+    # last read by the Phase-2 constraint builders and the column compaction
+    # just above; nothing between here and the return touches them, yet they
+    # are large — 16 B per column (counts + fisher) plus 8 B x num_sky per
+    # cross pair, e.g. ~17 GB for a 4-sky-block model on a ~1.5e8-pixel
+    # grid — and they would otherwise sit on top of the process-lifetime
+    # memory peak (the Phase-5 CSR/BlockCSR build below). A round trip
+    # through scratch disk removes them from that peak; the arrays come
+    # back bit-identical (np.save/np.load of int64/float64), and
+    # Calibrator.apply_lsqr spills them again for the solve.
+    # ----------------------------------------------------------------
+    _pix_spill_dir, _ = spill_pixel_state(pixel_counts, pixel_fisher,
+                                          pixel_cross,
+                                          label='for the CSR build')
+    if _pix_spill_dir is not None:
+        pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
     # Phase 3: allocate CSR buffers.
@@ -589,50 +765,76 @@ def setup_lsqr(file_list, ref_shape,
     # sort preserves the original col-within-row order across the batch,
     # which matches what coo_matrix(...).tocsr() does for stable sort_by_row.
     # ----------------------------------------------------------------
+    # The scatter runs over SUB-SLICES of each batch (in original entry
+    # order) rather than the whole batch at once: the sort/cumcount
+    # machinery allocates ~45 B per entry of transients, which at full
+    # batch width (~4e8 entries) is ~18-23 GB sitting exactly on the
+    # setup peak. Sub-slicing divides that by the slice count.
+    # Slot assignment is IDENTICAL: for entries of the same row split
+    # across slices, earlier slices write first and advance write_cursor,
+    # so later slices continue at the updated cursor — the concatenation
+    # of per-slice stable-sort orders over a row equals the whole-batch
+    # stable-sort order (stable sort preserves original order within
+    # equal keys; slice boundaries preserve original order across
+    # slices). Hence byte-identical csr_data/csr_indices.
+    scatter_chunk = 64_000_000
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
         row_offset = batch_row_starts[batch_id]
-        rows_b = batch['rows'].astype(np.int64, copy=False) + row_offset
-        cols_b = batch['cols']
-        data_b = batch['data']
-        if top2_active:
-            # int32 compact col indices (safe since n_active < 2^31).
-            cols_b = col_map[cols_b].astype(np.int32, copy=False)
-        else:
-            cols_b = cols_b.astype(np.int32, copy=False)
+        n_batch = batch['rows'].shape[0]
+        for s0 in range(0, n_batch, scatter_chunk):
+            s1 = min(s0 + scatter_chunk, n_batch)
+            rows_b = batch['rows'][s0:s1].astype(np.int64, copy=False) + row_offset
+            if compaction_active:
+                # int32 compact col indices (col_map is int32; gather emits
+                # int32 directly, astype is a no-op).
+                cols_b = col_map[batch['cols'][s0:s1]].astype(np.int32, copy=False)
+            else:
+                cols_b = batch['cols'][s0:s1].astype(np.int32, copy=False)
+            data_b = batch['data'][s0:s1]
 
-        n_b = rows_b.shape[0]
-        if n_b > 0:
-            # Stable sort by row so duplicates are contiguous; preserves
-            # within-row col order from the worker output.
-            order = np.argsort(rows_b, kind="stable")
-            rows_s = rows_b[order]
-            cols_s = cols_b[order]
-            data_s = data_b[order]
+            n_b = rows_b.shape[0]
+            if n_b > 0:
+                # Stable sort by row so duplicates are contiguous; preserves
+                # within-row col order from the worker output.
+                order = np.argsort(rows_b, kind="stable")
+                rows_s = rows_b[order]
+                cols_s = cols_b[order]
+                data_s = data_b[order]
 
-            # Within-row cumcount in sorted order.
-            is_new_group = np.empty(n_b, dtype=bool)
-            is_new_group[0] = True
-            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-            group_starts = np.flatnonzero(is_new_group)
-            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+                # Within-row cumcount in sorted order.
+                is_new_group = np.empty(n_b, dtype=bool)
+                is_new_group[0] = True
+                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+                group_starts = np.flatnonzero(is_new_group)
+                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
 
-            slots = indptr[rows_s] + write_cursor[rows_s] + within_row
-            csr_data[slots] = data_s
-            csr_indices[slots] = cols_s
+                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
+                csr_data[slots] = data_s
+                csr_indices[slots] = cols_s
 
-            # Update write_cursor: add the per-row count contributed by
-            # this batch.
-            unique_rows = rows_s[group_starts]
-            counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
-            write_cursor[unique_rows] += counts
-        # Free the batch refs.
+                # Update write_cursor: add the per-row count contributed by
+                # this slice (carries the running count to later slices).
+                unique_rows = rows_s[group_starts]
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                write_cursor[unique_rows] += counts
+            del rows_b, cols_b, data_b
+        # Free the batch refs (and its spill files, if any).
+        _files = batch.get('files')
         batch_results[batch_id] = None
-        del batch, rows_b, cols_b, data_b
+        del batch
+        if _files:
+            for _p in _files:
+                try:
+                    os.remove(_p)
+                except OSError:
+                    pass
     batch_results = None
+    if _spill_run_dir is not None:
+        shutil.rmtree(_spill_run_dir, ignore_errors=True)
 
     # ----------------------------------------------------------------
     # Phase 4b: scatter constraint blocks at their reserved row ranges.
@@ -650,7 +852,7 @@ def setup_lsqr(file_list, ref_shape,
         rows_b = blk['rows_local'] + cb_cursor
         cols_b = blk['cols']
         data_b = blk['data']
-        if top2_active:
+        if compaction_active:
             cols_b = col_map[cols_b].astype(np.int32, copy=False)
         else:
             cols_b = cols_b.astype(np.int32, copy=False)
@@ -690,39 +892,90 @@ def setup_lsqr(file_list, ref_shape,
     del write_cursor
 
     # ----------------------------------------------------------------
-    # Phase 6: build CSR. Indices are row-grouped but NOT col-sorted within
+    # Phase 5: build CSR. Indices are row-grouped but NOT col-sorted within
     # row (sufficient for LSQR/LSMR matvec/rmatvec — convergence depends
     # only on A as a linear map). We mark has_sorted_indices=False so
     # scipy callers that depend on it (e.g. .T → CSC view) can either
     # tolerate or trigger sort themselves.
+    #
+    # Once total nnz reaches 2**31, the unified csr_matrix constructor would
+    # upcast-COPY the int32 csr_indices to int64 (indptr's dtype wins) —
+    # +nnz*8 alloc at handoff and +nnz*4 held permanently, plus 50% more
+    # index bytes streamed per SpMV. In that regime we emit a BlockCSR
+    # instead: int32 index VIEWS sliced per row-block, each block's nnz kept
+    # below 2**31. Per-row index sorting is row-local, so sorting each block
+    # is bit-identical to sorting the unified matrix. The global int64
+    # indptr is released (blocks carry shifted int32 copies).
+    # SELFCAL_BLOCK_NNZ overrides the activation threshold AND per-block
+    # target (tests force small blocks with it); production default splits
+    # only when int64 would otherwise be forced.
     # ----------------------------------------------------------------
-    full_A = csr_matrix(
-        (csr_data, csr_indices, indptr),
-        shape=(total_rows, n_active),
-        copy=False,
-    )
-    full_A.has_sorted_indices = False
-    # Sort indices within each row in place. This is per-row qsort with no
-    # allocation peak and gives downstream code (CSC views, indices-binary
-    # search, etc.) the canonical layout. We also call sum_duplicates() as a
-    # defensive no-op (the bucket-sort build guarantees no duplicate (row,
-    # col) entries) so that downstream consumers can rely on canonical CSR.
-    full_A.sort_indices()
-    full_A.sum_duplicates()
+    _block_thr = int(os.environ.get('SELFCAL_BLOCK_NNZ', 2**31))
+    total_nnz = int(indptr[-1])
+    if total_nnz >= _block_thr:
+        from .blockcsr import build_block_csr
+        target = max(1, min(2**30, _block_thr))
+        full_A = build_block_csr(csr_data, csr_indices, indptr,
+                                 (total_rows, n_active), target)
+        del csr_data, csr_indices, indptr
+        print(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+              f"(nnz={total_nnz}).")
+        for _blk in full_A.blocks:
+            _blk.has_sorted_indices = False
+            _blk.sort_indices()
+            _blk.sum_duplicates()
+    else:
+        full_A = csr_matrix(
+            (csr_data, csr_indices, indptr),
+            shape=(total_rows, n_active),
+            copy=False,
+        )
+        full_A.has_sorted_indices = False
+        # Sort indices within each row in place. This is per-row qsort with no
+        # allocation peak and gives downstream code (CSC views, indices-binary
+        # search, etc.) the canonical layout. We also call sum_duplicates() as a
+        # defensive no-op (the bucket-sort build guarantees no duplicate (row,
+        # col) entries) so that downstream consumers can rely on canonical CSR.
+        full_A.sort_indices()
+        full_A.sum_duplicates()
 
-    if top2_active:
-        return full_A, full_b, pixel_counts, pixel_fisher, active_mask
-    return full_A, full_b, pixel_counts, pixel_fisher
+    # NOTE: the pixel state is deliberately NOT restored here. Restoring it
+    # before returning would re-inflate it right alongside the finished CSR —
+    # i.e. exactly at the peak the spill exists to avoid — and
+    # Calibrator.apply_lsqr would immediately write it back out again.
+    # Instead the spill directory travels to the caller, which keeps the
+    # arrays parked until save_calibration actually needs them.
+    #
+    # J == 2 keeps the bare (num_sky,) pair-(0,1) array return for downstream
+    # compatibility; J >= 3 returns the {(i, j): array} dict. When spilled,
+    # that reshaping happens on restore instead (see PixelSpill.restore).
+    if pixel_cross is not None and num_sky_blocks == 2:
+        pixel_cross = pixel_cross[(0, 1)]
+    return SetupResult(A=full_A, b=full_b,
+                       pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                       pixel_cross=pixel_cross,
+                       active_mask=active_mask if compaction_active else None,
+                       pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
+                                    if _pix_spill_dir is not None else None))
 
 
 def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
-                           num_sky_blocks=1):
+                           num_sky_blocks=1, num_chunks_list=None):
     """Generic coverage slicing for any number of sky blocks.
 
     Returns ``(sky_coverages, offset_coverages, offset_valid_fracs)`` where
     ``sky_coverages`` is a length-``num_sky_blocks`` list of ``ref_shape`` arrays
     (block 0 = continuum, 1.. = line blocks). :func:`parse_pixel_counts` is the
     back-compat fixed-tuple wrapper for <=2 blocks.
+
+    ``num_chunks_list`` (optional) is the *layout* column count per map — the
+    number of offset columns actually allocated in ``pixel_counts``. For an
+    ordinary per-chunk map this equals ``cm.max()+1`` (default when ``None``), so
+    behavior is byte-identical. For template / hard-poly-basis maps the offset
+    columns are amplitudes / polynomial coefficients, NOT one-per-chunk, so the
+    layout count must be used to slice + advance the cursor correctly; the caller
+    (``save_calibration``) overrides the coverage for those maps, so a
+    shape-correct placeholder frac is returned rather than a per-chunk division.
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -731,12 +984,19 @@ def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chun
 
     offset_coverages = []
     offset_valid_fracs = []
-    for ng, cm in zip(num_offset_groups_list, chunk_maps):
-        num_chunks = int(np.max(cm)) + 1
-        block = ng * num_chunks
-        offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, num_chunks)
-        chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=num_chunks)
-        offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+    for m, (ng, cm) in enumerate(zip(num_offset_groups_list, chunk_maps)):
+        real_chunks = int(np.max(cm)) + 1
+        nchk = real_chunks if num_chunks_list is None else int(num_chunks_list[m])
+        block = ng * nchk
+        offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, nchk)
+        if nchk == real_chunks:
+            chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=real_chunks)
+            offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+        else:
+            # Layout columns are not one-per-chunk (template alpha / poly-basis
+            # coeffs); the caller overrides this map's coverage, so a shape-correct
+            # placeholder avoids an ill-defined per-chunk division.
+            offset_valid_frac = offset_coverage.astype(np.float64)
         offset_coverages.append(offset_coverage)
         offset_valid_fracs.append(offset_valid_frac)
         cursor += block
@@ -780,8 +1040,94 @@ def parse_pixel_fisher(pixel_fisher, ref_shape, num_sky_blocks=1):
     return sky_fishers[0], None
 
 
+def _separability_from_moments(pixel_fisher, pixel_cross, num_sky, num_sky_blocks,
+                               block=None):
+    """Per-pixel separability ``I_P`` of one sky block from the streamed moments.
+
+    ``I_P`` is the Schur complement of block ``block`` (default: the last)
+    against all other sky blocks in the per-pixel J x J normal-matrix block.
+    J == 2 gives the closed form ``Σw²G² − (Σw²G)²/Σw²``; J == 3 (last block)
+    uses the 2x2 nuisance inverse (cont + slope) with a tiny ridge for pixels
+    where the nuisance pair is collinear (e.g. single-BC pixels: t constant →
+    cont/slope degenerate — the ridge slightly *underestimates* I there, i.e.
+    errs toward more damping). Any other (J, block) goes through the general
+    vectorized (J−1) x (J−1) nuisance solve with the same diagonal-ridge
+    convention, evaluated in pixel slabs to bound memory.
+    ``pixel_cross`` may be the bare pair-(0,1) array (J == 2) or the pair dict.
+    """
+    L = num_sky_blocks - 1
+    if block is None:
+        block = L
+    F = [pixel_fisher[j * num_sky:(j + 1) * num_sky] for j in range(num_sky_blocks)]
+    if not isinstance(pixel_cross, dict):
+        pixel_cross = {(0, 1): np.asarray(pixel_cross)}
+    if num_sky_blocks == 2 and block == 1:
+        c = pixel_cross[(0, 1)]
+        I_P = F[1] - np.where(F[0] > 0, c ** 2 / np.maximum(F[0], 1e-300), 0.0)
+        return np.maximum(I_P, 0.0)
+    if num_sky_blocks == 3 and block == 2:
+        c01 = pixel_cross[(0, 1)]
+        s0, s1 = pixel_cross[(0, 2)], pixel_cross[(1, 2)]
+        # Diagonal ridge (not a det ridge): keeps the rank-deficient case
+        # (e.g. single-BC pixels, where cont/slope are exactly collinear)
+        # numerically stable — det >= r*(F0+F1) so the 0/0 cancellation never
+        # happens, and the O(r) bias shrinks I (more damping = safe direction).
+        r = 1e-8 * (F[0] + F[1] + 1.0)
+        F0r, F1r = F[0] + r, F[1] + r
+        det = np.maximum(F0r * F1r - c01 ** 2, 1e-300)
+        # s^T M'^{-1} s with M' = [[F0+r, c01], [c01, F1+r]]
+        quad = (F1r * s0 ** 2 - 2.0 * c01 * s0 * s1 + F0r * s1 ** 2) / det
+        return np.maximum(F[2] - quad, 0.0)
+
+    # --- General path: arbitrary J and target block. Per pixel, solve the
+    # (J-1)x(J-1) nuisance normal block M (Gram of all non-target coefficient
+    # vectors, PSD) with the same relative diagonal ridge as the J=3 closed
+    # form, then I_P = F_k − s^T (M + rI)^{-1} s. Batched over pixel slabs.
+    def _c(i, j):
+        return F[i] if i == j else pixel_cross[(min(i, j), max(i, j))]
+
+    nuis = [j for j in range(num_sky_blocks) if j != block]
+    out = np.empty(num_sky, dtype=np.float64)
+    slab = max(1, 8_000_000 // max(L * L, 1))          # ~500 MB of M per slab
+    for p0 in range(0, num_sky, slab):
+        sl = slice(p0, min(p0 + slab, num_sky))
+        n = sl.stop - sl.start
+        M = np.empty((n, L, L), dtype=np.float64)
+        for a in range(L):
+            for b in range(a, L):
+                v = _c(nuis[a], nuis[b])[sl]
+                M[:, a, b] = v
+                if b != a:
+                    M[:, b, a] = v
+        s = np.stack([_c(nuis[a], block)[sl] for a in range(L)], axis=1)  # (n, L)
+        r = 1e-8 * (M.trace(axis1=1, axis2=2) + 1.0)
+        M[:, np.arange(L), np.arange(L)] += r[:, None]
+        x = np.linalg.solve(M, s[..., None])[..., 0]
+        out[sl] = F[block][sl] - np.einsum('nl,nl->n', s, x)
+    return np.maximum(out, 0.0)
+
+
+def parse_line_separability(pixel_cross, pixel_fisher, ref_shape, num_sky_blocks=2,
+                            block=None):
+    """Per-pixel line separability map ``I_P`` (see
+    :func:`_separability_from_moments`) reshaped to ``ref_shape``.
+
+    ``pixel_cross`` is the cross-moment return from ``setup_lsqr`` (bare array
+    for 2-block models, pair dict for >=3); ``pixel_fisher`` the full
+    accumulator; ``block`` selects which sky block's Schur complement to compute
+    (default: the last). Unlike the line Fisher (Σw²G², a magnitude metric),
+    I_P measures wavelength DIVERSITY: a pixel observed many times at a single
+    BC has large Fisher but I_P = 0 — exactly the degenerate pixels that blow up
+    under LSQR semi-convergence. Mask on I_P, not Fisher.
+    """
+    num_sky = ref_shape[0] * ref_shape[1]
+    return _separability_from_moments(
+        pixel_fisher, pixel_cross, num_sky, num_sky_blocks,
+        block=block).reshape(ref_shape)
+
+
 def apply_line_fisher_mask(sky_line, line_fisher, threshold):
-    """Apply Phase 6 Fisher mask at READ time: zero sky_line where Fisher < threshold.
+    """Apply the line-Fisher mask at read time: zero sky_line where Fisher < threshold.
 
     Cals saved by Calibrator.save_calibration contain RAW sky_line (no
     destructive mask) plus the per-pixel line Fisher info. The

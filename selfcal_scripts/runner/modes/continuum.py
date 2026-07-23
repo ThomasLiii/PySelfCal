@@ -1,4 +1,5 @@
-"""Continuum mode — the instrument-agnostic baseline (run_cal / d5 / damp* family).
+"""Continuum mode — the instrument-agnostic baseline recipe (the one behind the
+d5 / damp* configs in selfcal_scripts/configs/).
 
 Single offset block: column adjacency + linear column poly-constraint + per-frame
 mean-zero anchor + per-frame scalar; continuum-only sky; full mosaic + (if the
