@@ -106,11 +106,12 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                 "to infer the detector-grid shape from.")
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
         sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
-        # Row-slice-first: when grid_valid_weight is available, pre-filter
-        # the rows whose bilinear sample of grid_valid_weight is zero (i.e.
-        # whose downstream sub_weight will be zero anyway). For narrow
-        # channel masks this drops ~70-90 % of rows that the current code
-        # builds and then multiplies by zero. map_coordinates with
+        # Pre-filter zero-weight rows before building the interp matrix:
+        # when grid_valid_weight is available, drop rows whose bilinear
+        # sample of grid_valid_weight is zero (their downstream sub_weight
+        # would be zero anyway). For narrow channel masks this avoids
+        # building ~70-90 % of rows whose contribution would otherwise be
+        # multiplied by zero downstream. map_coordinates with
         # order=1, mode='constant', cval=0.0 is the exact bilinear sampler
         # that the interp matrix implements, so dropped rows are guaranteed
         # to be zero-contribution. coords are (row_coords, col_coords);

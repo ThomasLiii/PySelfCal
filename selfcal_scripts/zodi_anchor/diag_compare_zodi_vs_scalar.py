@@ -8,7 +8,8 @@ not the pixel-weighted sum).
 
 The anchor only fixes the global mean; this checks that the per-frame
 variation also tracks the zodi model, which validates the time/pointing/
-wavelength wiring in build_zodi_predictions.py.
+wavelength wiring in build_predictions.py (which produces the zodi_pred
+.npz this script consumes).
 
 Linear fit `full_DC = slope * zp + intercept` with optional moving
 sigma-clip in MJD space. The intercept is the anchor; the slope is the
@@ -41,8 +42,6 @@ def main():
         offsets_m0 = f['offsets/map_0'][:].astype(np.float64)
         cov_m0 = f['offset_coverage/map_0'][:].astype(np.float64)
     full_DC = compute_full_dc(frame_scalar, offsets_m0, cov_m0)
-    # fs is full_DC throughout the rest of this script
-    fs = full_DC
     z_npz = np.load(args.zodi_pred)
     zp = z_npz['zodi_pred'].astype(np.float64)
     mjds = (z_npz['mjds'].astype(np.float64) if 'mjds' in z_npz.files
@@ -50,35 +49,35 @@ def main():
     wavelength = float(z_npz['wavelength_um'])
     model_name = str(z_npz['model_name'])
 
-    assert len(fs) == len(zp), f"length mismatch: {len(fs)} vs {len(zp)}"
+    assert len(full_DC) == len(zp), f"length mismatch: {len(full_DC)} vs {len(zp)}"
     if mjds is None:
         print("WARNING: .npz has no 'mjds' — falling back to frame-index "
               "x-axis and disabling sigma-clip.")
 
     slope, intercept, r, inlier = fit_with_clip(
-        zp, fs, mjds,
+        zp, full_DC, mjds,
         window_days=args.clip_window_days,
         sigma=args.clip_sigma,
         iters=args.clip_iters)
     n_inlier = int(inlier.sum())
-    n_total_valid = int((np.isfinite(zp) & np.isfinite(fs)).sum())
+    n_total_valid = int((np.isfinite(zp) & np.isfinite(full_DC)).sum())
     n_outliers = n_total_valid - n_inlier
 
-    fs_in = fs[inlier]
+    full_dc_in = full_DC[inlier]
     zp_in = zp[inlier]
     C = float(intercept)
     print(f"frames in fit:     {n_inlier} (rejected {n_outliers} outliers)")
-    print(f"mean(full_DC)      = {fs_in.mean():.6g} MJy/sr (inliers)")
+    print(f"mean(full_DC)      = {full_dc_in.mean():.6g} MJy/sr (inliers)")
     print(f"mean(zodi_pred)    = {zp_in.mean():.6g} MJy/sr (inliers)")
-    print(f"std(full_DC)       = {fs_in.std():.6g}")
+    print(f"std(full_DC)       = {full_dc_in.std():.6g}")
     print(f"std(zodi_pred)     = {zp_in.std():.6g}")
     print(f"linfit slope       = {slope:.4f}")
     print(f"linfit intercept   = {intercept:.6g} MJy/sr  <- anchor C")
     print(f"Pearson r          = {r:.4f}")
-    resid_in = fs_in - (slope * zp_in + intercept)
+    resid_in = full_dc_in - (slope * zp_in + intercept)
     print(f"residual std (inliers, post-fit) = {resid_in.std():.6g}")
 
-    outlier = ~inlier & np.isfinite(zp) & np.isfinite(fs)
+    outlier = ~inlier & np.isfinite(zp) & np.isfinite(full_DC)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
@@ -87,9 +86,9 @@ def main():
     if mjds is not None:
         ord_in = np.argsort(mjds[inlier])
         ord_out = np.argsort(mjds[outlier])
-        ax.scatter(mjds[inlier][ord_in], fs[inlier][ord_in], s=2, alpha=0.5,
+        ax.scatter(mjds[inlier][ord_in], full_DC[inlier][ord_in], s=2, alpha=0.5,
                    c='tab:blue', label='full_DC (inlier)')
-        ax.scatter(mjds[outlier], fs[outlier], s=4, c='red', marker='x',
+        ax.scatter(mjds[outlier], full_DC[outlier], s=4, c='red', marker='x',
                    alpha=0.7, label=f'full_DC outlier (clipped, n={n_outliers})')
         # Plot zodi_pred sorted in MJD (smoother)
         all_valid = np.isfinite(mjds) & np.isfinite(zp)
@@ -99,10 +98,10 @@ def main():
                 label=f'zodi_pred ({model_name} @ {wavelength:.2f} um)')
         ax.set_xlabel('MJD')
     else:
-        ax.plot(fs, label='full_DC', lw=0.5, alpha=0.7)
+        ax.plot(full_DC, label='full_DC', lw=0.5, alpha=0.7)
         ax.plot(zp, label=f'zodi_pred ({model_name} @ {wavelength:.2f} um)',
                 lw=0.5, alpha=0.7)
-        ax.scatter(np.where(outlier)[0], fs[outlier], s=4, c='red',
+        ax.scatter(np.where(outlier)[0], full_DC[outlier], s=4, c='red',
                    marker='x', alpha=0.7,
                    label=f'outlier (clipped, n={n_outliers})')
         ax.set_xlabel('frame index')
@@ -112,9 +111,9 @@ def main():
 
     # Panel 2: scatter with linfit
     ax = axes[1]
-    ax.scatter(zp_in, fs_in, s=1, alpha=0.3, c='tab:blue', label='inlier')
+    ax.scatter(zp_in, full_dc_in, s=1, alpha=0.3, c='tab:blue', label='inlier')
     if outlier.any():
-        ax.scatter(zp[outlier], fs[outlier], s=4, c='red', marker='x',
+        ax.scatter(zp[outlier], full_DC[outlier], s=4, c='red', marker='x',
                    alpha=0.5, label=f'outlier (n={n_outliers})')
     xx = np.linspace(zp_in.min(), zp_in.max(), 100)
     ax.plot(xx, slope * xx + intercept, 'r-', lw=1,
@@ -125,9 +124,9 @@ def main():
     ax.set_title(f'Scatter: Pearson r = {r:.3f}, slope = {slope:.3f}')
     ax.legend(loc='upper left', fontsize=8)
 
-    # Panel 3: residuals (fs - linfit(zp))
+    # Panel 3: residuals (full_DC - linfit(zp))
     ax = axes[2]
-    resid_all = fs - (slope * zp + intercept)
+    resid_all = full_DC - (slope * zp + intercept)
     if mjds is not None:
         ord_in = np.argsort(mjds[inlier])
         ax.scatter(mjds[inlier][ord_in], resid_all[inlier][ord_in],
@@ -144,7 +143,7 @@ def main():
                        c='red', marker='x', alpha=0.7, label='outlier')
         ax.set_xlabel('frame index')
     ax.axhline(0, color='r', lw=0.5)
-    ax.set_ylabel('residual = fs - (slope·zp + intercept) (MJy/sr)')
+    ax.set_ylabel('residual = full_DC - (slope·zp + intercept) (MJy/sr)')
     ax.set_title(f'Residuals (inlier std = {resid_in.std():.4g})')
     ax.legend(loc='upper right', fontsize=8)
 

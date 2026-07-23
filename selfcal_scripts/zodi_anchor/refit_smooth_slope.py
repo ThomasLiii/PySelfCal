@@ -2,10 +2,14 @@
 
 Attack the root cause of the per-detector C jump: the per-channel anchor
 lets slope vary freely in wavelength, and slope/C trade off via
-``mean(zodi_pred)``. A few-percent slope inflation eats ~10-15 mMJy/sr
-from C. If slope is constrained to vary smoothly in wavelength across
-detectors, C should be continuous without any per-detector pedestal
-correction.
+``mean(zodi_pred)`` — the OLS fit couples them as
+``C = mean(full_DC) - slope * mean(zodi_pred)``, so a slope error delta
+shifts C by ``-delta * mean(zodi_pred)``; at NEP zodi levels (mean pred
+~0.3-0.5 MJy/sr) a few-percent slope inflation shifts C by ~10-15
+mMJy/sr. If slope is constrained to vary smoothly in wavelength across
+detectors, C should be continuous without the per-detector additive
+pedestal correction explored in ``prototype_pedestal_anchor.py`` /
+``prototype_pedestal_anchor_v2.py`` (same directory).
 
 Three variants are compared on the same axes:
 
@@ -90,8 +94,10 @@ def parse_args():
                    help='Number of moving sigma-clip refit iterations '
                         '(default 2, matches anchor clip_iters=2).')
     p.add_argument('--cal-glob-pat', default='cal_*polyK1.h5',
-                   help="Glob inside <run>/calibration "
-                        "(default: 'cal_*polyK1.h5').")
+                   help="Glob inside <run>/calibration (default "
+                        "'cal_*polyK1.h5' -- cal files whose filename "
+                        "suffix marks the linear K=1 polynomial-constraint "
+                        "solve; set to match your run's cal-file suffix).")
     p.add_argument('--out-plot', default=None,
                    help='Output PNG. Default: '
                         'figures/zodi_anchor/refit_smooth_slope.png')

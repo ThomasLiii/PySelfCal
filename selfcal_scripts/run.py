@@ -3,10 +3,11 @@
     python -m selfcal_scripts.run --config selfcal_scripts/configs/<run>.toml
 
 Pins the BLAS/OpenMP thread envs to 1 BEFORE importing numpy/selfcal (so the
-in-process LSQR threadpool is the only parallelism — same discipline the
-per-variant drivers used), loads the TOML config, and dispatches on its ``task``.
-``--dry-run`` loads + validates the config and resolves the instrument's jobs
-without executing the pipeline (used by the equality gate).
+in-process LSQR threadpool is the only source of parallelism), loads the TOML
+config, and dispatches on its ``task``. ``--dry-run`` loads + validates the
+config and resolves the instrument's jobs without executing the pipeline — a
+cheap way to confirm a config resolves to the intended jobs/mode, the same
+resolution the byte-equality regression checks in cache/refactor_gate/ verify.
 """
 import argparse
 import os

@@ -185,7 +185,7 @@ def load_zodi_pred_npz(path, cal_reproj_list=None):
 # WITHOUT touching the cal/mosaic. Results are written to a per-detector
 # anchor file (anchor_D{N}.h5) by build_anchor.py. The consumer
 # (load_anchor / Anchor) applies the shift to arrays at read time so the
-# pipeline outputs stay pristine. See workspace/zodi_anchor_refactor/refactor.md.
+# pipeline outputs stay pristine.
 # ---------------------------------------------------------------------
 
 def file_sha1(path, _bufsize=1 << 20):
@@ -202,8 +202,10 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
                            clip_iters=2):
     """Fit the per-channel anchor from a PRISTINE cal + zodi-pred npz.
 
-    Pure read + fit; never mutates cal or mosaic. Shared by build_anchor.py
-    and the run_cal.py driver hook.
+    Pure read + fit; never mutates cal or mosaic. Shared by
+    selfcal_scripts/zodi_anchor/build_anchor.py and the cal runner's inline
+    anchor step (``_run_zodi_anchor`` in ``selfcal_scripts/runner/pipelines.py``,
+    enabled when the run config sets ``[zodi].pred_dir``).
 
     Returns a dict of the per-channel summary scalars destined for the
     anchor-file Ch{c}/ group (plus npz identity fields).
@@ -267,7 +269,8 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
         zodi_pred_n=int(len(zodi_pred)),
         zodi_pred_sha=file_sha1(zodi_pred_npz),
         model_name=model_name,
-        # smoothing fields default to the raw fit until a Phase-1 pass runs.
+        # smoothing fields default to the raw fit; smooth_anchor_file()
+        # overwrites them on contaminated channels.
         slope_final=float(slope),
         C_final=float(intercept),
         contaminated_flag=False,
@@ -332,9 +335,11 @@ def append_anchor_channel(out_path, detector, source_run, channel,
     """Add/replace one channel in a per-detector anchor file, in place.
 
     Creates the file (and root attrs + channels group) if absent. Used by
-    the run_cal.py driver hook, which fits channels sequentially and
-    grows the detector anchor file as each finishes. Safe to re-run for a
-    channel (overwrites its group).
+    the cal runner's inline anchor step (``_run_zodi_anchor`` in
+    ``selfcal_scripts/runner/pipelines.py``, enabled by ``[zodi].pred_dir``
+    in the run config), which fits channels sequentially and grows the
+    detector anchor file as each finishes. Safe to re-run for a channel
+    (overwrites its group).
     """
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with h5py.File(out_path, 'a') as f:
@@ -471,7 +476,9 @@ def load_anchored_mosaic(mosaic_path, anchor, ch=None, extname='MEAN_MAP'):
 
 
 # ---------------------------------------------------------------------
-# Phase-1 slope smoothing of contaminated channels
+# Optional post-fit slope smoothing of contaminated channels
+# (rewrites slope_final / C_final in the anchor file; entry point
+# smooth_anchor_file)
 # ---------------------------------------------------------------------
 
 def rweighted_slope_smooth(wavelengths, slope, intercept, pearson_r,

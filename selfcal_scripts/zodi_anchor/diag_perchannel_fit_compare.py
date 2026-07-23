@@ -1,6 +1,6 @@
 """Per-channel diagnostic: per-channel anchor fit vs smooth-global-slope refit.
 
-For a curated set of representative channels (default: D3/D4/D5 x
+For a curated set of representative channels (default: D1-D5 x
 Ch{1,17,34}), pull the per-frame (full_DC, zodi_pred, mjd) using the
 same loader as ``refit_smooth_slope.py``, build a common inlier mask
 with the same moving MJD-window sigma-clip, then evaluate two fit
@@ -71,7 +71,8 @@ def parse_args():
     p.add_argument('--channels', default=None,
                    help='Comma-separated D:Ch list (e.g. '
                         '"3:1,3:17,3:34,4:1,4:17,4:34,5:1,5:17,5:34"). '
-                        'Default uses the curated boundary-aware set.')
+                        'Default: Ch 1, 17, 34 for each of D1-D5 '
+                        '(band-edge + mid-band channels).')
     p.add_argument('--cal-glob-pat', default='cal_*polyK1.h5',
                    help="Glob inside <run>/calibration "
                         "(default: 'cal_*polyK1.h5').")
@@ -265,7 +266,8 @@ def main():
             # Pearson r of (fdc, slope * zp): the slope-only modelled DC
             # component, NOT the (slope*zp + C) model line (adding a
             # constant leaves r unchanged anyway, so this is the same
-            # number, but compute it that way to match the spec).
+            # number; computed against slope*zp to make the compared
+            # quantity explicit).
             def _pearson(a, b):
                 a = np.asarray(a, dtype=np.float64)
                 b = np.asarray(b, dtype=np.float64)

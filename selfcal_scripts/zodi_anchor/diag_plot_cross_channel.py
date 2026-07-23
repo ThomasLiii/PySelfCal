@@ -9,8 +9,9 @@ wavelengths). Three panels:
       wavelength, one curve per channel.
   (c) per-chunk anchored "absolute" value (sky_in_chunk_anch +
       offset_avg + scalar_anch_avg) vs subchannel wavelength.
-      The 7 channel curves should overlap at adjacent subchannels
-      (where adjacent channels' masks overlap with padding=1).
+      The per-channel curves (one per cal file found) should overlap at
+      adjacent subchannels (where adjacent channels' masks overlap with
+      padding=1).
 
 Run in selfcal env (needs matplotlib).
 """
@@ -135,7 +136,10 @@ def main():
             skymap = f['skymap'][:]
             skymap_cov = f['skymap_coverage'][:] if 'skymap_coverage' in f else None
         # Anchor params from the anchor file (cals are pristine; shift
-        # applied in-memory). C_final/slope_final are smoothing-aware.
+        # applied in-memory). anchor.C()/.slope() return the
+        # C_final/slope_final fields: the per-channel fit after the
+        # optional cross-channel slope-smoothing pass (smooth_anchor.py)
+        # if it was run, else the raw fit.
         C = anchor.C(ch)
         slope = anchor.slope(ch)
         r = float(anchor.channels[ch]['pearson_r'])

@@ -1,9 +1,12 @@
 """LSQR solve: preconditioning, parallel SpMV operator, and the solver call.
 
-Split out of the former monolithic lsqr.py. ``apply_lsqr`` runs scipy
-lsqr/lsmr against a thread-parallel SpMV ``LinearOperator``, with Jacobi
-column-norm preconditioning and Top-2 column-compaction expansion. Independent
-of the assembly/system halves (operates on the returned A, b).
+The solver stage of ``selfcal.core``: matrix/RHS assembly lives in
+``assembly.py`` and ``system.py``; this module only consumes the returned
+(A, b). ``apply_lsqr`` runs scipy lsqr/lsmr against a thread-parallel SpMV
+``LinearOperator``, with Jacobi column-norm preconditioning and — when
+``setup_lsqr`` has already dropped all-zero columns and passes an
+``active_mask`` — expansion of the compact solution back to the full column
+layout.
 """
 import os
 
@@ -24,8 +27,9 @@ def _partition_csr(A, n_blocks):
     runs scipy's index-dtype unification with ``check_contents=True``, and when
     the parent has int64 indices (forced whenever total nnz > 2^31) every
     block's contents fit int32, so it silently downcast-COPIES all indices —
-    ~nnz*4 bytes of duplicates held for the whole solve (~89 GiB at full-NEP
-    tile scale; verified on scipy 1.15/1.16). Attribute assignment keeps true
+    ~nnz*4 bytes of duplicates held for the whole solve (e.g. ~89 GiB at
+    nnz ~2.4e10, one production-size tile; this is scipy's csr_matrix
+    constructor behavior at least through scipy 1.16). Attribute assignment keeps true
     views of the parent's data/indices; only the per-block shifted indptr is a
     fresh (small) array. Index dtype does not enter the float arithmetic, so
     matvec results are bit-identical either way.
@@ -50,9 +54,10 @@ def _make_parallel_operator(A_csr, n_threads):
     matvec: per-thread row-block partition of A_csr (GIL released during scipy CSR SpMV).
     rmatvec: A_csr.T as a zero-copy CSC view; scipy CSC SpMV handles A.T @ y directly.
 
-    The previous version materialized AT_csr = A_csr.T.tocsr() as an explicit copy, which
-    at no-srcmask region-10k scale was ~88 GB. The CSC view shares A_csr's storage and
-    costs O(1) — scipy's CSC @ vec is fast and releases the GIL.
+    Do NOT replace the view with AT = A_csr.T.tocsr(): that copies all of A's
+    storage (data + indices, ~8 bytes per nonzero — e.g. ~88 GB at nnz ~1e10).
+    The CSC view shares A_csr's storage and costs O(1) — scipy's CSC @ vec is
+    fast and releases the GIL.
     """
     m, n = A_csr.shape
 
@@ -117,28 +122,34 @@ def parallel_rmatvec_threads():
     columns), so unlike matvec it cannot be threaded without changing the
     order in which each output column's contributions are summed. The
     sequential kernel is therefore the default, and it dominates the solve:
-    matvec runs on many threads while this runs on one, so on the full-NEP
-    D4 M04 tile the LSQR solve spends most of its per-iteration time here.
+    matvec runs on many threads while this runs on one, so at production
+    scale (nnz ~1e10, far larger than any cache) the LSQR solve spends most
+    of its per-iteration time here.
 
     Enabling ``SELFCAL_PARALLEL_RMATVEC=<n>`` gives each thread a private
     output buffer and reduces them afterwards — race-free and DETERMINISTIC
     (a fixed thread count always yields the same bytes). Two consequences,
-    both measured on the M04 tile, both the reason this is opt-in:
+    both measured on a production-size tile (one 2x2-tiling block of a
+    full-NEP detector run, ~1100 frames, nnz ~1e10), both the reason this
+    is opt-in:
 
     * NOT bit-identical to the sequential kernel. Per-column sums become a
       tree instead of one chain, a float32 reassociation of ~1.5e-6 L2 in
       rmatvec (median exactly 0) that propagates to ~1e-4 of each converged
       sky map's own scatter (Pearson 1.0 vs the sequential cal; well inside
       the solver's atol/btol=1e-6). Scientifically equivalent, but the
-      byte-equality goldens must be regenerated once to adopt it, and the
-      output then depends on the thread count (a different ``n`` -> a
-      different partition -> different bytes at the ~1e-6 level).
+      byte-equality regression baselines (the reference cal_*.h5 outputs
+      that diff_cal_h5.py compares new runs against) must be regenerated
+      once to adopt it, and the output then depends on the thread count (a
+      different ``n`` -> a different partition -> different bytes at the
+      ~1e-6 level).
     * The real speedup is modest. rmatvec is memory-bandwidth-bound at
       production scale, so parallelising it gives ~1.5x per LSQR iteration
-      and ~1.3x on the whole tile (8994 -> 6812 s on M04) — not the larger
-      figure an isolated-kernel microbenchmark suggests (its smaller matrix
-      fits cache; the real one does not). 8 threads is the sweet spot; past
-      that the per-thread-buffer reduction costs more than it saves.
+      and ~1.3x on the whole tile (e.g. 8994 -> 6812 s on the tile above) —
+      not the larger figure an isolated-kernel microbenchmark suggests (its
+      smaller matrix fits cache; the real one does not). 8 threads was the
+      sweet spot on a 192-physical-core box; past that the O(n_threads x
+      n_cols) per-thread-buffer reduction costs more than it saves.
     """
     try:
         n = int(os.environ.get('SELFCAL_PARALLEL_RMATVEC', '0'))
@@ -317,9 +328,9 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     A : coo_matrix or csr_matrix
         Sparse system matrix. When ``csr_matrix`` is passed together with an
         ``active_mask``, setup_lsqr is assumed to have already compacted the
-        zero columns (Top 2 path); ``apply_lsqr`` skips its own column
-        elimination and uses ``active_mask`` only to expand the solution
-        back to the full column space at the end.
+        zero columns; ``apply_lsqr`` skips its own column elimination and
+        uses ``active_mask`` only to expand the solution back to the full
+        column space at the end.
     solver : str, optional
         Solver to use: 'lsmr' (default, faster convergence) or 'lsqr'.
     use_float32 : bool, optional
@@ -341,13 +352,15 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
 
-    # Setup may emit f32 b (exactly-f32-representable values only). For
+    # setup_lsqr may emit f32 b (exactly-f32-representable values only). For
     # use_float32 solves that's the wanted dtype already; for f64 solves,
-    # upcast reproduces the legacy f64 array bit-for-bit (exact conversion).
+    # upcasting is exact (every f32 value is exactly representable in f64),
+    # so the solver sees a b bit-identical to one built in f64 from the start.
     if not use_float32 and b.dtype == np.float32:
         b = b.astype(np.float64)
 
-    # ---- Top 2 fast path: A is already compact CSR (or int32 blocks) ----
+    # ---- Pre-compacted fast path: setup_lsqr already dropped all-zero
+    # ---- columns; A arrives as compact CSR (or int32 BlockCSR).
     if isinstance(A, (csr_matrix, BlockCSR)):
         is_block = isinstance(A, BlockCSR)
         if active_mask is not None:
@@ -362,8 +375,9 @@ def apply_lsqr(A, b, ref_shape, x0=None,
             num_cols = A.shape[1]
             n_active = num_cols
             x0_compressed = x0
-        # Drop this frame's ref to the full-layout x0 (the caller released its
-        # own via the ownership hand-off) so the f64 original can be freed once
+        # Drop this function's reference to the full-layout x0 (the caller
+        # transferred ownership and dropped its own reference — see
+        # Calibrator.apply_lsqr) so the f64 original can be freed once
         # x0_compressed is cast to float32 below.
         x0 = None
 
@@ -444,11 +458,9 @@ def apply_lsqr(A, b, ref_shape, x0=None,
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
+                # _make_parallel_operator has no rmatvec executor to shut
+                # down (only the BlockCSR operator creates one).
                 op._executor.shutdown(wait=False)
-            if getattr(op, '_rmatvec_executor', None) is not None:
-                op._rmatvec_executor.shutdown(wait=False)
-                if getattr(op, '_rmatvec_executor', None) is not None:
-                    op._rmatvec_executor.shutdown(wait=False)
         else:
             if solver == 'lsmr':
                 result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
@@ -492,13 +504,15 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     if use_float32:
         print("Downcasting to float32 for faster SpMV...")
         # setup_lsqr workers always emit float32 for sub_data_vec, so A.data
-        # is already f32 in production; skip the redundant ~25 GB copy.
+        # is already f32 in production; skip the redundant nnz-sized f32 copy
+        # (4 bytes per nonzero — tens of GB at production nnz ~1e10).
         if A.data.dtype == np.float32:
             data = A.data
         else:
             data = A.data.astype(np.float32)
-        # Drop the f64 b reference once the f32 cast exists (caller already released self.b;
-        # this releases the local f64 reference, saving ~80 GB at no-srcmask region-10k scale).
+        # Drop the f64 b reference once the f32 cast exists (caller already
+        # released self.b; this releases the local f64 reference — 8 bytes
+        # per equation, e.g. ~80 GB at ~1e10 equations).
         _b_in = b
         b = _b_in.astype(np.float32)
         del _b_in
@@ -510,8 +524,8 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     if precondition:
         print("Applying column-norm preconditioning...")
         # Chunked float32 accumulation of column-squared-norms.
-        # Avoids materializing the full nnz-sized f64 (data**2) temp (~56 GB at no-srcmask
-        # region-10k scale). f32 sum is safe: max per-column sum is bounded
+        # Avoids materializing the full nnz-sized f64 (data**2) temp (8 bytes
+        # per nonzero — e.g. ~56 GB at nnz ~7e9). f32 sum is safe: max per-column sum is bounded
         # (max data ~10 from apply_weight * max ~17k contributors ~1.7M, << f32 max 3.4e38).
         chunk_size = 64_000_000  # ~256 MB per chunk at f32
         col_sq_norm = np.zeros(n_active, dtype=np.float32)
@@ -525,8 +539,8 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         M_inv = col_norms
         M = 1.0 / M_inv
         # Chunked in-place gather-multiply: avoids two full-nnz transients
-        # (the M[new_col] gather and the .astype(data.dtype) copy together
-        # held ~52 GB at no-srcmask region-10k scale). M values are tiny
+        # (the M[new_col] gather and the .astype(data.dtype) copy, ~4 bytes
+        # per nonzero each — e.g. ~52 GB combined at production nnz). M values are tiny
         # (n_active entries), so per-chunk gather is cheap.
         chunk_size = 64_000_000  # ~256 MB per chunk at f32
         for start in range(0, data.size, chunk_size):
@@ -539,8 +553,9 @@ def apply_lsqr(A, b, ref_shape, x0=None,
 
     # Bind the row array + shape locally so we can drop the COO container immediately
     # after CSR build. Caller already released its reference (see Calibrator.apply_lsqr);
-    # this lets the (~140 GB at no-srcmask region-10k scale) COO arrays be freed as soon
-    # as CSR construction finishes. row/col are scipy properties without deleters, so we
+    # this lets the COO's row/col/data arrays (~12-16 bytes per nonzero —
+    # e.g. ~140 GB at nnz ~1e10) be freed as soon as CSR construction
+    # finishes. row/col are scipy properties without deleters, so we
     # drop A itself after rebinding row locally.
     A_row = A.row
     A_shape = A.shape

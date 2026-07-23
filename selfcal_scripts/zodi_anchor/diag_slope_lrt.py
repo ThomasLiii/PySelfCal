@@ -24,7 +24,8 @@ p<1e-6, with the surviving channel ids and a check for wavelength
 clustering.
 
 Plot (3-panel):
-  (a) log10(p_value) vs lambda for D3/D4/D5, with horizontal threshold lines
+  (a) log10(p_value) vs lambda for each loaded detector, with horizontal
+      threshold lines
   (b) slope_free with +/-2 sigma error bars (horizontal line at 1.0)
   (c) delta_BIC vs lambda
 
@@ -498,13 +499,16 @@ def main():
     summary = summarize_thresholds(stats_by_det, args.cluster_gap_um)
     print_summary(stats_by_det, summary, anchor_paths)
 
-    # ----- D4 Ch1 spotlight -----
+    # ----- D4 Ch1 spotlight: the channel with the largest slope deviation
+    # from 1 in the NEP 2026-W17 anchor fits, printed in full as a worked
+    # reference for reading the summary table above -----
     if 4 in stats_by_det:
         S4 = stats_by_det[4]
         idx = np.where(S4['channels'] == 1)[0]
         if len(idx):
             i = int(idx[0])
-            print("\n=== D4 Ch1 spotlight (canonical 'extreme' channel) ===")
+            print("\n=== D4 Ch1 spotlight (largest slope deviation from 1 "
+                  "in the NEP 2026-W17 anchor fits) ===")
             print(f"  wavelength    = {S4['wl'][i]:.4f} um")
             print(f"  slope_free    = {S4['slope_free'][i]:.6f}")
             print(f"  sigma_slope   = {S4['sigma_slope'][i]:.3e}")

@@ -13,13 +13,15 @@ already produced the npz files; this only does the cheap linear fit).
 
     python build_anchor.py --run-dir /mnt/.../SPHEREx_NEP_2026W17_D1_6p2arcsec
 
-Pass --smooth to also run the Phase-1 r-weighted slope smoothing in-place
-right after building (equivalent to a follow-up smooth_anchor.py). ONLY
-for atmospheric-contaminated detectors (D1 He I/OI; D2) — NOT D4/D5:
+Pass --smooth to also run the r-weighted slope smoothing in-place right
+after building (slope is splined across channels, C is recomputed — the
+same operation as a follow-up smooth_anchor.py). ONLY for
+atmospheric-contaminated detectors (D1 He I/OI; D2) — NOT D4/D5:
 
     python build_anchor.py --run-dir /mnt/.../D1_... --smooth
 
-See workspace/zodi_anchor_refactor/refactor.md for the architecture.
+See selfcal_scripts/zodi_anchor/README.md for the anchor architecture
+(and selfcal/zodi_anchor.py for the core math and file schema).
 """
 import argparse
 import glob
@@ -53,7 +55,8 @@ def parse_args():
                    help='Glob inside calibration/ for cal files.')
     p.add_argument('--smooth', action='store_true',
                    help='After building, run the r-weighted slope smoothing '
-                        'in-place (Phase 1). ONLY for atmospheric-contaminated '
+                        'in-place (slope splined, C recomputed; see '
+                        'smooth_anchor.py). ONLY for atmospheric-contaminated '
                         'detectors (D1 He I/OI; D2) — do NOT use for D4/D5, '
                         'whose low-r channels are real features. Equivalent '
                         'to running smooth_anchor.py afterward.')

@@ -2,10 +2,10 @@
 
 Makes Euclid a first-class instrument: the FITS extension layout, DQ ignore
 bits, detector geometry, and the square grid chunk map that the Euclid mosaic
-needs — previously hand-rolled in notebooks/euclid_mosaic.ipynb — live here.
+needs live here (used by notebooks/euclid_mosaic.ipynb).
 
 Euclid NISP is broadband imaging: no spectral aux maps, so the default
-continuum-only :class:`~selfcal.sky_model.SkyModel` applies and no SPHEREx
+continuum-only :class:`~selfcal.models.sky_model.SkyModel` applies and no SPHEREx
 LVF / spectral machinery is touched.
 """
 import numpy as np

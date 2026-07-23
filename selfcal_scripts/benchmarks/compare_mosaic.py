@@ -17,9 +17,9 @@ Meaningful-pixel mode
 ---------------------
 The default per-HDU summary reports diffs over *every* pixel, including
 near-zero baseline pixels where any absolute diff is large *relative* to a
-near-zero baseline. That tends to flag harmless noise as EXCEEDS. The honest
-gating criterion used during the perf-algo session was to restrict each HDU's
-diff to pixels where ``|baseline| > thr`` (baseline = the FIRST argument, ``a``).
+near-zero baseline. That tends to flag harmless noise as EXCEEDS. A more
+robust gating criterion is to restrict each HDU's diff to pixels where
+``|baseline| > thr`` (baseline = the FIRST argument, ``a``).
 
 When ``--meaningful-thr`` or ``--meaningful-extname-thr`` is provided, a SECOND
 summary block is emitted with that restriction applied per HDU. Different HDUs
@@ -27,7 +27,7 @@ have different physical scales (MEAN_MAP ~1e-3, STD_MAP ~1e-3..1e-5,
 SC_MEAN_MAP ~1e-3, WAV_* ~µm), so per-HDU overrides exist via
 ``--meaningful-extname-thr``. Per-HDU overrides take precedence over the
 global ``--meaningful-thr`` for the matching HDU. If neither flag is set,
-behavior is exactly as before.
+only the full-pixel summary is emitted.
 
 Examples:
     # global threshold across every HDU
@@ -173,9 +173,10 @@ def main():
                 return per_hdu[name]
             return args.meaningful_thr  # may be None → HDU is skipped
 
-        # Meaningful-block failures DO contribute to the overall exit status —
-        # they are the honest gate. Failures from block 1 are noisier but kept
-        # for backward compatibility with the legacy invocation.
+        # Meaningful-block failures count toward the exit status — they are
+        # the intended gate. Full-pixel (block 1) failures also still count,
+        # so invocations without the meaningful flags keep their original
+        # pass/fail semantics.
         failures += _summarize_meaningful(A, B, shared, args.rtol, args.atol, thr_for)
 
     if failures == 0:

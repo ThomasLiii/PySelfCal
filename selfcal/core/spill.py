@@ -1,11 +1,15 @@
 """Spill/restore for large write-once arrays that idle through a hot phase.
 
 The setup products ``pixel_counts`` / ``pixel_fisher`` / ``pixel_cross`` are
-written during Phase 1, consumed by the Phase-2 constraint builders and the
-Top-2 compaction, and then not read again until ``save_calibration`` — yet
-they are among the largest things resident during BOTH the setup peak (the
-Phase-3/4/6 CSR build) and the entire LSQR solve. At full-NEP multiline J=4
-scale that is ~17 GB of pure ballast in each.
+written while ``setup_lsqr`` collates worker results, consumed by its
+constraint-row builders and zero-column compaction (the numbered ``Phase N``
+comment sections inside ``setup_lsqr``, selfcal/core/system.py), and then
+not read again until ``save_calibration`` — yet they are among the largest
+things resident during BOTH the setup peak (the CSR allocate/scatter/build
+steps at the end of ``setup_lsqr``) and the entire LSQR solve. Each is one
+value per solve column — dominated by the J·N_pix sky columns for J sky
+blocks over an N_pix-pixel reference grid — so roughly 8·J·N_pix bytes
+apiece (e.g. ~17 GB each at N_pix ~ 5e8 pixels, J = 4).
 
 ``np.save``/``np.load`` round-trip int64/float64 arrays losslessly, so
 parking them on scratch disk and reloading is byte-identical to never having
@@ -15,8 +19,10 @@ walk ``items()`` and their float accumulation order must not change), so the
 key order is recorded and reproduced exactly.
 
 Spilling only triggers above ``$SELFCAL_SPILL_MIN_GB`` (default 4 GB) so
-small runs pay no I/O at all; at production scale a round trip is ~30 s
-against a multi-hour tile. ``$SELFCAL_SPILL_DIR`` overrides the location.
+small runs pay no I/O at all; for tens-of-GB arrays the save+reload round
+trip costs tens of seconds of scratch-disk I/O, negligible against a
+setup+solve that runs for hours. ``$SELFCAL_SPILL_DIR`` overrides the
+location.
 """
 import os
 import shutil
@@ -78,12 +84,13 @@ class PixelSpill:
 
     Lets ``setup_lsqr`` hand the arrays off WITHOUT materialising them: they
     stay on scratch until ``save_calibration`` actually reads them, so they
-    never sit alongside the finished CSR (the measured peak) and are not
-    written out a second time by ``apply_lsqr``.
+    never sit alongside the finished CSR (the point of peak resident memory
+    in a large run) and are not written out a second time by ``apply_lsqr``.
 
     ``num_sky_blocks`` is carried so the J==2 convention — ``pixel_cross``
     collapses from the ``{(i, j): array}`` dict to the bare pair-(0,1) array —
-    is applied on restore exactly as ``setup_lsqr`` used to apply it inline.
+    is applied on restore, so callers receive the same shape whether or not
+    the arrays were spilled.
     """
 
     __slots__ = ('spill_dir', 'num_sky_blocks')

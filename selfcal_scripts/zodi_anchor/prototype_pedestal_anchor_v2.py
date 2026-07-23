@@ -1,6 +1,6 @@
 """Prototype pedestal-subtraction anchor v2 — preserves per-channel features.
 
-The v1 model
+The v1 model (``prototype_pedestal_anchor.py``, same directory)
 
     full_DC[D, k, c] = (1 + amp_D) * zodi_pred + C_smooth(lambda) + P_D
 
@@ -194,15 +194,18 @@ def solve_pedestals(per_det, det_order, ref_det, smooth_masks,
     """
     P = {ref_det: 0.0}
     diagnostics = []
-    # We pin P at ref_det and propagate outward. The spec orders boundaries
-    # D3->D4, D4->D5, so we walk det_order pairwise; this assumes ref_det is
-    # the lowest detector (or that the user runs only adjacent dets).
+    # We pin P at ref_det and propagate outward, walking boundaries in
+    # ascending wavelength order (e.g. D3->D4, then D4->D5) via det_order
+    # pairwise; this assumes ref_det is the lowest detector (or that the
+    # user runs only adjacent dets).
     for d_lo, d_hi in zip(det_order[:-1], det_order[1:]):
         if d_lo not in P:
             raise SystemExit(f"P_D{d_lo} not yet pinned (ref_det must be the "
                              f"lowest detector in det_order; got det_order="
                              f"{det_order}, ref={ref_det})")
-        # Detector boundary wavelength = closer-to of WL_lo[max] and WL_hi[min]
+        # Boundary wavelength = midpoint between the longest-wavelength
+        # channel of the low detector and the shortest-wavelength channel
+        # of the high detector.
         wl_lo = per_det[d_lo]['WL']
         wl_hi = per_det[d_hi]['WL']
         lam_b = 0.5 * (np.nanmax(wl_lo) + np.nanmin(wl_hi))
@@ -474,8 +477,9 @@ def main():
     if det_order[0] != args.reference_detector:
         # We propagate P outward starting from the ref; require ref = lowest.
         raise SystemExit(
-            f"--reference-detector must be the lowest detector "
-            f"(spec walks boundaries low->high); got ref={args.reference_detector}, "
+            f"--reference-detector must be the lowest detector (pedestals "
+            f"are propagated from the lowest detector upward through each "
+            f"boundary); got ref={args.reference_detector}, "
             f"detectors={det_order}")
 
     print(f"=== prototype_pedestal_anchor_v2 ===")

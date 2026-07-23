@@ -1,10 +1,12 @@
 """Per-subframe LSQR row assembly (runs in the worker processes).
 
-Split out of the former monolithic lsqr.py. ``_prep_lsqr`` emits one subframe's
-sparse rows (sky components, offsets, per-frame scalar, per-frame constraints);
-``_prep_lsqr_batch_worker`` reconstructs the shared-memory arrays once per batch
-and assembles that batch's rows. ``selfcal.core.system.setup_lsqr`` dispatches
-``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor.
+``_prep_lsqr`` emits one subframe's sparse rows (sky components, offsets,
+per-frame scalar, per-frame constraints); ``_prep_lsqr_batch_worker``
+reconstructs the shared-memory arrays once per batch and assembles that
+batch's rows. Companion modules: ``selfcal.core.system`` (dispatches
+``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor and assembles the full
+sparse system from these per-subframe rows) and ``selfcal.core.solve``
+(runs LSQR on it).
 """
 import os
 import traceback
@@ -83,16 +85,19 @@ def _prep_lsqr(task_params):
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
         # --- Sky rows: one nnz per sky component per data row ---
-        # SkyModel generalizes the legacy num_sky_blocks {1,2} cases. Each
-        # component j contributes a coefficient over the valid pixels:
+        # The sky block is J sub-blocks of num_sky columns each, one per
+        # SkyModel component (J=1 continuum-only, J=2 adds one spectral-line
+        # component; any J is supported). Each component j contributes a
+        # coefficient over the valid pixels:
         #   - None  -> identity (continuum): store valid_weight directly.
         #   - array -> e.g. line profile G(λ) (LineComponent), store w_i * coeff.
-        # J==1 with an identity coefficient takes the fast path (no interleave,
-        # no multiply). J>=2 interleaves S_cols[j::J] = j*num_sky + P and
-        # S_data[j::J]. With components [continuum] or [continuum, pah_3p29
-        # Gaussian] this reproduces the old single/two-block emission byte-for-
-        # byte (same order, same float ops, same dtypes). aux maps (BC/BW) are
-        # sampled to the valid pixels and passed by name to each component.
+        # Emission order is pixel-major with components interleaved
+        # (S_cols[j::J] = j*num_sky + P). J==1 with an identity coefficient
+        # takes the fast path (no interleave, no multiply) — it emits the
+        # identical entry sequence, and after the final int32/float32 casts
+        # identical bytes, to the general loop; preserve this equivalence
+        # when editing either path. aux maps (BC/BW) are sampled to the
+        # valid pixels and passed by name to each component.
         sky_components = task_params.get('sky_components')
         if sky_components is None:
             J = 1
@@ -123,12 +128,12 @@ def _prep_lsqr(task_params):
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
         for m in range(K):
             cc_m = chunk_contribs[m]
-            # Slice the chunk-contrib columns for the valid pixels ONCE, then
-            # derive (chunk_idx, sub_idx, vals) from that single COO object.
-            # The previous code built cc_m[:, sub_pix_indices] twice (once for
-            # .nonzero(), once for .A[0] value extraction). Filtering tocoo() to
-            # numerically-nonzero entries reproduces .nonzero()'s exact set, so
-            # the assembled matrix is bit-identical.
+            # Slice the chunk-contrib columns for the valid pixels ONCE and
+            # take (chunk_idx, sub_idx, vals) from the single COO object —
+            # slicing separately for indices and for values would double the
+            # work. Filtering tocoo() to numerically-nonzero entries
+            # reproduces scipy's .nonzero() exact entry set, so the
+            # assembled matrix is bit-identical either way.
             sliced_m = cc_m[:, sub_pix_indices].tocoo()
             nz_m = sliced_m.data != 0
             chunk_idx_m = sliced_m.row[nz_m]
@@ -370,9 +375,9 @@ def _prep_lsqr_batch_worker(batch_params):
                 batch_rows.append(sub_rows + batch_row_offset)
                 batch_cols.append(sub_cols)
                 batch_data.append(sub_data)
-                batch_b.append(sub_b)
-            if spill_fhs is not None:
-                batch_b.append(sub_b)
+            # b never spills: its dtype varies (f32/f64) and it is small;
+            # it returns via SharedMemory on both paths.
+            batch_b.append(sub_b)
             batch_row_offset += num_rows
 
         if len(batch_b) == 0:

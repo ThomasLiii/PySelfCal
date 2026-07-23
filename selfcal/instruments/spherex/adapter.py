@@ -30,9 +30,10 @@ from .wavemap import wav_coadd
 SPHEREX_CALIB_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 
 # Named subchannel windows -> (inclusive-low, exclusive-high) subch index range.
-# Aromatic/Aliphatic are stable; the PAH-fit window VARIES per run (pahfit uses
-# 210-250, the tiled NEP build uses 200-260), so it is NOT a global preset — those
-# runs give an explicit `subch_window = [lo, hi]` in their config instead.
+# Aromatic/Aliphatic are stable; the PAH-fit window is run-dependent (different
+# production runs have chosen different subchannel ranges), so it is NOT a
+# global preset — such runs set an explicit `subch_window = [lo, hi]` in their
+# config instead.
 SUBCH_WINDOWS = {
     'Aromatic': (225, 236),
     'Aliphatic': (249, 260),
@@ -50,8 +51,9 @@ class Job:
 
 def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
     """Per-readout-channel chunk map at detector resolution (H2RG, post 4px trim).
-    Faithful copy of run_cal_k2_readout.make_readout_chunk_map. Returns
-    (chunk_map int32, n_chunks)."""
+    Chunk 0 covers the first ``col_start`` reference columns; then one chunk per
+    ``col_width``-wide readout column, plus a final partial chunk for any
+    remaining columns. Returns (chunk_map int32, n_chunks)."""
     H, W = det_shape
     chunk_map = np.full(det_shape, -1, dtype=np.int32)
     chunk_map[:, :col_start] = 0
@@ -210,7 +212,8 @@ class SPHERExInstrument:
 
     # ---- precompute geometry params (rarely-run generator) -----------------
     def precompute(self, inst_cfg):
-        """Generate + save per-detector LVF params (replaces precompute_lvf_params).
+        """Generate + save per-detector LVF params (the rarely-run `precompute`
+        task of the generic runner).
         Loops the detectors in inst_cfg['detectors']; saves lvf_params_D{N}.npy
         via spherex_utility.save_lvf_params (canonical package data dir, or
         inst_cfg['lvf_output_dir'] / $SELFCAL_LVF_PARAMS_DIR override)."""

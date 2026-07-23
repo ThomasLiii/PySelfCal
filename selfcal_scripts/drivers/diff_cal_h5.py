@@ -3,11 +3,15 @@
 Usage:
     python diff_cal_h5.py <baseline.h5> <candidate.h5>
 
-Handles both schemas:
+Handles three schema generations:
   - Legacy: top-level ``offset``, ``offset_coverage``, ``offset_coverage_frac``.
-  - Multi-chunk-map (Commit 3+): ``offsets/map_m``, ``offset_coverage/map_m``,
+  - Multi-chunk-map (current): ``offsets/map_m``, ``offset_coverage/map_m``,
     ``offset_coverage_frac/map_m``, plus optional top-level ``frame_scalar``
     and ``chunk_maps/map_m``.
+  - Per-component sky ('v3', newest — extends multi-chunk-map): a
+    ``sky/<name>`` group (with ``sky_coverage``/``sky_fisher``) holding N
+    named sky components; continuum/line remain hard-linked at the older
+    top-level names.
 
 When one side is legacy and the other is new, the per-map arrays
 (``offsets/map_0`` + ``frame_scalar`` if present) are compared against the
@@ -82,8 +86,9 @@ def diff(a_path, b_path):
 
         # Optional spectral-fit datasets (spectral_fit=True / num_sky_blocks==2):
         # the line-amplitude sky block + Fisher diagnostics. Compare when present
-        # in BOTH files; flag when present in only one (a refactor that silently
-        # drops the line block must fail the gate). frame_scalar is intentionally
+        # in BOTH files; flag when present in only one — a refactor that
+        # silently drops the line block must make this diff exit nonzero (the
+        # script is used as a byte-equality regression gate). frame_scalar is intentionally
         # NOT checked here — it is already folded into offset map_0 by
         # _read_offset, and is legitimately absent from the legacy schema.
         for k in ('skymap_line', 'skymap_line_coverage', 'skymap_line_fisher',
@@ -95,11 +100,14 @@ def diff(a_path, b_path):
                 print(f'DIFF {k}: present in {"A" if in_a else "B"} only')
                 failures += 1
 
-        # v3 per-component sky blocks (sky/<name>). Compared only when BOTH files
-        # are v3 (have a 'sky' group) — this adds coverage for N>2 components.
-        # A v3-vs-v2 comparison (e.g. a new v3 cal vs an older v2 golden) is NOT
-        # flagged here: the continuum/line VALUES are already checked via the
-        # top-level hard-linked names above, so a schema-only difference is fine.
+        # Per-component sky blocks (``sky/<name>`` group, the newest schema —
+        # see docstring). Compared only when BOTH files have a 'sky' group —
+        # this adds coverage for N>2 components. A cross-schema comparison
+        # (e.g. a freshly written cal file that has the ``sky`` group vs an
+        # older regression-reference file written before the group existed)
+        # is NOT flagged here: the continuum/line VALUES are already checked
+        # via the top-level hard-linked names above, so a schema-only
+        # difference is fine.
         if 'sky' in A and 'sky' in B:
             names_a, names_b = set(A['sky'].keys()), set(B['sky'].keys())
             if names_a != names_b:

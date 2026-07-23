@@ -121,7 +121,8 @@ def main():
     sup = (f'D{args.detector} Ch{args.channel} offset terms on detector frame '
            f'— example frame {frame}')
     if fs is not None:
-        sup += f'  (frame_scalar DC = {fs:.4f} MJy/sr, removed from both panels)'
+        sup += (f'  (frame_scalar DC = {fs:.4f} MJy/sr — separate additive '
+                f'term, not included in the per-map panels)')
     fig.suptitle(sup, y=1.02)
     fig.tight_layout()
 

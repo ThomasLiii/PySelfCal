@@ -1,21 +1,20 @@
 """Tiled (region-partitioned) calibration.
 
-Generalizes the chunked-NEP pattern (4 copy-pasted quadrant drivers +
-stitch_cals.py + launch_chain.sh) into one reusable mechanism: partition a large
-reference mosaic into overlapping tiles, assign each frame to a tile by
-footprint center (bounded per-tile memory) or AABB overlap, calibrate each tile
-independently, then merge the per-tile sky maps with Fisher-weighted
-inverse-variance averaging.
+Partition a large reference mosaic into overlapping tiles, assign each frame
+to a tile by footprint center (bounded per-tile memory) or AABB overlap,
+calibrate each tile independently, then merge the per-tile sky maps with
+Fisher-weighted inverse-variance averaging.
 
 Tiling is instrument-agnostic — usable for any large-region build (e.g. Euclid
-multi-region), not just SPHEREx NEP.
+multi-region), not just the SPHEREx North Ecliptic Pole (NEP) deep field.
 
 - :class:`TileSpec` / :func:`make_tile_grid` — tile geometry (an n_y x n_x grid
-  with per-side overlap; reproduces the NEP 2x2 quadrant bboxes).
+  with per-side overlap; e.g. a 2x2 grid with 50 px overlap for the SPHEREx
+  NEP deep field).
 - :func:`assign_frames` — frame -> tile assignment via
   :mod:`selfcal.io.frame_select`.
-- :func:`stitch` — Fisher-weighted merge of per-tile cal files (faithful port of
-  the chunked-NEP stitcher; byte-equal output on the same inputs).
+- :func:`stitch` — Fisher-weighted inverse-variance merge of per-tile cal files
+  into one cal-shaped h5.
 - :class:`TiledCalibration` — ties the three together; ``run(run_tile=...)``
   calibrates each tile via a caller-supplied per-tile recipe.
 """
@@ -47,9 +46,10 @@ def make_tile_grid(ref_shape, n_y, n_x, overlap_px=0, names=None):
     ``overlap_px // 2`` px on every interior side so adjacent tiles overlap by
     ``overlap_px`` (footprints provide the sky overlap the Fisher stitch blends).
 
-    With ``ref_shape=(12676, 12672), n_y=n_x=2, overlap_px=50`` this reproduces
-    the NEP quadrant bboxes (NW/NE/SW/SE) exactly. Default names are ``r{j}c{i}``;
-    pass ``names`` (row-major) to override.
+    Example: ``ref_shape=(12676, 12672), n_y=n_x=2, overlap_px=50`` gives four
+    quadrant tiles, each overlapping its neighbours by 50 px (the configuration
+    used for the SPHEREx NEP field). Default names are ``r{j}c{i}``; pass
+    ``names`` (row-major) to override.
     """
     H, W = ref_shape
     y_b = [round(i * H / n_y) for i in range(n_y + 1)]
@@ -110,8 +110,10 @@ def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
 
     Reads the continuum (and, when ``line``, the first line block) via the
     top-level ``skymap`` / ``skymap_line`` names, which resolve for both the v2
-    schema and the v3 hard-link aliases. Output datasets/dtypes match the
-    chunked-NEP stitcher, so the result is byte-equal on the same inputs.
+    schema and the v3 hard-link aliases. Accumulation is in float64; outputs
+    are written as float32 (``skymap*``, ``*_fisher``), int64 (``*_coverage``),
+    and uint8 (``n_contrib_*``). Keep these dataset names and dtypes stable —
+    downstream cal-file readers depend on them.
 
     Inputs with MORE than 2 sky blocks (v3 multi-spectral cals) are routed to
     :func:`_stitch_multiblock`, which stitches every ``sky/<name>`` block by
@@ -222,7 +224,8 @@ def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
 
 
 def _stitch_multiblock(input_paths, output_path, ref_shape, verbose=True):
-    """Fisher-weighted stitch of v3 multi-block (J > 2) spectral cals.
+    """Fisher-weighted stitch of v3 spectral cals with more than 2 sky blocks
+    (``num_sky_blocks`` attr > 2).
 
     One pass per sky block (bounded memory: one block's float64 accumulators at
     a time, tiles re-read bbox-cropped per block). Per block ``<name>`` the
@@ -230,8 +233,10 @@ def _stitch_multiblock(input_paths, output_path, ref_shape, verbose=True):
     (summed), ``sky_coverage/<name>`` (summed) and ``n_contrib/<name>``.
     ``sky_separability/<name>`` is summed over tiles where present — with
     center frame assignment tile frame sets are disjoint, so per-pixel
-    information is additive (exact for the Fisher, an upper-bound approximation
-    for the Schur complement I_P; overlap pixels only).
+    information is additive (exact for the Fisher; an upper-bound approximation
+    for the per-pixel separability metric ``I_P``, the Schur complement of one
+    sky block against the others — see
+    :func:`selfcal.core.system.parse_line_separability`; overlap pixels only).
     Back-compat hard links mirror ``save_calibration``: ``skymap*`` -> block 0,
     ``skymap_line*`` -> the LAST spectral block.
     """

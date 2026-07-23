@@ -3,8 +3,10 @@ the MEASURED SPHEREx spectral response (band-general LVFResponse kernel).
 
 G(lambda_c) = int L(lambda) R(lambda; lambda_c) dlambda, tabulated vs channel
 center (BC) — what selfcal uses as the per-pixel line coefficient. Saves npz
-with center_um / G / G_peaknorm / fwhm_conv (same schema as pah_template.npz)
-plus a diagnostic PNG (intrinsic | response | template).
+with center_um / G / G_peaknorm / fwhm_conv (the ``template_npz`` schema
+loaded by the runner's spectral-fit modes — see
+``selfcal_scripts/runner/modes/multiline.py``, which reads ``center_um`` and
+``G``/``G_peaknorm``) plus a diagnostic PNG (intrinsic | response | template).
 
 Intrinsic shapes:
   drude  --center-um C --fwhm-um F     (Draine Drude; PAH-like broad features)
@@ -26,6 +28,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# ``lvf_response`` (the measured LVF spectral-response model, class
+# ``LVFResponse``) is not pip-installed; it lives in the separate
+# SPHEREx_Spectral_Calibration checkout. Adjust this path or set PYTHONPATH
+# if the checkout moves.
 sys.path.insert(0, "/home/thomasli/spherex/SPHEREx_Spectral_Calibration")
 import lvf_response as L
 

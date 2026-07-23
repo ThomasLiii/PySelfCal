@@ -4,8 +4,10 @@ Replaces the soft ``subch_poly`` penalty (a weight ``λ`` on finite-difference
 rows that pull a free per-chunk offset toward a degree-D polynomial) with the
 offset *being* a degree-D polynomial in an abstract 1-D **coordinate** by
 construction: the solve carries the polynomial coefficients directly, so there
-is **no weight knob** and the null space that let the offset grow a spurious PAH
-bump (see ``project_spectral_fit_lvf_branch``) is gone.
+is **no weight knob**, and the null space that let a soft-penalized free offset
+absorb a spurious line-shaped bump along the dispersion direction (trading off
+against the per-pixel line amplitude, which biased fitted line maps) is
+eliminated by construction.
 
 Instrument-agnostic by design. The coordinate and the independent-polynomial
 grouping are supplied *per chunk* by the instrument/mode via the ``poly_basis``
@@ -17,7 +19,7 @@ different mapping fits a polynomial along *any* ordered path through the chunks
 without touching this module (a chunk-sequence coordinate, not a 2-D pixel
 direction).
 
-Design (chosen 2026-07-01):
+Design:
   * offset[frame, chunk] = scalar[frame] + Σ_{d=1..D} a[frame, group, d] · B_d(coord)
   * B_d = Chebyshev T_d on x = 2·(coord−lo)/(hi−lo) − 1 ∈ [−1,1], **mean-subtracted
     over the window grid** so each B_d is orthogonal to the constant → the per-frame

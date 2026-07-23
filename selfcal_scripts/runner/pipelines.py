@@ -7,10 +7,13 @@ a telescope or a calibration variant: the instrument turns the config into
 geometry, the mode turns geometry into the offset/sky/x0/mosaic recipe, and this
 file just sequences staging → setup_lsqr → apply_lsqr → save → mosaic → cleanup.
 
-Behavior is byte-identical to the per-variant drivers it replaces (gated): the
-only things that moved are *where the knobs come from* (a TOML table instead of a
-dict literal) and *where the recipe lives* (a mode/instrument instead of inline
-code).
+Edits to this engine must keep calibration output byte-identical: re-run the
+regression configs ``cache/refactor_gate/gate_continuum.toml`` and
+``gate_spectral.toml`` through ``run.py`` and diff the resulting ``cal_*.h5``
+against ``cache/refactor_gate/goldens/`` with
+``selfcal_scripts/drivers/diff_cal_h5.py``. All numeric choices live in the
+TOML config and the mode/instrument objects; this file only sequences
+staging → setup_lsqr → apply_lsqr → save → mosaic → cleanup.
 """
 import gc
 import glob as glob_module
@@ -50,19 +53,20 @@ def _calibration_kwargs(cfg):
 
 
 # ---------------------------------------------------------------------------
-# Standard per-job calibration (run_cal / d5 / damp* / pahfit / k2_readout).
+# Standard per-job calibration (task = 'cal'): one setup_lsqr + apply_lsqr +
+# save + optional mosaic per instrument job; the mode picks the recipe
+# (continuum / pahfit / k2_readout — see selfcal_scripts/runner/modes/).
 # ---------------------------------------------------------------------------
 def run_calibration(cfg):
-    from selfcal.models.sky_model import SkyModel  # noqa: F401 (ensures registry import side effects ok)
-
     inst = get_instrument(cfg.instrument)
     mode = get_mode(cfg.mode)
     _check_requires(mode, inst)
 
     selfcal_config = _make_config(cfg)
     if cfg.reproj_override:
-        # Run directly against an already-staged reproj dir (gating / re-runs);
-        # no NVMe staging or cleanup.
+        # Run directly against an already-staged reproj dir — used by the
+        # byte-equality regression configs in cache/refactor_gate/ and for
+        # manual re-runs; skips NVMe staging and cleanup.
         nvme = cfg.reproj_override
         set_hdd_io_limit(None)
     else:
@@ -176,10 +180,11 @@ def _run_zodi_anchor(cfg, selfcal_config, detector, cal_path, cal_file, job_tag)
 
 
 # ---------------------------------------------------------------------------
-# Tiled calibration (run_cal_tiled_NEP): per-tile cal + Fisher-weighted stitch.
+# Tiled calibration (task = 'tiled'): stage + solve each tile independently,
+# then Fisher-weighted stitch of the per-tile cal files.
 # ---------------------------------------------------------------------------
 def run_tiled(cfg):
-    from selfcal.pipeline.tiled import make_tile_grid, TiledCalibration
+    from selfcal.pipeline.tiled import make_tile_grid, TiledCalibration, TileSpec
 
     inst = get_instrument(cfg.instrument)
     mode = get_mode(cfg.mode)
@@ -197,11 +202,13 @@ def run_tiled(cfg):
     # Two tiling modes:
     #  - a uniform grid: `grid` = [n_y, n_x] with `overlap_px` (make_tile_grid);
     #  - explicit tiles: `tiles` = list of {name, bbox=[y0,y1,x0,x1]}, arbitrary
-    #    and possibly OVERLAPPING (the adaptive-overlap layout used to restore
-    #    per-pixel wavelength diversity at seams for spectral fits). Overlapping
-    #    bboxes share any frame whose footprint center lands in the overlap
-    #    (frame_filter='center'); the Fisher stitch is tile-shape-agnostic.
-    from selfcal.pipeline.tiled import TileSpec
+    #    and possibly OVERLAPPING. Overlap matters for spectral fits: with
+    #    disjoint tiles and frame_filter='center', a pixel near a seam only
+    #    receives frames whose footprint center fell on its side, truncating
+    #    its per-pixel wavelength coverage and blanking the fit mask there;
+    #    overlapping bboxes let seam pixels take frames from both
+    #    neighbouring tiles. The Fisher stitch is tile-shape-agnostic, so
+    #    overlapping tiles need no special handling.
     if t.get('tiles'):
         tiles = [TileSpec(name=spec['name'], bbox=tuple(spec['bbox']))
                  for spec in t['tiles']]

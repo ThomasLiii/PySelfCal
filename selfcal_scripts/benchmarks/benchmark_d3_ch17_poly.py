@@ -5,7 +5,9 @@ and system CPU% via a 0.5s sampler thread. Mosaic sub-phases (cache, mean,
 std, sigma_clip) are instrumented by monkey-patching coadd.compute_coadd_map
 so each call from Mosaicker.make_mosaic gets its own phase record.
 
-Config matches production (run_cal.py) with two changes:
+Config matches the production D3 continuum calibration (settings of the
+retired run_cal.py driver, now expressed as TOML configs under
+selfcal_scripts/configs/) with two changes:
   - frame_setting NumCol bumped from 1 -> 10
   - poly constraint added: linear polynomial along columns within each
     subchannel (compute_column_polynomial_chains, weight=0.5)
@@ -79,9 +81,10 @@ class PhaseTracker:
         live at this sub-phase's peak. Useful as an absolute headroom number,
         misleading as a per-phase allocation signal.
       * ``delta_rss_gb`` — ``peak_rss_gb - start_rss_gb`` where
-        ``start_rss_gb`` is the RSS sample taken at phase entry (or a fresh
-        process-tree RSS read if no in-window sample exists yet). This is the
-        per-phase signal: how much NEW memory came online during this phase.
+        ``start_rss_gb`` is a fresh whole-process-tree RSS read taken at
+        phase entry (computed with the same formula the background sampler
+        uses). This is the per-phase signal: how much NEW memory came online
+        during this phase.
         For an isolated phase that allocates and frees, this may even be
         negative (the in-window peak is below the entry-time RSS).
 
@@ -155,9 +158,9 @@ class PhaseTracker:
         """Time + record a phase. See class docstring for peak_rss vs delta_rss."""
         t_start = time.perf_counter() - self.t0
         d0 = psutil.disk_io_counters()
-        # Record start RSS at phase entry. Prefer the most recent in-window
-        # sample (samples are taken every sample_interval_s); fall back to a
-        # fresh read so the very first phase doesn't get start_rss=0.
+        # Record start RSS at phase entry via a fresh process-tree read (same
+        # formula as the sampler thread), so delta_rss is well-defined even
+        # for phases that begin before the first background sample lands.
         start_rss_gb = self._read_process_tree_rss_gb()
         print(f"[bench] phase {name} starting at t={t_start:.1f}s "
               f"start_rss={start_rss_gb:.2f}GB ...", flush=True)
@@ -302,13 +305,18 @@ class PhaseTracker:
 
 def main():
     # ============================================================
-    # Config — bumped from production run_cal.py
+    # Config — production calibration settings (from the retired run_cal.py
+    # driver; current equivalents live in selfcal_scripts/configs/) with the
+    # NumCol + poly-constraint changes below
     # ============================================================
     frame_setting = {
         'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 10,  # bumped from production NumCol=1 to exercise poly constraint
+        # 10 columns per subchannel (the retired run_cal.py baseline this
+        # benchmark was forked from ran NumCol=1); >1 column is required for
+        # the column poly constraint to bind.
+        'NumCol': 10,
     }
     POLY_DEGREE = 1
     POLY_WEIGHT = 0.5
