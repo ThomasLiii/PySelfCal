@@ -1,8 +1,9 @@
-"""K=2 readout mode — fiducial subchannel offsets + detector-fixed readout-channel
-offsets (SPHEREx H2RG). Two offset blocks: a free-per-frame subchannel block
-(subchannel adjacency) and a detector-fixed readout block (single shared offset
-via det_groups=0, mean-zero anchored). Continuum sky, x0 from A/b, mean-only mosaic
-over both chunk maps. SPHEREx-specific (uses the readout-channel map)."""
+"""Readout-channel mode ("k2" = two chunk-map offset blocks): fiducial
+subchannel offsets + detector-fixed readout-channel offsets (SPHEREx H2RG).
+The two blocks: a free-per-frame subchannel block (subchannel adjacency) and a
+detector-fixed readout block (single shared offset via det_groups=0, mean-zero
+anchored). Continuum sky, x0 from A/b, mean-only mosaic over both chunk maps.
+SPHEREx-specific (uses the readout-channel map)."""
 import numpy as np
 
 from .base import CalMode, register_mode

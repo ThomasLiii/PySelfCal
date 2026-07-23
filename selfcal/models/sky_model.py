@@ -13,11 +13,12 @@ where ``coeff_c`` is the component's per-observation coefficient:
 continuum path) for :class:`ContinuumComponent`, or the line profile ``G(λ_i)``
 for :class:`LineComponent`.
 
-Bit-identity: ``SkyModel.continuum_only()`` reproduces today's
+Bit-identity: ``SkyModel.continuum_only()`` reproduces the legacy
 ``num_sky_blocks==1`` emission and ``SkyModel.continuum_plus_pah_gaussian()``
 reproduces ``num_sky_blocks==2`` (component order [continuum, line], same
-interleave, same float ops). The row-assembly rewire that relies on this lands
-in Phase 3b; this module is the (behavior-free) foundation.
+interleave, same float ops). The row assembly (``selfcal.core.assembly``)
+consumes this model when emitting the per-observation sky coefficients; this
+module holds no assembly logic itself.
 
 Components are small frozen dataclasses (scalars + a profile holding at most a
 small template array) so they pickle cleanly into the multiprocessing task
@@ -65,7 +66,7 @@ class SpectralComponent(SkyComponent):
     spectral template (analytical or numerical).
 
     The coefficient at each observation is ``profile(λ)`` for any
-    :class:`~selfcal.profiles.SpectralProfile` (Gaussian, numerical template,
+    :class:`~selfcal.models.profiles.SpectralProfile` (Gaussian, numerical template,
     Lorentzian/Voigt, ...). Not line-specific — a "line" is just the common case
     of a peaked profile.
     """

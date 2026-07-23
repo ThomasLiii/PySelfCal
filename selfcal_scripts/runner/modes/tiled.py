@@ -1,8 +1,10 @@
-"""Tiled mode — region-partitioned PAHfit (the chunked-NEP build). Same spectral
-sky as pahfit, but a single offset block with TWO poly-constraint groups (linear
-column + cubic subchannel), and ``pipeline="tiled"`` so the engine routes it
-through selfcal.pipeline.tiled.TiledCalibration (per-tile cal + Fisher stitch,
-no mosaic) instead of the standard per-job loop."""
+"""Tiled mode — region-partitioned PAHfit for fields too large to solve in one
+system. Same spectral sky as pahfit, but a single offset block with TWO
+poly-constraint groups: a column poly of degree ``poly_degree`` (default 1) and
+a subchannel poly of degree ``subch_poly_degree`` (production uses linear column
++ cubic subchannel). ``pipeline="tiled"`` routes it through
+selfcal.pipeline.tiled.TiledCalibration (per-tile cal + Fisher stitch, no
+mosaic) instead of the standard per-job loop."""
 import numpy as np
 
 from .base import register_mode

@@ -60,7 +60,8 @@ def init_worker(shm_info, lock, reproj_list, cache_list, ref_shape, sigma):
             print(f"Worker failed to attach to SharedMemory: {unique_name} ({logical_name})")
 
 def _wavcoadd_batch_worker(batch_indices):
-    # --- Logic remains exactly the same as before ---
+    # Accumulate BC/BW-weighted sums for one batch of frames into local arrays;
+    # flush once into the shared totals under the lock at the end.
     reproj_list = worker_context['reproj_list']
     cache_list  = worker_context['cache_list']
     ref_shape   = worker_context['ref_shape']
@@ -93,8 +94,9 @@ def _wavcoadd_batch_worker(batch_indices):
             ref_coords = hf['ref_coords'][:]
             sub_data = hf['sub_data'][:]
             sub_weight = hf['sub_weight'][:]
-            # Newer cache files store a tight bbox of nonzero weight in the
-            # original (full) sub-frame coordinates.
+            # Cache files may carry an optional 'sub_bbox' dataset: a tight
+            # bbox of nonzero weight in full sub-frame coordinates. Fall back
+            # to the full frame when absent.
             if 'sub_bbox' in hf:
                 rmin, rmax, cmin, cmax = hf['sub_bbox'][:]
             else:
@@ -105,8 +107,9 @@ def _wavcoadd_batch_worker(batch_indices):
         # _prep_subframe.
         sub_mapping_cropped = sub_mapping[:, rmin:rmax, cmin:cmax]
 
-        # Direct bilinear via map_coordinates (no sparse matrix). Use the same
-        # [::-1] axis convention that the old sparse path used.
+        # Direct bilinear resample via map_coordinates. sub_mapping stores its
+        # two coordinate planes in the reverse order of the (row, col) order
+        # map_coordinates expects, hence the [::-1].
         sub_BC = map_coordinates(det_BC, sub_mapping_cropped[::-1], order=1, output=np.float32)
         sub_BW = map_coordinates(det_BW, sub_mapping_cropped[::-1], order=1, output=np.float32)
 
@@ -212,6 +215,10 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
     return wav_mean_map, wav_std_map
 
 if __name__ == "__main__":
+    # Ad-hoc single-run smoke test for wav_coadd with hard-coded paths (a
+    # specific run on /mnt/md124 and a cache dir in a different worktree) —
+    # not a supported entry point: the runner invokes wav_coadd via
+    # SPHERExInstrument.wavelength_append. Edit the paths before use.
     detector = 4
     batch_size = 40 
     max_workers = 40

@@ -20,8 +20,9 @@ def load_from_radius(vot_table_path, target_ra_deg, target_dec_deg, radius_deg, 
     
     exposure_list = []
     for row in tqdm(data, desc='Filtering exposures by radius'):
-        # Assuming RA/Dec are in specific columns, adjust if necessary
-        # Also ensure row[1] (filename part) and row[3], row[4] (coords) exist
+        # Expected VOTable row schema: row[1] = exposure file path relative to
+        # exp_base_dir, row[3] = RA (deg), row[4] = Dec (deg). The guard below
+        # skips rows where any of these is missing or mistyped.
         if len(row) > 4 and isinstance(row[3], (float, int)) and isinstance(row[4], (float, int)) and isinstance(row[1], str):
             exp_coord = SkyCoord(row[3], row[4], unit='deg') 
             separation = target_coord.separation(exp_coord).value

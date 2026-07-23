@@ -1,4 +1,3 @@
-from xml.parsers.expat import errors
 from tqdm import tqdm
 import numpy as np
 
@@ -68,11 +67,11 @@ def make_weight(frame, sigma=1.4, floor=1e-4):
     Bright pixels get down-weighted ∝ 1/sqrt(brightness), so the per-row L2
     contribution (∝ w²) is ∝ 1/brightness — matching shot-noise variance.
 
-    Previously this used 1/frame² (assumes variance ∝ brightness⁴, ~10000x
-    suppression at bright cirrus vs dim sky) which was too aggressive and
-    ill-conditioned the solve. The Poisson form keeps ~10x dynamic range
-    between dim and bright pixel weight, enough to break the sky→offset
-    leakage that causes bowl-around-cirrus without losing solve stability.
+    Do not steepen this to 1/frame² (that assumes variance ∝ brightness⁴):
+    the ~10000x bright-vs-dim suppression ill-conditions the solve. The
+    Poisson form keeps ~10x dynamic range between dim and bright pixels —
+    enough to break the sky→offset leakage that produces bowls around bright
+    cirrus, while keeping the solve stable.
     '''
     abs_frame = np.abs(frame) + floor
     weight = 1.0 / np.sqrt(abs_frame)
@@ -102,19 +101,6 @@ def compute_chunk_edges(det_shape, chunk_size):
     x_edges = np.arange(0, det_w + 1, chunk_w)
     
     return x_edges, y_edges
-
-# def bin2d_last_axes(arr, bin_factor):
-#     d, h, w = arr.shape
-#     assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
-
-#     h_bins = h // bin_factor
-#     w_bins = w // bin_factor
-
-#     # Reshape and average
-#     reshaped = arr.reshape(d, h_bins, bin_factor, w_bins, bin_factor)
-#     binned = reshaped.mean(axis=(2, 4))
-
-#     return binned
 
 def bin2d(arr, bin_factor, bin_func=np.mean):
     """
@@ -187,7 +173,10 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
 
     # Normalize to get average
     binned.data /= (bin_factor * bin_factor)
-    # binned.sum_duplicates()
+    # Duplicates (several source pixels landing in one output bin) are left
+    #  unsummed on purpose: scipy treats duplicate COO entries as implicitly
+    #  summed, and any conversion (tocsr/todense/matvec) performs that sum, so
+    #  sum_duplicates() here would only canonicalize storage at extra cost.
     return binned
 
 def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
@@ -223,7 +212,9 @@ def chunk_to_det(chunk_map, chunk_data):
 
 def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     """
-    Optimized generation of sparse interpolation matrix.
+    Build a sparse bilinear-interpolation matrix (CSR, shape (N_total, H*W))
+    mapping a flattened (H, W) source grid to N_total fractional sample
+    coordinates; rows with non-finite coordinates are left structurally empty.
 
     Parameters
     ----------
@@ -275,9 +266,9 @@ def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     rf_inv = 1.0 - r_frac
     cf_inv = 1.0 - c_frac
 
-    # 3. Optimized Bounds Check (The bottleneck fix)
-    # Instead of creating 'all_r' (size 4N), check bounds on 'r0' (size N)
-    # Pre-calculate boolean masks for rows/cols being inside image
+    # 3. Bounds check. Test r0/c0 (size-N arrays) and derive the four
+    # per-corner in-bounds masks from them, rather than materializing
+    # 4N-sized expanded corner-coordinate arrays just to range-test them.
     in_r0 = (r0 >= 0) & (r0 < H)
     in_c0 = (c0 >= 0) & (c0 < W)
     in_r1 = (r0 + 1 >= 0) & (r0 + 1 < H)
@@ -448,7 +439,7 @@ def arc_spline(x_sample, y_sample, return_params=False):
         errors = distances - R
         return np.sum(errors**2)
 
-    yc_guess = 10000#np.mean(y)
+    yc_guess = 10000  # the LVF edge arcs are shallow (R ~ 1e4 px), so the circle center sits far above the detector; seed it there
     xc_guess = np.median(x_sample)
     R_guess = np.mean(np.sqrt((x_sample - xc_guess)**2 + (y_sample - yc_guess)**2))
 
@@ -674,8 +665,8 @@ def make_grid_chunk_map(det_shape, n_chunks_per_side):
 
     Generic detector geometry (e.g. broadband imagers such as Euclid NISP). Each
     cell is ``det_h // n`` x ``det_w // n`` px; any remainder rows/cols on the
-    high edge fall in the last cell. Mirrors the hand-rolled square-chunk helper
-    the Euclid notebook used.
+    high edge fall in the last cell. This is the square-chunk layout used by
+    ``notebooks/euclid_mosaic.ipynb``.
     """
     det_h, det_w = det_shape
     chunk_h = det_h // n_chunks_per_side

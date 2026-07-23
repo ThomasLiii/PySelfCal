@@ -12,8 +12,9 @@ falls in the tile.
 intervals ``[a0, a1)`` and ``[b0, b1)`` overlap iff ``a0 < b1 and b0 < a1``,
 applied independently on y and x.
 
-Extracted from selfcal_scripts/drivers/chunked_NEP/chunk_filter.py so it is
-reusable beyond the SPHEREx NEP quadrant build (e.g. Euclid multi-region).
+Instrument-agnostic: depends only on the ``ref_coords`` attr, so it applies to
+any region-partitioned calibration build (e.g. SPHEREx sky-field tiles or
+Euclid multi-region mosaics).
 """
 from __future__ import annotations
 

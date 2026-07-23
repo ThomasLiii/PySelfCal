@@ -85,9 +85,9 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
     Parameters
     ----------
     active_mask : np.ndarray of bool, optional
-        When supplied, ``A`` is the COMPACT matrix produced by the Top 2
-        column-elimination path; ``active_mask`` (length = original
-        ``num_cols_full``) marks which original columns survived. The
+        When supplied, ``A`` is the COMPACT matrix produced by the early
+        zero-column compaction in ``setup_lsqr``; ``active_mask`` (length =
+        original ``num_cols_full``) marks which original columns survived. The
         per-column diag-LS still runs on the compact ``A``, but the
         sky/offset boundary is computed in the compact column space
         (``n_active_sky = active_mask[:num_sky_eff].sum()``) and the
@@ -97,9 +97,9 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
         through ``apply_lsqr``, which expects full-layout x0 and does its
         own compression).
 
-        When ``active_mask is None`` (default), behavior is unchanged:
-        the returned ``x0`` has length ``A.shape[1]`` and the sky/offset
-        boundary is ``num_sky_eff`` on the supplied ``A``.
+        When ``active_mask is None`` (default): the returned ``x0`` has
+        length ``A.shape[1]`` and the sky/offset boundary is
+        ``num_sky_eff`` on the supplied ``A``.
     """
     from .blockcsr import BlockCSR
     if isinstance(A, BlockCSR):
@@ -112,25 +112,28 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
     num_sky = ref_h * ref_w
     num_sky_eff = num_sky_blocks * num_sky
     num_cols = A.shape[1]
-    # f32 b (exact values, see setup Phase 2d) -> upcast so off_data * b
-    # products stay f64 as in the legacy path. No-op for f64 b.
+    # b may arrive as float32: setup_lsqr can emit an f32 right-hand side
+    # whose values are exactly representable in f32 (see the full_b build in
+    # system.setup_lsqr). Upcast so the off_data * b products accumulate in
+    # f64, identical to an f64 b. No-op for f64 b.
     b = b.astype(np.float64, copy=False)
 
-    # setup_lsqr now returns a csr_matrix (post Top 1 refactor); the original
-    # COO path is preserved for callers that still pass a coo_matrix. We need
-    # row/col/data triples to do the per-column diag-LS below, so convert CSR
-    # to COO here. tocoo(copy=False) shares data/indices but does allocate a
-    # transient nnz-sized row array via np.repeat — acceptable since this is
-    # a one-time setup call (not in the LSQR hot loop).
+    # setup_lsqr returns a csr_matrix; the COO branch below is kept for
+    # callers that pass a coo_matrix directly. We need row/col/data triples
+    # to do the per-column diag-LS below, so convert CSR to COO here.
+    # tocoo(copy=False) shares data/indices but does allocate a transient
+    # nnz-sized row array via np.repeat — acceptable since this is a
+    # one-time setup call (not in the LSQR hot loop).
     if isinstance(A, csr_matrix):
         A_coo = A.tocoo(copy=False)
     else:
         A_coo = A
 
     # Boundary between sky and offset blocks IN THE COMPACT COLUMN SPACE.
-    # When active_mask is supplied, A is already compacted (Top 2), so the
-    # original sky boundary num_sky_eff may correspond to a smaller compact
-    # column index. Otherwise the matrix is in its original layout.
+    # When active_mask is supplied, A is already compacted (zero-column
+    # elimination in setup_lsqr), so the original sky boundary num_sky_eff
+    # may correspond to a smaller compact column index. Otherwise the matrix
+    # is in its original layout.
     if active_mask is not None:
         if active_mask.size < num_sky_eff:
             raise ValueError(
@@ -186,11 +189,11 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
     LSQR's first few iterations refine the chunk offsets around it.
 
     For CSR input this walks the matrix directly and touches ONLY the scalar
-    columns. The legacy implementation went through
-    ``compute_x0_from_Ab`` — ``A.tocoo()`` (an nnz-sized row array) plus
-    offset-block extraction copies (~25 B/nnz transient, several hundred GB at
-    full-NEP tile scale) — to compute values that were then zeroed for every
-    column except the scalars. Bit-equality with that path is preserved
+    columns. Going through ``compute_x0_from_Ab`` instead would materialize
+    ``A.tocoo()`` (an nnz-sized row array) plus offset-block extraction
+    copies (~25 B per stored nonzero of transients — e.g. ~500 GB at
+    production nnz ~2e10), only to zero every column except the scalars.
+    Bit-equality with that COO-based computation is preserved
     because ``np.bincount`` accumulates strictly in element order and
     restricting the selection to ``col >= scalar_boundary`` keeps each scalar
     column's entries in the same (row-major) order, so every per-column sum
@@ -208,15 +211,18 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
         still the original-layout value; the function internally derives the
         compact equivalent.
     num_sky_blocks : int
-        1 for the legacy single-sky-block layout. 2 for spectral_fit mode.
+        1 for the standard single-sky-block layout. 2 for spectral_fit mode.
     active_mask : np.ndarray of bool, optional
-        When supplied, ``A`` is the COMPACT matrix produced by Top 2 column
-        elimination. The returned ``x0`` is expanded back to the FULL
-        (uncompacted) layout — same convention as ``compute_x0_from_Ab``.
+        When supplied, ``A`` is the COMPACT matrix produced by the early
+        zero-column compaction in ``setup_lsqr``. The returned ``x0`` is
+        expanded back to the FULL (uncompacted) layout — same convention as
+        ``compute_x0_from_Ab``.
     """
     from .blockcsr import BlockCSR
     if not isinstance(A, (csr_matrix, BlockCSR)):
-        # Legacy COO callers: keep the original (memory-heavy) path.
+        # COO input: fall back to the generic diag-LS (memory-heavy — it
+        # materializes offset-block copies of every column), then zero the
+        # chunk-offset block.
         x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
                                 active_mask=active_mask)
         ref_h, ref_w = ref_shape
@@ -274,14 +280,16 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
             d = data[s0:s1][keep]
             sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
                                                                    copy=False))
-            # Square in the data's own dtype (f32 in production) — the legacy
-            # path squared BEFORE bincount's exact cast to f64, so the f32
-            # rounding of d*d is part of the byte-equal contract.
+            # Square in the data's own dtype (f32 in production) to match
+            # the reference computation in compute_x0_from_Ab, which squares
+            # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
+            # of the bit-equality contract.
             sel_w2.append(d * d)
             counts = np.diff(indptr[r0:r1 + 1])
-            # Upcast b to f64 BEFORE the product: setup may now emit f32 b
-            # (exactly-representable values only), and f32*f64 -> f64 is what
-            # the legacy f64-b path computed. No-op (view) when b is f64.
+            # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
+            # b (exactly-representable values only), and f32-value * f64 ->
+            # f64 gives the same result an f64 b would. No-op (view) when b
+            # is f64.
             bvals = np.repeat(
                 b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
                 counts)[keep]

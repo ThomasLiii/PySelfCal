@@ -1,8 +1,9 @@
 """Multi-line spectral mode — continuum + N emission-line blocks + hard
 poly-basis offset.
 
-The J-block-generic production recipe (validated on the SPHEREx NEP field: PAH
-3.29 aromatic + 3.40 aliphatic + 3.47 plateau, Detector 4). Generalizes ``pahfit``
+The production spectral recipe, generic over the number of emission-line blocks
+(validated on the SPHEREx NEP field: PAH 3.29 aromatic + 3.40 aliphatic + 3.47
+plateau, Detector 4). Generalizes ``pahfit``
 (a single 3.29um line) to an arbitrary, config-driven list of spectral blocks,
 each an arbitrary profile's per-pixel amplitude, over the shared continuum.
 
@@ -18,8 +19,10 @@ Offset = a single hard poly-basis block: a degree-``subch_poly_degree`` Chebyshe
 in subchannel, one independent polynomial per column, plus the per-frame scalar
 (the DC). The SPHEREx chunk encoding lives in the adapter
 (``inst.subchannel_poly_basis``); the core sees only abstract coord/group arrays.
-No adjacency, no penalty weight, NO line-orthogonalization (abandoned — never
-demonstrated a win), NO water-filling, NO sloped continuum.
+No adjacency and no penalty weight on the offset block. The line profiles are
+deliberately used as-is — not orthogonalized against the continuum — and the
+continuum is flat per pixel (no per-pixel spectral-slope term); both
+alternatives were tested and gave no measurable benefit.
 
 Pre-flight, prints the profile **Gram matrix** (continuum + every line sampled
 at the window subchannels' mean BC) and warns at |r| > 0.7 — overlapping
@@ -103,7 +106,8 @@ class Multiline(PAHfit):
         print(f"[multiline] hard poly-basis offset: degree={poly_basis['degree']} "
               f"-> {ncf} coeffs/col x {poly_basis['num_groups']} col "
               f"= {ncf * poly_basis['num_groups']} coeffs/frame "
-              f"(no weight knob, no ortho; DC in the per-frame scalar)", flush=True)
+              f"(no penalty weight, no profile orthogonalization; "
+              f"the DC term is carried by the per-frame scalar)", flush=True)
         return OffsetModel([OffsetBlock(chunk_map=cm, poly_basis=poly_basis)],
                            use_per_frame_scalar=True)
 

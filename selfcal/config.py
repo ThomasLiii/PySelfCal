@@ -1,9 +1,10 @@
 """Path / resource resolution for selfcal.
 
-External users set environment variables (or pass explicit paths); the
-historical absolute defaults are used only as a fallback when they exist, so
-on-host runs are unchanged while an installed package off-host fails with an
-actionable error instead of a silent wrong path.
+External users set environment variables (or pass explicit paths). Defaults may
+be absolute paths that exist only on the original processing host; they are
+used as a fallback only when present, so runs on that host need no
+configuration, while an installed package on any other machine fails with an
+actionable error instead of silently using a wrong path.
 
 Resolution order: explicit argument > ``$env_var`` > ``default``.
 """
@@ -32,7 +33,8 @@ def resolve_path(explicit=None, *, env_var=None, default=None, what='path',
     env_var : str or None
         Environment variable consulted next.
     default : str or os.PathLike or None
-        Fallback (e.g. a packaged resource or the historical on-host path).
+        Fallback (e.g. a packaged resource, or a host-specific absolute path
+        that may not exist on other machines).
     what : str
         Human label used in error messages.
     must_exist : bool

@@ -323,11 +323,12 @@ class Reprojector:
             pending_files = [r['input_fits'] for r in pending]
             pending_exp = [r['exp_idx'] for r in pending]
             pending_det = [r['det_idx'] for r in pending]
-            # sci/dq lists are per-extension and shared across all exposures.
-            # batch_reproject expects per-exposure iteration internally; pass
-            # the deduped per-exposure file list (one per pending task) plus
-            # length-1 sci/dq lists so the inner zip yields exactly one ext
-            # per task.
+            # The incoming sci/dq ext args are per-extension, shared across
+            # exposures; the pending records already flatten that
+            # (exposure x extension) cross product. With
+            # per_task_extensions=True, batch_reproject zips exposure_list
+            # with sci_ext_list/dq_ext_list element-wise, so pass one
+            # (file, sci_ext, dq_ext) triple per pending task.
             with timer("Reprojection"):
                 new_success, failures = batch_reproject(
                     num_processes=max_workers,
@@ -462,12 +463,13 @@ class Calibrator(Reprojector):
         # Set when setup_lsqr parked the pixel state on scratch disk; the
         # arrays are materialised on first use (save_calibration).
         self._pixel_spill = None
-        # When setup_lsqr runs the Top 2 gated path (no template-mode map),
+        # When setup_lsqr runs its early zero-column compaction (enabled by
+        # ``compact_zero_columns``, skipped when any map uses template mode),
         # it returns a CSR matrix that has already had its zero columns
         # eliminated. ``active_mask`` (length num_cols_full) marks which
         # original columns survived; apply_lsqr uses it to expand the
         # compact solution back to the full layout. Both are None in the
-        # legacy (template-mode) path.
+        # uncompacted (template-mode) path.
         self.active_mask = None
         self.num_cols_full = None
         # If set to a non-None float, save_calibration writes it as an
@@ -485,8 +487,8 @@ class Calibrator(Reprojector):
         self.det_templates = []
         self.col_bases = None  # length K+1; col_bases[K] == scalar_col_start
         self.num_scalar_cols = 0
-        self.layout = None  # selfcal.layout.SystemLayout, set in setup_lsqr
-        self.sky_model = None  # selfcal.sky_model.SkyModel, set in setup_lsqr
+        self.layout = None  # selfcal.core.layout.SystemLayout, set in setup_lsqr
+        self.sky_model = None  # selfcal.models.sky_model.SkyModel, set in setup_lsqr
         self.sky_component_names = None  # set in load_calibration (v3)
 
     def setup_lsqr(self, chunk_maps=None, grid_valid_weight=None, oversample_factor=1,
@@ -503,7 +505,7 @@ class Calibrator(Reprojector):
                    spectral_fit=False, line_center=None, line_sigma=None,
                    damp_weight_line=None,
                    offset_model=None, sky_model=None,
-                   top2_compaction_enabled=True,
+                   compact_zero_columns=True,
                    batch_spill_dir=None):
         """Build the LSQR system for K chunk maps.
 
@@ -601,7 +603,7 @@ class Calibrator(Reprojector):
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
-                top2_compaction_enabled=top2_compaction_enabled,
+                compact_zero_columns=compact_zero_columns,
                 batch_spill_dir=batch_spill_dir)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -656,7 +658,9 @@ class Calibrator(Reprojector):
 
     def __del__(self):
         # A Calibrator dropped without ever saving (an aborted tile, a failed
-        # solve) would otherwise leave its ~17 GB of parked arrays behind.
+        # solve) would otherwise leave its parked pixel-state arrays behind
+        # on scratch disk — full-reference-grid float64 arrays that reach
+        # tens of GB on production-size grids.
         try:
             spill = getattr(self, '_pixel_spill', None)
             if spill is not None:
@@ -669,10 +673,12 @@ class Calibrator(Reprojector):
 
         They are write-once setup products read again only by
         save_calibration, but they otherwise sit in RAM through the whole
-        LSQR solve (~17 GB at full-NEP J=4). setup_lsqr does the same round
-        trip across the CSR build; see selfcal.core.spill for why this is
-        byte-identical. Returns the spill dir, or None if nothing was
-        spilled (below the size threshold).
+        LSQR solve — their size scales with (reference-grid pixel count) x
+        (number of sky blocks) x 8 bytes per array, e.g. ~17 GB apiece for
+        a 4-sky-block model on a large tiled grid. setup_lsqr does the same
+        round trip across the CSR build; see selfcal.core.spill for why
+        this is byte-identical. Returns the spill dir, or None if nothing
+        was spilled (below the size threshold).
         """
         spill_dir, _ = spill_pixel_state(self.pixel_counts, self.pixel_fisher,
                                          self.pixel_cross,
@@ -698,10 +704,11 @@ class Calibrator(Reprojector):
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
             # When keep_state=False, hand A / b / x0 to apply_lsqr WITHOUT keeping
-            # any reference in this frame: a plain `A_local = self.A` local would
-            # pin the arrays for the entire solve (the f64 b alone is ~22 GB at
-            # full-NEP tile scale, a COO A ~140 GB at no-srcmask region-10k
-            # scale), defeating the release that apply_lsqr's internal
+            # any reference in this method: a plain `A_local = self.A` local would
+            # pin the arrays for the entire solve (the f64 b holds 8 bytes per
+            # retained data sample — e.g. ~22 GB at ~2.7e9 rows — and a COO A
+            # costs ~12-16 bytes/nnz, i.e. ~140 GB at nnz ~1e10),
+            # defeating the release that apply_lsqr's internal
             # `del`/rebinds are meant to enable. The list-pop idiom transfers
             # ownership: after the pops, the callee's parameters hold the only
             # references, so the f64 b really is freed right after its float32
@@ -900,9 +907,10 @@ class Calibrator(Reprojector):
             if self.det_templates[m] is not None or self._poly_basis_for(m) is not None:
                 # Template mode has one alpha/frame; hard poly-basis has coeff
                 # columns (num_col*D), not per-chunk — the layout coverage block
-                # doesn't match num_chunks_real. Use a trivial per-chunk coverage
-                # here (v1: the poly offset is a smooth function of subchannel, so
-                # per-chunk coverage is a refinement, not load-bearing for the fit).
+                # doesn't match num_chunks_real. Use a trivial all-ones per-chunk
+                # coverage here. Acceptable simplification: the poly offset is a
+                # smooth function of subchannel, so per-chunk coverage would only
+                # refine, not change, the fit.
                 cov_m = np.ones((num_frames, num_chunks_real), dtype=np.int32)
                 frac_m = np.ones((num_frames, num_chunks_real), dtype=np.float32)
             else:
@@ -912,12 +920,12 @@ class Calibrator(Reprojector):
             map_coverages.append(cov_m)
             map_coverage_fracs.append(frac_m)
 
-        # Phase 6 (non-destructive): skymap_line is saved RAW. The Fisher-info
-        # threshold (self.line_fisher_threshold) is saved as an informational
-        # attr only; analysis applies the mask at read time via
-        # ``selfcal.core.lsqr.apply_line_fisher_mask`` (or
-        # ``selfcal.core.lsqr.apply_line_fisher_mask``). This lets analysts sweep
-        # the threshold without re-running the ~6-10 hr calibration.
+        # Non-destructive line masking: skymap_line is saved RAW. The
+        # Fisher-info threshold (self.line_fisher_threshold) is saved as an
+        # informational attr only; analysis applies the mask at read time via
+        # ``selfcal.core.lsqr.apply_line_fisher_mask``. This lets analysts
+        # sweep the threshold without re-running the calibration solve (many
+        # hours of compute at production scale).
 
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
@@ -1084,7 +1092,6 @@ class Mosaicker(Reprojector):
         self.skymap_coverage = None
         self.skymap_fisher = None
         self.skymap_line_fisher = None
-        self.cal_path = None
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
                      'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}

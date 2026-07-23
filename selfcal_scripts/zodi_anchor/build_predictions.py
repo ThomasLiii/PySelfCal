@@ -3,8 +3,10 @@
 For each reproj file listed in the cal's /reproj_list, read MJD +
 pointing, sample the channel-valid mask centroid, evaluate ZodiPy at
 (RA, Dec, MJD, channel-mean wavelength), and aggregate to a single
-per-frame mean in MJy/sr. Writes the result as an .npz that drops
-directly into apply_zodi_anchor.py --zodi-pred.
+per-frame mean in MJy/sr. Writes the result as an .npz that
+build_anchor.py (or the cal runner's inline anchor step,
+selfcal.zodi_anchor.append_anchor_channel) consumes to fit the
+per-channel zodi anchor.
 
 ENVIRONMENT
 -----------
@@ -13,7 +15,7 @@ zodipy 1.1.3 hard-pins numpy<2.0, which conflicts with the main
 sidecar `selfcal-zodipy` env:
 
     /home/thomasli/anaconda3/envs/selfcal-zodipy/bin/python \\
-        selfcal_scripts/zodi_anchor/build_zodi_predictions.py --cal ...
+        selfcal_scripts/zodi_anchor/build_predictions.py --cal ...
 
 The script intentionally has no SelfCal package imports so the sidecar
 env can stay minimal (numpy, scipy, astropy, h5py, hdf5plugin, zodipy).
@@ -204,8 +206,11 @@ def channel_valid_mask_from_cal(cal_h5):
     if ('chunk_maps' not in cal_h5
             or 'map_0' not in cal_h5['chunk_maps']):
         raise ValueError(
-            "cal file lacks /chunk_maps/map_0 (legacy schema). Anchor "
-            "requires the multi-map schema (production since 2026-04).")
+            "cal file lacks /chunk_maps/map_0. The anchor requires the "
+            "multi-chunk-map cal schema (chunk maps under "
+            "/chunk_maps/map_m, coverage under /offset_coverage_frac/"
+            "map_m); legacy single-map cal files (top-level "
+            "offset/chunk_map) are not supported.")
     det_chunk_map = cal_h5['chunk_maps/map_0'][:]
     cov_frac = cal_h5['offset_coverage_frac/map_0'][:]
     valid_chunks = np.where((cov_frac > VALID_CHUNK_THRESH).any(axis=0))[0]
@@ -440,8 +445,10 @@ def parse_args():
     p.add_argument('--metadata-cache', default=None,
                    help='Persistent metadata cache path (per detector). '
                         'Stores MJD + WCS header per reproj file so '
-                        'subsequent runs skip the 10-15 min per-frame '
-                        'I/O. Default: '
+                        'reruns skip the per-frame header I/O (two file '
+                        'opens per frame: reproj h5 + source FITS header; '
+                        'roughly 10 min for a few-thousand-frame run at '
+                        'the default 30 workers). Default: '
                         f'{DEFAULT_METADATA_CACHE_TEMPLATE}')
     return p.parse_args()
 

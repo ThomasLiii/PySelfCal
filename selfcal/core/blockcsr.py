@@ -2,7 +2,8 @@
 
 A single scipy CSR must store ``indptr`` values up to nnz, so once total nnz
 exceeds 2**31 scipy forces BOTH indptr and indices to int64 — pure index
-overhead of nnz*4 bytes (~78 GiB at full-NEP multiline tile scale) plus an
+overhead of nnz*4 bytes (e.g. ~78 GiB at nnz ~2.1e10, typical of a
+multi-thousand-frame production tile) plus an
 nnz*8 upcast copy at construction, even though the column ids themselves fit
 int32 comfortably. Splitting the rows into blocks whose per-block nnz stays
 below 2**31 keeps every stored integer in int32; nothing numerical reads the

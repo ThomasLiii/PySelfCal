@@ -1,6 +1,8 @@
-"""Re-plot zodi_spectrum_all_detectors.npz with y-axis ranges clipped to
-exclude the D1 airglow-contaminated channels (He I 1083 nm, OI 8446 nm)
-so the bulk continuum is readable.
+"""Re-plot the all-detector anchor-spectrum summary written by
+diag_joint_zodi_spectrum.py (figures/zodi_anchor/
+zodi_spectrum_all_detectors.npz), with y-axis ranges clipped to exclude
+the D1 airglow-contaminated channels (He I 1083 nm, OI 8446 nm) so the
+bulk continuum is readable.
 
 Reads:  figures/zodi_anchor/zodi_spectrum_all_detectors.npz
 Writes: figures/zodi_anchor/zodi_spectrum_all_detectors_zoomed.png
@@ -180,8 +182,9 @@ def main():
     _draw_det_boundaries(ax)
     _draw_feature_lines(ax)
 
-    # (d) Pearson r -- already had ylim(-0.3, 1.05); keep as-is but
-    # explicitly bound below 0 to prevent airglow-r dragging the scale.
+    # (d) Pearson r: fixed zoom ylim(0.85, 1.005) so the airglow
+    # channels' depressed r values fall off-scale instead of setting
+    # the axis range.
     ax = axes[3]
     ax.axhline(1.0, color='k', lw=0.5, alpha=0.4)
     ax.axhline(0.0, color='k', lw=0.5, alpha=0.4)

@@ -198,11 +198,12 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
         y_bound = spl(x_bound/oversample_factor) * oversample_factor
         y_bound = np.clip(y_bound, 0, out_shape[1])
         chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i
-    else:
-        prev_y_bound = y_bound
-        y_bound = np.zeros_like(y_bound)
-        chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i + 1
-    
+
+    # Region below the last (largest-R) arc gets the final chunk id (i + 1 after the loop).
+    prev_y_bound = y_bound
+    y_bound = np.zeros_like(y_bound)
+    chunk_map[(y_mesh >= y_bound) & (y_mesh < prev_y_bound)] = i + 1
+
     return chunk_map, lvf_params, np.array(r_edges)
 
 def make_fiducial_chunk_map(band, BC_map, num_channels=17, num_subchannels=10,
@@ -365,9 +366,12 @@ def compute_column_adjacency(chunk_map, num_columns):
     Parameters
     ----------
     chunk_map : np.ndarray
-        The full ID map (Subchannel * N + Band)
+        The stripped chunk-ID map. IDs follow chunk = subchannel * num_columns
+        + column ("column" = vertical strip index within a subchannel, NOT the
+        detector band).
     num_columns : int
-        The NUM_COLUMNS constant used to build the map.
+        Number of column subdivisions per subchannel, i.e. the num_columns
+        value chunk_map was built with (see make_stripped_chunk_map).
     """
     print("Computing Vertical Strip Adjacency (Filtering Arcs)...")
     
@@ -380,8 +384,7 @@ def compute_column_adjacency(chunk_map, num_columns):
     u = chunk_map[:, :-1][mask]
     v = chunk_map[:, 1:][mask]
     
-    # 2. Decompose IDs back into (Subchannel, Band)
-    # Formula: ID = Sub * N + Band
+    # 2. Decompose: chunk_id = subchannel * num_columns + column
     sub_u = u // num_columns
     sub_v = v // num_columns
     
@@ -449,7 +452,7 @@ def compute_column_polynomial_chains(chunk_map, num_columns, degree=1):
     ====== === =================
     degree  L  stencil
     ====== === =================
-    0       2  ``[1, -1]`` (the existing constant-prior adjacency)
+    0       2  ``[1, -1]`` (the pairwise equal-offset constraint, equivalent to the adjacency pairs produced by ``compute_column_adjacency``)
     1       3  ``[1, -2, 1]`` (linear)
     2       4  ``[1, -3, 3, -1]`` (quadratic)
     ====== === =================
