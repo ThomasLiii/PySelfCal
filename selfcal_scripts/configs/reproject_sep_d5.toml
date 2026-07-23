@@ -1,0 +1,37 @@
+# SEP D5 reprojection — raw SPHEREx SEP FITS, detector 5 (Band 5, ~4.05um; the
+# Brackett-alpha window). Reprojects onto the EXISTING D4 SEP reference grid
+# (source_ref_path below) so the D5 Bra maps are pixel-aligned with the D4
+# PAH/continuum maps for direct overlay. D5's focal-plane field is slightly
+# offset from D4's, so some D5 edge coverage may clip against the D4 grid.
+# Raw SEP data is D2+D4+D5 (the reproject_sep_d4 "entirely D4" note is stale);
+# 21,560 raw D5 files -> ~19-20k reprojected after FINAST!=0 astrometry cuts.
+# Drops poor-astrometry exposures (FINAST != 0).
+task = "reproject"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+
+[instrument]
+name = "spherex"
+detector = 5
+num_sub = 10
+num_ch = 34
+num_col = 5
+
+[reproject]
+input_dirs = ["/data3/SPHEREx/SPHEREx_sep_data"]
+file_pattern = "/*/*/*/*D{detector}*.fits"
+# Share the D4 SEP projection grid so D5-Bra is pixel-aligned with D4-PAH.
+# (D4 fit this grid fresh from its own exposures; D5 rides on it.)
+source_ref_path = "/data3/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/ref.fits"
+padding_pixels = 100
+use_ext = [1]
+header_filter_workers = 16
+max_workers = 50
+inner_parallel = 1
+reproj_func = "exact"
+padding_percentage = 0.05
+sci_ext_list = [1]
+dq_ext_list = [2]
+replace_existing = false
