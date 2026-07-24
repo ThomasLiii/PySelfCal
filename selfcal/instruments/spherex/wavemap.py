@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import glob
 import os
@@ -7,9 +8,12 @@ from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
+from ... import _state
 from ...geometry.map_helper import compute_crop, check_invalid
 from ...io.reproj import load_reproj_file
 from .spherex_utility import load_calibration
+
+logger = logging.getLogger(__name__)
 
 worker_context = {}
 
@@ -57,6 +61,9 @@ def init_worker(shm_info, lock, reproj_list, cache_list, ref_shape, sigma):
             worker_context[logical_name] = arr
             
         except FileNotFoundError:
+            # Runs inside a Pool child (init_worker is the Pool initializer);
+            # children have no configured logging handler, so keep print() to
+            # guarantee the attach-failure reaches stderr.
             print(f"Worker failed to attach to SharedMemory: {unique_name} ({logical_name})")
 
 def _wavcoadd_batch_worker(batch_indices):
@@ -178,14 +185,15 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
         # --- Multiprocessing ---
         all_indices = np.arange(len(reproj_list))
         tasks = [all_indices[i:i + batch_size] for i in range(0, len(all_indices), batch_size)]
-        print(f"Processing {len(reproj_list)} files in {len(tasks)} batches with {max_workers} workers...")
+        logger.info(f"Processing {len(reproj_list)} files in {len(tasks)} batches with {max_workers} workers...")
 
         with Manager() as manager:
             global_lock = manager.Lock()
             
             with Pool(processes=max_workers, initializer=init_worker, 
                         initargs=(shm_info, global_lock, reproj_list, cache_list, ref_shape, sigma)) as pool:
-                list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks)))
+                list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks),
+                          disable=not _state.progress_enabled))
 
         # --- Aggregate ---    
         # Retrieve outputs by logical name so this stays correct regardless of

@@ -35,7 +35,9 @@ import contextlib
 import gc
 import glob as glob_module
 import json
+import logging
 import shutil
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -304,6 +306,10 @@ class PhaseTracker:
 # ============================================================
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     # ============================================================
     # Config — production calibration settings (from the retired run_cal.py
     # driver; current equivalents live in selfcal_scripts/configs/) with the

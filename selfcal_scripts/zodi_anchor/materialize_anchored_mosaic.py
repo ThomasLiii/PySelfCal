@@ -17,6 +17,7 @@ Reads only the anchor file + mosaics (no cal/npz). Runs in the selfcal env.
 """
 import argparse
 import glob
+import logging
 import os
 import re
 import shutil
@@ -98,6 +99,10 @@ def materialize_run(run_dir, out_dir, channels, overwrite):
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     args = parse_args()
     for run_dir in args.run_dir:
         print(f"=== {run_dir} ===")

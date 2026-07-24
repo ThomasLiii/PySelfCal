@@ -26,7 +26,16 @@ Spectral / arbitrary-template fitting (any number of components)::
 """
 __version__ = "0.1.0"
 
-from ._state import set_hdd_io_limit
+import logging as _logging
+
+# Library convention: selfcal never configures logging for the application.
+# Every module logs to logging.getLogger(__name__) under this "selfcal" root;
+# the NullHandler silences it until the application attaches its own handler
+# (e.g. logging.basicConfig(level=logging.INFO, format="%(message)s") for the
+# plain console output the pipeline scripts use).
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from ._state import set_hdd_io_limit, set_progress
 from .pipeline.pipeline_wrapper import (PipelineConfig, Reprojector, Calibrator,
                                        Mosaicker)
 from .models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
@@ -39,7 +48,7 @@ from .pipeline.tiled import TiledCalibration, TileSpec, make_tile_grid
 from .config import resolve_path, SelfCalConfigError
 
 __all__ = [
-    "set_hdd_io_limit",
+    "set_hdd_io_limit", "set_progress",
     "PipelineConfig", "Reprojector", "Calibrator", "Mosaicker",
     "SkyModel", "SkyComponent", "ContinuumComponent", "SpectralComponent",
     "LineComponent",

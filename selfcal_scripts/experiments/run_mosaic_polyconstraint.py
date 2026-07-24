@@ -24,6 +24,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+import logging
 import sys
 import shutil
 import time
@@ -104,6 +105,10 @@ def variant_chunk_maps_and_funcs(variant, detector_inputs, channel_inputs,
 
 
 if __name__ == "__main__":
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     # ----------------------------- Settings -----------------------------
     base_frame_setting = {
         'Detector': 5,

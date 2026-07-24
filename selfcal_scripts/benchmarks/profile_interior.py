@@ -25,7 +25,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 import cProfile
 import glob as glob_module
+import logging
 import pstats
+import sys
 import tempfile
 import time
 from functools import partial
@@ -214,6 +216,10 @@ def run_mean(cache_files, ref_shape):
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--phase', choices=['lsqr', 'cache', 'mean'], required=True)
     ap.add_argument('--n-frames', type=int, default=60)

@@ -1,6 +1,7 @@
 import datetime
 import glob
 import json
+import logging
 import os
 import shutil
 import sys
@@ -17,6 +18,7 @@ from tqdm import tqdm
 
 import warnings
 
+from .. import _state
 from ..core import coadd
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file
@@ -29,6 +31,8 @@ from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
 from ..models.sky_model import SkyModel
 
+logger = logging.getLogger(__name__)
+
 # Manifest schema bump when the JSON layout changes incompatibly.
 _REPROJ_MANIFEST_SCHEMA = 1
 _REPROJ_MANIFEST_NAME = 'manifest.json'
@@ -40,7 +44,7 @@ def timer(description):
     start = time.perf_counter() # distinct from time.time(), better for execution duration
     yield
     elapsed = time.perf_counter() - start
-    print(f"{description} finished in {elapsed:.2f} seconds.")
+    logger.info(f"{description} finished in {elapsed:.2f} seconds.")
 
 @dataclass
 class PipelineConfig:
@@ -76,7 +80,7 @@ class Reprojector:
         self.ref_shape = None
         self.ref_wcs = None
 
-    def define_reference(self, padding_pixels=100, use_ext=[1],
+    def define_reference(self, padding_pixels=100, use_ext=(1,),
                          source_ref_path=None, verify_projection=True):
         '''Define the smallest WCS oriented north-up, east-left frame that
         contains all exposures.
@@ -106,8 +110,8 @@ class Reprojector:
                         f"{source_ref_path}. Delete the existing ref to "
                         f"re-derive, or pass verify_projection=False to skip.")
         elif source_ref_path is not None:
-            print(f"Reference WCS not found at {self.config.ref_path}; "
-                  f"deriving from {source_ref_path}.")
+            logger.info(f"Reference WCS not found at {self.config.ref_path}; "
+                        f"deriving from {source_ref_path}.")
             self.ref_wcs, self.ref_shape = wcs_helper.derive_reference_from(
                 source_ref_path=source_ref_path,
                 exposure_list=self.exposure_list,
@@ -115,9 +119,9 @@ class Reprojector:
                 use_ext=use_ext,
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
-            print(f"Reference WCS saved to {self.config.ref_path}")
+            logger.info(f"Reference WCS saved to {self.config.ref_path}")
         else:
-            print(f"Reference WCS not found at {self.config.ref_path}. Creating a new reference frame.")
+            logger.info(f"Reference WCS not found at {self.config.ref_path}. Creating a new reference frame.")
             self.ref_wcs, self.ref_shape = wcs_helper.find_optimal_frame(
                 exposure_list=self.exposure_list,
                 resolution_arcsec=self.config.resolution_arcsec,
@@ -125,9 +129,9 @@ class Reprojector:
                 use_ext=use_ext
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
-            print(f"Reference WCS saved to {self.config.ref_path}")
-        print(f'Mosaic shape: {self.ref_shape}')
-        print(f'Mosaic WCS: {self.ref_wcs}')
+            logger.info(f"Reference WCS saved to {self.config.ref_path}")
+        logger.info(f'Mosaic shape: {self.ref_shape}')
+        logger.info(f'Mosaic WCS: {self.ref_wcs}')
 
     # ---- Manifest / failed-log helpers ----
     #
@@ -246,7 +250,7 @@ class Reprojector:
         try:
             manifest = self.load_manifest()
         except ValueError as e:
-            print(f'WARNING: could not load manifest: {e}')
+            logger.warning(f'WARNING: could not load manifest: {e}')
         expected = len(manifest['tasks']) if manifest else None
         existing = set(os.listdir(out)) if os.path.isdir(out) else set()
         done = pending = None
@@ -273,14 +277,14 @@ class Reprojector:
         # Compact one-line summary, easy to grep in logs.
         def _s(v):
             return '?' if v is None else str(v)
-        print(f"[reproj status] expected={_s(expected)} done={_s(done)} "
-              f"pending={_s(pending)} failed_logged={failed_logged} "
-              f"quarantined={quarantined} dir={out}")
+        logger.info(f"[reproj status] expected={_s(expected)} done={_s(done)} "
+                    f"pending={_s(pending)} failed_logged={failed_logged} "
+                    f"quarantined={quarantined} dir={out}")
         return report
 
     def run_reproject(self, max_workers=50, reproj_func='exact', padding_percentage=0.05,
                       sci_ext_list=None, dq_ext_list=None, exp_idx_list=None, det_idx_list=None,
-                      output_dir=None, replace_existing=False, reproject_kwargs={}):
+                      output_dir=None, replace_existing=False, reproject_kwargs=None):
         """Build per-(exposure, extension) reprojection tasks, dispatch the
         pending subset, write the run manifest, and log any worker failures.
 
@@ -290,6 +294,8 @@ class Reprojector:
         retains its own existing-file check as a safety net. ``self.reproj_list``
         is set to the sorted union of pre-existing and newly-completed outputs.
         """
+        if reproject_kwargs is None:
+            reproject_kwargs = {}
         if self.ref_wcs is None or self.ref_shape is None:
             raise ValueError("Reference WCS and shape must be defined before running reprojection. Call define_reference() first.")
         if output_dir is None:
@@ -314,8 +320,8 @@ class Reprojector:
             else:
                 pending.append(rec)
 
-        print(f'[run_reproject] manifest={len(records)} tasks, '
-              f'already_done={len(existing_paths)}, pending={len(pending)}')
+        logger.info(f'[run_reproject] manifest={len(records)} tasks, '
+                    f'already_done={len(existing_paths)}, pending={len(pending)}')
 
         new_success = []
         failures = []
@@ -347,12 +353,12 @@ class Reprojector:
                     per_task_extensions=True,
                 )
         else:
-            print('[run_reproject] nothing to do; all outputs already exist.')
+            logger.info('[run_reproject] nothing to do; all outputs already exist.')
 
         if failures:
             self._append_failures(failures)
-            print(f'[run_reproject] logged {len(failures)} failures to '
-                  f'{self.failed_log_path}')
+            logger.warning(f'[run_reproject] logged {len(failures)} failures to '
+                           f'{self.failed_log_path}')
 
         self.reproj_list = sorted(set(existing_paths) | set(new_success))
         # Mirror get_reproj_files so callers always see consistent idx state.
@@ -380,7 +386,7 @@ class Reprojector:
         ``quarantine=False`` (legacy behavior). Failures are appended to
         ``failed.jsonl`` either way."""
         if not self.reproj_list:
-            print('check_reproj_files: nothing to check (reproj_list empty)')
+            logger.info('check_reproj_files: nothing to check (reproj_list empty)')
             return
         broken = []
         # Reads are I/O bound; a small ThreadPool would also work, but the
@@ -390,12 +396,13 @@ class Reprojector:
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(self._check_one, p): p for p in self.reproj_list}
             for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc='Checking reprojected files'):
+                            desc='Checking reprojected files',
+                            disable=not _state.progress_enabled):
                 path, ok, err = fut.result()
                 if not ok:
                     broken.append((path, err))
         if not broken:
-            print(f'check_reproj_files: all {len(self.reproj_list)} files OK')
+            logger.info(f'check_reproj_files: all {len(self.reproj_list)} files OK')
             return
         if quarantine:
             os.makedirs(self.quarantine_dir, exist_ok=True)
@@ -412,7 +419,7 @@ class Reprojector:
                     action = 'deleted'
             except OSError as e:
                 action = f'remove/move failed: {e}'
-            print(f'check_reproj_files: {base}: {err} -> {action}')
+            logger.warning(f'check_reproj_files: {base}: {err} -> {action}')
             # parse idx from filename (best-effort; quarantined names match
             # the exp_NNNN_det_DD.h5 pattern)
             try:
@@ -432,8 +439,8 @@ class Reprojector:
         # try to consume them.
         broken_set = {p for p, _ in broken}
         self.reproj_list = [p for p in self.reproj_list if p not in broken_set]
-        print(f'check_reproj_files: {len(broken)} broken; '
-              f'{len(self.reproj_list)} remain in reproj_list')
+        logger.warning(f'check_reproj_files: {len(broken)} broken; '
+                       f'{len(self.reproj_list)} remain in reproj_list')
 
     def get_reproj_files(self, reproj_dir=None):
         if reproj_dir is None:
@@ -441,7 +448,7 @@ class Reprojector:
         self.reproj_list = sorted(glob.glob(os.path.join(reproj_dir, '*.h5')))
         self.det_idx_list = []
         self.exp_idx_list = []
-        for file in tqdm(self.reproj_list):
+        for file in tqdm(self.reproj_list, disable=not _state.progress_enabled):
             file_name = os.path.basename(file)
             exp_idx, det_idx = int(file_name.split('_')[1]), int(file_name.split('_')[3].removesuffix('.h5'))
             self.det_idx_list.append(det_idx)
@@ -493,7 +500,7 @@ class Calibrator(Reprojector):
 
     def setup_lsqr(self, chunk_maps=None, grid_valid_weight=None, oversample_factor=1,
                    apply_mask=True, apply_weight=True, max_workers=20,
-                   outlier_thresh=3.0, ignore_list=[], batch_size=10,
+                   outlier_thresh=3.0, ignore_list=None, batch_size=10,
                    offset_regularization=False,
                    reg_weights=None, adj_infos=None, poly_constraints_list=None,
                    mean_offsets_list=None, poly_basis_list=None,
@@ -532,6 +539,8 @@ class Calibrator(Reprojector):
         channel-mask calibrations on H2RG detectors where ``compute_x0_from_Ab``
         alone leaves low-coverage chunks under-constrained.
         """
+        if ignore_list is None:
+            ignore_list = []
         # An OffsetModel bundles the per-map offset config; expanding it here to
         # the parallel-list kwargs keeps a single downstream code path that is
         # numerically identical to the equivalent flat-kwarg call. The flat
@@ -548,8 +557,9 @@ class Calibrator(Reprojector):
             poly_basis_list = om['poly_basis_list']
             use_per_frame_scalar = om['use_per_frame_scalar']
 
-        assert isinstance(chunk_maps, list) and len(chunk_maps) >= 1, \
-            "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)"
+        if not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
+            raise ValueError(
+                "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)")
         K = len(chunk_maps)
 
         def _check_len(name, val):
@@ -696,10 +706,10 @@ class Calibrator(Reprojector):
                    solver='lsmr', use_float32=False, n_threads=32, keep_state=False):
         if resume:
             if self.x is None:
-                print("No previous solution found. Starting from scratch.")
+                logger.warning("No previous solution found. Starting from scratch.")
             else:
                 x0 = self.x
-                print("Resuming LSQR from previous solution.")
+                logger.info("Resuming LSQR from previous solution.")
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
@@ -896,6 +906,8 @@ class Calibrator(Reprojector):
             sky_names = list(self.sky_model.names)
         else:
             sky_names = ['continuum'] + [f'line_{j}' for j in range(1, self.num_sky_blocks)]
+        # Internal invariant: sky_names is derived from self.sky_model / num_sky_blocks
+        # above, so a mismatch is a self-consistency bug, not caller input. Keep as assert.
         assert len(sky_names) == self.num_sky_blocks
 
         expanded_offsets = []
@@ -998,7 +1010,7 @@ class Calibrator(Reprojector):
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
             if self._has_scalars() and frame_scalar is not None and len(frame_scalar) > 0:
                 f.create_dataset('frame_scalar', data=frame_scalar, compression='gzip')
-        print(f"Calibration saved to {cal_path}")
+        logger.info(f"Calibration saved to {cal_path}")
         return cal_path
 
     def _sky_names(self):
@@ -1127,11 +1139,11 @@ class Mosaicker(Reprojector):
                 self.offset_coverages = [f['offset_coverage'][:]]
                 self.offset_coverage_fracs = [f['offset_coverage_frac'][:]]
                 self.cal_chunk_maps = []
-        print(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
+        logger.info(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
 
     def make_mosaic(self, chunk_maps, grid_valid_weight, oversample_factor=1, apply_mask=True, apply_weight=True, max_workers=20,
-        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=[],
+        make_std_map=False, apply_sigma_clipping=False, sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=None,
         det_offset_funcs=None, cache_batch_size=10, coadd_batch_size=10, cache_dir='cache/',
         cache_intermediate=False, det_aux=None, preprocess_func=None, postprocess_func=None, valid_chunk_thresh=0.01):
         """Build coadded maps applying per-map calibration offsets.
@@ -1145,12 +1157,14 @@ class Mosaicker(Reprojector):
         is reported on map 0 only and embedded in the FITS header by
         ``save_mosaic`` for legacy compatibility.
         """
-        assert isinstance(chunk_maps, list) and chunk_maps, \
-            "chunk_maps must be a non-empty list of ndarrays"
+        if ignore_list is None:
+            ignore_list = []
+        if not (isinstance(chunk_maps, list) and chunk_maps):
+            raise ValueError("chunk_maps must be a non-empty list of ndarrays")
         K = len(chunk_maps)
         if det_offset_funcs is not None:
-            assert len(det_offset_funcs) == K, \
-                f"det_offset_funcs length must match chunk_maps ({K})"
+            if len(det_offset_funcs) != K:
+                raise ValueError(f"det_offset_funcs length must match chunk_maps ({K})")
         self.chunk_maps = chunk_maps
 
         offset_lists_param = None
@@ -1173,7 +1187,7 @@ class Mosaicker(Reprojector):
                     off[~valid] = 0.0
                     offset_lists_param.append(off)
             else:
-                print("Warning: Calibration offsets not available. No offsets will be applied.")
+                logger.warning("Warning: Calibration offsets not available. No offsets will be applied.")
 
         # Bundle arguments common to all compute_coadd_map calls
         common_kwargs = {
@@ -1196,7 +1210,7 @@ class Mosaicker(Reprojector):
         }
 
         if cache_intermediate:
-            print("Caching intermediate computations...")
+            logger.info("Caching intermediate computations...")
             with timer("Cache computation"):
                 cached_list = coadd.compute_coadd_map(
                     mode='cache',
@@ -1207,7 +1221,7 @@ class Mosaicker(Reprojector):
             common_kwargs['file_list'] = cached_list
             common_kwargs['use_cached'] = True
 
-        print("Computing mean map...")
+        logger.info("Computing mean map...")
         with timer("Mean map computation"):
             self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = coadd.compute_coadd_map(
                 mode='mean', 
@@ -1216,7 +1230,7 @@ class Mosaicker(Reprojector):
             )
         
         if make_std_map:
-            print("Computing std map...")
+            logger.info("Computing std map...")
             with timer("Std map computation"):
                 self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = coadd.compute_coadd_map(
                     mode='std', 
@@ -1226,7 +1240,7 @@ class Mosaicker(Reprojector):
                 )
 
         if make_std_map and apply_sigma_clipping:
-            print("Computing sigma-clipped mean map...")
+            logger.info("Computing sigma-clipped mean map...")
             
             with timer("Sigma-clipped mean map computation"):
                 self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = coadd.compute_coadd_map(
@@ -1300,5 +1314,5 @@ class Mosaicker(Reprojector):
 
         hdul = fits.HDUList([primary_hdu] + hdu_list)
         hdul.writeto(mos_path, overwrite=overwrite)
-        print(f"Mosaic saved to {mos_path}")
+        logger.info(f"Mosaic saved to {mos_path}")
         return mos_path
