@@ -1,6 +1,9 @@
 """Module-level mutable state shared across selfcal submodules."""
+from __future__ import annotations
 
 from multiprocessing import Lock as _MPLock, BoundedSemaphore as _MPSemaphore
+
+__all__ = ["set_hdd_io_limit", "set_progress"]
 
 # Semaphore to limit concurrent HDD reads. With many workers doing random reads
 # on a RAID array, seek thrashing kills throughput. Uses multiprocessing.BoundedSemaphore
@@ -13,7 +16,7 @@ def _init_coadd_worker(lock):
     global _coadd_flush_lock
     _coadd_flush_lock = lock
 
-def set_hdd_io_limit(n):
+def set_hdd_io_limit(n: int | None) -> None:
     """Set the max number of concurrent file reads from slow storage.
     Call before any parallel processing starts. Works across both threads and processes.
     """
@@ -28,7 +31,7 @@ def set_hdd_io_limit(n):
 # the next bar. Default True preserves the historical behavior.
 progress_enabled = True
 
-def set_progress(enabled):
+def set_progress(enabled: bool) -> None:
     """Enable/disable tqdm progress bars rendered by selfcal library calls."""
     global progress_enabled
     progress_enabled = bool(enabled)

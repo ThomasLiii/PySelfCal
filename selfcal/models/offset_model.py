@@ -31,9 +31,13 @@ weighting, workers, ...) are NOT per-block and stay as ``setup_lsqr`` kwargs.
 ``use_per_frame_scalar`` is a model-level flag (the scalar block is shared
 across maps), so it lives on ``OffsetModel``.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
+
+__all__ = ['OffsetBlock', 'OffsetModel']
 
 
 @dataclass(frozen=True)
@@ -105,20 +109,31 @@ class OffsetModel:
                 raise TypeError(f"blocks[{i}] is {type(b).__name__}, expected OffsetBlock")
 
     @property
-    def num_maps(self):
+    def num_maps(self) -> int:
+        """Number of offset blocks (maps) in the model."""
         return len(self.blocks)
 
     @property
-    def chunk_maps(self):
+    def chunk_maps(self) -> list[np.ndarray]:
+        """The per-block chunk maps, in block order."""
         return [b.chunk_map for b in self.blocks]
 
-    def to_setup_kwargs(self):
+    def to_setup_kwargs(self) -> dict:
         """Expand to the parallel-list kwargs ``setup_lsqr`` consumes.
 
         Always emits explicit length-K lists. Passing ``[None]*K`` /
         ``[0.0]*K`` is equivalent to passing the bare ``None`` defaults
         (``setup_lsqr`` fills ``None`` to ``[None]*K`` / ``[0.0]*K``), so this
         is numerically identical to the flat-kwarg call.
+
+        Returns
+        -------
+        dict
+            The parallel-list ``setup_lsqr`` kwargs: ``chunk_maps``,
+            ``det_groups_list``, ``det_templates``, ``reg_weights``,
+            ``adj_infos``, ``poly_constraints_list``, ``mean_offsets_list``,
+            ``poly_basis_list`` (each a length-K list indexed by map ``m``),
+            plus the model-level ``use_per_frame_scalar`` flag.
         """
         return {
             'chunk_maps': [b.chunk_map for b in self.blocks],

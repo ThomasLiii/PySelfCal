@@ -1,12 +1,44 @@
 """Solution vector parsing, encoding, and initial-guess computation."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.sparse import csr_matrix
 
+if TYPE_CHECKING:
+    from scipy.sparse import coo_matrix
+    from .blockcsr import BlockCSR
 
-def parse_x_sky(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None,
-                num_sky_blocks=1):
+__all__ = [
+    "parse_x_sky",
+    "encode_x",
+    "compute_x0_from_Ab",
+    "compute_x0_scalar_only",
+]
+
+
+def parse_x_sky(x: np.ndarray, ref_shape: tuple[int, int],
+                num_offset_groups_list: list[int], num_chunks_list: list[int],
+                num_frames: int | None = None, num_sky_blocks: int = 1
+                ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
     """Generic parse of the LSQR solution vector for any number of sky blocks.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        The LSQR/LSMR solution vector (full column layout).
+    ref_shape : tuple of int
+        (height, width) of the reference frame.
+    num_offset_groups_list : list of int
+        Per-map offset-group count (block m has ``num_offset_groups[m]`` rows).
+    num_chunks_list : list of int
+        Per-map chunk (column) count (block m has ``num_chunks[m]`` columns).
+    num_frames : int or None, optional
+        Number of frames; when set, the trailing per-frame scalars are sliced
+        off, otherwise ``frame_scalar`` comes back empty.
+    num_sky_blocks : int, optional
+        Number of sky blocks (1 continuum, +1 per spectral component).
 
     Returns
     -------
@@ -59,7 +91,7 @@ def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=No
         "use parse_x_sky for the N-component list form")
 
 
-def encode_x(skymap, offsets):
+def encode_x(skymap: np.ndarray, offsets: np.ndarray | list[np.ndarray]) -> np.ndarray:
     """Concatenate sky + per-map offsets back into the solution vector.
 
     ``offsets`` may be a single ndarray (K=1 convenience) or a list of ndarrays.
@@ -72,7 +104,9 @@ def encode_x(skymap, offsets):
     return np.concatenate(parts)
 
 
-def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
+def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
+                       ref_shape: tuple[int, int], num_sky_blocks: int = 1,
+                       active_mask: np.ndarray | None = None) -> np.ndarray:
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
@@ -85,6 +119,17 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
 
     Parameters
     ----------
+    A : csr_matrix or coo_matrix
+        The assembled design matrix from ``setup_lsqr``. ``BlockCSR`` is
+        rejected (use ``compute_x0_scalar_only``).
+    b : np.ndarray
+        The right-hand-side vector from ``setup_lsqr`` (upcast to float64
+        internally so the products accumulate identically to an f64 ``b``).
+    ref_shape : tuple of int
+        (height, width) of the reference frame.
+    num_sky_blocks : int, optional
+        Number of sky blocks; 2 for spectral_fit, where the sky block spans
+        ``2 * num_sky`` columns and the offset block starts at ``2 * num_sky``.
     active_mask : np.ndarray of bool, optional
         When supplied, ``A`` is the COMPACT matrix produced by the early
         zero-column compaction in ``setup_lsqr``; ``active_mask`` (length =
@@ -178,8 +223,11 @@ def compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=1, active_mask=None):
     return x0_full
 
 
-def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
-                           active_mask=None, _chunk_target_entries=64_000_000):
+def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
+                           ref_shape: tuple[int, int], scalar_col_start: int,
+                           num_sky_blocks: int = 1,
+                           active_mask: np.ndarray | None = None,
+                           _chunk_target_entries: int = 64_000_000) -> np.ndarray:
     """x0 for the ``use_per_frame_scalar`` setup: scalar gets diag-LS, chunks
     start at 0, sky starts at 0.
 
@@ -205,6 +253,14 @@ def compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
 
     Parameters
     ----------
+    A : csr_matrix, BlockCSR, or coo_matrix
+        The assembled design matrix from ``setup_lsqr``. CSR/BlockCSR use the
+        direct scalar-only walk; COO falls back to ``compute_x0_from_Ab``.
+    b : np.ndarray
+        The right-hand-side vector from ``setup_lsqr`` (upcast to float64
+        internally).
+    ref_shape : tuple of int
+        (height, width) of the reference frame.
     scalar_col_start : int
         Column index where the per-frame scalar block begins, in the ORIGINAL
         (uncompacted) column space. For K maps, this is the value Calibrator

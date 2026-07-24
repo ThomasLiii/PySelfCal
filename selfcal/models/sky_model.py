@@ -24,7 +24,21 @@ Components are small frozen dataclasses (scalars + a profile holding at most a
 small template array) so they pickle cleanly into the multiprocessing task
 dicts; large arrays travel via SHM, never inside a component.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+
+__all__ = [
+    'SkyComponent',
+    'ContinuumComponent',
+    'SpectralComponent',
+    'LineComponent',
+    'SkyModel',
+]
 
 
 @dataclass(frozen=True)
@@ -44,7 +58,22 @@ class SkyComponent:
     aux_requirements: tuple = ()
     damp_weight: float = None
 
-    def coefficients(self, aux):  # pragma: no cover - interface
+    def coefficients(self, aux: dict[str, np.ndarray]) -> np.ndarray | None:  # pragma: no cover - interface
+        """Per-observation coefficient for this component's sky block.
+
+        Parameters
+        ----------
+        aux : dict[str, np.ndarray]
+            Auxiliary maps sampled at the subframe's valid pixels, keyed by
+            aux-map name (the keys listed in ``aux_requirements``).
+
+        Returns
+        -------
+        np.ndarray or None
+            The per-pixel coefficient ``coeff_c(λ)`` for each valid pixel, or
+            ``None`` to signal the identity coefficient (the row assembly then
+            stores the pixel weight directly, no multiply).
+        """
         raise NotImplementedError
 
 
@@ -54,7 +83,20 @@ class ContinuumComponent(SkyComponent):
     aux_requirements: tuple = ()
     damp_weight: float = None
 
-    def coefficients(self, aux):
+    def coefficients(self, aux: dict[str, np.ndarray]) -> None:
+        """Return ``None`` (the identity coefficient) for the continuum block.
+
+        Parameters
+        ----------
+        aux : dict[str, np.ndarray]
+            Auxiliary maps at the valid pixels (unused; continuum needs none).
+
+        Returns
+        -------
+        None
+            Always ``None`` — signals the assembly to store ``valid_weight``
+            directly, preserving the legacy single-block fast path.
+        """
         # Identity coefficient: the row assembly stores valid_weight directly
         # (no multiply-by-1.0), preserving the legacy single-block fast path.
         return None
@@ -85,7 +127,20 @@ class SpectralComponent(SkyComponent):
                 reqs = reqs + (k,)
         object.__setattr__(self, 'aux_requirements', reqs)
 
-    def coefficients(self, aux):
+    def coefficients(self, aux: dict[str, np.ndarray]) -> np.ndarray:
+        """Evaluate the profile at this component's wavelength key.
+
+        Parameters
+        ----------
+        aux : dict[str, np.ndarray]
+            Auxiliary maps at the valid pixels; must contain ``wavelength_key``
+            and any keys the profile's ``aux_requirements`` declares.
+
+        Returns
+        -------
+        np.ndarray
+            The float32 per-pixel coefficient ``profile(λ)``.
+        """
         return self.profile.evaluate(aux[self.wavelength_key], aux)
 
 
@@ -108,15 +163,17 @@ class SkyModel:
             raise ValueError(f"duplicate sky-component names: {names}")
 
     @property
-    def n_blocks(self):
+    def n_blocks(self) -> int:
+        """Number of sky blocks (one per component)."""
         return len(self.components)
 
     @property
-    def names(self):
+    def names(self) -> list[str]:
+        """Ordered list of component names (one per sky block)."""
         return [c.name for c in self.components]
 
     @property
-    def aux_requirements(self):
+    def aux_requirements(self) -> tuple[str, ...]:
         """Ordered union of all components' aux requirements."""
         seen = []
         for c in self.components:
@@ -127,17 +184,39 @@ class SkyModel:
 
     # --- factories matching the two legacy configurations ---
     @classmethod
-    def continuum_only(cls):
-        """Reproduces ``num_sky_blocks == 1`` (continuum-only)."""
+    def continuum_only(cls) -> SkyModel:
+        """Reproduces ``num_sky_blocks == 1`` (continuum-only).
+
+        Returns
+        -------
+        SkyModel
+            A model with a single :class:`ContinuumComponent`.
+        """
         return cls((ContinuumComponent(),))
 
     @classmethod
-    def continuum_plus_pah_gaussian(cls, line_center=None, line_sigma=None):
+    def continuum_plus_pah_gaussian(
+        cls, line_center: float | None = None, line_sigma: float | None = None
+    ) -> SkyModel:
         """Reproduces ``num_sky_blocks == 2`` (continuum + PAH 3.29 µm Gaussian).
 
         Defaults pull the SPHEREx PAH constants; per-pixel σ uses the BW map via
         QuadratureSigma(2.355, 2.890e-4) when BW is supplied, else scalar
         line_sigma — matching the legacy spectral_fit behavior exactly.
+
+        Parameters
+        ----------
+        line_center : float or None, optional
+            Line center in µm. ``None`` (default) uses the SPHEREx PAH constant
+            ``PAH_LINE_CENTER_UM``.
+        line_sigma : float or None, optional
+            Scalar fallback σ in µm, used when the BW width map is absent.
+            ``None`` (default) uses ``LINE_SIGMA_UM``.
+
+        Returns
+        -------
+        SkyModel
+            A two-component model ``[continuum, pah_3p29]``.
         """
         from ..instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
         from .profiles import GaussianProfile, QuadratureSigma

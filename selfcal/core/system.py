@@ -9,12 +9,14 @@ zero-coverage columns (early column compaction). The solver stage that
 consumes the result lives in selfcal.core.solve. Also home to the post-solve
 coverage/Fisher parsers.
 """
+from __future__ import annotations
+
 import logging
 import os
 import shutil
 import tempfile
 
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from tqdm import tqdm
@@ -30,7 +32,19 @@ from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block)
 from .assembly import _prep_lsqr_batch_worker
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "setup_lsqr",
+    "SetupResult",
+    "parse_pixel_counts_sky",
+    "parse_pixel_fisher_sky",
+    "parse_line_separability",
+    "apply_line_fisher_mask",
+]
 
 
 class SetupResult(NamedTuple):
@@ -55,22 +69,31 @@ class SetupResult(NamedTuple):
     pixel_spill: object = None
 
 
-def setup_lsqr(file_list, ref_shape,
-               chunk_maps=None, grid_valid_weight=None, apply_mask=True, apply_weight=False,
-               valid_threshold=0.99,
-               outlier_thresh=3, max_workers=20, ignore_list=None, oversample_factor=1, batch_size=10, offset_regularization=False,
-               reg_weights=None, adj_infos=None, poly_constraints_list=None,
-               mean_offsets_list=None, det_groups_list=None, det_templates=None,
-               poly_basis_list=None,
-               use_per_frame_scalar=False,
-               postprocess_func=None, preprocess_func=None,
-               weighted_damping=False, damp_weight=0.1, damp_offset=0.0,
-               det_aux=None,
-               spectral_fit=False, line_center=None, line_sigma=None,
-               damp_weight_line=None,
-               sky_model=None,
-               compact_zero_columns=True,
-               batch_spill_dir=None):
+def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
+               chunk_maps: list[np.ndarray] | None = None,
+               grid_valid_weight: np.ndarray | None = None,
+               apply_mask: bool = True, apply_weight: bool = False,
+               valid_threshold: float = 0.99,
+               outlier_thresh: float | None = 3, max_workers: int = 20,
+               ignore_list: list[int] | None = None, oversample_factor: int = 1,
+               batch_size: int = 10, offset_regularization: bool = False,
+               reg_weights: list[float] | None = None, adj_infos: list | None = None,
+               poly_constraints_list: list | None = None,
+               mean_offsets_list: list | None = None, det_groups_list: list | None = None,
+               det_templates: list | None = None,
+               poly_basis_list: list | None = None,
+               use_per_frame_scalar: bool = False,
+               postprocess_func: Callable | None = None,
+               preprocess_func: Callable | None = None,
+               weighted_damping: bool = False, damp_weight: float = 0.1,
+               damp_offset: float = 0.0,
+               det_aux: list[np.ndarray] | None = None,
+               spectral_fit: bool = False, line_center: float | None = None,
+               line_sigma: float | None = None,
+               damp_weight_line: float | None = None,
+               sky_model: SkyModel | None = None,
+               compact_zero_columns: bool = True,
+               batch_spill_dir: str | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
@@ -145,6 +168,67 @@ def setup_lsqr(file_list, ref_shape,
         column. Set False to keep the uncompacted column layout and let
         ``apply_lsqr`` compact instead (debug aid for isolating a suspected
         regression to the compaction step).
+    apply_mask : bool, optional
+        Apply each subframe's data-quality mask when reading it (default True).
+    apply_weight : bool, optional
+        Weight each pixel's data row by its ``valid_weight`` instead of unit
+        weight (default False).
+    valid_threshold : float, optional
+        Minimum valid fraction for a reprojected pixel to be kept (default 0.99).
+    outlier_thresh : float or None, optional
+        Sigma threshold for per-subframe outlier rejection; ``None`` disables it.
+    max_workers : int, optional
+        Number of worker processes in the row-assembly pool (default 20).
+    ignore_list : list of int or None, optional
+        Data-quality flag values to treat as invalid; ``None``/empty ignores none.
+    oversample_factor : int, optional
+        Sub-pixel oversampling factor applied when reading each subframe.
+    batch_size : int, optional
+        Number of subframes assembled per worker batch (default 10).
+    offset_regularization : bool, optional
+        Enable the per-map adjacency/offset regularization rows.
+    poly_basis_list : list or None, optional
+        Per-map hard polynomial basis (length K). When set for map m, that map
+        solves for polynomial coefficients (shape-only; DC absorbed by the
+        per-frame scalar) rather than per-chunk offsets.
+    postprocess_func : callable or None, optional
+        Optional per-subframe postprocessing hook run inside the worker.
+    preprocess_func : callable or None, optional
+        Optional per-subframe preprocessing hook run inside the worker.
+    weighted_damping : bool, optional
+        Enable coverage-weighted Tikhonov damping of the sky blocks.
+    damp_weight : float, optional
+        Coverage-weighted damping weight for the continuum sky block (default 0.1).
+    damp_offset : float, optional
+        Coverage-weighted damping weight for the offset columns; 0 disables it.
+    det_aux : list of np.ndarray or None, optional
+        Detector-grid auxiliary maps ``[BC_map]`` (optionally ``[BC_map, BW_map]``)
+        required by a spectral ``sky_model`` to evaluate the line coefficient per
+        sub-pixel.
+    spectral_fit : bool, optional
+        Deprecated shim: when True, lowers to a continuum+PAH-Gaussian
+        ``SkyModel``. Prefer passing ``sky_model=`` explicitly.
+    line_center : float or None, optional
+        Line-center wavelength for the ``spectral_fit`` shim.
+    line_sigma : float or None, optional
+        Line Gaussian sigma for the ``spectral_fit`` shim.
+    damp_weight_line : float or None, optional
+        Damping weight for spectral (line) sky blocks; defaults to
+        ``3 * damp_weight`` when a spectral model is active.
+    sky_model : SkyModel or None, optional
+        Forward-looking sky-model object driving per-pixel sky row emission;
+        defaults to continuum-only (or continuum+PAH when ``spectral_fit``).
+    batch_spill_dir : str or None, optional
+        Directory for streaming each batch's bulk COO arrays to page-cache-backed
+        files instead of SharedMemory (see the note above); ``None`` keeps the
+        pure-SharedMemory behavior.
+
+    Returns
+    -------
+    result : SetupResult
+        Named tuple ``(A, b, pixel_counts, pixel_fisher, pixel_cross,
+        active_mask, pixel_spill)``. Returns ``(None, None)`` instead when no
+        valid data is found in any subframe.
     """
     # Mutable-default normalization: an empty ignore_list means "ignore nothing".
     if ignore_list is None:
@@ -986,8 +1070,12 @@ def setup_lsqr(file_list, ref_shape,
                                     if _pix_spill_dir is not None else None))
 
 
-def parse_pixel_counts_sky(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,
-                           num_sky_blocks=1, num_chunks_list=None):
+def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
+                           num_offset_groups_list: list[int],
+                           chunk_maps: list[np.ndarray],
+                           num_sky_blocks: int = 1,
+                           num_chunks_list: list[int] | None = None
+                           ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
     """Generic coverage slicing for any number of sky blocks.
 
     Returns ``(sky_coverages, offset_coverages, offset_valid_fracs)`` where
@@ -1046,7 +1134,8 @@ def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_ma
     return sky_coverages[0], offset_coverages, offset_valid_fracs
 
 
-def parse_pixel_fisher_sky(pixel_fisher, ref_shape, num_sky_blocks=1):
+def parse_pixel_fisher_sky(pixel_fisher: np.ndarray, ref_shape: tuple[int, int],
+                           num_sky_blocks: int = 1) -> list[np.ndarray]:
     """Generic Fisher slicing: returns a length-``num_sky_blocks`` list of
     ``ref_shape`` arrays (block 0 = continuum). See :func:`parse_pixel_counts_sky`.
     """
@@ -1134,8 +1223,9 @@ def _separability_from_moments(pixel_fisher, pixel_cross, num_sky, num_sky_block
     return np.maximum(out, 0.0)
 
 
-def parse_line_separability(pixel_cross, pixel_fisher, ref_shape, num_sky_blocks=2,
-                            block=None):
+def parse_line_separability(pixel_cross: np.ndarray | dict, pixel_fisher: np.ndarray,
+                            ref_shape: tuple[int, int], num_sky_blocks: int = 2,
+                            block: int | None = None) -> np.ndarray:
     """Per-pixel line separability map ``I_P`` (see
     :func:`_separability_from_moments`) reshaped to ``ref_shape``.
 
@@ -1153,7 +1243,8 @@ def parse_line_separability(pixel_cross, pixel_fisher, ref_shape, num_sky_blocks
         block=block).reshape(ref_shape)
 
 
-def apply_line_fisher_mask(sky_line, line_fisher, threshold):
+def apply_line_fisher_mask(sky_line: np.ndarray, line_fisher: np.ndarray,
+                           threshold: float) -> tuple[np.ndarray, np.ndarray]:
     """Apply the line-Fisher mask at read time: zero sky_line where Fisher < threshold.
 
     Cals saved by Calibrator.save_calibration contain RAW sky_line (no
