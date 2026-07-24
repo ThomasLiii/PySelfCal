@@ -8,12 +8,20 @@ actionable error instead of silently using a wrong path.
 
 Resolution order: explicit argument > ``$env_var`` > ``default``.
 """
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
+__all__ = ["resolve_path", "SelfCalConfigError"]
+
 
 class SelfCalConfigError(RuntimeError):
-    """Raised when a required path/resource cannot be resolved."""
+    """Raised when a required path/resource cannot be resolved.
+
+    Carries an actionable message naming the resource and how to supply it
+    (an explicit argument or the relevant ``SELFCAL_*`` environment variable).
+    """
 
 
 # Environment variables (documented for external users).
@@ -22,8 +30,10 @@ ENV_SPHEREX_CHANNEL_FILE = 'SELFCAL_SPHEREX_CHANNEL_FILE'
 ENV_LVF_PARAMS_DIR = 'SELFCAL_LVF_PARAMS_DIR'
 
 
-def resolve_path(explicit=None, *, env_var=None, default=None, what='path',
-                 must_exist=True):
+def resolve_path(explicit: str | os.PathLike | None = None, *,
+                 env_var: str | None = None,
+                 default: str | os.PathLike | None = None, what: str = 'path',
+                 must_exist: bool = True) -> str:
     """Resolve a path from an explicit value, an env var, or a default.
 
     Parameters
@@ -39,6 +49,16 @@ def resolve_path(explicit=None, *, env_var=None, default=None, what='path',
         Human label used in error messages.
     must_exist : bool
         If True, raise when the resolved path does not exist on disk.
+
+    Returns
+    -------
+    str
+        The resolved path as a string.
+
+    Raises
+    ------
+    SelfCalConfigError
+        If nothing resolves, or ``must_exist`` and the resolved path is absent.
     """
     candidate = source = None
     if explicit is not None:

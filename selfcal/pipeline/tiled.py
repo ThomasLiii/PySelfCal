@@ -24,6 +24,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
@@ -31,7 +32,13 @@ import numpy as np
 from ..io.frame_select import (load_ref_coords_table, filter_by_center,
                                compute_overlapping_frames_from_cache)
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 logger = logging.getLogger(__name__)
+
+__all__ = ["TiledCalibration", "TileSpec", "make_tile_grid", "assign_frames",
+           "stitch"]
 
 STITCHER_VERSION = "fisher-stream-v2"
 
@@ -41,10 +48,12 @@ class TileSpec:
     """A tile: a name and a half-open ``(y0, y1, x0, x1)`` bbox in ref-grid px."""
 
     name: str
-    bbox: tuple
+    bbox: tuple[int, int, int, int]
 
 
-def make_tile_grid(ref_shape, n_y, n_x, overlap_px=0, names=None):
+def make_tile_grid(ref_shape: tuple[int, int], n_y: int, n_x: int,
+                   overlap_px: int = 0,
+                   names: list[str] | None = None) -> list[TileSpec]:
     """An ``n_y`` x ``n_x`` grid of tiles over ``ref_shape``, each grown by
     ``overlap_px // 2`` px on every interior side so adjacent tiles overlap by
     ``overlap_px`` (footprints provide the sky overlap the Fisher stitch blends).
@@ -73,7 +82,9 @@ def make_tile_grid(ref_shape, n_y, n_x, overlap_px=0, names=None):
     return tiles
 
 
-def assign_frames(reproj_files, tiles, frame_filter='center', halo=0):
+def assign_frames(reproj_files: list[str], tiles: list[TileSpec],
+                  frame_filter: str = 'center',
+                  halo: int = 0) -> dict[str, tuple[list[str], np.ndarray]]:
     """Assign frames to tiles. Returns ``{tile_name: (files, idx)}``.
 
     ``frame_filter='center'`` (default) keeps frames whose footprint center is in
@@ -101,7 +112,9 @@ def _bbox_nonzero(cov):
     return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
 
 
-def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
+def stitch(input_paths: list[str], output_path: str,
+           ref_shape: tuple[int, int] | None = None, line: bool = True,
+           verbose: bool = True) -> str:
     """Fisher-weighted inverse-variance merge of per-tile cal files into one
     cal-shaped h5.
 
@@ -337,21 +350,32 @@ class TiledCalibration:
     merging. Tiles run sequentially by default (per-tile peak RSS is large).
     """
 
-    def __init__(self, reproj_files, tiles, frame_filter='center', halo=0):
+    def __init__(self, reproj_files: list[str], tiles: list[TileSpec],
+                 frame_filter: str = 'center', halo: int = 0) -> None:
         self.reproj_files = list(reproj_files)
         self.tiles = list(tiles)
         self.frame_filter = frame_filter
         self.halo = halo
         self._assignment = None
 
-    def assign_frames(self):
+    def assign_frames(self) -> dict[str, tuple[list[str], np.ndarray]]:
+        """Assign frames to tiles, memoizing the result on the instance.
+
+        Returns
+        -------
+        dict of str to (list of str, np.ndarray)
+            Mapping ``{tile_name: (files, idx)}`` from the module-level
+            :func:`assign_frames`; computed once and cached for reuse by
+            :meth:`run`.
+        """
         if self._assignment is None:
             self._assignment = assign_frames(
                 self.reproj_files, self.tiles,
                 frame_filter=self.frame_filter, halo=self.halo)
         return self._assignment
 
-    def run(self, run_tile, sequential=True):
+    def run(self, run_tile: Callable[[TileSpec, list[str]], str],
+            sequential: bool = True) -> dict[str, str]:
         """Calibrate each tile. ``run_tile(tile, files) -> cal_path``. Returns
         ``{tile_name: cal_path}``. Aborts on the first tile that raises."""
         if not sequential:
@@ -364,7 +388,8 @@ class TiledCalibration:
             cal_paths[t.name] = run_tile(t, files)
         return cal_paths
 
-    def stitch(self, cal_paths, output_path, **kwargs):
+    def stitch(self, cal_paths: list[str] | dict[str, str], output_path: str,
+               **kwargs) -> str:
         """Fisher-stitch the per-tile cal files (a list, or the dict from
         :meth:`run`) into ``output_path``."""
         if isinstance(cal_paths, dict):

@@ -40,8 +40,8 @@ from .pipeline.pipeline_wrapper import (PipelineConfig, Reprojector, Calibrator,
                                        Mosaicker)
 from .models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
                                SpectralComponent, LineComponent)
-from .models.profiles import (SpectralProfile, GaussianProfile, TemplateProfile,
-                              QuadratureSigma, LineProfile)
+from .models.profiles import (SpectralProfile, GaussianProfile, LinearProfile,
+                              TemplateProfile, QuadratureSigma, LineProfile)
 from .models.offset_model import OffsetModel, OffsetBlock
 from .core.layout import SystemLayout
 from .pipeline.tiled import TiledCalibration, TileSpec, make_tile_grid
@@ -52,8 +52,8 @@ __all__ = [
     "PipelineConfig", "Reprojector", "Calibrator", "Mosaicker",
     "SkyModel", "SkyComponent", "ContinuumComponent", "SpectralComponent",
     "LineComponent",
-    "SpectralProfile", "GaussianProfile", "TemplateProfile", "QuadratureSigma",
-    "LineProfile",
+    "SpectralProfile", "GaussianProfile", "LinearProfile", "TemplateProfile",
+    "QuadratureSigma", "LineProfile",
     "OffsetModel", "OffsetBlock",
     "SystemLayout",
     "TiledCalibration", "TileSpec", "make_tile_grid",

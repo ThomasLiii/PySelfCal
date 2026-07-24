@@ -8,6 +8,8 @@ The solver stage of ``selfcal.core``: matrix/RHS assembly lives in
 ``active_mask`` — expansion of the compact solution back to the full column
 layout.
 """
+from __future__ import annotations
+
 import logging
 import os
 
@@ -33,6 +35,8 @@ from threadpoolctl import threadpool_limits
 from .blockcsr import BlockCSR, _csr_shell
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["apply_lsqr"]
 
 
 def _partition_csr(A, n_blocks):
@@ -333,10 +337,13 @@ def _make_parallel_operator_blocks(bcsr, n_threads):
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
-def apply_lsqr(A, b, ref_shape, x0=None,
-                atol=1e-05, btol=1e-05, damp=1e-2, iter_lim=100, precondition=True,
-                solver='lsmr', use_float32=False, n_threads=32,
-                active_mask=None, num_cols_full=None):
+def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
+                ref_shape: tuple[int, int], x0: np.ndarray | None = None,
+                atol: float = 1e-05, btol: float = 1e-05, damp: float = 1e-2,
+                iter_lim: int = 100, precondition: bool = True,
+                solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
+                active_mask: np.ndarray | None = None,
+                num_cols_full: int | None = None) -> np.ndarray:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -347,11 +354,32 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         zero columns; ``apply_lsqr`` skips its own column elimination and
         uses ``active_mask`` only to expand the solution back to the full
         column space at the end.
+    b : np.ndarray
+        Right-hand-side vector (may arrive float32 from ``setup_lsqr``; it is
+        upcast to float64 for float64 solves).
+    ref_shape : tuple of int
+        (height, width) of the reference frame; ``ref_h * ref_w`` sky columns.
+    x0 : np.ndarray or None, optional
+        Initial guess in the FULL (uncompacted) column layout, or None to
+        start from zero. Compacted internally when ``active_mask`` is set.
+    atol : float, optional
+        Absolute tolerance passed to the solver (default 1e-05).
+    btol : float, optional
+        Relative tolerance passed to the solver (default 1e-05).
+    damp : float, optional
+        Tikhonov damping applied by the solver (default 1e-2).
+    iter_lim : int, optional
+        Maximum solver iterations (default 100).
+    precondition : bool, optional
+        Apply Jacobi column-norm preconditioning before solving (default True).
     solver : str, optional
         Solver to use: 'lsmr' (default, faster convergence) or 'lsqr'.
     use_float32 : bool, optional
         If True, cast matrix data and b to float32 before solving.
         Reduces memory bandwidth (~2x faster SpMV) at the cost of precision.
+    n_threads : int, optional
+        Thread count for the parallel SpMV ``LinearOperator``; <=1 uses scipy's
+        serial matvec (default 32).
     active_mask : np.ndarray of bool, optional
         When set, marks the columns of the original (uncompacted) layout
         that are present in the supplied compact CSR. Used to expand the
@@ -359,6 +387,12 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     num_cols_full : int, optional
         Original (uncompacted) column count. Required when ``active_mask``
         is given. Equals ``A.shape[1]`` when no compaction happened upstream.
+
+    Returns
+    -------
+    x : np.ndarray
+        Solution vector in the full (uncompacted) column layout: expanded via
+        ``active_mask`` when compaction ran, otherwise the raw solver output.
     """
     if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR)):
         raise TypeError(
