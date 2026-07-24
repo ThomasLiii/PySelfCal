@@ -1,7 +1,7 @@
 import os
 import glob
+import logging
 import numpy as np
-import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.table import Table
 from tqdm import tqdm
@@ -14,10 +14,13 @@ from multiprocessing import Pool
 from skimage import measure
 from scipy.interpolate import make_smoothing_spline, griddata
 from scipy.optimize import least_squares
+from ... import _state
 from ...geometry.map_helper import arc_spline, linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds
 from ...io.reproj import load_reproj_file
 from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
                        ENV_SPHEREX_CHANNEL_FILE, ENV_LVF_PARAMS_DIR)
+
+logger = logging.getLogger(__name__)
 
 
 # Canonical on-host paths for the SPHEREx spectral-calibration products. These
@@ -107,7 +110,8 @@ def interpolate_array(data_arr, interp_factor=5):
 def extract_edge_samples(BC_map, channel_edges):
     edge_x_list = []
     edge_y_list = []
-    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
+    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges),
+                       disable=not _state.progress_enabled):
         edge_y = np.argmin(np.abs(BC_map - lam), axis=0).astype(np.float32)
         edge_x = np.arange(len(edge_y)).astype(np.float32)
 
@@ -126,7 +130,8 @@ def extract_edge_samples(BC_map, channel_edges):
     return np.array(edge_x_list), np.array(edge_y_list)
     
 def fit_lvf_arcs(edge_x_list, edge_y_list):
-    assert edge_x_list.shape == edge_y_list.shape, "x and y must be the same shape."
+    if edge_x_list.shape != edge_y_list.shape:
+        raise ValueError("x and y must be the same shape.")
 
     def _arc_residuals(params, edge_x_list, edge_y_list):
         xc, yc = params[0], params[1]
@@ -181,7 +186,8 @@ def make_spherex_chunk_map(BC_map, channel_edges, oversample_factor=1, lvf_param
     r_edges = []
     y_bound = np.full(out_shape[1], out_shape[0]-1)
     
-    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges)):
+    for i, lam in tqdm(enumerate(channel_edges), total=len(channel_edges),
+                       disable=not _state.progress_enabled):
         prev_y_bound = y_bound
         xc = lvf_params['xc']
         yc = lvf_params['yc']
@@ -228,6 +234,9 @@ def make_fiducial_chunk_mask(valid_channels, num_channels=17, num_subchannels=10
     return chunk_valid_mask
 
 def visualize_chunk_map(chunk_map, chunk_valid_mask):
+    # Lazy import: matplotlib is only needed for this plotting helper, so the
+    # module (and the pipeline that imports it) does not depend on it at import.
+    import matplotlib.pyplot as plt
     masked_chunk_map = np.where(chunk_valid_mask[chunk_map], chunk_map, np.nan)
     plt.imshow(masked_chunk_map, cmap='viridis', interpolation='none')
 
@@ -321,7 +330,8 @@ def compute_offsets_guess(reproj_list, det_chunk_map, max_workers=16):
             results = list(tqdm(
                 pool.imap(_offset_worker_func, reproj_list, chunksize=20),
                 total=len(reproj_list),
-                desc="Calculating initial guess offsets"
+                desc="Calculating initial guess offsets",
+                disable=not _state.progress_enabled
             ))
     finally:
         shm.close()
@@ -343,10 +353,10 @@ def load_lvf_params(filename, input_dir=None):
                              default=_LVF_PARAMS_DIR, what='LVF params dir')
     input_path = os.path.join(input_dir, filename)
     if not os.path.exists(input_path):
-        print(f"LVF parameters file {input_path} not found. Returning None.")
+        logger.warning(f"LVF parameters file {input_path} not found. Returning None.")
         return None
     lvf_params = np.load(input_path, allow_pickle=True).item()
-    print(f"Loaded LVF parameters from {input_path}")
+    logger.info(f"Loaded LVF parameters from {input_path}")
     return lvf_params
 
 def save_lvf_params(lvf_params, output_dir=None):
@@ -356,7 +366,7 @@ def save_lvf_params(lvf_params, output_dir=None):
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, lvf_params['filename'])
     np.save(output_path, lvf_params)
-    print(f"Saved LVF parameters to {output_path}")
+    logger.info(f"Saved LVF parameters to {output_path}")
 
 def compute_column_adjacency(chunk_map, num_columns):
     """
@@ -373,8 +383,8 @@ def compute_column_adjacency(chunk_map, num_columns):
         Number of column subdivisions per subchannel, i.e. the num_columns
         value chunk_map was built with (see make_stripped_chunk_map).
     """
-    print("Computing Vertical Strip Adjacency (Filtering Arcs)...")
-    
+    logger.info("Computing Vertical Strip Adjacency (Filtering Arcs)...")
+
     # 1. Get ALL horizontal transitions (Arc + Strip boundaries)
     # Compare pixel i with i+1
     mask = (chunk_map[:, :-1] != -1) & \
@@ -400,7 +410,7 @@ def compute_column_adjacency(chunk_map, num_columns):
     pairs = np.sort(np.stack([u_filtered, v_filtered], axis=1), axis=1)
     unique_pairs = np.unique(pairs, axis=0)
     
-    print(f"Found {len(unique_pairs)} vertical strip boundaries.")
+    logger.info(f"Found {len(unique_pairs)} vertical strip boundaries.")
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
 def compute_subchannel_adjacency(chunk_map, num_columns):
@@ -408,8 +418,8 @@ def compute_subchannel_adjacency(chunk_map, num_columns):
     Generates adjacency pairs for vertical subchannel transitions.
     This links chunk IDs across the boundaries of subchannels, keeping within the same column.
     """
-    print("Computing Vertical Subchannel Adjacency...")
-    
+    logger.info("Computing Vertical Subchannel Adjacency...")
+
     # Compare pixel i with pixel i+1 vertically
     mask = (chunk_map[:-1, :] != -1) & \
            (chunk_map[1:, :] != -1) & \
@@ -431,13 +441,13 @@ def compute_subchannel_adjacency(chunk_map, num_columns):
     v_filtered = v[valid_pair_mask]
     
     if len(u_filtered) == 0:
-        print("Found 0 vertical subchannel boundaries.")
+        logger.info("Found 0 vertical subchannel boundaries.")
         return np.array([]), np.array([])
         
     pairs = np.sort(np.stack([u_filtered, v_filtered], axis=1), axis=1)
     unique_pairs = np.unique(pairs, axis=0)
     
-    print(f"Found {len(unique_pairs)} vertical subchannel boundaries.")
+    logger.info(f"Found {len(unique_pairs)} vertical subchannel boundaries.")
     return unique_pairs[:, 0], unique_pairs[:, 1]
 
 def compute_column_polynomial_chains(chunk_map, num_columns, degree=1):

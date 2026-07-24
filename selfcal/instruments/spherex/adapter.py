@@ -12,6 +12,7 @@ of this baggage. See ``selfcal.instruments.base.Instrument`` for the contract.
 Methods take plain dicts/args (an ``inst_cfg`` mapping = the TOML ``[instrument]``
 table), not the runner's RunConfig, so the package stays independent of the runner.
 """
+import logging
 import os
 from dataclasses import dataclass
 from functools import partial
@@ -25,6 +26,8 @@ from .spherex_utility import (
     compute_column_polynomial_chains, compute_subchannel_polynomial_chains,
     make_spherex_stripped_offset_map)
 from .wavemap import wav_coadd
+
+logger = logging.getLogger(__name__)
 
 # SPHEREx per-band spectral calibration (BC/BW maps) default location.
 SPHEREX_CALIB_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
@@ -66,6 +69,8 @@ def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
     if right_start < W:
         chunk_map[:, right_start:] = n_chunks
         n_chunks += 1
+    # Internal invariant: verifies this function's own tiling of the map it just
+    # built left no pixel unassigned (not caller-input validation) -> keep assert.
     assert (chunk_map >= 0).all(), "every pixel must be assigned a readout channel"
     return chunk_map, n_chunks
 
@@ -253,7 +258,7 @@ class SPHERExInstrument:
         """LVF wavelength coaddition -> append wav_mean/wav_std maps (full mosaic
         mode). The generic engine calls this only if the instrument provides it."""
         import time
-        print("Coadding wavelength maps...")
+        logger.info("Coadding wavelength maps...")
         t00 = time.time()
         wav_mean, wav_std = wav_coadd(
             det_inputs['det_BC'], det_inputs['det_BW'],
@@ -261,6 +266,6 @@ class SPHERExInstrument:
             reproj_list=mm.reproj_list, cache_list=mm.cached_list,
             ref_shape=maps['mean_map']['data'].shape, sigma=sigma,
             batch_size=40, max_workers=30)
-        print(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
+        logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
         mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
                         'wav_std_map': {'data': wav_std, 'unit': 'um'}})

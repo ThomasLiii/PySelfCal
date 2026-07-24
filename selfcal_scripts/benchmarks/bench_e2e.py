@@ -55,6 +55,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
+import logging
 import signal
 import subprocess
 import sys
@@ -275,6 +276,10 @@ def _orchestrate(before_ref, after_ref, label, n_frames, max_workers):
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--n-frames', type=int, default=4000)
     ap.add_argument('--label', required=True)

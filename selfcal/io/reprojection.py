@@ -1,5 +1,6 @@
 """Batch reprojection of detector frames onto a common reference WCS."""
 
+import logging
 import os
 import h5py
 import hdf5plugin
@@ -13,7 +14,10 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 
 from reproject import reproject_interp, reproject_exact, reproject_adaptive
 
+from .. import _state
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
+
+logger = logging.getLogger(__name__)
 
 
 def _result(task_params, output_file, success, error=None):
@@ -138,13 +142,16 @@ def _reproject_worker(task_params):
                 os.remove(tmp_file)
         except OSError:
             pass
+        # Runs inside a multiprocessing.Pool child (see batch_reproject); worker
+        # processes have no configured logging handlers, so keep print() — a
+        # logger call would silently swallow this per-frame error report.
         print(f'Error processing detector {det_idx} from exposure file index {exp_idx} ({file_path}): {e}')
         return _result(task_params, output_file, success=False, error=str(e))
 
 def batch_reproject(exposure_list, ref_wcs, ref_shape,
                     output_dir='output/', padding_percentage=0.05, num_processes=1,
-                    sci_ext_list=[], dq_ext_list=[], reproj_func='interp', exp_idx_list=None, det_idx_list=None,
-                    replace_existing=False, reproject_kwargs={},
+                    sci_ext_list=None, dq_ext_list=None, reproj_func='interp', exp_idx_list=None, det_idx_list=None,
+                    replace_existing=False, reproject_kwargs=None,
                     per_task_extensions=False):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
@@ -198,20 +205,38 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         sci_ext, dq_ext, error). Empty when everything succeeds.
     """
 
-    assert isinstance(exposure_list, (list, tuple)) and exposure_list, "exposure_list must be a non-empty list or tuple"
-    assert isinstance(ref_wcs, WCS), "Reference WCS must be an astropy.wcs.WCS object"
-    assert isinstance(ref_shape, (list, tuple, np.ndarray)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert isinstance(padding_percentage, float) and 0 <= padding_percentage, "padding_percentage must be a float larger than 0"
-    assert isinstance(num_processes, int) and num_processes > 0, "num_processes must be a positive integer"
-    assert sci_ext_list is None or isinstance(sci_ext_list, (list, tuple, np.ndarray)), "sci_ext_list must be a list or tuple"
-    assert dq_ext_list is None or isinstance(dq_ext_list, (list, tuple, np.ndarray)), "dq_ext_list must be a list or tuple"
-    assert reproj_func in ['exact', 'interp', 'adaptive'], "reproj_func must be one of 'exact', 'interp', or 'adaptive'"
-    assert exp_idx_list is None or isinstance(exp_idx_list, (list, tuple, np.ndarray)), "exp_idx_list must be a list or tuple"
-    assert det_idx_list is None or isinstance(det_idx_list, (list, tuple, np.ndarray)), "det_idx_list must be a list or tuple"
-    assert type(replace_existing) is bool, "replace_existing must be a boolean"
+    if sci_ext_list is None:
+        sci_ext_list = []
+    if dq_ext_list is None:
+        dq_ext_list = []
+    if reproject_kwargs is None:
+        reproject_kwargs = {}
+
+    if not (isinstance(exposure_list, (list, tuple)) and exposure_list):
+        raise TypeError("exposure_list must be a non-empty list or tuple")
+    if not isinstance(ref_wcs, WCS):
+        raise TypeError("Reference WCS must be an astropy.wcs.WCS object")
+    if not (isinstance(ref_shape, (list, tuple, np.ndarray)) and len(ref_shape) == 2):
+        raise TypeError("ref_shape must be a list or tuple of length 2")
+    if not (isinstance(padding_percentage, float) and 0 <= padding_percentage):
+        raise TypeError("padding_percentage must be a float larger than 0")
+    if not (isinstance(num_processes, int) and num_processes > 0):
+        raise TypeError("num_processes must be a positive integer")
+    if not (sci_ext_list is None or isinstance(sci_ext_list, (list, tuple, np.ndarray))):
+        raise TypeError("sci_ext_list must be a list or tuple")
+    if not (dq_ext_list is None or isinstance(dq_ext_list, (list, tuple, np.ndarray))):
+        raise TypeError("dq_ext_list must be a list or tuple")
+    if reproj_func not in ['exact', 'interp', 'adaptive']:
+        raise ValueError("reproj_func must be one of 'exact', 'interp', or 'adaptive'")
+    if not (exp_idx_list is None or isinstance(exp_idx_list, (list, tuple, np.ndarray))):
+        raise TypeError("exp_idx_list must be a list or tuple")
+    if not (det_idx_list is None or isinstance(det_idx_list, (list, tuple, np.ndarray))):
+        raise TypeError("det_idx_list must be a list or tuple")
+    if type(replace_existing) is not bool:
+        raise TypeError("replace_existing must be a boolean")
 
     os.makedirs(output_dir, exist_ok=True)
-    print(f'Starting batch reprojection. Output will be saved to: {output_dir}')
+    logger.info(f'Starting batch reprojection. Output will be saved to: {output_dir}')
     # Determine sub-frame width based on a sample detector frame
     try:
         with fits.open(exposure_list[0]) as hdul_sample:
@@ -269,15 +294,17 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     if num_processes > 1 and len(tasks) > 0:
         with Pool(processes=num_processes) as pool:
             results = list(tqdm(pool.imap_unordered(_reproject_worker, tasks),
-                                total=len(tasks), desc='Reprojecting frames'))
+                                total=len(tasks), desc='Reprojecting frames',
+                                disable=not _state.progress_enabled))
     elif len(tasks) > 0:
-        for task in tqdm(tasks, desc='Reprojecting frames (sequentially)'):
+        for task in tqdm(tasks, desc='Reprojecting frames (sequentially)',
+                         disable=not _state.progress_enabled):
             results.append(_reproject_worker(task))
 
     # imap_unordered yields in completion order; sort for deterministic
     # downstream behavior (chunk grouping, batch IDs, etc.).
     success_file = sorted(r['output_file'] for r in results if r['success'])
     failures = [r for r in results if not r['success']]
-    print(f'Batch reprojection completed. {len(success_file)} frames successfully '
-          f'processed out of {len(tasks)} ({len(failures)} failed).')
+    logger.info(f'Batch reprojection completed. {len(success_file)} frames successfully '
+                f'processed out of {len(tasks)} ({len(failures)} failed).')
     return success_file, failures

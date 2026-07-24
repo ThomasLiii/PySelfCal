@@ -75,7 +75,8 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     if chunk_maps:
         s0 = chunk_maps[0].shape
         for cm in chunk_maps[1:]:
-            assert cm.shape == s0, "all chunk_maps must share the same shape"
+            if cm.shape != s0:
+                raise ValueError("all chunk_maps must share the same shape")
         shape_sources.append(('chunk_maps[0]', s0))
     if grid_valid_weight is not None:
         shape_sources.append(('grid_valid_weight', grid_valid_weight.shape))
@@ -84,9 +85,10 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     if shape_sources:
         interp_input_shape = shape_sources[0][1]
         for name, s in shape_sources[1:]:
-            assert s == interp_input_shape, (
-                f"_prep_subframe detector-space shape mismatch: "
-                f"{shape_sources[0][0]}={interp_input_shape} vs {name}={s}")
+            if s != interp_input_shape:
+                raise ValueError(
+                    f"_prep_subframe detector-space shape mismatch: "
+                    f"{shape_sources[0][0]}={interp_input_shape} vs {name}={s}")
 
     # Build interp_matrix iff a downstream step actually needs it.
     # for_lsqr alone with empty chunk_maps is a no-op (no chunk_contribs to
@@ -137,8 +139,8 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     # Per-map grid offsets are accumulated, then a single det_to_sub call
     # bilinear-interpolates the total once regardless of K.
     if chunk_offsets is not None:
-        assert len(chunk_offsets) == len(chunk_maps), \
-            "chunk_offsets length must match chunk_maps"
+        if len(chunk_offsets) != len(chunk_maps):
+            raise ValueError("chunk_offsets length must match chunk_maps")
         total_grid_offset = None
         for m, off_m in enumerate(chunk_offsets):
             if off_m is None:

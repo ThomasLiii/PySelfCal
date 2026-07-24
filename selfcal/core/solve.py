@@ -8,15 +8,31 @@ The solver stage of ``selfcal.core``: matrix/RHS assembly lives in
 ``active_mask`` — expansion of the compact solution back to the full column
 layout.
 """
+import logging
 import os
 
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
-from scipy.sparse import coo_matrix, csr_matrix, _sparsetools
+from scipy.sparse import coo_matrix, csr_matrix
+try:
+    # Private scipy kernel: ``_sparsetools.csc_matvec`` drives the bit-exact
+    # BlockCSR transpose product (a CSR row-block reinterpreted as CSC).
+    # This is scipy-private API and can move between releases; it is present
+    # and verified through scipy 1.16.
+    from scipy.sparse import _sparsetools
+except ImportError as e:  # pragma: no cover - depends on scipy internals
+    raise ImportError(
+        "selfcal.core.solve couples to scipy's private sparse kernels "
+        "(scipy.sparse._sparsetools.csc_matvec) for the bit-exact BlockCSR "
+        "transpose product; that private module is present and verified "
+        "through scipy 1.16. Pin a compatible scipy version or upgrade selfcal."
+    ) from e
 from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, _csr_shell
+
+logger = logging.getLogger(__name__)
 
 
 def _partition_csr(A, n_blocks):
@@ -61,7 +77,7 @@ def _make_parallel_operator(A_csr, n_threads):
     """
     m, n = A_csr.shape
 
-    print(f"Building parallel SpMV operator ({n_threads} threads)...")
+    logger.info(f"Building parallel SpMV operator ({n_threads} threads)...")
     AT_view = A_csr.T  # zero-copy CSC view sharing storage with A_csr
 
     A_blocks, A_bounds = _partition_csr(A_csr, n_threads)
@@ -197,9 +213,9 @@ def _make_parallel_rmatvec(bcsr, n_threads, out_n, dtype):
     pieces = _row_pieces(bcsr, n_threads)
     bufs = [np.zeros(out_n, dtype=dtype) for _ in pieces]
     ex = ThreadPoolExecutor(max_workers=len(pieces))
-    print(f"  rmatvec: PARALLEL scatter over {len(pieces)} threads "
-          f"(+{len(pieces) * out_n * np.dtype(dtype).itemsize / 2**30:.2f} GB "
-          f"of private buffers) — NOT bit-identical to the sequential kernel.")
+    logger.info(f"  rmatvec: PARALLEL scatter over {len(pieces)} threads "
+                f"(+{len(pieces) * out_n * np.dtype(dtype).itemsize / 2**30:.2f} GB "
+                f"of private buffers) — NOT bit-identical to the sequential kernel.")
 
     def _rmatvec(y):
         y = np.ascontiguousarray(y, dtype=dtype)
@@ -245,8 +261,8 @@ def _make_parallel_operator_blocks(bcsr, n_threads):
     """
     m, n = bcsr.shape
     dtype = bcsr.dtype
-    print(f"Building parallel SpMV operator ({n_threads} threads, "
-          f"{len(bcsr.blocks)} int32 storage blocks)...")
+    logger.info(f"Building parallel SpMV operator ({n_threads} threads, "
+                f"{len(bcsr.blocks)} int32 storage blocks)...")
     thread_cuts = np.linspace(0, m, max(1, n_threads) + 1, dtype=np.int64)
     bounds = np.unique(np.concatenate((bcsr.row_bounds, thread_cuts)))
     pieces = []
@@ -344,10 +360,13 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         Original (uncompacted) column count. Required when ``active_mask``
         is given. Equals ``A.shape[1]`` when no compaction happened upstream.
     """
-    assert isinstance(A, (coo_matrix, csr_matrix, BlockCSR)), \
-        "A must be a scipy.sparse.coo_matrix, csr_matrix, or BlockCSR"
-    assert isinstance(b, np.ndarray), "b must be a numpy array"
-    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
+    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR)):
+        raise TypeError(
+            "A must be a scipy.sparse.coo_matrix, csr_matrix, or BlockCSR")
+    if not isinstance(b, np.ndarray):
+        raise TypeError("b must be a numpy array")
+    if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
+        raise ValueError("ref_shape must be a list or tuple of length 2")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -364,12 +383,14 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     if isinstance(A, (csr_matrix, BlockCSR)):
         is_block = isinstance(A, BlockCSR)
         if active_mask is not None:
-            assert num_cols_full is not None, \
-                "num_cols_full must be supplied alongside active_mask"
+            if num_cols_full is None:
+                raise ValueError(
+                    "num_cols_full must be supplied alongside active_mask")
             num_cols = int(num_cols_full)
             n_active = int(active_mask.sum())
-            assert A.shape[1] == n_active, (
-                f"A.shape[1]={A.shape[1]} != active_mask.sum()={n_active}")
+            if A.shape[1] != n_active:
+                raise ValueError(
+                    f"A.shape[1]={A.shape[1]} != active_mask.sum()={n_active}")
             x0_compressed = x0[active_mask] if x0 is not None else None
         else:
             num_cols = A.shape[1]
@@ -383,7 +404,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
 
         A_shape = A.shape
         if use_float32:
-            print("Downcasting to float32 for faster SpMV...")
+            logger.info("Downcasting to float32 for faster SpMV...")
             for _blk in (A.blocks if is_block else (A,)):
                 if _blk.data.dtype != np.float32:
                     _blk.data = _blk.data.astype(np.float32)
@@ -394,7 +415,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
                 x0_compressed = x0_compressed.astype(np.float32)
 
         if precondition:
-            print("Applying column-norm preconditioning...")
+            logger.info("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
             col_sq_norm = np.zeros(n_active, dtype=np.float32)
             if is_block:
@@ -429,7 +450,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
             M = None
             x0_solver = x0_compressed
 
-        print(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
+        logger.info(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
         A_csr = A
         del A
 
@@ -488,7 +509,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     num_active = int(np.sum(active_mask))
 
     if num_active < num_cols:
-        print(f"Eliminating {num_cols - num_active} zero columns ({num_active}/{num_cols} active)...")
+        logger.info(f"Eliminating {num_cols - num_active} zero columns ({num_active}/{num_cols} active)...")
         col_map = np.full(num_cols, -1, dtype=A.col.dtype)
         col_map[active_mask] = np.arange(num_active, dtype=A.col.dtype)
         new_col = col_map[A.col]
@@ -502,7 +523,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     n_active = num_active if active_mask is not None else num_cols
 
     if use_float32:
-        print("Downcasting to float32 for faster SpMV...")
+        logger.info("Downcasting to float32 for faster SpMV...")
         # setup_lsqr workers always emit float32 for sub_data_vec, so A.data
         # is already f32 in production; skip the redundant nnz-sized f32 copy
         # (4 bytes per nonzero — tens of GB at production nnz ~1e10).
@@ -522,7 +543,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
         data = A.data
 
     if precondition:
-        print("Applying column-norm preconditioning...")
+        logger.info("Applying column-norm preconditioning...")
         # Chunked float32 accumulation of column-squared-norms.
         # Avoids materializing the full nnz-sized f64 (data**2) temp (8 bytes
         # per nonzero — e.g. ~56 GB at nnz ~7e9). f32 sum is safe: max per-column sum is bounded
@@ -560,7 +581,7 @@ def apply_lsqr(A, b, ref_shape, x0=None,
     A_row = A.row
     A_shape = A.shape
     del A
-    print(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
+    logger.info(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
     A_csr = coo_matrix((data, (A_row, new_col)), shape=(A_shape[0], n_active)).tocsr()
     del data, new_col, A_row
 

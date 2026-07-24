@@ -43,6 +43,7 @@ import contextlib
 import gc
 import glob as glob_module
 import json
+import logging
 import shutil
 import sys
 import threading
@@ -334,6 +335,10 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
 # ============================================================
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     frame_setting = {
         'Detector': 3,
         'NumSub': 10,

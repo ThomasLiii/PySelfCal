@@ -19,3 +19,16 @@ def set_hdd_io_limit(n):
     """
     global _hdd_io_semaphore
     _hdd_io_semaphore = _MPSemaphore(n) if n and n > 0 else None
+
+
+# Whether library functions render tqdm progress bars (stderr). Applications
+# (the runner, interactive sessions) usually want them; embedding callers and
+# batch logs usually do not. Read at each call site via
+# ``disable=not _state.progress_enabled`` so a mid-run toggle takes effect on
+# the next bar. Default True preserves the historical behavior.
+progress_enabled = True
+
+def set_progress(enabled):
+    """Enable/disable tqdm progress bars rendered by selfcal library calls."""
+    global progress_enabled
+    progress_enabled = bool(enabled)

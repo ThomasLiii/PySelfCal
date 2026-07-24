@@ -21,8 +21,9 @@ def parse_x_sky(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frame
     This is the N-component generalization; :func:`parse_x` is the back-compat
     fixed-tuple wrapper for the 1- and 2-block cases.
     """
-    assert len(num_offset_groups_list) == len(num_chunks_list), (
-        "num_offset_groups_list and num_chunks_list must have the same length")
+    if len(num_offset_groups_list) != len(num_chunks_list):
+        raise ValueError(
+            "num_offset_groups_list and num_chunks_list must have the same length")
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     sky_maps = [x[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)

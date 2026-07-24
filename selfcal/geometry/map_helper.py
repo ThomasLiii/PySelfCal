@@ -1,17 +1,21 @@
-from tqdm import tqdm
+import logging
+
 import numpy as np
 
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix, csr_matrix
-import cv2
 
 from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
 from scipy.optimize import minimize
 from scipy.ndimage import map_coordinates
 
-def bit_to_bool(bitmask_array, ignore_list=[], bitmask_header=None, invert=False, expand_bits=False):
+logger = logging.getLogger(__name__)
+
+def bit_to_bool(bitmask_array, ignore_list=None, bitmask_header=None, invert=False, expand_bits=False):
     # By default, 1 indicates bad pixels and 0 indicates good pixels.
     # If invert=True, this is flipped.
+    if ignore_list is None:
+        ignore_list = []
     ignore_mask_val = np.uint32(0)
     for item in ignore_list:
         bit = bitmask_header[item] if bitmask_header is not None else item
@@ -108,17 +112,19 @@ def bin2d(arr, bin_factor, bin_func=np.mean):
     """
     if arr.ndim == 2:
         h, w = arr.shape
-        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        if not (h % bin_factor == 0 and w % bin_factor == 0):
+            raise ValueError("h and w must be divisible by bin_factor")
         h_bins = h // bin_factor
         w_bins = w // bin_factor
-        
+
         # Reshape and apply function for a single 2D array
         reshaped = arr.reshape(h_bins, bin_factor, w_bins, bin_factor)
         binned = bin_func(reshaped, axis=(1, 3))
-        
+
     elif arr.ndim == 3:
         num_layers, h, w = arr.shape
-        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        if not (h % bin_factor == 0 and w % bin_factor == 0):
+            raise ValueError("h and w must be divisible by bin_factor")
         h_bins = h // bin_factor
         w_bins = w // bin_factor
         
@@ -136,14 +142,25 @@ def bin2d_cv(arr, bin_factor):
     Bins a 2D array using cv2.resize.
     This is only appropriate for mean-binning.
     """
+    # Lazy import: opencv-python is only needed by this cv2-backed binner, so it
+    # stays out of the module-import path (and off the dependency list for the
+    # rest of the package).
+    try:
+        import cv2
+    except ImportError as e:
+        raise ImportError(
+            "bin2d_cv requires opencv-python (cv2); install it with "
+            "`pip install opencv-python` to use the cv2-backed binner."
+        ) from e
+
     if arr.ndim != 2:
         raise ValueError("OpenCV resize only suitable for 2D arrays in this context.")
-        
+
     h, w = arr.shape
     if not (h % bin_factor == 0 and w % bin_factor == 0):
         # cv2.resize can handle this, but it's not a true 'binning'
         # if the dimensions are not multiples.
-        print("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
+        logger.warning("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
 
     h_new, w_new = h // bin_factor, w // bin_factor
     
@@ -157,8 +174,10 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
     Fast binning of a COO sparse matrix shaped (N, height * width), where the second axis is a flattened 2D grid.
     Performs 2D average pooling with bin_factor.
     """
-    assert isinstance(mat, coo_matrix), "Input must be COO format"
-    assert height % bin_factor == 0 and width % bin_factor == 0
+    if not isinstance(mat, coo_matrix):
+        raise TypeError("Input must be COO format")
+    if not (height % bin_factor == 0 and width % bin_factor == 0):
+        raise ValueError
 
     row, flat_col, data = mat.row, mat.col, mat.data
 
@@ -400,8 +419,9 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
     The function f(x) is constructed as the derivative of a monotonic
     cubic spline F(x), where F(x) is the integral of f(x).
     """
-    assert len(x_edge) == len(y_mean) + 1, \
-        "Length of x_edge must be 1 more than the length of y_mean."
+    if len(x_edge) != len(y_mean) + 1:
+        raise ValueError(
+            "Length of x_edge must be 1 more than the length of y_mean.")
 
     x_edge = np.asarray(x_edge, dtype=float)
     y_mean = np.asarray(y_mean, dtype=float)
@@ -431,7 +451,8 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
 
 
 def arc_spline(x_sample, y_sample, return_params=False):
-    assert len(x_sample) == len(y_sample), "x and y must be the same length."
+    if len(x_sample) != len(y_sample):
+        raise ValueError("x and y must be the same length.")
 
     def _arc_cost(params, x, y):
         xc, yc, R = params
@@ -533,8 +554,8 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
     if chunk_map is None:
         return None
 
-    print(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
-    
+    logger.info(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
+
     all_i_list = []
     all_j_list = []
 
@@ -572,7 +593,7 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
         unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
         return (unique_pairs[:, 0], unique_pairs[:, 1])
     else:
-        print("Warning: No adjacency pairs found.")
+        logger.warning("Warning: No adjacency pairs found.")
         return None
     
 def mean_preserving_spline_2d(y_edges, x_edges, means, x_degree=3, y_degree=3):

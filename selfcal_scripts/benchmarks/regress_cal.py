@@ -35,6 +35,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import glob as glob_module
+import logging
+import sys
 import time
 
 import numpy as np
@@ -50,6 +52,10 @@ NVME_DIR = '/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_SPHEREx_nep
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--suffix', required=True)
     ap.add_argument('--n-frames', type=int, default=300)

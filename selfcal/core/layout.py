@@ -99,8 +99,9 @@ class SystemLayout:
             if pb is not None:
                 # Hard poly-basis: columns are a[frame, col, d] coeffs. Reuse the
                 # chunk machinery: num_chunks := num_col*degree, one group/frame.
-                assert det_groups_list[m] is None and det_templates[m] is None, \
-                    f"poly_basis[{m}] is incompatible with det_groups/det_templates"
+                if not (det_groups_list[m] is None and det_templates[m] is None):
+                    raise ValueError(
+                        f"poly_basis[{m}] is incompatible with det_groups/det_templates")
                 from ..models.offset_basis import n_coef as _n_coef
                 ftg = np.arange(num_frames)
                 num_offset_groups_m = num_frames
@@ -121,8 +122,9 @@ class SystemLayout:
                 num_offset_groups_m = num_frames
 
             if det_templates[m] is not None:
-                assert det_groups_list[m] is not None, \
-                    f"det_templates[{m}] requires det_groups_list[{m}]"
+                if det_groups_list[m] is None:
+                    raise ValueError(
+                        f"det_templates[{m}] requires det_groups_list[{m}]")
                 tmpl = np.asarray(det_templates[m], dtype=np.float32)
                 # Template mode collapses (groups, chunks) into one per-frame alpha.
                 num_offset_groups_m = num_frames

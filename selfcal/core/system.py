@@ -9,6 +9,7 @@ zero-coverage columns (early column compaction). The solver stage that
 consumes the result lives in selfcal.core.solve. Also home to the post-solve
 coverage/Fisher parsers.
 """
+import logging
 import os
 import shutil
 import tempfile
@@ -21,12 +22,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
+from .. import _state
 from .layout import SystemLayout
 from .spill import spill_pixel_state, PixelSpill
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
                                   offset_damping_block)
 from .assembly import _prep_lsqr_batch_worker
+
+logger = logging.getLogger(__name__)
 
 
 class SetupResult(NamedTuple):
@@ -54,7 +58,7 @@ class SetupResult(NamedTuple):
 def setup_lsqr(file_list, ref_shape,
                chunk_maps=None, grid_valid_weight=None, apply_mask=True, apply_weight=False,
                valid_threshold=0.99,
-               outlier_thresh=3, max_workers=20, ignore_list=[], oversample_factor=1, batch_size=10, offset_regularization=False,
+               outlier_thresh=3, max_workers=20, ignore_list=None, oversample_factor=1, batch_size=10, offset_regularization=False,
                reg_weights=None, adj_infos=None, poly_constraints_list=None,
                mean_offsets_list=None, det_groups_list=None, det_templates=None,
                poly_basis_list=None,
@@ -142,22 +146,40 @@ def setup_lsqr(file_list, ref_shape,
         ``apply_lsqr`` compact instead (debug aid for isolating a suspected
         regression to the compaction step).
     """
-    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
-    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list of length 2"
-    assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
-    assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
-    assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
-    assert isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0), "outlier_thresh must be a positive number or None"
-    assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
-    assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
-    assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
+    # Mutable-default normalization: an empty ignore_list means "ignore nothing".
+    if ignore_list is None:
+        ignore_list = []
+
+    # Entry validation of caller-supplied arguments. These must survive
+    # ``python -O`` (asserts do not), so they are explicit raises: pure type
+    # checks -> TypeError, value/shape/length/positivity checks -> ValueError.
+    if not (isinstance(file_list, (list, np.ndarray)) and file_list):
+        raise ValueError("file_list must be a non-empty list")
+    if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
+        raise ValueError("ref_shape must be a list of length 2")
+    if not (grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray)):
+        raise TypeError("grid_valid_weight must be a numpy array")
+    if not isinstance(apply_mask, bool):
+        raise TypeError("apply_mask must be a boolean")
+    if not isinstance(apply_weight, bool):
+        raise TypeError("apply_weight must be a boolean")
+    if not (isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0)):
+        raise ValueError("outlier_thresh must be a positive number or None")
+    if not (isinstance(max_workers, int) and max_workers > 0):
+        raise ValueError("max_workers must be a positive integer")
+    if not isinstance(ignore_list, (list, np.ndarray)):
+        raise TypeError("ignore_list must be a list or array of data quality flags to ignore")
+    if not (isinstance(batch_size, int) and batch_size > 0):
+        raise ValueError("batch_size must be a positive integer")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
         chunk_maps = []
-    assert isinstance(chunk_maps, list), "chunk_maps must be a list"
+    if not isinstance(chunk_maps, list):
+        raise TypeError("chunk_maps must be a list")
     for cm in chunk_maps:
-        assert isinstance(cm, np.ndarray), "every chunk_maps entry must be a numpy array"
+        if not isinstance(cm, np.ndarray):
+            raise TypeError("every chunk_maps entry must be a numpy array")
     K = len(chunk_maps)
 
     def _default(x, fill):
@@ -185,13 +207,16 @@ def setup_lsqr(file_list, ref_shape,
             chains = np.asarray(grp['chains'], dtype=np.int64)
             stencil = np.asarray(grp['stencil'], dtype=np.float64)
             weight = float(grp['weight'])
-            assert chains.ndim == 2, \
-                f"poly_constraints_list[{m}][{g_idx}]['chains'] must be 2-D"
-            assert stencil.ndim == 1, \
-                f"poly_constraints_list[{m}][{g_idx}]['stencil'] must be 1-D"
-            assert chains.shape[1] == stencil.shape[0], \
-                (f"poly_constraints_list[{m}][{g_idx}]: chains.shape[1]="
-                 f"{chains.shape[1]} != len(stencil)={stencil.shape[0]}")
+            if chains.ndim != 2:
+                raise ValueError(
+                    f"poly_constraints_list[{m}][{g_idx}]['chains'] must be 2-D")
+            if stencil.ndim != 1:
+                raise ValueError(
+                    f"poly_constraints_list[{m}][{g_idx}]['stencil'] must be 1-D")
+            if chains.shape[1] != stencil.shape[0]:
+                raise ValueError(
+                    f"poly_constraints_list[{m}][{g_idx}]: chains.shape[1]="
+                    f"{chains.shape[1]} != len(stencil)={stencil.shape[0]}")
             norm_groups.append({'chains': chains, 'stencil': stencil, 'weight': weight})
         normalized_poly.append(norm_groups if norm_groups else None)
     poly_constraints_list = normalized_poly
@@ -210,7 +235,8 @@ def setup_lsqr(file_list, ref_shape,
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates),
                       ('poly_basis_list', poly_basis_list)):
-        assert len(arr) == K, f"{name} must have length {K} (got {len(arr)})"
+        if len(arr) != K:
+            raise ValueError(f"{name} must have length {K} (got {len(arr)})")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -253,8 +279,8 @@ def setup_lsqr(file_list, ref_shape,
                 "A spectral SkyModel (>1 sky block) requires det_aux=[BC_map] "
                 "(or [BC_map, BW_map] for per-pixel σ). Pass BC_map from "
                 "selfcal.instruments.spherex.spherex_utility.load_calibration(band=detector).")
-        print(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
-              f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
+        logger.info(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
+                    f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
     # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
     aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
 
@@ -279,11 +305,11 @@ def setup_lsqr(file_list, ref_shape,
     total_cols = layout.total_cols
 
     if any_det_groups or use_per_frame_scalar:
-        print(f"Locking detector offsets: {num_frames} frames -> "
-              f"groups {num_offset_groups_list} + {num_frames} frame scalars")
+        logger.info(f"Locking detector offsets: {num_frames} frames -> "
+                    f"groups {num_offset_groups_list} + {num_frames} frame scalars")
     if any(t is not None for t in det_template_arr_list):
         tmpl_indices = [m for m, t in enumerate(det_template_arr_list) if t is not None]
-        print(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
+        logger.info(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
 
     common_params = {
         'chunk_maps': chunk_maps,
@@ -382,7 +408,7 @@ def setup_lsqr(file_list, ref_shape,
         os.makedirs(batch_spill_dir, exist_ok=True)
         _spill_run_dir = tempfile.mkdtemp(prefix='batch_spill_',
                                           dir=batch_spill_dir)
-        print(f"Batch COO spill -> {_spill_run_dir} (page-cache backed).")
+        logger.info(f"Batch COO spill -> {_spill_run_dir} (page-cache backed).")
 
     batched_tasks = []
     for i in range(0, len(all_individual_tasks), batch_size):
@@ -391,7 +417,7 @@ def setup_lsqr(file_list, ref_shape,
                  'spill_dir': _spill_run_dir}
         batched_tasks.append(batch)
 
-    print(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
+    logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results
@@ -441,7 +467,8 @@ def setup_lsqr(file_list, ref_shape,
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
                        for i, batch in enumerate(batched_tasks)}
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix"):
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix",
+                               disable=not _state.progress_enabled):
                 batch_id = futures[future]
                 result = future.result()
                 if result is None:
@@ -527,7 +554,7 @@ def setup_lsqr(file_list, ref_shape,
         total_rows_data += r['num_rows']
 
     if not any_kept:
-        print("No valid data found in any subframe.")
+        logger.warning("No valid data found in any subframe.")
         return None, None
 
     # Ensure Python int to avoid numpy int32 overflow on big runs.
@@ -559,19 +586,19 @@ def setup_lsqr(file_list, ref_shape,
         if mean_off is None:
             continue
         if det_template_arr_list[m] is not None:
-            print(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
+            logger.warning(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
             continue
         if poly_basis_list[m] is not None:
-            print(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
+            logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
             continue
-        print(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
+        logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
         constraint_blocks.append(mean_offset_block(
             m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
             col_bases, weight=constraint_weight).as_dict())
 
     # --- Coverage-weighted sky damping (continuum, then each line block) ---
     if weighted_damping and damp_weight > 0:
-        print("Applying Coverage-Weighted Damping (continuum)...")
+        logger.info("Applying Coverage-Weighted Damping (continuum)...")
         blk = sky_damping_block(0, damp_weight, sky_pixel_counts, num_sky)
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
@@ -587,7 +614,7 @@ def setup_lsqr(file_list, ref_shape,
                 w_j = damp_weight_line
             if w_j is None or w_j <= 0:
                 continue
-            print(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
+            logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
             blk = sky_damping_block(
                 j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
             if blk is not None:
@@ -595,7 +622,7 @@ def setup_lsqr(file_list, ref_shape,
 
     # --- Coverage-weighted offset damping ---
     if damp_offset > 0:
-        print(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
+        logger.info(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
         n_offset_cols = scalar_col_start - num_sky_eff
         blk = offset_damping_block(damp_offset, offset_pixel_counts[:n_offset_cols], num_sky_eff)
         if blk is not None:
@@ -720,7 +747,7 @@ def setup_lsqr(file_list, ref_shape,
         # exact (cumsum <= n_active < 2^31).
         col_map = np.cumsum(active_mask, dtype=np.int32)
         col_map -= 1
-        print(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
+        logger.info(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
     else:
         active_mask = None
         col_map = None
@@ -918,8 +945,8 @@ def setup_lsqr(file_list, ref_shape,
         full_A = build_block_csr(csr_data, csr_indices, indptr,
                                  (total_rows, n_active), target)
         del csr_data, csr_indices, indptr
-        print(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
-              f"(nnz={total_nnz}).")
+        logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+                    f"(nnz={total_nnz}).")
         for _blk in full_A.blocks:
             _blk.has_sorted_indices = False
             _blk.sort_indices()

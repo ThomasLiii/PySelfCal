@@ -24,12 +24,15 @@ trip costs tens of seconds of scratch-disk I/O, negligible against a
 setup+solve that runs for hours. ``$SELFCAL_SPILL_DIR`` overrides the
 location.
 """
+import logging
 import os
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _nbytes(counts, fisher, cross):
@@ -57,8 +60,10 @@ def spill_pixel_state(counts, fisher, cross, label='', min_gb=None):
         return None, n_bytes
     base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
     spill_dir = tempfile.mkdtemp(prefix='selfcal_pixel_spill_', dir=base)
-    print(f"Spilling pixel state ({n_bytes/2**30:.1f} GB) to {spill_dir}"
-          f"{' ' + label if label else ''}...", flush=True)
+    # flush=True dropped in the print->logger migration: logging handlers
+    # flush per emitted record, so logger.info has no (and needs no) flush kwarg.
+    logger.info(f"Spilling pixel state ({n_bytes/2**30:.1f} GB) to {spill_dir}"
+                f"{' ' + label if label else ''}...")
     jobs = []
     if counts is not None:
         jobs.append(('pixel_counts.npy', counts))

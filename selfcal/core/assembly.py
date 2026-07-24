@@ -269,6 +269,9 @@ def _prep_lsqr(task_params):
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except Exception as e:
+        # Runs inside a ProcessPoolExecutor child (_prep_lsqr / the batch
+        # worker): children have no configured logging handlers, so a logger
+        # call would silently swallow this error report — keep print().
         print(f"Error processing file {reproj_file}: {e}")
         traceback.print_exc()
         return None

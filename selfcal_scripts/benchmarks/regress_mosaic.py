@@ -30,7 +30,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import glob as glob_module
+import logging
 import shutil
+import sys
 import time
 from functools import partial
 
@@ -49,6 +51,10 @@ CACHE_ROOT = '/home/thomasli/selfcal-project/selfcal/cache'
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--suffix', required=True)
     ap.add_argument('--cal-suffix', default='_gate_baseline')

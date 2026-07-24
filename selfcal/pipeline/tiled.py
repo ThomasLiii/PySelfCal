@@ -20,6 +20,7 @@ multi-region), not just the SPHEREx North Ecliptic Pole (NEP) deep field.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ import numpy as np
 
 from ..io.frame_select import (load_ref_coords_table, filter_by_center,
                                compute_overlapping_frames_from_cache)
+
+logger = logging.getLogger(__name__)
 
 STITCHER_VERSION = "fisher-stream-v2"
 
@@ -151,7 +154,7 @@ def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
             bb = _bbox_nonzero(cov_c_full)
             if bb is None:
                 if verbose:
-                    print(f"[stitch] {os.path.basename(p)}: empty coverage; skipping", flush=True)
+                    logger.warning(f"[stitch] {os.path.basename(p)}: empty coverage; skipping")
                 continue
             r0, r1, c0, c1 = bb
             sky_c = f["skymap"][r0:r1, c0:c1]
@@ -186,8 +189,8 @@ def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
             del sky_l, fish_l, cov_l
         del sky_c, fish_c, cov_c
         if verbose:
-            print(f"[stitch] accumulated {os.path.basename(p)} in {time.time()-t0:.1f}s "
-                  f"(bbox y[{r0}:{r1}] x[{c0}:{c1}])", flush=True)
+            logger.info(f"[stitch] accumulated {os.path.basename(p)} in {time.time()-t0:.1f}s "
+                        f"(bbox y[{r0}:{r1}] x[{c0}:{c1}])")
 
     m_c = den_cont > 0.0
     sky_cont = np.zeros((H, W), dtype=np.float32)
@@ -218,8 +221,8 @@ def stitch(input_paths, output_path, ref_shape=None, line=True, verbose=True):
         f.attrs["stitcher_version"] = STITCHER_VERSION
     os.replace(tmp, output_path)
     if verbose:
-        print(f"[stitch] wrote {output_path} "
-              f"(cont covered {int(m_c.sum()):,}px)", flush=True)
+        logger.info(f"[stitch] wrote {output_path} "
+                    f"(cont covered {int(m_c.sum()):,}px)")
     return output_path
 
 
@@ -295,8 +298,8 @@ def _stitch_multiblock(input_paths, output_path, ref_shape, verbose=True):
             if nm == names[0]:
                 covered0 = int(m.sum())
             if verbose:
-                print(f"[stitch] block {nm!r}: {len(input_paths)} tiles in "
-                      f"{time.time()-t0:.1f}s, covered {int(m.sum()):,}px", flush=True)
+                logger.info(f"[stitch] block {nm!r}: {len(input_paths)} tiles in "
+                            f"{time.time()-t0:.1f}s, covered {int(m.sum()):,}px")
             del num, den, cov, ncon, sep, sky, m
 
         # Back-compat hard-link aliases (mirror save_calibration's v3 layout).
@@ -319,8 +322,8 @@ def _stitch_multiblock(input_paths, output_path, ref_shape, verbose=True):
         out.attrs["stitcher_version"] = STITCHER_VERSION + "-multiblock"
     os.replace(tmp, output_path)
     if verbose:
-        print(f"[stitch] wrote {output_path} "
-              f"({len(names)} sky blocks, cont covered {covered0:,}px)", flush=True)
+        logger.info(f"[stitch] wrote {output_path} "
+                    f"({len(names)} sky blocks, cont covered {covered0:,}px)")
     return output_path
 
 

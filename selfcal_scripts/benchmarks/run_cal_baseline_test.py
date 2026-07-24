@@ -4,6 +4,8 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import logging
+import sys
 import shutil
 import time
 import gc
@@ -214,6 +216,10 @@ VARIANT_NUMCOL = {'poly_off': 3, 'poly_k1': 10, 'poly_k2': 10, 'oldx0_off': 3, '
 
 
 if __name__ == "__main__":
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     # ----------------------------- Start of Settings -----------------------------
     base_frame_setting = {
         'Detector': 5,
