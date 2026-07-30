@@ -1,18 +1,27 @@
 """Path / resource resolution for selfcal.
 
-External users set environment variables (or pass explicit paths); the
-historical absolute defaults are used only as a fallback when they exist, so
-on-host runs are unchanged while an installed package off-host fails with an
-actionable error instead of a silent wrong path.
+External users set environment variables (or pass explicit paths). Defaults may
+be absolute paths that exist only on the original processing host; they are
+used as a fallback only when present, so runs on that host need no
+configuration, while an installed package on any other machine fails with an
+actionable error instead of silently using a wrong path.
 
 Resolution order: explicit argument > ``$env_var`` > ``default``.
 """
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
+__all__ = ["resolve_path", "SelfCalConfigError"]
+
 
 class SelfCalConfigError(RuntimeError):
-    """Raised when a required path/resource cannot be resolved."""
+    """Raised when a required path/resource cannot be resolved.
+
+    Carries an actionable message naming the resource and how to supply it
+    (an explicit argument or the relevant ``SELFCAL_*`` environment variable).
+    """
 
 
 # Environment variables (documented for external users).
@@ -21,8 +30,10 @@ ENV_SPHEREX_CHANNEL_FILE = 'SELFCAL_SPHEREX_CHANNEL_FILE'
 ENV_LVF_PARAMS_DIR = 'SELFCAL_LVF_PARAMS_DIR'
 
 
-def resolve_path(explicit=None, *, env_var=None, default=None, what='path',
-                 must_exist=True):
+def resolve_path(explicit: str | os.PathLike | None = None, *,
+                 env_var: str | None = None,
+                 default: str | os.PathLike | None = None, what: str = 'path',
+                 must_exist: bool = True) -> str:
     """Resolve a path from an explicit value, an env var, or a default.
 
     Parameters
@@ -32,11 +43,22 @@ def resolve_path(explicit=None, *, env_var=None, default=None, what='path',
     env_var : str or None
         Environment variable consulted next.
     default : str or os.PathLike or None
-        Fallback (e.g. a packaged resource or the historical on-host path).
+        Fallback (e.g. a packaged resource, or a host-specific absolute path
+        that may not exist on other machines).
     what : str
         Human label used in error messages.
     must_exist : bool
         If True, raise when the resolved path does not exist on disk.
+
+    Returns
+    -------
+    str
+        The resolved path as a string.
+
+    Raises
+    ------
+    SelfCalConfigError
+        If nothing resolves, or ``must_exist`` and the resolved path is absent.
     """
     candidate = source = None
     if explicit is not None:

@@ -1,4 +1,5 @@
 import glob
+import logging
 import os
 import h5py
 from tqdm import tqdm
@@ -11,17 +12,22 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from reproject.mosaicking import find_optimal_celestial_wcs
 
+from .. import _state
+
+logger = logging.getLogger(__name__)
+
 def _load_det_wcs(fits_files, use_ext):
     wcs_list = []
     files_to_process = fits_files
 
-    for file_path in tqdm(files_to_process, desc='Loading corner WCS'):
+    for file_path in tqdm(files_to_process, desc='Loading corner WCS',
+                          disable=not _state.progress_enabled):
         try:
             with fits.open(file_path) as hdul:
                 for ext_idx in use_ext:
                     wcs_list.append(WCS(hdul[ext_idx].header))
         except Exception as e:
-            print(f'Warning: Could not process {file_path}: {e}')
+            logger.warning(f'Warning: Could not process {file_path}: {e}')
     if not wcs_list:
         raise ValueError('No WCS objects could be loaded. Check FITS files and extensions.')
     return wcs_list
@@ -36,10 +42,10 @@ def _pad_wcs(wcs, shape, padding_pixels):
     return new_wcs, new_shape
 
 
-def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use_ext = [1, 10, 37, 46]):
+def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use_ext=(1, 10, 37, 46)):
     if not exposure_list:
         raise ValueError('No exposure files provided to define WCS.')
-    print('Defining optimal celestial WCS...')
+    logger.info('Defining optimal celestial WCS...')
     wcs_list = _load_det_wcs(exposure_list, use_ext)
     ref_wcs, ref_shape = find_optimal_celestial_wcs(wcs_list, resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
     ref_wcs, ref_shape = _pad_wcs(ref_wcs, ref_shape, padding_pixels)
@@ -110,8 +116,8 @@ def derive_reference_from(source_ref_path, exposure_list, padding_pixels=100,
     if not exposure_list:
         raise ValueError('No exposure files provided to derive reference from.')
     source_wcs, source_shape = load_from_fits(source_ref_path)
-    print(f'Deriving reference from {source_ref_path} '
-          f'(source shape {source_shape})')
+    logger.info(f'Deriving reference from {source_ref_path} '
+                f'(source shape {source_shape})')
     wcs_list = _load_det_wcs(exposure_list, use_ext)
 
     xs, ys = [], []
@@ -146,8 +152,8 @@ def derive_reference_from(source_ref_path, exposure_list, padding_pixels=100,
     # new array's pixel (0,0) coincide with the source array's pixel (x_min,y_min).
     new_wcs.wcs.crpix[0] -= x_min
     new_wcs.wcs.crpix[1] -= y_min
-    print(f'Derived reference shape {new_shape} (bbox in source: '
-          f'x=[{x_min}, {x_max}], y=[{y_min}, {y_max}])')
+    logger.info(f'Derived reference shape {new_shape} (bbox in source: '
+                f'x=[{x_min}, {x_max}], y=[{y_min}, {y_max}])')
     return new_wcs, new_shape
 
 
@@ -156,19 +162,17 @@ def save_to_fits(wcs, shape, filename):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     header = wcs.to_header()
-    # header['NAXIS'] = 2
-    # header['NAXIS1'] = shape[1]
-    # header['NAXIS2'] = shape[0]
+    # NAXIS/NAXIS1/NAXIS2 are set automatically by PrimaryHDU from the data shape.
     hdu_0 = fits.PrimaryHDU(header=header, data=np.zeros(shape))
     hdul = fits.HDUList([hdu_0])
     hdul.writeto(filename, overwrite=True)
-    print(f'Reference frame FITS saved to: {filename}')
+    logger.info(f'Reference frame FITS saved to: {filename}')
 
 
 def load_from_fits(file_path):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f'Reference WCS file not found: {file_path}')
-    print(f'Loading reference frame from: {file_path}')
+    logger.info(f'Loading reference frame from: {file_path}')
     ref_header = fits.open(file_path)[0].header
     ref_wcs = WCS(ref_header)
     ref_shape = (ref_header['NAXIS2'], ref_header['NAXIS1'])

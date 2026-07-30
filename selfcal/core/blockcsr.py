@@ -1,0 +1,104 @@
+"""Row-block representation of a CSR matrix too large for int32 indices.
+
+A single scipy CSR must store ``indptr`` values up to nnz, so once total nnz
+exceeds 2**31 scipy forces BOTH indptr and indices to int64 — pure index
+overhead of nnz*4 bytes (e.g. ~78 GiB at nnz ~2.1e10, typical of a
+multi-thousand-frame production tile) plus an
+nnz*8 upcast copy at construction, even though the column ids themselves fit
+int32 comfortably. Splitting the rows into blocks whose per-block nnz stays
+below 2**31 keeps every stored integer in int32; nothing numerical reads the
+index width, and both SpMV directions can be made bit-identical to the
+unified matrix (matvec is row-local, so blocking cannot change any row's
+accumulation; the transpose product is reproduced by scattering each block
+sequentially into one shared output — the same C loop split across row
+ranges).
+
+``BlockCSR`` is intentionally minimal: an ordered list of scipy
+``csr_matrix`` row-blocks plus their global row boundaries. Only
+``core.solve.apply_lsqr`` and ``core.solution.compute_x0_scalar_only``
+consume it. ``setup_lsqr`` emits it only when total nnz crosses the int64
+threshold (env ``SELFCAL_BLOCK_NNZ`` overrides, for tests), so every
+smaller run keeps the plain ``csr_matrix`` path byte-for-byte.
+"""
+import numpy as np
+from scipy.sparse import csr_matrix
+
+
+class BlockCSR:
+    """Ordered row-blocks of one logical CSR matrix.
+
+    Attributes
+    ----------
+    blocks : list of scipy.sparse.csr_matrix
+        Row-blocks in row order. Each block's nnz < 2**31 so its
+        indices/indptr are int32.
+    row_bounds : np.ndarray, shape (n_blocks + 1,)
+        Global row index of each block boundary; block i covers rows
+        ``row_bounds[i]:row_bounds[i+1]``.
+    shape : tuple
+        Logical (n_rows, n_cols) of the full matrix.
+    """
+
+    def __init__(self, blocks, row_bounds, shape):
+        self.blocks = list(blocks)
+        self.row_bounds = np.asarray(row_bounds, dtype=np.int64)
+        self.shape = (int(shape[0]), int(shape[1]))
+
+    @property
+    def dtype(self):
+        return self.blocks[0].data.dtype
+
+    @property
+    def nnz(self):
+        return int(sum(blk.nnz for blk in self.blocks))
+
+    def __repr__(self):
+        return (f"<BlockCSR shape={self.shape} nnz={self.nnz} "
+                f"blocks={len(self.blocks)}>")
+
+
+def _csr_shell(data, indices, indptr, shape):
+    """Zero-copy csr_matrix from pre-validated arrays.
+
+    The public ``csr_matrix((data, indices, indptr))`` constructor runs
+    index-dtype unification with content checks and will silently COPY the
+    index arrays whenever their dtypes can be "improved" — exactly the copy
+    this module exists to avoid. ``__new__`` + attribute assignment keeps the
+    supplied arrays as-is; callers guarantee consistency.
+    """
+    blk = csr_matrix.__new__(csr_matrix)
+    blk._shape = (int(shape[0]), int(shape[1]))
+    blk.data = data
+    blk.indices = indices
+    blk.indptr = indptr
+    return blk
+
+
+def build_block_csr(data, indices, indptr, shape, target_nnz):
+    """Split (data, indices int32, indptr int64) into a BlockCSR.
+
+    Row cuts are nnz-aware: each block gets ~``target_nnz`` entries (never
+    more than target_nnz + the largest single row, and a row always fits —
+    row nnz <= n_cols < 2**31). The int32 ``indices`` array is SLICED into
+    views (no copy); only each block's shifted indptr is a fresh int32 array.
+    The caller must not reuse ``indptr`` afterwards (it can be freed).
+    """
+    n_rows = int(shape[0])
+    total_nnz = int(indptr[-1])
+    n_blocks = max(1, int(np.ceil(total_nnz / float(target_nnz))))
+    # Row boundaries where the cumulative nnz crosses each target multiple.
+    targets = (np.arange(1, n_blocks) * (total_nnz / n_blocks)).astype(np.int64)
+    cuts = np.searchsorted(indptr, targets, side='left')
+    bounds = np.unique(np.concatenate(([0], cuts, [n_rows])))
+    blocks = []
+    for i in range(len(bounds) - 1):
+        sr, er = int(bounds[i]), int(bounds[i + 1])
+        s0, s1 = int(indptr[sr]), int(indptr[er])
+        if s1 - s0 >= 2**31:
+            raise ValueError(
+                f"block rows [{sr},{er}) hold {s1 - s0} entries (>= 2^31); "
+                "single rows this dense cannot be int32-indexed")
+        local_indptr = (indptr[sr:er + 1] - s0).astype(np.int32)
+        blocks.append(_csr_shell(data[s0:s1], indices[s0:s1], local_indptr,
+                                 (er - sr, shape[1])))
+    return BlockCSR(blocks, bounds, shape)

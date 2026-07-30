@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import glob
 import os
@@ -7,9 +8,12 @@ from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
+from ... import _state
 from ...geometry.map_helper import compute_crop, check_invalid
 from ...io.reproj import load_reproj_file
 from .spherex_utility import load_calibration
+
+logger = logging.getLogger(__name__)
 
 worker_context = {}
 
@@ -57,10 +61,14 @@ def init_worker(shm_info, lock, reproj_list, cache_list, ref_shape, sigma):
             worker_context[logical_name] = arr
             
         except FileNotFoundError:
+            # Runs inside a Pool child (init_worker is the Pool initializer);
+            # children have no configured logging handler, so keep print() to
+            # guarantee the attach-failure reaches stderr.
             print(f"Worker failed to attach to SharedMemory: {unique_name} ({logical_name})")
 
 def _wavcoadd_batch_worker(batch_indices):
-    # --- Logic remains exactly the same as before ---
+    # Accumulate BC/BW-weighted sums for one batch of frames into local arrays;
+    # flush once into the shared totals under the lock at the end.
     reproj_list = worker_context['reproj_list']
     cache_list  = worker_context['cache_list']
     ref_shape   = worker_context['ref_shape']
@@ -93,8 +101,9 @@ def _wavcoadd_batch_worker(batch_indices):
             ref_coords = hf['ref_coords'][:]
             sub_data = hf['sub_data'][:]
             sub_weight = hf['sub_weight'][:]
-            # Newer cache files store a tight bbox of nonzero weight in the
-            # original (full) sub-frame coordinates.
+            # Cache files may carry an optional 'sub_bbox' dataset: a tight
+            # bbox of nonzero weight in full sub-frame coordinates. Fall back
+            # to the full frame when absent.
             if 'sub_bbox' in hf:
                 rmin, rmax, cmin, cmax = hf['sub_bbox'][:]
             else:
@@ -105,8 +114,9 @@ def _wavcoadd_batch_worker(batch_indices):
         # _prep_subframe.
         sub_mapping_cropped = sub_mapping[:, rmin:rmax, cmin:cmax]
 
-        # Direct bilinear via map_coordinates (no sparse matrix). Use the same
-        # [::-1] axis convention that the old sparse path used.
+        # Direct bilinear resample via map_coordinates. sub_mapping stores its
+        # two coordinate planes in the reverse order of the (row, col) order
+        # map_coordinates expects, hence the [::-1].
         sub_BC = map_coordinates(det_BC, sub_mapping_cropped[::-1], order=1, output=np.float32)
         sub_BW = map_coordinates(det_BW, sub_mapping_cropped[::-1], order=1, output=np.float32)
 
@@ -175,14 +185,15 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
         # --- Multiprocessing ---
         all_indices = np.arange(len(reproj_list))
         tasks = [all_indices[i:i + batch_size] for i in range(0, len(all_indices), batch_size)]
-        print(f"Processing {len(reproj_list)} files in {len(tasks)} batches with {max_workers} workers...")
+        logger.info(f"Processing {len(reproj_list)} files in {len(tasks)} batches with {max_workers} workers...")
 
         with Manager() as manager:
             global_lock = manager.Lock()
             
             with Pool(processes=max_workers, initializer=init_worker, 
                         initargs=(shm_info, global_lock, reproj_list, cache_list, ref_shape, sigma)) as pool:
-                list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks)))
+                list(tqdm(pool.imap_unordered(_wavcoadd_batch_worker, tasks), total=len(tasks),
+                          disable=not _state.progress_enabled))
 
         # --- Aggregate ---    
         # Retrieve outputs by logical name so this stays correct regardless of
@@ -212,12 +223,16 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
     return wav_mean_map, wav_std_map
 
 if __name__ == "__main__":
+    # Ad-hoc single-run smoke test for wav_coadd with hard-coded paths (a
+    # specific run on /mnt/md124 and a cache dir in a different worktree) —
+    # not a supported entry point: the runner invokes wav_coadd via
+    # SPHERExInstrument.wavelength_append. Edit the paths before use.
     detector = 4
     batch_size = 40 
     max_workers = 40
     sigma = 3.0
 
-    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
+    det_BC, det_BW = load_calibration(band=detector, calibration_dir='/data3/SPHEREx/SpecCal_202509/ParameterFiles')
 
     reproj_dir = '/mnt/md124/thomasli/selfcal/outputs/nep_det4_3p1arcsec/reprojected'
     reproj_list = sorted(glob.glob(reproj_dir + '/*.h5'))

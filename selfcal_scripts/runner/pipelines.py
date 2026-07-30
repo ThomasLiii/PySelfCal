@@ -7,10 +7,13 @@ a telescope or a calibration variant: the instrument turns the config into
 geometry, the mode turns geometry into the offset/sky/x0/mosaic recipe, and this
 file just sequences staging → setup_lsqr → apply_lsqr → save → mosaic → cleanup.
 
-Behavior is byte-identical to the per-variant drivers it replaces (gated): the
-only things that moved are *where the knobs come from* (a TOML table instead of a
-dict literal) and *where the recipe lives* (a mode/instrument instead of inline
-code).
+Edits to this engine must keep calibration output byte-identical: re-run the
+regression configs ``cache/refactor_gate/gate_continuum.toml`` and
+``gate_spectral.toml`` through ``run.py`` and diff the resulting ``cal_*.h5``
+against ``cache/refactor_gate/goldens/`` with
+``selfcal_scripts/drivers/diff_cal_h5.py``. All numeric choices live in the
+TOML config and the mode/instrument objects; this file only sequences
+staging → setup_lsqr → apply_lsqr → save → mosaic → cleanup.
 """
 import gc
 import glob as glob_module
@@ -50,19 +53,20 @@ def _calibration_kwargs(cfg):
 
 
 # ---------------------------------------------------------------------------
-# Standard per-job calibration (run_cal / d5 / damp* / pahfit / k2_readout).
+# Standard per-job calibration (task = 'cal'): one setup_lsqr + apply_lsqr +
+# save + optional mosaic per instrument job; the mode picks the recipe
+# (continuum / pahfit / k2_readout — see selfcal_scripts/runner/modes/).
 # ---------------------------------------------------------------------------
 def run_calibration(cfg):
-    from selfcal.models.sky_model import SkyModel  # noqa: F401 (ensures registry import side effects ok)
-
     inst = get_instrument(cfg.instrument)
     mode = get_mode(cfg.mode)
     _check_requires(mode, inst)
 
     selfcal_config = _make_config(cfg)
     if cfg.reproj_override:
-        # Run directly against an already-staged reproj dir (gating / re-runs);
-        # no NVMe staging or cleanup.
+        # Run directly against an already-staged reproj dir — used by the
+        # byte-equality regression configs in cache/refactor_gate/ and for
+        # manual re-runs; skips NVMe staging and cleanup.
         nvme = cfg.reproj_override
         set_hdd_io_limit(None)
     else:
@@ -102,9 +106,12 @@ def run_calibration(cfg):
                 oversample_factor=1,
                 sky_model=sky_model,
                 det_aux=det_aux,
+                batch_spill_dir=cfg.cache_dir,
                 **cal_kwargs)
-            x0 = mode.x0(cfg, cc)
-            cc.apply_lsqr(x0=x0, use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
+            # List-pop hand-off: keeping a plain `x0` local would pin the
+            # full-layout f64 vector for the entire solve (see Calibrator.apply_lsqr).
+            _x0_owned = [mode.x0(cfg, cc)]
+            cc.apply_lsqr(x0=_x0_owned.pop(), use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
             mode.configure(cfg, cc)
             # Save with original HDD paths so the cal stays valid after NVMe cleanup.
             nvme_list = cc.reproj_list
@@ -173,10 +180,11 @@ def _run_zodi_anchor(cfg, selfcal_config, detector, cal_path, cal_file, job_tag)
 
 
 # ---------------------------------------------------------------------------
-# Tiled calibration (run_cal_tiled_NEP): per-tile cal + Fisher-weighted stitch.
+# Tiled calibration (task = 'tiled'): stage + solve each tile independently,
+# then Fisher-weighted stitch of the per-tile cal files.
 # ---------------------------------------------------------------------------
 def run_tiled(cfg):
-    from selfcal.pipeline.tiled import make_tile_grid, TiledCalibration
+    from selfcal.pipeline.tiled import make_tile_grid, TiledCalibration, TileSpec
 
     inst = get_instrument(cfg.instrument)
     mode = get_mode(cfg.mode)
@@ -191,8 +199,33 @@ def run_tiled(cfg):
         staging.rss_checkpoint('startup')
 
     ref_shape = tuple(t['ref_shape'])
-    tiles = make_tile_grid(ref_shape, t['grid'][0], t['grid'][1],
-                           overlap_px=t['overlap_px'], names=t['tile_names'])
+    # Two tiling modes:
+    #  - a uniform grid: `grid` = [n_y, n_x] with `overlap_px` (make_tile_grid);
+    #  - explicit tiles: `tiles` = list of {name, bbox=[y0,y1,x0,x1]}, arbitrary
+    #    and possibly OVERLAPPING. Overlap matters for spectral fits: with
+    #    disjoint tiles and frame_filter='center', a pixel near a seam only
+    #    receives frames whose footprint center fell on its side, truncating
+    #    its per-pixel wavelength coverage and blanking the fit mask there;
+    #    overlapping bboxes let seam pixels take frames from both
+    #    neighbouring tiles. The Fisher stitch is tile-shape-agnostic, so
+    #    overlapping tiles need no special handling.
+    if t.get('tiles'):
+        tiles = [TileSpec(name=spec['name'], bbox=tuple(spec['bbox']))
+                 for spec in t['tiles']]
+        print(f"[tiled] {len(tiles)} explicit tiles (from [tiled].tiles)", flush=True)
+    else:
+        tiles = make_tile_grid(ref_shape, t['grid'][0], t['grid'][1],
+                               overlap_px=t['overlap_px'], names=t['tile_names'])
+    # Optional partial run: build the full grid (so each tile's bbox is correct),
+    # then restrict the run to a subset of tile names. A partial run skips the
+    # stitch (a single tile is already a full cal-shaped h5 over its region).
+    only_tiles = t.get('only_tiles')
+    if only_tiles:
+        all_names = [tile.name for tile in tiles]
+        tiles = [tile for tile in tiles if tile.name in only_tiles]
+        if not tiles:
+            raise ValueError(f"only_tiles={only_tiles} matched no tile in {all_names}")
+        print(f"[tiled] only_tiles={only_tiles}: partial run, stitch skipped.", flush=True)
     print("[tiled] tiles:", flush=True)
     for tile in tiles:
         print(f"    {tile.name}: bbox={tile.bbox}", flush=True)
@@ -249,11 +282,14 @@ def run_tiled(cfg):
             oversample_factor=1,
             sky_model=sky_model,
             det_aux=det_aux,
+            batch_spill_dir=cfg.cache_dir,
             **cal_kwargs)
         staging.rss_checkpoint(f'{tile.name} post-setup_lsqr')
-        x0 = mode.x0(cfg, cc)
+        # List-pop hand-off: keeping a plain `x0` local would pin the
+        # full-layout f64 vector for the entire solve (see Calibrator.apply_lsqr).
+        _x0_owned = [mode.x0(cfg, cc)]
         staging.rss_checkpoint(f'{tile.name} pre-apply_lsqr')
-        cc.apply_lsqr(x0=x0, use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
+        cc.apply_lsqr(x0=_x0_owned.pop(), use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
         staging.rss_checkpoint(f'{tile.name} post-apply_lsqr')
         mode.configure(cfg, cc)
 
@@ -268,6 +304,11 @@ def run_tiled(cfg):
         return cal_path
 
     cal_paths = tiled.run(run_tile, sequential=True)
+    if only_tiles:
+        print(f"[tiled] partial run complete ({only_tiles}); per-tile cals: {cal_paths}. "
+              f"Stitch skipped — re-run without only_tiles to build + stitch all tiles.",
+              flush=True)
+        return
     stitched = os.path.join(selfcal_config.cal_dir,
                             f'cal_{frame_tag}_{job.name}{t["stitched_suffix"]}.h5')
     print(f"\n[tiled] stitching {len(cal_paths)} tile cals -> {stitched}", flush=True)

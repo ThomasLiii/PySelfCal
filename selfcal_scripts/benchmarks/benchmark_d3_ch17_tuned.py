@@ -1,8 +1,10 @@
 """Benchmark cal+mosaic for D3 Ch17 with tuned parallelism + batch sizes.
 
 A/B test against benchmark_d3_ch17_numcol3.py — exact same config (NumCol=3,
-no poly, use_per_frame_scalar=True, K=1, etc.) but with the four levers from
-d3_ch17_analysis.md bumped:
+no poly, use_per_frame_scalar=True, K=1, etc.) but with the parallelism /
+batch-size levers raised as follows (motivated by a phase-timing analysis of
+the numcol3 baseline; local notes in figures/benchmark/d3_ch17_analysis.md,
+gitignored):
 
   Param                  baseline (numcol3)   tuned (this script)
   max_workers (cal)              32                    96
@@ -30,7 +32,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import gc
 import glob as glob_module
+import logging
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -50,6 +54,10 @@ from benchmark_d3_ch17_poly import PhaseTracker
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     frame_setting = {
         'Detector': 3,
         'NumSub': 10,

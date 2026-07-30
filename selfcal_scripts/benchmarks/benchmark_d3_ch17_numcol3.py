@@ -26,7 +26,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import gc
 import glob as glob_module
+import logging
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -46,11 +48,17 @@ from benchmark_d3_ch17_poly import PhaseTracker
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     frame_setting = {
         'Detector': 3,
         'NumSub': 10,
         'NumCh': 34,
-        'NumCol': 3,  # production stable used NumCol=3; no poly constraint
+        # NumCol=3: the pre-poly-constraint production setting;
+        # benchmark_d3_ch17_poly.py is the NumCol=10 + poly counterpart.
+        'NumCol': 3,
     }
 
     selfcal_config = pipeline_wrapper.PipelineConfig(
@@ -263,13 +271,10 @@ def main():
     with open(txt_path, 'w') as f:
         f.write(summary + '\n')
     tracker.save_json(json_path)
-    # plot with custom title
-    import matplotlib.pyplot as plt
+    # PhaseTracker.plot_timeline hardcodes a generic title; the output
+    # filename identifies the variant.
+    import matplotlib.pyplot as plt  # unused (matplotlib.use('Agg') at module top is all this script needs)
     tracker.plot_timeline(png_path)
-    # patch the title in the saved png by re-rendering quickly? simplest: re-render here
-    # The PhaseTracker.plot_timeline hardcodes its own title. Override by calling and
-    # then re-saving with a custom suptitle is too much work; the filename indicates
-    # the variant so leave as-is.
 
     print(f"\n[bench] wrote {txt_path}")
     print(f"[bench] wrote {json_path}")

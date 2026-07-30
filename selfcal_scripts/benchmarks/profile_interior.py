@@ -1,6 +1,8 @@
 """Per-frame interior profiler for the cal setup_lsqr and coadd hot paths.
 
-Step-1 tool for the perf/algo-optimizations work. Runs the per-frame interior
+In-process cProfile harness for the per-frame hot paths: run it before and
+after a code change to localize where the time went (bench_e2e.py measures the
+end-to-end wall/RSS effect of the same change). Runs the per-frame interior
 *in-process* (single process, no pool) so cProfile actually sees the work, on a
 fixed, sorted subset of the D3 Ch17 run. Use the SAME --n-frames / --detector /
 --channel before and after a change to read the delta.
@@ -23,7 +25,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import argparse
 import cProfile
 import glob as glob_module
+import logging
 import pstats
+import sys
 import tempfile
 import time
 from functools import partial
@@ -212,6 +216,10 @@ def run_mean(cache_files, ref_shape):
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--phase', choices=['lsqr', 'cache', 'mean'], required=True)
     ap.add_argument('--n-frames', type=int, default=60)

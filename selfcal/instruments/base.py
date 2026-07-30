@@ -27,8 +27,9 @@ What an instrument typically provides (all optional except a name):
 
 A minimal new instrument needs only: an exposure-list loader, its ext/DQ
 conventions, and a chunk-map recipe (reuse ``geometry.make_grid_chunk_map`` if a
-regular grid suffices). The synthetic instrument in the test suite is the
-living reference for that minimum.
+regular grid suffices). The Euclid instrument (``selfcal.instruments.euclid``:
+``exposures.py`` + ``conventions.py``) is the smallest in-tree example of that
+minimum.
 """
 from typing import Protocol, runtime_checkable
 
@@ -41,7 +42,8 @@ class Instrument(Protocol):
     telescope. ``capabilities`` is a set of feature tags (e.g. ``"wavelength"``,
     ``"subchannel"``) a mode can declare it ``requires``; a broadband (non-LVF)
     instrument simply omits them. See ``spherex/adapter.py`` for the reference impl.
-    The older duck-typed reproject conventions above still hold for that stage."""
+    The duck-typed conventions in the module docstring above additionally apply
+    to the reprojection stage (which is driven outside this Protocol)."""
 
     name: str
     capabilities: frozenset

@@ -1,15 +1,17 @@
-"""Fixed-subset cal generator for the perf/algo-optimizations regression gate.
+"""Fixed-subset cal generator for byte-equality regression testing of the cal path.
 
 Runs the real Calibrator.setup_lsqr + apply_lsqr + save_calibration on a fixed,
 sorted subset of the D3 Ch17 NumCol=3 NVMe-staged reproj files, with the exact
 benchmark_d3_ch17_numcol3 config. Save BEFORE a change as the baseline, then
-after each change diff with diff_cal_h5.py — opt A/B MUST be byte-equal.
+after each change diff with diff_cal_h5.py — every candidate MUST be byte-equal
+to the baseline.
 
-By default setup_lsqr is now driven via the OffsetModel object API (the path the
-refactor is migrating production toward); this is the path the routine gate
-exercises and it lowers byte-equal to the (flat-path) golden. Pass --flat-kwargs
-to run the deprecated parallel-list kwargs instead, as a legacy-path regression
-check that the old API still reproduces the golden.
+By default setup_lsqr is driven via the OffsetModel object API (the API the
+production runner uses); this is the path the standing byte-equality regression
+check exercises. OffsetModel lowers internally to the flat parallel-list kwargs,
+so its cal is byte-equal to a baseline generated with those kwargs. Pass
+--flat-kwargs to run the deprecated parallel-list kwargs instead, as a
+legacy-path regression check that the old API still reproduces the baseline.
 
 Usage:
     python regress_cal.py --suffix _gate_baseline --n-frames 300   # OffsetModel (default)
@@ -33,6 +35,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import glob as glob_module
+import logging
+import sys
 import time
 
 import numpy as np
@@ -48,6 +52,10 @@ NVME_DIR = '/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_SPHEREx_nep
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--suffix', required=True)
     ap.add_argument('--n-frames', type=int, default=300)
@@ -89,8 +97,9 @@ def main():
     )
     if args.flat_kwargs:
         # Legacy-path regression check: the deprecated parallel-list kwargs.
-        # Identical code to the pre-flip default; must still be byte-equal to the
-        # golden now that the object API is the default path.
+        # This is the code path that was setup_lsqr's default before the
+        # OffsetModel API became the default input form; must remain byte-equal
+        # to the baseline.
         cc.setup_lsqr(
             chunk_maps=[det_inputs['det_chunk_map']],
             adj_infos=[det_inputs['adj_info']],
@@ -100,9 +109,10 @@ def main():
             **common,
         )
     else:
-        # Default path the gate exercises: the config expressed as an OffsetModel.
-        # Lowers to the same parallel-list kwargs, so the cal is byte-equal to the
-        # (flat-path) golden.
+        # Default path the standing byte-equality regression check exercises:
+        # the config expressed as an OffsetModel. Lowers to the same
+        # parallel-list kwargs, so the cal is byte-equal to a baseline
+        # generated via --flat-kwargs.
         from selfcal.models.offset_model import OffsetModel, OffsetBlock
         om = OffsetModel([
             OffsetBlock(chunk_map=det_inputs['det_chunk_map'],

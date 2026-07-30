@@ -1,0 +1,79 @@
+# Tiled SEP D4 PAHfit calibration — 4x4 grid (the memory-safe full-field build).
+# The 2x2 version (tiled_sep.toml) OOM'd: its NW tile's apply_lsqr needed more
+# than the ~200GB left free under heavy box contention (jatin's 256-worker
+# extract_sources job). 4x4 tiles cover ~1/4 the area each -> ~1/4 the active
+# sky cols after zero-column elimination -> per-tile peak ~150-250GB, which fits
+# the ~400GB typically free. 16 tiles run SEQUENTIALLY (peak = one tile).
+# Per-tile recipe identical to the 2x2: 60-subch PAH window + cubic-subchannel
+# poly + dampL5e-3, oversample_factor=1 sky block, iter_lim=200 (iter400 grows a
+# null-space planar mode; iter200 is the better stopping point). Fisher stitch.
+# max_workers / apply_n_threads trimmed to 24 to lower peak memory + stay polite
+# under the contending job.
+task = "tiled"
+mode = "tiled"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_sep4x4_{tile}_iter200_subchPoly3_w100_outThresh5_sigma2_polyK1"
+oversample = 2
+hdd_io_limit = 20
+apply_n_threads = 24
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 5
+subch_window = [200, 260]
+window_name = "Aromatic_PAHfit"
+
+[params]
+poly_degree = 1
+poly_weight = 0.5
+reg_weight = 0.1
+subch_poly_degree = 3
+subch_poly_weight = 100.0
+subch_poly_lo = 200
+subch_poly_hi = 259
+subch_tot = 342
+line_fisher_threshold = 10.0
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 5e-3
+max_workers = 24
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 200
+precondition = true
+solver = "lsqr"
+
+[tiled]
+ref_shape = [12343, 12303]
+grid = [4, 4]
+overlap_px = 50
+tile_names = ["r0c0", "r0c1", "r0c2", "r0c3",
+              "r1c0", "r1c1", "r1c2", "r1c3",
+              "r2c0", "r2c1", "r2c2", "r2c3",
+              "r3c0", "r3c1", "r3c2", "r3c3"]
+full_reproj_dir = "/data3/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/reprojected"
+frame_glob = "exp_*_det_00.h5"
+frame_filter = "center"
+halo = 0
+nvme_subdir = "reproj_nvme_pahfit_sep_4x4"
+stitched_suffix = "_damp0p1_reg0p1_applyWt_PAHfit_dampL5e-3_subch60_nosrcmask_NumCol5_sep4x4_SEP_iter200_stitched"
+line = true
+rss_guardrail = true

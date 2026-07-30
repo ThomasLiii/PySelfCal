@@ -178,7 +178,7 @@ def main(detector, n_frames, n_workers, batch_size, seed, reuse_cache=False):
     # range so we don't extrapolate. Pixels outside become NaN in the result.
     BC_map, _ = load_calibration(
         band=detector,
-        calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration')
+        calibration_dir='/data3/SPHEREx/SpecCal_202509/ParameterFiles')
     w_min, w_max = float(spec_w.min()), float(spec_w.max())
     in_band = np.isfinite(BC_map) & (BC_map >= w_min) & (BC_map <= w_max)
     finite_pix = np.isfinite(mean_arr) & in_band

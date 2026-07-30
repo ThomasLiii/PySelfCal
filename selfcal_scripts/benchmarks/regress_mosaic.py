@@ -1,8 +1,9 @@
-"""Fixed-subset mosaic generator for the perf/algo-optimizations regression gate.
+"""Fixed-subset mosaic generator for regression testing of coadd/mosaic changes.
 
 Builds the D3 Ch17 NumCol=3 mosaic (cache + mean + std + sigma-clip + wav) on the
 same fixed 300-frame subset used by regress_cal.py, against a pre-generated cal.
-Used to gate the coadd-fusion opts (C/D): generate a baseline mosaic on the
+Used to gate optimizations that fuse or reorder the coadd's mean/std/sigma-clip
+accumulation passes: generate a baseline mosaic on the
 pre-change code, then a candidate on the changed code, and compare the
 STD_MAP / SC_MEAN_MAP / MEAN_MAP / WAV_* HDUs within float32 ε with
 compare_mosaic.py.
@@ -16,8 +17,9 @@ ULP-level mosaic comparison to be meaningful. The defaults (50 / 48) shouldn't
 be changed unless you are deliberately re-baselining: the imap_unordered
 flush ordering in compute_coadd_map depends on batch_size and worker count,
 and shifting either of them is enough to perturb the float32 accumulators at
-the noise-floor level (see mos_baseline vs mos_baseline2 in the perf-algo
-artifact for a sense of the size of that intrinsic noise floor).
+the noise-floor level (to measure that intrinsic noise floor, generate the
+baseline twice with different --suffix values and compare the pair with
+compare_mosaic.py).
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -28,7 +30,9 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
 import glob as glob_module
+import logging
 import shutil
+import sys
 import time
 from functools import partial
 
@@ -47,6 +51,10 @@ CACHE_ROOT = '/home/thomasli/selfcal-project/selfcal/cache'
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--suffix', required=True)
     ap.add_argument('--cal-suffix', default='_gate_baseline')

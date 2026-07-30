@@ -86,7 +86,10 @@ def parse_args():
                         '(default 3).')
     p.add_argument('--cal-glob-pat', default='cal_*polyK1.h5',
                    help="Glob pattern for cal files inside <run>/calibration "
-                        "(default: 'cal_*polyK1.h5').")
+                        "(default 'cal_*polyK1.h5' -- cal files whose "
+                        "filename suffix marks the linear K=1 "
+                        "polynomial-constraint solve; set to match your "
+                        "run's cal-file suffix).")
     p.add_argument('--joint-data', default='/tmp/joint_resid_data.npz',
                    help='Optional .npz from diag_joint_amp_fit.py for the '
                         'panel (d) overlay of the joint-amp model residual std. '
@@ -555,9 +558,14 @@ def main():
         jn = jumps_new[(d_lo, d_hi)]
         print(f"  D{d_lo}->D{d_hi}: old C_c jump        = {j:+.5g} MJy/sr")
         print(f"  D{d_lo}->D{d_hi}: new C_eff jump      = {jn:+.5g} MJy/sr")
-    # Comparison to raw-stack notes
+    # Reference: inter-detector boundary jumps measured on raw (pre-selfcal)
+    # exposure stacks by diag_raw_stack_spectrum.py (same directory), on the
+    # NEP 2026W17 runs. The ~+0.017 / ~+0.006 MJy/sr values below are
+    # field-specific — re-measure for other fields.
     print()
-    print("--- pedestal vs raw-stack reference jumps ---")
+    print("--- pedestal vs raw-stack reference jumps "
+          "(diag_raw_stack_spectrum.py, NEP 2026W17; "
+          "re-measure for other fields) ---")
     if 4 in P:
         print(f"  P_D4                     = {P[4]:+.5g} MJy/sr   "
               f"(raw-stack D3->D4 jump  ~ +0.017 MJy/sr)")

@@ -11,11 +11,16 @@ same cache can serve different filter logic. Cache writes are atomic
 (tmp + rename), so a Ctrl-C never leaves a corrupt file behind.
 """
 import json
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from astropy.io import fits
 from tqdm import tqdm
+
+from .. import _state
+
+logger = logging.getLogger(__name__)
 
 
 _CACHE_SCHEMA = 1
@@ -135,8 +140,8 @@ def cached_header_values(exposure_list, keys, ext=1, cache_path=None,
             pending_idx.append(i)
 
     if verbose:
-        print(f'[cached_header_values] {n_hit}/{len(exposure_list)} cache hits, '
-              f'{len(pending_idx)} to read')
+        logger.info(f'[cached_header_values] {n_hit}/{len(exposure_list)} cache hits, '
+                    f'{len(pending_idx)} to read')
 
     if pending_idx:
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -144,7 +149,7 @@ def cached_header_values(exposure_list, keys, ext=1, cache_path=None,
                     for i in pending_idx}
             for fut in tqdm(as_completed(futs), total=len(futs),
                             desc='Reading FITS headers',
-                            disable=len(futs) < 100):
+                            disable=len(futs) < 100 or not _state.progress_enabled):
                 i = futs[fut]
                 path, mtime, vals, err = fut.result()
                 if err is not None:
@@ -185,13 +190,13 @@ def filter_exposures_by_header(exposure_list, predicate, keys, ext=1,
             dropped.append(path)
             n_err += 1
             if verbose:
-                print(f'  dropped {path}: header read failed ({vals["_error_"]})')
+                logger.warning(f'  dropped {path}: header read failed ({vals["_error_"]})')
             continue
         if predicate(vals):
             kept.append(path)
         else:
             dropped.append(path)
     if verbose:
-        print(f'[filter_exposures_by_header] kept {len(kept)}, '
-              f'dropped {len(dropped)} (incl. {n_err} read errors)')
+        logger.info(f'[filter_exposures_by_header] kept {len(kept)}, '
+                    f'dropped {len(dropped)} (incl. {n_err} read errors)')
     return kept, dropped

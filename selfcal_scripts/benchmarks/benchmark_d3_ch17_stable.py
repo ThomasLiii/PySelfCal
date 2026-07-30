@@ -7,7 +7,9 @@ run_cal_baseline_test.py).
 Config matches benchmark_d3_ch17_numcol3.py on main as closely as the stable
 API permits:
   - NumCol=3, no poly constraint (poly didn't exist yet anyway)
-  - K=1 (the only K stable supports)
+  - single offset chunk-map per frame (stable predates the multi-chunk-map
+    solve on main, where several maps — e.g. an extra readout-pattern map —
+    are fit jointly)
   - column adjacency reg, weight=0.1
   - weighted_damping=True, damp_weight=0.1
   - outlier_thresh=5.0, batch_size=20, max_workers=32
@@ -26,8 +28,8 @@ Differences from main (forced by API):
 Reads NVMe cache shared with main at:
   /home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec/
 
-Writes outputs into main's figures/benchmark/ so all three benchmarks live
-side-by-side:
+Writes outputs into the main worktree's figures/benchmark/ so they sit
+beside the main-branch benchmark_d3_ch17_* outputs in one directory:
   /home/thomasli/selfcal-project/selfcal/figures/benchmark/d3_ch17_stable_*.{txt,json,png}
 """
 import os
@@ -41,6 +43,7 @@ import contextlib
 import gc
 import glob as glob_module
 import json
+import logging
 import shutil
 import sys
 import threading
@@ -76,7 +79,10 @@ from selfcal.instruments.spherex.wavemap import wav_coadd
 
 
 # ============================================================
-# PhaseTracker (copy of benchmark_d3_ch17_poly.PhaseTracker for self-containment)
+# PhaseTracker — inlined so this script runs standalone on the stable
+# worktree (stable lacks the benchmark modules). Snapshot of
+# benchmark_d3_ch17_poly.PhaseTracker that may lag the main-branch version;
+# notably it has no start/delta-RSS columns.
 # ============================================================
 
 class PhaseTracker:
@@ -251,7 +257,7 @@ def prepare_detector_inputs(frame_setting, mosaic_setting_oversample):
     lvf_params = load_lvf_params(f'lvf_params_D{detector}.npy')
     det_BC, det_BW = load_calibration(
         band=detector,
-        calibration_dir='/home/thomasli/spherex/SPHEREx_Spectral_Calibration',
+        calibration_dir='/data3/SPHEREx/SpecCal_202509/ParameterFiles',
     )
     grid_chunk_map, _, _, _ = make_stripped_chunk_map(
         detector, num_subchannels=num_subchannels, num_channels=num_channels,
@@ -329,6 +335,10 @@ def prepare_channel_inputs(ch, frame_setting, det_chunk_map, grid_chunk_map):
 # ============================================================
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     frame_setting = {
         'Detector': 3,
         'NumSub': 10,
@@ -349,6 +359,10 @@ def main():
         'ignore_list': [],
         'batch_size': 20,
         'offset_regularization': True,
+        # single-form: scalar, not a list — stable's API predates main's
+        # multi-chunk-map lists (reg_weights=[...]). The same tag below marks
+        # chunk_map / adj_info / det_offset_func, which main takes as
+        # chunk_maps / adj_infos / det_offset_funcs lists.
         'reg_weight': 0.1,         # single-form
         'weighted_damping': True,
         'damp_weight': 0.1,
@@ -369,7 +383,8 @@ def main():
     mosaic_oversample_factor = 2
 
     CACHE_DIR = '/home/thomasli/selfcal-project/selfcal/cache/'
-    # Write outputs to main's figures dir so the three benchmarks coexist.
+    # Write outputs to the main worktree's figures/benchmark/ so this run's
+    # tables/plots sit beside the main-branch benchmark_d3_ch17_* outputs.
     BENCH_DIR = '/home/thomasli/selfcal-project/selfcal/figures/benchmark/'
     os.makedirs(BENCH_DIR, exist_ok=True)
     FILE_SUFFIX = '_bench_d3_ch17_stable'

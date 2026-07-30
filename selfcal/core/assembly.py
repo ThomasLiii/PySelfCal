@@ -1,11 +1,14 @@
 """Per-subframe LSQR row assembly (runs in the worker processes).
 
-Split out of the former monolithic lsqr.py. ``_prep_lsqr`` emits one subframe's
-sparse rows (sky components, offsets, per-frame scalar, per-frame constraints);
-``_prep_lsqr_batch_worker`` reconstructs the shared-memory arrays once per batch
-and assembles that batch's rows. ``selfcal.core.system.setup_lsqr`` dispatches
-``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor.
+``_prep_lsqr`` emits one subframe's sparse rows (sky components, offsets,
+per-frame scalar, per-frame constraints); ``_prep_lsqr_batch_worker``
+reconstructs the shared-memory arrays once per batch and assembles that
+batch's rows. Companion modules: ``selfcal.core.system`` (dispatches
+``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor and assembles the full
+sparse system from these per-subframe rows) and ``selfcal.core.solve``
+(runs LSQR on it).
 """
+import os
 import traceback
 
 import numpy as np
@@ -13,6 +16,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, check_invalid
+from ..models.offset_basis import eval_offset_basis, n_coef
 
 
 def _prep_lsqr(task_params):
@@ -30,6 +34,7 @@ def _prep_lsqr(task_params):
     offset_regularization = task_params['offset_regularization']
     adj_info_list = task_params['adj_info_list']
     poly_constraint_list = task_params['poly_constraint_list']
+    poly_basis_list = task_params.get('poly_basis_list') or [None] * len(task_params['chunk_maps'])
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
     scalar_col_start = task_params['scalar_col_start']
@@ -80,16 +85,19 @@ def _prep_lsqr(task_params):
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
         # --- Sky rows: one nnz per sky component per data row ---
-        # SkyModel generalizes the legacy num_sky_blocks {1,2} cases. Each
-        # component j contributes a coefficient over the valid pixels:
+        # The sky block is J sub-blocks of num_sky columns each, one per
+        # SkyModel component (J=1 continuum-only, J=2 adds one spectral-line
+        # component; any J is supported). Each component j contributes a
+        # coefficient over the valid pixels:
         #   - None  -> identity (continuum): store valid_weight directly.
         #   - array -> e.g. line profile G(λ) (LineComponent), store w_i * coeff.
-        # J==1 with an identity coefficient takes the fast path (no interleave,
-        # no multiply). J>=2 interleaves S_cols[j::J] = j*num_sky + P and
-        # S_data[j::J]. With components [continuum] or [continuum, pah_3p29
-        # Gaussian] this reproduces the old single/two-block emission byte-for-
-        # byte (same order, same float ops, same dtypes). aux maps (BC/BW) are
-        # sampled to the valid pixels and passed by name to each component.
+        # Emission order is pixel-major with components interleaved
+        # (S_cols[j::J] = j*num_sky + P). J==1 with an identity coefficient
+        # takes the fast path (no interleave, no multiply) — it emits the
+        # identical entry sequence, and after the final int32/float32 casts
+        # identical bytes, to the general loop; preserve this equivalence
+        # when editing either path. aux maps (BC/BW) are sampled to the
+        # valid pixels and passed by name to each component.
         sky_components = task_params.get('sky_components')
         if sky_components is None:
             J = 1
@@ -120,28 +128,49 @@ def _prep_lsqr(task_params):
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []
         for m in range(K):
             cc_m = chunk_contribs[m]
-            # Slice the chunk-contrib columns for the valid pixels ONCE, then
-            # derive (chunk_idx, sub_idx, vals) from that single COO object.
-            # The previous code built cc_m[:, sub_pix_indices] twice (once for
-            # .nonzero(), once for .A[0] value extraction). Filtering tocoo() to
-            # numerically-nonzero entries reproduces .nonzero()'s exact set, so
-            # the assembled matrix is bit-identical.
+            # Slice the chunk-contrib columns for the valid pixels ONCE and
+            # take (chunk_idx, sub_idx, vals) from the single COO object —
+            # slicing separately for indices and for values would double the
+            # work. Filtering tocoo() to numerically-nonzero entries
+            # reproduces scipy's .nonzero() exact entry set, so the
+            # assembled matrix is bit-identical either way.
             sliced_m = cc_m[:, sub_pix_indices].tocoo()
             nz_m = sliced_m.data != 0
             chunk_idx_m = sliced_m.row[nz_m]
             sub_idx_m = sliced_m.col[nz_m]
             chunk_vals_m = sliced_m.data[nz_m]
-            O_rows_parts.append(sub_idx_m)
             if det_template_list[m] is not None:
                 # Template mode: one alpha column per frame for this map
+                O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(np.full(len(chunk_idx_m), col_bases[m] + index, dtype=np.int64))
                 O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m
                                     * det_template_list[m][group_idx_list[m], chunk_idx_m])
+            elif poly_basis_list[m] is not None:
+                # Hard poly-basis: the offset is a polynomial in an abstract
+                # per-chunk COORDINATE (``chunk_coord``), independent per per-chunk
+                # GROUP (``chunk_group``, ``num_groups`` of them) — the instrument
+                # supplies both, so this core is encoding-agnostic. Each
+                # (chunk-contrib, obs) entry emits n_coef nnz into coeff columns
+                # a[frame, group, k], coefficient w * chunk_val * B_k(coord).
+                pb = poly_basis_list[m]
+                ng = int(pb['num_groups']); ncf = n_coef(pb)
+                coord = np.asarray(pb['chunk_coord'])[chunk_idx_m]
+                grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
+                B = eval_offset_basis(coord, pb)                                 # (n, ncf)
+                w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
+                base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
+                coeff_base = grp * ncf                                           # + k below
+                for k in range(ncf):
+                    O_rows_parts.append(sub_idx_m)
+                    O_cols_parts.append(base + coeff_base + k)
+                    O_data_parts.append(w_cv * B[:, k])
             else:
+                _fw = valid_weight[sub_idx_m] * chunk_vals_m
+                O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(col_bases[m]
                                     + (group_idx_list[m] * num_chunks_list[m])
                                     + chunk_idx_m)
-                O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m)
+                O_data_parts.append(_fw)
         O_rows = np.concatenate(O_rows_parts) if O_rows_parts else np.empty(0, dtype=np.int64)
         O_cols = np.concatenate(O_cols_parts) if O_cols_parts else np.empty(0, dtype=np.int64)
         O_data = np.concatenate(O_data_parts) if O_data_parts else np.empty(0, dtype=np.float64)
@@ -156,6 +185,10 @@ def _prep_lsqr(task_params):
             reg_row_offset = num_valid_pixels
             for m in range(K):
                 if det_template_list[m] is not None:
+                    continue
+                if poly_basis_list[m] is not None:
+                    # Hard poly-basis carries no per-chunk adjacency/penalty rows —
+                    # the polynomial is exact (no weight knob).
                     continue
                 offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
 
@@ -236,6 +269,9 @@ def _prep_lsqr(task_params):
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except Exception as e:
+        # Runs inside a ProcessPoolExecutor child (_prep_lsqr / the batch
+        # worker): children have no configured logging handlers, so a logger
+        # call would silently swallow this error report — keep print().
         print(f"Error processing file {reproj_file}: {e}")
         traceback.print_exc()
         return None
@@ -293,12 +329,32 @@ def _prep_lsqr_batch_worker(batch_params):
             adj_info_list.append(tuple(adj_parts))
         shm_arrays['adj_info_list'] = adj_info_list
 
+    spill_dir = batch_params.get('spill_dir')
+    batch_id = batch_params.get('batch_id', 0)
+    spill_paths = None
+    spill_fhs = None
     try:
+        if spill_dir is not None:
+            # Stream the bulk COO arrays straight to files, one append per
+            # subframe: no per-batch list retention, no concatenate copy,
+            # no bulk SharedMemory copy (worker holds ~1x one subframe's
+            # arrays instead of ~3x the whole batch). Byte-identical to the
+            # concatenate path: same arrays, same order, raw dtype bytes.
+            # Row/col/data dtypes are uniform across subframes
+            # (int32/int32/float32, see _prep_lsqr's final casts); b's dtype
+            # varies (f32/f64 with reg rows) so it stays on the SHM path.
+            spill_paths = [os.path.join(spill_dir,
+                                        f'b{batch_id:05d}_{k}.bin')
+                           for k in ('rows', 'cols', 'data')]
+            spill_fhs = [open(p, 'wb', buffering=8 * 1024 * 1024)
+                         for p in spill_paths]
+
         batch_rows = []
         batch_cols = []
         batch_data = []
         batch_b = []
         batch_row_offset = 0
+        n_entries = 0
 
         for task_params in sub_tasks:
             # Inject reconstructed shared memory arrays
@@ -313,14 +369,41 @@ def _prep_lsqr_batch_worker(batch_params):
             if len(sub_b) == 0:
                 continue
 
-            batch_rows.append(sub_rows + batch_row_offset)
-            batch_cols.append(sub_cols)
-            batch_data.append(sub_data)
+            if spill_fhs is not None:
+                (sub_rows + batch_row_offset).tofile(spill_fhs[0])
+                sub_cols.tofile(spill_fhs[1])
+                sub_data.tofile(spill_fhs[2])
+                n_entries += sub_cols.shape[0]
+            else:
+                batch_rows.append(sub_rows + batch_row_offset)
+                batch_cols.append(sub_cols)
+                batch_data.append(sub_data)
+            # b never spills: its dtype varies (f32/f64) and it is small;
+            # it returns via SharedMemory on both paths.
             batch_b.append(sub_b)
             batch_row_offset += num_rows
 
         if len(batch_b) == 0:
+            if spill_fhs is not None:
+                for fh in spill_fhs:
+                    fh.close()
+                for p in spill_paths:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
             return None
+
+        if spill_fhs is not None:
+            for fh in spill_fhs:
+                fh.close()
+            cat_b = np.concatenate(batch_b)
+            shm = SharedMemory(create=True, size=max(cat_b.nbytes, 1))
+            np.ndarray(cat_b.shape, dtype=cat_b.dtype, buffer=shm.buf)[:] = cat_b
+            b_meta = (shm.name, cat_b.shape, cat_b.dtype.str)
+            shm.close()
+            return {'files': spill_paths, 'shm': [b_meta],
+                    'num_rows': batch_row_offset, 'n_entries': n_entries}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)

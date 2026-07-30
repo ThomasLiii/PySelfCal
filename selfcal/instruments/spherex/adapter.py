@@ -12,6 +12,7 @@ of this baggage. See ``selfcal.instruments.base.Instrument`` for the contract.
 Methods take plain dicts/args (an ``inst_cfg`` mapping = the TOML ``[instrument]``
 table), not the runner's RunConfig, so the package stays independent of the runner.
 """
+import logging
 import os
 from dataclasses import dataclass
 from functools import partial
@@ -26,13 +27,16 @@ from .spherex_utility import (
     make_spherex_stripped_offset_map)
 from .wavemap import wav_coadd
 
+logger = logging.getLogger(__name__)
+
 # SPHEREx per-band spectral calibration (BC/BW maps) default location.
-SPHEREX_CALIB_DIR = '/home/thomasli/spherex/SPHEREx_Spectral_Calibration'
+SPHEREX_CALIB_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
 
 # Named subchannel windows -> (inclusive-low, exclusive-high) subch index range.
-# Aromatic/Aliphatic are stable; the PAH-fit window VARIES per run (pahfit uses
-# 210-250, the tiled NEP build uses 200-260), so it is NOT a global preset — those
-# runs give an explicit `subch_window = [lo, hi]` in their config instead.
+# Aromatic/Aliphatic are stable; the PAH-fit window is run-dependent (different
+# production runs have chosen different subchannel ranges), so it is NOT a
+# global preset — such runs set an explicit `subch_window = [lo, hi]` in their
+# config instead.
 SUBCH_WINDOWS = {
     'Aromatic': (225, 236),
     'Aliphatic': (249, 260),
@@ -50,8 +54,9 @@ class Job:
 
 def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
     """Per-readout-channel chunk map at detector resolution (H2RG, post 4px trim).
-    Faithful copy of run_cal_k2_readout.make_readout_chunk_map. Returns
-    (chunk_map int32, n_chunks)."""
+    Chunk 0 covers the first ``col_start`` reference columns; then one chunk per
+    ``col_width``-wide readout column, plus a final partial chunk for any
+    remaining columns. Returns (chunk_map int32, n_chunks)."""
     H, W = det_shape
     chunk_map = np.full(det_shape, -1, dtype=np.int32)
     chunk_map[:, :col_start] = 0
@@ -64,6 +69,8 @@ def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
     if right_start < W:
         chunk_map[:, right_start:] = n_chunks
         n_chunks += 1
+    # Internal invariant: verifies this function's own tiling of the map it just
+    # built left no pixel unassigned (not caller-input validation) -> keep assert.
     assert (chunk_map >= 0).all(), "every pixel must be assigned a readout channel"
     return chunk_map, n_chunks
 
@@ -182,6 +189,25 @@ class SPHERExInstrument:
             num_subchannels=num_subchannels, num_columns=num_columns,
             degree=degree, subch_lo=lo, subch_hi=hi)
 
+    def subchannel_poly_basis(self, det_chunk_map, num_columns, degree, lo, hi):
+        """Hard poly-basis descriptor for a per-column subchannel polynomial
+        offset (the ``poly_basis`` dict consumed by the instrument-agnostic core
+        in ``selfcal.models.offset_basis``). This is the ONLY place the SPHEREx
+        chunk encoding ``chunk = subchannel*num_col + column`` is inverted:
+        ``chunk_coord`` = subchannel (the polynomial coordinate), ``chunk_group``
+        = column (one independent polynomial per column). The core sees only the
+        abstract coord/group arrays. Used by spectral modes whose offset is a
+        degree-``degree`` Chebyshev in subchannel over the window ``[lo, hi]``."""
+        n_chunks = int(det_chunk_map.max()) + 1
+        chunk_ids = np.arange(n_chunks)
+        return {
+            'degree': int(degree),
+            'num_groups': int(num_columns),
+            'coord_lo': int(lo), 'coord_hi': int(hi),
+            'chunk_coord': chunk_ids // int(num_columns),
+            'chunk_group': chunk_ids % int(num_columns),
+        }
+
     # ---- readout-channel geometry (k2 mode) --------------------------------
     def readout_chunk_map(self, det_shape, col_start=60, col_width=64):
         return make_readout_chunk_map(det_shape, col_start=col_start, col_width=col_width)
@@ -191,7 +217,8 @@ class SPHERExInstrument:
 
     # ---- precompute geometry params (rarely-run generator) -----------------
     def precompute(self, inst_cfg):
-        """Generate + save per-detector LVF params (replaces precompute_lvf_params).
+        """Generate + save per-detector LVF params (the rarely-run `precompute`
+        task of the generic runner).
         Loops the detectors in inst_cfg['detectors']; saves lvf_params_D{N}.npy
         via spherex_utility.save_lvf_params (canonical package data dir, or
         inst_cfg['lvf_output_dir'] / $SELFCAL_LVF_PARAMS_DIR override)."""
@@ -231,7 +258,7 @@ class SPHERExInstrument:
         """LVF wavelength coaddition -> append wav_mean/wav_std maps (full mosaic
         mode). The generic engine calls this only if the instrument provides it."""
         import time
-        print("Coadding wavelength maps...")
+        logger.info("Coadding wavelength maps...")
         t00 = time.time()
         wav_mean, wav_std = wav_coadd(
             det_inputs['det_BC'], det_inputs['det_BW'],
@@ -239,6 +266,6 @@ class SPHERExInstrument:
             reproj_list=mm.reproj_list, cache_list=mm.cached_list,
             ref_shape=maps['mean_map']['data'].shape, sigma=sigma,
             batch_size=40, max_workers=30)
-        print(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
+        logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
         mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
                         'wav_std_map': {'data': wav_std, 'unit': 'um'}})

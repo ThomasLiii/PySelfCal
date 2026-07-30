@@ -1,7 +1,13 @@
-"""Build mosaic FITS files for the poly_k1 and poly_k2 calibrations.
+"""Build mosaic FITS files for the polynomial-constraint calibration variants
+defined in ``benchmarks/run_cal_baseline_test.py``: poly_k1 = one LVF chunk
+map (K=1, where K = number of chunk maps) with a linear column-polynomial
+constraint at NumCol=10; poly_k2 = the same plus a second 32-stripe
+detector-fixed readout map (K=2).
 
-Matches the production mosaic call (``run_cal.py``): the LVF chunk map
-goes through ``make_spherex_stripped_offset_map`` (mean-preserving spline);
+Matches the production ``make_mosaic`` recipe (as run by the generic runner's
+mosaic step; formerly the ``run_cal.py`` driver, kept in git history): the
+LVF chunk map goes through ``make_spherex_stripped_offset_map``
+(mean-preserving spline);
 for ``poly_k2`` the second 32-stripe detector-fixed map uses the simple
 chunk_to_det broadcast (``det_offset_funcs[1] = None``). Wavelength coadd
 is appended via ``wav_coadd`` so the FITS layout matches the existing
@@ -18,6 +24,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+import logging
 import sys
 import shutil
 import time
@@ -98,6 +105,10 @@ def variant_chunk_maps_and_funcs(variant, detector_inputs, channel_inputs,
 
 
 if __name__ == "__main__":
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     # ----------------------------- Settings -----------------------------
     base_frame_setting = {
         'Detector': 5,
@@ -136,6 +147,13 @@ if __name__ == "__main__":
     # a suffix, pass the same value twice. For the diagnostic 'production'
     # variant we keep the original cal suffix but write a `_remosaic_v2` mosaic
     # so the March 2026 production mosaic (5GB) isn't clobbered.
+    # 'multi_chunk_pr' targets the regression-reference cal written when the
+    # multi-chunk-map schema first landed; its on-disk suffix
+    # '_baseline_after_commit3' is historical and must match the existing file.
+    # The '*_fixed' rows target the cal files currently produced by
+    # run_cal_baseline_test.py (its FILE_SUFFIX appends '_fixed'); the
+    # un-suffixed rows are the earlier pre-fix generation of the same
+    # variants, kept so old mosaics remain reproducible.
     VARIANT_SPEC = {
         'baseline':         (3,  '_baseline_after_poly_off',           '_baseline_after_poly_off'),
         'production':       (3,  '_damp0p1_reg0p1_outThresh5_sigma2',  '_damp0p1_reg0p1_outThresh5_sigma2_remosaic_v2'),

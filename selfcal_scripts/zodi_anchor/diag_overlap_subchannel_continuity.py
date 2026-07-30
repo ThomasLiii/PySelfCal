@@ -1,4 +1,5 @@
-"""Overlap-subchannel sanity check for the v2 pedestal model.
+"""Overlap-subchannel sanity check for the pedestal-anchor prototype
+(``prototype_pedestal_anchor_v2.py``; 'v2' below).
 
 The SelfCal pipeline runs each channel as an independent LSQR solve, but
 each channel's solve is padded by ``subchannel_padding=1`` so that
@@ -64,7 +65,8 @@ import numpy as np
 from selfcal.zodi_anchor import load_anchor
 
 
-# Production constants (match selfcal_scripts/drivers/run_cal.py).
+# Production constants for the NEP 2026-W17 runs (NumCol=10 era; same
+# values the selfcal_scripts/configs/*.toml runner configs use).
 NUM_SUB = 10
 NUM_CH = 34
 NUM_COL = 10

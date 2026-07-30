@@ -1,5 +1,6 @@
 """HDF5 I/O for reprojected exposure files."""
 
+import logging
 import os
 import h5py
 import numpy as np
@@ -7,6 +8,8 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 from .. import _state
+
+logger = logging.getLogger(__name__)
 
 
 def load_reproj_file(file_path, fields):
@@ -26,8 +29,10 @@ def load_reproj_file(file_path, fields):
         Dictionary containing the extracted data, key is the fields and value is the corresponding datas
     """
 
-    assert isinstance(file_path, str) and os.path.isfile(file_path), "file_path must be a valid file path"
-    assert isinstance(fields, (list, tuple)), "fields must be a list or tuple of strings"
+    if not (isinstance(file_path, str) and os.path.isfile(file_path)):
+        raise ValueError("file_path must be a valid file path")
+    if not isinstance(fields, (list, tuple)):
+        raise TypeError("fields must be a list or tuple of strings")
 
     data = {}
     is_file_missing = False
@@ -77,6 +82,11 @@ def load_reproj_file(file_path, fields):
         data['det_idx'] = det_idx
         data['exp_idx'] = exp_idx
     except Exception as e:
+        # load_reproj_file runs inside _prep_subframe, which executes in
+        # multiprocessing children (_prep_lsqr in core/assembly, the coadd
+        # workers in core/coadd). Those children have no configured logging
+        # handlers, so keep print() — a logger call would silently swallow
+        # this fallback report.
         print(f"Error loading {file_path}: {e}. Will use placeholders.")
         is_file_missing = True
         for key in fields:

@@ -1,5 +1,6 @@
 """Co-addition pipeline: mean, std, sigma-clipped maps, and intermediate caching."""
 
+import logging
 import os
 import h5py
 import numpy as np
@@ -10,6 +11,8 @@ from multiprocessing.shared_memory import SharedMemory
 from .. import _state
 from .subframe import _prep_subframe
 from ..geometry.map_helper import compute_crop
+
+logger = logging.getLogger(__name__)
 
 
 def _coadd_batch_worker(params):
@@ -62,7 +65,9 @@ def _coadd_batch_worker(params):
         cache_dir = params['cache_dir']
         cached_list = []
     else:
-        # Accumulators — direct arrays (threads) or SharedMemory (processes)
+        # Accumulators: attach to the SharedMemory blocks the manager created
+        # (workers run in a multiprocessing.Pool); the direct-array fallback
+        # covers callers that pass arrays in params.
         data_sum_arr = params.get('total_data_sum')
         if data_sum_arr is None:
             shm_data_sum = SharedMemory(name=params['total_data_sum_name'])
@@ -88,7 +93,8 @@ def _coadd_batch_worker(params):
         local_weight_sum = np.zeros(ref_shape, dtype=np.float32)
         local_aux_sum = np.zeros_like(aux_sum_arr) if aux_sum_arr is not None else None
 
-        # Read-only maps — direct arrays (threads) or SharedMemory (processes)
+        # Read-only maps (mean/std): taken directly from params if present,
+        # otherwise attached from the manager's SharedMemory blocks.
         mean_map = params.get('mean_map')
         if mean_map is None and 'mean_map_name' in params:
             shm_mean = SharedMemory(name=params['mean_map_name'])
@@ -135,6 +141,9 @@ def _coadd_batch_worker(params):
                         sub_aux = hf['sub_aux'][:]
 
             except Exception as e:
+                # Runs inside a multiprocessing.Pool child (_coadd_batch_worker):
+                # children have no configured logging handlers, so a logger call
+                # would silently swallow this error report — keep print().
                 print(f"Error loading cached file {file_path}: {e}")
                 continue
         else:
@@ -422,7 +431,7 @@ def _coadd_batch_manager(params):
         })
         tasks.append(task_params)
 
-    print(f"Processing {total_files} files in {len(tasks)} batches...")
+    logger.info(f"Processing {total_files} files in {len(tasks)} batches...")
 
     # --- Execution ---
     try:
@@ -430,7 +439,8 @@ def _coadd_batch_manager(params):
             # Pool: real processes bypass the GIL for full CPU parallelism
             total_result = []
             with Pool(processes=max_workers) as pool:
-                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                for res in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks),
+                                disable=not _state.progress_enabled):
                     total_result.extend(res)
             total_result.sort()
             return total_result
@@ -438,7 +448,8 @@ def _coadd_batch_manager(params):
             # Pool: real processes bypass the GIL for full CPU parallelism
             mp_lock = _MPLock()
             with Pool(processes=max_workers, initializer=_state._init_coadd_worker, initargs=(mp_lock,)) as pool:
-                for _ in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks)):
+                for _ in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks),
+                              disable=not _state.progress_enabled):
                     pass  # Workers flush to SharedMemory accumulators
 
             # Read final results from SharedMemory (copy before cleanup)
@@ -457,7 +468,7 @@ def _coadd_batch_manager(params):
 def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, sigma=3.0,
                       offset_lists=None, apply_weight=True,
                       apply_mask=True, chunk_maps=None, grid_valid_weight=None,
-                      max_workers=10, ignore_list=[], det_offset_funcs=None, oversample_factor=1,
+                      max_workers=10, ignore_list=None, det_offset_funcs=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
                       cache_dir='cache/', use_cached=False, det_aux=None,
                       preprocess_func=None, postprocess_func=None):
@@ -484,37 +495,64 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
         callables. ``None`` (or per-map ``None``) falls back to the standard
         ``chunk_to_det`` per map.
     """
-    # --- Common Assertions for All Modes ---
-    assert mode in ['mean', 'std', 'sigma_clip', 'cache'], "mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'"
+    # Mutable-default normalization: an empty ignore_list means "ignore nothing".
+    if ignore_list is None:
+        ignore_list = []
+
+    # --- Common validation for All Modes ---
+    # Explicit raises (not asserts) so caller-input validation survives
+    # ``python -O``: pure type checks -> TypeError, value/shape/length ->
+    # ValueError. Messages are unchanged from the previous assert statements.
+    if mode not in ['mean', 'std', 'sigma_clip', 'cache']:
+        raise ValueError("mode must be one of 'mean', 'std', 'sigma_clip', or 'cache'")
     if mode == 'cache':
-        assert cache_dir is not None, "cache_dir must be provided if cache_intermediate is True"
+        if cache_dir is None:
+            raise ValueError("cache_dir must be provided when mode='cache'")
         os.makedirs(cache_dir, exist_ok=True)
     if mode == 'std':
-        assert mean_map is not None, "mean_map must be provided for 'std' mode"
+        if mean_map is None:
+            raise ValueError("mean_map must be provided for 'std' mode")
     if mode == 'sigma_clip':
-        assert mean_map is not None, "mean_map must be provided for 'sigma_clip' mode"
-        assert std_map is not None, "std_map must be provided for 'sigma_clip' mode"
-        assert isinstance(sigma, (int, float)) and sigma > 0, "sigma must be a positive number"
-    assert isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2, "ref_shape must be a list or tuple of length 2"
-    assert isinstance(file_list, (list, np.ndarray)) and file_list, "file_list must be a non-empty list"
-    assert isinstance(apply_weight, bool), "apply_weight must be a boolean"
-    assert isinstance(apply_mask, bool), "apply_mask must be a boolean"
+        if mean_map is None:
+            raise ValueError("mean_map must be provided for 'sigma_clip' mode")
+        if std_map is None:
+            raise ValueError("std_map must be provided for 'sigma_clip' mode")
+        if not (isinstance(sigma, (int, float)) and sigma > 0):
+            raise ValueError("sigma must be a positive number")
+    if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
+        raise ValueError("ref_shape must be a list or tuple of length 2")
+    if not (isinstance(file_list, (list, np.ndarray)) and file_list):
+        raise ValueError("file_list must be a non-empty list")
+    if not isinstance(apply_weight, bool):
+        raise TypeError("apply_weight must be a boolean")
+    if not isinstance(apply_mask, bool):
+        raise TypeError("apply_mask must be a boolean")
     if chunk_maps is None:
         chunk_maps = []
-    assert isinstance(chunk_maps, list), "chunk_maps must be a list of ndarrays"
+    if not isinstance(chunk_maps, list):
+        raise TypeError("chunk_maps must be a list of ndarrays")
     K = len(chunk_maps)
     if offset_lists is not None:
-        assert len(offset_lists) == K, f"offset_lists length must match chunk_maps ({K})"
+        if len(offset_lists) != K:
+            raise ValueError(f"offset_lists length must match chunk_maps ({K})")
     if det_offset_funcs is not None:
-        assert len(det_offset_funcs) == K, f"det_offset_funcs length must match chunk_maps ({K})"
-    assert grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray), "grid_valid_weight must be a numpy array"
-    assert isinstance(max_workers, int) and max_workers > 0, "max_workers must be a positive integer"
-    assert isinstance(ignore_list, (list, np.ndarray)), "ignore_list must be a list or array of data quality flags to ignore"
-    assert isinstance(oversample_factor, int) and oversample_factor > 0, "oversample_factor must be a positive integer"
-    assert isinstance(batch_size, int) and batch_size > 0, "batch_size must be a positive integer"
-    assert use_cached & (mode == 'cache') == False, "use_cached and mode='cache' cannot both be True"
+        if len(det_offset_funcs) != K:
+            raise ValueError(f"det_offset_funcs length must match chunk_maps ({K})")
+    if not (grid_valid_weight is None or isinstance(grid_valid_weight, np.ndarray)):
+        raise TypeError("grid_valid_weight must be a numpy array")
+    if not (isinstance(max_workers, int) and max_workers > 0):
+        raise ValueError("max_workers must be a positive integer")
+    if not isinstance(ignore_list, (list, np.ndarray)):
+        raise TypeError("ignore_list must be a list or array of data quality flags to ignore")
+    if not (isinstance(oversample_factor, int) and oversample_factor > 0):
+        raise ValueError("oversample_factor must be a positive integer")
+    if not (isinstance(batch_size, int) and batch_size > 0):
+        raise ValueError("batch_size must be a positive integer")
+    if not (use_cached & (mode == 'cache') == False):
+        raise ValueError("use_cached and mode='cache' cannot both be True")
     if use_cached:
-        assert os.path.isdir(cache_dir), "cache_dir must be a valid directory when use_cached is True"
+        if not os.path.isdir(cache_dir):
+            raise ValueError("cache_dir must be a valid directory when use_cached is True")
 
     # Pack parameters
     params = {

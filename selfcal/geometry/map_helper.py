@@ -1,18 +1,21 @@
-from xml.parsers.expat import errors
-from tqdm import tqdm
+import logging
+
 import numpy as np
 
 from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix, csr_matrix
-import cv2
 
 from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
 from scipy.optimize import minimize
 from scipy.ndimage import map_coordinates
 
-def bit_to_bool(bitmask_array, ignore_list=[], bitmask_header=None, invert=False, expand_bits=False):
+logger = logging.getLogger(__name__)
+
+def bit_to_bool(bitmask_array, ignore_list=None, bitmask_header=None, invert=False, expand_bits=False):
     # By default, 1 indicates bad pixels and 0 indicates good pixels.
     # If invert=True, this is flipped.
+    if ignore_list is None:
+        ignore_list = []
     ignore_mask_val = np.uint32(0)
     for item in ignore_list:
         bit = bitmask_header[item] if bitmask_header is not None else item
@@ -68,11 +71,11 @@ def make_weight(frame, sigma=1.4, floor=1e-4):
     Bright pixels get down-weighted ∝ 1/sqrt(brightness), so the per-row L2
     contribution (∝ w²) is ∝ 1/brightness — matching shot-noise variance.
 
-    Previously this used 1/frame² (assumes variance ∝ brightness⁴, ~10000x
-    suppression at bright cirrus vs dim sky) which was too aggressive and
-    ill-conditioned the solve. The Poisson form keeps ~10x dynamic range
-    between dim and bright pixel weight, enough to break the sky→offset
-    leakage that causes bowl-around-cirrus without losing solve stability.
+    Do not steepen this to 1/frame² (that assumes variance ∝ brightness⁴):
+    the ~10000x bright-vs-dim suppression ill-conditions the solve. The
+    Poisson form keeps ~10x dynamic range between dim and bright pixels —
+    enough to break the sky→offset leakage that produces bowls around bright
+    cirrus, while keeping the solve stable.
     '''
     abs_frame = np.abs(frame) + floor
     weight = 1.0 / np.sqrt(abs_frame)
@@ -103,36 +106,25 @@ def compute_chunk_edges(det_shape, chunk_size):
     
     return x_edges, y_edges
 
-# def bin2d_last_axes(arr, bin_factor):
-#     d, h, w = arr.shape
-#     assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
-
-#     h_bins = h // bin_factor
-#     w_bins = w // bin_factor
-
-#     # Reshape and average
-#     reshaped = arr.reshape(d, h_bins, bin_factor, w_bins, bin_factor)
-#     binned = reshaped.mean(axis=(2, 4))
-
-#     return binned
-
 def bin2d(arr, bin_factor, bin_func=np.mean):
     """
     Bins a 2D array or a stack of 2D arrays (3D) by a given factor.
     """
     if arr.ndim == 2:
         h, w = arr.shape
-        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        if not (h % bin_factor == 0 and w % bin_factor == 0):
+            raise ValueError("h and w must be divisible by bin_factor")
         h_bins = h // bin_factor
         w_bins = w // bin_factor
-        
+
         # Reshape and apply function for a single 2D array
         reshaped = arr.reshape(h_bins, bin_factor, w_bins, bin_factor)
         binned = bin_func(reshaped, axis=(1, 3))
-        
+
     elif arr.ndim == 3:
         num_layers, h, w = arr.shape
-        assert h % bin_factor == 0 and w % bin_factor == 0, "h and w must be divisible by bin_factor"
+        if not (h % bin_factor == 0 and w % bin_factor == 0):
+            raise ValueError("h and w must be divisible by bin_factor")
         h_bins = h // bin_factor
         w_bins = w // bin_factor
         
@@ -150,14 +142,25 @@ def bin2d_cv(arr, bin_factor):
     Bins a 2D array using cv2.resize.
     This is only appropriate for mean-binning.
     """
+    # Lazy import: opencv-python is only needed by this cv2-backed binner, so it
+    # stays out of the module-import path (and off the dependency list for the
+    # rest of the package).
+    try:
+        import cv2
+    except ImportError as e:
+        raise ImportError(
+            "bin2d_cv requires opencv-python (cv2); install it with "
+            "`pip install opencv-python` to use the cv2-backed binner."
+        ) from e
+
     if arr.ndim != 2:
         raise ValueError("OpenCV resize only suitable for 2D arrays in this context.")
-        
+
     h, w = arr.shape
     if not (h % bin_factor == 0 and w % bin_factor == 0):
         # cv2.resize can handle this, but it's not a true 'binning'
         # if the dimensions are not multiples.
-        print("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
+        logger.warning("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
 
     h_new, w_new = h // bin_factor, w // bin_factor
     
@@ -171,8 +174,10 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
     Fast binning of a COO sparse matrix shaped (N, height * width), where the second axis is a flattened 2D grid.
     Performs 2D average pooling with bin_factor.
     """
-    assert isinstance(mat, coo_matrix), "Input must be COO format"
-    assert height % bin_factor == 0 and width % bin_factor == 0
+    if not isinstance(mat, coo_matrix):
+        raise TypeError("Input must be COO format")
+    if not (height % bin_factor == 0 and width % bin_factor == 0):
+        raise ValueError
 
     row, flat_col, data = mat.row, mat.col, mat.data
 
@@ -187,7 +192,10 @@ def bin2d_coo_matrix(mat, height, width, bin_factor):
 
     # Normalize to get average
     binned.data /= (bin_factor * bin_factor)
-    # binned.sum_duplicates()
+    # Duplicates (several source pixels landing in one output bin) are left
+    #  unsummed on purpose: scipy treats duplicate COO entries as implicitly
+    #  summed, and any conversion (tocsr/todense/matvec) performs that sum, so
+    #  sum_duplicates() here would only canonicalize storage at extra cost.
     return binned
 
 def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
@@ -223,7 +231,9 @@ def chunk_to_det(chunk_map, chunk_data):
 
 def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     """
-    Optimized generation of sparse interpolation matrix.
+    Build a sparse bilinear-interpolation matrix (CSR, shape (N_total, H*W))
+    mapping a flattened (H, W) source grid to N_total fractional sample
+    coordinates; rows with non-finite coordinates are left structurally empty.
 
     Parameters
     ----------
@@ -275,9 +285,9 @@ def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     rf_inv = 1.0 - r_frac
     cf_inv = 1.0 - c_frac
 
-    # 3. Optimized Bounds Check (The bottleneck fix)
-    # Instead of creating 'all_r' (size 4N), check bounds on 'r0' (size N)
-    # Pre-calculate boolean masks for rows/cols being inside image
+    # 3. Bounds check. Test r0/c0 (size-N arrays) and derive the four
+    # per-corner in-bounds masks from them, rather than materializing
+    # 4N-sized expanded corner-coordinate arrays just to range-test them.
     in_r0 = (r0 >= 0) & (r0 < H)
     in_c0 = (c0 >= 0) & (c0 < W)
     in_r1 = (r0 + 1 >= 0) & (r0 + 1 < H)
@@ -409,8 +419,9 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
     The function f(x) is constructed as the derivative of a monotonic
     cubic spline F(x), where F(x) is the integral of f(x).
     """
-    assert len(x_edge) == len(y_mean) + 1, \
-        "Length of x_edge must be 1 more than the length of y_mean."
+    if len(x_edge) != len(y_mean) + 1:
+        raise ValueError(
+            "Length of x_edge must be 1 more than the length of y_mean.")
 
     x_edge = np.asarray(x_edge, dtype=float)
     y_mean = np.asarray(y_mean, dtype=float)
@@ -440,7 +451,8 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
 
 
 def arc_spline(x_sample, y_sample, return_params=False):
-    assert len(x_sample) == len(y_sample), "x and y must be the same length."
+    if len(x_sample) != len(y_sample):
+        raise ValueError("x and y must be the same length.")
 
     def _arc_cost(params, x, y):
         xc, yc, R = params
@@ -448,7 +460,7 @@ def arc_spline(x_sample, y_sample, return_params=False):
         errors = distances - R
         return np.sum(errors**2)
 
-    yc_guess = 10000#np.mean(y)
+    yc_guess = 10000  # the LVF edge arcs are shallow (R ~ 1e4 px), so the circle center sits far above the detector; seed it there
     xc_guess = np.median(x_sample)
     R_guess = np.mean(np.sqrt((x_sample - xc_guess)**2 + (y_sample - yc_guess)**2))
 
@@ -542,8 +554,8 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
     if chunk_map is None:
         return None
 
-    print(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
-    
+    logger.info(f"Pre-computing adjacency matrix (Axis: {reg_axis})...")
+
     all_i_list = []
     all_j_list = []
 
@@ -581,7 +593,7 @@ def compute_chunk_adjacency(chunk_map, reg_axis='both'):
         unique_pairs = np.unique(np.stack([all_i[mask], all_j[mask]], axis=1), axis=0)
         return (unique_pairs[:, 0], unique_pairs[:, 1])
     else:
-        print("Warning: No adjacency pairs found.")
+        logger.warning("Warning: No adjacency pairs found.")
         return None
     
 def mean_preserving_spline_2d(y_edges, x_edges, means, x_degree=3, y_degree=3):
@@ -674,8 +686,8 @@ def make_grid_chunk_map(det_shape, n_chunks_per_side):
 
     Generic detector geometry (e.g. broadband imagers such as Euclid NISP). Each
     cell is ``det_h // n`` x ``det_w // n`` px; any remainder rows/cols on the
-    high edge fall in the last cell. Mirrors the hand-rolled square-chunk helper
-    the Euclid notebook used.
+    high edge fall in the last cell. This is the square-chunk layout used by
+    ``notebooks/euclid_mosaic.ipynb``.
     """
     det_h, det_w = det_shape
     chunk_h = det_h // n_chunks_per_side

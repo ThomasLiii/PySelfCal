@@ -227,7 +227,20 @@ clarity:
   `A` and `A^T` into row-blocks and runs CSR SpMV in a `ThreadPoolExecutor`,
   with BLAS pinned to a single thread via `threadpool_limits`. Both `lsmr`
   and `lsqr` solvers are supported. Column-layout-agnostic (works for any K
-  and any scalar/no-scalar configuration).
+  and any scalar/no-scalar configuration). Also accepts a
+  [`core/blockcsr.py`](core/blockcsr.py) `BlockCSR` (see below).
+
+- **[`core/blockcsr.py`](core/blockcsr.py)** — `BlockCSR`: row-block list
+  representation that `setup_lsqr` emits instead of one giant CSR once total
+  nnz reaches 2^31 (env `SELFCAL_BLOCK_NNZ` overrides). A unified scipy CSR
+  at that scale is forced to int64 indices (+nnz*4 bytes held, +nnz*8 upcast
+  copy at construction, +50% index bytes per SpMV); per-block int32 stays
+  bit-identical because matvec is row-local and the transpose product is
+  reproduced by scattering blocks sequentially into one shared output
+  (`_sparsetools.csc_matvec` accumulates in the same global row order as the
+  unified CSC product). `compute_x0_scalar_only` consumes it too;
+  `compute_x0_from_Ab` (k2-style full-offset warm starts) intentionally does
+  not.
 
 - **`parse_pixel_counts` (in [`core/system.py`](core/system.py))** —
   Separates sky-pixel coverage from per-map chunk coverage and returns lists
@@ -622,6 +635,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/assembly.py`](core/assembly.py) | `_prep_lsqr` + shared-memory batch worker. |
 | [`core/system.py`](core/system.py) | `setup_lsqr` + coverage/Fisher parsers + line-mask. |
 | [`core/solve.py`](core/solve.py) | `apply_lsqr` + thread-parallel SpMV operator. |
+| [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |
 | [`core/coadd.py`](core/coadd.py) | Parallel mean / std / sigma-clip coaddition + caching. |

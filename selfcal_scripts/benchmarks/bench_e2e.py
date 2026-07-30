@@ -1,9 +1,12 @@
-"""Time-bounded end-to-end before/after harness for the perf/algo-optimizations work.
+"""Time-bounded end-to-end before/after harness for pipeline performance changes:
+compares any two git refs of selfcal/ phase-by-phase on identical inputs and
+machine state.
 
 Runs the full D3 Ch17 NumCol=3 pipeline (cal setup_lsqr + apply + mosaic
 cache/mean/std/sigma_clip + wav) on a fixed --n-frames subset of the NVMe-staged
-reproj files, with the production 48/50 config, phase-timed (wall + peak RSS) via
-the shared PhaseTracker. Same harness on the pre-change SelfCal (git checkout
+reproj files, with the production parallelism config (max_workers=48; cal
+batch_size, mosaic cache_batch_size and coadd_batch_size all 50), phase-timed
+(wall + peak RSS) via the shared PhaseTracker. Same harness on the pre-change SelfCal (git checkout
 <parent> -- selfcal/) vs the changed selfcal gives a clean per-phase delta on
 identical machine state.
 
@@ -52,6 +55,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import argparse
+import logging
 import signal
 import subprocess
 import sys
@@ -202,7 +206,7 @@ def _run_once(label, n_frames, max_workers):
 # ---------------------------------------------------------------------------
 
 def _git(*args, capture=False):
-    """Thin wrapper around git so we can swap a dry-run flag in later if needed."""
+    """Run git in REPO_ROOT; with capture=True, return stripped stdout instead of streaming."""
     cmd = ['git'] + list(args)
     if capture:
         out = subprocess.run(cmd, cwd=REPO_ROOT, check=True,
@@ -272,6 +276,10 @@ def _orchestrate(before_ref, after_ref, label, n_frames, max_workers):
 
 
 def main():
+    # selfcal library logs -> plain stdout, matching the historical print()
+    # console output byte-for-byte (log parsers match on these lines).
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--n-frames', type=int, default=4000)
     ap.add_argument('--label', required=True)

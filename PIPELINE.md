@@ -122,6 +122,14 @@ Key knobs:
 - For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape)` — diagonal-LS over the full offset region.
 - `iter_lim=50` is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
 - `precondition=True` (column-norm) is essential — much faster convergence.
+- **Memory env knobs** (defaults need no tuning): `SELFCAL_BLOCK_NNZ` —
+  nnz threshold at which `setup_lsqr` emits an int32 `BlockCSR` instead of a
+  unified CSR (default `2**31`, the point where scipy would force int64
+  indices; outputs are bit-identical either way). `SELFCAL_SPILL_MIN_GB`
+  (default 4) / `SELFCAL_SPILL_DIR` (default system tmp) — `Calibrator.apply_lsqr`
+  spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
+  duration of the solve when they exceed the threshold (exact byte
+  round-trip; ~1 min I/O against a multi-hour production solve).
 - `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. Default `n_threads=48` (tuned 2026-05).
 
 `det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.

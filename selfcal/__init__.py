@@ -2,8 +2,9 @@
 
 Supports SPHEREx (LVF spectral) and Euclid (broadband) data. The curated names
 below are the high-level API; lower-level functions live in the submodules
-(``selfcal.core``, ``selfcal.geometry``, ``selfcal.io``) or the back-compat
-real submodules.
+(``selfcal.core``, ``selfcal.geometry``, ``selfcal.io``, ``selfcal.models``);
+``selfcal.core.lsqr`` remains as a back-compat re-export of the split
+assembly/system/solve modules.
 
 Quick start::
 
@@ -25,25 +26,34 @@ Spectral / arbitrary-template fitting (any number of components)::
 """
 __version__ = "0.1.0"
 
-from ._state import set_hdd_io_limit
+import logging as _logging
+
+# Library convention: selfcal never configures logging for the application.
+# Every module logs to logging.getLogger(__name__) under this "selfcal" root;
+# the NullHandler silences it until the application attaches its own handler
+# (e.g. logging.basicConfig(level=logging.INFO, format="%(message)s") for the
+# plain console output the pipeline scripts use).
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from ._state import set_hdd_io_limit, set_progress
 from .pipeline.pipeline_wrapper import (PipelineConfig, Reprojector, Calibrator,
                                        Mosaicker)
 from .models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
                                SpectralComponent, LineComponent)
-from .models.profiles import (SpectralProfile, GaussianProfile, TemplateProfile,
-                              QuadratureSigma, LineProfile)
+from .models.profiles import (SpectralProfile, GaussianProfile, LinearProfile,
+                              TemplateProfile, QuadratureSigma, LineProfile)
 from .models.offset_model import OffsetModel, OffsetBlock
 from .core.layout import SystemLayout
 from .pipeline.tiled import TiledCalibration, TileSpec, make_tile_grid
 from .config import resolve_path, SelfCalConfigError
 
 __all__ = [
-    "set_hdd_io_limit",
+    "set_hdd_io_limit", "set_progress",
     "PipelineConfig", "Reprojector", "Calibrator", "Mosaicker",
     "SkyModel", "SkyComponent", "ContinuumComponent", "SpectralComponent",
     "LineComponent",
-    "SpectralProfile", "GaussianProfile", "TemplateProfile", "QuadratureSigma",
-    "LineProfile",
+    "SpectralProfile", "GaussianProfile", "LinearProfile", "TemplateProfile",
+    "QuadratureSigma", "LineProfile",
     "OffsetModel", "OffsetBlock",
     "SystemLayout",
     "TiledCalibration", "TileSpec", "make_tile_grid",
