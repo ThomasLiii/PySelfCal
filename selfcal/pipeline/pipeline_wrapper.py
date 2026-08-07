@@ -654,6 +654,7 @@ class Calibrator(Reprojector):
                    poly_constraints_list: list | None = None,
                    mean_offsets_list: list | None = None, poly_basis_list: list | None = None,
                    det_groups_list: list | None = None, det_templates: list | None = None,
+                   chunk_scales: list | None = None,
                    use_per_frame_scalar: bool = False,
                    postprocess_func: Callable | None = None,
                    preprocess_func: Callable | None = None,
@@ -812,6 +813,7 @@ class Calibrator(Reprojector):
             poly_constraints_list = om['poly_constraints_list']
             mean_offsets_list = om['mean_offsets_list']
             poly_basis_list = om['poly_basis_list']
+            chunk_scales = om['chunk_scales']
             use_per_frame_scalar = om['use_per_frame_scalar']
         elif chunk_maps is not None:
             warnings.warn(
@@ -846,6 +848,7 @@ class Calibrator(Reprojector):
         _check_len('mean_offsets_list', mean_offsets_list)
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
+        _check_len('chunk_scales', chunk_scales)
 
         # Resolve the sky model. sky_model= is the forward-looking API; the
         # legacy spectral_fit flag is a deprecated shim that builds the
@@ -882,6 +885,7 @@ class Calibrator(Reprojector):
                 poly_basis_list=poly_basis_list,
                 det_groups_list=det_groups_list,
                 det_templates=det_templates,
+                chunk_scales=chunk_scales,
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
@@ -925,7 +929,10 @@ class Calibrator(Reprojector):
             self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
             num_frames=num_frames, det_groups_list=det_groups_list,
             det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar,
-            poly_basis_list=poly_basis_list)
+            poly_basis_list=poly_basis_list,
+            suppress_group_scalars=(not use_per_frame_scalar
+                                    and chunk_scales is not None
+                                    and any(cs is not None for cs in chunk_scales)))
         self.chunk_maps = chunk_maps
         self.frame_to_groups = self.layout.frame_to_group_list
         self.num_offset_groups_list = self.layout.num_offset_groups_list

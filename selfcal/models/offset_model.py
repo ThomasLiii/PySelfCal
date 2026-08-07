@@ -81,6 +81,17 @@ class OffsetBlock:
         ``chunk_group`` (per-chunk coordinate / group-index arrays). When set,
         ``adj_info``/``reg_weight``/``poly_constraints`` for this block are
         ignored (the polynomial is exact, no weight knob).
+    chunk_scale : np.ndarray or None
+        Per-(frame, chunk) known multiplier on this block's chunk
+        contributions, shape ``(num_frames, num_chunks)``. The solved unknown
+        for chunk ``j`` then scales the *pattern* ``chunk_scale[k, j]`` in
+        frame ``k`` instead of being the offset value itself:
+        ``offset_k(j) = x_j * chunk_scale[k, j]``. Combined with
+        ``det_groups=np.zeros(num_frames)`` (one shared group) this fits a
+        physical template with a per-chunk amplitude shared by ALL frames —
+        e.g. a zodi prediction ``Z[k, j]`` with a per-chunk multiplicative
+        correction ``c(j)`` solved jointly with the sky. Incompatible with
+        ``template`` / ``poly_basis`` on the same block.
     """
 
     chunk_map: np.ndarray
@@ -91,6 +102,7 @@ class OffsetBlock:
     poly_constraints: object = None
     mean_offset: object = None
     poly_basis: object = None
+    chunk_scale: object = None
 
 
 @dataclass(frozen=True)
@@ -144,5 +156,6 @@ class OffsetModel:
             'poly_constraints_list': [b.poly_constraints for b in self.blocks],
             'mean_offsets_list': [b.mean_offset for b in self.blocks],
             'poly_basis_list': [b.poly_basis for b in self.blocks],
+            'chunk_scales': [b.chunk_scale for b in self.blocks],
             'use_per_frame_scalar': self.use_per_frame_scalar,
         }

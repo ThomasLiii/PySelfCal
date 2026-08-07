@@ -40,6 +40,8 @@ def _prep_lsqr(task_params):
     scalar_col_start = task_params['scalar_col_start']
     num_scalar_cols = task_params['num_scalar_cols']
     det_template_list = task_params['det_template_list']
+    chunk_scale_list = (task_params.get('chunk_scale_list')
+                        or [None] * len(task_params['chunk_maps']))
     chunk_maps = task_params['chunk_maps']
     K = len(chunk_maps)
 
@@ -178,6 +180,12 @@ def _prep_lsqr(task_params):
                     O_data_parts.append(w_cv * B[:, k])
             else:
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
+                if chunk_scale_list[m] is not None:
+                    # Known per-(frame, chunk) pattern: the solved unknown is an
+                    # amplitude on scale[k, j] (e.g. a per-chunk multiplicative
+                    # correction to a zodi prediction), shared across frames via
+                    # det_groups.
+                    _fw = _fw * chunk_scale_list[m][index, chunk_idx_m]
                 O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(col_bases[m]
                                     + (group_idx_list[m] * num_chunks_list[m])

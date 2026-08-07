@@ -74,7 +74,8 @@ class SystemLayout:
               det_groups_list: list[np.ndarray | None] | None = None,
               det_templates: list[np.ndarray | None] | None = None,
               use_per_frame_scalar: bool = False,
-              poly_basis_list: list[dict | None] | None = None) -> SystemLayout:
+              poly_basis_list: list[dict | None] | None = None,
+              suppress_group_scalars: bool = False) -> SystemLayout:
         """Compute the column layout from the setup inputs.
 
         ``det_groups_list`` / ``det_templates`` / ``poly_basis_list`` may be
@@ -112,6 +113,16 @@ class SystemLayout:
             Per-map hard polynomial-basis spec (with keys such as
             ``'num_groups'``) or ``None``; incompatible with ``det_groups_list``
             / ``det_templates`` for the same map.
+        suppress_group_scalars : bool, optional
+            Historically, any map with ``det_groups`` forces the per-frame
+            scalar block (grouped offsets cannot absorb per-frame DC, so the
+            scalars catch it). Chunk-scale template solves need the opposite:
+            NO per-frame freedom at all, so the template cannot be traded
+            against a per-frame DC (with a near-separable pattern like a zodi
+            prediction, ``c_j -> c_j - d/shape_j`` + scalars absorbing
+            ``d*level_k`` is an exact null direction). Setting this True
+            honors ``use_per_frame_scalar=False`` even when det_groups are
+            present. Explicit ``use_per_frame_scalar=True`` still wins.
 
         Returns
         -------
@@ -176,7 +187,10 @@ class SystemLayout:
             num_chunks_list.append(num_chunks_m)
             det_template_arr_list.append(tmpl)
 
-        num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
+        num_scalar_cols = (num_frames
+                           if (use_per_frame_scalar
+                               or (any_det_groups and not suppress_group_scalars))
+                           else 0)
 
         num_sky = int(ref_shape[0]) * int(ref_shape[1])
         col_bases = [num_sky_blocks * num_sky]

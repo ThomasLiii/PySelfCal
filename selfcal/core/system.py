@@ -83,6 +83,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                mean_offsets_list: list | None = None, det_groups_list: list | None = None,
                det_templates: list | None = None,
                poly_basis_list: list | None = None,
+               chunk_scales: list | None = None,
                use_per_frame_scalar: bool = False,
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
@@ -161,6 +162,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
+    chunk_scales : list or None
+        Per-map ``(num_frames, num_chunks)`` known multipliers (length K).
+        When set for map m, each chunk contribution in frame k is scaled by
+        ``chunk_scales[m][k, j]``, so the solved per-chunk unknown is an
+        amplitude on that pattern (``offset_k(j) = x_j * scale[k, j]``) rather
+        than the offset value itself. Pair with a single shared det_group to
+        fit a physical template (e.g. a per-frame zodi prediction) with one
+        multiplicative correction per chunk shared across all frames.
+        Incompatible with ``det_templates`` / ``poly_basis_list`` on the same
+        map.
     compact_zero_columns : bool, optional
         Enable the early drop of zero-coverage columns from the assembled
         CSR (default True); ``apply_lsqr`` then skips its own full-nnz
@@ -277,6 +288,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
     poly_basis_list = _default(poly_basis_list, None)
+    chunk_scales = _default(chunk_scales, None)
 
     # Normalize and validate poly-constraint groups: each entry is None or a
     # non-empty list of dicts; each dict has matching chains.shape[1] == len(stencil).
@@ -319,9 +331,34 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates),
-                      ('poly_basis_list', poly_basis_list)):
+                      ('poly_basis_list', poly_basis_list),
+                      ('chunk_scales', chunk_scales)):
         if len(arr) != K:
             raise ValueError(f"{name} must have length {K} (got {len(arr)})")
+
+    # chunk_scale validation: float64 contiguous, correct shape, and only on
+    # plain per-chunk maps (the scale multiplies the plain branch's entries;
+    # template / poly-basis maps have their own column semantics).
+    _n_frames_cs = len(file_list)
+    _normalized_cs = []
+    for m, cs in enumerate(chunk_scales):
+        if cs is None:
+            _normalized_cs.append(None)
+            continue
+        if det_templates[m] is not None or poly_basis_list[m] is not None:
+            raise ValueError(
+                f"chunk_scales[{m}] is incompatible with det_templates / "
+                f"poly_basis_list on the same map")
+        cs = np.ascontiguousarray(cs, dtype=np.float64)
+        n_chunks_m = int(np.max(chunk_maps[m])) + 1
+        if cs.shape != (_n_frames_cs, n_chunks_m):
+            raise ValueError(
+                f"chunk_scales[{m}] must have shape (num_frames, num_chunks) = "
+                f"({_n_frames_cs}, {n_chunks_m}); got {cs.shape}")
+        if not np.all(np.isfinite(cs)):
+            raise ValueError(f"chunk_scales[{m}] contains non-finite values")
+        _normalized_cs.append(cs)
+    chunk_scales = _normalized_cs
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -376,10 +413,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # pipeline_wrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
     # column arithmetic can never drift.
     any_det_groups = any(g is not None for g in det_groups_list)
+    # Chunk-scale template solves suppress the auto per-frame scalars unless
+    # explicitly requested — the whole point of the template is zero per-frame
+    # freedom (see SystemLayout.build docstring).
+    _suppress_scalars = (not use_per_frame_scalar
+                         and any(cs is not None for cs in chunk_scales))
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list)
+        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list,
+        suppress_group_scalars=_suppress_scalars)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
@@ -421,6 +464,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
+        'chunk_scale_list': chunk_scales,
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
