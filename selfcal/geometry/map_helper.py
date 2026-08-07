@@ -92,6 +92,37 @@ def find_outliers(data, threshold=3):
     z_score = (data - median)/nmad
     return np.abs(z_score) > threshold
 
+
+def find_outliers_grouped(data, group_ids, threshold=3):
+    '''Robust outlier flag computed WITHIN each group separately.
+
+    Like :func:`find_outliers` but the median + NMAD (hence the z-score) are
+    computed within each ``group_ids`` value rather than over the whole array.
+    For SPHEREx the group is the SUBCHANNEL, so a bright star pixel is judged
+    against its own subchannel's sky (not the frame-wide distribution that mixes
+    subchannels of very different brightness). NaN data are ignored; groups with
+    < 3 finite pixels or zero NMAD flag nothing. Same (H, W) bool return.
+    '''
+    out = np.zeros(np.shape(data), dtype=bool)
+    fd = np.asarray(data).ravel()
+    fg = np.asarray(group_ids).ravel()
+    fo = out.ravel()
+    finite = np.isfinite(fd)
+    if not finite.any():
+        return out
+    for g in np.unique(fg[finite]):
+        m = finite & (fg == g)
+        if m.sum() < 3:
+            continue
+        d = fd[m]
+        med = np.median(d)
+        nmad = 1.4826 * np.median(np.abs(d - med))
+        if nmad == 0:
+            continue
+        sel = np.nonzero(m)[0]
+        fo[sel[np.abs((d - med) / nmad) > threshold]] = True
+    return out
+
 def map_pixels(wcs_in, wcs_out, x_in, y_in):
     ra, dec = wcs_in.pixel_to_world_values(x_in, y_in)
     x_out, y_out = wcs_out.world_to_pixel_values(ra, dec)

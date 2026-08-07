@@ -646,7 +646,8 @@ class Calibrator(Reprojector):
                    oversample_factor: int = 1,
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
-                   outlier_thresh: float = 3.0, ignore_list: list[int] | None = None,
+                   outlier_thresh: float = 3.0, outlier_subchannel_edges=None,
+                   ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
                    reg_weights: list[float] | None = None, adj_infos: list | None = None,
@@ -824,9 +825,16 @@ class Calibrator(Reprojector):
                 "removed in a future release.",
                 DeprecationWarning, stacklevel=2)
 
-        if not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
+        # K=0 (empty chunk_maps) is allowed ONLY for a sky-only solve: no offset
+        # columns, the offset already subtracted from the data (e.g. two-pass
+        # pass 2). Requires a sky_model + det_aux so there is still something to
+        # fit. Otherwise a non-empty chunk_maps list is required.
+        sky_only = (isinstance(chunk_maps, list) and len(chunk_maps) == 0
+                    and sky_model is not None)
+        if not sky_only and not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
             raise ValueError(
-                "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)")
+                "chunk_maps must be a non-empty list of ndarrays (or pass "
+                "offset_model=), unless sky-only (empty chunk_maps + sky_model)")
         K = len(chunk_maps)
 
         def _check_len(name, val):
@@ -865,6 +873,7 @@ class Calibrator(Reprojector):
                 grid_valid_weight=grid_valid_weight,
                 apply_mask=apply_mask, apply_weight=apply_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh,
+                outlier_subchannel_edges=outlier_subchannel_edges,
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
