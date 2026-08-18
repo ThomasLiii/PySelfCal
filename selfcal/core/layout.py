@@ -147,14 +147,25 @@ class SystemLayout:
             cm = chunk_maps[m]
             pb = poly_basis_list[m]
             if pb is not None:
-                # Hard poly-basis: columns are a[frame, col, d] coeffs. Reuse the
-                # chunk machinery: num_chunks := num_col*degree, one group/frame.
-                if not (det_groups_list[m] is None and det_templates[m] is None):
+                # Hard poly-basis: columns are a[group, col, d] coeffs. Reuse the
+                # chunk machinery: num_chunks := num_col*n_coef. Without
+                # det_groups there is one group per frame (the standard per-frame
+                # polynomial offset). WITH det_groups the coefficients are SHARED
+                # across the frames of each group — a single group makes the
+                # polynomial one curve for the whole run, which is what a
+                # physical template correction wants (pair with include_dc,
+                # since no per-frame scalar then owns the DC).
+                if det_templates[m] is not None:
                     raise ValueError(
-                        f"poly_basis[{m}] is incompatible with det_groups/det_templates")
+                        f"poly_basis[{m}] is incompatible with det_templates")
                 from ..models.offset_basis import n_coef as _n_coef
-                ftg = np.arange(num_frames)
-                num_offset_groups_m = num_frames
+                if det_groups_list[m] is None:
+                    ftg = np.arange(num_frames)
+                    num_offset_groups_m = num_frames
+                else:
+                    _uniq, ftg = np.unique(np.asarray(det_groups_list[m]),
+                                           return_inverse=True)
+                    num_offset_groups_m = len(_uniq)
                 num_chunks_m = int(pb['num_groups']) * _n_coef(pb)
                 tmpl = None
                 frame_to_group_list.append(ftg)

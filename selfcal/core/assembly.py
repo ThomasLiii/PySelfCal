@@ -172,6 +172,12 @@ def _prep_lsqr(task_params):
                 grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
                 B = eval_offset_basis(coord, pb)                                 # (n, ncf)
                 w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
+                if chunk_scale_list[m] is not None:
+                    # Template-under-polynomial: the solved coefficients multiply
+                    # B_d(coord) * scale[frame, chunk], so the offset is a smooth
+                    # polynomial correction TO a known per-frame pattern (e.g.
+                    # c(lambda) * zodi prediction) rather than to a bare 1.
+                    w_cv = w_cv * chunk_scale_list[m][index, chunk_idx_m]
                 base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
                 coeff_base = grp * ncf                                           # + k below
                 for k in range(ncf):

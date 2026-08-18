@@ -82,10 +82,18 @@ def sky_damping_block(block_index, weight, coverage, num_sky):
                            np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
 
 
-def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
+def offset_damping_block(weight, offset_block_coverage, num_sky_eff, target=None):
     """Coverage-weighted damping on the offset columns (``damp_offset``).
 
     Columns are ``num_sky_eff + valid_offset_cols``. Returns None if empty.
+
+    ``target`` (same length as ``offset_block_coverage``) pulls each column
+    toward that value instead of toward zero — Tikhonov about a PRIOR MEAN.
+    The motivating case is a physical offset prediction (e.g. a zodi template):
+    a frame whose offset is well constrained by sky crossings still moves
+    freely, while an under-constrained one relaxes to the predicted offset
+    rather than drifting into absorbing sky emission. ``None`` (default) keeps
+    the classic damp-toward-zero and is byte-identical to before.
     """
     valid = np.nonzero(offset_block_coverage)[0]
     if len(valid) == 0:
@@ -93,5 +101,9 @@ def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
     data = np.sqrt(weight * offset_block_coverage[valid]).astype(np.float32)
     n = len(valid)
     cols = (valid + num_sky_eff).astype(np.int64, copy=False)
+    if target is None:
+        b = np.zeros(n, dtype=np.float64)
+    else:
+        b = (data.astype(np.float64) * np.asarray(target, dtype=np.float64)[valid])
     return ConstraintBlock(np.arange(n, dtype=np.int64), cols, data,
-                           np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
+                           b, num_rows=n, nnz_per_row=1)

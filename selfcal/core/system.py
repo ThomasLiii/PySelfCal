@@ -89,6 +89,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.1,
                damp_offset: float = 0.0,
+               offset_prior: dict | None = None,
                det_aux: list[np.ndarray] | None = None,
                spectral_fit: bool = False, line_center: float | None = None,
                line_sigma: float | None = None,
@@ -213,6 +214,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Coverage-weighted damping weight for the continuum sky block (default 0.1).
     damp_offset : float, optional
         Coverage-weighted damping weight for the offset columns; 0 disables it.
+    offset_prior : dict or None, optional
+        Tikhonov toward a PRIOR MEAN instead of toward zero:
+        ``{'weight': float, 'target': 1-D array, 'mask': optional bool array}``
+        where ``target`` is indexed
+        like the offset+scalar column span (``total_cols - num_sky_eff``). Each
+        column is pulled toward its target with coverage weighting, so
+        well-constrained frames still move freely while under-constrained ones
+        relax to the prediction. Intended for a physical offset model (a zodi
+        template): it stops an under-determined per-frame offset from drifting
+        into absorbing sky emission, without removing the per-frame freedom
+        that keeps survey-footprint fringes out of the map. ``None`` disables
+        it (byte-identical to before).
     det_aux : list of np.ndarray or None, optional
         Detector-grid auxiliary maps ``[BC_map]`` (optionally ``[BC_map, BW_map]``)
         required by a spectral ``sky_model`` to evaluate the line coefficient per
@@ -345,10 +358,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if cs is None:
             _normalized_cs.append(None)
             continue
-        if det_templates[m] is not None or poly_basis_list[m] is not None:
+        if det_templates[m] is not None:
             raise ValueError(
-                f"chunk_scales[{m}] is incompatible with det_templates / "
-                f"poly_basis_list on the same map")
+                f"chunk_scales[{m}] is incompatible with det_templates on the "
+                f"same map")
         cs = np.ascontiguousarray(cs, dtype=np.float64)
         n_chunks_m = int(np.max(chunk_maps[m])) + 1
         if cs.shape != (_n_frames_cs, n_chunks_m):
@@ -755,6 +768,33 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         logger.info(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
         n_offset_cols = scalar_col_start - num_sky_eff
         blk = offset_damping_block(damp_offset, offset_pixel_counts[:n_offset_cols], num_sky_eff)
+        if blk is not None:
+            constraint_blocks.append(blk.as_dict())
+
+    # --- Offset prior (Tikhonov about a predicted offset, not about zero) ---
+    if offset_prior is not None:
+        pw = float(offset_prior['weight'])
+        tgt = np.asarray(offset_prior['target'], dtype=np.float64)
+        n_span = total_cols - num_sky_eff          # offset columns + scalar columns
+        if tgt.shape != (n_span,):
+            raise ValueError(
+                f"offset_prior['target'] must have shape ({n_span},) "
+                f"(offset+scalar column span); got {tgt.shape}")
+        cov = offset_pixel_counts[:n_span].copy()
+        # Optional column mask: False entries get NO damping row at all. This is
+        # NOT the same as a zero target there — a zero target would damp those
+        # columns toward zero, which is a different (and generally wrong) prior.
+        pmask = offset_prior.get('mask')
+        if pmask is not None:
+            pmask = np.asarray(pmask, dtype=bool)
+            if pmask.shape != (n_span,):
+                raise ValueError(
+                    f"offset_prior['mask'] must have shape ({n_span},); got {pmask.shape}")
+            cov[~pmask] = 0
+        logger.info(f"Applying offset PRIOR damping (weight={pw}, "
+                    f"{int((cov > 0).sum())} covered columns, "
+                    f"|target| median {np.median(np.abs(tgt[cov > 0])) if (cov > 0).any() else 0:.4g})")
+        blk = offset_damping_block(pw, cov, num_sky_eff, target=tgt)
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 

@@ -37,7 +37,7 @@ import numpy as np
 from numpy.polynomial import chebyshev as _C
 
 
-def cheb_shape_basis(subch, degree, lo, hi):
+def cheb_shape_basis(subch, degree, lo, hi, include_dc=False):
     """Mean-zero Chebyshev shape basis, degrees d=1..``degree``.
 
     Parameters
@@ -50,12 +50,19 @@ def cheb_shape_basis(subch, degree, lo, hi):
     lo, hi : int
         Inclusive subchannel window the polynomial is defined over (maps to
         x ∈ [-1, 1]); the mean is taken over the integer grid ``lo..hi``.
+    include_dc : bool, optional
+        Prepend the constant column (d=0), giving D+1 columns. Needed when the
+        block has no per-frame scalar to own the DC — e.g. a template offset
+        whose coefficients are shared across ALL frames (``chunk_scale`` with a
+        single ``det_groups`` group), where the polynomial supplies its own
+        constant.
 
     Returns
     -------
     B : (N, D) float64
         ``B[i, d-1] = T_d(x(subch_i)) - mean_grid(T_d)``. Orthogonal to the
         constant by construction (each column sums ~0 over the window grid).
+        With ``include_dc`` the shape is (N, D+1) and column 0 is all ones.
     """
     if degree < 1:
         raise ValueError(f"degree must be >= 1 (d=0 is the scalar), got {degree}")
@@ -70,12 +77,14 @@ def cheb_shape_basis(subch, degree, lo, hi):
     for d in range(1, degree + 1):
         coef = np.zeros(d + 1); coef[d] = 1.0            # Chebyshev T_d
         B[:, d - 1] = _C.chebval(x, coef) - _C.chebval(xg, coef).mean()
+    if include_dc:
+        B = np.concatenate([np.ones((subch.size, 1), dtype=np.float64), B], axis=1)
     return B
 
 
 def n_coef(pb):
     """Number of solved coefficients per column for a poly_basis spec."""
-    return int(pb['degree'])
+    return int(pb['degree']) + (1 if pb.get('include_dc') else 0)
 
 
 def eval_offset_basis(coord, pb):
@@ -87,7 +96,8 @@ def eval_offset_basis(coord, pb):
     Instrument-agnostic: ``coord`` is an abstract polynomial coordinate (the
     instrument decides what it means, e.g. SPHEREx subchannel via
     ``pb['chunk_coord']``); this module never assumes a chunk encoding."""
-    return cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
+    return cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'],
+                            include_dc=bool(pb.get('include_dc')))
 
 
 if __name__ == "__main__":  # quick self-test
