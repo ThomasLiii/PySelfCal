@@ -67,6 +67,7 @@ class SetupResult(NamedTuple):
     pixel_cross: object
     active_mask: object = None
     pixel_spill: object = None
+    pixel_rhs: object = None
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -94,6 +95,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                damp_weight_line: float | None = None,
                sky_model: SkyModel | None = None,
                compact_zero_columns: bool = True,
+               sky_rhs_moments: bool = False,
                batch_spill_dir: str | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
@@ -161,6 +163,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
+    sky_rhs_moments : bool, optional
+        Also stream the per-pixel RIGHT-HAND-SIDE moments ``Σ (w·G_j)·(w·v)``
+        for every sky block j (same per-batch bincount as the Fisher/cross
+        moments). Together with ``pixel_fisher`` / ``pixel_cross`` these are the
+        complete per-pixel normal equations, which lets a K=0 sky-only solve be
+        done in CLOSED FORM per pixel (``selfcal.core.solution.
+        solve_sky_closed_form``) — no LSQR, no iteration count, no
+        semi-convergence on low-diversity pixels. Returned as
+        ``SetupResult.pixel_rhs`` (``(num_sky_blocks * num_sky,)`` float64) or
+        None. Default False = byte-identical to before.
     compact_zero_columns : bool, optional
         Enable the early drop of zero-coverage columns from the assembled
         CSR (default True); ``apply_lsqr`` then skips its own full-nnz
@@ -512,6 +524,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
+    pixel_rhs = (np.zeros(num_sky_blocks * num_sky, dtype=np.float64)
+                 if sky_rhs_moments else None)
     # Per-pixel sky-block cross moments Σ a_i·a_j per pair (i, j), i < j
     # (a_0 = w for the continuum, a_j = w·coeff_j for spectral blocks).
     # Together with pixel_fisher's per-block diagonals these give the per-pixel
@@ -612,6 +626,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                     * _rowvals[ii][_b_rows[_m_j]],
                             minlength=num_sky,
                         )
+                if pixel_rhs is not None:
+                    # RHS moments: pair each sky entry (w*G_j) with its row's
+                    # b (= w*v) -> Σ w² G_j v per pixel, per block.
+                    _rowb = np.asarray(batch_results[batch_id]['b'], dtype=np.float64)[_b_rows]
+                    _sky = _b_cols < num_sky_blocks * num_sky
+                    pixel_rhs += np.bincount(
+                        _b_cols[_sky],
+                        weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
+                        minlength=num_sky_blocks * num_sky,
+                    )
                 # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
                 # add the global row offset in Phase 3 (cumulative across
                 # batches). Keeping this batch-local is what lets Phase 4
@@ -1066,7 +1090,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_cross = pixel_cross[(0, 1)]
     return SetupResult(A=full_A, b=full_b,
                        pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
-                       pixel_cross=pixel_cross,
+                       pixel_cross=pixel_cross, pixel_rhs=pixel_rhs,
                        active_mask=active_mask if compaction_active else None,
                        pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
                                     if _pix_spill_dir is not None else None))
