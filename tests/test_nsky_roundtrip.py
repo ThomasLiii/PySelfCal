@@ -71,8 +71,10 @@ def test_nsky3_save_load_roundtrip():
         # hard-link aliases: skymap -> continuum (values equal)
         assert np.array_equal(f['skymap'][...], f['sky']['continuum'][...])
         assert np.array_equal(f['skymap_coverage'][...], f['sky_coverage']['continuum'][...])
-        # 2 line blocks -> NO single-line skymap_line alias (ambiguous)
-        assert 'skymap_line' not in f
+        # With >1 spectral block, skymap_line aliases the LAST block (the
+        # primary line; earlier extras are nuisance shapes like a continuum
+        # slope) — matching save_calibration and the tiled stitch convention.
+        assert np.array_equal(f['skymap_line'][...], f['sky']['aliphatic'][...])
         # each block has coverage + fisher
         for nm in names:
             assert nm in f['sky_coverage'] and nm in f['sky_fisher']
