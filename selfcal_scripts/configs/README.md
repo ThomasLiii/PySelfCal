@@ -27,6 +27,7 @@ a telescope or a specific calibration variant by name.
 | `k2_readout` | cal / k2_readout | `experiments/run_cal_k2_readout.py` |
 | `tiled_nep` | tiled / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
 | `multiline_nep` | tiled / multiline | (workspace `spectral-pah-fit` campaign) |
+| `../spectral_4pass/configs/sep_d4_half_{WEST,EAST}` | cal / pahfit_lvf_polybasis (pass 1 of the 4-pass chain) | (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
 | `precompute` | precompute | `drivers/precompute_lvf_params.py` |
 
@@ -48,7 +49,12 @@ no staging), `postprocess` (named subframe hook).
 
 **`[params]`** — mode knobs. continuum/pahfit: `reg_weight`, `poly_degree`,
 `poly_weight` (omit `poly_weight` to disable the column poly-constraint),
-`line_fisher_threshold` (pahfit). k2_readout: `reg_weight`, `readout_reg_weight`.
+`line_fisher_threshold` (pahfit). pahfit_subch/pahfit_lvf: the above +
+`subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/`subch_poly_hi`/`subch_tot`;
+pahfit_lvf adds `line_template_npz` (+ `line_template_norm`); pahfit_lvf_polybasis
+uses the hard poly-basis offset (`subch_poly_degree`/`_lo`/`_hi`, no weight) with
+the template sky — see `selfcal_scripts/spectral_4pass/README.md` for the pass
+knobs. k2_readout: `reg_weight`, `readout_reg_weight`.
 tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 `subch_poly_hi`/`subch_tot`. multiline: `subch_poly_degree`/`subch_poly_lo`/
 `subch_poly_hi` (hard poly-basis offset), `line_fisher_threshold`, and one
