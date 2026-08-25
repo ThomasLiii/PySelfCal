@@ -1,0 +1,57 @@
+# SEP D4 aromatic 4-pass chain, EAST half (pass 1+2 tile). Pair with the other half in
+# run_4pass.py. Staged frames: reproj_override (NVMe copy of the half's frames,
+# see PIPELINE.md staging pattern). Product: cal_..._<TAG>_p4line_SEAMFREE.h5.
+task = "cal"
+mode = "pahfit_lvf_polybasis"
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_PAHfit_realistic_dampL5e-3_HALF_EAST"
+oversample = 2
+reproj_override = "/home/thomasli/selfcal-project/selfcal/workspace/spectral-pah-fit/sep/cache/reproj_sep_EAST"
+skip_mosaic = true
+apply_n_threads = 32
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 3
+subch_window = [200, 260]
+window_name = "Aromatic_PAHfit_realistic"
+
+[params]
+subch_poly_degree = 2
+subch_poly_lo = 200
+subch_poly_hi = 259
+line_ortho = false
+line_fisher_threshold = 10.0
+pass1_thresh = 2.5
+pass1_ignore_list = [21]
+pass2_thresh = 5.0
+pass2_subch_clip = true
+pass3_poly_degree = 4
+line_template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal_scripts/spectral_4pass/data/pah_template.npz"
+line_template_norm = "peak"
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 5e-3
+max_workers = 24
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 100
+precondition = true
+solver = "lsqr"
