@@ -1,174 +1,88 @@
 # SelfCal transfer-function kit (SPHEREx D1–D6)
 
-Measure the selfcal pipeline's transfer function by pushing a **known fake sky**
-through the **fiducial** calibration + mosaic recipe and comparing the output
-mosaic to what you put in. This kit makes that a config-based, few-lines-to-change
-operation, and easy to swap between detectors.
+Measure the SelfCal pipeline's transfer function: inject a **known fake sky** into
+reprojected frames, run the **fiducial** calibration + mosaic, and compare the
+output mosaic to what you put in. It runs the standard pipeline — no special code
+path. For the how and why (geometry, schema details, options), see
+[`DETAILS.md`](DETAILS.md).
 
-Everything runs off the existing pipeline (`selfcal_scripts.run`) — no forked
-code path. You reuse the real reprojected frames for each detector and only swap
-their pixel values, so the geometry, WCS, footprints, and per-detector reference
-grid stay exactly as in the fiducial run.
+## 1. Install
 
----
+Requires Python ≥ 3.11.
 
-## The idea (why it's just a crop)
-
-The pipeline stores each reprojected frame's `sub_data` as the exposure **already
-reprojected onto the reference grid**, bbox-cropped to `ref_coords = [y0,y1,x0,x1]`.
-So `sub_data` has shape `(y1-y0, x1-x0)` and pixel `(i,j)` is reference-grid pixel
-`(y0+i, x0+j)`. (Verified on a real D3 frame: `ref_coords=[2422,5574,6421,9573]`,
-`sub_data` shape `(3152,3152)` — an exact bbox crop, ~58% NaN = the detector
-footprint.)
-
-That means injecting a fake sky `S` (defined on the detector's ref grid) is a
-plain crop, done per frame:
-
-```
-sub_data_new = S[y0:y1, x0:x1]      # keep NaN wherever the real frame was NaN
+```bash
+git clone git@github.com:ThomasLiii/PySelfCal.git
+cd PySelfCal
+pip install -e .          # installs the `selfcal` package + dependencies
 ```
 
-Preserving the original NaN pattern keeps each frame's **observed footprint**
-identical to the fiducial run — so only the sky values change, not the coverage.
-Everything else in the frame (`sub_mapping`, `sub_bitmask`, `sub_foot`,
-`ref_coords`, WCS headers, and the **filename**) is copied through unchanged, so
-the `exp_<n>_det_<n>.h5` indices still parse and the SPHEREx LVF geometry (chunk
-maps, wavelengths) the runner rebuilds from `detector=N` still lines up.
+## 2. What you need (per detector)
 
-> Note: the frames are **Zstd-compressed HDF5** — any script that reads/writes
-> them must `import hdf5plugin` (a selfcal dependency). The kit scripts do.
+- **Reprojected frames** and the detector's **`ref.fits`** — provided by the
+  pipeline owner (they define the exact fiducial geometry; too large for git).
+- **A fake sky** to inject — a 2-D array on the **same grid as `ref.fits`**
+  (`.npy` or `.fits`, shape == the `ref.fits` image shape).
 
----
+### Reprojected-frame format
 
-## What you provide, per detector
+Each frame is one **Zstd-compressed HDF5** file named `exp_<e>_det_<d>.h5`
+(e.g. `exp_000000_det_0.h5`). You inject a fake sky by replacing **only**
+`sub_data` — the script below does it. Contents:
 
-1. **Real reprojected frames** — the detector's fiducial `reprojected/` dir.
-2. **The detector's `ref.fits`** — the same reference grid used for its fiducial
-   mosaic (defines the grid your fake sky lives on).
-3. **A fake sky** on that ref grid (`.npy` or `.fits`, shape == ref.fits shape).
+| key | type / shape | meaning |
+| --- | --- | --- |
+| `sub_data` | float32, `H×W` | the exposure on the reference grid, cropped to the bbox (this is what you replace) |
+| `sub_mapping` | float32, `2×H×W` | detector↔reference coordinate map |
+| `sub_bitmask` | int32, `H×W` | data-quality bits |
+| `sub_foot` | float16, `H×W` | footprint / coverage |
+| attr `ref_coords` | `[y0, y1, x0, x1]` | the frame's bbox in the reference grid, so `H = y1-y0`, `W = x1-x0` |
+| attrs `sub_header`, `det_header` | str | WCS headers |
 
-You do **not** provide chunk maps, valid masks, or wavelengths — the runner
-rebuilds those from `detector=N` + the LVF params shipped in the package.
+Because `sub_data` is already on the reference grid (cropped to `ref_coords`),
+injecting a fake sky `S` is a plain crop: `sub_data = S[y0:y1, x0:x1]` (keeping
+NaN where the frame was unobserved). See `DETAILS.md`. Reading/writing the frames
+needs `import hdf5plugin` (a dependency) — the kit scripts handle this.
 
----
+## 3. Run
 
-## Steps
+All commands below are run from the repo root. Point `SELFCAL_PY` at the env's
+Python if your shell's `python` is not the one you `pip install`ed into.
 
-### 1. Inject the fake sky into the frames
-```
-python inject_fake_sky.py \
-    --frames-in  /mnt/md124/.../SPHEREx_..._D3_.../reprojected \
-    --frames-out /scratch/tf/D3_fakesky_frames \
-    --fake-sky   /scratch/tf/fake_sky_D3.npy \
-    --ref-fits   /mnt/md124/.../SPHEREx_..._D3_.../ref.fits \
+```bash
+# a) Inject your fake sky into copies of the real frames.
+python selfcal_scripts/transfer_function/inject_fake_sky.py \
+    --frames-in  <real_reproj_dir> \
+    --frames-out <fakesky_frames_dir> \
+    --fake-sky   <fake_sky.npy> \
+    --ref-fits   <ref.fits> \
     --workers 16
-```
-Writes a full copy of every frame with `sub_data` replaced by the crop of your
-fake sky (footprint preserved). Filenames are kept.
 
-### 2. Sanity-check one frame (recommended before a 900-frame run)
-```
-python verify_frame.py /scratch/tf/D3_fakesky_frames/exp_000000_det_0.h5 \
-    --orig /mnt/md124/.../reprojected/exp_000000_det_0.h5
-```
-Confirms the schema is intact and that only `sub_data` changed (footprint,
-`sub_mapping`, `ref_coords`, etc. unchanged). Expect `RESULT: PASS`.
+# b) (optional) Sanity-check one frame before the full run.
+python selfcal_scripts/transfer_function/verify_frame.py \
+    <fakesky_frames_dir>/exp_000000_det_0.h5 \
+    --orig <real_reproj_dir>/exp_000000_det_0.h5
 
-### 3. Run the fiducial cal + mosaic
-
-`run_transfer_function.sh` is the whole interface — exactly **6 inputs**,
-everything else (the frozen fiducial recipe, pointing the runner at your
-`ref.fits`) is handled for you. Give the inputs as **command-line flags**:
-
-```
-SELFCAL_PY=~/anaconda3/envs/selfcal/bin/python \
-./run_transfer_function.sh \
+# c) Run the fiducial calibration + mosaic (a single channel).
+SELFCAL_PY=<env python>  selfcal_scripts/transfer_function/run_transfer_function.sh \
     --detector   3 \
     --channel    17 \
-    --frames     /scratch/tf/D3_fakesky_frames \
-    --ref        /mnt/md124/.../SPHEREx_..._D3_.../ref.fits \
-    --output-dir /mnt/md124/thomasli/selfcal/outputs \
+    --frames     <fakesky_frames_dir> \
+    --ref        <ref.fits> \
+    --output-dir <output_dir> \
     --run-name   TF_D3
 ```
-(`SELFCAL_PY` is only needed if your shell's `python` is not the selfcal env.
-`--help` lists the flags; short forms `-d -c -f -r -o -n` also work; any flag
-you omit falls back to the default at the top of the script.)
 
-Two other ways to pass the same 6 inputs, if you prefer:
-- **Env vars** (e.g. for a detector loop):
-  ```
-  for d in 1 2 3 4 5 6; do
-    DETECTOR=$d REPROJ_FRAME_DIR=/scratch/tf/D${d}_fakesky_frames \
-    REF_FITS=/mnt/.../D${d}/ref.fits RUN_NAME=TF_D${d} ./run_transfer_function.sh
-  done
-  ```
-- **Edit the 6 defaults** at the top of the script, then just `./run_transfer_function.sh`.
+`run_transfer_function.sh --help` lists all flags (short forms `-d -c -f -r -o -n`).
+Swap detector = change `--detector`, `--frames`, `--ref`, `--run-name`.
 
-Precedence: flag > env var > default.
+## 4. Output
 
-Outputs land in `{OUTPUT_DIR}/{RUN_NAME}/{calibration,mosaic}/`:
-`cal_*.h5` and `mosaic_*.fits`.
+Under `<output_dir>/<run-name>/`:
 
-> Advanced: everything except the 6 inputs is the frozen fiducial recipe, held
-> in `transfer_function.toml`. Only touch that file to deliberately deviate from
-> the fiducial settings.
+- **`mosaic/mosaic_*.fits`** — the recovered map, on the same WCS as `ref.fits`.
+- `calibration/cal_*.h5` — the calibration solution.
 
-Outputs land in `{output_dir}/TF_D{detector}/{calibration,mosaic}/`:
-`cal_*.h5` and `mosaic_*.fits`.
-
-### 4. Compare → transfer function
-Compare the output `mosaic_*.fits` to your injected fake sky on the ref grid
-(they share the same WCS). Sweep different injected skies (a delta, a sinusoid
-per spatial frequency, a flat, …) and repeat steps 1–3 per input to trace the
-transfer function. Give each sweep a distinct `run_name`/`reproj_override` so
-outputs don't collide (shared `/mnt` outputs).
-
----
-
-A "channel" is one of the detector's 34 LVF wavelength slices; each is an
-independent cal+mosaic. The kit runs a **single** channel (default the mid-band
-`Ch17`) — enough to characterize the transfer function without 34× the compute.
-Change it with the config's `channels = [[N]]` line, or the launcher's last arg.
-
-## Swapping detectors
-
-Per detector, three of the six inputs change — `DETECTOR`, `REPROJ_FRAME_DIR`,
-`REF_FITS` (and usually `RUN_NAME`). Set them as env vars and the same launcher
-sweeps all of D1–D6 in the loop shown in step 3.
-
----
-
-## ⚠️ Confirm before use (fiducial recipe)
-
-The config bakes in the recipe from `selfcal_scripts/configs/d5.toml`
-(`continuum` mode; `damp_weight=0.1`, `reg_weight=0.1`, `outlier_thresh=5`,
-`sigma=2`, `poly_degree=1`, `poly_weight=0.5`, `num_col=10`, `oversample=2`).
-**Thomas: confirm** this is the exact recipe behind your fiducial D1–D6 mosaics.
-(Channel is now just one representative slice — no per-detector range to pin down.)
-
----
-
-## Optional cleanup for when this is promoted into the repo
-
-The one awkward step is making `ref.fits` appear at `{output_dir}/{run_name}/`.
-Today the kit handles it with a symlink (launcher does it automatically). A
-cleaner fix is a **3-line `ref_override` config field**, mirroring the existing
-`reproj_override`, so the collaborator points straight at the ref.fits with no
-symlink:
-
-- `selfcal_scripts/runner/config.py`: add `ref_override: str = None` to
-  `RunConfig` (and to the `_SCALAR_KEYS`/parse list alongside `reproj_override`).
-- `selfcal_scripts/runner/pipelines.py` `_make_config(cfg)`: pass
-  `ref_path=cfg.ref_override or None` to `PipelineConfig(...)` (which already
-  accepts a `ref_path` argument).
-
-Then `ref_override = "/path/to/ref.fits"` replaces the symlink. Left out of the
-kit for now since you wanted no tracked-code changes yet.
-
----
-
-## Files
-- `inject_fake_sky.py` — replace `sub_data` with the fake-sky crop (footprint preserved).
-- `verify_frame.py` — schema/injection sanity check on one frame.
-- `transfer_function.toml` — the fiducial config template (3 lines to edit).
-- `run_transfer_function.sh` — one-command per-detector launcher (symlink + fill + run).
+Compare `mosaic_*.fits` to your injected fake sky (they share the reference WCS)
+to read off the transfer function. Sweep different injected skies (a point
+source, a sinusoid per spatial frequency, …), giving each a distinct `--run-name`
+so outputs don't collide.
