@@ -42,7 +42,7 @@ name = "pah_3p29"
 # the template the existing pass-1 cals were built with (BC grid stops at 3.47um;
 # the wide-grid package template line_templates/aromatic_3p289.npz is the
 # candidate replacement -- a user decision, see workspace/spectral-npass/brief.md)
-template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal_scripts/spectral_4pass/data/pah_template.npz"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aromatic_3p289_sep_to347.npz"
 damp_weight = 5e-3
 
 [calibration]
