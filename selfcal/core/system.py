@@ -662,6 +662,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         for shm in shm_objects:
             shm.close()
             shm.unlink()
+    # Release the collate loop's leftovers: the last batch's per-block masks
+    # (~5 bytes per entry), row-value scratch and the memmap names that would
+    # otherwise pin the last spill files, all the way through the CSR build.
+    _b_cols = _b_data = _b_rows = None
+    _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
     # ----------------------------------------------------------------
     # Phase 2: compute per-batch row offsets, total_rows_data, and the
@@ -754,6 +759,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             constraint_blocks.append(blk.as_dict())
 
 
+    # These slices are views: left alive they would pin the whole
+    # pixel_counts array through the CSR build even after it is spilled.
+    sky_pixel_counts = line_pixel_counts = offset_pixel_counts = None
+
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row
     # space (data rows first, then each constraint block).
@@ -829,6 +838,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     np.cumsum(row_nnz, out=indptr[1:])
     total_nnz = int(indptr[-1])
     # row_nnz no longer needed; we will use indptr+write_cursor for scatter.
+    _max_row_nnz = int(row_nnz.max()) if row_nnz.size else 0
     del row_nnz
 
     # ----------------------------------------------------------------
@@ -838,6 +848,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # uncompacted layout (apply_lsqr handles compaction itself).
     # ----------------------------------------------------------------
     compaction_active = not any(t is not None for t in det_template_arr_list)
+    if os.environ.get('SELFCAL_COMPACT_TEMPLATES') == '1':
+        # Measurement override (memopt2): compact even with template blocks.
+        # Every template column is covered (one per frame with data rows),
+        # so the guard below still applies; see the report for whether the
+        # result is byte-equal to the uncompacted solve.
+        compaction_active = True
     # Debug knob: caller can force compaction off to compare against the
     # uncompacted-CSR layout — useful for isolating a suspected regression
     # to the compaction step itself. Default True is the production path.
@@ -901,7 +917,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     csr_data = np.empty(total_nnz, dtype=np.float32)
     csr_indices = np.empty(total_nnz, dtype=np.int32)
-    write_cursor = np.zeros(total_rows, dtype=np.int32)
+    # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
+    # mean-offset constraint row with num_chunks entries (<= a few thousand);
+    # asserted, since an overflow here would silently corrupt slot assignment.
+    assert _max_row_nnz < 2**15, f"row nnz {_max_row_nnz} overflows int16 write_cursor"
+    write_cursor = np.zeros(total_rows, dtype=np.int16)
 
     # ----------------------------------------------------------------
     # Phase 4a: streaming scatter of data rows (one batch at a time;
@@ -971,7 +991,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 # Update write_cursor: add the per-row count contributed by
                 # this slice (carries the running count to later slices).
                 unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
                 write_cursor[unique_rows] += counts
             del rows_b, cols_b, data_b
         # Free the batch refs (and its spill files, if any).
@@ -1038,7 +1058,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 csr_indices[slots] = cols_s
 
                 unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
                 write_cursor[unique_rows] += counts
         cb_cursor += nrows
     del write_cursor
