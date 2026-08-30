@@ -1054,27 +1054,40 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         target = max(1, min(2**30, _block_thr))
         full_A = build_block_csr(csr_data, csr_indices, indptr,
                                  (total_rows, n_active), target)
-        del csr_data, csr_indices, indptr
+        _blk_starts = [int(indptr[r0]) for r0 in full_A.row_bounds[:-1]]
+        del indptr
         logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
                     f"(nnz={total_nnz}).")
-        for _blk in full_A.blocks:
-            _blk.has_sorted_indices = False
-            _blk.sort_indices()
-            _blk.sum_duplicates()
+        _blocks = full_A.blocks
     else:
         full_A = csr_matrix(
             (csr_data, csr_indices, indptr),
             shape=(total_rows, n_active),
             copy=False,
         )
-        full_A.has_sorted_indices = False
-        # Sort indices within each row in place. This is per-row qsort with no
-        # allocation peak and gives downstream code (CSC views, indices-binary
-        # search, etc.) the canonical layout. We also call sum_duplicates() as a
-        # defensive no-op (the bucket-sort build guarantees no duplicate (row,
-        # col) entries) so that downstream consumers can rely on canonical CSR.
-        full_A.sort_indices()
-        full_A.sum_duplicates()
+        # The constructor downcasts indptr to a private int32 copy and keeps
+        # data/indices as (full-length) views of our buffers.
+        del indptr
+        _blocks = [full_A]
+        _blk_starts = [0]
+    # Sort indices within each row and merge duplicate (row, col) entries —
+    # per-row operations, so doing them block-wise is bit-identical to the
+    # unified matrix. Done by merge_duplicates_inplace rather than scipy's
+    # sort_indices()/sum_duplicates(): scipy's version ends in prune(), which
+    # COPIES every block's data/indices (a view smaller than half its base)
+    # while the pre-merge buffers stay pinned — a ~2x-CSR transient that was
+    # the process-lifetime memory peak for template-offset runs. The helper
+    # front-packs in place and shrinks the buffers with an in-place realloc.
+    # It needs sole ownership of the buffers (resize refuses otherwise), so
+    # our names are handed over through a list and dropped.
+    from .blockcsr import merge_duplicates_inplace
+    _buf = [csr_data, csr_indices]
+    del csr_data, csr_indices
+    _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
+    del _buf, _blocks, _blk_starts
+    if _nnz_post != _nnz_pre:
+        logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+                    f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it
     # before returning would re-inflate it right alongside the finished CSR —
