@@ -27,14 +27,16 @@ a telescope or a specific calibration variant by name.
 | `k2_readout` | cal / k2_readout | `experiments/run_cal_k2_readout.py` |
 | `tiled_nep` | tiled / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
 | `multiline_nep` | tiled / multiline | (workspace `spectral-pah-fit` campaign) |
-| `../spectral_4pass/configs/sep_d4_half_{WEST,EAST}` | cal / pahfit_lvf_polybasis (pass 1 of the 4-pass chain) | (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
+| `sep_d4_npass` | npass / multiline (J=2, W/E tiles, n=8) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
+| `nep_d4_npass` | npass / multiline (J=4, 16 overlap tiles, n=4) | passes 2+ on top of `multiline_nep` |
+| `nep_d4_probe1k_npass` | npass / multiline (J=4, 1k-frame probe) | the multiline stability probe |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
 | `precompute` | precompute | `drivers/precompute_lvf_params.py` |
 
 ## Schema
 
-**Top-level (generic)** — `task` (`cal`|`tiled`|`reproject`|`precompute`),
-`mode` (cal/tiled only), `output_dir`, `run_name` (may contain `{detector}`),
+**Top-level (generic)** — `task` (`cal`|`tiled`|`npass`|`reproject`|`precompute`),
+`mode` (cal/tiled/npass only), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
@@ -53,8 +55,8 @@ no staging), `postprocess` (named subframe hook).
 `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/`subch_poly_hi`/`subch_tot`;
 pahfit_lvf adds `line_template_npz` (+ `line_template_norm`); pahfit_lvf_polybasis
 uses the hard poly-basis offset (`subch_poly_degree`/`_lo`/`_hi`, no weight) with
-the template sky — see `selfcal_scripts/spectral_4pass/README.md` for the pass
-knobs. k2_readout: `reg_weight`, `readout_reg_weight`.
+the template sky (== `multiline` with one `[[params.lines]]` block).
+k2_readout: `reg_weight`, `readout_reg_weight`.
 tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 `subch_poly_hi`/`subch_tot`. multiline: `subch_poly_degree`/`subch_poly_lo`/
 `subch_poly_hi` (hard poly-basis offset), `line_fisher_threshold`, and one
@@ -71,6 +73,19 @@ tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 EITHER a uniform grid `grid = [n_y, n_x]` + `overlap_px` + `tile_names`, OR an
 explicit `tiles = [{name, bbox=[y0,y1,x0,x1]}, ...]` list of arbitrary/overlapping
 tiles for the adaptive-overlap layout; `line` toggles the spectral-block stitch).
+
+**`[passes]`** (npass task — the N-pass alternating solve, see the "N-pass
+alternating solve" section of [PIPELINE.md](../../PIPELINE.md)): `n` (number
+of passes; `1` == the legacy `cal`/`tiled` solve, byte-equal), `stop_tol`
+(stop after a SKY pass whose per-block step RMS is below it; `0` = run all
+`n`), `sky_merge` (`combine` = exact additive moments, default; `stitch` =
+Fisher stitch, legacy), and the per-pass-type clip knobs `init = {outlier_thresh,
+subch_clip, ignore_list}` (pass 1 only; omit to reproduce the legacy clip),
+`sky = {outlier_thresh, subch_clip}`, `offset = {poly_degree, outlier_thresh,
+subch_clip, bright_cut, min_pix}`. Pass 1 runs through `run_tiled` when
+`[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
+overlapping tiles are de-duplicated first-tile-wins), else through
+`run_calibration`. A re-run resumes: passes whose product exists are skipped.
 
 ## Adding a calibration variant (mode)
 

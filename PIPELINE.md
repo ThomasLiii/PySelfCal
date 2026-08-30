@@ -179,6 +179,65 @@ this whenever `use_per_frame_scalar=True`. For runs without the scalar,
 `compute_x0_from_Ab(A, b, ref_shape)` is the older full-offset warm
 start.
 
+## N-pass alternating solve (task `npass`)
+
+One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
+implemented as the runner task `npass` (`selfcal_scripts/runner/npass.py`;
+primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
+`selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
+
+```
+d_k(p) = Σ_j S_j(p)·c_j(λ_k(p)) + Σ_d a_{k,col(p),d} B_d(sub(p)) + s_k
+```
+
+J sky blocks `S_j` (continuum + line amplitudes; `c_j` = the line template at
+the observation's BC), a hard Chebyshev offset shape per column in subchannel,
+and a per-frame scalar. Given the offsets the sky is **block-diagonal** (one
+J×J normal system per pixel); given the sky the offsets are **independent per
+frame**. The joint problem is therefore solved by alternating least squares
+with each half exact:
+
+| pass | type | solves | mechanism | tiles |
+| --- | --- | --- | --- | --- |
+| 1 | INIT | `S, a, s` jointly | the legacy joint LSQR (`run_tiled` / `run_calibration`) | yes (memory) |
+| even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
+| odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
+
+`n = 1` **is** the legacy single solve (byte-equal; regression gate on a NEP
+production tile). `n = 2` is the two-pass recipe; `n = 4` the SEP 4-pass
+product. Why not just the joint LSQR: it *semi-converges* — the offsets
+converge fast, the low-wavelength-diversity pixels' continuum↔line split does
+not, and past that point the iterate drifts along the exact null spaces
+(uniform line floor ↔ static detector pattern; uniform sky ↔ scalars). Each
+SKY/OFFSET pass is an exact block minimization, so the objective is
+non-increasing in `n`, but drift along the null spaces is not excluded — the
+runner records per-pass monitors in `<stem>_npass_monitor.json` (per-block
+median / % positive / step RMS, offset DC, residual RMS, bright-cut
+fallbacks) and `stop_tol` can stop early; pick `n` from those, not by
+assumption. The remaining zero points (line floor, continuum DC) are
+unobservable from the data in any `n` and need the post-hoc anchors
+(`selfcal/line_floor.py`, `selfcal/zodi_anchor.py`).
+
+Why the SKY passes need no tiles: a pixel's normal equations are sums over its
+observations, so per-tile dumps over **disjoint** frame sets are additive and
+summing them is identical to a single full-field solve — no seam can exist.
+Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
+reads every frame of the field (`[tiled].full_reproj_dir`).
+
+Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
+coverage, `sky_separability/<name>`; written by the same
+`selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
+`<stem>_pass{i}off.h5` (`offsets/map_0` + `frame_scalar` + `fit_ok` +
+`resid_rms`, consumable by `OffsetSubtractor`). Re-running the same config
+resumes at the first missing product. Hooks are POSTprocess functions
+(weights are computed on the raw data first); `SkySubtractor.window` handles
+subframes overhanging any map edge (a negative `ref_coords` start is a Python
+negative slice — the SEP LMC-streak bug).
+
+Wall on the 192-core box: SEP (19,269 frames, J=2): SKY pass ≈ 1.5 h (two
+halves + combine), OFFSET ≈ 50 min; NEP 1k probe (J=4, 121 subch): SKY ≈ 45
+min, OFFSET ≈ 4 min.
+
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
