@@ -240,8 +240,19 @@ class SPHERExInstrument:
                 f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
 
     # ---- aux maps for spectral modes (per-pixel wavelength) ----------------
+    aux_keys = ('BC', 'BW')     # names of the entries aux() returns, in order
+
     def aux(self, det_inputs):
         return [det_inputs['det_BC'], det_inputs['det_BW']]
+
+    def subchannel_bc_edges(self, det_inputs, det_chunk_map, num_columns):
+        """BC bin edges between consecutive subchannels, for the per-subchannel
+        outlier clip (``outlier_subchannel_edges``). Inverts the chunk encoding
+        (group = chunk // num_col = subchannel) here, in the adapter."""
+        from selfcal.pipeline.npass import group_wavelength_edges
+        n_chunks = int(det_chunk_map.max()) + 1
+        group_of_chunk = np.arange(n_chunks) // int(num_columns)
+        return group_wavelength_edges(det_inputs['det_BC'], det_chunk_map, group_of_chunk)
 
     # ---- mosaic helpers ----------------------------------------------------
     def offset_render(self, inst_cfg, det_inputs, channel_inputs):

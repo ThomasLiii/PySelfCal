@@ -76,6 +76,7 @@ def run_calibration(cfg):
     detector = cfg.instrument_cfg.get('detector')
     frame_tag = inst.frame_tag(cfg.instrument_cfg)
     det_inputs = inst.detector_inputs(cfg.instrument_cfg, cfg.oversample)
+    cal_paths = []
 
     for job in inst.jobs(cfg.instrument_cfg):
         t0 = time.time()
@@ -142,12 +143,14 @@ def run_calibration(cfg):
             if os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir)
 
+        cal_paths.append(cal_path)
         gc.collect()
         print(f"Finished {job.name} for detector {detector} in {time.time() - t0:.2f} seconds.")
         print("-" * 50 + "\n")
 
     if not cfg.reproj_override:
         staging.cleanup_nvme(cfg, nvme)
+    return cal_paths
 
 
 def _run_zodi_anchor(cfg, selfcal_config, detector, cal_path, cal_file, job_tag):
@@ -308,12 +311,16 @@ def run_tiled(cfg):
         print(f"[tiled] partial run complete ({only_tiles}); per-tile cals: {cal_paths}. "
               f"Stitch skipped — re-run without only_tiles to build + stitch all tiles.",
               flush=True)
-        return
+        return {'tiles': cal_paths, 'stitched': None, 'assignment': assignment}
     stitched = os.path.join(selfcal_config.cal_dir,
                             f'cal_{frame_tag}_{job.name}{t["stitched_suffix"]}.h5')
-    print(f"\n[tiled] stitching {len(cal_paths)} tile cals -> {stitched}", flush=True)
-    tiled.stitch(cal_paths, stitched, ref_shape=ref_shape, line=t.get('line', True))
+    if os.path.exists(stitched):
+        print(f"[tiled] stitched cal exists, skipping stitch: {stitched}", flush=True)
+    else:
+        print(f"\n[tiled] stitching {len(cal_paths)} tile cals -> {stitched}", flush=True)
+        tiled.stitch(cal_paths, stitched, ref_shape=ref_shape, line=t.get('line', True))
     print(f"[tiled] DONE. stitched cal: {stitched}", flush=True)
+    return {'tiles': cal_paths, 'stitched': stitched, 'assignment': assignment}
 
 
 # ---------------------------------------------------------------------------
@@ -372,9 +379,16 @@ def run_precompute(cfg):
     inst.precompute(cfg.instrument_cfg)
 
 
+def run_npass(cfg):
+    """N-pass alternating solve (task = 'npass'); see runner/npass.py."""
+    from selfcal_scripts.runner.npass import run_npass as _run
+    return _run(cfg, run_calibration=run_calibration, run_tiled=run_tiled)
+
+
 _TASKS = {
     'cal': run_calibration,
     'tiled': run_tiled,
+    'npass': run_npass,
     'reproject': run_reprojection,
     'precompute': run_precompute,
 }
