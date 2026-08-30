@@ -1,0 +1,108 @@
+# NEP W17 D4 multi-line (aromatic 3.289 + aliphatic 3.400 + plateau 3.470 um,
+# J = 4) as an N-PASS alternating solve over the production 16 adaptive-overlap
+# tiles. Pass 1 = the existing iter-300 tile cals (same suffix -> run_tiled
+# skips them and only stitches); then SKY (closed form from additive per-tile
+# moment dumps: every pixel solved from ALL its frames, so the seam-diversity
+# stripes of the tiled iterate cannot occur) and OFFSET (per-frame refit vs the
+# one global sky) passes alternate. Tiles overlap by design; for the moment
+# dumps each frame is assigned to the first tile whose bbox holds its centre.
+# Derived from multiline_nep.toml (step 6 of the npass campaign, 2026-08-30).
+task = "npass"
+mode = "multiline"
+
+output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_multiline3_NEPovlp_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+oversample = 2
+skip_mosaic = true
+apply_n_threads = 32
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 3
+subch_window = [200, 321]
+window_name = "Multiline3"
+
+[params]
+subch_poly_degree = 2
+subch_poly_lo = 200
+subch_poly_hi = 320
+line_fisher_threshold = 10.0
+
+[[params.lines]]
+name = "aromatic"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aromatic_3p289.npz"
+damp_weight = 5e-3
+
+[[params.lines]]
+name = "aliphatic"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aliphatic_3p400.npz"
+damp_weight = 5e-3
+
+[[params.lines]]
+name = "plateau"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/plateau_3p470.npz"
+damp_weight = 5e-3
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 5e-3
+max_workers = 48
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 300
+precondition = true
+solver = "lsqr"
+
+[tiled]
+ref_shape = [12676, 12672]
+# the production run staged the whole field on NVMe (gone); stage per tile from HDD
+full_reproj_dir = "/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D4_6p2arcsec/reprojected"
+frame_glob = "exp_*_det_00.h5"
+frame_filter = "center"
+halo = 0
+nvme_subdir = "reproj_nvme_SPHEREx_NEP_2026W17_D4_6p2arcsec"
+stitched_suffix = "_multiline3_NEPovlp_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+line = true
+rss_guardrail = true
+tiles = [
+  { name = "M01", bbox = [0, 6489, 0, 4723] },
+  { name = "M02", bbox = [0, 4911, 3145, 6938] },
+  { name = "M03", bbox = [3333, 6799, 0, 4972] },
+  { name = "M04", bbox = [4911, 6199, 4972, 6188] },
+  { name = "M05", bbox = [0, 5048, 4610, 7558] },
+  { name = "M06", bbox = [5048, 6199, 6188, 7558] },
+  { name = "M07", bbox = [0, 6217, 7558, 12672] },
+  { name = "M08", bbox = [3061, 7249, 7558, 12672] },
+  { name = "M09", bbox = [4699, 7567, 0, 4991] },
+  { name = "M10", bbox = [6199, 7567, 4991, 6120] },
+  { name = "M11", bbox = [5989, 12676, 0, 4801] },
+  { name = "M12", bbox = [7567, 12676, 3073, 6870] },
+  { name = "M13", bbox = [6199, 6907, 6120, 7060] },
+  { name = "M14", bbox = [6907, 12676, 5520, 7660] },
+  { name = "M15", bbox = [4849, 7622, 7060, 12672] },
+  { name = "M16", bbox = [6044, 12676, 7060, 12672] },
+]
+
+[passes]
+n = 4
+stop_tol = 0.0
+sky_merge = "combine"
+# pass 1 = the legacy production solve (whole-frame 5-sigma clip), reused as-is
+sky    = { outlier_thresh = 5.0, subch_clip = true }
+offset = { poly_degree = 4, outlier_thresh = 2.5, subch_clip = true, bright_cut = 0.05, min_pix = 5000 }

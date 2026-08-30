@@ -174,14 +174,25 @@ class _Run:
                     tiles = [x for x in tiles if x.name in only]
                 assignment = TiledCalibration(files, tiles, frame_filter=t.get("frame_filter", "center"),
                                               halo=t.get("halo", 0)).assign_frames()
-            self.tile_frames = {name: list(files) for name, (files, _) in assignment.items()}
+            # Moments are additive only over DISJOINT frame sets: with
+            # overlapping tile bboxes (or halo > 0) a frame can be centre-assigned
+            # to several tiles -> keep it in the FIRST tile listed.
+            self.tile_frames = {}
             seen = set()
-            for name, files in self.tile_frames.items():
-                dup = seen.intersection(os.path.basename(f) for f in files)
-                if dup:
-                    raise ValueError(f"tile {name}: {len(dup)} frames also in another tile — "
-                                     "npass needs disjoint tiles (frame_filter='center', halo=0)")
-                seen.update(os.path.basename(f) for f in files)
+            n_dup = 0
+            for name, (files, _) in assignment.items():
+                keep = []
+                for f in files:
+                    b = os.path.basename(f)
+                    if b in seen:
+                        n_dup += 1
+                        continue
+                    seen.add(b)
+                    keep.append(f)
+                self.tile_frames[name] = keep
+            if n_dup:
+                print(f"[npass] {n_dup} frames assigned to more than one tile -> kept in the "
+                      f"first tile listed (moments must not double-count)", flush=True)
             self.all_frames = sorted({f for fs in self.tile_frames.values() for f in fs})
         else:
             import h5py, hdf5plugin  # noqa: F401
