@@ -223,6 +223,29 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     return x0_full
 
 
+
+def _accumulate_runs(acc, cols, w):
+    """``acc[c] += w`` with np.bincount's exact arithmetic, run by run.
+
+    ``w`` is float64 in entry order; equal consecutive ``cols`` form runs.
+    For each run the sum is a sequential left fold seeded with the current
+    accumulator — computed as ``np.cumsum([acc[c], w_run...])[-1]`` — which
+    is bit-for-bit what ``np.bincount(cols, weights=w)`` produces when the
+    same entries are fed to it in one call (it too adds each weight to a
+    float64 slot in entry order, starting from 0.0).
+    """
+    if cols.size == 0:
+        return
+    starts = np.flatnonzero(np.diff(cols)) + 1
+    bounds = np.concatenate(([0], starts, [cols.size]))
+    for i in range(bounds.size - 1):
+        a, z = int(bounds[i]), int(bounds[i + 1])
+        col = int(cols[a])
+        run = np.empty(z - a + 1, dtype=np.float64)
+        run[0] = acc[col]
+        run[1:] = w[a:z]
+        acc[col] = np.cumsum(run)[-1]
+
 def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
                            ref_shape: tuple[int, int], scalar_col_start: int,
                            num_sky_blocks: int = 1,
@@ -319,7 +342,18 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
         block_iter = [(blk, int(A.row_bounds[i]))
                       for i, blk in enumerate(A.blocks)]
 
-    sel_cols, sel_w2, sel_wb = [], [], []
+    # Streaming, bit-identical to ONE global np.bincount over all selected
+    # entries: bincount's per-column value is a sequential float64 left fold
+    # in entry order starting from 0.0 (0.0 + w0 is exactly w0), and so is
+    # np.cumsum. Every scalar column's entries come in consecutive runs (a
+    # frame's data rows are contiguous), so per chunk we cumsum each run
+    # with the column's carried accumulator prepended as the first element —
+    # ((acc + w_k) + w_k+1) + ... — which continues the exact same fold
+    # across chunk and block boundaries. No entry is ever materialised
+    # beyond one chunk (the concatenate-then-bincount form held ~20 B per
+    # selected entry plus concatenation copies: +43 GB at 1.8e9 rows).
+    AtA_diag = np.zeros(num_scalar_cols)
+    Atb = np.zeros(num_scalar_cols)
     for blk, row_off in block_iter:
         indptr = blk.indptr
         indices = blk.indices
@@ -335,13 +369,12 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
             if not keep.any():
                 continue
             d = data[s0:s1][keep]
-            sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
-                                                                   copy=False))
+            c = cols_c[keep] - scalar_boundary
             # Square in the data's own dtype (f32 in production) to match
             # the reference computation in compute_x0_from_Ab, which squares
             # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
             # of the bit-equality contract.
-            sel_w2.append(d * d)
+            w2 = (d * d).astype(np.float64, copy=False)
             counts = np.diff(indptr[r0:r1 + 1])
             # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
             # b (exactly-representable values only), and f32-value * f64 ->
@@ -350,24 +383,12 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
             bvals = np.repeat(
                 b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
                 counts)[keep]
-            sel_wb.append(d * bvals)
-
-    if sel_cols:
-        cat_cols = np.concatenate(sel_cols)
-        del sel_cols
-        cat_w2 = np.concatenate(sel_w2)
-        del sel_w2
-        cat_wb = np.concatenate(sel_wb)
-        del sel_wb
-        AtA_diag = np.bincount(cat_cols, weights=cat_w2,
-                               minlength=num_scalar_cols)
-        del cat_w2
-        Atb = np.bincount(cat_cols, weights=cat_wb,
-                          minlength=num_scalar_cols)
-        del cat_cols, cat_wb
-        scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
-    else:
-        scalars = np.zeros(num_scalar_cols)
+            wb = d * bvals
+            del bvals, d, keep, cols_c
+            _accumulate_runs(AtA_diag, c, w2)
+            _accumulate_runs(Atb, c, wb)
+            del c, w2, wb
+    scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
 
     if active_mask is None:
         x0 = np.zeros(num_cols)
