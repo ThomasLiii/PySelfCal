@@ -646,7 +646,8 @@ class Calibrator(Reprojector):
                    oversample_factor: int = 1,
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
-                   outlier_thresh: float = 3.0, ignore_list: list[int] | None = None,
+                   outlier_thresh: float = 3.0, outlier_subchannel_edges=None,
+                   ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
                    reg_weights: list[float] | None = None, adj_infos: list | None = None,
@@ -665,6 +666,7 @@ class Calibrator(Reprojector):
                    offset_model: OffsetModel | None = None,
                    sky_model: SkyModel | None = None,
                    compact_zero_columns: bool = True,
+                   sky_rhs_moments: bool = False,
                    batch_spill_dir: str | None = None) -> None:
         """Build the LSQR system for K chunk maps.
 
@@ -824,9 +826,16 @@ class Calibrator(Reprojector):
                 "removed in a future release.",
                 DeprecationWarning, stacklevel=2)
 
-        if not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
+        # K=0 (empty chunk_maps) is allowed ONLY for a sky-only solve: no offset
+        # columns, the offset already subtracted from the data (e.g. two-pass
+        # pass 2). Requires a sky_model + det_aux so there is still something to
+        # fit. Otherwise a non-empty chunk_maps list is required.
+        sky_only = (isinstance(chunk_maps, list) and len(chunk_maps) == 0
+                    and sky_model is not None)
+        if not sky_only and not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
             raise ValueError(
-                "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)")
+                "chunk_maps must be a non-empty list of ndarrays (or pass "
+                "offset_model=), unless sky-only (empty chunk_maps + sky_model)")
         K = len(chunk_maps)
 
         def _check_len(name, val):
@@ -865,6 +874,7 @@ class Calibrator(Reprojector):
                 grid_valid_weight=grid_valid_weight,
                 apply_mask=apply_mask, apply_weight=apply_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh,
+                outlier_subchannel_edges=outlier_subchannel_edges,
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
@@ -881,6 +891,7 @@ class Calibrator(Reprojector):
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
+                sky_rhs_moments=sky_rhs_moments,
                 batch_spill_dir=batch_spill_dir)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -892,6 +903,7 @@ class Calibrator(Reprojector):
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
                 self.pixel_cross = None
+                self.pixel_rhs = None
                 self._pixel_spill = None
             else:
                 r = _setup_result
@@ -899,6 +911,7 @@ class Calibrator(Reprojector):
                 self.pixel_counts = r.pixel_counts
                 self.pixel_fisher = r.pixel_fisher
                 self.pixel_cross = r.pixel_cross
+                self.pixel_rhs = r.pixel_rhs
                 self.active_mask = r.active_mask
                 self.num_cols_full = (int(r.active_mask.size)
                                       if r.active_mask is not None else None)
@@ -924,6 +937,38 @@ class Calibrator(Reprojector):
         self.det_templates = self.layout.det_template_arr_list
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
+
+    def solve_sky_closed_form(self, damp_weight: float = 0.0,
+                              damp_weight_line: float | None = None) -> np.ndarray:
+        """Solve a K=0 SKY-ONLY system in closed form per pixel (no LSQR).
+
+        Requires ``setup_lsqr(chunk_maps=[], sky_model=..., sky_rhs_moments=True)``
+        so the per-pixel normal equations are complete. Sets ``self.x`` in the
+        full column layout (sky blocks only — there are no offset/scalar columns
+        in a K=0 solve) so ``save_calibration`` works unchanged.
+
+        Damping mirrors the LSQR path (coverage-weighted Tikhonov per block).
+        See :func:`selfcal.core.solution.solve_sky_closed_form` for why this
+        replaces the iterative solve for sky-only systems.
+        """
+        from ..core.solution import solve_sky_closed_form as _closed
+        if self.chunk_maps:
+            raise ValueError("solve_sky_closed_form is for K=0 sky-only systems "
+                             "(setup_lsqr(chunk_maps=[]))")
+        if getattr(self, 'pixel_rhs', None) is None:
+            raise ValueError("pixel_rhs missing — call setup_lsqr(..., sky_rhs_moments=True)")
+        self._materialize_pixel_state()
+        J = self.num_sky_blocks
+        num_sky = self.ref_shape[0] * self.ref_shape[1]
+        dws = [float(damp_weight)]
+        for comp in self.sky_model.components[1:]:
+            w = getattr(comp, 'damp_weight', None)
+            dws.append(float(damp_weight_line if w is None else w) if
+                       (damp_weight_line is not None or w is not None) else 0.0)
+        with timer("Closed-form sky solve"):
+            self.x = _closed(self.pixel_fisher, self.pixel_cross, self.pixel_rhs,
+                             self.pixel_counts, num_sky, J, damp_weights=dws)
+        return self.x
 
     def _materialize_pixel_state(self):
         """Load pixel_counts/fisher/cross if they are parked on scratch disk."""

@@ -385,3 +385,74 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
             "inconsistent with A")
     x0_full[scalar_full_idx + scalar_col_start] = scalars
     return x0_full
+
+
+def solve_sky_closed_form(pixel_fisher, pixel_cross, pixel_rhs, pixel_counts,
+                          num_sky, num_sky_blocks, damp_weights=None):
+    """Exact per-pixel least-squares solution of a K=0 SKY-ONLY system.
+
+    With no offset unknowns the normal equations are block-diagonal: each sky
+    pixel is an independent J x J system built from the moments that
+    ``setup_lsqr`` already streams (``pixel_fisher`` = Σw²G_j², ``pixel_cross``
+    = Σw²G_iG_j, and ``pixel_rhs`` = Σw²G_j·v when ``sky_rhs_moments=True``).
+    Solving them directly replaces LSQR for this case, which matters because
+    LSQR only SEMI-converges on the block-diagonal problem: every pixel's 2x2
+    converges at its own rate set by its wavelength diversity, so at a fixed
+    ``iter_lim`` the low-diversity pixels are still mid-way along the
+    cont<->line valley (the Pearson -0.9 collapse seen on low-diversity tiles).
+    The closed form has no iteration count and therefore no such
+    field-dependence — the same recipe gives the converged answer on every
+    field, and because the solve is per-pixel it also does not need tiling.
+
+    Damping is applied exactly as the LSQR path does: coverage-weighted
+    Tikhonov ``damp_j * coverage`` added to the j-th diagonal (see
+    ``constraint_builders.sky_damping_block``), so results are comparable with
+    the iterative solve at convergence.
+
+    Parameters
+    ----------
+    pixel_fisher : (J*num_sky,) float64
+    pixel_cross : dict {(i,j): (num_sky,)} or, for J == 2, the bare (0,1) array
+    pixel_rhs : (J*num_sky,) float64
+    pixel_counts : (>= J*num_sky,) int — sky-block coverage (per-block slices)
+    num_sky, num_sky_blocks : int
+    damp_weights : sequence of J floats or None
+        Per-block damping weights (``damp_weight`` for block 0,
+        ``damp_weight_line`` / component weight for the rest). None/0 = none.
+
+    Returns
+    -------
+    x_sky : (J*num_sky,) float64
+        Block-stacked solution (block j at ``[j*num_sky:(j+1)*num_sky]``);
+        pixels with a singular (all-zero) normal block are 0.
+    """
+    J = int(num_sky_blocks)
+    if not isinstance(pixel_cross, dict):
+        pixel_cross = {(0, 1): np.asarray(pixel_cross)}
+    F = [np.asarray(pixel_fisher[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+         for j in range(J)]
+    r = [np.asarray(pixel_rhs[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+         for j in range(J)]
+    cov = [np.asarray(pixel_counts[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+           for j in range(J)]
+    dw = list(damp_weights) if damp_weights is not None else [0.0] * J
+    # normal matrix per pixel: M_jj = F_j + damp_j*cov_j ; M_ij = cross_ij
+    M = np.zeros((num_sky, J, J), dtype=np.float64)
+    for j in range(J):
+        M[:, j, j] = F[j] + (float(dw[j]) * cov[j] if dw[j] and dw[j] > 0 else 0.0)
+    for (i, j), c in pixel_cross.items():
+        M[:, i, j] = c
+        M[:, j, i] = c
+    rhs = np.stack(r, axis=1)                                   # (num_sky, J)
+    x = np.zeros((num_sky, J), dtype=np.float64)
+    if J == 2:
+        a, b, d = M[:, 0, 0], M[:, 0, 1], M[:, 1, 1]
+        det = a * d - b * b
+        ok = det > 0
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        x[:, 0] = (d * rhs[:, 0] - b * rhs[:, 1]) * inv
+        x[:, 1] = (a * rhs[:, 1] - b * rhs[:, 0]) * inv
+    else:
+        ok = np.linalg.det(M) > 0
+        x[ok] = np.linalg.solve(M[ok], rhs[ok][..., None])[..., 0]
+    return x.T.reshape(-1)

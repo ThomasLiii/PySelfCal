@@ -15,7 +15,7 @@ import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 
 from .subframe import _prep_subframe
-from ..geometry.map_helper import find_outliers, check_invalid
+from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
 from ..models.offset_basis import eval_offset_basis, n_coef
 
 
@@ -70,7 +70,19 @@ def _prep_lsqr(task_params):
 
         sub_valid = sub_weight > 0
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
-            sub_out = find_outliers(np.where(sub_valid, sub_data, np.nan), threshold=outlier_thresh)
+            masked = np.where(sub_valid, sub_data, np.nan)
+            # Per-subchannel clip: when subchannel BC edges are supplied and the
+            # BC aux is available, judge each pixel against its OWN subchannel's
+            # sky (find_outliers_grouped) instead of the frame-wide distribution
+            # (find_outliers). Edges None (default) -> whole-frame, byte-identical.
+            edges = task_params.get('outlier_subchannel_edges')
+            aux_keys = task_params.get('aux_keys') or []
+            if edges is not None and sub_aux is not None and 'BC' in aux_keys:
+                bc_sub = sub_aux[aux_keys.index('BC')]
+                groups = np.digitize(bc_sub, edges)
+                sub_out = find_outliers_grouped(masked, groups, threshold=outlier_thresh)
+            else:
+                sub_out = find_outliers(masked, threshold=outlier_thresh)
             sub_valid &= ~sub_out
         valid_sub_coords = np.nonzero(sub_valid)
 
