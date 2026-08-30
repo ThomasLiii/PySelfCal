@@ -67,9 +67,14 @@ def _scratch(tmp, arr, scalar):
 
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
-                 iter_lim=None, show=False, calc_var=False, x0=None):
+                 iter_lim=None, show=False, calc_var=False, x0=None,
+                 x0_owned=False):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
-    tuple) with in-place vector updates. See the module docstring."""
+    tuple) with in-place vector updates. See the module docstring.
+
+    ``x0`` is copied unless ``x0_owned=True``, in which case its buffer is
+    used as the solution vector directly (the caller must hold no other
+    reference it cares about) — one n-length vector less."""
     A = aslinearoperator(A)
     b = np.atleast_1d(b)
     if b.ndim > 1:
@@ -81,7 +86,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     var = np.zeros(n) if calc_var else np.zeros(0)
 
     if x0 is not None:
-        x0 = np.asarray(x0)
+        x0 = np.asarray(x0) if x0_owned else np.array(x0)
 
     if show:
         print(' ')
