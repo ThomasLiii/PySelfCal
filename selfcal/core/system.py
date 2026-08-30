@@ -433,6 +433,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
+        # Template / hard-poly-basis offsets emit duplicate (row, col)
+        # entries; merge them per subframe in the worker (bit-identical to
+        # the Phase-5 merge, see assembly._merge_subframe_duplicates) so no
+        # downstream buffer is sized on the pre-merge stream.
+        'merge_duplicates': bool(any(t is not None for t in det_template_arr_list)
+                                 or any(pb is not None for pb in poly_basis_list)),
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
@@ -599,7 +605,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 _b_rows = batch_results[batch_id]['rows']
                 # Per-batch streaming accumulation. Avoids holding a
                 # full-nnz float64 squared-data temp later.
-                pixel_counts += np.bincount(_b_cols, minlength=total_cols)
+                _cnt = np.bincount(_b_cols, minlength=total_cols)
+                _oc = result.get('offset_counts')
+                if _oc is not None:
+                    # The worker merged duplicate offset entries; pixel_counts
+                    # keeps the pre-merge contract for the offset + scalar
+                    # columns from the counts it shipped (integers -> exact).
+                    _cnt[num_sky_blocks * num_sky:] = 0
+                    _cnt[_oc[0]] = _oc[1]
+                pixel_counts += _cnt
+                del _cnt
                 pixel_fisher += np.bincount(
                     _b_cols,
                     weights=_b_data.astype(np.float64) ** 2,
