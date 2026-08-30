@@ -24,6 +24,7 @@ from .. import _state
 from ..core import coadd
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file
+from ..io.cal_writer import write_sky_groups
 from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
                          parse_pixel_fisher_sky, apply_line_fisher_mask,
                          parse_line_separability)
@@ -1313,62 +1314,16 @@ class Calibrator(Reprojector):
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
             f.attrs['num_maps'] = K
-            f.attrs['num_sky_blocks'] = self.num_sky_blocks
-            f.attrs['schema_version'] = 3
-            f.attrs['sky_components'] = np.array(sky_names, dtype='S')
-            # --- v3: per-component sky blocks under sky/<name> (block 0 =
-            # continuum, 1.. = spectral components, each an arbitrary profile's
-            # per-pixel amplitude map). Saved RAW; the Fisher attr below is an
-            # informational read-time mask threshold, not applied destructively.
-            sky_grp = f.create_group('sky')
-            skycov_grp = f.create_group('sky_coverage')
-            skyfish_grp = f.create_group('sky_fisher')
-            for j, name in enumerate(sky_names):
-                sky_grp.create_dataset(name, data=sky_maps[j], compression='gzip')
-                skycov_grp.create_dataset(name, data=sky_coverages[j], compression='gzip')
-                if sky_fishers[j] is not None:
-                    skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
-                                               compression='gzip')
-            # Per-pixel SEPARABILITY I_P (each spectral block's Schur
-            # complement against all other sky blocks). Unlike the block's
-            # Fisher (a magnitude metric), I_P measures wavelength diversity —
-            # the quantity that bounds per-pixel amplitude variance and
-            # identifies the degenerate pixels that blow up under LSQR
-            # semi-convergence. Kept as a read-time diagnostic. One dataset per
-            # spectral block, sky_separability/<name>; for 2-block cals this is
-            # the single legacy dataset, byte-identical.
-            if (getattr(self, 'pixel_cross', None) is not None
-                    and self.num_sky_blocks >= 2 and self.pixel_fisher is not None):
-                sep_grp = f.create_group('sky_separability')
-                for j in range(1, self.num_sky_blocks):
-                    sep = parse_line_separability(
-                        self.pixel_cross, self.pixel_fisher, self.ref_shape,
-                        num_sky_blocks=self.num_sky_blocks, block=j)
-                    sep_grp.create_dataset(
-                        sky_names[j], data=sep.astype('float32'), compression='gzip')
-            # --- Back-compat hard-link aliases (v2 readers resolve transparently):
-            # skymap -> continuum; skymap_line -> the single spectral block when
-            # there is exactly one. h5py resolves these on read, so
-            # f['skymap'][...] etc. return identical values without duplicating data.
-            cont = sky_names[0]
-            f['skymap'] = sky_grp[cont]
-            f['skymap_coverage'] = skycov_grp[cont]
-            if cont in skyfish_grp:
-                f['skymap_fisher'] = skyfish_grp[cont]
-            extra_names = sky_names[1:]
-            if extra_names:
-                # Alias the LAST spectral block (the line; earlier extras are
-                # nuisance shapes like a continuum slope). Single-extra cals
-                # keep the exact v2 aliasing behavior.
-                ln = extra_names[-1]
-                f['skymap_line'] = sky_grp[ln]
-                f['skymap_line_coverage'] = skycov_grp[ln]
-                if ln in skyfish_grp:
-                    f['skymap_line_fisher'] = skyfish_grp[ln]
-            # Informational: recommended Fisher threshold for read-time masking.
-            # Not a contract — analysis is free to pick any threshold.
-            if self.line_fisher_threshold is not None:
-                f.attrs['line_fisher_threshold'] = float(self.line_fisher_threshold)
+            # v3 sky blocks (+ per-block separability + v2 aliases): ONE writer
+            # shared with the sky-only producers (selfcal.io.cal_writer).
+            write_sky_groups(
+                f, sky_names=sky_names, sky_maps=sky_maps, sky_coverages=sky_coverages,
+                sky_fishers=sky_fishers,
+                pixel_cross=(self.pixel_cross if (getattr(self, 'pixel_cross', None) is not None
+                                                  and self.pixel_fisher is not None) else None),
+                pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
+                num_sky_blocks=self.num_sky_blocks,
+                line_fisher_threshold=self.line_fisher_threshold)
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')

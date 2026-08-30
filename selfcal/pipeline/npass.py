@@ -45,7 +45,6 @@ from scipy.ndimage import map_coordinates
 
 from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
-from ..core.system import parse_line_separability
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
 from ..models.offset_basis import cheb_shape_basis
 
@@ -464,36 +463,17 @@ def write_sky_cal(path, *, ref_shape, sky_names, sky_maps, sky_counts, sky_fishe
     ``sky_fisher/``, ``sky_separability/<name>`` for every spectral block, and
     the ``skymap`` / ``skymap_line`` hard-link aliases.
     """
+    from ..io.cal_writer import write_sky_groups
     J = len(sky_names)
     with h5py.File(path, "w") as f:
         f.attrs["num_maps"] = 0
-        f.attrs["num_sky_blocks"] = J
-        f.attrs["schema_version"] = 3
-        f.attrs["sky_components"] = np.array(sky_names, dtype="S")
-        sky_grp = f.create_group("sky")
-        cov_grp = f.create_group("sky_coverage")
-        fis_grp = f.create_group("sky_fisher")
-        for j, n in enumerate(sky_names):
-            sky_grp.create_dataset(n, data=np.asarray(sky_maps[j], np.float32), compression="gzip")
-            cov_grp.create_dataset(n, data=np.asarray(sky_counts[j]), compression="gzip")
-            fis_grp.create_dataset(n, data=np.asarray(sky_fishers[j], np.float32), compression="gzip")
-        if J >= 2:
-            sep_grp = f.create_group("sky_separability")
-            for j in range(1, J):
-                sep = parse_line_separability(pixel_cross, pixel_fisher, ref_shape,
-                                              num_sky_blocks=J, block=j)
-                sep_grp.create_dataset(sky_names[j], data=sep.astype(np.float32), compression="gzip")
-        cont = sky_names[0]
-        f["skymap"] = sky_grp[cont]
-        f["skymap_coverage"] = cov_grp[cont]
-        f["skymap_fisher"] = fis_grp[cont]
-        if J >= 2:
-            ln = sky_names[-1]
-            f["skymap_line"] = sky_grp[ln]
-            f["skymap_line_coverage"] = cov_grp[ln]
-            f["skymap_line_fisher"] = fis_grp[ln]
-        if line_fisher_threshold is not None:
-            f.attrs["line_fisher_threshold"] = float(line_fisher_threshold)
+        write_sky_groups(f, sky_names=list(sky_names),
+                         sky_maps=[np.asarray(m, np.float32) for m in sky_maps],
+                         sky_coverages=[np.asarray(c) for c in sky_counts],
+                         sky_fishers=[np.asarray(fi, np.float32) for fi in sky_fishers],
+                         pixel_cross=pixel_cross, pixel_fisher=pixel_fisher,
+                         ref_shape=tuple(ref_shape), num_sky_blocks=J,
+                         line_fisher_threshold=line_fisher_threshold)
         f.create_dataset("reproj_list", data=np.array([str(p).encode() for p in reproj_list]))
         for k, v in (attrs or {}).items():
             f.attrs[k] = v
