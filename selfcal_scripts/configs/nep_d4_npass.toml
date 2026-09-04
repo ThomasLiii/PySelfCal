@@ -100,7 +100,7 @@ tiles = [
 ]
 
 [passes]
-n = 4
+n = 8
 stop_tol = 0.0
 sky_merge = "combine"
 # pass 1 = the legacy production solve (whole-frame 5-sigma clip), reused as-is
