@@ -33,6 +33,7 @@ from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, _csr_shell
+from .lsqr_inplace import lsqr_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -480,22 +481,38 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                     stop = min(start + chunk_size, _bd.size)
                     _bd[start:stop] *= M[_bc[start:stop]].astype(_bd.dtype, copy=False)
             x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
+            # Only M (post-solve unscaling) is needed from here on; the
+            # squared norms, the norm vector and the unscaled x0 are dead
+            # weight for the whole solve (3 n-length vectors).
+            del col_sq_norm, col_norms, M_inv
+            x0_compressed = None
         else:
             M = None
             x0_solver = x0_compressed
+            x0_compressed = None
 
         logger.info(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
         A_csr = A
         del A
+        # x0_solver is a private temporary: hand it to lsqr_inplace as the
+        # solution buffer (x0_owned) instead of letting it copy it.
+        _x0_owned = [x0_solver]
+        del x0_solver
+        # lsqr_inplace (bit-identical to scipy's lsqr, in-place vector
+        # updates) reads b exactly once; hand it over without keeping a
+        # reference so the solver can release the m-length vector for the
+        # rest of the solve. lsmr keeps scipy's implementation.
+        _b_owned = [b]
+        del b
 
         if is_block:
             op = _make_parallel_operator_blocks(A_csr, n_threads)
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
-                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
                     elif solver == 'lsqr':
-                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
@@ -507,9 +524,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
-                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
                     elif solver == 'lsqr':
-                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
@@ -518,9 +535,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 op._executor.shutdown(wait=False)
         else:
             if solver == 'lsmr':
-                result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                result = lsmr(A_csr, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
             elif solver == 'lsqr':
-                result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                result = lsqr_inplace(A_csr, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
             else:
                 raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
         x_solver = result[0]

@@ -102,3 +102,86 @@ def build_block_csr(data, indices, indptr, shape, target_nnz):
         blocks.append(_csr_shell(data[s0:s1], indices[s0:s1], local_indptr,
                                  (er - sr, shape[1])))
     return BlockCSR(blocks, bounds, shape)
+
+
+def _move_forward(arr, src, dst, n, chunk=1 << 26):
+    """In-place ``arr[dst:dst+n] = arr[src:src+n]`` for ``dst <= src``.
+
+    Walks forward in fixed chunks so no chunk overwrites a later chunk's
+    source (``dst + k + chunk <= src + k + chunk``); ``np.copyto`` buffers the
+    intra-chunk overlap itself. Memory: one chunk (256 MB at 4 B/entry).
+    """
+    assert dst <= src
+    for k in range(0, n, chunk):
+        m = min(chunk, n - k)
+        np.copyto(arr[dst + k:dst + k + m], arr[src + k:src + k + m])
+
+
+def merge_duplicates_inplace(blocks, arrays, starts):
+    """Sort + merge duplicate (row, col) entries of row-blocks WITHOUT copies.
+
+    Equivalent to ``blk.sort_indices(); blk.sum_duplicates()`` on every block
+    (the same scipy kernels, ``csr_sort_indices`` and ``csr_sum_duplicates``,
+    run on the same per-row entry sequences, so the merged values are
+    bit-identical), but the storage is handled here instead of by scipy's
+    ``prune()``. ``prune()`` copies a block's ``indices``/``data`` whenever the
+    post-merge view is smaller than half its base array — true for every
+    block of a BlockCSR — so the pre-merge base arrays stay pinned while
+    per-block copies pile up: a ~2x-the-final-CSR transient at the end of
+    ``setup_lsqr`` whenever a mode emits duplicates (template / hard
+    poly-basis offsets emit one entry per chunk-contrib into the same
+    per-frame column). Here each block is merged in place (the kernel
+    front-packs within the block's slice), the packed runs are slid forward
+    into one contiguous prefix of the base arrays, and the base arrays are
+    shrunk with ``ndarray.resize`` — an in-place ``realloc``, no second copy
+    of the matrix at any moment.
+
+    Parameters
+    ----------
+    blocks : list of csr_matrix
+        Row-blocks whose ``data`` / ``indices`` are VIEWS into ``arrays``
+        starting at ``starts[i]`` (``build_block_csr`` output, or a single
+        unified ``csr_matrix`` with ``starts=[0]``). ``indptr`` must be a
+        private array per block (it is rewritten in place).
+    arrays : list ``[data, indices]``
+        The two base arrays, passed in a list the CALLER NO LONGER REFERENCES
+        by name: ``ndarray.resize`` refuses when any other reference or view
+        exists. The list is emptied and the (possibly shrunk) arrays returned.
+    starts : list of int
+        Offset of each block's first entry in the base arrays (pre-merge).
+
+    Returns
+    -------
+    (data, indices, nnz_before, nnz_after)
+    """
+    from scipy.sparse import _sparsetools
+    data, indices = arrays.pop(0), arrays.pop(0)
+    assert not arrays
+    nnz_before = int(sum(int(b.indptr[-1]) for b in blocks))
+    spans = []
+    g = 0
+    for blk, s0 in zip(blocks, starts):
+        assert int(blk.indptr[-1]) == blk.indices.shape[0] == blk.data.shape[0]
+        blk.has_sorted_indices = False
+        blk.sort_indices()                      # in place, per row
+        n_rows, n_cols = blk.shape
+        _sparsetools.csr_sum_duplicates(n_rows, n_cols, blk.indptr,
+                                        blk.indices, blk.data)   # in place
+        n_blk = int(blk.indptr[-1])
+        if g != s0:
+            _move_forward(data, s0, g, n_blk)
+            _move_forward(indices, s0, g, n_blk)
+        spans.append((g, n_blk))
+        g += n_blk
+    if g < nnz_before:
+        # Drop every view before shrinking; glibc realloc shrinks a large
+        # mapping in place (mremap), so this releases the slack without a copy.
+        for blk in blocks:
+            blk.data = blk.indices = None
+        data.resize(g, refcheck=True)
+        indices.resize(g, refcheck=True)
+    for blk, (g0, n) in zip(blocks, spans):
+        blk.data = data[g0:g0 + n]
+        blk.indices = indices[g0:g0 + n]
+        blk.has_canonical_format = True        # sorted + duplicate-free now
+    return data, indices, nnz_before, g

@@ -13,6 +13,7 @@ import traceback
 
 import numpy as np
 from multiprocessing.shared_memory import SharedMemory
+from scipy.sparse import csr_matrix
 
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
@@ -278,7 +279,14 @@ def _prep_lsqr(task_params):
         sub_data_vec = sub_data_vec.astype(np.float32)
         sub_b = sub_b[unique_rows]
 
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
+        off_counts = None
+        if task_params.get('merge_duplicates'):
+            ref_h, ref_w = task_params['ref_shape']
+            sub_rows, sub_cols, sub_data_vec, off_counts = _merge_subframe_duplicates(
+                sub_rows, sub_cols, sub_data_vec, len(sub_b),
+                task_params['scalar_col_start'] + task_params['num_scalar_cols'],
+                task_params['num_sky_blocks'] * ref_h * ref_w)
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
 
     except Exception as e:
         # Runs inside a ProcessPoolExecutor child (_prep_lsqr / the batch
@@ -287,6 +295,35 @@ def _prep_lsqr(task_params):
         print(f"Error processing file {reproj_file}: {e}")
         traceback.print_exc()
         return None
+
+
+def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
+    """Merge duplicate (row, col) entries of ONE subframe, in the worker.
+
+    Template / hard-poly-basis offsets emit one entry per chunk-contrib into
+    the same per-frame column, so ~1/4 of a template-mode row's entries are
+    duplicates. Left in, they inflate every downstream buffer (batch spill
+    files, the CSR buffers of Phase 3/4a) by the same fraction until the
+    Phase-5 merge. Merging here instead is bit-identical to merging there:
+    scipy's ``coo -> csr`` conversion is a stable row bucket (``coo_tocsr``
+    keeps each row's entries in emission order) followed by the very kernels
+    Phase 5 runs on the very same per-row sequences (``csr_sort_indices`` then
+    ``csr_sum_duplicates``, float32 arithmetic), and the global scatter is
+    stable too, so each row reaches Phase 5 with the same entry sequence
+    either way. The stream returned is row-grouped and column-sorted; Phase 5
+    then finds nothing to merge.
+
+    ``pixel_counts`` is defined on the PRE-merge stream (its offset-column
+    part feeds ``offset_damping_block``), so the pre-merge counts of every
+    column >= ``num_sky_eff`` are returned alongside as ``(col_ids, counts)``
+    (integers -> exactly reproducible in the main process).
+    """
+    off = cols >= num_sky_eff
+    off_ids, off_cnt = np.unique(cols[off], return_counts=True)
+    A = csr_matrix((data, (rows, cols)), shape=(n_rows, n_cols))
+    rows = np.repeat(np.arange(n_rows, dtype=np.int32), np.diff(A.indptr))
+    return (rows.astype(np.int32, copy=False), A.indices.astype(np.int32, copy=False),
+            A.data.astype(np.float32, copy=False), (off_ids.astype(np.int64), off_cnt))
 
 def _prep_lsqr_batch_worker(batch_params):
     """Wrapper to process a list (batch) of subframes in a single worker process."""
@@ -365,6 +402,7 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_cols = []
         batch_data = []
         batch_b = []
+        off_ids_parts, off_cnt_parts = [], []
         batch_row_offset = 0
         n_entries = 0
 
@@ -377,9 +415,12 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
             if len(sub_b) == 0:
                 continue
+            if off_counts is not None:
+                off_ids_parts.append(off_counts[0])
+                off_cnt_parts.append(off_counts[1])
 
             if spill_fhs is not None:
                 (sub_rows + batch_row_offset).tofile(spill_fhs[0])
@@ -406,6 +447,17 @@ def _prep_lsqr_batch_worker(batch_params):
                         pass
             return None
 
+        # Pre-merge offset-column counts (see _merge_subframe_duplicates):
+        # summed over the batch's subframes, shipped sparse (this batch's
+        # own frames' columns only).
+        offset_counts = None
+        if off_ids_parts:
+            _ids = np.concatenate(off_ids_parts)
+            _u, _inv = np.unique(_ids, return_inverse=True)
+            _tot = np.zeros(_u.size, dtype=np.int64)
+            np.add.at(_tot, _inv, np.concatenate(off_cnt_parts))
+            offset_counts = (_u, _tot)
+
         if spill_fhs is not None:
             for fh in spill_fhs:
                 fh.close()
@@ -415,7 +467,8 @@ def _prep_lsqr_batch_worker(batch_params):
             b_meta = (shm.name, cat_b.shape, cat_b.dtype.str)
             shm.close()
             return {'files': spill_paths, 'shm': [b_meta],
-                    'num_rows': batch_row_offset, 'n_entries': n_entries}
+                    'num_rows': batch_row_offset, 'n_entries': n_entries,
+                    'offset_counts': offset_counts}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)
@@ -430,7 +483,8 @@ def _prep_lsqr_batch_worker(batch_params):
             result_shm.append((shm.name, arr.shape, arr.dtype.str))
             shm.close()
 
-        return {'shm': result_shm, 'num_rows': batch_row_offset}
+        return {'shm': result_shm, 'num_rows': batch_row_offset,
+                'offset_counts': offset_counts}
     finally:
         for shm in shm_handles:
             shm.close()

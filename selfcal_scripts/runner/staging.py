@@ -92,8 +92,8 @@ def cleanup_nvme(cfg, nvme_reproj_dir):
 
 
 # --------------------------------------------------------------------------
-# RSS guardrail — polls VmRSS every RSS_POLL_SEC (15 s) and forces os._exit(2)
-# once RSS reaches RSS_ABORT_FRACTION (85%) of MemTotal: a clean, logged exit
+# RSS guardrail — polls the HARD RSS (RssAnon + RssShmem; see _read_self_rss_kb)
+# every RSS_POLL_SEC (15 s) and forces os._exit(2) once it reaches RSS_ABORT_FRACTION (85%) of MemTotal: a clean, logged exit
 # instead of a kernel OOM-kill mid-allocation with no traceback. Used by the
 # tiled build (large per-tile peak).
 # --------------------------------------------------------------------------
@@ -111,28 +111,41 @@ def _read_meminfo_kb(field='MemTotal'):
 
 
 def _read_self_rss_kb():
+    """(hard_kb, vmrss_kb): hard = RssAnon + RssShmem — the part that cannot be
+    reclaimed without swapping and is what an OOM-kill is about. VmRSS also
+    counts RssFile: clean page-cache pages of the memmapped batch spill files
+    (up to ~12 B per matrix entry during assembly), which the kernel drops on
+    demand. Guarding on VmRSS would abort a large tile on reclaimable cache.
+    """
+    anon = shmem = vmrss = 0
     try:
         with open('/proc/self/status') as f:
             for line in f:
                 if line.startswith('VmRSS:'):
-                    return int(line.split()[1])
+                    vmrss = int(line.split()[1])
+                elif line.startswith('RssAnon:'):
+                    anon = int(line.split()[1])
+                elif line.startswith('RssShmem:'):
+                    shmem = int(line.split()[1])
     except Exception:
         pass
-    return 0
+    hard = anon + shmem if anon else vmrss
+    return hard, vmrss
 
 
 def _rss_guardrail_loop(mem_total_kb, abort_threshold_kb):
     while True:
         try:
-            rss_kb = _read_self_rss_kb()
+            rss_kb, vmrss_kb = _read_self_rss_kb()
             if rss_kb > _RSS_STATE['peak_kb']:
                 _RSS_STATE['peak_kb'] = rss_kb
             rss_gb = rss_kb / 1024 / 1024
             peak_gb = _RSS_STATE['peak_kb'] / 1024 / 1024
             total_gb = mem_total_kb / 1024 / 1024
             pct = 100.0 * rss_kb / mem_total_kb if mem_total_kb else 0
-            print(f'[RSS] {time.strftime("%H:%M:%S")}  RSS={rss_gb:6.1f} GB  '
-                  f'peak={peak_gb:6.1f} GB  ({pct:5.1f}% of {total_gb:.0f} GB)',
+            print(f'[RSS] {time.strftime("%H:%M:%S")}  hard={rss_gb:6.1f} GB  '
+                  f'peak={peak_gb:6.1f} GB  ({pct:5.1f}% of {total_gb:.0f} GB)'
+                  f'  VmRSS={vmrss_kb/1024/1024:6.1f} GB',
                   file=sys.stderr, flush=True)
             if rss_kb >= abort_threshold_kb and not _RSS_STATE['aborting']:
                 _RSS_STATE['aborting'] = True
@@ -163,7 +176,8 @@ def start_rss_guardrail():
 
 
 def rss_checkpoint(label):
-    rss_kb = _read_self_rss_kb()
+    rss_kb, vmrss_kb = _read_self_rss_kb()
     peak_kb = max(rss_kb, _RSS_STATE['peak_kb'])
-    print(f'[RSS] checkpoint {label!r}: RSS={rss_kb/1024/1024:.1f} GB  '
+    print(f'[RSS] checkpoint {label!r}: hard={rss_kb/1024/1024:.1f} GB  '
+          f'VmRSS={vmrss_kb/1024/1024:.1f} GB  '
           f'peak so far={peak_kb/1024/1024:.1f} GB', flush=True)

@@ -433,6 +433,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
+        # Template / hard-poly-basis offsets emit duplicate (row, col)
+        # entries; merge them per subframe in the worker (bit-identical to
+        # the Phase-5 merge, see assembly._merge_subframe_duplicates) so no
+        # downstream buffer is sized on the pre-merge stream.
+        'merge_duplicates': bool(any(t is not None for t in det_template_arr_list)
+                                 or any(pb is not None for pb in poly_basis_list)),
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
@@ -599,7 +605,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 _b_rows = batch_results[batch_id]['rows']
                 # Per-batch streaming accumulation. Avoids holding a
                 # full-nnz float64 squared-data temp later.
-                pixel_counts += np.bincount(_b_cols, minlength=total_cols)
+                _cnt = np.bincount(_b_cols, minlength=total_cols)
+                _oc = result.get('offset_counts')
+                if _oc is not None:
+                    # The worker merged duplicate offset entries; pixel_counts
+                    # keeps the pre-merge contract for the offset + scalar
+                    # columns from the counts it shipped (integers -> exact).
+                    _cnt[num_sky_blocks * num_sky:] = 0
+                    _cnt[_oc[0]] = _oc[1]
+                pixel_counts += _cnt
+                del _cnt
                 pixel_fisher += np.bincount(
                     _b_cols,
                     weights=_b_data.astype(np.float64) ** 2,
@@ -647,6 +662,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         for shm in shm_objects:
             shm.close()
             shm.unlink()
+    # Release the collate loop's leftovers: the last batch's per-block masks
+    # (~5 bytes per entry), row-value scratch and the memmap names that would
+    # otherwise pin the last spill files, all the way through the CSR build.
+    _b_cols = _b_data = _b_rows = None
+    _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
     # ----------------------------------------------------------------
     # Phase 2: compute per-batch row offsets, total_rows_data, and the
@@ -739,6 +759,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             constraint_blocks.append(blk.as_dict())
 
 
+    # These slices are views: left alive they would pin the whole
+    # pixel_counts array through the CSR build even after it is spilled.
+    sky_pixel_counts = line_pixel_counts = offset_pixel_counts = None
+
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row
     # space (data rows first, then each constraint block).
@@ -814,6 +838,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     np.cumsum(row_nnz, out=indptr[1:])
     total_nnz = int(indptr[-1])
     # row_nnz no longer needed; we will use indptr+write_cursor for scatter.
+    _max_row_nnz = int(row_nnz.max()) if row_nnz.size else 0
     del row_nnz
 
     # ----------------------------------------------------------------
@@ -823,6 +848,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # uncompacted layout (apply_lsqr handles compaction itself).
     # ----------------------------------------------------------------
     compaction_active = not any(t is not None for t in det_template_arr_list)
+    if os.environ.get('SELFCAL_COMPACT_TEMPLATES') == '1':
+        # Measurement override (memopt2): compact even with template blocks.
+        # Every template column is covered (one per frame with data rows),
+        # so the guard below still applies; see the report for whether the
+        # result is byte-equal to the uncompacted solve.
+        compaction_active = True
     # Debug knob: caller can force compaction off to compare against the
     # uncompacted-CSR layout — useful for isolating a suspected regression
     # to the compaction step itself. Default True is the production path.
@@ -886,7 +917,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     csr_data = np.empty(total_nnz, dtype=np.float32)
     csr_indices = np.empty(total_nnz, dtype=np.int32)
-    write_cursor = np.zeros(total_rows, dtype=np.int32)
+    # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
+    # mean-offset constraint row with num_chunks entries (<= a few thousand);
+    # asserted, since an overflow here would silently corrupt slot assignment.
+    assert _max_row_nnz < 2**15, f"row nnz {_max_row_nnz} overflows int16 write_cursor"
+    write_cursor = np.zeros(total_rows, dtype=np.int16)
 
     # ----------------------------------------------------------------
     # Phase 4a: streaming scatter of data rows (one batch at a time;
@@ -956,7 +991,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 # Update write_cursor: add the per-row count contributed by
                 # this slice (carries the running count to later slices).
                 unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
                 write_cursor[unique_rows] += counts
             del rows_b, cols_b, data_b
         # Free the batch refs (and its spill files, if any).
@@ -1023,7 +1058,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 csr_indices[slots] = cols_s
 
                 unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int32, copy=False)
+                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
                 write_cursor[unique_rows] += counts
         cb_cursor += nrows
     del write_cursor
@@ -1054,27 +1089,40 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         target = max(1, min(2**30, _block_thr))
         full_A = build_block_csr(csr_data, csr_indices, indptr,
                                  (total_rows, n_active), target)
-        del csr_data, csr_indices, indptr
+        _blk_starts = [int(indptr[r0]) for r0 in full_A.row_bounds[:-1]]
+        del indptr
         logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
                     f"(nnz={total_nnz}).")
-        for _blk in full_A.blocks:
-            _blk.has_sorted_indices = False
-            _blk.sort_indices()
-            _blk.sum_duplicates()
+        _blocks = full_A.blocks
     else:
         full_A = csr_matrix(
             (csr_data, csr_indices, indptr),
             shape=(total_rows, n_active),
             copy=False,
         )
-        full_A.has_sorted_indices = False
-        # Sort indices within each row in place. This is per-row qsort with no
-        # allocation peak and gives downstream code (CSC views, indices-binary
-        # search, etc.) the canonical layout. We also call sum_duplicates() as a
-        # defensive no-op (the bucket-sort build guarantees no duplicate (row,
-        # col) entries) so that downstream consumers can rely on canonical CSR.
-        full_A.sort_indices()
-        full_A.sum_duplicates()
+        # The constructor downcasts indptr to a private int32 copy and keeps
+        # data/indices as (full-length) views of our buffers.
+        del indptr
+        _blocks = [full_A]
+        _blk_starts = [0]
+    # Sort indices within each row and merge duplicate (row, col) entries —
+    # per-row operations, so doing them block-wise is bit-identical to the
+    # unified matrix. Done by merge_duplicates_inplace rather than scipy's
+    # sort_indices()/sum_duplicates(): scipy's version ends in prune(), which
+    # COPIES every block's data/indices (a view smaller than half its base)
+    # while the pre-merge buffers stay pinned — a ~2x-CSR transient that was
+    # the process-lifetime memory peak for template-offset runs. The helper
+    # front-packs in place and shrinks the buffers with an in-place realloc.
+    # It needs sole ownership of the buffers (resize refuses otherwise), so
+    # our names are handed over through a list and dropped.
+    from .blockcsr import merge_duplicates_inplace
+    _buf = [csr_data, csr_indices]
+    del csr_data, csr_indices
+    _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
+    del _buf, _blocks, _blk_starts
+    if _nnz_post != _nnz_pre:
+        logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+                    f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it
     # before returning would re-inflate it right alongside the finished CSR —
