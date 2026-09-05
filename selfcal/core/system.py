@@ -698,6 +698,21 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             minlength=total_cols,
         ), out=pixel_fisher)
 
+    # The cross moments are the collation's critical path (J(J-1)/2 pair
+    # chains, ~10 at J=5). The per-batch prep (block masks + row-value
+    # scatter) is computed ONCE by a prep stage and fanned out to a few
+    # pair-GROUP threads through bounded queues: every pair keeps its own
+    # '+=' chain in arrival order (prep preserves it, each group queue
+    # preserves it), groups own disjoint pairs, and the shared prep arrays
+    # are only read — so the bytes cannot change. Queue bound 2 caps the
+    # in-flight masks+rowvals at ~2 batches.
+    _cross_group_qs = []
+    _cross_groups = []
+    if pixel_cross is not None:
+        _n_grp = min(3, len(_cross_pairs))
+        _cross_groups = [list(_cross_pairs[g::_n_grp]) for g in range(_n_grp)]
+        _cross_group_qs = [_queue.Queue(maxsize=2) for _ in _cross_groups]
+
     def _acc_cross(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
         # Pair each data row's block-i entry with its block-j entry
         # through the shared local row id -> Σ a_i·a_j per pixel.
@@ -711,7 +726,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             _v = np.zeros(result['num_rows'], dtype=np.float64)
             _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
             _rowvals.append(_v)
-        for (ii, jj) in _cross_pairs:
+        for _gq in _cross_group_qs:
+            _gq.put((_masks, _rowvals, _b_rows, _b_cols, _b_data))
+
+    def _acc_cross_group(pairs, item):
+        _masks, _rowvals, _b_rows, _b_cols, _b_data = item
+        for (ii, jj) in pairs:
             _m_j = _masks[jj]
             pixel_cross[(ii, jj)] += np.bincount(
                 _b_cols[_m_j] - jj * num_sky,
@@ -753,7 +773,27 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _fam_threads = [threading.Thread(target=_fam_loop, args=(fn, q),
                                      name=f'collate-{fn.__name__}', daemon=True)
                     for fn, q in zip(_families, _fam_qs)]
-    for _t in _fam_threads:
+
+    def _cross_group_loop(pairs, q):
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            try:
+                _acc_cross_group(pairs, item)
+            except BaseException as e:   # surfaced after the join
+                _fam_err.append(e)
+                # Keep draining: the queue is BOUNDED, so stopping here
+                # would leave the prep stage blocked on a full queue.
+                while q.get() is not None:
+                    pass
+                return
+
+    _cross_threads = [threading.Thread(target=_cross_group_loop, args=(g, q),
+                                       name=f'collate-cross-g{i}', daemon=True)
+                      for i, (g, q) in enumerate(zip(_cross_groups,
+                                                     _cross_group_qs))]
+    for _t in _fam_threads + _cross_threads:
         _t.start()
 
     try:
@@ -795,6 +835,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         for _q in _fam_qs:
             _q.put(None)
         for _t in _fam_threads:
+            _t.join()
+        for _q in _cross_group_qs:
+            _q.put(None)
+        for _t in _cross_threads:
             _t.join()
         if _fam_err:
             raise _fam_err[0]
