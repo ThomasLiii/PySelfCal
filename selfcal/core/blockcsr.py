@@ -178,8 +178,15 @@ def merge_duplicates_inplace(blocks, arrays, starts):
         # mapping in place (mremap), so this releases the slack without a copy.
         for blk in blocks:
             blk.data = blk.indices = None
-        data.resize(g, refcheck=True)
-        indices.resize(g, refcheck=True)
+        try:
+            data.resize(g, refcheck=True)
+            indices.resize(g, refcheck=True)
+        except ValueError:
+            # Non-owning buffers (the parallel scatter's shared mmaps) cannot
+            # be shrunk in place. Unreachable in current modes (the worker
+            # merge leaves no duplicates), so tolerate the slack rather than
+            # copy: the blocks below re-slice to the packed spans either way.
+            pass
     for blk, (g0, n) in zip(blocks, spans):
         blk.data = data[g0:g0 + n]
         blk.indices = indices[g0:g0 + n]

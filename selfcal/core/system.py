@@ -12,6 +12,7 @@ coverage/Fisher parsers.
 from __future__ import annotations
 
 import logging
+import mmap
 import os
 import shutil
 import tempfile
@@ -68,6 +69,92 @@ class SetupResult(NamedTuple):
     active_mask: object = None
     pixel_spill: object = None
     pixel_rhs: object = None
+
+
+def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, indptr,
+                       col_map, csr_data, csr_indices, write_cursor,
+                       cursor_base, scatter_chunk=64_000_000):
+    """Scatter one batch's COO entries into the CSR buffers.
+
+    Byte-for-byte the original Phase-4a inner loop: sub-slices in original
+    entry order, stable sort by row, within-row cumcount — every entry's
+    slot is fully determined by the batch content, ``indptr`` and the
+    within-batch order, so WHERE this runs (main process or a forked
+    worker) cannot change a single byte. ``write_cursor`` may be the global
+    per-row cursor (``cursor_base=0``) or a batch-local one indexed by
+    ``global_row - cursor_base``.
+    """
+    compaction_active = col_map is not None
+    n_batch = rows_arr.shape[0]
+    for s0 in range(0, n_batch, scatter_chunk):
+        s1 = min(s0 + scatter_chunk, n_batch)
+        rows_b = rows_arr[s0:s1].astype(np.int64, copy=False) + row_offset
+        if compaction_active:
+            cols_b = col_map[cols_arr[s0:s1]].astype(np.int32, copy=False)
+        else:
+            cols_b = cols_arr[s0:s1].astype(np.int32, copy=False)
+        data_b = data_arr[s0:s1]
+
+        n_b = rows_b.shape[0]
+        if n_b > 0:
+            order = np.argsort(rows_b, kind="stable")
+            rows_s = rows_b[order]
+            cols_s = cols_b[order]
+            data_s = data_b[order]
+
+            is_new_group = np.empty(n_b, dtype=bool)
+            is_new_group[0] = True
+            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+            group_starts = np.flatnonzero(is_new_group)
+            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+
+            cur_s = rows_s - cursor_base
+            slots = indptr[rows_s] + write_cursor[cur_s] + within_row
+            csr_data[slots] = data_s
+            csr_indices[slots] = cols_s
+
+            unique_rows = rows_s[group_starts]
+            counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
+            write_cursor[unique_rows - cursor_base] += counts
+        del rows_b, cols_b, data_b
+
+
+# Fork-inherited context for the parallel scatter workers: the parent fills
+# this right before creating the pool; forked children read indptr/col_map
+# through copy-on-write pages and write through the MAP_SHARED csr buffers.
+_SCATTER_CTX = {}
+
+
+def _scatter_batch_worker(task):
+    """One batch, in a forked child. Pure data movement — see _scatter_one_batch."""
+    if not _SCATTER_CTX:
+        raise RuntimeError("scatter context missing — the pool must be "
+                           "forked after _SCATTER_CTX is filled")
+    row_offset, num_rows, files = task
+    ctx = _SCATTER_CTX
+    fr, fc, fd = files
+    rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
+    cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
+    data_mm = np.memmap(fd, dtype=np.float32, mode='r')
+    cursor = np.zeros(num_rows, dtype=np.int16)      # this batch's rows only
+    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, ctx['indptr'],
+                       ctx['col_map'], ctx['csr_data'], ctx['csr_indices'],
+                       cursor, cursor_base=row_offset)
+    return row_offset
+
+
+def _alloc_scatter_buffer(n, dtype):
+    """n-element array in an ANONYMOUS SHARED mapping (MAP_SHARED|MAP_ANON).
+
+    Forked scatter workers inherit the mapping and write the CSR through it
+    directly. Deliberately not SharedMemory/tmpfs: no /dev/shm mount cap and
+    no name lifecycle; the pages are shmem-class RAM (RssShmem — counted by
+    the hard-RSS guardrail) and are freed when the array (and its mmap base)
+    is garbage-collected.
+    """
+    mm = mmap.mmap(-1, max(1, int(n) * np.dtype(dtype).itemsize))
+    return np.frombuffer(mm, dtype=dtype, count=int(n))
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -913,10 +1000,25 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
-    # Phase 3: allocate CSR buffers.
+    # Phase 3: allocate CSR buffers. When the spill path is active the
+    # scatter runs in forked workers over per-batch (disjoint) row ranges,
+    # so the buffers live in anonymous SHARED mappings; otherwise plain
+    # arrays and the serial scatter (byte-identical either way — the
+    # scatter is pure data movement). SELFCAL_SCATTER_WORKERS=0|1 forces
+    # the serial path.
     # ----------------------------------------------------------------
-    csr_data = np.empty(total_nnz, dtype=np.float32)
-    csr_indices = np.empty(total_nnz, dtype=np.int32)
+    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
+                                          min(8, max_workers)))
+    _file_batches = [(batch_row_starts[i], r['num_rows'], r['files'])
+                     for i, r in enumerate(batch_results)
+                     if r is not None and 'files' in r]
+    _par_scatter = _scatter_workers > 1 and len(_file_batches) > 1
+    if _par_scatter:
+        csr_data = _alloc_scatter_buffer(total_nnz, np.float32)
+        csr_indices = _alloc_scatter_buffer(total_nnz, np.int32)
+    else:
+        csr_data = np.empty(total_nnz, dtype=np.float32)
+        csr_indices = np.empty(total_nnz, dtype=np.int32)
     # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
     # mean-offset constraint row with num_chunks entries (<= a few thousand);
     # asserted, since an overflow here would silently corrupt slot assignment.
@@ -950,50 +1052,28 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # equal keys; slice boundaries preserve original order across
     # slices). Hence byte-identical csr_data/csr_indices.
     scatter_chunk = 64_000_000
+    if _par_scatter:
+        # Every spill batch is scattered by a forked worker: batches own
+        # disjoint row ranges, so all writes are disjoint, and slot
+        # assignment is schedule-independent (see _scatter_one_batch).
+        logger.info(f"Phase 4a: parallel scatter, {len(_file_batches)} batches "
+                    f"over {_scatter_workers} workers.")
+        _SCATTER_CTX.update(indptr=indptr, col_map=col_map,
+                            csr_data=csr_data, csr_indices=csr_indices)
+        try:
+            with ProcessPoolExecutor(max_workers=_scatter_workers) as _ex:
+                list(_ex.map(_scatter_batch_worker, _file_batches, chunksize=1))
+        finally:
+            _SCATTER_CTX.clear()
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
-        row_offset = batch_row_starts[batch_id]
-        n_batch = batch['rows'].shape[0]
-        for s0 in range(0, n_batch, scatter_chunk):
-            s1 = min(s0 + scatter_chunk, n_batch)
-            rows_b = batch['rows'][s0:s1].astype(np.int64, copy=False) + row_offset
-            if compaction_active:
-                # int32 compact col indices (col_map is int32; gather emits
-                # int32 directly, astype is a no-op).
-                cols_b = col_map[batch['cols'][s0:s1]].astype(np.int32, copy=False)
-            else:
-                cols_b = batch['cols'][s0:s1].astype(np.int32, copy=False)
-            data_b = batch['data'][s0:s1]
-
-            n_b = rows_b.shape[0]
-            if n_b > 0:
-                # Stable sort by row so duplicates are contiguous; preserves
-                # within-row col order from the worker output.
-                order = np.argsort(rows_b, kind="stable")
-                rows_s = rows_b[order]
-                cols_s = cols_b[order]
-                data_s = data_b[order]
-
-                # Within-row cumcount in sorted order.
-                is_new_group = np.empty(n_b, dtype=bool)
-                is_new_group[0] = True
-                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-                group_starts = np.flatnonzero(is_new_group)
-                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
-
-                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
-                csr_data[slots] = data_s
-                csr_indices[slots] = cols_s
-
-                # Update write_cursor: add the per-row count contributed by
-                # this slice (carries the running count to later slices).
-                unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
-                write_cursor[unique_rows] += counts
-            del rows_b, cols_b, data_b
+        if not (_par_scatter and 'files' in batch):
+            _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
+                               batch_row_starts[batch_id], indptr, col_map,
+                               csr_data, csr_indices, write_cursor,
+                               cursor_base=0, scatter_chunk=scatter_chunk)
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
