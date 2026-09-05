@@ -16,6 +16,7 @@ import mmap
 import os
 import shutil
 import tempfile
+import threading
 
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -656,6 +657,105 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     batch_results = [None] * len(batched_tasks)
     row_nnz_per_batch = [None] * len(batched_tasks)
+
+    # ----------------------------------------------------------------
+    # Collation families. The per-batch accumulations are the dominant
+    # SERIAL cost of assembly (~1000 s at a 1k-frame tile once the workers
+    # finish). The accumulator families (counts+row_nnz | fisher | cross |
+    # rhs) write DISJOINT accumulators and only read the batch arrays, so
+    # each family runs in its own thread consuming an ordered queue fed in
+    # as_completed order: every family's f64 `+=` chain sees exactly the
+    # batch sequence it sees today (the order-sensitive part), families
+    # never interact, and np.bincount releases the GIL. The statements in
+    # the family functions are the previous loop body verbatim (np.add with
+    # out= is the same ufunc `+=` invokes).
+    # ----------------------------------------------------------------
+    import queue as _queue
+
+    def _acc_counts(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        _cnt = np.bincount(_b_cols, minlength=total_cols)
+        _oc = result.get('offset_counts')
+        if _oc is not None:
+            # The worker merged duplicate offset entries; pixel_counts
+            # keeps the pre-merge contract for the offset + scalar
+            # columns from the counts it shipped (integers -> exact).
+            _cnt[num_sky_blocks * num_sky:] = 0
+            _cnt[_oc[0]] = _oc[1]
+        np.add(pixel_counts, _cnt, out=pixel_counts)
+        del _cnt
+        # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
+        # add the global row offset in Phase 3 (cumulative across
+        # batches). Keeping this batch-local is what lets Phase 4
+        # stream-scatter without revisiting all batches twice.
+        row_nnz_per_batch[batch_id] = np.bincount(
+            _b_rows, minlength=result['num_rows']
+        ).astype(np.int32, copy=False)
+
+    def _acc_fisher(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        np.add(pixel_fisher, np.bincount(
+            _b_cols,
+            weights=_b_data.astype(np.float64) ** 2,
+            minlength=total_cols,
+        ), out=pixel_fisher)
+
+    def _acc_cross(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        # Pair each data row's block-i entry with its block-j entry
+        # through the shared local row id -> Σ a_i·a_j per pixel.
+        # Every data row has exactly one entry per sky block (the
+        # J-interleave in assembly), so a per-row scatter of block
+        # i's values indexes cleanly from block j's entries.
+        _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
+                  for jj in range(num_sky_blocks)]
+        _rowvals = []
+        for jj in range(num_sky_blocks):
+            _v = np.zeros(result['num_rows'], dtype=np.float64)
+            _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
+            _rowvals.append(_v)
+        for (ii, jj) in _cross_pairs:
+            _m_j = _masks[jj]
+            pixel_cross[(ii, jj)] += np.bincount(
+                _b_cols[_m_j] - jj * num_sky,
+                weights=_b_data[_m_j].astype(np.float64)
+                        * _rowvals[ii][_b_rows[_m_j]],
+                minlength=num_sky,
+            )
+
+    def _acc_rhs(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        # RHS moments: pair each sky entry (w*G_j) with its row's
+        # b (= w*v) -> Σ w² G_j v per pixel, per block.
+        _rowb = np.asarray(_b_b, dtype=np.float64)[_b_rows]
+        _sky = _b_cols < num_sky_blocks * num_sky
+        np.add(pixel_rhs, np.bincount(
+            _b_cols[_sky],
+            weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
+            minlength=num_sky_blocks * num_sky,
+        ), out=pixel_rhs)
+
+    _families = [_acc_counts, _acc_fisher]
+    if pixel_cross is not None:
+        _families.append(_acc_cross)
+    if pixel_rhs is not None:
+        _families.append(_acc_rhs)
+    _fam_qs = [_queue.Queue() for _ in _families]
+    _fam_err = []
+
+    def _fam_loop(fn, q):
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            try:
+                fn(*item)
+            except BaseException as e:   # surfaced after the join
+                _fam_err.append(e)
+                return
+
+    _fam_threads = [threading.Thread(target=_fam_loop, args=(fn, q),
+                                     name=f'collate-{fn.__name__}', daemon=True)
+                    for fn, q in zip(_families, _fam_qs)]
+    for _t in _fam_threads:
+        _t.start()
+
     try:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
@@ -687,64 +787,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                         'b':    _read_shm(shm_infos[3]),
                         'num_rows': result['num_rows'],
                     }
-                _b_cols = batch_results[batch_id]['cols']
-                _b_data = batch_results[batch_id]['data']
-                _b_rows = batch_results[batch_id]['rows']
-                # Per-batch streaming accumulation. Avoids holding a
-                # full-nnz float64 squared-data temp later.
-                _cnt = np.bincount(_b_cols, minlength=total_cols)
-                _oc = result.get('offset_counts')
-                if _oc is not None:
-                    # The worker merged duplicate offset entries; pixel_counts
-                    # keeps the pre-merge contract for the offset + scalar
-                    # columns from the counts it shipped (integers -> exact).
-                    _cnt[num_sky_blocks * num_sky:] = 0
-                    _cnt[_oc[0]] = _oc[1]
-                pixel_counts += _cnt
-                del _cnt
-                pixel_fisher += np.bincount(
-                    _b_cols,
-                    weights=_b_data.astype(np.float64) ** 2,
-                    minlength=total_cols,
-                )
-                if pixel_cross is not None:
-                    # Pair each data row's block-i entry with its block-j entry
-                    # through the shared local row id -> Σ a_i·a_j per pixel.
-                    # Every data row has exactly one entry per sky block (the
-                    # J-interleave in assembly), so a per-row scatter of block
-                    # i's values indexes cleanly from block j's entries.
-                    _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
-                              for jj in range(num_sky_blocks)]
-                    _rowvals = []
-                    for jj in range(num_sky_blocks):
-                        _v = np.zeros(result['num_rows'], dtype=np.float64)
-                        _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
-                        _rowvals.append(_v)
-                    for (ii, jj) in _cross_pairs:
-                        _m_j = _masks[jj]
-                        pixel_cross[(ii, jj)] += np.bincount(
-                            _b_cols[_m_j] - jj * num_sky,
-                            weights=_b_data[_m_j].astype(np.float64)
-                                    * _rowvals[ii][_b_rows[_m_j]],
-                            minlength=num_sky,
-                        )
-                if pixel_rhs is not None:
-                    # RHS moments: pair each sky entry (w*G_j) with its row's
-                    # b (= w*v) -> Σ w² G_j v per pixel, per block.
-                    _rowb = np.asarray(batch_results[batch_id]['b'], dtype=np.float64)[_b_rows]
-                    _sky = _b_cols < num_sky_blocks * num_sky
-                    pixel_rhs += np.bincount(
-                        _b_cols[_sky],
-                        weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
-                        minlength=num_sky_blocks * num_sky,
-                    )
-                # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
-                # add the global row offset in Phase 3 (cumulative across
-                # batches). Keeping this batch-local is what lets Phase 4
-                # stream-scatter without revisiting all batches twice.
-                row_nnz_per_batch[batch_id] = np.bincount(
-                    _b_rows, minlength=result['num_rows']
-                ).astype(np.int32, copy=False)
+                _br = batch_results[batch_id]
+                _item = (batch_id, result, _br['rows'], _br['cols'],
+                         _br['data'], _br['b'])
+                for _q in _fam_qs:
+                    _q.put(_item)
+        for _q in _fam_qs:
+            _q.put(None)
+        for _t in _fam_threads:
+            _t.join()
+        if _fam_err:
+            raise _fam_err[0]
     finally:
         for shm in shm_objects:
             shm.close()
