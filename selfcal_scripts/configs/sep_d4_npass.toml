@@ -39,10 +39,12 @@ line_fisher_threshold = 10.0
 
 [[params.lines]]
 name = "pah_3p29"
-# the template the existing pass-1 cals were built with (BC grid stops at 3.47um;
-# the wide-grid package template line_templates/aromatic_3p289.npz is the
-# candidate replacement -- a user decision, see workspace/spectral-npass/brief.md)
-template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aromatic_3p289_sep_to347.npz"
+# WIDE-GRID template (USER decision 2026-09-06): the old aromatic_3p289_sep_to347.npz
+# (BC grid stops at 3.47um) clipped the red wing at the ~8% level; SEP now uses the
+# same wide-grid template as NEP. The existing pass-1 (INIT) offsets were solved with
+# the old template and are reused as the alternation's starting point; the sky is
+# refit with the new template from pass 2 on. Products carry the _wideG stem.
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aromatic_3p289.npz"
 damp_weight = 5e-3
 
 [calibration]
@@ -73,7 +75,7 @@ frame_filter = "center"
 halo = 0
 # symlinks to the HDD frames (the SEP reproj lives on the RAID; stage_files skips existing paths)
 nvme_subdir = "reproj_nvme_SEP_D4_npass"
-stitched_suffix = "_PAHfit_realistic_dampL5e-3_HALVES_npass"
+stitched_suffix = "_PAHfit_realistic_dampL5e-3_HALVES_npass_wideG"
 line = true
 rss_guardrail = true
 tiles = [
@@ -82,7 +84,7 @@ tiles = [
 ]
 
 [passes]
-n = 8
+n = 4          # the decided default; the n=8 monitor run used the old template
 stop_tol = 0.0
 sky_merge = "combine"
 init   = { outlier_thresh = 2.5, subch_clip = true, ignore_list = [21] }
