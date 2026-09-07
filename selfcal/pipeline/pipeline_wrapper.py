@@ -31,6 +31,7 @@ from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
+from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
 from typing import TYPE_CHECKING
@@ -1324,11 +1325,11 @@ class Calibrator(Reprojector):
             skycov_grp = f.create_group('sky_coverage')
             skyfish_grp = f.create_group('sky_fisher')
             for j, name in enumerate(sky_names):
-                sky_grp.create_dataset(name, data=sky_maps[j], compression='gzip')
-                skycov_grp.create_dataset(name, data=sky_coverages[j], compression='gzip')
+                create_gzip_dataset_parallel(sky_grp, name, sky_maps[j])
+                create_gzip_dataset_parallel(skycov_grp, name, sky_coverages[j])
                 if sky_fishers[j] is not None:
-                    skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
-                                               compression='gzip')
+                    create_gzip_dataset_parallel(skyfish_grp, name,
+                                                 sky_fishers[j].astype('float32'))
             # Per-pixel SEPARABILITY I_P (each spectral block's Schur
             # complement against all other sky blocks). Unlike the block's
             # Fisher (a magnitude metric), I_P measures wavelength diversity —
@@ -1344,8 +1345,8 @@ class Calibrator(Reprojector):
                     sep = parse_line_separability(
                         self.pixel_cross, self.pixel_fisher, self.ref_shape,
                         num_sky_blocks=self.num_sky_blocks, block=j)
-                    sep_grp.create_dataset(
-                        sky_names[j], data=sep.astype('float32'), compression='gzip')
+                    create_gzip_dataset_parallel(
+                        sep_grp, sky_names[j], sep.astype('float32'))
             # --- Back-compat hard-link aliases (v2 readers resolve transparently):
             # skymap -> continuum; skymap_line -> the single spectral block when
             # there is exactly one. h5py resolves these on read, so

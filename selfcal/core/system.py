@@ -12,9 +12,11 @@ coverage/Fisher parsers.
 from __future__ import annotations
 
 import logging
+import mmap
 import os
 import shutil
 import tempfile
+import threading
 
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -68,6 +70,92 @@ class SetupResult(NamedTuple):
     active_mask: object = None
     pixel_spill: object = None
     pixel_rhs: object = None
+
+
+def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, indptr,
+                       col_map, csr_data, csr_indices, write_cursor,
+                       cursor_base, scatter_chunk=64_000_000):
+    """Scatter one batch's COO entries into the CSR buffers.
+
+    Byte-for-byte the original Phase-4a inner loop: sub-slices in original
+    entry order, stable sort by row, within-row cumcount — every entry's
+    slot is fully determined by the batch content, ``indptr`` and the
+    within-batch order, so WHERE this runs (main process or a forked
+    worker) cannot change a single byte. ``write_cursor`` may be the global
+    per-row cursor (``cursor_base=0``) or a batch-local one indexed by
+    ``global_row - cursor_base``.
+    """
+    compaction_active = col_map is not None
+    n_batch = rows_arr.shape[0]
+    for s0 in range(0, n_batch, scatter_chunk):
+        s1 = min(s0 + scatter_chunk, n_batch)
+        rows_b = rows_arr[s0:s1].astype(np.int64, copy=False) + row_offset
+        if compaction_active:
+            cols_b = col_map[cols_arr[s0:s1]].astype(np.int32, copy=False)
+        else:
+            cols_b = cols_arr[s0:s1].astype(np.int32, copy=False)
+        data_b = data_arr[s0:s1]
+
+        n_b = rows_b.shape[0]
+        if n_b > 0:
+            order = np.argsort(rows_b, kind="stable")
+            rows_s = rows_b[order]
+            cols_s = cols_b[order]
+            data_s = data_b[order]
+
+            is_new_group = np.empty(n_b, dtype=bool)
+            is_new_group[0] = True
+            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
+            group_starts = np.flatnonzero(is_new_group)
+            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
+            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+
+            cur_s = rows_s - cursor_base
+            slots = indptr[rows_s] + write_cursor[cur_s] + within_row
+            csr_data[slots] = data_s
+            csr_indices[slots] = cols_s
+
+            unique_rows = rows_s[group_starts]
+            counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
+            write_cursor[unique_rows - cursor_base] += counts
+        del rows_b, cols_b, data_b
+
+
+# Fork-inherited context for the parallel scatter workers: the parent fills
+# this right before creating the pool; forked children read indptr/col_map
+# through copy-on-write pages and write through the MAP_SHARED csr buffers.
+_SCATTER_CTX = {}
+
+
+def _scatter_batch_worker(task):
+    """One batch, in a forked child. Pure data movement — see _scatter_one_batch."""
+    if not _SCATTER_CTX:
+        raise RuntimeError("scatter context missing — the pool must be "
+                           "forked after _SCATTER_CTX is filled")
+    row_offset, num_rows, files = task
+    ctx = _SCATTER_CTX
+    fr, fc, fd = files
+    rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
+    cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
+    data_mm = np.memmap(fd, dtype=np.float32, mode='r')
+    cursor = np.zeros(num_rows, dtype=np.int16)      # this batch's rows only
+    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, ctx['indptr'],
+                       ctx['col_map'], ctx['csr_data'], ctx['csr_indices'],
+                       cursor, cursor_base=row_offset)
+    return row_offset
+
+
+def _alloc_scatter_buffer(n, dtype):
+    """n-element array in an ANONYMOUS SHARED mapping (MAP_SHARED|MAP_ANON).
+
+    Forked scatter workers inherit the mapping and write the CSR through it
+    directly. Deliberately not SharedMemory/tmpfs: no /dev/shm mount cap and
+    no name lifecycle; the pages are shmem-class RAM (RssShmem — counted by
+    the hard-RSS guardrail) and are freed when the array (and its mmap base)
+    is garbage-collected.
+    """
+    mm = mmap.mmap(-1, max(1, int(n) * np.dtype(dtype).itemsize))
+    return np.frombuffer(mm, dtype=dtype, count=int(n))
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -569,6 +657,145 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     batch_results = [None] * len(batched_tasks)
     row_nnz_per_batch = [None] * len(batched_tasks)
+
+    # ----------------------------------------------------------------
+    # Collation families. The per-batch accumulations are the dominant
+    # SERIAL cost of assembly (~1000 s at a 1k-frame tile once the workers
+    # finish). The accumulator families (counts+row_nnz | fisher | cross |
+    # rhs) write DISJOINT accumulators and only read the batch arrays, so
+    # each family runs in its own thread consuming an ordered queue fed in
+    # as_completed order: every family's f64 `+=` chain sees exactly the
+    # batch sequence it sees today (the order-sensitive part), families
+    # never interact, and np.bincount releases the GIL. The statements in
+    # the family functions are the previous loop body verbatim (np.add with
+    # out= is the same ufunc `+=` invokes).
+    # ----------------------------------------------------------------
+    import queue as _queue
+
+    def _acc_counts(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        _cnt = np.bincount(_b_cols, minlength=total_cols)
+        _oc = result.get('offset_counts')
+        if _oc is not None:
+            # The worker merged duplicate offset entries; pixel_counts
+            # keeps the pre-merge contract for the offset + scalar
+            # columns from the counts it shipped (integers -> exact).
+            _cnt[num_sky_blocks * num_sky:] = 0
+            _cnt[_oc[0]] = _oc[1]
+        np.add(pixel_counts, _cnt, out=pixel_counts)
+        del _cnt
+        # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
+        # add the global row offset in Phase 3 (cumulative across
+        # batches). Keeping this batch-local is what lets Phase 4
+        # stream-scatter without revisiting all batches twice.
+        row_nnz_per_batch[batch_id] = np.bincount(
+            _b_rows, minlength=result['num_rows']
+        ).astype(np.int32, copy=False)
+
+    def _acc_fisher(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        np.add(pixel_fisher, np.bincount(
+            _b_cols,
+            weights=_b_data.astype(np.float64) ** 2,
+            minlength=total_cols,
+        ), out=pixel_fisher)
+
+    # The cross moments are the collation's critical path (J(J-1)/2 pair
+    # chains, ~10 at J=5). The per-batch prep (block masks + row-value
+    # scatter) is computed ONCE by a prep stage and fanned out to a few
+    # pair-GROUP threads through bounded queues: every pair keeps its own
+    # '+=' chain in arrival order (prep preserves it, each group queue
+    # preserves it), groups own disjoint pairs, and the shared prep arrays
+    # are only read — so the bytes cannot change. Queue bound 2 caps the
+    # in-flight masks+rowvals at ~2 batches.
+    _cross_group_qs = []
+    _cross_groups = []
+    if pixel_cross is not None:
+        _n_grp = min(3, len(_cross_pairs))
+        _cross_groups = [list(_cross_pairs[g::_n_grp]) for g in range(_n_grp)]
+        _cross_group_qs = [_queue.Queue(maxsize=2) for _ in _cross_groups]
+
+    def _acc_cross(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        # Pair each data row's block-i entry with its block-j entry
+        # through the shared local row id -> Σ a_i·a_j per pixel.
+        # Every data row has exactly one entry per sky block (the
+        # J-interleave in assembly), so a per-row scatter of block
+        # i's values indexes cleanly from block j's entries.
+        _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
+                  for jj in range(num_sky_blocks)]
+        _rowvals = []
+        for jj in range(num_sky_blocks):
+            _v = np.zeros(result['num_rows'], dtype=np.float64)
+            _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
+            _rowvals.append(_v)
+        for _gq in _cross_group_qs:
+            _gq.put((_masks, _rowvals, _b_rows, _b_cols, _b_data))
+
+    def _acc_cross_group(pairs, item):
+        _masks, _rowvals, _b_rows, _b_cols, _b_data = item
+        for (ii, jj) in pairs:
+            _m_j = _masks[jj]
+            pixel_cross[(ii, jj)] += np.bincount(
+                _b_cols[_m_j] - jj * num_sky,
+                weights=_b_data[_m_j].astype(np.float64)
+                        * _rowvals[ii][_b_rows[_m_j]],
+                minlength=num_sky,
+            )
+
+    def _acc_rhs(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        # RHS moments: pair each sky entry (w*G_j) with its row's
+        # b (= w*v) -> Σ w² G_j v per pixel, per block.
+        _rowb = np.asarray(_b_b, dtype=np.float64)[_b_rows]
+        _sky = _b_cols < num_sky_blocks * num_sky
+        np.add(pixel_rhs, np.bincount(
+            _b_cols[_sky],
+            weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
+            minlength=num_sky_blocks * num_sky,
+        ), out=pixel_rhs)
+
+    _families = [_acc_counts, _acc_fisher]
+    if pixel_cross is not None:
+        _families.append(_acc_cross)
+    if pixel_rhs is not None:
+        _families.append(_acc_rhs)
+    _fam_qs = [_queue.Queue() for _ in _families]
+    _fam_err = []
+
+    def _fam_loop(fn, q):
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            try:
+                fn(*item)
+            except BaseException as e:   # surfaced after the join
+                _fam_err.append(e)
+                return
+
+    _fam_threads = [threading.Thread(target=_fam_loop, args=(fn, q),
+                                     name=f'collate-{fn.__name__}', daemon=True)
+                    for fn, q in zip(_families, _fam_qs)]
+
+    def _cross_group_loop(pairs, q):
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            try:
+                _acc_cross_group(pairs, item)
+            except BaseException as e:   # surfaced after the join
+                _fam_err.append(e)
+                # Keep draining: the queue is BOUNDED, so stopping here
+                # would leave the prep stage blocked on a full queue.
+                while q.get() is not None:
+                    pass
+                return
+
+    _cross_threads = [threading.Thread(target=_cross_group_loop, args=(g, q),
+                                       name=f'collate-cross-g{i}', daemon=True)
+                      for i, (g, q) in enumerate(zip(_cross_groups,
+                                                     _cross_group_qs))]
+    for _t in _fam_threads + _cross_threads:
+        _t.start()
+
     try:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
@@ -600,64 +827,21 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                         'b':    _read_shm(shm_infos[3]),
                         'num_rows': result['num_rows'],
                     }
-                _b_cols = batch_results[batch_id]['cols']
-                _b_data = batch_results[batch_id]['data']
-                _b_rows = batch_results[batch_id]['rows']
-                # Per-batch streaming accumulation. Avoids holding a
-                # full-nnz float64 squared-data temp later.
-                _cnt = np.bincount(_b_cols, minlength=total_cols)
-                _oc = result.get('offset_counts')
-                if _oc is not None:
-                    # The worker merged duplicate offset entries; pixel_counts
-                    # keeps the pre-merge contract for the offset + scalar
-                    # columns from the counts it shipped (integers -> exact).
-                    _cnt[num_sky_blocks * num_sky:] = 0
-                    _cnt[_oc[0]] = _oc[1]
-                pixel_counts += _cnt
-                del _cnt
-                pixel_fisher += np.bincount(
-                    _b_cols,
-                    weights=_b_data.astype(np.float64) ** 2,
-                    minlength=total_cols,
-                )
-                if pixel_cross is not None:
-                    # Pair each data row's block-i entry with its block-j entry
-                    # through the shared local row id -> Σ a_i·a_j per pixel.
-                    # Every data row has exactly one entry per sky block (the
-                    # J-interleave in assembly), so a per-row scatter of block
-                    # i's values indexes cleanly from block j's entries.
-                    _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
-                              for jj in range(num_sky_blocks)]
-                    _rowvals = []
-                    for jj in range(num_sky_blocks):
-                        _v = np.zeros(result['num_rows'], dtype=np.float64)
-                        _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
-                        _rowvals.append(_v)
-                    for (ii, jj) in _cross_pairs:
-                        _m_j = _masks[jj]
-                        pixel_cross[(ii, jj)] += np.bincount(
-                            _b_cols[_m_j] - jj * num_sky,
-                            weights=_b_data[_m_j].astype(np.float64)
-                                    * _rowvals[ii][_b_rows[_m_j]],
-                            minlength=num_sky,
-                        )
-                if pixel_rhs is not None:
-                    # RHS moments: pair each sky entry (w*G_j) with its row's
-                    # b (= w*v) -> Σ w² G_j v per pixel, per block.
-                    _rowb = np.asarray(batch_results[batch_id]['b'], dtype=np.float64)[_b_rows]
-                    _sky = _b_cols < num_sky_blocks * num_sky
-                    pixel_rhs += np.bincount(
-                        _b_cols[_sky],
-                        weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
-                        minlength=num_sky_blocks * num_sky,
-                    )
-                # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
-                # add the global row offset in Phase 3 (cumulative across
-                # batches). Keeping this batch-local is what lets Phase 4
-                # stream-scatter without revisiting all batches twice.
-                row_nnz_per_batch[batch_id] = np.bincount(
-                    _b_rows, minlength=result['num_rows']
-                ).astype(np.int32, copy=False)
+                _br = batch_results[batch_id]
+                _item = (batch_id, result, _br['rows'], _br['cols'],
+                         _br['data'], _br['b'])
+                for _q in _fam_qs:
+                    _q.put(_item)
+        for _q in _fam_qs:
+            _q.put(None)
+        for _t in _fam_threads:
+            _t.join()
+        for _q in _cross_group_qs:
+            _q.put(None)
+        for _t in _cross_threads:
+            _t.join()
+        if _fam_err:
+            raise _fam_err[0]
     finally:
         for shm in shm_objects:
             shm.close()
@@ -913,10 +1097,25 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
-    # Phase 3: allocate CSR buffers.
+    # Phase 3: allocate CSR buffers. When the spill path is active the
+    # scatter runs in forked workers over per-batch (disjoint) row ranges,
+    # so the buffers live in anonymous SHARED mappings; otherwise plain
+    # arrays and the serial scatter (byte-identical either way — the
+    # scatter is pure data movement). SELFCAL_SCATTER_WORKERS=0|1 forces
+    # the serial path.
     # ----------------------------------------------------------------
-    csr_data = np.empty(total_nnz, dtype=np.float32)
-    csr_indices = np.empty(total_nnz, dtype=np.int32)
+    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
+                                          min(8, max_workers)))
+    _file_batches = [(batch_row_starts[i], r['num_rows'], r['files'])
+                     for i, r in enumerate(batch_results)
+                     if r is not None and 'files' in r]
+    _par_scatter = _scatter_workers > 1 and len(_file_batches) > 1
+    if _par_scatter:
+        csr_data = _alloc_scatter_buffer(total_nnz, np.float32)
+        csr_indices = _alloc_scatter_buffer(total_nnz, np.int32)
+    else:
+        csr_data = np.empty(total_nnz, dtype=np.float32)
+        csr_indices = np.empty(total_nnz, dtype=np.int32)
     # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
     # mean-offset constraint row with num_chunks entries (<= a few thousand);
     # asserted, since an overflow here would silently corrupt slot assignment.
@@ -950,50 +1149,28 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # equal keys; slice boundaries preserve original order across
     # slices). Hence byte-identical csr_data/csr_indices.
     scatter_chunk = 64_000_000
+    if _par_scatter:
+        # Every spill batch is scattered by a forked worker: batches own
+        # disjoint row ranges, so all writes are disjoint, and slot
+        # assignment is schedule-independent (see _scatter_one_batch).
+        logger.info(f"Phase 4a: parallel scatter, {len(_file_batches)} batches "
+                    f"over {_scatter_workers} workers.")
+        _SCATTER_CTX.update(indptr=indptr, col_map=col_map,
+                            csr_data=csr_data, csr_indices=csr_indices)
+        try:
+            with ProcessPoolExecutor(max_workers=_scatter_workers) as _ex:
+                list(_ex.map(_scatter_batch_worker, _file_batches, chunksize=1))
+        finally:
+            _SCATTER_CTX.clear()
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
-        row_offset = batch_row_starts[batch_id]
-        n_batch = batch['rows'].shape[0]
-        for s0 in range(0, n_batch, scatter_chunk):
-            s1 = min(s0 + scatter_chunk, n_batch)
-            rows_b = batch['rows'][s0:s1].astype(np.int64, copy=False) + row_offset
-            if compaction_active:
-                # int32 compact col indices (col_map is int32; gather emits
-                # int32 directly, astype is a no-op).
-                cols_b = col_map[batch['cols'][s0:s1]].astype(np.int32, copy=False)
-            else:
-                cols_b = batch['cols'][s0:s1].astype(np.int32, copy=False)
-            data_b = batch['data'][s0:s1]
-
-            n_b = rows_b.shape[0]
-            if n_b > 0:
-                # Stable sort by row so duplicates are contiguous; preserves
-                # within-row col order from the worker output.
-                order = np.argsort(rows_b, kind="stable")
-                rows_s = rows_b[order]
-                cols_s = cols_b[order]
-                data_s = data_b[order]
-
-                # Within-row cumcount in sorted order.
-                is_new_group = np.empty(n_b, dtype=bool)
-                is_new_group[0] = True
-                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-                group_starts = np.flatnonzero(is_new_group)
-                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
-
-                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
-                csr_data[slots] = data_s
-                csr_indices[slots] = cols_s
-
-                # Update write_cursor: add the per-row count contributed by
-                # this slice (carries the running count to later slices).
-                unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
-                write_cursor[unique_rows] += counts
-            del rows_b, cols_b, data_b
+        if not (_par_scatter and 'files' in batch):
+            _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
+                               batch_row_starts[batch_id], indptr, col_map,
+                               csr_data, csr_indices, write_cursor,
+                               cursor_base=0, scatter_chunk=scatter_chunk)
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
