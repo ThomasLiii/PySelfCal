@@ -11,6 +11,7 @@ layout.
 from __future__ import annotations
 
 import logging
+import mmap as _mmap
 import os
 
 import numpy as np
@@ -249,7 +250,212 @@ def _make_parallel_rmatvec(bcsr, n_threads, out_n, dtype):
 
 
 
-def _make_parallel_operator_blocks(bcsr, n_threads):
+def _rmatvec_split_ranges():
+    """Column-range count for the partitioned rmatvec (SELFCAL_RMATVEC_SPLIT,
+    default 4; <=1 keeps the sequential single-thread kernel)."""
+    try:
+        return max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '4')))
+    except ValueError:
+        return 1
+
+
+def _madvise_dontneed(arr, i0, i1):
+    """Release the physical pages backing arr[i0:i1] when arr sits in an
+    anonymous shared mmap (the parallel-scatter buffers). Page-aligned
+    inward; silently a no-op for ordinary arrays."""
+    base = arr
+    while not isinstance(base, _mmap.mmap):
+        if isinstance(base, memoryview):
+            base = base.obj              # np.frombuffer's .base is a memoryview
+            continue
+        nxt = getattr(base, 'base', None)
+        if nxt is None:
+            return                       # ordinary array — nothing to punch
+        base = nxt
+    itemsize = arr.dtype.itemsize
+    off = arr.ctypes.data - np.frombuffer(base, dtype=np.uint8).ctypes.data
+    b0 = off + i0 * itemsize
+    b1 = off + i1 * itemsize
+    page = _mmap.PAGESIZE
+    b0 = (b0 + page - 1) // page * page
+    b1 = b1 // page * page
+    if b1 > b0:
+        # Shared-anonymous (shmem) pages are NOT freed by MADV_DONTNEED —
+        # it only drops the mappings while the pages stay charged to the
+        # shmem object. MADV_REMOVE hole-punches them (actually frees).
+        try:
+            base.madvise(getattr(_mmap, 'MADV_REMOVE', _mmap.MADV_DONTNEED),
+                         b0, b1 - b0)
+        except (ValueError, OSError):
+            try:
+                base.madvise(_mmap.MADV_DONTNEED, b0, b1 - b0)
+            except (ValueError, OSError):
+                pass
+
+
+def _partition_block_columns(blk, cuts, chunk=64_000_000, workers=8):
+    """Split one canonical (column-sorted) CSR row-block into per-column-range
+    sub-CSRs with LOCAL int32 column ids.
+
+    Entries are taken in storage order and stable-filtered per range, so each
+    sub-block's rows keep their original within-row entry order and each
+    COLUMN's complete entry sequence lands in exactly one range — the
+    property the bit-equal partitioned SpMV rests on. Pure data movement,
+    so both stages run in threads: range classification chunk-parallel,
+    then one gather thread per range (each writes only its own arrays).
+    """
+    n_rows = blk.shape[0]
+    nranges = len(cuts) - 1
+    nnz = blk.indices.shape[0]
+    rid = np.empty(nnz, dtype=np.int8)
+
+    def _classify(s0):
+        s1 = min(s0 + chunk, nnz)
+        rid[s0:s1] = np.searchsorted(cuts[1:-1], blk.indices[s0:s1],
+                                     side='right').astype(np.int8)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_classify, range(0, nnz, chunk)))
+
+    row_of = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(blk.indptr))
+    subs = [None] * nranges
+
+    def _gather(t):
+        m_t = rid == t
+        cnt = np.bincount(row_of[m_t], minlength=n_rows).astype(np.int64)
+        indptr_t = np.zeros(n_rows + 1, dtype=np.int32)
+        np.cumsum(cnt, out=indptr_t[1:])
+        data_t = blk.data[m_t]
+        idx_t = (blk.indices[m_t] - cuts[t]).astype(np.int32, copy=False)
+        subs[t] = (data_t, idx_t, indptr_t)
+    with ThreadPoolExecutor(max_workers=nranges) as ex:
+        list(ex.map(_gather, range(nranges)))
+    return subs
+
+
+class _ColSplit:
+    """Column-partitioned copy of a BlockCSR for the bit-equal parallel SpMV.
+
+    ``sub[b][t]`` is the (data, local int32 indices, int32 indptr) of storage
+    block ``b`` restricted to columns ``cuts[t]:cuts[t+1]``. Each source
+    block's pages are released (madvise) right after its split, so the build
+    transient stays around one block; steady overhead is the extra per-range
+    indptrs ((T-1) x 4 B/row).
+    """
+
+    def __init__(self, bcsr, nranges):
+        m, n = bcsr.shape
+        self.shape = bcsr.shape
+        self.dtype = bcsr.dtype
+        self.row_bounds = bcsr.row_bounds.copy()
+        self.cuts = np.linspace(0, n, nranges + 1, dtype=np.int64)
+        self.sub = []
+        for blk in bcsr.blocks:
+            self.sub.append(_partition_block_columns(blk, self.cuts))
+            d, i = blk.data, blk.indices
+            blk.data = blk.indices = blk.indptr = None
+            _madvise_dontneed(d, 0, d.shape[0])
+            _madvise_dontneed(i, 0, i.shape[0])
+        bcsr.blocks = []
+
+
+def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
+    """Bit-equal FULLY-parallel SpMV from a column-partitioned copy.
+
+    rmatvec: thread t owns columns ``cuts[t]:cuts[t+1]`` and walks the row
+    pieces IN ORDER with the same raw ``csc_matvec`` kernel the sequential
+    path uses — a column's complete fold lives in exactly one thread and
+    sees its entries in the identical global row order, so every output
+    element is bit-identical to the single-thread scatter.
+
+    matvec: the output starts at zero and the ranges are applied as ORDERED
+    continuation passes (``csr_matvec`` resumes each row's sum from
+    ``Yx[i]``), each pass row-parallel. Rows are column-sorted (canonical),
+    so the concatenation of the per-range segments IS the original storage
+    order — the per-row addition sequence is unchanged.
+
+    Consumes ``bcsr`` (its blocks are released as they are split).
+    """
+    m, n = bcsr.shape
+    dtype = bcsr.dtype
+    logger.info(f"Building column-partitioned SpMV operator ({n_threads} matvec "
+                f"threads, {nranges} rmatvec column ranges, "
+                f"{len(bcsr.blocks)} storage blocks)...")
+    row_bounds = bcsr.row_bounds.copy()
+    thread_cuts = np.linspace(0, m, max(1, n_threads) + 1, dtype=np.int64)
+    bounds = np.unique(np.concatenate((row_bounds, thread_cuts)))
+    split = _ColSplit(bcsr, nranges)
+    cuts = split.cuts
+
+    # Piece-level views: (r0, r1, per-range (data, idx, indptr)) — the
+    # block-level indptrs are dropped afterwards so the steady indptr
+    # overhead is nranges x 4 B/row.
+    pieces = []
+    for r0, r1 in zip(bounds[:-1], bounds[1:]):
+        bi = int(np.searchsorted(row_bounds, r0, side='right') - 1)
+        lr0 = int(r0 - row_bounds[bi])
+        lr1 = int(r1 - row_bounds[bi])
+        per_range = []
+        for data_t, idx_t, ip_t in split.sub[bi]:
+            s0, s1 = int(ip_t[lr0]), int(ip_t[lr1])
+            per_range.append((data_t[s0:s1], idx_t[s0:s1],
+                              (ip_t[lr0:lr1 + 1] - s0).astype(np.int32,
+                                                              copy=False)))
+        pieces.append((int(r0), int(r1), per_range))
+    split.sub = None   # block-level indptrs die; data/idx live on via views
+
+    executor = ThreadPoolExecutor(max_workers=max(1, n_threads))
+    rexecutor = ThreadPoolExecutor(max_workers=nranges)
+
+    def _matvec(x):
+        od = dtype                      # n_threads>1 regime: output in A dtype
+        out = np.zeros(m, dtype=od)
+        xs = x if x.dtype == od else np.ascontiguousarray(x, dtype=od)
+        for t in range(nranges):        # ordered continuation passes
+            c0, c1 = int(cuts[t]), int(cuts[t + 1])
+            x_t = np.ascontiguousarray(xs[c0:c1])
+
+            def _work(p, t=t, x_t=x_t, c1c0=c1 - c0):
+                r0, r1, per_range = p
+                data_t, idx_t, ip_t = per_range[t]
+                ad = data_t if data_t.dtype == od else data_t.astype(od)
+                _sparsetools.csr_matvec(r1 - r0, c1c0, ip_t, idx_t, ad,
+                                        x_t, out[r0:r1])
+            list(executor.map(_work, pieces))
+        return out
+
+    def _rmatvec(y):
+        out_dtype = np.promote_types(dtype, y.dtype)
+        out = np.zeros(n, dtype=out_dtype)
+        yc = np.ascontiguousarray(y, dtype=out_dtype)
+
+        def _work(t):
+            c0, c1 = int(cuts[t]), int(cuts[t + 1])
+            out_t = out[c0:c1]
+            for r0, r1, per_range in pieces:      # global row order
+                data_t, idx_t, ip_t = per_range[t]
+                ad = (data_t if data_t.dtype == out_dtype
+                      else data_t.astype(out_dtype))
+                _sparsetools.csc_matvec(c1 - c0, r1 - r0, ip_t, idx_t, ad,
+                                        yc[r0:r1], out_t)
+        list(rexecutor.map(_work, range(nranges)))
+        return out
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
+    op._executor = executor
+    op._rmatvec_executor = rexecutor
+    op._pieces = pieces
+    op._colsplit = split
+    return op
+
+
+def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
+    _nranges = _rmatvec_split_ranges()
+    if (a_owned and _nranges > 1 and n_threads > 1
+            and parallel_rmatvec_threads() <= 1 and len(bcsr.blocks) > 0):
+        # Column-partitioned bit-equal parallel SpMV; consumes the blocks,
+        # hence only when the caller handed A over (keep_state=False).
+        return _make_parallel_operator_colsplit(bcsr, n_threads, _nranges)
+
     """Thread-parallel matvec + bit-exact rmatvec for a BlockCSR.
 
     matvec: rows are cut at the union of storage-block boundaries and an
@@ -344,7 +550,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 iter_lim: int = 100, precondition: bool = True,
                 solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
                 active_mask: np.ndarray | None = None,
-                num_cols_full: int | None = None) -> np.ndarray:
+                num_cols_full: int | None = None,
+                a_owned: bool = False) -> np.ndarray:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -546,7 +753,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         del b
 
         if is_block:
-            op = _make_parallel_operator_blocks(A_csr, n_threads)
+            op = _make_parallel_operator_blocks(A_csr, n_threads,
+                                                 a_owned=a_owned)
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
