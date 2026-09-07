@@ -32,6 +32,7 @@ from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
+from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
 from typing import TYPE_CHECKING

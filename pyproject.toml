@@ -6,7 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "selfcal"
 version = "0.1.0"
 description = "Self-calibration pipeline for astronomical imaging (SPHEREx, Euclid)"
-requires-python = ">=3.9"
+# 3.11 is the true floor: core/coadd.py uses star-expression indexing
+# (arr[*idx]), added in 3.11. 3.9/3.10 would SyntaxError on import.
+requires-python = ">=3.11"
 dependencies = [
     "astropy",
     "h5py",
@@ -28,10 +30,47 @@ dependencies = [
 # in-tree scipy implementation. Imported lazily, so the core package installs
 # and imports without it.
 mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
-dev = ["pytest"]
+dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
 
 [tool.setuptools.packages.find]
 include = ["selfcal*"]
+
+[tool.pytest.ini_options]
+# The suite is self-contained: no /mnt or /data dependency, so it runs on any
+# checkout (and in CI). Data-dependent regression lives in the byte-equality
+# gates (cache/refactor_gate/), which are run manually, not under pytest.
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Lint the library + runner; leave gitignored scratch and archived code alone.
+extend-exclude = ["archive", "workspace", "notebooks", "analysis"]
+
+[tool.ruff.lint]
+# A pragmatic default: pyflakes (F) + a subset of pycodestyle (E) + import
+# sorting (I). Deliberately NOT enabling the noisier opinionated rule families
+# on a mature scientific codebase — this catches real defects (undefined names,
+# unused imports, shadowing) without a thousand style nits.
+select = ["F", "E", "I"]
+# E501 (line length) is advisory here; long numeric/comment lines are common and
+# reflowing them adds no value. Ruff still reports genuinely over-long code.
+ignore = ["E501"]
+
+[tool.mypy]
+# Type-check the annotated PUBLIC surface (Tier 3) without drowning in the
+# untyped internals of a numeric codebase. ignore_missing_imports tolerates the
+# absence of numpy/scipy/astropy stubs; we do NOT require full annotation
+# coverage. NOTE: mypy currently reports ~120 pre-existing issues (mostly
+# None-initialized instance attributes in the stateful pipeline classes and the
+# dataclass field defaults typed loosely as `object`/`float`). These are tracked
+# for a dedicated typing-cleanup branch; until then CI runs mypy ADVISORY
+# (non-blocking) — see .github/workflows/ci.yml.
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = true
 
 [tool.setuptools.package-data]
 # Ship the SPHEREx LVF arc-fit parameters + multi-line spectral templates.

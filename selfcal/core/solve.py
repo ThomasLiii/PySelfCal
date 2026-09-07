@@ -33,6 +33,7 @@ from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, _csr_shell
+from .lsqr_inplace import lsqr_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -452,50 +453,106 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             logger.info("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
             col_sq_norm = np.zeros(n_active, dtype=np.float32)
-            if is_block:
-                # Same GLOBAL chunk cuts as the unified loop below (the
-                # float32 partial-sum tree is part of the byte-equal
-                # contract); straddling chunks are concatenated inside the
-                # iterator, never split.
-                for d_chunk, c_chunk in _iter_global_entry_chunks(A.blocks, chunk_size):
-                    col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
+
+            # Same GLOBAL chunk cuts for blocks and unified (the float32
+            # partial-sum tree is part of the byte-equal contract);
+            # straddling block chunks are concatenated inside the iterator,
+            # never split.
+            def _chunk_pairs():
+                if is_block:
+                    yield from _iter_global_entry_chunks(A.blocks, chunk_size)
+                else:
+                    _d, _c = A.data, A.indices
+                    for start in range(0, _d.size, chunk_size):
+                        stop = min(start + chunk_size, _d.size)
+                        yield _d[start:stop], _c[start:stop]
+
+            def _partial(d_chunk, c_chunk):
+                return np.bincount(c_chunk, weights=d_chunk * d_chunk,
+                                   minlength=n_active).astype(np.float32)
+
+            # Each chunk's bincount is a pure function; computing a few of
+            # them in threads (np.bincount releases the GIL) and applying
+            # `+=` strictly in chunk order reproduces the serial loop's
+            # partial-sum tree bit for bit. An in-flight partial costs up to
+            # ~12 B x n_active (float64 bincount result + float32 cast), so
+            # the window is capped to keep the transient under the solve
+            # plateau; window 1 degenerates to the serial loop.
+            _win = max(1, min(8, int(20e9 // max(1, n_active * 12))))
+            if _win > 1:
+                from collections import deque
+                with ThreadPoolExecutor(max_workers=_win) as _ex:
+                    _q = deque()
+                    for _pair in _chunk_pairs():
+                        _q.append(_ex.submit(_partial, *_pair))
+                        if len(_q) >= _win:
+                            col_sq_norm += _q.popleft().result()
+                    while _q:
+                        col_sq_norm += _q.popleft().result()
             else:
-                data = A.data
-                new_col = A.indices
-                for start in range(0, data.size, chunk_size):
-                    stop = min(start + chunk_size, data.size)
-                    d_chunk = data[start:stop]
-                    c_chunk = new_col[start:stop]
-                    col_sq_norm += np.bincount(c_chunk, weights=d_chunk * d_chunk, minlength=n_active).astype(np.float32)
+                for _d_chunk, _c_chunk in _chunk_pairs():
+                    col_sq_norm += _partial(_d_chunk, _c_chunk)
+
             col_norms = np.sqrt(col_sq_norm)
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
-            # Elementwise in-place scaling: chunk boundaries are free here
-            # (no cross-entry accumulation), so the block path scales each
-            # block's arrays directly.
+            # Elementwise in-place scaling over disjoint tiles: no entry is
+            # read or written by two tiles and multiplication is elementwise,
+            # so any execution order gives identical bytes — threaded. Each
+            # tile's gather temp is ~256 MB (M[indices] copy).
+            _tiles = []
             for _blk in (A.blocks if is_block else (A,)):
+                for start in range(0, _blk.data.size, chunk_size):
+                    _tiles.append((_blk, start,
+                                   min(start + chunk_size, _blk.data.size)))
+
+            def _scale_tile(t):
+                _blk, s0, s1 = t
                 _bd, _bc = _blk.data, _blk.indices
-                for start in range(0, _bd.size, chunk_size):
-                    stop = min(start + chunk_size, _bd.size)
-                    _bd[start:stop] *= M[_bc[start:stop]].astype(_bd.dtype, copy=False)
+                _bd[s0:s1] *= M[_bc[s0:s1]].astype(_bd.dtype, copy=False)
+
+            _nsc = min(8, max(1, n_threads), max(1, len(_tiles)))
+            if _nsc > 1:
+                with ThreadPoolExecutor(max_workers=_nsc) as _ex:
+                    list(_ex.map(_scale_tile, _tiles))
+            else:
+                for _t in _tiles:
+                    _scale_tile(_t)
+            del _tiles
             x0_solver = x0_compressed * M_inv.astype(x0_compressed.dtype) if x0_compressed is not None else None
+            # Only M (post-solve unscaling) is needed from here on; the
+            # squared norms, the norm vector and the unscaled x0 are dead
+            # weight for the whole solve (3 n-length vectors).
+            del col_sq_norm, col_norms, M_inv
+            x0_compressed = None
         else:
             M = None
             x0_solver = x0_compressed
+            x0_compressed = None
 
         logger.info(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
         A_csr = A
         del A
+        # x0_solver is a private temporary: hand it to lsqr_inplace as the
+        # solution buffer (x0_owned) instead of letting it copy it.
+        _x0_owned = [x0_solver]
+        del x0_solver
+        # lsqr_inplace (bit-identical to scipy's lsqr, in-place vector
+        # updates) reads b exactly once; hand it over without keeping a
+        # reference so the solver can release the m-length vector for the
+        # rest of the solve. lsmr keeps scipy's implementation.
+        _b_owned = [b]
+        del b
 
         if is_block:
             op = _make_parallel_operator_blocks(A_csr, n_threads)
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
-                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
                     elif solver == 'lsqr':
-                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
@@ -507,9 +564,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
-                        result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
                     elif solver == 'lsqr':
-                        result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
@@ -518,9 +575,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 op._executor.shutdown(wait=False)
         else:
             if solver == 'lsmr':
-                result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
+                result = lsmr(A_csr, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
             elif solver == 'lsqr':
-                result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+                result = lsqr_inplace(A_csr, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
             else:
                 raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
         x_solver = result[0]

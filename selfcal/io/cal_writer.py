@@ -42,6 +42,7 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
         Informational read-time mask threshold (not applied destructively).
     """
     from ..core.system import parse_line_separability
+    from .parallel_h5 import create_gzip_dataset_parallel
 
     f.attrs['num_sky_blocks'] = int(num_sky_blocks)
     f.attrs['schema_version'] = 3
@@ -50,11 +51,11 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
     skycov_grp = f.create_group('sky_coverage')
     skyfish_grp = f.create_group('sky_fisher')
     for j, name in enumerate(sky_names):
-        sky_grp.create_dataset(name, data=sky_maps[j], compression='gzip')
-        skycov_grp.create_dataset(name, data=sky_coverages[j], compression='gzip')
+        create_gzip_dataset_parallel(sky_grp, name, sky_maps[j])
+        create_gzip_dataset_parallel(skycov_grp, name, sky_coverages[j])
         if sky_fishers[j] is not None:
-            skyfish_grp.create_dataset(name, data=np.asarray(sky_fishers[j]).astype('float32'),
-                                       compression='gzip')
+            create_gzip_dataset_parallel(skyfish_grp, name,
+                                         np.asarray(sky_fishers[j]).astype('float32'))
     # Per-pixel SEPARABILITY I_P (each spectral block's Schur complement against
     # all other sky blocks): wavelength diversity, the quantity that bounds
     # per-pixel amplitude variance. One dataset per spectral block.
@@ -63,7 +64,7 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
         for j in range(1, num_sky_blocks):
             sep = parse_line_separability(pixel_cross, pixel_fisher, ref_shape,
                                           num_sky_blocks=num_sky_blocks, block=j)
-            sep_grp.create_dataset(sky_names[j], data=sep.astype('float32'), compression='gzip')
+            create_gzip_dataset_parallel(sep_grp, sky_names[j], sep.astype('float32'))
     # Back-compat hard-link aliases (v2 readers resolve transparently).
     cont = sky_names[0]
     f['skymap'] = sky_grp[cont]
