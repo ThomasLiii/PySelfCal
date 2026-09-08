@@ -465,8 +465,20 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
 
 def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
     _nranges = _rmatvec_split_ranges()
+    # The partition pays a build whose transients must stay NUMA-node-local
+    # to be worth it: three M11-scale runs measured the build at 3,000-4,850 s
+    # (net loss at iter200) once the copies overflow the 386 GB node, while
+    # at <=1k-tile scale it is a clear win (−21..25 %/iteration for a ~170 s
+    # build). Auto-enable only when the matrix leaves comfortable node
+    # headroom for the build's in-flight copies; SELFCAL_RMATVEC_SPLIT_MAX_GB
+    # overrides the threshold (raise it to force the split at large scale).
+    try:
+        _split_max = float(os.environ.get('SELFCAL_RMATVEC_SPLIT_MAX_GB', '170'))
+    except ValueError:
+        _split_max = 170.0
     if (a_owned and _nranges > 1 and n_threads > 1
-            and parallel_rmatvec_threads() <= 1 and len(bcsr.blocks) > 0):
+            and parallel_rmatvec_threads() <= 1 and len(bcsr.blocks) > 0
+            and bcsr.nnz * 8 <= _split_max * 1e9):
         # Column-partitioned bit-equal parallel SpMV; consumes the blocks,
         # hence only when the caller handed A over (keep_state=False).
         return _make_parallel_operator_colsplit(bcsr, n_threads, _nranges)
