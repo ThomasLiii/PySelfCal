@@ -293,7 +293,8 @@ def _madvise_dontneed(arr, i0, i1):
                 pass
 
 
-def _partition_block_columns(blk, cuts, chunk=64_000_000, workers=8):
+def _partition_block_columns(blk, cuts, chunk=64_000_000, workers=8,
+                             count_chunk_rows=16_000_000):
     """Split one canonical (column-sorted) CSR row-block into per-column-range
     sub-CSRs with LOCAL int32 column ids.
 
@@ -316,16 +317,30 @@ def _partition_block_columns(blk, cuts, chunk=64_000_000, workers=8):
     with ThreadPoolExecutor(max_workers=workers) as ex:
         list(ex.map(_classify, range(0, nnz, chunk)))
 
-    row_of = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(blk.indptr))
     subs = [None] * nranges
+    cr = count_chunk_rows   # bounds the row-id expansion for the per-row
+                            # counts at ~128 MB instead of 8 B per entry
 
     def _gather(t):
         m_t = rid == t
-        cnt = np.bincount(row_of[m_t], minlength=n_rows).astype(np.int64)
+        cnt = np.zeros(n_rows, dtype=np.int64)
+        for r0 in range(0, n_rows, cr):
+            r1 = min(r0 + cr, n_rows)
+            s0, s1 = int(blk.indptr[r0]), int(blk.indptr[r1])
+            if s0 == s1:
+                continue
+            row_local = np.repeat(np.arange(r1 - r0, dtype=np.int64),
+                                  np.diff(blk.indptr[r0:r1 + 1]))
+            cnt[r0:r1] = np.bincount(row_local[m_t[s0:s1]],
+                                     minlength=r1 - r0)
+            del row_local
         indptr_t = np.zeros(n_rows + 1, dtype=np.int32)
         np.cumsum(cnt, out=indptr_t[1:])
         data_t = blk.data[m_t]
-        idx_t = (blk.indices[m_t] - cuts[t]).astype(np.int32, copy=False)
+        # int32 subtrahend: int32 - int64 scalar would promote to an
+        # int64 intermediate (8 B x selected) under NEP 50.
+        idx_t = blk.indices[m_t]
+        np.subtract(idx_t, np.int32(cuts[t]), out=idx_t)
         subs[t] = (data_t, idx_t, indptr_t)
     with ThreadPoolExecutor(max_workers=nranges) as ex:
         list(ex.map(_gather, range(nranges)))
