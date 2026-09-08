@@ -685,7 +685,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # ~12 B x n_active (float64 bincount result + float32 cast), so
             # the window is capped to keep the transient under the solve
             # plateau; window 1 degenerates to the serial loop.
-            _win = max(1, min(8, int(20e9 // max(1, n_active * 12))))
+            _win = max(1, min(8, int(32e9 // max(1, n_active * 12))))
             if _win > 1:
                 from collections import deque
                 with ThreadPoolExecutor(max_workers=_win) as _ex:
