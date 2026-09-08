@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
@@ -672,7 +672,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     import queue as _queue
 
-    def _acc_counts(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+    # counts and fisher: the expensive per-batch part (the bincount, and
+    # for fisher the f64 weights) is a pure function, so it runs in a small
+    # per-family pool while a fold thread applies '+=' strictly in arrival
+    # order through a bounded queue (backpressure caps in-flight partials
+    # at 2 batches). The counts fold order is irrelevant anyway (integers,
+    # exact); fisher's f64 chain keeps its exact order.
+    _counts_ex = ThreadPoolExecutor(max_workers=2)
+    _fisher_ex = ThreadPoolExecutor(max_workers=2)
+    _counts_fold_q = None   # created with the family threads below
+    _fisher_fold_q = None
+
+    def _counts_work(batch_id, result, _b_rows, _b_cols):
         _cnt = np.bincount(_b_cols, minlength=total_cols)
         _oc = result.get('offset_counts')
         if _oc is not None:
@@ -681,8 +692,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             # columns from the counts it shipped (integers -> exact).
             _cnt[num_sky_blocks * num_sky:] = 0
             _cnt[_oc[0]] = _oc[1]
-        np.add(pixel_counts, _cnt, out=pixel_counts)
-        del _cnt
         # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
         # add the global row offset in Phase 3 (cumulative across
         # batches). Keeping this batch-local is what lets Phase 4
@@ -690,13 +699,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         row_nnz_per_batch[batch_id] = np.bincount(
             _b_rows, minlength=result['num_rows']
         ).astype(np.int32, copy=False)
+        return _cnt
+
+    def _acc_counts(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
+        _counts_fold_q.put(_counts_ex.submit(_counts_work, batch_id, result,
+                                             _b_rows, _b_cols))
+
+    def _fisher_work(_b_cols, _b_data):
+        return np.bincount(_b_cols, weights=_b_data.astype(np.float64) ** 2,
+                           minlength=total_cols)
 
     def _acc_fisher(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
-        np.add(pixel_fisher, np.bincount(
-            _b_cols,
-            weights=_b_data.astype(np.float64) ** 2,
-            minlength=total_cols,
-        ), out=pixel_fisher)
+        _fisher_fold_q.put(_fisher_ex.submit(_fisher_work, _b_cols, _b_data))
 
     # The cross moments are the collation's critical path (J(J-1)/2 pair
     # chains, ~10 at J=5). The per-batch prep (block masks + row-value
@@ -709,23 +723,27 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _cross_group_qs = []
     _cross_groups = []
     if pixel_cross is not None:
-        _n_grp = min(3, len(_cross_pairs))
+        _n_grp = min(5, len(_cross_pairs))
         _cross_groups = [list(_cross_pairs[g::_n_grp]) for g in range(_n_grp)]
         _cross_group_qs = [_queue.Queue(maxsize=2) for _ in _cross_groups]
+
+    _cross_prep_ex = ThreadPoolExecutor(max_workers=max(1, num_sky_blocks))
 
     def _acc_cross(batch_id, result, _b_rows, _b_cols, _b_data, _b_b):
         # Pair each data row's block-i entry with its block-j entry
         # through the shared local row id -> Σ a_i·a_j per pixel.
         # Every data row has exactly one entry per sky block (the
         # J-interleave in assembly), so a per-row scatter of block
-        # i's values indexes cleanly from block j's entries.
-        _masks = [(_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
-                  for jj in range(num_sky_blocks)]
-        _rowvals = []
-        for jj in range(num_sky_blocks):
-            _v = np.zeros(result['num_rows'], dtype=np.float64)
-            _v[_b_rows[_masks[jj]]] = _b_data[_masks[jj]]
-            _rowvals.append(_v)
+        # i's values indexes cleanly from block j's entries. Each block's
+        # mask/rowval is independent -> inner threads (pure per block).
+        def _one(jj):
+            m = (_b_cols >= jj * num_sky) & (_b_cols < (jj + 1) * num_sky)
+            v = np.zeros(result['num_rows'], dtype=np.float64)
+            v[_b_rows[m]] = _b_data[m]
+            return m, v
+        pairs = list(_cross_prep_ex.map(_one, range(num_sky_blocks)))
+        _masks = [pr[0] for pr in pairs]
+        _rowvals = [pr[1] for pr in pairs]
         for _gq in _cross_group_qs:
             _gq.put((_masks, _rowvals, _b_rows, _b_cols, _b_data))
 
@@ -770,9 +788,39 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 _fam_err.append(e)
                 return
 
+    _counts_fold_q = _queue.Queue(maxsize=2)
+    _fisher_fold_q = _queue.Queue(maxsize=2)
+
+    def _fold_loop(q, apply_fn):
+        while True:
+            fut = q.get()
+            if fut is None:
+                return
+            try:
+                apply_fn(fut.result())
+            except BaseException as e:   # surfaced after the join
+                _fam_err.append(e)
+                while q.get() is not None:   # bounded queue: keep draining
+                    pass
+                return
+
+    _fold_threads = [
+        threading.Thread(target=_fold_loop,
+                         args=(_counts_fold_q,
+                               lambda r: np.add(pixel_counts, r,
+                                                out=pixel_counts)),
+                         name='collate-counts-fold', daemon=True),
+        threading.Thread(target=_fold_loop,
+                         args=(_fisher_fold_q,
+                               lambda r: np.add(pixel_fisher, r,
+                                                out=pixel_fisher)),
+                         name='collate-fisher-fold', daemon=True),
+    ]
+
     _fam_threads = [threading.Thread(target=_fam_loop, args=(fn, q),
                                      name=f'collate-{fn.__name__}', daemon=True)
                     for fn, q in zip(_families, _fam_qs)]
+    _fam_threads += _fold_threads
 
     def _cross_group_loop(pairs, q):
         while True:
@@ -835,11 +883,21 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         for _q in _fam_qs:
             _q.put(None)
         for _t in _fam_threads:
-            _t.join()
+            if not _t.name.endswith('-fold'):
+                _t.join()
+        # enqueuer families are done -> close the downstream stages
+        _counts_fold_q.put(None)
+        _fisher_fold_q.put(None)
         for _q in _cross_group_qs:
             _q.put(None)
+        for _t in _fam_threads:
+            if _t.name.endswith('-fold'):
+                _t.join()
         for _t in _cross_threads:
             _t.join()
+        _counts_ex.shutdown(wait=False)
+        _fisher_ex.shutdown(wait=False)
+        _cross_prep_ex.shutdown(wait=False)
         if _fam_err:
             raise _fam_err[0]
     finally:
