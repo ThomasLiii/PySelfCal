@@ -31,6 +31,7 @@ from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
+from ..core.shmbuf import worker_pool_context
 from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
@@ -510,7 +511,8 @@ class Reprojector:
         # existing _hdd_io_semaphore is process-local, so use ProcessPool
         # for symmetry with batch_reproject. max_workers small to avoid HDD
         # seek thrash when files live on the RAID.
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers,
+                                 mp_context=worker_pool_context()) as ex:
             futures = {ex.submit(self._check_one, p): p for p in self.reproj_list}
             for fut in tqdm(as_completed(futures), total=len(futures),
                             desc='Checking reprojected files',

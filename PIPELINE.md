@@ -130,6 +130,23 @@ Key knobs:
   spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
   duration of the solve when they exceed the threshold (exact byte
   round-trip; ~1 min I/O against a multi-hour production solve).
+- **Process pools & the parallel scatter.** Every worker pool (assembly,
+  Phase-4a CSR scatter, coadd) runs on the **forkserver** start method
+  (`SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
+  escape hatch only). Forking a pool from the runner's multi-threaded process
+  can hand a child the stderr lock in a locked state (the RSS guardrail prints
+  every 15 s); the child then hangs at exit and the parent joins it forever —
+  a production tile lost 6 h to this on 2026-09-09. Consequences: (1) entry
+  scripts MUST keep their run code under `if __name__ == "__main__":`
+  (children re-import the main module, the standard multiprocessing rule);
+  (2) shared arrays reach workers as explicit `selfcal.core.shmbuf.SharedBuffer`
+  handles (memfd-backed, fd-passed — no `/dev/shm` size cap), never by fork
+  inheritance. The scatter: `SELFCAL_SCATTER_WORKERS` (default `min(8,
+  max_workers)`; `0`/`1` = the byte-identical serial path) and
+  `SELFCAL_SCATTER_TIMEOUT_S` (default 1800 per batch) — on timeout or a
+  broken pool the remaining batches are re-scattered serially, so an
+  unattended run degrades to slow, never to a hang. Serial and parallel
+  scatters are element-wise identical (pure data movement).
 - `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. Default `n_threads=48` (tuned 2026-05).
 
 `det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.

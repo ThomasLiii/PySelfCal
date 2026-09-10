@@ -93,6 +93,11 @@ def cleanup_nvme(cfg, nvme_reproj_dir):
 
 # --------------------------------------------------------------------------
 # RSS guardrail — polls the HARD RSS (RssAnon + RssShmem; see _read_self_rss_kb)
+# NOTE: this thread prints to stderr every poll. Forking a process pool from
+# a threaded parent can hand a child the stderr lock in a locked state, and
+# multiprocessing children flush stderr at exit -> the child hangs and the
+# parent joins it forever (seen in production 2026-09-09). All pipeline
+# pools therefore use the forkserver context (selfcal.core.shmbuf).
 # every RSS_POLL_SEC (15 s) and forces os._exit(2) once it reaches RSS_ABORT_FRACTION (85%) of MemTotal: a clean, logged exit
 # instead of a kernel OOM-kill mid-allocation with no traceback. Used by the
 # tiled build (large per-tile peak).
