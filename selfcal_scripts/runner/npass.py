@@ -28,6 +28,7 @@ Config (``[passes]``)::
     n         = 4          # number of passes
     stop_tol  = 0.0        # > 0: stop after a SKY pass whose step RMS (all blocks) is below it
     sky_merge = "combine"  # 'combine' (exact, additive moments) | 'stitch' (Fisher; legacy)
+    keep_moments = false   # true keeps each SKY pass's per-tile dumps (~23 GB each at J=4)
     init   = { outlier_thresh = 2.5, subch_clip = true, ignore_list = [21] }   # pass-1 clip
     sky    = { outlier_thresh = 5.0, subch_clip = true }
     offset = { poly_degree = 4, outlier_thresh = 2.5, subch_clip = true,
@@ -262,6 +263,23 @@ class _Run:
         if merge == "combine":
             combine_moments(pieces, out, sky_names=list(self.sky_model.names), damp_weights=dws,
                             line_fisher_threshold=self.lft, attrs={"npass_pass": i})
+            # The dumps are pure intermediates and they are BIG (a J=4 full-NEP
+            # tile dump is ~23 GB, so one n=8 run is ~0.5 TB and a 16-tile one
+            # ~1.4 TB). Once the combine has written the product they have no
+            # further use -- a resumed run skips the whole pass on the product's
+            # existence, not on theirs. Keeping them filled the 3.6 TB root disk
+            # mid-run on 2026-09-10 and killed pass 4 with ENOSPC.
+            if not self.p.get("keep_moments", False):
+                freed = 0
+                for q in pieces:
+                    try:
+                        freed += os.path.getsize(q)
+                        os.remove(q)
+                    except OSError:
+                        pass
+                print(f"[npass] pass {i} SKY: removed {len(pieces)} moment dumps "
+                      f"({freed/1e9:.0f} GB freed); set [passes].keep_moments = true "
+                      f"to retain them", flush=True)
         else:
             from selfcal.pipeline.tiled import stitch
             ref_shape = tuple(cfg.tiled["ref_shape"]) if cfg.tiled else None
