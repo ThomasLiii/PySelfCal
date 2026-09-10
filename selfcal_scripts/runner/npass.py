@@ -26,6 +26,7 @@ a re-run skips passes whose product exists.
 Config (``[passes]``)::
 
     n         = 4          # number of passes
+    order     = "sky_first"  # 'sky_first' (INIT,SKY,OFFSET,...) | 'offset_first' (INIT,OFFSET,SKY,...)
     stop_tol  = 0.0        # > 0: stop after a SKY pass whose step RMS (all blocks) is below it
     sky_merge = "combine"  # 'combine' (exact, additive moments) | 'stitch' (Fisher; legacy)
     keep_moments = false   # true keeps each SKY pass's per-tile dumps (~23 GB each at J=4)
@@ -62,12 +63,32 @@ _OFFSET_DEFAULTS = dict(poly_degree=4, outlier_thresh=2.5, subch_clip=True,
                         bright_cut=0.05, min_pix=5000)
 
 
-def schedule(n: int) -> list[str]:
-    """Pass types for an ``n``-pass run: INIT, then alternating SKY / OFFSET."""
+def schedule(n: int, order: str = "sky_first") -> list[str]:
+    """Pass types for an ``n``-pass run: INIT, then alternating SKY / OFFSET.
+
+    ``order`` picks which half runs first after INIT:
+
+    ``"sky_first"`` (INIT, SKY, OFFSET, SKY, ...) goes straight to the exact
+        sky. Its pass-2 product inherits pass 1's per-tile offsets, which were
+        solved jointly with a per-tile sky: within a tile each frame's offset
+        error was compensated by that tile's own sky, and the Fisher stitch
+        blended the boundaries. Freezing those offsets and deriving ONE sky
+        removes the compensation, so pass-1 offset error prints into the sky
+        as footprint arcs, concentrated where the tiles' gauges disagree (NEP
+        D4, 2026-09-10: 4-5x excess within ~1000 px of a tile edge).
+
+    ``"offset_first"`` (INIT, OFFSET, SKY, OFFSET, ...) re-levels every frame
+        against the single stitched INIT sky BEFORE any exact sky solve, so
+        the first SKY pass already sees globally consistent offsets. Costs one
+        extra OFFSET pass; makes a cheap low-n run usable.
+    """
     n = int(n)
     if n < 1:
         raise ValueError(f"[passes].n must be >= 1, got {n}")
-    return ["init"] + ["sky" if i % 2 == 0 else "offset" for i in range(2, n + 1)]
+    if order not in ("sky_first", "offset_first"):
+        raise ValueError(f"[passes].order must be 'sky_first' or 'offset_first', got {order!r}")
+    first, second = ("offset", "sky") if order == "offset_first" else ("sky", "offset")
+    return ["init"] + [first if i % 2 == 0 else second for i in range(2, n + 1)]
 
 
 def _init_cfg(cfg, edges_fn=None):
@@ -90,12 +111,13 @@ def describe_schedule(cfg) -> list[str]:
     """Human-readable schedule for ``--dry-run``."""
     p = cfg.passes
     n = int(p.get("n", 4))
-    sched = schedule(n)
+    order = p.get("order", "sky_first")
+    sched = schedule(n, order)
     how1 = "tiled (" + ("explicit tiles" if cfg.tiled.get("tiles") else "grid") + ")" \
         if cfg.tiled else "single cal"
     sky = dict(_SKY_DEFAULTS, **p.get("sky", {}))
     off = dict(_OFFSET_DEFAULTS, **p.get("offset", {}))
-    lines = [f"npass: n={n}, sky_merge={p.get('sky_merge', 'combine')}, "
+    lines = [f"npass: n={n}, order={order}, sky_merge={p.get('sky_merge', 'combine')}, "
              f"stop_tol={p.get('stop_tol', 0.0)}"]
     for i, t in enumerate(sched, start=1):
         if t == "init":
@@ -106,7 +128,8 @@ def describe_schedule(cfg) -> list[str]:
         elif t == "sky":
             lines.append(f"  pass {i}: SKY    closed form given pass-{i-1} offsets {sky}")
         else:
-            lines.append(f"  pass {i}: OFFSET per-frame refit given pass-{i-1} sky {off}")
+            src = "the stitched INIT sky" if i == 2 else f"pass-{i-1} sky"
+            lines.append(f"  pass {i}: OFFSET per-frame refit given {src} {off}")
     return lines
 
 
@@ -312,9 +335,14 @@ def run_npass(cfg, *, run_calibration, run_tiled):
     from selfcal.pipeline.npass import sky_monitors, offset_monitors, append_monitor
     p = cfg.passes
     n = int(p.get("n", 4))
-    sched = schedule(n)
+    sched = schedule(n, p.get("order", "sky_first"))
     for line in describe_schedule(cfg):
         print(f"[npass] {line}", flush=True)
+    if sched[-1] == "offset":
+        print(f"[npass] NOTE: the schedule ends on an OFFSET pass, which writes offsets but no "
+              f"sky map -- the last sky product will be from pass {len(sched) - 1}. Use an odd n "
+              f"with order='offset_first' (or an even n with 'sky_first') to end on a sky.",
+              flush=True)
     run = _Run(cfg)
 
     # ---- pass 1: INIT = the legacy task --------------------------------------
