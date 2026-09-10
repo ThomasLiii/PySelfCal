@@ -21,8 +21,12 @@ import threading
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+
+from .shmbuf import SharedBuffer, worker_pool_context
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
+                                as_completed, TimeoutError as _FutTimeout)
+from concurrent.futures.process import BrokenProcessPool
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
 
@@ -121,41 +125,29 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, indptr,
         del rows_b, cols_b, data_b
 
 
-# Fork-inherited context for the parallel scatter workers: the parent fills
-# this right before creating the pool; forked children read indptr/col_map
-# through copy-on-write pages and write through the MAP_SHARED csr buffers.
-_SCATTER_CTX = {}
-
-
 def _scatter_batch_worker(task):
-    """One batch, in a forked child. Pure data movement — see _scatter_one_batch."""
-    if not _SCATTER_CTX:
-        raise RuntimeError("scatter context missing — the pool must be "
-                           "forked after _SCATTER_CTX is filled")
-    row_offset, num_rows, files = task
-    ctx = _SCATTER_CTX
+    """One batch, in a worker process. Pure data movement — see _scatter_one_batch.
+
+    Everything the worker needs arrives EXPLICITLY in ``task`` (spill file
+    paths + SharedBuffer handles); nothing is inherited from the parent, so
+    the pool can use the fork-safe forkserver start method.
+    """
+    row_offset, num_rows, files, bufs = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     cursor = np.zeros(num_rows, dtype=np.int16)      # this batch's rows only
-    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, ctx['indptr'],
-                       ctx['col_map'], ctx['csr_data'], ctx['csr_indices'],
+    col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
+    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset,
+                       bufs['indptr'].array, col_map,
+                       bufs['csr_data'].array, bufs['csr_indices'].array,
                        cursor, cursor_base=row_offset)
+    del rows_mm, cols_mm, data_mm, col_map
+    for b in bufs.values():
+        if b is not None:
+            b.close()
     return row_offset
-
-
-def _alloc_scatter_buffer(n, dtype):
-    """n-element array in an ANONYMOUS SHARED mapping (MAP_SHARED|MAP_ANON).
-
-    Forked scatter workers inherit the mapping and write the CSR through it
-    directly. Deliberately not SharedMemory/tmpfs: no /dev/shm mount cap and
-    no name lifecycle; the pages are shmem-class RAM (RssShmem — counted by
-    the hard-RSS guardrail) and are freed when the array (and its mmap base)
-    is garbage-collected.
-    """
-    mm = mmap.mmap(-1, max(1, int(n) * np.dtype(dtype).itemsize))
-    return np.frombuffer(mm, dtype=dtype, count=int(n))
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -797,7 +789,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         _t.start()
 
     try:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with ProcessPoolExecutor(max_workers=max_workers,
+                                 mp_context=worker_pool_context()) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
                        for i, batch in enumerate(batched_tasks)}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix",
@@ -1016,9 +1009,34 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         blk['b'] = None
 
     # ----------------------------------------------------------------
+    # Parallel-scatter decision (Phase 4a): spill batches are scattered by
+    # worker processes over disjoint row ranges; the arrays they need
+    # (csr_data/csr_indices to write, indptr/col_map to read) live in
+    # memfd-backed SharedBuffers handed to them explicitly — nothing is
+    # inherited by fork, so the pool can use the fork-safe forkserver
+    # context (see selfcal.core.shmbuf). SELFCAL_SCATTER_WORKERS=0|1 forces
+    # the serial path (plain arrays, byte-identical: the scatter is pure
+    # data movement).
+    # ----------------------------------------------------------------
+    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
+                                          min(8, max_workers)))
+    _file_batches = [(batch_row_starts[i], r['num_rows'], r['files'])
+                     for i, r in enumerate(batch_results)
+                     if r is not None and 'files' in r]
+    _par_scatter = _scatter_workers > 1 and len(_file_batches) > 1
+    _shared = {}          # name -> SharedBuffer (parallel scatter only)
+
+    def _shared_alloc(name, n, dtype, zero=False):
+        if _par_scatter:
+            _shared[name] = SharedBuffer(n, dtype, name)
+            arr = _shared[name].array      # memfd pages start zeroed
+            return arr
+        return np.zeros(n, dtype=dtype) if zero else np.empty(n, dtype=dtype)
+
+    # ----------------------------------------------------------------
     # Phase 2e: build CSR indptr (int64) + total_nnz.
     # ----------------------------------------------------------------
-    indptr = np.zeros(total_rows + 1, dtype=np.int64)
+    indptr = _shared_alloc('indptr', total_rows + 1, np.int64, zero=True)
     np.cumsum(row_nnz, out=indptr[1:])
     total_nnz = int(indptr[-1])
     # row_nnz no longer needed; we will use indptr+write_cursor for scatter.
@@ -1070,7 +1088,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         # int32 halves both the map itself (total_cols entries) and every
         # per-batch col_map[cols_b] gather output in Phase 4. Values are
         # exact (cumsum <= n_active < 2^31).
-        col_map = np.cumsum(active_mask, dtype=np.int32)
+        col_map = _shared_alloc('col_map', int(active_mask.size), np.int32)
+        np.cumsum(active_mask, dtype=np.int32, out=col_map)
         col_map -= 1
         logger.info(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
     else:
@@ -1104,18 +1123,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # scatter is pure data movement). SELFCAL_SCATTER_WORKERS=0|1 forces
     # the serial path.
     # ----------------------------------------------------------------
-    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
-                                          min(8, max_workers)))
-    _file_batches = [(batch_row_starts[i], r['num_rows'], r['files'])
-                     for i, r in enumerate(batch_results)
-                     if r is not None and 'files' in r]
-    _par_scatter = _scatter_workers > 1 and len(_file_batches) > 1
-    if _par_scatter:
-        csr_data = _alloc_scatter_buffer(total_nnz, np.float32)
-        csr_indices = _alloc_scatter_buffer(total_nnz, np.int32)
-    else:
-        csr_data = np.empty(total_nnz, dtype=np.float32)
-        csr_indices = np.empty(total_nnz, dtype=np.int32)
+    csr_data = _shared_alloc('csr_data', total_nnz, np.float32)
+    csr_indices = _shared_alloc('csr_indices', total_nnz, np.int32)
     # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
     # mean-offset constraint row with num_chunks entries (<= a few thousand);
     # asserted, since an overflow here would silently corrupt slot assignment.
@@ -1149,24 +1158,47 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # equal keys; slice boundaries preserve original order across
     # slices). Hence byte-identical csr_data/csr_indices.
     scatter_chunk = 64_000_000
+    _done_par = set()
     if _par_scatter:
-        # Every spill batch is scattered by a forked worker: batches own
+        # Every spill batch is scattered by a worker process: batches own
         # disjoint row ranges, so all writes are disjoint, and slot
         # assignment is schedule-independent (see _scatter_one_batch).
+        # Safety net: a batch that does not complete within
+        # SELFCAL_SCATTER_TIMEOUT_S (or a broken pool) is re-done serially
+        # below — its slots are private and simply overwritten — so an
+        # unattended run degrades to slow, never to a hang.
+        _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
         logger.info(f"Phase 4a: parallel scatter, {len(_file_batches)} batches "
-                    f"over {_scatter_workers} workers.")
-        _SCATTER_CTX.update(indptr=indptr, col_map=col_map,
-                            csr_data=csr_data, csr_indices=csr_indices)
+                    f"over {_scatter_workers} workers (forkserver).")
+        _bufs = {'csr_data': _shared['csr_data'], 'csr_indices': _shared['csr_indices'],
+                 'indptr': _shared['indptr'], 'col_map': _shared.get('col_map')}
+        _ex = ProcessPoolExecutor(max_workers=_scatter_workers,
+                                  mp_context=worker_pool_context())
         try:
-            with ProcessPoolExecutor(max_workers=_scatter_workers) as _ex:
-                list(_ex.map(_scatter_batch_worker, _file_batches, chunksize=1))
-        finally:
-            _SCATTER_CTX.clear()
+            _futs = {_ex.submit(_scatter_batch_worker, (ro, nr, fl, _bufs)): ro
+                     for ro, nr, fl in _file_batches}
+            for _f in as_completed(_futs, timeout=_timeout * len(_futs)):
+                _f.result(timeout=_timeout)     # re-raises a worker exception
+                _done_par.add(_futs[_f])
+        except (_FutTimeout, BrokenProcessPool) as _e:
+            logger.warning(f"Phase 4a: parallel scatter aborted ({type(_e).__name__}: "
+                           f"{_e}); {len(_file_batches) - len(_done_par)} batch(es) "
+                           "will be scattered serially.")
+            for _p in list(getattr(_ex, '_processes', {}).values()):
+                try:
+                    _p.kill()
+                except Exception:
+                    pass
+            _ex.shutdown(wait=False, cancel_futures=True)
+        else:
+            _ex.shutdown(wait=True)
+        del _bufs
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
-        if not (_par_scatter and 'files' in batch):
+        if not (_par_scatter and 'files' in batch
+                and batch_row_starts[batch_id] in _done_par):
             _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
                                batch_row_starts[batch_id], indptr, col_map,
                                csr_data, csr_indices, write_cursor,
@@ -1239,6 +1271,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 write_cursor[unique_rows] += counts
         cb_cursor += nrows
     del write_cursor
+    _shared.clear()          # fds closed; the arrays keep their mappings
 
     # ----------------------------------------------------------------
     # Phase 5: build CSR. Indices are row-grouped but NOT col-sorted within
