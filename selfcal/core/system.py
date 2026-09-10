@@ -29,6 +29,7 @@ from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import _sparsetools as _spt
 
 from .. import _state
 from .layout import SystemLayout
@@ -76,53 +77,75 @@ class SetupResult(NamedTuple):
     pixel_rhs: object = None
 
 
-def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, indptr,
-                       col_map, csr_data, csr_indices, write_cursor,
-                       cursor_base, scatter_chunk=64_000_000):
-    """Scatter one batch's COO entries into the CSR buffers.
+def _place_rows(rows_local, cols, data, num_rows, n_cols, out_indices, out_data):
+    """Lay ``num_rows`` rows out as CSR in ONE C pass (scipy's ``coo_tocsr``).
 
-    Byte-for-byte the original Phase-4a inner loop: sub-slices in original
-    entry order, stable sort by row, within-row cumcount — every entry's
-    slot is fully determined by the batch content, ``indptr`` and the
-    within-batch order, so WHERE this runs (main process or a forked
-    worker) cannot change a single byte. ``write_cursor`` may be the global
-    per-row cursor (``cursor_base=0``) or a batch-local one indexed by
-    ``global_row - cursor_base``.
+    Every row receives its entries in their ORIGINAL order — the placement
+    the previous Python kernel produced with a stable sort by row plus a
+    within-row cumcount, so the bytes written are identical, without the
+    sort/cumcount transients (~45 B per entry) and at a fraction of the
+    cost. ``out_indices`` / ``out_data`` are the destination spans (views
+    into the CSR buffers); the local indptr is returned.
     """
-    compaction_active = col_map is not None
-    n_batch = rows_arr.shape[0]
-    for s0 in range(0, n_batch, scatter_chunk):
-        s1 = min(s0 + scatter_chunk, n_batch)
-        rows_b = rows_arr[s0:s1].astype(np.int64, copy=False) + row_offset
-        if compaction_active:
-            cols_b = col_map[cols_arr[s0:s1]].astype(np.int32, copy=False)
-        else:
-            cols_b = cols_arr[s0:s1].astype(np.int32, copy=False)
-        data_b = data_arr[s0:s1]
+    n = int(rows_local.shape[0])
+    idt = np.int64 if (n >= 2**31 or num_rows >= 2**31) else np.int32
+    rl = np.ascontiguousarray(rows_local, dtype=idt)
+    cl = np.ascontiguousarray(cols, dtype=idt)
+    dl = np.ascontiguousarray(data, dtype=out_data.dtype)
+    indptr = np.empty(num_rows + 1, dtype=idt)
+    if out_indices.dtype == idt:
+        _spt.coo_tocsr(int(num_rows), int(n_cols), n, rl, cl, dl,
+                       indptr, out_indices, out_data)
+    else:                                  # >2**31 entries in one block
+        tmp = np.empty(n, dtype=idt)
+        _spt.coo_tocsr(int(num_rows), int(n_cols), n, rl, cl, dl,
+                       indptr, tmp, out_data)
+        out_indices[...] = tmp
+        del tmp
+    return indptr
 
-        n_b = rows_b.shape[0]
-        if n_b > 0:
-            order = np.argsort(rows_b, kind="stable")
-            rows_s = rows_b[order]
-            cols_s = cols_b[order]
-            data_s = data_b[order]
 
-            is_new_group = np.empty(n_b, dtype=bool)
-            is_new_group[0] = True
-            is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-            group_starts = np.flatnonzero(is_new_group)
-            group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-            within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
+def _compact_in_place(indices, e0, e1, col_map, cut=0, chunk=64_000_000):
+    """Map ``indices[e0:e1]`` from full column space to compact ids (and,
+    for partitioned storage, to ids local to a column range) in place, a
+    chunk at a time — no full-span gather temporary."""
+    cut = np.int32(cut)
+    for c0 in range(e0, e1, chunk):
+        v = indices[c0:min(c0 + chunk, e1)]
+        if col_map is not None:
+            v[...] = col_map[v]
+        if cut:
+            v -= cut
 
-            cur_s = rows_s - cursor_base
-            slots = indptr[rows_s] + write_cursor[cur_s] + within_row
-            csr_data[slots] = data_s
-            csr_indices[slots] = cols_s
 
-            unique_rows = rows_s[group_starts]
-            counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
-            write_cursor[unique_rows - cursor_base] += counts
-        del rows_b, cols_b, data_b
+def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
+                       indptr, col_map, csr_data, csr_indices, n_cols):
+    """Place one batch's entries (batch-LOCAL rows, original entry order)
+    into the unified CSR buffers.
+
+    A batch owns a contiguous row range, hence a contiguous entry span, and
+    writes nothing outside it — so batches can be placed in any order, in
+    any process (pure data movement), and re-placing one is idempotent.
+    Column ids are compacted in place afterwards. The row layout the kernel
+    derives from the batch itself is checked against the global indptr; a
+    disagreement raises instead of silently corrupting the matrix.
+    """
+    n = int(rows_arr.shape[0])
+    e0 = int(indptr[row_offset])
+    e1 = int(indptr[row_offset + num_rows])
+    if e1 - e0 != n:
+        raise RuntimeError(f"batch entry count {n} != indptr span {e1 - e0}")
+    if n == 0:
+        return
+    local = _place_rows(rows_arr, cols_arr, data_arr, num_rows, n_cols,
+                        csr_indices[e0:e1], csr_data[e0:e1])
+    for k0 in range(0, num_rows + 1, 16_000_000):      # bounded comparison temp
+        k1 = min(k0 + 16_000_000, num_rows + 1)
+        if not np.array_equal(local[k0:k1].astype(np.int64) + e0,
+                              indptr[row_offset + k0:row_offset + k1]):
+            raise RuntimeError("batch row layout disagrees with the global indptr")
+    del local
+    _compact_in_place(csr_indices, e0, e1, col_map)
 
 
 def _scatter_batch_worker(task):
@@ -132,22 +155,92 @@ def _scatter_batch_worker(task):
     paths + SharedBuffer handles); nothing is inherited from the parent, so
     the pool can use the fork-safe forkserver start method.
     """
-    row_offset, num_rows, files, bufs = task
+    row_offset, num_rows, files, n_cols, bufs = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
-    cursor = np.zeros(num_rows, dtype=np.int16)      # this batch's rows only
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
-    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset,
+    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
                        bufs['indptr'].array, col_map,
-                       bufs['csr_data'].array, bufs['csr_indices'].array,
-                       cursor, cursor_base=row_offset)
+                       bufs['csr_data'].array, bufs['csr_indices'].array, n_cols)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
-    return row_offset
+
+
+def _range_ids(cols_full, full_cuts):
+    """uint8 column-range id of every entry, from FULL-space column ids
+    (``T - 1`` vectorised comparisons — much cheaper than a searchsorted)."""
+    rid = np.zeros(cols_full.shape[0], dtype=np.uint8)
+    for t in range(1, len(full_cuts) - 1):
+        rid += (cols_full >= np.int32(full_cuts[t]))
+    return rid
+
+
+def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
+                         col_map, csr_data, csr_indices, ip_all, n_cols):
+    """Place one STORAGE BLOCK (a spill batch, or one constraint block) into
+    the column-partitioned layout.
+
+    The buffers are (block, range)-major: block b's entries are contiguous,
+    and inside them range 0's rows come first, then range 1's, ... so every
+    (block, range) piece is itself a contiguous CSR with its own int32
+    indptr (the indptrs live back-to-back in ``ip_all``). Handing
+    ``coo_tocsr`` the VIRTUAL row ``range_id * num_rows + row`` produces
+    exactly that layout in one C pass: each piece's rows keep their original
+    entry order — the unified placement restricted to the range — and the
+    virtual indptr carries every piece's indptr. Column ids are compacted
+    and made range-local afterwards, in place.
+
+    ``layout`` = (T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off,
+    expected_range_nnz); the placed per-range entry counts must match the
+    Phase-1 totals the layout was built from, else this raises.
+    """
+    T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off, expected = layout
+    n = int(rows_local.shape[0])
+    if n != int(blk_nnz):
+        raise RuntimeError(f"storage block entry count {n} != layout nnz {blk_nnz}")
+    ip_view = ip_all[ip_off:ip_off + T * (num_rows + 1)]
+    if n == 0:
+        ip_view[:] = 0
+        return
+    vdt = np.int64 if (T * num_rows >= 2**31 or n >= 2**31) else np.int32
+    key = _range_ids(cols_arr, full_cuts).astype(vdt)
+    key *= vdt(num_rows)
+    np.add(key, rows_local, out=key, casting='unsafe')
+    vip = _place_rows(key, cols_arr, data_arr, T * num_rows, n_cols,
+                      csr_indices[blk_start:blk_start + n],
+                      csr_data[blk_start:blk_start + n])
+    del key
+    for t in range(T):
+        seg = vip[t * num_rows:(t + 1) * num_rows + 1]
+        s0, s1 = int(seg[0]), int(seg[-1])
+        if s1 - s0 != int(expected[t]):
+            raise RuntimeError(f"column range {t}: {s1 - s0} entries placed, "
+                               f"{int(expected[t])} expected from Phase 1")
+        o = t * (num_rows + 1)
+        np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
+        _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
+                          col_map, cut=int(cuts_c[t]))
+
+
+def _scatter_block_worker_split(task):
+    """Partitioned-layout placement of one spill batch in a worker process."""
+    num_rows, files, layout, n_cols, bufs = task
+    fr, fc, fd = files
+    rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
+    cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
+    data_mm = np.memmap(fd, dtype=np.float32, mode='r')
+    col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
+    _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
+                         bufs['csr_data'].array, bufs['csr_indices'].array,
+                         bufs['ip_all'].array, n_cols)
+    del rows_mm, cols_mm, data_mm, col_map
+    for b in bufs.values():
+        if b is not None:
+            b.close()
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -650,6 +743,30 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     batch_results = [None] * len(batched_tasks)
     row_nnz_per_batch = [None] * len(batched_tasks)
 
+    # Partitioned storage (ColSplitCSR): when the spill path is active, the
+    # placement runs in worker processes and the solve wants T column ranges
+    # (SELFCAL_RMATVEC_SPLIT), the CSR is emitted directly as storage
+    # blocks x column ranges — the layout the bit-equal parallel SpMV
+    # consumes — so no solve-time partition build is needed. Ranges are cut
+    # in the FULL column space here (compaction is decided only after
+    # Phase 1); the compaction map is monotone, so each full-space range
+    # maps onto one contiguous compact range. Phase 1 counts each batch's
+    # entries PER RANGE (T integers per batch, order-free) — the per-row
+    # layout comes out of the placement kernel itself. Phase 2e may lower T
+    # (memory gate) by merging adjacent ranges, whose cuts are a subset of
+    # these.
+    try:
+        _split_T_req = max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '4')))
+    except ValueError:
+        _split_T_req = 1
+    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
+                                          min(8, max_workers)))
+    _want_split = (_spill_run_dir is not None and _scatter_workers > 1
+                   and _split_T_req > 1)
+    _full_cuts = (np.linspace(0, total_cols, _split_T_req + 1, dtype=np.int64)
+                  if _want_split else None)
+    range_nnz_per_batch = [None] * len(batched_tasks) if _want_split else None
+
     # ----------------------------------------------------------------
     # Collation families. The per-batch accumulations are the dominant
     # SERIAL cost of assembly (~1000 s at a 1k-frame tile once the workers
@@ -677,6 +794,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     def _counts_work(batch_id, result, _b_rows, _b_cols):
         _cnt = np.bincount(_b_cols, minlength=total_cols)
+        if _want_split:
+            # Per-range entry totals for the partitioned layout, read off the
+            # histogram above BEFORE the pixel_counts adjustment below (which
+            # restores the pre-merge offset counts): summing it over the range
+            # cuts is exactly the number of entries this batch spilled into
+            # each range.
+            range_nnz_per_batch[batch_id] = np.add.reduceat(
+                _cnt, _full_cuts[:-1]).astype(np.int64)
         _oc = result.get('offset_counts')
         if _oc is not None:
             # The worker merged duplicate offset entries; pixel_counts
@@ -1024,6 +1149,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # Free per-batch row_nnz; no longer needed.
     row_nnz_per_batch = None
 
+    # Per-range entry totals of the constraint blocks (partitioned storage
+    # only), from their full-space column ids — same shape as the per-batch
+    # totals Phase 1 accumulated.
+    range_nnz_per_cblock = None
+    if _want_split:
+        range_nnz_per_cblock = [
+            np.bincount(_range_ids(np.asarray(blk['cols']), _full_cuts),
+                        minlength=_split_T_req).astype(np.int64)
+            for blk in constraint_blocks]
+
     # ----------------------------------------------------------------
     # Phase 2d: build full_b (vector of right-hand-sides). Concatenated in
     # the same order as the row scatter: per-batch b in batch-id order,
@@ -1067,17 +1202,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         blk['b'] = None
 
     # ----------------------------------------------------------------
-    # Parallel-scatter decision (Phase 4a): spill batches are scattered by
-    # worker processes over disjoint row ranges; the arrays they need
-    # (csr_data/csr_indices to write, indptr/col_map to read) live in
-    # memfd-backed SharedBuffers handed to them explicitly — nothing is
-    # inherited by fork, so the pool can use the fork-safe forkserver
-    # context (see selfcal.core.shmbuf). SELFCAL_SCATTER_WORKERS=0|1 forces
-    # the serial path (plain arrays, byte-identical: the scatter is pure
-    # data movement).
+    # Parallel-placement decision (Phase 4a): spill batches are placed by
+    # worker processes into disjoint entry spans; the arrays they need
+    # (csr_data/csr_indices and, for partitioned storage, ip_all to write;
+    # indptr/col_map to read) live in memfd-backed SharedBuffers handed to
+    # them explicitly — nothing is inherited by fork, so the pool can use
+    # the fork-safe forkserver context (see selfcal.core.shmbuf).
+    # SELFCAL_SCATTER_WORKERS=0|1 forces the serial path (plain arrays,
+    # byte-identical: placement is pure data movement).
     # ----------------------------------------------------------------
-    _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
-                                          min(8, max_workers)))
     _file_batches = [(batch_row_starts[i], r['num_rows'], r['files'])
                      for i, r in enumerate(batch_results)
                      if r is not None and 'files' in r]
@@ -1092,13 +1225,86 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return np.zeros(n, dtype=dtype) if zero else np.empty(n, dtype=dtype)
 
     # ----------------------------------------------------------------
-    # Phase 2e: build CSR indptr (int64) + total_nnz.
+    # Phase 2e: total_nnz, then the CSR row layout. The unified path builds
+    # the int64 global indptr; the partitioned path builds a storage-block
+    # table instead (one block per spill batch, then one per constraint
+    # block) and never materialises a global indptr at all.
     # ----------------------------------------------------------------
-    indptr = _shared_alloc('indptr', total_rows + 1, np.int64, zero=True)
-    np.cumsum(row_nnz, out=indptr[1:])
-    total_nnz = int(indptr[-1])
-    # row_nnz no longer needed; we will use indptr+write_cursor for scatter.
-    _max_row_nnz = int(row_nnz.max()) if row_nnz.size else 0
+    total_nnz = int(row_nnz.sum(dtype=np.int64))
+    _block_thr = int(os.environ.get('SELFCAL_BLOCK_NNZ', 2**31))
+    # Partitioned storage engages in the BlockCSR regime only (smaller runs
+    # keep the unified csr_matrix path byte-for-byte).
+    _partitioned = bool(_par_scatter and _want_split and total_nnz >= _block_thr
+                        and all(r is None or r['num_rows'] == 0 or 'files' in r
+                                for r in batch_results))
+    if _partitioned:
+        # T column ranges hold one int32 indptr per range instead of one per
+        # block: (T - 1) x 4 B/row of extra permanent storage. The gate
+        # halves T — merging adjacent ranges, whose cuts are a subset of the
+        # finer ones — until that extra fits SELFCAL_SPLIT_EXTRA_GB, so a
+        # big tile trades ranges for memory instead of raising its peak.
+        _split_T = _split_T_req
+        _extra_gate = float(os.environ.get('SELFCAL_SPLIT_EXTRA_GB', '24')) * 1e9
+        while _split_T > 1 and (_split_T - 1) * 4.0 * total_rows > _extra_gate:
+            _split_T = _split_T // 2 if _split_T % 2 == 0 else 1
+        if _split_T < _split_T_req:
+            logger.info(
+                f"Partitioned storage: {_split_T_req} column ranges would add "
+                f"{(_split_T_req - 1) * 4.0 * total_rows / 1e9:.1f} GB of per-range "
+                f"indptr (gate {_extra_gate / 1e9:.0f} GB, SELFCAL_SPLIT_EXTRA_GB); "
+                f"using {_split_T}.")
+        _partitioned = _split_T > 1
+    if _partitioned:
+        _step = _split_T_req // _split_T
+        _full_cuts_T = np.ascontiguousarray(_full_cuts[::_step])
+        assert _full_cuts_T.size == _split_T + 1 and _full_cuts_T[-1] == total_cols
+
+        def _merge_ranges(tot):
+            return tot.reshape(_split_T, _step).sum(axis=1)
+
+        # Storage-block table: one block per spill batch (batch-id order,
+        # i.e. the data-row order), then one per constraint block. Each
+        # block's pieces carry int32 indptrs, so a block must stay under
+        # 2**31 entries.
+        _blk_rows, _blk_rnnz, _blk_src = [], [], []
+        for _bi, _r in enumerate(batch_results):
+            if _r is None or _r['num_rows'] == 0:
+                continue
+            _blk_rows.append(int(_r['num_rows']))
+            _blk_rnnz.append(_merge_ranges(range_nnz_per_batch[_bi]))
+            _blk_src.append(_bi)
+        for _ci, blk in enumerate(constraint_blocks):
+            _blk_rows.append(int(blk['num_rows']))
+            _blk_rnnz.append(_merge_ranges(range_nnz_per_cblock[_ci]))
+            _blk_src.append(None)
+        _blk_nnz = [int(rn.sum()) for rn in _blk_rnnz]
+        if _blk_nnz and max(_blk_nnz) >= 2**31:
+            logger.warning("Partitioned storage disabled: a storage block holds "
+                           f"{max(_blk_nnz)} entries (int32 piece-indptr limit).")
+            _partitioned = False
+    range_nnz_per_batch = None
+    range_nnz_per_cblock = None
+    if _partitioned:
+        _nb = len(_blk_rows)
+        _row_bounds = np.zeros(_nb + 1, dtype=np.int64)
+        np.cumsum(_blk_rows, out=_row_bounds[1:])
+        assert int(_row_bounds[-1]) == total_rows, (int(_row_bounds[-1]), total_rows)
+        assert sum(_blk_nnz) == total_nnz, (sum(_blk_nnz), total_nnz)
+        _blk_start = np.zeros(_nb + 1, dtype=np.int64)
+        np.cumsum(_blk_nnz, out=_blk_start[1:])
+        _base = np.zeros((_nb, _split_T + 1), dtype=np.int64)   # entry offset of piece (b, t)
+        for _b in range(_nb):
+            np.cumsum(_blk_rnnz[_b], out=_base[_b, 1:])
+            _base[_b, :] += _blk_start[_b]
+        _ip_off = np.zeros(_nb + 1, dtype=np.int64)             # piece-indptr offsets
+        np.cumsum([_split_T * (r + 1) for r in _blk_rows], out=_ip_off[1:])
+        indptr = None
+    else:
+        indptr = _shared_alloc('indptr', total_rows + 1, np.int64, zero=True)
+        np.cumsum(row_nnz, out=indptr[1:])
+        assert int(indptr[-1]) == total_nnz
+    # row_nnz is not needed past here: the unified path scatters through
+    # indptr, the partitioned one through the per-block layout above.
     del row_nnz
 
     # ----------------------------------------------------------------
@@ -1155,6 +1361,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         col_map = None
         n_active = total_cols
 
+    if _partitioned:
+        # Compact-space cuts: the compaction map is monotone, so the number of
+        # active columns below each full-space cut is the compact cut.
+        if compaction_active:
+            _cuts_c = np.array([int(np.count_nonzero(active_mask[:int(c)]))
+                                for c in _full_cuts_T], dtype=np.int64)
+        else:
+            _cuts_c = _full_cuts_T.copy()
+
     # ----------------------------------------------------------------
     # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
     # last read by the Phase-2 constraint builders and the column compaction
@@ -1174,74 +1389,80 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
-    # Phase 3: allocate CSR buffers. When the spill path is active the
-    # scatter runs in forked workers over per-batch (disjoint) row ranges,
-    # so the buffers live in anonymous SHARED mappings; otherwise plain
-    # arrays and the serial scatter (byte-identical either way — the
-    # scatter is pure data movement). SELFCAL_SCATTER_WORKERS=0|1 forces
-    # the serial path.
+    # Phase 3: allocate the entry buffers (plus, for partitioned storage,
+    # the back-to-back per-(block, range) indptrs). With the spill path
+    # active they are memfd-backed shared mappings the worker processes
+    # write into; otherwise plain arrays written in this process —
+    # byte-identical either way, since placement is pure data movement.
     # ----------------------------------------------------------------
     csr_data = _shared_alloc('csr_data', total_nnz, np.float32)
     csr_indices = _shared_alloc('csr_indices', total_nnz, np.int32)
-    # int16 per-row fill cursor (2 B/row instead of 4): the widest row is a
-    # mean-offset constraint row with num_chunks entries (<= a few thousand);
-    # asserted, since an overflow here would silently corrupt slot assignment.
-    assert _max_row_nnz < 2**15, f"row nnz {_max_row_nnz} overflows int16 write_cursor"
-    write_cursor = np.zeros(total_rows, dtype=np.int16)
+    _ip_all = (_shared_alloc('ip_all', int(_ip_off[-1]), np.int32)
+               if _partitioned else None)
 
     # ----------------------------------------------------------------
-    # Phase 4a: streaming scatter of data rows (one batch at a time;
-    # release each batch's arrays immediately after scatter so the peak
-    # footprint stays small).
+    # Phase 4a: place the data rows. Every spill batch owns a contiguous row
+    # range — hence a contiguous entry span of the CSR buffers (unified), or
+    # one whole storage block (partitioned) — so worker processes can place
+    # batches in any order without a byte of overlap, and a batch that has
+    # to be redone is simply re-placed over its own span. The kernel
+    # (scipy's coo_tocsr, see _place_rows) reproduces the stable
+    # sort-by-row / within-row-cumcount placement the previous Python kernel
+    # produced, in one C pass; the layout it derives is checked against the
+    # Phase-1 counts, so a disagreement raises rather than corrupts.
     #
-    # Within-batch row collisions are common (e.g. spectral_fit mode places
-    # 2 sky nnz + 1 offset + 1 scalar in the SAME row). A naive
-    #   slots = indptr[rows_b] + write_cursor[rows_b]
-    # would have all duplicates read the same write_cursor value and
-    # overwrite the same slot. We instead stable-sort by row and use a
-    # within-row cumcount so every entry lands in its own slot. Stable
-    # sort preserves the original col-within-row order across the batch,
-    # which matches what coo_matrix(...).tocsr() does for stable sort_by_row.
+    # Safety net: a batch that does not finish within
+    # SELFCAL_SCATTER_TIMEOUT_S (or a broken pool) is redone serially below,
+    # so an unattended run degrades to slow, never to a hang.
     # ----------------------------------------------------------------
-    # The scatter runs over SUB-SLICES of each batch (in original entry
-    # order) rather than the whole batch at once: the sort/cumcount
-    # machinery allocates ~45 B per entry of transients, which at full
-    # batch width (~4e8 entries) is ~18-23 GB sitting exactly on the
-    # setup peak. Sub-slicing divides that by the slice count.
-    # Slot assignment is IDENTICAL: for entries of the same row split
-    # across slices, earlier slices write first and advance write_cursor,
-    # so later slices continue at the updated cursor — the concatenation
-    # of per-slice stable-sort orders over a row equals the whole-batch
-    # stable-sort order (stable sort preserves original order within
-    # equal keys; slice boundaries preserve original order across
-    # slices). Hence byte-identical csr_data/csr_indices.
-    scatter_chunk = 64_000_000
     _done_par = set()
-    if _par_scatter:
-        # Every spill batch is scattered by a worker process: batches own
-        # disjoint row ranges, so all writes are disjoint, and slot
-        # assignment is schedule-independent (see _scatter_one_batch).
-        # Safety net: a batch that does not complete within
-        # SELFCAL_SCATTER_TIMEOUT_S (or a broken pool) is re-done serially
-        # below — its slots are private and simply overwritten — so an
-        # unattended run degrades to slow, never to a hang.
-        _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
-        logger.info(f"Phase 4a: parallel scatter, {len(_file_batches)} batches "
+    _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
+    _batch_block = {src: _b for _b, src in enumerate(_blk_src)
+                    if src is not None} if _partitioned else {}
+
+    def _layout_of(_b):
+        return (_split_T, _full_cuts_T, _cuts_c, int(_blk_start[_b]),
+                int(_blk_nnz[_b]), int(_ip_off[_b]), _blk_rnnz[_b])
+
+    if _partitioned:
+        logger.info(f"Phase 4a: parallel placement into partitioned storage "
+                    f"({_nb} storage blocks x {_split_T} column ranges), "
+                    f"{len(_file_batches)} batches over {_scatter_workers} "
+                    "workers (forkserver).")
+    elif _par_scatter:
+        logger.info(f"Phase 4a: parallel placement, {len(_file_batches)} batches "
                     f"over {_scatter_workers} workers (forkserver).")
-        _bufs = {'csr_data': _shared['csr_data'], 'csr_indices': _shared['csr_indices'],
-                 'indptr': _shared['indptr'], 'col_map': _shared.get('col_map')}
+    else:
+        logger.info("Phase 4a: serial placement.")
+    if _par_scatter:
+        if _partitioned:
+            _bufs = {'csr_data': _shared['csr_data'],
+                     'csr_indices': _shared['csr_indices'],
+                     'ip_all': _shared['ip_all'], 'col_map': _shared.get('col_map')}
+            _worker = _scatter_block_worker_split
+            _tasks = [(_bi, (_blk_rows[_b], batch_results[_bi]['files'],
+                             _layout_of(_b), total_cols, _bufs))
+                      for _bi, _b in _batch_block.items()]
+        else:
+            _bufs = {'csr_data': _shared['csr_data'],
+                     'csr_indices': _shared['csr_indices'],
+                     'indptr': _shared['indptr'], 'col_map': _shared.get('col_map')}
+            _worker = _scatter_batch_worker
+            _tasks = [(_bi, (batch_row_starts[_bi], _r['num_rows'], _r['files'],
+                             total_cols, _bufs))
+                      for _bi, _r in enumerate(batch_results)
+                      if _r is not None and 'files' in _r]
         _ex = ProcessPoolExecutor(max_workers=_scatter_workers,
                                   mp_context=worker_pool_context())
         try:
-            _futs = {_ex.submit(_scatter_batch_worker, (ro, nr, fl, _bufs)): ro
-                     for ro, nr, fl in _file_batches}
-            for _f in as_completed(_futs, timeout=_timeout * len(_futs)):
+            _futs = {_ex.submit(_worker, _task): _key for _key, _task in _tasks}
+            for _f in as_completed(_futs, timeout=_timeout * max(1, len(_futs))):
                 _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
         except (_FutTimeout, BrokenProcessPool) as _e:
-            logger.warning(f"Phase 4a: parallel scatter aborted ({type(_e).__name__}: "
-                           f"{_e}); {len(_file_batches) - len(_done_par)} batch(es) "
-                           "will be scattered serially.")
+            logger.warning(f"Phase 4a: parallel placement aborted ({type(_e).__name__}: "
+                           f"{_e}); {len(_futs) - len(_done_par)} batch(es) will be "
+                           "placed serially.")
             for _p in list(getattr(_ex, '_processes', {}).values()):
                 try:
                     _p.kill()
@@ -1250,17 +1471,21 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             _ex.shutdown(wait=False, cancel_futures=True)
         else:
             _ex.shutdown(wait=True)
-        del _bufs
+        del _bufs, _tasks
     for batch_id in range(len(batched_tasks)):
         batch = batch_results[batch_id]
         if batch is None:
             continue
-        if not (_par_scatter and 'files' in batch
-                and batch_row_starts[batch_id] in _done_par):
+        if _partitioned:
+            if batch_id not in _done_par and batch['num_rows']:
+                _b = _batch_block[batch_id]
+                _scatter_block_split(batch['rows'], batch['cols'], batch['data'],
+                                     _blk_rows[_b], _layout_of(_b), col_map,
+                                     csr_data, csr_indices, _ip_all, total_cols)
+        elif batch_id not in _done_par:
             _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
-                               batch_row_starts[batch_id], indptr, col_map,
-                               csr_data, csr_indices, write_cursor,
-                               cursor_base=0, scatter_chunk=scatter_chunk)
+                               batch_row_starts[batch_id], batch['num_rows'],
+                               indptr, col_map, csr_data, csr_indices, total_cols)
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
@@ -1278,61 +1503,36 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     # Phase 4b: scatter constraint blocks at their reserved row ranges.
     #
-    # Same row-collision concern as Phase 4a: e.g. the per-frame
-    # mean-offset block has nc_m entries per row. Use the same
-    # stable-sort + within-row cumcount pattern. write_cursor for
-    # constraint rows starts at 0 (no prior batches touched them) but
-    # we still write through write_cursor for uniformity.
+    # Each constraint block is a contiguous row range as well (unified: its
+    # own entry span; partitioned: its own storage block), so the same
+    # placement kernel handles it.
     # ----------------------------------------------------------------
     cb_cursor = total_rows_data
-    for blk in constraint_blocks:
-        nrows = blk['num_rows']
-        nnz_per_row = blk['nnz_per_row']
-        rows_b = blk['rows_local'] + cb_cursor
-        cols_b = blk['cols']
-        data_b = blk['data']
-        if compaction_active:
-            cols_b = col_map[cols_b].astype(np.int32, copy=False)
+    for _ci, blk in enumerate(constraint_blocks):
+        nrows = int(blk['num_rows'])
+        _rows_l = np.asarray(blk['rows_local'])
+        _cols_b = np.asarray(blk['cols'])
+        _data_b = np.asarray(blk['data'])
+        if _partitioned:
+            _b = _nb - len(constraint_blocks) + _ci
+            _scatter_block_split(_rows_l, _cols_b, _data_b, nrows, _layout_of(_b),
+                                 col_map, csr_data, csr_indices, _ip_all, total_cols)
         else:
-            cols_b = cols_b.astype(np.int32, copy=False)
-
-        n_b = rows_b.shape[0]
-        if n_b > 0:
-            # nnz_per_row can be a scalar (uniform) or a numpy array (varying per-row).
-            is_uniform_one = (np.ndim(nnz_per_row) == 0 and int(nnz_per_row) == 1)
-            if is_uniform_one:
-                # Fast path: every constraint row contributes exactly one
-                # entry, so no duplicates exist and no sort is required.
-                slots = indptr[rows_b] + write_cursor[rows_b]
-                csr_data[slots] = data_b
-                csr_indices[slots] = cols_b
-                write_cursor[rows_b] += 1
-            else:
-                order = np.argsort(rows_b, kind="stable")
-                rows_s = rows_b[order]
-                cols_s = cols_b[order]
-                data_s = data_b[order]
-
-                is_new_group = np.empty(n_b, dtype=bool)
-                is_new_group[0] = True
-                is_new_group[1:] = rows_s[1:] != rows_s[:-1]
-                group_starts = np.flatnonzero(is_new_group)
-                group_idx = np.cumsum(is_new_group, dtype=np.int64) - 1
-                within_row = np.arange(n_b, dtype=np.int64) - group_starts[group_idx]
-
-                slots = indptr[rows_s] + write_cursor[rows_s] + within_row
-                csr_data[slots] = data_s
-                csr_indices[slots] = cols_s
-
-                unique_rows = rows_s[group_starts]
-                counts = np.diff(np.append(group_starts, n_b)).astype(np.int16, copy=False)
-                write_cursor[unique_rows] += counts
+            _scatter_one_batch(_rows_l, _cols_b, _data_b, cb_cursor, nrows,
+                               indptr, col_map, csr_data, csr_indices, total_cols)
         cb_cursor += nrows
-    del write_cursor
+        del _rows_l, _cols_b, _data_b
     _shared.clear()          # fds closed; the arrays keep their mappings
 
     # ----------------------------------------------------------------
-    # Phase 5: build CSR. Indices are row-grouped but NOT col-sorted within
+    # Phase 5: hand the placed entries over as a matrix.
+    #
+    # Partitioned storage is already in its final layout: each
+    # (block, range) piece is a contiguous CSR, so all that remains is the
+    # per-row column sort (row-local, hence bit-identical to sorting the
+    # unified matrix, and thread-safe across pieces).
+    #
+    # On the unified path, indices are row-grouped but NOT col-sorted within
     # row (sufficient for LSQR/LSMR matvec/rmatvec — convergence depends
     # only on A as a linear map). We mark has_sorted_indices=False so
     # scipy callers that depend on it (e.g. .T → CSC view) can either
@@ -1350,9 +1550,45 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # target (tests force small blocks with it); production default splits
     # only when int64 would otherwise be forced.
     # ----------------------------------------------------------------
-    _block_thr = int(os.environ.get('SELFCAL_BLOCK_NNZ', 2**31))
-    total_nnz = int(indptr[-1])
-    if total_nnz >= _block_thr:
+    if _partitioned:
+        from .blockcsr import ColSplitCSR
+        _sub = [[None] * _split_T for _ in range(_nb)]
+        _pieces = []
+        for _b in range(_nb):
+            _nr = _blk_rows[_b]
+            for _t in range(_split_T):
+                e0, e1 = int(_base[_b, _t]), int(_base[_b, _t + 1])
+                o = int(_ip_off[_b]) + _t * (_nr + 1)
+                ip = _ip_all[o:o + _nr + 1]
+                assert int(ip[0]) == 0 and int(ip[-1]) == e1 - e0, (
+                    "piece indptr disagrees with the layout")
+                _sub[_b][_t] = (csr_data[e0:e1], csr_indices[e0:e1], ip)
+                _pieces.append(_sub[_b][_t])
+
+        # Sort each piece's rows by column. Sorting is row-local, so doing
+        # it per piece is bit-identical to sorting the unified matrix (each
+        # row's range-t entries are exactly its unified entries in that
+        # column window). Pieces are disjoint and the scipy kernel releases
+        # the GIL, so this runs in threads. Duplicates cannot survive (the
+        # assembly workers merge them per row), which the canonical-format
+        # check confirms — the alternative would silently change values.
+        def _canonicalise(piece):
+            d, i, ip = piece
+            nr = ip.shape[0] - 1
+            if not _spt.csr_has_sorted_indices(nr, ip, i):
+                _spt.csr_sort_indices(nr, ip, i, d)
+            return bool(_spt.csr_has_canonical_format(nr, ip, i))
+
+        with ThreadPoolExecutor(max_workers=min(16, max(1, max_workers))) as _sx:
+            _canon = list(_sx.map(_canonicalise, _pieces))
+        if not all(_canon):
+            raise RuntimeError("duplicate (row, col) entries in partitioned storage")
+        del _pieces, _canon
+        full_A = ColSplitCSR(_sub, _row_bounds, _cuts_c, (total_rows, n_active))
+        del _sub, _ip_all, csr_data, csr_indices
+        logger.info(f"Phase 5: ColSplitCSR with {_nb} int32 storage blocks x "
+                    f"{_split_T} column ranges (nnz={total_nnz}).")
+    elif total_nnz >= _block_thr:
         from .blockcsr import build_block_csr
         target = max(1, min(2**30, _block_thr))
         full_A = build_block_csr(csr_data, csr_indices, indptr,
@@ -1383,14 +1619,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # front-packs in place and shrinks the buffers with an in-place realloc.
     # It needs sole ownership of the buffers (resize refuses otherwise), so
     # our names are handed over through a list and dropped.
-    from .blockcsr import merge_duplicates_inplace
-    _buf = [csr_data, csr_indices]
-    del csr_data, csr_indices
-    _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
-    del _buf, _blocks, _blk_starts
-    if _nnz_post != _nnz_pre:
-        logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
-                    f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
+    if not _partitioned:
+        from .blockcsr import merge_duplicates_inplace
+        _buf = [csr_data, csr_indices]
+        del csr_data, csr_indices
+        _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
+        del _buf, _blocks, _blk_starts
+        if _nnz_post != _nnz_pre:
+            logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+                        f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it
     # before returning would re-inflate it right alongside the finished CSR —
