@@ -33,7 +33,7 @@ except ImportError as e:  # pragma: no cover - depends on scipy internals
 from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
 from threadpoolctl import threadpool_limits
 
-from .blockcsr import BlockCSR, _csr_shell
+from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
 from .lsqr_inplace import lsqr_inplace
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,103 @@ def _iter_global_entry_chunks(blocks, chunk_size):
     if buf_n:
         yield ((buf_d[0], buf_c[0]) if len(buf_d) == 1
                else (np.concatenate(buf_d), np.concatenate(buf_c)))
+
+
+def _iter_range_pieces_colsplit(A, chunk_size):
+    """Cut a ColSplitCSR at the same GLOBAL entry boundaries as
+    :func:`_iter_global_entry_chunks`, and yield each chunk as its PER-RANGE
+    slices rather than one merged array.
+
+    The logical stream is row-major with each row's ranges in order (rows are
+    column-sorted), so a global chunk is, per block, one contiguous slice of
+    every range's arrays — the boundary rows split at whichever range holds
+    the chunk edge. Yielding those slices with their column offset (instead
+    of concatenating them under global column ids) keeps the indices as
+    int32 VIEWS: no per-chunk int64 copy of the ids, and no per-block
+    segment/prefix tables. Each column's entries stay in row order within
+    the chunk, and a column belongs to exactly one range, so the caller's
+    per-range float32 partial sums are bit-identical to the unified
+    matrix's single partial per chunk.
+
+    Yields
+    ------
+    list of (data, indices, col_offset, width)
+        ``indices`` are local to the range; add ``col_offset`` for global.
+    """
+    T = A.nranges
+    cuts = A.cuts
+    pend = [[] for _ in range(T)]
+    pend_n = 0
+
+    def _emit():
+        out = []
+        for t in range(T):
+            if not pend[t]:
+                continue
+            if len(pend[t]) == 1:
+                d, i = pend[t][0]
+            else:
+                d = np.concatenate([p[0] for p in pend[t]])
+                i = np.concatenate([p[1] for p in pend[t]])
+            out.append((d, i, int(cuts[t]), int(cuts[t + 1] - cuts[t])))
+            pend[t].clear()
+        return out
+
+    for b in range(A.nblocks):
+        per = A.sub[b]
+        ips = [p[2] for p in per]
+        n_rows = ips[0].shape[0] - 1
+
+        def _offset(r, ips=ips):
+            """Entries of the block before row ``r``, over all ranges."""
+            return sum(int(ip[r]) for ip in ips)
+
+        def _row_at(target, lo, hi):
+            """Last row whose start offset is <= target (searchsorted 'right'
+            minus one, evaluated without materialising the offsets: only the
+            few chunk boundaries per block are ever located)."""
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if _offset(mid) <= target:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            return lo
+
+        nnz_b = _offset(n_rows)
+        lpos = 0
+        row_lo = 0                    # boundaries advance, so the search does
+        while lpos < nnz_b:
+            take = min(nnz_b - lpos, chunk_size - pend_n)
+            l0, l1 = lpos, lpos + take
+            r0 = _row_at(l0, row_lo, n_rows)
+            q0 = l0 - _offset(r0)
+            if l1 == nnz_b:                       # chunk ends at the block end
+                r1 = n_rows - 1
+                q1 = nnz_b - _offset(r1)
+            else:
+                r1 = _row_at(l1, r0, n_rows)
+                q1 = l1 - _offset(r1)
+            row_lo = r0
+            acc0 = acc1 = 0                       # entries of the boundary rows
+            for t in range(T):                    # in ranges before t
+                ip = ips[t]
+                w0, w1 = int(ip[r0]), int(ip[r1])
+                seg0, seg1 = int(ip[r0 + 1]) - w0, int(ip[r1 + 1]) - w1
+                s0 = w0 + min(max(q0 - acc0, 0), seg0)
+                s1 = w1 + min(max(q1 - acc1, 0), seg1)
+                acc0 += seg0
+                acc1 += seg1
+                if s1 > s0:
+                    d_t, i_t, _ = per[t]
+                    pend[t].append((d_t[s0:s1], i_t[s0:s1]))
+            pend_n += take
+            lpos = l1
+            if pend_n == chunk_size:
+                yield _emit()
+                pend_n = 0
+    if pend_n:
+        yield _emit()
 
 
 def parallel_rmatvec_threads():
@@ -390,33 +487,38 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
 
     Consumes ``bcsr`` (its blocks are released as they are split).
     """
-    m, n = bcsr.shape
-    dtype = bcsr.dtype
-    logger.info(f"Building column-partitioned SpMV operator ({n_threads} matvec "
-                f"threads, {nranges} rmatvec column ranges, "
-                f"{len(bcsr.blocks)} storage blocks)...")
-    row_bounds = bcsr.row_bounds.copy()
+    if isinstance(bcsr, ColSplitCSR):
+        split = bcsr                     # storage already partitioned by setup
+        nranges = split.nranges
+        logger.info(f"Building column-partitioned SpMV operator from partitioned "
+                    f"storage ({n_threads} matvec threads, {nranges} rmatvec ranges, "
+                    f"{split.nblocks} storage blocks)...")
+    else:
+        logger.info(f"Building column-partitioned SpMV operator ({n_threads} matvec "
+                    f"threads, {nranges} rmatvec column ranges, "
+                    f"{len(bcsr.blocks)} storage blocks)...")
+        split = _ColSplit(bcsr, nranges)
+    m, n = split.shape
+    dtype = split.dtype
+    row_bounds = split.row_bounds.copy()
     thread_cuts = np.linspace(0, m, max(1, n_threads) + 1, dtype=np.int64)
     bounds = np.unique(np.concatenate((row_bounds, thread_cuts)))
-    split = _ColSplit(bcsr, nranges)
     cuts = split.cuts
 
-    # Piece-level views: (r0, r1, per-range (data, idx, indptr)) — the
-    # block-level indptrs are dropped afterwards so the steady indptr
-    # overhead is nranges x 4 B/row.
+    # Piece-level views: (r0, r1, per-range (data, idx, indptr)). Every
+    # entry here is a VIEW — the indptr slice keeps the stored absolute
+    # offsets and the data/index arrays are passed whole, which is what the
+    # scipy kernels index with, so the steady indptr overhead stays the
+    # nranges x 4 B/row the storage already holds (no per-piece copies).
     pieces = []
     for r0, r1 in zip(bounds[:-1], bounds[1:]):
         bi = int(np.searchsorted(row_bounds, r0, side='right') - 1)
         lr0 = int(r0 - row_bounds[bi])
         lr1 = int(r1 - row_bounds[bi])
-        per_range = []
-        for data_t, idx_t, ip_t in split.sub[bi]:
-            s0, s1 = int(ip_t[lr0]), int(ip_t[lr1])
-            per_range.append((data_t[s0:s1], idx_t[s0:s1],
-                              (ip_t[lr0:lr1 + 1] - s0).astype(np.int32,
-                                                              copy=False)))
-        pieces.append((int(r0), int(r1), per_range))
-    split.sub = None   # block-level indptrs die; data/idx live on via views
+        pieces.append((int(r0), int(r1),
+                       [(data_t, idx_t, ip_t[lr0:lr1 + 1])
+                        for data_t, idx_t, ip_t in split.sub[bi]]))
+    split.sub = None       # the tuples die; data/idx/indptr live on as views
 
     executor = ThreadPoolExecutor(max_workers=max(1, n_threads))
     rexecutor = ThreadPoolExecutor(max_workers=nranges)
@@ -432,8 +534,13 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
             def _work(p, t=t, x_t=x_t, c1c0=c1 - c0):
                 r0, r1, per_range = p
                 data_t, idx_t, ip_t = per_range[t]
-                ad = data_t if data_t.dtype == od else data_t.astype(od)
-                _sparsetools.csr_matvec(r1 - r0, c1c0, ip_t, idx_t, ad,
+                if data_t.dtype == od:
+                    _sparsetools.csr_matvec(r1 - r0, c1c0, ip_t, idx_t, data_t,
+                                            x_t, out[r0:r1])
+                    return
+                s0, s1 = int(ip_t[0]), int(ip_t[-1])
+                _sparsetools.csr_matvec(r1 - r0, c1c0, ip_t - np.int32(s0),
+                                        idx_t[s0:s1], data_t[s0:s1].astype(od),
                                         x_t, out[r0:r1])
             list(executor.map(_work, pieces))
         return out
@@ -448,9 +555,14 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
             out_t = out[c0:c1]
             for r0, r1, per_range in pieces:      # global row order
                 data_t, idx_t, ip_t = per_range[t]
-                ad = (data_t if data_t.dtype == out_dtype
-                      else data_t.astype(out_dtype))
-                _sparsetools.csc_matvec(c1 - c0, r1 - r0, ip_t, idx_t, ad,
+                if data_t.dtype == out_dtype:
+                    _sparsetools.csc_matvec(c1 - c0, r1 - r0, ip_t, idx_t,
+                                            data_t, yc[r0:r1], out_t)
+                    continue
+                s0, s1 = int(ip_t[0]), int(ip_t[-1])
+                _sparsetools.csc_matvec(c1 - c0, r1 - r0, ip_t - np.int32(s0),
+                                        idx_t[s0:s1],
+                                        data_t[s0:s1].astype(out_dtype),
                                         yc[r0:r1], out_t)
         list(rexecutor.map(_work, range(nranges)))
         return out
@@ -629,9 +741,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         Solution vector in the full (uncompacted) column layout: expanded via
         ``active_mask`` when compaction ran, otherwise the raw solver output.
     """
-    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR)):
+    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
         raise TypeError(
-            "A must be a scipy.sparse.coo_matrix, csr_matrix, or BlockCSR")
+            "A must be a scipy.sparse.coo_matrix, csr_matrix, BlockCSR or ColSplitCSR")
     if not isinstance(b, np.ndarray):
         raise TypeError("b must be a numpy array")
     if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
@@ -649,8 +761,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
 
     # ---- Pre-compacted fast path: setup_lsqr already dropped all-zero
     # ---- columns; A arrives as compact CSR (or int32 BlockCSR).
-    if isinstance(A, (csr_matrix, BlockCSR)):
+    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
         is_block = isinstance(A, BlockCSR)
+        is_split = isinstance(A, ColSplitCSR)
         if active_mask is not None:
             if num_cols_full is None:
                 raise ValueError(
@@ -674,9 +787,16 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         A_shape = A.shape
         if use_float32:
             logger.info("Downcasting to float32 for faster SpMV...")
-            for _blk in (A.blocks if is_block else (A,)):
-                if _blk.data.dtype != np.float32:
-                    _blk.data = _blk.data.astype(np.float32)
+            if is_split:
+                for _b in range(A.nblocks):
+                    for _t in range(A.nranges):
+                        _d, _i, _ip = A.sub[_b][_t]
+                        if _d.dtype != np.float32:
+                            A.sub[_b][_t] = (_d.astype(np.float32), _i, _ip)
+            else:
+                for _blk in (A.blocks if is_block else (A,)):
+                    if _blk.data.dtype != np.float32:
+                        _blk.data = _blk.data.astype(np.float32)
             _b_in = b
             b = _b_in.astype(np.float32)
             del _b_in
@@ -692,18 +812,32 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # partial-sum tree is part of the byte-equal contract);
             # straddling block chunks are concatenated inside the iterator,
             # never split.
-            def _chunk_pairs():
-                if is_block:
-                    yield from _iter_global_entry_chunks(A.blocks, chunk_size)
+            def _chunk_pieces():
+                """Each global chunk as [(data, indices, col_offset, width)]:
+                one piece per column range for partitioned storage, a single
+                whole-width piece otherwise."""
+                if is_split:
+                    yield from _iter_range_pieces_colsplit(A, chunk_size)
+                elif is_block:
+                    for _d, _c in _iter_global_entry_chunks(A.blocks, chunk_size):
+                        yield [(_d, _c, 0, n_active)]
                 else:
                     _d, _c = A.data, A.indices
                     for start in range(0, _d.size, chunk_size):
                         stop = min(start + chunk_size, _d.size)
-                        yield _d[start:stop], _c[start:stop]
+                        yield [(_d[start:stop], _c[start:stop], 0, n_active)]
 
-            def _partial(d_chunk, c_chunk):
-                return np.bincount(c_chunk, weights=d_chunk * d_chunk,
-                                   minlength=n_active).astype(np.float32)
+            def _partial(pieces):
+                # A column lives in exactly one range, so folding a range's
+                # entries into its own slice sees the same addends in the
+                # same order as one whole-width bincount would.
+                return [(c0, np.bincount(i, weights=d * d,
+                                         minlength=w).astype(np.float32))
+                        for d, i, c0, w in pieces]
+
+            def _fold(parts):
+                for c0, p in parts:
+                    col_sq_norm[c0:c0 + p.size] += p
 
             # Each chunk's bincount is a pure function; computing a few of
             # them in threads (np.bincount releases the GIL) and applying
@@ -717,15 +851,15 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 from collections import deque
                 with ThreadPoolExecutor(max_workers=_win) as _ex:
                     _q = deque()
-                    for _pair in _chunk_pairs():
-                        _q.append(_ex.submit(_partial, *_pair))
+                    for _pieces in _chunk_pieces():
+                        _q.append(_ex.submit(_partial, _pieces))
                         if len(_q) >= _win:
-                            col_sq_norm += _q.popleft().result()
+                            _fold(_q.popleft().result())
                     while _q:
-                        col_sq_norm += _q.popleft().result()
+                        _fold(_q.popleft().result())
             else:
-                for _d_chunk, _c_chunk in _chunk_pairs():
-                    col_sq_norm += _partial(_d_chunk, _c_chunk)
+                for _pieces in _chunk_pieces():
+                    _fold(_partial(_pieces))
 
             col_norms = np.sqrt(col_sq_norm)
             col_norms[col_norms == 0] = 1.0
@@ -736,13 +870,27 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # so any execution order gives identical bytes — threaded. Each
             # tile's gather temp is ~256 MB (M[indices] copy).
             _tiles = []
-            for _blk in (A.blocks if is_block else (A,)):
-                for start in range(0, _blk.data.size, chunk_size):
-                    _tiles.append((_blk, start,
-                                   min(start + chunk_size, _blk.data.size)))
+            if is_split:
+                for _b in range(A.nblocks):
+                    for _t in range(A.nranges):
+                        _d, _i, _ip = A.sub[_b][_t]
+                        # range-local ids index the range's slice of M
+                        _Mt = M[int(A.cuts[_t]):int(A.cuts[_t + 1])]
+                        for start in range(0, _d.size, chunk_size):
+                            _tiles.append(((_d, _i, _Mt), start,
+                                           min(start + chunk_size, _d.size)))
+            else:
+                for _blk in (A.blocks if is_block else (A,)):
+                    for start in range(0, _blk.data.size, chunk_size):
+                        _tiles.append((_blk, start,
+                                       min(start + chunk_size, _blk.data.size)))
 
             def _scale_tile(t):
                 _blk, s0, s1 = t
+                if isinstance(_blk, tuple):        # partitioned storage: local ids
+                    _bd, _bc, _Mt = _blk
+                    _bd[s0:s1] *= _Mt[_bc[s0:s1]].astype(_bd.dtype, copy=False)
+                    return
                 _bd, _bc = _blk.data, _blk.indices
                 _bd[s0:s1] *= M[_bc[s0:s1]].astype(_bd.dtype, copy=False)
 
@@ -779,9 +927,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         _b_owned = [b]
         del b
 
-        if is_block:
-            op = _make_parallel_operator_blocks(A_csr, n_threads,
-                                                 a_owned=a_owned)
+        if is_block or is_split:
+            op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)
+                  if is_split else
+                  _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned))
             try:
                 with threadpool_limits(limits=1, user_api='blas'):
                     if solver == 'lsmr':
