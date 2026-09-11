@@ -35,6 +35,7 @@ class RunConfig:
     # Operational / gating knobs (optional):
     n_frames: int = None               # limit cal to the first N sorted reproj files
     skip_mosaic: bool = False          # cal only (no mosaic / wavelength)
+    wavelength_coadd: bool = True      # append the LVF wav_mean/wav_std maps
     reproj_override: str = None        # use this reproj dir directly (skip NVMe staging)
 
     instrument_cfg: dict = field(default_factory=dict)
@@ -59,6 +60,7 @@ _SCALAR_KEYS = {
     'task', 'mode', 'output_dir', 'run_name', 'resolution_arcsec',
     'cache_dir', 'suffix', 'oversample', 'staging', 'keep_nvme', 'hdd_io_limit',
     'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override',
+    'wavelength_coadd',
 }
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',

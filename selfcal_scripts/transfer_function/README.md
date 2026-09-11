@@ -80,6 +80,15 @@ Swap detector = change `--detector`, `--frames`, `--ref`, `--run-name`.
 Under `<output_dir>/<run-name>/`:
 
 - **`mosaic/mosaic_*.fits`** — the recovered map, on the same WCS as `ref.fits`.
+  Extension `MEAN_MAP` is what you compare against; `MEAN_MAP_WEIGHT` is its
+  coverage. (The fiducial science mosaics also carry std, sigma-clipped-mean
+  and wavelength maps; the kit skips those — the transfer function does not
+  read them, and building them roughly doubles the mosaic's wall time. The
+  calibration is unaffected, and `MEAN_MAP` is the same map either way — to
+  within the coadd's own run-to-run non-determinism, since it accumulates in
+  worker-completion order and so is not bit-reproducible in any configuration.
+  To get the other maps, set `make_std_map`, `apply_sigma_clipping` and
+  `cache_intermediate` back to `true` in `transfer_function.toml`.)
 - `calibration/cal_*.h5` — the calibration solution.
 
 Compare `mosaic_*.fits` to your injected fake sky (they share the reference WCS)

@@ -20,6 +20,7 @@ cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
 
 reproj_override = "/scratch/tf/D3_fakesky_frames"    # (set by launcher: REPROJ_FRAME_DIR)
 skip_mosaic = false                                  # produce the mosaic (what you compare against)
+wavelength_coadd = false                             # wav_mean/wav_std are not read by the transfer function
 
 [instrument]
 name = "spherex"
@@ -56,13 +57,23 @@ precondition = true
 solver = "lsqr"
 
 [mosaic]
+# The transfer function is read off MEAN_MAP, so the mosaic builds only that:
+# one coadd pass over the frames, no intermediate cache (nothing reuses it),
+# no std / sigma-clipped maps (and wavelength_coadd = false above, since the
+# wav maps are per-pixel effective wavelength, not flux). The CALIBRATION recipe above is untouched:
+# this only stops computing maps the transfer function does not read, and
+# MEAN_MAP is the same map either way — to within the coadd's own
+# run-to-run non-determinism, since it accumulates in worker-completion
+# order and so is not bit-reproducible in any configuration. Set
+# make_std_map/apply_sigma_clipping/cache_intermediate back to true to get
+# the full fiducial mosaic.
 apply_mask = true
 apply_weight = false
-make_std_map = true
-apply_sigma_clipping = true
+make_std_map = false
+apply_sigma_clipping = false
 sigma = 2.0
 ignore_list = [21]
 cache_batch_size = 50
 coadd_batch_size = 50
-cache_intermediate = true
+cache_intermediate = false
 max_workers = 48

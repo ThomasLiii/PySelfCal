@@ -38,8 +38,12 @@ a telescope or a specific calibration variant by name.
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
-`skip_mosaic`, `reproj_override` (run directly against an existing reproj dir,
-no staging), `postprocess` (named subframe hook).
+`skip_mosaic`, `wavelength_coadd` (default `true`; `false` builds the mosaic
+without the LVF `wav_mean`/`wav_std` maps — it sigma-clips against the std map
+and reads the intermediate cache, so leaving it on requires `[mosaic]`
+`make_std_map` and `cache_intermediate`), `reproj_override` (run directly
+against an existing reproj dir, no staging), `postprocess` (named subframe
+hook).
 
 **`[instrument]`** — instrument-specific. SPHEREx: `name = "spherex"`, `detector`,
 `num_sub`/`num_ch`/`num_col`, `calib_dir`, and exactly one channel selector:

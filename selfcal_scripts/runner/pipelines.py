@@ -133,7 +133,21 @@ def run_calibration(cfg):
                 det_offset_funcs=det_offset_funcs,
                 cache_dir=cache_dir,
                 **cfg.mosaic)
-            if mode.mosaic_mode == 'full':
+            # `wavelength_coadd` (default true) selects the LVF wav_mean/wav_std
+            # append. It sigma-clips against the std map and reads the
+            # intermediate cache, so it cannot run without them: say so here
+            # rather than fail deep inside the coadd on a None std map.
+            if mode.mosaic_mode == 'full' and cfg.wavelength_coadd:
+                missing = [k for k in ('make_std_map', 'cache_intermediate')
+                           if not cfg.mosaic.get(k, False)]
+                if missing:
+                    raise ValueError(
+                        f"wavelength_coadd = true needs [mosaic] "
+                        f"{' and '.join(missing)} = true (the LVF coaddition "
+                        "sigma-clips against the std map and reads the "
+                        "intermediate cache). Set them true, or set "
+                        "wavelength_coadd = false to build the mosaic without "
+                        "the wav_mean/wav_std maps.")
                 inst.wavelength_append(det_inputs, mm, maps, cfg.mosaic['sigma'])
             mm.save_mosaic(mos_file=mos_file, overwrite=True)
             if cfg.zodi.get('pred_dir'):
