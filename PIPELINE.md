@@ -239,7 +239,30 @@ Why the SKY passes need no tiles: a pixel's normal equations are sums over its
 observations, so per-tile dumps over **disjoint** frame sets are additive and
 summing them is identical to a single full-field solve — no seam can exist.
 Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
-reads every frame of the field (`[tiled].full_reproj_dir`).
+reads every frame of the field (`[tiled].full_reproj_dir`). Verified at full
+scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
+offsets with a completely different partition (3 vertical bands instead of 6
+blocks) reproduced the product to float32 rounding — 4–87 differing elements
+of 160.6 M, max 4.7e-10 against a p99 signal of 1.7–4.1e-2, Fisher and
+coverage byte-equal, and the median difference **exactly zero in every
+distance bin from either partition's boundaries**.
+
+**Ordering matters when INIT is tiled** (`[passes].order`, default
+`sky_first`). Each INIT tile is an independent joint solve, so it picks its own
+gauge along the near-null directions; frames in neighbouring tiles come out on
+mutually inconsistent gauges. A SKY pass fed those offsets has to compromise,
+which puts smooth footprint-scale lobes within ~1 frame footprint of every INIT
+tile edge — and the next OFFSET pass then fits *to* the lobed sky, so the pair
+is self-consistent and the alternation drains it only slowly (still visible at
+pass 4). `order = "offset_first"` runs INIT → OFFSET → SKY → …, re-levelling
+every frame against the one stitched INIT sky before any exact sky exists; its
+first sky has no lobes (measured on the NEP: the pass-3-to-pass-5 step shows
+0.9–1.2× the far-field level at the edges, i.e. flat, versus 2.5–3.8× for the
+sky-first chain's maps). Use it whenever pass 1 is tiled; with an untiled INIT
+there is no gauge mismatch to fix and the extra OFFSET pass is close to a
+no-op. Note the parity: `offset_first` ends on a sky for **odd** `n`
+(`sky_first` for even `n`) — the runner warns when a schedule ends on an OFFSET
+pass, whose product carries no sky map.
 
 Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
 coverage, `sky_separability/<name>`; written by the same

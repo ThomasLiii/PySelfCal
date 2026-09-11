@@ -79,7 +79,12 @@ alternating solve" section of [PIPELINE.md](../../PIPELINE.md)): `n` (number
 of passes; `1` == the legacy `cal`/`tiled` solve, byte-equal), `stop_tol`
 (stop after a SKY pass whose per-block step RMS is below it; `0` = run all
 `n`), `sky_merge` (`combine` = exact additive moments, default; `stitch` =
-Fisher stitch, legacy), and the per-pass-type clip knobs `init = {outlier_thresh,
+Fisher stitch, legacy), `order` (`sky_first` default, or `offset_first` =
+INIT → OFFSET → SKY → … — prefer it whenever pass 1 is **tiled**, it removes
+the seam-adjacent lobes the per-tile INIT gauges otherwise leave in the first
+exact sky; it ends on a sky for odd `n`), `keep_moments` (retain the per-tile
+moment dumps, ~23 GB each at J=4; they are deleted after the combine by
+default), and the per-pass-type clip knobs `init = {outlier_thresh,
 subch_clip, ignore_list}` (pass 1 only; omit to reproduce the legacy clip),
 `sky = {outlier_thresh, subch_clip}`, `offset = {poly_degree, outlier_thresh,
 subch_clip, bright_cut, min_pix}`. Pass 1 runs through `run_tiled` when

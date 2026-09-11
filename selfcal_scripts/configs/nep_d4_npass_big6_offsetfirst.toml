@@ -90,7 +90,8 @@ tiles = [
 ]
 
 [passes]
-n = 3          # INIT, OFFSET, SKY -- the direct comparison against big6 sky_first pass 2
+n = 5          # INIT, OFFSET, SKY (n=3, the comparison against big6 sky_first pass 2), then
+               # OFFSET, SKY: does a sky pass from gauge-consistent offsets stay seam-free?
 stop_tol = 0.0
 order = "offset_first"   # re-level all frames against the stitched INIT sky BEFORE the first exact sky
 sky_merge = "combine"
