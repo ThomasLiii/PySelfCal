@@ -122,21 +122,50 @@ Key knobs:
 - For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape)` — diagonal-LS over the full offset region.
 - `iter_lim=50` is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
 - `precondition=True` (column-norm) is essential — much faster convergence.
+- **The transpose product, and what "statistical equality" means here.**
+  `A^T @ y` is a scatter into output columns, so it cannot be threaded
+  without changing the order in which each column's contributions are
+  summed. The default kernel is ROW-SPLIT: each thread owns a contiguous row
+  range and a private output buffer, and the buffers are reduced in a fixed
+  order afterwards. That is deterministic for a given thread count (the same
+  config on the same machine reproduces the same bytes) but not bit-identical
+  to the one-chain sequential product: a float32 reassociation of ~1e-7 per
+  product that reaches the converged maps at ~1e-6 of their own values;
+  integer coverage, Fisher and separability outputs are untouched. Measured
+  on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
+  (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
+  capped so the private buffers stay under `SELFCAL_RMATVEC_BUFFER_GB`
+  (default 16); `SELFCAL_PARALLEL_RMATVEC=<n>` pins it, and `=1` selects the
+  sequential kernel — the byte-exact verification mode the pre-2026-09-10
+  goldens were made with. In practice the count equals `apply_n_threads` for
+  every production tile: the buffer cap binds only when compaction is off
+  (803 M uncompacted columns x 32 threads would want 103 GB), so all tiles of
+  one mosaic are treated identically — but **keep `apply_n_threads` fixed
+  across the tiles you intend to stitch**, since the solution depends on the
+  count at the reassociation level. How much depends on how converged the
+  solve is: a converged 1k-frame solve moves by ~1e-6 of each pixel's noise,
+  while a deliberately under-converged 30-iteration template fit moves by
+  ~1e-3 of it — and two different thread counts differ from each other by as
+  much as either differs from the sequential kernel.
+- **Column compaction is always on**, template-mode maps included. The solve
+  runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
+  tile), which removes ~17 GB of n-space vectors and is what makes the
+  row-split buffers affordable. The compact solve differs from the
+  uncompacted one at ~5e-6 relative (n-space reductions regroup), the same
+  class of difference as the row-split product. `compact_zero_columns=False`
+  is a debugging escape hatch.
 - **Column-partitioned storage.** Above the `SELFCAL_BLOCK_NNZ` threshold,
   `setup_lsqr` writes the matrix as **storage blocks x column ranges** (one
-  block per spill batch and per constraint block; `SELFCAL_RMATVEC_SPLIT`
-  ranges, default 4) — the layout the bit-equal parallel `rmatvec` consumes,
-  so the solve no longer copies the matrix into it (207 s -> 8 s on a
-  1k-frame tile). `A^T y` is a scatter into output columns, so it cannot be
-  threaded without changing each column's addition order; giving a thread
-  exclusive ownership of a column range keeps that order and the bytes.
-  T ranges hold `(T-1) * 4 B/row` more permanent indptr than a plain
-  `BlockCSR`: `SELFCAL_SPLIT_EXTRA_GB` (default 24) halves T — merging
-  adjacent ranges, whose cuts are a subset of the finer ones — until that
-  fits, so a large tile trades ranges for memory rather than raising its
-  peak, and T = 1 turns partitioning off. Rows are placed by scipy's
-  `coo_tocsr` in one pass per block, which reproduces the previous
-  sort-by-row placement exactly.
+  block per spill batch and per constraint block), placing rows with scipy's
+  `coo_tocsr` in one pass per block. The default is ONE range, i.e.
+  block-major storage with one int32 indptr per block (the same bytes per row
+  as a plain `BlockCSR`, but built without the int64 global indptr and with
+  the per-row sorts threaded). `SELFCAL_RMATVEC_SPLIT=<T>` cuts T column
+  ranges, which only the sequential verification kernel uses (one thread per
+  range folds its columns in the sequential order — the byte-equal parallel
+  transpose product of the 2026-09 byte-equality rounds); T ranges hold
+  `(T-1) * 4 B/row` more indptr, and `SELFCAL_SPLIT_EXTRA_GB` (default 24)
+  halves T until that fits.
 - **Memory env knobs** (defaults need no tuning): `SELFCAL_BLOCK_NNZ` —
   nnz threshold at which `setup_lsqr` emits int32 block storage instead of a
   unified CSR (default `2**31`, the point where scipy would force int64

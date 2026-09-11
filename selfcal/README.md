@@ -223,10 +223,16 @@ clarity:
 
 - **`apply_lsqr` (in [`core/solve.py`](core/solve.py))** — Handles
   zero-column elimination, optional float32 downcast, column-norm
-  preconditioning, and a custom thread-parallel `LinearOperator` that splits
-  `A` and `A^T` into row-blocks and runs CSR SpMV in a `ThreadPoolExecutor`,
-  with BLAS pinned to a single thread via `threadpool_limits`. Both `lsmr`
-  and `lsqr` solvers are supported. Column-layout-agnostic (works for any K
+  preconditioning, and a custom thread-parallel `LinearOperator`: `A @ x` is
+  row-parallel (a row's dot product is its own), and `A^T @ y` is ROW-SPLIT —
+  each thread scatters its own rows into a private output buffer and the
+  buffers are reduced in a fixed order — with BLAS pinned to a single thread
+  via `threadpool_limits`. The row-split product is deterministic for a given
+  thread count but not bit-identical to the one-chain sequential scatter
+  (a float32 reassociation of ~1e-7 per product, ~1e-6 in the converged
+  maps); `SELFCAL_PARALLEL_RMATVEC=1` selects the sequential kernel, the
+  byte-exact verification mode. Both `lsmr` and `lsqr` solvers are
+  supported. Column-layout-agnostic (works for any K
   and any scalar/no-scalar configuration). Also accepts a
   [`core/blockcsr.py`](core/blockcsr.py) `BlockCSR` (see below).
 
@@ -234,24 +240,27 @@ clarity:
   representation that `setup_lsqr` emits instead of one giant CSR once total
   nnz reaches 2^31 (env `SELFCAL_BLOCK_NNZ` overrides). A unified scipy CSR
   at that scale is forced to int64 indices (+nnz*4 bytes held, +nnz*8 upcast
-  copy at construction, +50% index bytes per SpMV); per-block int32 stays
-  bit-identical because matvec is row-local and the transpose product is
-  reproduced by scattering blocks sequentially into one shared output
-  (`_sparsetools.csc_matvec` accumulates in the same global row order as the
-  unified CSC product). `compute_x0_scalar_only` consumes it too;
+  copy at construction, +50% index bytes per SpMV); per-block int32 gives
+  the same bytes as the unified matrix under either transpose kernel:
+  matvec is row-local, and a thread of the row-split product (or the whole
+  sequential product, in verification mode) scatters rows in the same global
+  row order whatever the block boundaries (`_sparsetools.csc_matvec`).
+  `compute_x0_scalar_only` consumes it too;
   `compute_x0_from_Ab` (k2-style full-offset warm starts) intentionally does
   not.
 
   `ColSplitCSR` in the same module is that storage cut a second way, into
   column ranges: `sub[b][t]` is storage block `b` restricted to columns
   `cuts[t]:cuts[t+1]`, with local int32 column ids and its own indptr. The
-  transpose product scatters into output columns, so it cannot be threaded
-  without reordering each column's additions; a thread that owns a whole
-  column range keeps that order, which is what makes the parallel `rmatvec`
-  bit-equal. `setup_lsqr` emits this layout directly (see
-  [`core/system.py`](core/system.py) Phase 3-5), so the solve never copies
-  the matrix into it. `partition_block_csr` is the reference converter, used
-  by the tests and by the solve-time fallback for a plain `BlockCSR`.
+  default is one range: block-major storage that `setup_lsqr` emits directly
+  (see [`core/system.py`](core/system.py) Phase 3-5), placed by scipy's
+  `coo_tocsr` with threaded per-row sorts and no int64 global indptr. The
+  transpose product on it is the row-split kernel described under
+  `apply_lsqr`; with `SELFCAL_RMATVEC_SPLIT=<T>` ranges and the sequential
+  kernel selected, a thread per column range keeps each column's addition
+  order, which is the byte-exact verification mode. `partition_block_csr` is
+  the reference converter, used by the tests and by the solve-time fallback
+  for a plain `BlockCSR`.
 
 - **`parse_pixel_counts` (in [`core/system.py`](core/system.py))** —
   Separates sky-pixel coverage from per-map chunk coverage and returns lists
