@@ -137,7 +137,16 @@ Key knobs:
   capped so the private buffers stay under `SELFCAL_RMATVEC_BUFFER_GB`
   (default 16); `SELFCAL_PARALLEL_RMATVEC=<n>` pins it, and `=1` selects the
   sequential kernel — the byte-exact verification mode the pre-2026-09-10
-  goldens were made with.
+  goldens were made with. In practice the count equals `apply_n_threads` for
+  every production tile: the buffer cap binds only when compaction is off
+  (803 M uncompacted columns x 32 threads would want 103 GB), so all tiles of
+  one mosaic are treated identically — but **keep `apply_n_threads` fixed
+  across the tiles you intend to stitch**, since the solution depends on the
+  count at the reassociation level. How much depends on how converged the
+  solve is: a converged 1k-frame solve moves by ~1e-6 of each pixel's noise,
+  while a deliberately under-converged 30-iteration template fit moves by
+  ~1e-3 of it — and two different thread counts differ from each other by as
+  much as either differs from the sequential kernel.
 - **Column compaction is always on**, template-mode maps included. The solve
   runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
   tile), which removes ~17 GB of n-space vectors and is what makes the
