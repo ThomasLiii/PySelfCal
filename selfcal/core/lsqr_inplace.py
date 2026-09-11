@@ -37,6 +37,9 @@ reference (e.g. ``lsqr_inplace(op, holder.pop(), ...)``) to actually free it.
 ``var`` is only allocated when ``calc_var`` (scipy allocates an n-length
 float64 array regardless); otherwise an empty array is returned in its slot.
 """
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from math import sqrt
 from scipy.sparse.linalg import aslinearoperator
@@ -52,6 +55,81 @@ _MSG = ('The exact solution is  x = 0                              ',
         'The least-squares solution is good enough for this machine',
         'Cond(Abar) seems to be too large for this machine         ',
         'The iteration limit has been reached                      ')
+
+
+
+class _ChunkedOps:
+    """The elementwise vector updates of one LSQR run, split over threads.
+
+    Each output element depends only on the matching input elements, so
+    computing contiguous slices of a vector in any order writes exactly the
+    bytes the one-shot call writes — the same ufunc, the same loop, only
+    partitioned. Reductions (``norm``, and the scalar recurrences) are NOT
+    touched; they stay a single ordered pass.
+
+    At production width the updates are pure memory traffic: ~3.2 GB per
+    read/write of an 8e8-element float32 vector, ~0.3 s serial and ~0.06 s
+    across 8 threads. Below ``_MIN`` elements per thread the split costs
+    more than it saves, so short vectors (every small fixture, and the
+    scalar-block work) keep the serial path.
+    """
+
+    _MIN = 8_000_000
+
+    def __init__(self, workers):
+        self._workers = max(1, workers)
+        self._ex = ThreadPoolExecutor(max_workers=self._workers) if workers > 1 else None
+        self._cache = {}
+
+    def _chunks(self, n):
+        if self._ex is None or n < 2 * self._MIN:
+            return None
+        cuts = self._cache.get(n)
+        if cuts is None:
+            k = max(2, min(self._workers, n // self._MIN))
+            b = np.linspace(0, n, k + 1, dtype=np.int64)
+            cuts = self._cache[n] = [(int(b[i]), int(b[i + 1])) for i in range(k)]
+        return cuts
+
+    def _run(self, n, work):
+        cuts = self._chunks(n)
+        if cuts is None:
+            work(0, n)
+            return
+        list(self._ex.map(lambda c: work(c[0], c[1]), cuts))
+
+    def imul(self, a, s):                 # a *= s
+        def work(i, j):
+            a[i:j] *= s
+        self._run(a.shape[0], work)
+
+    def iadd(self, a, b):                 # a += b
+        def work(i, j):
+            a[i:j] += b[i:j]
+        self._run(a.shape[0], work)
+
+    def sub(self, a, b, out):             # out = a - b
+        def work(i, j):
+            np.subtract(a[i:j], b[i:j], out=out[i:j])
+        self._run(out.shape[0], work)
+
+    def mul(self, a, s, out):             # out = a * s
+        def work(i, j):
+            np.multiply(a[i:j], s, out=out[i:j])
+        self._run(out.shape[0], work)
+
+    def close(self):
+        if self._ex is not None:
+            self._ex.shutdown(wait=False)
+            self._ex = None
+
+
+def _vec_threads():
+    """Threads for the elementwise vector updates (SELFCAL_VEC_THREADS, 8)."""
+    try:
+        return max(1, int(os.environ.get('SELFCAL_VEC_THREADS', '8')))
+    except ValueError:
+        return 8
 
 
 def _promote(arr, other):
@@ -100,6 +178,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         print(str3)
         print(str4)
 
+    vec = _ChunkedOps(_vec_threads())
     itn = 0
     istop = 0
     ctol = 0
@@ -127,14 +206,14 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         x = x0
         out = A.matvec(x)
         u = _promote(b, out)                # u = b - A x  (b's buffer if no promotion)
-        np.subtract(u, out, out=u)
+        vec.sub(u, out, u)
         del out
         beta = np.linalg.norm(u)
     del b
 
     if beta > 0:
         u = _promote(u, 1/beta)
-        u *= (1/beta)
+        vec.imul(u, (1/beta))
         v = A.rmatvec(u)
         alfa = np.linalg.norm(v)
     else:
@@ -143,7 +222,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
 
     if alfa > 0:
         v = _promote(v, 1 / alfa)
-        v *= (1 / alfa)
+        vec.imul(v, (1 / alfa))
     w = v.copy()
     tmp = np.empty_like(w)          # scratch for dk / t1*w
 
@@ -157,6 +236,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     if arnorm == 0:
         if show:
             print(_MSG[0])
+        vec.close()
         return x, istop, itn, r1norm, r2norm, anorm, acond, arnorm, xnorm, var
 
     head1 = '   Itn      x[0]       r1norm     r2norm '
@@ -177,27 +257,27 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         # beta*u = A v - alfa*u   (in place: u <- alfa*u; u <- out - u)
         out = A.matvec(v)
         u = _promote(u, alfa)
-        u *= alfa
+        vec.imul(u, alfa)
         u = _promote(u, out)
-        np.subtract(out, u, out=u)
+        vec.sub(out, u, u)
         del out
         beta = np.linalg.norm(u)
 
         if beta > 0:
             u = _promote(u, 1/beta)
-            u *= (1/beta)
+            vec.imul(u, (1/beta))
             anorm = sqrt(anorm**2 + alfa**2 + beta**2 + dampsq)
             # alfa*v = A' u - beta*v   (in place: v <- beta*v; v <- out - v)
             out = A.rmatvec(u)
             v = _promote(v, beta)
-            v *= beta
+            vec.imul(v, beta)
             v = _promote(v, out)
-            np.subtract(out, v, out=v)
+            vec.sub(out, v, v)
             del out
             alfa = np.linalg.norm(v)
             if alfa > 0:
                 v = _promote(v, 1 / alfa)
-                v *= (1 / alfa)
+                vec.imul(v, (1 / alfa))
 
         if damp > 0:
             rhobar1 = sqrt(rhobar**2 + dampsq)
@@ -221,18 +301,18 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         t1 = phi / rho
         t2 = -theta / rho
         tmp = _scratch(tmp, w, (1 / rho))
-        np.multiply(w, (1 / rho), out=tmp)          # dk = (1/rho) * w
+        vec.mul(w, (1 / rho), tmp)                  # dk = (1/rho) * w
         ddnorm = ddnorm + np.linalg.norm(tmp)**2
         if calc_var:
             var = var + tmp**2
         tmp = _scratch(tmp, w, t1)
-        np.multiply(w, t1, out=tmp)                 # t1 * w
+        vec.mul(w, t1, tmp)                         # t1 * w
         x = _promote(x, tmp)
-        x += tmp                                    # x = x + t1*w
+        vec.iadd(x, tmp)                            # x = x + t1*w
         w = _promote(w, t2)
-        w *= t2
+        vec.imul(w, t2)
         w = _promote(w, v)
-        w += v                                      # w = v + t2*w
+        vec.iadd(w, v)                              # w = v + t2*w
 
         delta = sn2 * rho
         gambar = -cs2 * rho
@@ -322,4 +402,5 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         print(str3 + '   ' + str4)
         print(' ')
 
+    vec.close()
     return x, istop, itn, r1norm, r2norm, anorm, acond, arnorm, xnorm, var

@@ -242,6 +242,17 @@ clarity:
   `compute_x0_from_Ab` (k2-style full-offset warm starts) intentionally does
   not.
 
+  `ColSplitCSR` in the same module is that storage cut a second way, into
+  column ranges: `sub[b][t]` is storage block `b` restricted to columns
+  `cuts[t]:cuts[t+1]`, with local int32 column ids and its own indptr. The
+  transpose product scatters into output columns, so it cannot be threaded
+  without reordering each column's additions; a thread that owns a whole
+  column range keeps that order, which is what makes the parallel `rmatvec`
+  bit-equal. `setup_lsqr` emits this layout directly (see
+  [`core/system.py`](core/system.py) Phase 3-5), so the solve never copies
+  the matrix into it. `partition_block_csr` is the reference converter, used
+  by the tests and by the solve-time fallback for a plain `BlockCSR`.
+
 - **`parse_pixel_counts` (in [`core/system.py`](core/system.py))** —
   Separates sky-pixel coverage from per-map chunk coverage and returns lists
   of per-map coverage arrays.
@@ -635,7 +646,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/assembly.py`](core/assembly.py) | `_prep_lsqr` + shared-memory batch worker. |
 | [`core/system.py`](core/system.py) | `setup_lsqr` + coverage/Fisher parsers + line-mask. |
 | [`core/solve.py`](core/solve.py) | `apply_lsqr` + thread-parallel SpMV operator. |
-| [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31. |
+| [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31; `ColSplitCSR` row-blocks x column-ranges for the bit-equal parallel transpose product. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |
 | [`core/coadd.py`](core/coadd.py) | Parallel mean / std / sigma-clip coaddition + caching. |

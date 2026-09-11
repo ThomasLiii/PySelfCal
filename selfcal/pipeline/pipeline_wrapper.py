@@ -1092,7 +1092,7 @@ class Calibrator(Reprojector):
                 _spill_dir = self._spill_pixel_state()
                 try:
                     self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
-                                                x0=_owned.pop(0), atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                                x0=_owned.pop(0), a_owned=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                                                 solver=solver, use_float32=use_float32, n_threads=n_threads,
                                                 active_mask=active_mask_local,
                                                 num_cols_full=num_cols_full_local)

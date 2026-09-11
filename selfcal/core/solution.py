@@ -299,7 +299,8 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
         ``compute_x0_from_Ab``.
     """
     from .blockcsr import BlockCSR
-    if not isinstance(A, (csr_matrix, BlockCSR)):
+    from .blockcsr import ColSplitCSR as _CS
+    if not isinstance(A, (csr_matrix, BlockCSR, _CS)):
         # COO input: fall back to the generic diag-LS (memory-heavy — it
         # materializes offset-block copies of every column), then zero the
         # chunk-offset block.
@@ -336,8 +337,28 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
     entries_per_row = max(1, int(A.nnz // max(1, n_rows_total)))
     chunk_rows = max(1, target_entries // entries_per_row)
 
+    from .blockcsr import ColSplitCSR, _csr_shell
+    walk_boundary = scalar_boundary   # boundary in the WALKED arrays' column ids
     if isinstance(A, csr_matrix):
         block_iter = [(A, 0)]
+    elif isinstance(A, ColSplitCSR):
+        # The scalar block is the highest column range: every scalar column
+        # lives in the LAST range, whose per-row segments hold exactly the
+        # scalar entries of the row in row order — the same selected sequence
+        # the full-row walk produces. Walk that range's arrays only, with the
+        # boundary expressed in its local ids.
+        last = A.nranges - 1
+        c_last = int(A.cuts[last])
+        if scalar_boundary < c_last:
+            raise ValueError("scalar block straddles a column-range cut; "
+                             "cannot restrict the x0 walk to the last range")
+        block_iter = []
+        for _bi in range(A.nblocks):
+            d, i, ip = A.sub[_bi][last]
+            nrows = int(A.row_bounds[_bi + 1] - A.row_bounds[_bi])
+            block_iter.append((_csr_shell(d, i, ip, (nrows, int(A.shape[1]) - c_last)),
+                               int(A.row_bounds[_bi])))
+        walk_boundary = scalar_boundary - c_last
     else:  # BlockCSR: blocks in global row order
         block_iter = [(blk, int(A.row_bounds[i]))
                       for i, blk in enumerate(A.blocks)]
@@ -354,40 +375,65 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
     # selected entry plus concatenation copies: +43 GB at 1.8e9 rows).
     AtA_diag = np.zeros(num_scalar_cols)
     Atb = np.zeros(num_scalar_cols)
-    for blk, row_off in block_iter:
+
+    def _prep(args):
+        """Selection + products for one chunk — pure per chunk; the fold
+        below stays strictly in chunk order, so where this runs cannot
+        change a byte."""
+        blk, row_off, r0, r1 = args
         indptr = blk.indptr
-        indices = blk.indices
-        data = blk.data
-        n_rows = blk.shape[0]
-        for r0 in range(0, n_rows, chunk_rows):
-            r1 = min(r0 + chunk_rows, n_rows)
-            s0, s1 = int(indptr[r0]), int(indptr[r1])
-            if s0 == s1:
-                continue
-            cols_c = indices[s0:s1]
-            keep = cols_c >= scalar_boundary
-            if not keep.any():
-                continue
-            d = data[s0:s1][keep]
-            c = cols_c[keep] - scalar_boundary
-            # Square in the data's own dtype (f32 in production) to match
-            # the reference computation in compute_x0_from_Ab, which squares
-            # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
-            # of the bit-equality contract.
-            w2 = (d * d).astype(np.float64, copy=False)
-            counts = np.diff(indptr[r0:r1 + 1])
-            # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
-            # b (exactly-representable values only), and f32-value * f64 ->
-            # f64 gives the same result an f64 b would. No-op (view) when b
-            # is f64.
-            bvals = np.repeat(
-                b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
-                counts)[keep]
-            wb = d * bvals
-            del bvals, d, keep, cols_c
-            _accumulate_runs(AtA_diag, c, w2)
-            _accumulate_runs(Atb, c, wb)
-            del c, w2, wb
+        s0, s1 = int(indptr[r0]), int(indptr[r1])
+        if s0 == s1:
+            return None
+        cols_c = blk.indices[s0:s1]
+        keep = cols_c >= walk_boundary
+        if not keep.any():
+            return None
+        d = blk.data[s0:s1][keep]
+        c = cols_c[keep] - walk_boundary
+        # Square in the data's own dtype (f32 in production) to match
+        # the reference computation in compute_x0_from_Ab, which squares
+        # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
+        # of the bit-equality contract.
+        w2 = (d * d).astype(np.float64, copy=False)
+        counts = np.diff(indptr[r0:r1 + 1])
+        # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
+        # b (exactly-representable values only), and f32-value * f64 ->
+        # f64 gives the same result an f64 b would. No-op (view) when b
+        # is f64.
+        bvals = np.repeat(
+            b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
+            counts)[keep]
+        wb = d * bvals
+        return c, w2, wb
+
+    chunks = [(blk, row_off, r0, min(r0 + chunk_rows, blk.shape[0]))
+              for blk, row_off in block_iter
+              for r0 in range(0, blk.shape[0], chunk_rows)]
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fold(res):
+        if res is None:
+            return
+        c, w2, wb = res
+        _accumulate_runs(AtA_diag, c, w2)
+        _accumulate_runs(Atb, c, wb)
+
+    if len(chunks) > 1:
+        # Prep in a small thread window (the gathers/products release the
+        # GIL); folds applied strictly in chunk order.
+        with ThreadPoolExecutor(max_workers=3) as _ex:
+            q = deque()
+            for ch in chunks:
+                q.append(_ex.submit(_prep, ch))
+                if len(q) >= 3:
+                    _fold(q.popleft().result())
+            while q:
+                _fold(q.popleft().result())
+    else:
+        for ch in chunks:
+            _fold(_prep(ch))
     scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
 
     if active_mask is None:
