@@ -747,22 +747,23 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # placement runs in worker processes and the solve wants T column ranges
     # (SELFCAL_RMATVEC_SPLIT), the CSR is emitted directly as storage
     # blocks x column ranges — the layout the bit-equal parallel SpMV
-    # consumes — so no solve-time partition build is needed. Ranges are cut
-    # in the FULL column space here (compaction is decided only after
-    # Phase 1); the compaction map is monotone, so each full-space range
-    # maps onto one contiguous compact range. Phase 1 counts each batch's
-    # entries PER RANGE (T integers per batch, order-free) — the per-row
-    # layout comes out of the placement kernel itself. Phase 2e may lower T
-    # (memory gate) by merging adjacent ranges, whose cuts are a subset of
-    # these.
+    # consumes — so no solve-time partition build is needed. T defaults to 1
+    # (one range: block-major storage with one int32 indptr per block, the
+    # same bytes per row as a BlockCSR); more ranges only serve the
+    # byte-exact verification kernel. Ranges are cut in the FULL column
+    # space here (compaction is decided only after Phase 1); the compaction
+    # map is monotone, so each full-space range maps onto one contiguous
+    # compact range. Phase 1 counts each batch's entries PER RANGE (T
+    # integers per batch, order-free) — the per-row layout comes out of the
+    # placement kernel itself. Phase 2e may lower T (memory gate) by merging
+    # adjacent ranges, whose cuts are a subset of these.
     try:
-        _split_T_req = max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '4')))
+        _split_T_req = max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '1')))
     except ValueError:
         _split_T_req = 1
     _scatter_workers = int(os.environ.get('SELFCAL_SCATTER_WORKERS',
                                           min(8, max_workers)))
-    _want_split = (_spill_run_dir is not None and _scatter_workers > 1
-                   and _split_T_req > 1)
+    _want_split = _spill_run_dir is not None and _scatter_workers > 1
     _full_cuts = (np.linspace(0, total_cols, _split_T_req + 1, dtype=np.int64)
                   if _want_split else None)
     range_nnz_per_batch = [None] * len(batched_tasks) if _want_split else None
@@ -1253,7 +1254,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 f"{(_split_T_req - 1) * 4.0 * total_rows / 1e9:.1f} GB of per-range "
                 f"indptr (gate {_extra_gate / 1e9:.0f} GB, SELFCAL_SPLIT_EXTRA_GB); "
                 f"using {_split_T}.")
-        _partitioned = _split_T > 1
     if _partitioned:
         _step = _split_T_req // _split_T
         _full_cuts_T = np.ascontiguousarray(_full_cuts[::_step])
@@ -1308,18 +1308,19 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     del row_nnz
 
     # ----------------------------------------------------------------
-    # Early column compaction. If no template-mode map is in use, every
-    # "active" column (pixel_counts > 0) gets compacted now so apply_lsqr
-    # can skip its full-nnz col_map gather. Template-mode runs keep the
-    # uncompacted layout (apply_lsqr handles compaction itself).
+    # Early column compaction: every "active" column (pixel_counts > 0) is
+    # compacted now, so the solve runs in the active column space and
+    # apply_lsqr skips its full-nnz col_map gather. Template-mode maps are
+    # included (every template column is covered — one per frame with data
+    # rows — so the constraint guard below applies to them too): at a
+    # 1k-frame tile that is 38 M columns instead of 803 M, which removes
+    # ~17 GB of n-space vectors and is what makes the row-split transpose
+    # product's private buffers affordable. The compact solve is not
+    # byte-identical to the uncompacted one (n-space reductions regroup;
+    # ~5e-6 relative in the maps), which is why it used to be excluded for
+    # template modes under the byte-equality rule.
     # ----------------------------------------------------------------
-    compaction_active = not any(t is not None for t in det_template_arr_list)
-    if os.environ.get('SELFCAL_COMPACT_TEMPLATES') == '1':
-        # Measurement override (memopt2): compact even with template blocks.
-        # Every template column is covered (one per frame with data rows),
-        # so the guard below still applies; see the report for whether the
-        # result is byte-equal to the uncompacted solve.
-        compaction_active = True
+    compaction_active = True
     # Debug knob: caller can force compaction off to compare against the
     # uncompacted-CSR layout — useful for isolating a suspected regression
     # to the compaction step itself. Default True is the production path.

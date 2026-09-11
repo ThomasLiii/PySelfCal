@@ -98,13 +98,23 @@ def _make_parallel_operator(A_csr, n_threads):
         list(executor.map(_work, range(n_threads)))
         return out
 
+    _rmv_threads = rmatvec_threads(n_threads, n, dtype.itemsize)
+    _rowsplit, _rex = (None, None)
+    if _rmv_threads > 1 and A_csr.indptr.dtype == A_csr.indices.dtype:
+        _rowsplit, _rex, _ = _make_rowsplit_rmatvec(
+            m, n, dtype, _rmv_threads, np.array([0, m], dtype=np.int64),
+            _scatter_block_csr([A_csr], np.array([0, m], dtype=np.int64), n))
+
     def _rmatvec(y):
-        # Single scipy CSC SpMV — no per-thread slicing needed; the kernel is already
-        # vectorized and releases the GIL.
+        if _rowsplit is not None and np.promote_types(dtype, y.dtype) == dtype:
+            return _rowsplit(y)
+        # Sequential reference: one scipy CSC SpMV over the zero-copy
+        # transpose view (the kernel releases the GIL).
         return AT_view @ y
 
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=A_csr.dtype)
     op._executor = executor
+    op._rmatvec_executor = _rex
     op._AT_view = AT_view  # prevent GC
     return op
 
@@ -234,57 +244,46 @@ def _iter_range_pieces_colsplit(A, chunk_size):
         yield _emit()
 
 
-def parallel_rmatvec_threads():
-    """Thread count for the parallel rmatvec; 0 = off (the default).
+def rmatvec_threads(n_threads, n_cols, itemsize=4):
+    """Threads for the row-split ``A^T @ y`` — the default transpose product.
 
     ``A^T @ y`` is a scatter (every matrix row adds into scattered output
-    columns), so unlike matvec it cannot be threaded without changing the
-    order in which each output column's contributions are summed. The
-    sequential kernel is therefore the default, and it dominates the solve:
-    matvec runs on many threads while this runs on one, so at production
-    scale (nnz ~1e10, far larger than any cache) the LSQR solve spends most
-    of its per-iteration time here.
+    columns), so it cannot be threaded without changing the order in which
+    each output column's contributions are summed. The row-split kernel gives
+    each thread a private output buffer for its own rows and reduces the
+    buffers in a fixed order afterwards: race-free, DETERMINISTIC for a given
+    thread count, and 5.2x faster than the sequential kernel on the real
+    1k-frame matrix once the columns are compacted (2.07 s vs 10.69 s). It is
+    NOT bit-identical to the sequential kernel — a column's sum is a fixed
+    tree rather than one chain, a float32 reassociation of ~1e-7 per product
+    that reaches the converged maps at the ~1e-6 level of their own values
+    (integer coverage, Fisher and separability outputs are untouched). The
+    solution therefore depends on the thread count at that level; a fixed
+    thread count reproduces the same bytes.
 
-    Enabling ``SELFCAL_PARALLEL_RMATVEC=<n>`` gives each thread a private
-    output buffer and reduces them afterwards — race-free and DETERMINISTIC
-    (a fixed thread count always yields the same bytes). Two consequences,
-    both measured on a production-size tile (one 2x2-tiling block of a
-    full-NEP detector run, ~1100 frames, nnz ~1e10), both the reason this
-    is opt-in:
-
-    * NOT bit-identical to the sequential kernel. Per-column sums become a
-      tree instead of one chain, a float32 reassociation of ~1.5e-6 L2 in
-      rmatvec (median exactly 0) that propagates to ~1e-4 of each converged
-      sky map's own scatter (Pearson 1.0 vs the sequential cal; well inside
-      the solver's atol/btol=1e-6). Scientifically equivalent, but the
-      byte-equality regression baselines (the reference cal_*.h5 outputs
-      that diff_cal_h5.py compares new runs against) must be regenerated
-      once to adopt it, and the output then depends on the thread count (a
-      different ``n`` -> a different partition -> different bytes at the
-      ~1e-6 level).
-    * The real speedup is modest. rmatvec is memory-bandwidth-bound at
-      production scale, so parallelising it gives ~1.5x per LSQR iteration
-      and ~1.3x on the whole tile (e.g. 8994 -> 6812 s on the tile above) —
-      not the larger figure an isolated-kernel microbenchmark suggests (its
-      smaller matrix fits cache; the real one does not). 8 threads was the
-      sweet spot on a 192-physical-core box; past that the O(n_threads x
-      n_cols) per-thread-buffer reduction costs more than it saves.
+    Default: as many threads as the matvec uses, capped so the private
+    buffers (``threads x n_cols x itemsize``) stay under
+    ``SELFCAL_RMATVEC_BUFFER_GB`` (default 16). ``SELFCAL_PARALLEL_RMATVEC=<n>``
+    pins the count; ``1`` (or ``0``) selects the sequential kernel — the
+    byte-exact reference the regression goldens were re-baselined against.
     """
+    raw = os.environ.get('SELFCAL_PARALLEL_RMATVEC')
+    if raw not in (None, '', 'auto'):
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
     try:
-        n = int(os.environ.get('SELFCAL_PARALLEL_RMATVEC', '0'))
+        budget = float(os.environ.get('SELFCAL_RMATVEC_BUFFER_GB', '16')) * 1e9
     except ValueError:
-        n = 0
-    return max(0, n)
+        budget = 16e9
+    per_thread = max(1, int(n_cols)) * int(itemsize)
+    return max(1, min(int(n_threads), int(budget // per_thread)))
 
 
-def _row_pieces(bcsr, n_pieces):
-    """Split the rows into ``n_pieces`` contiguous chunks of storage shells.
-
-    Each piece is a list of (block, local_start, local_end) covering one
-    contiguous global row range, so a thread can scatter its own rows without
-    touching another thread's.
-    """
-    m = bcsr.shape[0]
+def _row_spans(row_bounds, m, n_pieces):
+    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges and intersect each
+    with the storage blocks: ``[(r0, r1, [(block, lo, hi), ...]), ...]``."""
     cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
     pieces = []
     for r0, r1 in zip(cuts[:-1], cuts[1:]):
@@ -292,66 +291,81 @@ def _row_pieces(bcsr, n_pieces):
         if r1 <= r0:
             continue
         spans = []
-        for bi, blk in enumerate(bcsr.blocks):
-            b0 = int(bcsr.row_bounds[bi])
-            b1 = int(bcsr.row_bounds[bi + 1])
-            lo, hi = max(r0, b0), min(r1, b1)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = max(r0, int(row_bounds[bi])), min(r1, int(row_bounds[bi + 1]))
             if lo < hi:
-                spans.append((blk, b0, lo, hi))
+                spans.append((bi, lo, hi))
         if spans:
             pieces.append((r0, r1, spans))
     return pieces
 
 
-def _make_parallel_rmatvec(bcsr, n_threads, out_n, dtype):
-    """Parallel scatter rmatvec: private per-thread buffers + reduction.
+def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
+    """Row-split ``A^T @ y`` over any storage: ``scatter(bi, lo, hi, y_seg, buf)``
+    must add rows ``lo:hi`` (global ids, inside storage block ``bi``) into
+    ``buf`` (length ``n``) with scipy's ``csc_matvec``.
 
-    Each thread scatters a disjoint row range with scipy's own C kernel (which
-    releases the GIL) into a buffer it alone owns, so no numba and no locking.
-    The buffers are allocated ONCE per operator, not per call.
-
-    Determinism: the row partition and the reduction order are both fixed at
-    construction, so repeated calls on the same input return identical bytes.
+    Each thread owns a contiguous row range and a private buffer, allocated
+    once per operator. The reduction walks the buffers in index order for
+    every element, so it is the same left fold whichever thread evaluates a
+    column chunk — deterministic, and parallel. Rows within a thread are
+    scattered in row order block by block, so for a column the per-thread
+    partial is the same sequence whatever the storage layout.
     """
-    pieces = _row_pieces(bcsr, n_threads)
-    bufs = [np.zeros(out_n, dtype=dtype) for _ in pieces]
+    pieces = _row_spans(row_bounds, m, n_threads)
+    bufs = [np.zeros(n, dtype=dtype) for _ in pieces]
     ex = ThreadPoolExecutor(max_workers=len(pieces))
-    logger.info(f"  rmatvec: PARALLEL scatter over {len(pieces)} threads "
-                f"(+{len(pieces) * out_n * np.dtype(dtype).itemsize / 2**30:.2f} GB "
-                f"of private buffers) — NOT bit-identical to the sequential kernel.")
+    logger.info(f"  rmatvec: row-split over {len(pieces)} threads "
+                f"(+{len(pieces) * n * np.dtype(dtype).itemsize / 2**30:.2f} GB "
+                "of private buffers; deterministic for this thread count, not "
+                "bit-identical to the sequential kernel).")
+    red_cuts = np.linspace(0, n, len(pieces) + 1, dtype=np.int64)
 
     def _rmatvec(y):
         y = np.ascontiguousarray(y, dtype=dtype)
 
-        def _work(i):
-            r0, r1, spans = pieces[i]
+        def _scatter_piece(i):
             buf = bufs[i]
-            buf[:] = 0
-            for blk, b0, lo, hi in spans:
-                l0, l1 = lo - b0, hi - b0
-                s0 = int(blk.indptr[l0])
-                _sparsetools.csc_matvec(
-                    out_n, hi - lo,
-                    blk.indptr[l0:l1 + 1] - blk.indptr[l0],
-                    blk.indices[s0:int(blk.indptr[l1])],
-                    blk.data[s0:int(blk.indptr[l1])],
-                    y[lo:hi], buf)
+            buf[...] = 0
+            for bi, lo, hi in pieces[i][2]:
+                scatter(bi, lo, hi, y[lo:hi], buf)
 
-        list(ex.map(_work, range(len(pieces))))
-        out = bufs[0].copy()
-        for i in range(1, len(bufs)):        # fixed order => deterministic
-            out += bufs[i]
+        list(ex.map(_scatter_piece, range(len(pieces))))
+        out = np.empty(n, dtype=dtype)
+
+        def _reduce_chunk(k):
+            c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+            out[c0:c1] = bufs[0][c0:c1]
+            for b in bufs[1:]:                 # fixed order => same fold everywhere
+                out[c0:c1] += b[c0:c1]
+
+        list(ex.map(_reduce_chunk, range(len(pieces))))
         return out
 
-    return _rmatvec, ex
+    return _rmatvec, ex, len(pieces)
+
+
+def _scatter_block_csr(blocks, row_bounds, n):
+    """``scatter`` for a BlockCSR (or a single unified CSR passed as one block):
+    the indptr slice keeps its absolute offsets, so the whole index/data
+    arrays are passed and nothing is copied."""
+    def scatter(bi, lo, hi, y_seg, buf):
+        blk = blocks[bi]
+        lr0, lr1 = lo - int(row_bounds[bi]), hi - int(row_bounds[bi])
+        _sparsetools.csc_matvec(n, hi - lo, blk.indptr[lr0:lr1 + 1],
+                                blk.indices, blk.data, y_seg, buf)
+    return scatter
 
 
 
 def _rmatvec_split_ranges():
-    """Column-range count for the partitioned rmatvec (SELFCAL_RMATVEC_SPLIT,
-    default 4; <=1 keeps the sequential single-thread kernel)."""
+    """Column-range count of the partitioned storage (SELFCAL_RMATVEC_SPLIT,
+    default 1). More than one range only matters to the byte-exact
+    verification kernel (``SELFCAL_PARALLEL_RMATVEC=1``): each range's columns
+    are then folded by one thread in the sequential order. The default
+    row-split kernel needs no ranges."""
     try:
-        return max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '4')))
+        return max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '1')))
     except ValueError:
         return 1
 
@@ -518,7 +532,8 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
         pieces.append((int(r0), int(r1),
                        [(data_t, idx_t, ip_t[lr0:lr1 + 1])
                         for data_t, idx_t, ip_t in split.sub[bi]]))
-    split.sub = None       # the tuples die; data/idx/indptr live on as views
+    split_sub = split.sub  # per-block (data, idx, indptr) views for the row-split scatter
+    split.sub = None       # the container's own list dies; the views live on
 
     executor = ThreadPoolExecutor(max_workers=max(1, n_threads))
     rexecutor = ThreadPoolExecutor(max_workers=nranges)
@@ -545,7 +560,29 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
             list(executor.map(_work, pieces))
         return out
 
+    # Row-split parallel scatter (the default): a thread owns a row range and
+    # scatters each of its storage blocks' T range pieces into its private
+    # buffer's column window — a column's entries still arrive in row order.
+    _rmv_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
+    _rowsplit, _rsex = (None, None)
+    if _rmv_threads > 1:
+        _sub = split_sub          # captured before split.sub is dropped below
+
+        def _scatter_split(bi, lo, hi, y_seg, buf):
+            lr0, lr1 = lo - int(row_bounds[bi]), hi - int(row_bounds[bi])
+            for t, (data_t, idx_t, ip_t) in enumerate(_sub[bi]):
+                c0, c1 = int(cuts[t]), int(cuts[t + 1])
+                _sparsetools.csc_matvec(c1 - c0, hi - lo, ip_t[lr0:lr1 + 1],
+                                        idx_t, data_t, y_seg, buf[c0:c1])
+
+        _rowsplit, _rsex, _ = _make_rowsplit_rmatvec(
+            m, n, dtype, _rmv_threads, row_bounds, _scatter_split)
+
     def _rmatvec(y):
+        if _rowsplit is not None and np.promote_types(dtype, y.dtype) == dtype:
+            return _rowsplit(y)
+        # Byte-exact verification kernel: one thread per column range, each
+        # folding its columns in the sequential order.
         out_dtype = np.promote_types(dtype, y.dtype)
         out = np.zeros(n, dtype=out_dtype)
         yc = np.ascontiguousarray(y, dtype=out_dtype)
@@ -570,8 +607,10 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges):
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
     op._executor = executor
     op._rmatvec_executor = rexecutor
+    op._rowsplit_executor = _rsex
     op._pieces = pieces
     op._colsplit = split
+    op._split_sub = split_sub
     return op
 
 
@@ -589,8 +628,8 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
     except ValueError:
         _split_max = 170.0
     if (a_owned and _nranges > 1 and n_threads > 1
-            and parallel_rmatvec_threads() <= 1 and len(bcsr.blocks) > 0
-            and bcsr.nnz * 8 <= _split_max * 1e9):
+            and rmatvec_threads(n_threads, bcsr.shape[1]) <= 1
+            and len(bcsr.blocks) > 0 and bcsr.nnz * 8 <= _split_max * 1e9):
         # Column-partitioned bit-equal parallel SpMV; consumes the blocks,
         # hence only when the caller handed A over (keep_state=False).
         return _make_parallel_operator_colsplit(bcsr, n_threads, _nranges)
@@ -662,13 +701,16 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
                                     bd, y[sr:er], out)
         return out
 
-    # Opt-in parallel scatter. Only for the all-one-dtype case: the private
-    # buffers are typed at construction, so a y of a different dtype would
-    # change the promotion and is left to the sequential kernel.
-    _par_threads = parallel_rmatvec_threads()
-    _rmatvec_parallel, _par_ex = (
-        _make_parallel_rmatvec(bcsr, _par_threads, n, dtype)
-        if _par_threads > 1 else (None, None))
+    # Row-split parallel scatter (the default). Only for the all-one-dtype
+    # case: the private buffers are typed at construction, so a y of a
+    # different dtype would change the promotion and is left to the
+    # sequential kernel.
+    _par_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
+    _rmatvec_parallel, _par_ex = (None, None)
+    if _par_threads > 1:
+        _rmatvec_parallel, _par_ex, _ = _make_rowsplit_rmatvec(
+            m, n, dtype, _par_threads, bcsr.row_bounds,
+            _scatter_block_csr(bcsr.blocks, bcsr.row_bounds, n))
 
     def _rmatvec(y):
         if (_rmatvec_parallel is not None
@@ -940,9 +982,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
-                op._executor.shutdown(wait=False)
-                if getattr(op, '_rmatvec_executor', None) is not None:
-                    op._rmatvec_executor.shutdown(wait=False)
+                for _ex_name in ('_executor', '_rmatvec_executor', '_rowsplit_executor'):
+                    if getattr(op, _ex_name, None) is not None:
+                        getattr(op, _ex_name).shutdown(wait=False)
         elif n_threads > 1:
             op = _make_parallel_operator(A_csr, n_threads)
             try:
@@ -954,9 +996,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                     else:
                         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
             finally:
-                # _make_parallel_operator has no rmatvec executor to shut
-                # down (only the BlockCSR operator creates one).
                 op._executor.shutdown(wait=False)
+                if getattr(op, '_rmatvec_executor', None) is not None:
+                    op._rmatvec_executor.shutdown(wait=False)
         else:
             if solver == 'lsmr':
                 result = lsmr(A_csr, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
