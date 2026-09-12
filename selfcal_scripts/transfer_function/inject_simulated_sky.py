@@ -91,10 +91,8 @@ def main():
                     help="Directory of REAL reprojected .h5 frames (read-only).")
     ap.add_argument("--frames-out", required=True,
                     help="Output directory for the simulated-sky frames (created).")
-    ap.add_argument("--simulated-sky", "--fake-sky", required=True,
-                    dest="simulated_sky",
-                    help="Simulated sky on the detector's ref grid (.npy or "
-                         ".fits). --fake-sky is accepted as an old alias.")
+    ap.add_argument("--simulated-sky", required=True,
+                    help="Simulated sky on the detector's ref grid (.npy or .fits).")
     ap.add_argument("--ref-fits", required=True,
                     help="The detector's ref.fits (defines the ref grid shape).")
     ap.add_argument("--workers", type=int, default=8)
