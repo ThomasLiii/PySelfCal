@@ -18,7 +18,7 @@ oversample = 2
 apply_n_threads = 48
 cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
 
-reproj_override = "/scratch/tf/D3_fakesky_frames"    # (set by launcher: REPROJ_FRAME_DIR)
+reproj_override = "/scratch/tf/D3_simsky_frames"     # (set by launcher: REPROJ_FRAME_DIR)
 skip_mosaic = false                                  # produce the mosaic (what you compare against)
 wavelength_coadd = false                             # wav_mean/wav_std are not read by the transfer function
 

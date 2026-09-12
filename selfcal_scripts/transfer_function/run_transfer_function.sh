@@ -5,7 +5,7 @@
 #   1) Command-line flags (any subset; the rest fall back to the defaults below):
 #        ./run_transfer_function.sh \
 #            --detector 3 --channel 17 \
-#            --frames  /scratch/tf/D3_fakesky_frames \
+#            --frames  /scratch/tf/D3_simsky_frames \
 #            --ref     /mnt/.../D3/ref.fits \
 #            --output-dir /mnt/md124/thomasli/selfcal/outputs \
 #            --run-name TF_D3
@@ -19,7 +19,7 @@
 # ==========================================================================
 DETECTOR="${DETECTOR:-3}"                 # 1..6
 CHANNEL="${CHANNEL:-17}"                  # 1..34 (single LVF channel)
-REPROJ_FRAME_DIR="${REPROJ_FRAME_DIR:-/scratch/tf/D3_fakesky_frames}"  # fake-sky frames
+REPROJ_FRAME_DIR="${REPROJ_FRAME_DIR:-/scratch/tf/D3_simsky_frames}"   # simulated-sky frames
 REF_FITS="${REF_FITS:-/mnt/md124/thomasli/selfcal/outputs/SPHEREx_NEP_2026W17_D3_6p2arcsec/ref.fits}"
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/md124/thomasli/selfcal/outputs}"        # cal+mosaic land under here
 RUN_NAME="${RUN_NAME:-TF_D3}"            # under OUTPUT_DIR; the run's folder name
