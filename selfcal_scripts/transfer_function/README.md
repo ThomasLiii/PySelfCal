@@ -102,12 +102,11 @@ Under `<output_dir>/<run-name>/`:
   coverage. (The fiducial science mosaics also carry std, sigma-clipped-mean
   and wavelength maps; the kit skips those — the transfer function does not
   read them, and building them costs ~30 % more mosaic wall time. The
-  calibration is unaffected, and `MEAN_MAP` is the same map either way — to
-  within the coadd's own run-to-run non-determinism, since it accumulates in
-  worker-completion order and so is not bit-reproducible in any configuration.
-  To get the other maps, set `make_std_map`, `apply_sigma_clipping`,
-  `cache_intermediate` and `wavelength_coadd` back to `true` in
-  `transfer_function.toml`.)
+  calibration is unaffected, and `MEAN_MAP` is the same map either way: the
+  coadd accumulates in a fixed order, so the maps depend only on the frames
+  and the batch sizes. To get the other maps, set `make_std_map`,
+  `apply_sigma_clipping`, `cache_intermediate` and `wavelength_coadd` back
+  to `true` in `transfer_function.toml`.)
 - `calibration/cal_*.h5` — the calibration solution.
 
 Compare `mosaic_*.fits` to the simulated sky you put in (they share the

@@ -69,6 +69,12 @@ class Instrument(Protocol):
         """Per-(chunk_map, offset)->grid renderer for the mosaic (or None)."""
         ...
 
+    def wavelength_maps(self, det_inputs):
+        """Optional: the ``(band centre, band width)`` detector-grid maps whose
+        per-pixel weighted mean / std the mosaic coadds alongside the
+        sigma-clipped mean (LVF only). ``None`` means the instrument has none."""
+        return None
+
     def wavelength_append(self, det_inputs, mm, maps, sigma) -> None:
         """Optional: append per-pixel wavelength maps after mosaicking (LVF only)."""
         ...

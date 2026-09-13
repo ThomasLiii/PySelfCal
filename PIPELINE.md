@@ -321,12 +321,17 @@ Sub-frame side length sized to fit the detector diagonal at mosaic
 resolution:
 `sub_width = ceil(sqrt(2) * det_width / (ref_reso/det_reso) * (1 + 2*padding_percentage))`.
 
-Cached intermediates from `coadd.compute_coadd_map(mode='cache')` live in
-`cache_dir` as `cached_<original>.h5` and follow the same schema, but the
-arrays are tightly cropped to the nonzero-weight bbox; an extra
-`sub_bbox` `[rmin, rmax, cmin, cmax]` records that crop in original
-sub-frame coordinates so `wav_coadd` can crop `sub_mapping` to match
-before `map_coordinates`.
+Cached intermediates from the mosaic's cache pass live in `cache_dir` as
+`cached_<original>.h5` in the **sparse** format (`attrs['format'] =
+'sparse-v1'`): only the frame's nonzero-weight pixels are stored —
+`ref_coords` (the nonzero-weight bbox in reference coordinates),
+`sub_bbox` `[rmin, rmax, cmin, cmax]` (the same bbox in original sub-frame
+coordinates), `attrs['shape']` (bbox shape), `mask` (packed bits of
+`weight != 0` over the bbox, row-major), and value vectors in that order:
+`data`, `weight`, optional `aux` `(K, n)`, and `bc` / `bw` (per-pixel LVF
+band centre / width, present when the mosaic was asked for wavelength
+maps). `coadd.read_cached_frame` / `load_cached_frame_dense` read this and
+the legacy dense format (cropped `sub_data` / `sub_weight` arrays).
 
 ## Mosaic `*.fits` schema
 
@@ -337,8 +342,9 @@ header. `EXTNAME` is one of:
 - `MEAN_MAP`, `MEAN_MAP_WEIGHT` — weighted mean and `sum(weight)`.
 - `STD_MAP`, `STD_MAP_WEIGHT` — weighted std and weight.
 - `SC_MEAN_MAP`, `SC_MEAN_MAP_WEIGHT` — sigma-clipped mean and weight.
-- `WAV_MEAN_MAP`, `WAV_STD_MAP` — appended via `Mosaicker.append_maps`
-  after `wav_coadd` (BUNIT=`um`).
+- `WAV_MEAN_MAP`, `WAV_STD_MAP` — LVF wavelength maps (BUNIT=`um`),
+  coadded inside the sigma-clip pass (`make_mosaic(wav_maps=...)`) or, when
+  sigma clipping is off, by the standalone `wav_coadd` over the cache.
 
 Header keys to know:
 - `BUNIT` — taken from `Mosaicker.maps[name]['unit']` (`'MJy/sr'` for sky

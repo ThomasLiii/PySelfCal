@@ -39,9 +39,10 @@ a telescope or a specific calibration variant by name.
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
 `skip_mosaic`, `wavelength_coadd` (default `true`; `false` builds the mosaic
-without the LVF `wav_mean`/`wav_std` maps — it sigma-clips against the std map
-and reads the intermediate cache, so leaving it on requires `[mosaic]`
-`make_std_map` and `cache_intermediate`), `reproj_override` (run directly
+without the LVF `wav_mean`/`wav_std` maps — they sigma-clip against the std
+map, so leaving it on requires `[mosaic]` `make_std_map` plus either
+`apply_sigma_clipping` (coadded inside the sigma-clip pass, no extra pass) or
+`cache_intermediate` (standalone coadd over the cache)), `reproj_override` (run directly
 against an existing reproj dir, no staging), `postprocess` (named subframe
 hook).
 
