@@ -1570,7 +1570,8 @@ class Mosaicker(Reprojector):
         coadd_batch_size: int = 10, cache_dir: str = 'cache/',
         cache_intermediate: bool = False, det_aux: np.ndarray | None = None,
         preprocess_func: Callable | None = None, postprocess_func: Callable | None = None,
-        valid_chunk_thresh: float = 0.01) -> dict:
+        valid_chunk_thresh: float = 0.01,
+        wav_maps: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
         """Build coadded maps applying per-map calibration offsets.
 
         ``chunk_maps`` is a length-K list of (typically grid-resolution) chunk
@@ -1629,12 +1630,28 @@ class Mosaicker(Reprojector):
         valid_chunk_thresh : float, optional
             Minimum per-map coverage fraction below which a chunk's offset is
             zeroed out.
+        wav_maps : (np.ndarray, np.ndarray) or None, optional
+            ``(band centre, band width)`` detector-grid maps. When given
+            (requires ``make_std_map`` and ``apply_sigma_clipping``), the
+            sigma-clip pass also coadds their band-width-weighted per-pixel
+            mean and std, added as ``wav_mean_map`` / ``wav_std_map`` (unit
+            unset; the instrument's ``wavelength_append`` labels it).
 
         Returns
         -------
         dict
             ``self.maps`` — the ``mean_map`` / ``std_map`` / ``sc_mean_map``
-            entries (each a ``{'data', 'weight', 'aux', 'unit'}`` dict).
+            entries (each a ``{'data', 'weight', 'aux', 'unit'}`` dict), plus
+            the wavelength maps when ``wav_maps`` was given.
+
+        Notes
+        -----
+        The passes run through ``coadd.run_coadd_schedule``: one pass prepares
+        every frame, writes the intermediate cache (if ``cache_intermediate``)
+        and accumulates the mean; the std and sigma-clipped passes then read
+        the cache (or re-prepare the frames). Accumulation order is fixed
+        (batch order, frame order within a batch), so the maps depend only on
+        the frames and the batch sizes, not on ``max_workers``.
         """
         if ignore_list is None:
             ignore_list = []
@@ -1668,68 +1685,36 @@ class Mosaicker(Reprojector):
             else:
                 logger.warning("Warning: Calibration offsets not available. No offsets will be applied.")
 
-        # Bundle arguments common to all compute_coadd_map calls
-        common_kwargs = {
-            'ref_shape': self.ref_shape,
-            'file_list': self.reproj_list,
-            'offset_lists': offset_lists_param,
-            'apply_weight': apply_weight,
-            'apply_mask': apply_mask,
-            'chunk_maps': chunk_maps,
-            'max_workers': max_workers,
-            'grid_valid_weight': grid_valid_weight,
-            'ignore_list': ignore_list,
-            'oversample_factor': oversample_factor,
-            'det_offset_funcs': det_offset_funcs,
-            'cache_dir': cache_dir,
-            'use_cached': False,
-            'det_aux': det_aux,
-            'preprocess_func': preprocess_func,
-            'postprocess_func': postprocess_func
-        }
-
-        if cache_intermediate:
-            logger.info("Caching intermediate computations...")
-            with timer("Cache computation"):
-                cached_list = coadd.compute_coadd_map(
-                    mode='cache',
-                    batch_size=cache_batch_size,
-                    **common_kwargs
-                )
-            self.cached_list = cached_list
-            common_kwargs['file_list'] = cached_list
-            common_kwargs['use_cached'] = True
-
-        logger.info("Computing mean map...")
-        with timer("Mean map computation"):
-            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = coadd.compute_coadd_map(
-                mode='mean', 
-                batch_size=coadd_batch_size,
-                **common_kwargs
-            )
-        
-        if make_std_map:
-            logger.info("Computing std map...")
-            with timer("Std map computation"):
-                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = coadd.compute_coadd_map(
-                    mode='std', 
-                    mean_map=self.maps['mean_map']['data'], 
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                )
-
-        if make_std_map and apply_sigma_clipping:
-            logger.info("Computing sigma-clipped mean map...")
-            
-            with timer("Sigma-clipped mean map computation"):
-                self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = coadd.compute_coadd_map(
-                    mode='sigma_clip',
-                    mean_map=self.maps['mean_map']['data'],
-                    std_map=self.maps['std_map']['data'],
-                    sigma=sigma,
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                    )
+        with timer("Mosaic coadd passes"):
+            maps, cached_list = coadd.run_coadd_schedule(
+                ref_shape=self.ref_shape,
+                file_list=self.reproj_list,
+                offset_lists=offset_lists_param,
+                apply_weight=apply_weight,
+                apply_mask=apply_mask,
+                chunk_maps=chunk_maps,
+                grid_valid_weight=grid_valid_weight,
+                max_workers=max_workers,
+                ignore_list=ignore_list,
+                det_offset_funcs=det_offset_funcs,
+                oversample_factor=oversample_factor,
+                cache_batch_size=cache_batch_size,
+                coadd_batch_size=coadd_batch_size,
+                cache_dir=cache_dir,
+                cache_intermediate=cache_intermediate,
+                det_aux=det_aux,
+                preprocess_func=preprocess_func,
+                postprocess_func=postprocess_func,
+                make_std_map=make_std_map,
+                apply_sigma_clipping=apply_sigma_clipping,
+                sigma=sigma,
+                wav_maps=wav_maps)
+        self.cached_list = cached_list
+        for name, entry in maps.items():
+            if name not in self.maps:
+                self.maps[name] = {'data': None, 'weight': None, 'aux': None, 'unit': None}
+            for key in ('data', 'weight', 'aux'):
+                self.maps[name][key] = entry.get(key)
 
         return self.maps
     

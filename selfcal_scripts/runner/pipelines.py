@@ -126,28 +126,38 @@ def run_calibration(cfg):
             mm = pipeline_wrapper.Mosaicker(selfcal_config, reproj_dir=nvme)
             mm.load_calibration(cal_path=cal_path)
             mm.reproj_list = staging.remap_to_nvme(mm.reproj_list, nvme)
+            # `wavelength_coadd` (default true) selects the LVF wav_mean/wav_std
+            # maps. They are sigma-clipped against the std map, so they need
+            # make_std_map; with apply_sigma_clipping they are coadded inside
+            # the sigma-clip pass (no extra pass, no cache needed), otherwise
+            # the standalone wavelength coadd runs over the intermediate cache.
+            # Say so here rather than fail deep inside the coadd.
+            wav_maps = None
+            want_wav = mode.mosaic_mode == 'full' and cfg.wavelength_coadd
+            if want_wav:
+                if not cfg.mosaic.get('make_std_map', False):
+                    raise ValueError(
+                        "wavelength_coadd = true needs [mosaic] make_std_map = true "
+                        "(the LVF coaddition sigma-clips against the std map). Set it "
+                        "true, or set wavelength_coadd = false to build the mosaic "
+                        "without the wav_mean/wav_std maps.")
+                if cfg.mosaic.get('apply_sigma_clipping', False):
+                    wav_maps = inst.wavelength_maps(det_inputs)
+                elif not cfg.mosaic.get('cache_intermediate', False):
+                    raise ValueError(
+                        "wavelength_coadd = true needs [mosaic] apply_sigma_clipping = "
+                        "true (coadded in the sigma-clip pass) or cache_intermediate = "
+                        "true (standalone coadd over the cache). Set one, or set "
+                        "wavelength_coadd = false.")
             maps = mm.make_mosaic(
                 chunk_maps=chunk_maps,
                 grid_valid_weight=ch_inputs['grid_valid_weight'],
                 oversample_factor=cfg.oversample,
                 det_offset_funcs=det_offset_funcs,
                 cache_dir=cache_dir,
+                wav_maps=wav_maps,
                 **cfg.mosaic)
-            # `wavelength_coadd` (default true) selects the LVF wav_mean/wav_std
-            # append. It sigma-clips against the std map and reads the
-            # intermediate cache, so it cannot run without them: say so here
-            # rather than fail deep inside the coadd on a None std map.
-            if mode.mosaic_mode == 'full' and cfg.wavelength_coadd:
-                missing = [k for k in ('make_std_map', 'cache_intermediate')
-                           if not cfg.mosaic.get(k, False)]
-                if missing:
-                    raise ValueError(
-                        f"wavelength_coadd = true needs [mosaic] "
-                        f"{' and '.join(missing)} = true (the LVF coaddition "
-                        "sigma-clips against the std map and reads the "
-                        "intermediate cache). Set them true, or set "
-                        "wavelength_coadd = false to build the mosaic without "
-                        "the wav_mean/wav_std maps.")
+            if want_wav:
                 inst.wavelength_append(det_inputs, mm, maps, cfg.mosaic['sigma'])
             mm.save_mosaic(mos_file=mos_file, overwrite=True)
             if cfg.zodi.get('pred_dir'):

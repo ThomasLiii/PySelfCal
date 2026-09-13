@@ -256,7 +256,15 @@ def compute_crop(ref_shape, coords):
     ref_crop = np.s_[y0:y1, x0:x1]
     return sub_crop, ref_crop
 
-def chunk_to_det(chunk_map, chunk_data):
+def chunk_to_det(chunk_map, chunk_data, needed=None):
+    """Render per-chunk values onto the detector grid.
+
+    ``needed`` (flat grid indices) restricts the render to those pixels and
+    returns a 1-D array in that order; it is the same gather as
+    ``chunk_data[chunk_map].ravel()[needed]`` without the full-grid render.
+    """
+    if needed is not None:
+        return chunk_data[chunk_map.ravel()[needed]]
     det_offset = chunk_data[chunk_map]
     return det_offset
 

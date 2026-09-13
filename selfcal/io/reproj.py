@@ -11,6 +11,43 @@ from .. import _state
 
 logger = logging.getLogger(__name__)
 
+try:  # optional fast decode of shuffle+zstd datasets (numcodecs ships with zarr)
+    from numcodecs import Zstd as _Zstd
+    from numcodecs.shuffle import Shuffle as _Shuffle
+except ImportError:  # pragma: no cover - fallback is the plain h5py read
+    _Zstd = _Shuffle = None
+
+_H5_FILTER_SHUFFLE = 2
+_H5_FILTER_ZSTD = 32015
+
+
+def _read_dataset(ds):
+    """``ds[()]``, decoded outside HDF5 when that is cheaper.
+
+    The reprojected frames store each dataset as ONE chunk filtered by
+    shuffle + Zstandard.  HDF5's read path (filter pipeline into a chunk
+    buffer, then a copy out) costs ~1.5x the raw decode; for such datasets
+    the chunk is read as-is and decoded with numcodecs' zstd + C unshuffle
+    into the output array.  The bytes are the same either way — the codecs
+    are lossless — and any dataset that is not exactly this layout falls back
+    to the h5py read.
+    """
+    if _Zstd is None or ds.chunks is None or ds.chunks != ds.shape or ds.ndim == 0:
+        return ds[()]
+    try:
+        plist = ds.id.get_create_plist()
+        filters = [plist.get_filter(i) for i in range(plist.get_nfilters())]
+        if ([f[0] for f in filters] != [_H5_FILTER_SHUFFLE, _H5_FILTER_ZSTD]
+                or tuple(filters[0][2]) != (ds.dtype.itemsize,)
+                or ds.id.get_num_chunks() != 1):
+            return ds[()]
+        _, raw = ds.id.read_direct_chunk((0,) * ds.ndim)
+    except Exception:  # any HDF5 API surprise -> the standard path
+        return ds[()]
+    out = np.empty(ds.shape, dtype=ds.dtype)
+    _Shuffle(elementsize=ds.dtype.itemsize).decode(_Zstd().decode(raw), out=out.reshape(-1).view(np.uint8))
+    return out
+
 
 def load_reproj_file(file_path, fields):
     """Helper to load selected fields from a single HDF5 file.
@@ -69,7 +106,7 @@ def load_reproj_file(file_path, fields):
 
                 # --- CASE 3: Datasets (Heavy Data: sub_data, sub_bitmask, etc.) ---
                 elif key in file:
-                    data[key] = file[key][()] # Load dataset into memory
+                    data[key] = _read_dataset(file[key]) # Load dataset into memory
 
                 # --- CASE 4: Key not found ---
                 else:

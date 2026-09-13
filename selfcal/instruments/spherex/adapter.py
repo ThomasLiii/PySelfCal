@@ -254,9 +254,20 @@ class SPHERExInstrument:
             x_edges=det_inputs['x_edges'], tot_subchannels=ns * nch + 2,
             num_columns=ncol, fill_invalid=True)
 
+    def wavelength_maps(self, det_inputs):
+        """(band centre, band width) LVF maps, coadded by the mosaic's sigma-clip pass."""
+        return det_inputs['det_BC'], det_inputs['det_BW']
+
     def wavelength_append(self, det_inputs, mm, maps, sigma):
-        """LVF wavelength coaddition -> append wav_mean/wav_std maps (full mosaic
-        mode). The generic engine calls this only if the instrument provides it."""
+        """LVF wavelength maps for the full mosaic. When ``make_mosaic`` was given
+        the band maps (``wav_maps=self.wavelength_maps(...)``) it has already
+        coadded them inside the sigma-clip pass and this only labels the units;
+        otherwise the standalone ``wav_coadd`` runs over the intermediate cache
+        (the pre-2026-09 path, which needs ``cache_intermediate``)."""
+        if 'wav_mean_map' in maps and maps['wav_mean_map'].get('data') is not None:
+            for k in ('wav_mean_map', 'wav_std_map'):
+                mm.maps[k]['unit'] = 'um'
+            return
         import time
         logger.info("Coadding wavelength maps...")
         t00 = time.time()

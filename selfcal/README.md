@@ -266,20 +266,28 @@ clarity:
   Separates sky-pixel coverage from per-map chunk coverage and returns lists
   of per-map coverage arrays.
 
-- **[`core/coadd.py`](core/coadd.py)** — `compute_coadd_map(mode, ...)` is a
-  unified parallel co-adder with four modes.
-  - `cache`: runs `_prep_subframe` and writes tightly-cropped HDF5
-    caches of `(ref_coords, sub_data, sub_weight, sub_aux, sub_bbox)`,
-    cutting downstream I/O dramatically when a subframe has data in
-    only a small window.
+- **[`core/coadd.py`](core/coadd.py)** — the coadd engine.
+  `run_coadd_schedule(...)` runs every pass a mosaic needs; `compute_coadd_map(mode, ...)`
+  is the single-pass API with four modes.
+  - `cache`: runs `_prep_subframe` and writes each frame's **nonzero-weight
+    pixels** (packed bbox mask + value vectors, `format='sparse-v1'`) — a
+    single-channel SPHEREx frame keeps ~1 % of its pixels, so this is ~10x
+    smaller than the dense bbox crops it replaced (which are still read).
   - `mean`: weighted mean map, `sum(d*w) / sum(w)`.
   - `std`: weighted standard deviation using a supplied mean map.
   - `sigma_clip`: weighted mean with per-pixel `|d - mean| <= sigma * std`
     clipping, using supplied mean and std maps.
-  Accumulators live in `SharedMemory`; each worker accumulates locally and
-  flushes under a lock once per batch to avoid thrash. Large read-only
-  arrays (`chunk_map`, `grid_valid_weight`, `mean_map`, `std_map`,
-  `det_aux`) are also staged in shared memory.
+  The schedule fuses the cache pass with the mean accumulation, and (given
+  `wav_maps`, the LVF band-centre/width maps) accumulates the wavelength
+  sums inside the sigma-clip pass from per-pixel values sampled once in the
+  cache pass — there is no separate wavelength pass.
+  Accumulators live in `SharedMemory`; each worker accumulates a batch into
+  lazily-zeroed full-grid locals (only touched pages materialise) and
+  flushes **only the batch's union window, in batch order** through a
+  turnstile, so the maps are a pure function of (frames, batch size) —
+  bit-reproducible at any worker count. Large read-only arrays (`chunk_map`,
+  `grid_valid_weight`, `mean_map`, `std_map`, `det_aux`, band maps) are
+  also staged in shared memory.
 
 - **[`core/solution.py`](core/solution.py)** — Small utilities for the `x`
   vector:
@@ -357,8 +365,9 @@ clarity:
     reads; set via `set_hdd_io_limit(n)`. Essential when many workers do
     random reads on a RAID array, where seek thrashing kills
     throughput.
-  - `_coadd_flush_lock` — lock for the coadd accumulator flush; pushed
-    into worker processes via the `_init_coadd_worker` pool initializer.
+  - `_coadd_turn` — the `(Condition, Value)` turnstile that orders the
+    coadd workers' per-batch flushes; pushed into worker processes via the
+    `_init_coadd_worker` pool initializer.
 
 ### Geometry, masking, and interpolation helpers (`geometry/`)
 
@@ -462,10 +471,11 @@ clarity:
   ref_shape, sigma, ...)` produces per-pixel `wav_mean` and `wav_std` maps
   (effective wavelength and its spread per mosaic pixel) by running a
   multi-process sigma-clipped weighted coaddition of the LVF band-center and
-  band-width values mapped through each exposure's `sub_mapping`. Like
-  `coadd.py`, it uses `SharedMemory` for both inputs and output accumulators,
-  and crops to the cached `sub_bbox` before `map_coordinates` to avoid
-  touching unused pixels.
+  band-width values mapped through each exposure's `sub_mapping`. This is
+  the standalone (pre-2026-09) path over an intermediate cache of either
+  format; the runner now folds the same sums into the mosaic's sigma-clip
+  pass (`make_mosaic(wav_maps=...)`, see `core/coadd.py`) and only calls
+  `wav_coadd` when sigma clipping is off.
 
 - **[`instruments/euclid/exposures.py`](instruments/euclid/exposures.py)** —
   Simple exposure-list helpers for Euclid data: `load_from_radius` (filter a
@@ -504,11 +514,10 @@ x -> (skymap(s), [det_offset_0, ..., det_offset_{K-1}], frame_scalar)
    v
 calibration/cal_*.h5
    |
-   |  Mosaicker.load_calibration -> Mosaicker.make_mosaic -> core.coadd.compute_coadd_map
+   |  Mosaicker.load_calibration -> Mosaicker.make_mosaic -> core.coadd.run_coadd_schedule
    v
-mosaic dict: {mean_map, std_map, sc_mean_map}
-   |
-   |  wavemap.wav_coadd          -> append_maps   (LVF instruments only)
+mosaic dict: {mean_map, std_map, sc_mean_map, wav_mean_map, wav_std_map}
+   |            (wav maps: LVF instruments only, coadded inside the sigma-clip pass)
    v
 mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
 ```
@@ -520,18 +529,26 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   `multiprocessing.shared_memory.SharedMemory` and rehydrated by each
   worker rather than pickled. This is both faster and dramatically
   reduces peak memory for multi-process pools.
-- **Local-then-flush accumulation.** Coadd workers maintain local sums
-  and flush to the shared accumulator once per batch under a lock,
-  instead of locking per file, keeping contention flat as workers scale.
+- **Ordered window flush.** Coadd workers accumulate a batch into
+  lazily-zeroed local grids and flush only the batch's union window into
+  the shared accumulator, in batch order (a turnstile), so contention stays
+  flat as workers scale and the maps depend only on the frames and the
+  batch size — not on the worker count or completion order.
+- **Sparse per-frame payloads.** Everything downstream of `_prep_subframe`
+  carries only a frame's nonzero-weight pixels; the per-frame preparation
+  itself builds the interpolation matrix, offsets and weights over the
+  bounding box of the rows that can carry weight, and the per-frame offset
+  render evaluates the spline only at the grid pixels that box reads
+  (identical values, ~3 % of the grid).
 - **HDD throttle.** A global `BoundedSemaphore` (`set_hdd_io_limit`)
   bounds concurrent HDD reads to avoid RAID seek thrashing. The runner
   typically copies reprojected HDF5s onto NVMe and disables the
   limit before calibration / mosaicking.
-- **Tight-bbox cache crops.** `core/coadd.py` in `cache` mode trims each
-  cached subframe to the nonzero-weight bounding box, often a small
-  fraction of the full subframe (e.g. a single channel inside a
-  multi-channel detector), so the downstream pass is near-linear in true
-  signal.
+- **Sparse intermediate cache.** `core/coadd.py` in `cache` mode stores
+  each frame's nonzero-weight pixels only (packed bbox mask + values), a
+  small fraction of the full subframe (e.g. a single channel inside a
+  multi-channel detector), so the downstream passes are linear in true
+  signal and the cache is a few per cent of the frames' size.
 - **Zero-column elimination and column-norm preconditioning.**
   `apply_lsqr` drops all-zero columns before the solve (so unseen sky
   pixels and inactive chunks do not bloat the iterate), then rescales
@@ -610,6 +627,7 @@ maps = mm.make_mosaic(
     apply_sigma_clipping=True, sigma=2.0,
     cache_batch_size=50, coadd_batch_size=50,
     cache_intermediate=True, max_workers=48,
+    wav_maps=(det_BC, det_BW),        # LVF band maps -> wav_mean_map / wav_std_map (optional)
 )
 mm.save_mosaic(mos_file='mosaic.fits', overwrite=True)
 ```
@@ -647,7 +665,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | File | Purpose |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Curated public API re-exports + package docstring. |
-| [`_state.py`](_state.py) | Shared I/O semaphore and coadd flush lock. |
+| [`_state.py`](_state.py) | Shared I/O semaphore and the coadd flush turnstile. |
 | [`config.py`](config.py) | Path resolution + `SelfCalConfigError`. |
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
@@ -658,7 +676,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31; `ColSplitCSR` row-blocks x column-ranges for the bit-equal parallel transpose product. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |
-| [`core/coadd.py`](core/coadd.py) | Parallel mean / std / sigma-clip coaddition + caching. |
+| [`core/coadd.py`](core/coadd.py) | Parallel mean / std / sigma-clip (+ wavelength) coaddition, sparse caching, deterministic flush order. |
 | [`core/solution.py`](core/solution.py) | `parse_x`, `encode_x`, `compute_x0_from_Ab`, `compute_x0_scalar_only`. |
 | [`core/layout.py`](core/layout.py) | `SystemLayout` — column layout of `x`. |
 | [`core/constraint_builders.py`](core/constraint_builders.py) | Mean-offset / sky / offset damping constraint rows. |

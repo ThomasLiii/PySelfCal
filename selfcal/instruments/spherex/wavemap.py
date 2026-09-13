@@ -11,6 +11,7 @@ from tqdm import tqdm
 from ... import _state
 from ...geometry.map_helper import compute_crop, check_invalid
 from ...io.reproj import load_reproj_file
+from ...core.coadd import load_cached_frame_dense
 from .spherex_utility import load_calibration
 
 logger = logging.getLogger(__name__)
@@ -96,18 +97,10 @@ def _wavcoadd_batch_worker(batch_indices):
         sub_mapping = load_reproj_file(reproj_list[i], fields=['sub_mapping'])['sub_mapping']
         H_orig, W_orig = sub_mapping.shape[1:]
 
-        # Open the cache file once and pull both the data + the bbox.
-        with h5py.File(cache_list[i], 'r') as hf:
-            ref_coords = hf['ref_coords'][:]
-            sub_data = hf['sub_data'][:]
-            sub_weight = hf['sub_weight'][:]
-            # Cache files may carry an optional 'sub_bbox' dataset: a tight
-            # bbox of nonzero weight in full sub-frame coordinates. Fall back
-            # to the full frame when absent.
-            if 'sub_bbox' in hf:
-                rmin, rmax, cmin, cmax = hf['sub_bbox'][:]
-            else:
-                rmin, rmax, cmin, cmax = 0, H_orig, 0, W_orig
+        # The cache file (sparse or legacy dense format) as dense bbox crops,
+        # plus the bbox in full sub-frame coordinates.
+        ref_coords, sub_data, sub_weight, sub_bbox = load_cached_frame_dense(cache_list[i])
+        rmin, rmax, cmin, cmax = (int(v) for v in sub_bbox)
 
         # Crop sub_mapping to the cached bbox BEFORE the resample, so we only
         # touch the pixels we'll actually use. Mirrors the early-bbox crop in
