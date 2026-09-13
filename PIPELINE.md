@@ -306,8 +306,8 @@ Datasets:
 - `sub_mapping` `(2, sub_w, sub_w)` float32 — for each subframe pixel,
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
-  the chunk map and (b) sample per-pixel `det_BC` / `det_BW` in
-  `wav_coadd`.
+  the chunk map and (b) sample per-pixel `det_BC` / `det_BW` for the
+  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`).
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
