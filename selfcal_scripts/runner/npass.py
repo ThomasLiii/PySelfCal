@@ -60,7 +60,7 @@ __all__ = ["schedule", "describe_schedule", "run_npass"]
 PASS_TYPES = ("init", "sky", "offset")
 _SKY_DEFAULTS = dict(outlier_thresh=5.0, subch_clip=True)
 _OFFSET_DEFAULTS = dict(poly_degree=4, outlier_thresh=2.5, subch_clip=True,
-                        bright_cut=0.05, min_pix=5000)
+                        bright_cut=0.05, min_pix=5000, segments=None)
 
 
 def schedule(n: int, order: str = "sky_first") -> list[str]:
@@ -315,7 +315,8 @@ class _Run:
         opts = dict(_OFFSET_DEFAULTS, **self.p.get("offset", {}))
         p = self.cfg.params
         pb = self.inst.subchannel_poly_basis(self.cm, self.ncol, degree=int(opts["poly_degree"]),
-                                             lo=int(p["subch_poly_lo"]), hi=int(p["subch_poly_hi"]))
+                                             lo=int(p["subch_poly_lo"]), hi=int(p["subch_poly_hi"]),
+                                             segments=opts.get("segments"))
         sky = SkySubtractor(sky_cal, self.sky_model,
                             export_dir=os.path.join(self.work_dir, f"sky_pass{i-1}"),
                             aux_keys=getattr(self.inst, "aux_keys", ("BC", "BW")))

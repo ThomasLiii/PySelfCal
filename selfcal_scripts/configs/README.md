@@ -87,7 +87,14 @@ moment dumps, ~23 GB each at J=4; they are deleted after the combine by
 default), and the per-pass-type clip knobs `init = {outlier_thresh,
 subch_clip, ignore_list}` (pass 1 only; omit to reproduce the legacy clip),
 `sky = {outlier_thresh, subch_clip}`, `offset = {poly_degree, outlier_thresh,
-subch_clip, bright_cut, min_pix}`. Pass 1 runs through `run_tiled` when
+subch_clip, bright_cut, min_pix, segments}` — `segments` (optional, e.g.
+`[[200, 259], [260, 320]]`, inclusive subchannel ranges inside
+`subch_poly_lo..hi`) fits an independent degree-`poly_degree` Chebyshev per
+column on each segment instead of one over the whole window; use it when the
+window is wide, since a single polynomial over ~120 subchannels resolves 2×
+less per-frame subchannel structure than the same degree over 60 and a higher
+global degree extrapolates wildly wherever a frame's coverage is partial (see
+PIPELINE.md). Pass 1 runs through `run_tiled` when
 `[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
 overlapping tiles are de-duplicated first-tile-wins), else through
 `run_calibration`. A re-run resumes: passes whose product exists are skipped.

@@ -247,6 +247,23 @@ of 160.6 M, max 4.7e-10 against a p99 signal of 1.7–4.1e-2, Fisher and
 coverage byte-equal, and the median difference **exactly zero in every
 distance bin from either partition's boundaries**.
 
+**The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
+per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
+`subch_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+multi-line window (200–320) captured 3–5× less of the per-frame structure at the
+~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
+window (200–259): the wide fit is constrained by the red-end data, so red-end
+residuals pull the polynomial on the aromatic band, and what it cannot follow
+stays in the residual and projects onto the adjacent line templates as
+frame-coherent stripes (0.64 ×10⁻³ MJy/sr rms at 64–1024 px in the dim sky,
+aromatic–aliphatic stripe correlation +0.52, identical whether the per-pixel
+model is J=2 or J=4). Raising the global degree is *not* the answer — degree 8
+over 121 subchannels extrapolated to ±200 MJy/sr in frames with partial red-end
+coverage. `segments = [[200, 259], [260, 320]]` fits an independent degree-4
+shape on each range (the aromatic band gets exactly the narrow-window basis, the
+red end its own), with nothing to extrapolate. One segment equal to the window is
+bit-identical to the unsegmented basis.
+
 **Ordering matters when INIT is tiled** (`[passes].order`, default
 `sky_first`). Each INIT tile is an independent joint solve, so it picks its own
 gauge along the near-null directions; frames in neighbouring tiles come out on

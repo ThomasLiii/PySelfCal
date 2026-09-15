@@ -46,7 +46,7 @@ from scipy.ndimage import map_coordinates
 from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
-from ..models.offset_basis import cheb_shape_basis
+from ..models.offset_basis import eval_offset_basis
 
 __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
@@ -253,9 +253,11 @@ def _refit_init(state):
     _W.update(state)
     pb = state["poly_basis"]
     coord = np.asarray(pb["chunk_coord"], dtype=float)
-    _W["Bc"] = cheb_shape_basis(coord, int(pb["degree"]), pb["coord_lo"], pb["coord_hi"])
+    # The same basis the joint solve assembles with (piecewise when the spec
+    # carries `segments`); "deg" is the number of shape coefficients per group.
+    _W["Bc"] = eval_offset_basis(coord, pb)
     _W["grp"] = np.asarray(pb["chunk_group"], dtype=int)
-    _W["deg"] = int(pb["degree"])
+    _W["deg"] = int(_W["Bc"].shape[1])
     _W["ngroups"] = int(pb["num_groups"])
 
 
@@ -335,7 +337,10 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
     ok = np.zeros(len(frames), dtype=bool)
     fell_back = 0
     t0 = time.time()
-    print(f"[npass] OFFSET refit: {len(frames)} frames, deg {poly_basis['degree']} x "
+    segs = poly_basis.get("segments")
+    basis_desc = (f"deg-{poly_basis['degree']} Chebyshev per group"
+                  + (f" on {len(segs)} segments {list(map(list, segs))}" if segs else ""))
+    print(f"[npass] OFFSET refit: {len(frames)} frames, {basis_desc} x "
           f"{poly_basis['num_groups']} groups + DC, clip {thresh}, bright cut {bright_cut}",
           flush=True)
     with ProcessPoolExecutor(max_workers=max_workers, initializer=_refit_init,
@@ -359,8 +364,10 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
         f.create_dataset("fit_ok", data=ok)
         f.create_dataset("resid_rms", data=rms)
         f.attrs["num_maps"] = 1
-        f.attrs["model"] = (f"OFFSET pass: per-frame min-norm LSQ of (data - sky) on deg-"
-                            f"{poly_basis['degree']} Chebyshev per group + DC scalar")
+        f.attrs["model"] = (f"OFFSET pass: per-frame min-norm LSQ of (data - sky) on "
+                            f"{basis_desc} + DC scalar")
+        if segs:
+            f.attrs["basis_segments"] = np.asarray(segs, dtype=np.int64)
         f.attrs["sky_cal"] = sky.sky_cal
         f.attrs["bright_cut"] = -1.0 if bright_cut is None else float(bright_cut)
         for k, v in (attrs or {}).items():

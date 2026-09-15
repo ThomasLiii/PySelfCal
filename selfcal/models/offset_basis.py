@@ -73,20 +73,54 @@ def cheb_shape_basis(subch, degree, lo, hi):
     return B
 
 
+def piecewise_cheb_shape_basis(subch, degree, segments):
+    """Local variant of :func:`cheb_shape_basis`: an independent degree-``degree``
+    mean-zero Chebyshev shape on each ``[lo, hi]`` of ``segments``, zero outside
+    it. Columns are ordered segment-major (segment 0's d=1..D, then segment 1's,
+    ...), so the result is ``(N, D * len(segments))``.
+
+    Why: a single polynomial over a wide coordinate window is fit to ALL of the
+    window's data, so residual structure at one end pulls the polynomial at the
+    other, and raising the degree to compensate extrapolates wildly wherever a
+    frame's coverage of the window is partial. Independent low-degree shapes per
+    segment keep the per-coordinate resolution of a narrow-window fit without
+    either coupling. A single segment equal to the window reproduces
+    :func:`cheb_shape_basis` exactly.
+    """
+    subch = np.asarray(subch, dtype=np.float64).ravel()
+    segs = [(int(lo), int(hi)) for lo, hi in segments]
+    if not segs:
+        raise ValueError("segments must be a non-empty list of (lo, hi)")
+    for (a0, a1), (b0, b1) in zip(segs, segs[1:]):
+        if b0 <= a1:
+            raise ValueError(f"segments must be increasing and disjoint, got {segs}")
+    B = np.zeros((subch.size, degree * len(segs)), dtype=np.float64)
+    for s, (lo, hi) in enumerate(segs):
+        inside = (subch >= lo) & (subch <= hi)
+        B[inside, s * degree:(s + 1) * degree] = cheb_shape_basis(subch[inside], degree, lo, hi)
+    return B
+
+
 def n_coef(pb):
-    """Number of solved coefficients per column for a poly_basis spec."""
-    return int(pb['degree'])
+    """Number of solved coefficients per group for a poly_basis spec."""
+    segs = pb.get('segments')
+    return int(pb['degree']) * (len(segs) if segs else 1)
 
 
 def eval_offset_basis(coord, pb):
     """Offset basis evaluated at coordinate values ``coord`` for a poly_basis
     spec: the mean-zero Chebyshev basis over the coordinate window
-    ``[coord_lo, coord_hi]``. Returns ``(len(coord), n_coef(pb))``. Single source
-    of truth for both the row assembly and the save-time reconstruction.
+    ``[coord_lo, coord_hi]``, or — when the spec carries ``segments`` — the
+    piecewise basis of :func:`piecewise_cheb_shape_basis`. Returns
+    ``(len(coord), n_coef(pb))``. Single source of truth for both the row
+    assembly and the save-time reconstruction.
 
     Instrument-agnostic: ``coord`` is an abstract polynomial coordinate (the
     instrument decides what it means, e.g. SPHEREx subchannel via
     ``pb['chunk_coord']``); this module never assumes a chunk encoding."""
+    segs = pb.get('segments')
+    if segs:
+        return piecewise_cheb_shape_basis(coord, int(pb['degree']), segs)
     return cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
 
 
