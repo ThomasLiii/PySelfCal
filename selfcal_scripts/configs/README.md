@@ -97,7 +97,10 @@ global degree extrapolates wildly wherever a frame's coverage is partial (see
 PIPELINE.md); `ridge` (default `0` = plain least squares) adds a Tikhonov term
 on the shape/level coefficients, λ² = ridge² × the median diagonal of DᵀD, so a
 segment a frame barely covers is held near zero instead of extrapolating —
-pair it with `segments` (SEP: `ridge = 0.03`). Pass 1 runs through `run_tiled` when
+pair it with `segments` (SEP: `ridge = 0.03`). The joint INIT solve of the `multiline`
+mode takes the same segmentation as `[params].subch_poly_segments` (an independent
+degree-`subch_poly_degree` shape per column on each segment, plus a level per segment
+after the first). Pass 1 runs through `run_tiled` when
 `[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
 overlapping tiles are de-duplicated first-tile-wins), else through
 `run_calibration`. A re-run resumes: passes whose product exists are skipped.
