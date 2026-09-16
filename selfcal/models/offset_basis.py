@@ -75,17 +75,28 @@ def cheb_shape_basis(subch, degree, lo, hi):
 
 def piecewise_cheb_shape_basis(subch, degree, segments):
     """Local variant of :func:`cheb_shape_basis`: an independent degree-``degree``
-    mean-zero Chebyshev shape on each ``[lo, hi]`` of ``segments``, zero outside
-    it. Columns are ordered segment-major (segment 0's d=1..D, then segment 1's,
-    ...), so the result is ``(N, D * len(segments))``.
+    mean-zero Chebyshev shape on each ``[lo, hi]`` of ``segments`` (zero outside
+    it), plus one **level** column per segment after the first (the segment's
+    indicator), so the segments may sit at different levels. Columns, segment-
+    major: segment 0 → ``T_1..T_D``; segment s ≥ 1 → ``[1_s, T_1..T_D]``. The
+    result is ``(N, D * S + (S - 1))`` for ``S`` segments.
 
-    Why: a single polynomial over a wide coordinate window is fit to ALL of the
-    window's data, so residual structure at one end pulls the polynomial at the
-    other, and raising the degree to compensate extrapolates wildly wherever a
-    frame's coverage of the window is partial. Independent low-degree shapes per
-    segment keep the per-coordinate resolution of a narrow-window fit without
-    either coupling. A single segment equal to the window reproduces
-    :func:`cheb_shape_basis` exactly.
+    Why the level columns: with a single frame-wide DC and mean-zero shapes per
+    segment, a step in level between two segments would be unrepresentable —
+    yet a global polynomial restricted to each segment has a different mean on
+    each. With them, the piecewise basis is a superset of the global degree-D
+    polynomial restricted to the window, so its least-squares residual can never
+    be larger. (Without them, the SEP J=4 refit's residual ROSE from 0.0222 to
+    0.0298 and the sky absorbed a step at the segment boundary.) Segment 0 has
+    no level column because the per-frame scalar owns the overall DC.
+
+    Why segments at all: a single polynomial over a wide coordinate window is fit
+    to ALL of the window's data, so residual structure at one end pulls the
+    polynomial at the other, and raising the degree to compensate extrapolates
+    wildly wherever a frame's coverage of the window is partial. Independent
+    low-degree shapes per segment keep the per-coordinate resolution of a
+    narrow-window fit without either coupling. A single segment equal to the
+    window reproduces :func:`cheb_shape_basis` exactly.
     """
     subch = np.asarray(subch, dtype=np.float64).ravel()
     segs = [(int(lo), int(hi)) for lo, hi in segments]
@@ -94,17 +105,28 @@ def piecewise_cheb_shape_basis(subch, degree, segments):
     for (a0, a1), (b0, b1) in zip(segs, segs[1:]):
         if b0 <= a1:
             raise ValueError(f"segments must be increasing and disjoint, got {segs}")
-    B = np.zeros((subch.size, degree * len(segs)), dtype=np.float64)
+    B = np.zeros((subch.size, n_piecewise_coef(degree, len(segs))), dtype=np.float64)
+    col = 0
     for s, (lo, hi) in enumerate(segs):
         inside = (subch >= lo) & (subch <= hi)
-        B[inside, s * degree:(s + 1) * degree] = cheb_shape_basis(subch[inside], degree, lo, hi)
+        if s > 0:
+            B[inside, col] = 1.0
+            col += 1
+        B[inside, col:col + degree] = cheb_shape_basis(subch[inside], degree, lo, hi)
+        col += degree
     return B
+
+
+def n_piecewise_coef(degree, n_segments):
+    """Columns of :func:`piecewise_cheb_shape_basis`: D shapes per segment plus a
+    level per segment after the first."""
+    return int(degree) * int(n_segments) + (int(n_segments) - 1)
 
 
 def n_coef(pb):
     """Number of solved coefficients per group for a poly_basis spec."""
     segs = pb.get('segments')
-    return int(pb['degree']) * (len(segs) if segs else 1)
+    return n_piecewise_coef(pb['degree'], len(segs)) if segs else int(pb['degree'])
 
 
 def eval_offset_basis(coord, pb):

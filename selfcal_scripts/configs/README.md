@@ -94,7 +94,10 @@ column on each segment instead of one over the whole window; use it when the
 window is wide, since a single polynomial over ~120 subchannels resolves 2×
 less per-frame subchannel structure than the same degree over 60 and a higher
 global degree extrapolates wildly wherever a frame's coverage is partial (see
-PIPELINE.md). Pass 1 runs through `run_tiled` when
+PIPELINE.md); `ridge` (default `0` = plain least squares) adds a Tikhonov term
+on the shape/level coefficients, λ² = ridge² × the median diagonal of DᵀD, so a
+segment a frame barely covers is held near zero instead of extrapolating —
+pair it with `segments` (SEP: `ridge = 0.03`). Pass 1 runs through `run_tiled` when
 `[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
 overlapping tiles are de-duplicated first-tile-wins), else through
 `run_calibration`. A re-run resumes: passes whose product exists are skipped.

@@ -305,11 +305,25 @@ def _refit_frame(path):
         for d in range(deg):
             np.add.at(D, (obs_i, g["grp"][chunk_i] * deg + d), wc * g["Bc"][chunk_i, d])
         D[:, -1] = w
-        a, *_ = np.linalg.lstsq(D, w * v, rcond=None)
+        rhs = w * v
+        if g["ridge"] > 0.0:
+            # Tikhonov on the shape/level coefficients (never the DC), with
+            # λ² = ridge² × the median diagonal of DᵀD. Invisible for a
+            # well-supported (segment, column) block; decisive for one a frame
+            # barely covers, which otherwise extrapolates to O(MJy/sr) --
+            # min-norm least squares only guards EXACT singularity, and such a
+            # block is merely tiny. Normal equations: a 28x28 solve, no copy of D.
+            AtA = D.T @ D
+            diag = np.diag(AtA)[:-1]
+            lam2 = (g["ridge"] ** 2) * float(np.median(diag[diag > 0])) if np.any(diag > 0) else 0.0
+            AtA[np.arange(D.shape[1] - 1), np.arange(D.shape[1] - 1)] += lam2
+            a = np.linalg.solve(AtA, D.T @ rhs)
+        else:
+            a, *_ = np.linalg.lstsq(D, rhs, rcond=None)
         off = np.zeros(len(g["grp"]), dtype=np.float32)
         for d in range(deg):
             off += (a[g["grp"] * deg + d] * g["Bc"][:, d]).astype(np.float32)
-        resid = w * v - D @ a
+        resid = rhs - D @ a
         return (os.path.basename(path), (off, np.float32(a[-1])), float(np.std(resid)),
                 -n if used_all else n)
     except Exception:
@@ -318,18 +332,23 @@ def _refit_frame(path):
 
 def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, poly_basis,
                             edges=None, ignore_list=(), thresh=2.5, bright_cut=0.05,
-                            min_pix=5000, out_h5, max_workers=48, attrs=None):
+                            min_pix=5000, out_h5, max_workers=48, attrs=None, ridge=0.0):
     """OFFSET pass: refit every frame's offset against the fixed sky ``sky``
     (a :class:`SkySubtractor`). Independent per frame, hence over the whole
     field at once. Writes an offsets fragment (``offsets/map_0``,
     ``frame_scalar``, ``chunk_maps/map_0``, ``reproj_list``, ``fit_ok``,
     ``resid_rms``) that :class:`OffsetSubtractor` consumes. Returns
     ``(out_h5, monitor_dict)``.
+
+    ``ridge`` (default 0 = plain min-norm least squares, unchanged) adds a
+    Tikhonov term on the shape/level coefficients with λ² = ridge² × the median
+    diagonal of DᵀD — see ``_refit_frame``; use it with a segmented basis, whose
+    per-(segment, column) blocks a frame may barely cover.
     """
     state = dict(sky=sky, cm=np.asarray(det_chunk_map), grid_valid=grid_valid,
                  det_aux=det_aux, poly_basis=poly_basis, edges=edges,
                  ignore_list=list(ignore_list), thresh=float(thresh),
-                 bright_cut=bright_cut, min_pix=int(min_pix))
+                 bright_cut=bright_cut, min_pix=int(min_pix), ridge=float(ridge))
     n_chunks = len(poly_basis["chunk_group"])
     offsets = np.zeros((len(frames), n_chunks), dtype=np.float32)
     scalars = np.zeros(len(frames), dtype=np.float32)
@@ -341,8 +360,8 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
     basis_desc = (f"deg-{poly_basis['degree']} Chebyshev per group"
                   + (f" on {len(segs)} segments {list(map(list, segs))}" if segs else ""))
     print(f"[npass] OFFSET refit: {len(frames)} frames, {basis_desc} x "
-          f"{poly_basis['num_groups']} groups + DC, clip {thresh}, bright cut {bright_cut}",
-          flush=True)
+          f"{poly_basis['num_groups']} groups + DC, clip {thresh}, bright cut {bright_cut}"
+          + (f", ridge {ridge:g}" if ridge else ""), flush=True)
     with ProcessPoolExecutor(max_workers=max_workers, initializer=_refit_init,
                              initargs=(state,)) as ex:
         for i, (name, fit, r, n) in enumerate(ex.map(_refit_frame, frames, chunksize=8)):
@@ -368,6 +387,7 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
                             f"{basis_desc} + DC scalar")
         if segs:
             f.attrs["basis_segments"] = np.asarray(segs, dtype=np.int64)
+        f.attrs["ridge"] = float(ridge)
         f.attrs["sky_cal"] = sky.sky_cal
         f.attrs["bright_cut"] = -1.0 if bright_cut is None else float(bright_cut)
         for k, v in (attrs or {}).items():

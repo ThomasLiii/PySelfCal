@@ -60,7 +60,7 @@ __all__ = ["schedule", "describe_schedule", "run_npass"]
 PASS_TYPES = ("init", "sky", "offset")
 _SKY_DEFAULTS = dict(outlier_thresh=5.0, subch_clip=True)
 _OFFSET_DEFAULTS = dict(poly_degree=4, outlier_thresh=2.5, subch_clip=True,
-                        bright_cut=0.05, min_pix=5000, segments=None)
+                        bright_cut=0.05, min_pix=5000, segments=None, ridge=0.0)
 
 
 def schedule(n: int, order: str = "sky_first") -> list[str]:
@@ -327,6 +327,7 @@ class _Run:
             ignore_list=self.cfg.calibration.get("ignore_list", []),
             thresh=float(opts["outlier_thresh"]), bright_cut=opts.get("bright_cut"),
             min_pix=int(opts["min_pix"]), out_h5=out, max_workers=self.max_workers,
+            ridge=float(opts.get("ridge") or 0.0),
             attrs={"npass_pass": i})
         return out, mon
 
