@@ -10,6 +10,13 @@ Each `.toml` here fully describes one pipeline run. Run it with:
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml --dry-run
 ```
 
+**Logs.** Every run (not `--dry-run`) writes its full console output — the
+main process, worker processes and any traceback — to
+`<output_dir>/<run_name>/logs/<task>_<YYYYmmdd-HHMMSS>_<pid>.log`, headed by
+the command, the git commit and the complete config text, while still printing
+to the terminal. `--log PATH` picks the file, `--no-log` turns it off. Configs
+without an `output_dir`/`run_name` log under `<cache_dir>/logs/`.
+
 The generic engine (`selfcal_scripts/runner/`) reads the config, asks the
 **instrument** for geometry and the **mode** for the calibration recipe, and
 sequences staging → setup_lsqr → apply_lsqr → save → mosaic. It never references

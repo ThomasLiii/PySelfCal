@@ -46,6 +46,7 @@ Pipeline runs are launched via the **generic runner** — pick/edit a TOML confi
 ./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml   # or any config
 ./selfcal_scripts/launch/d4_aromatic.sh                             # per-run launcher
 ./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml --dry-run  # resolve jobs+mode, no compute
+# every real run also logs to <output_dir>/<run_name>/logs/<task>_<timestamp>_<pid>.log (--log PATH / --no-log)
 ```
 
 The config picks an **instrument** (geometry adapter; SPHEREx specifics — LVF stripped maps, subchannels, BC/BW wavelength, adjacency — live in `selfcal/instruments/spherex/adapter.py`, nowhere in the generic engine), a **mode** (the calibration recipe), and a **task** (`cal`/`tiled`/`reproject`/`precompute`). `run.py` pins `OMP/MKL/OPENBLAS_NUM_THREADS=1` before importing numpy (the in-process LSQR threadpool is the only parallelism). **Adding a calibration variant = one new `@register_mode` module under `runner/modes/`; adding a telescope = one new instrument adapter** — neither touches the engine. Schema + how-to in [`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md); tuning knobs in [PIPELINE.md](PIPELINE.md).
