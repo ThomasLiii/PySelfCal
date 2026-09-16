@@ -108,6 +108,10 @@ Under `<output_dir>/<run-name>/`:
   `apply_sigma_clipping`, `cache_intermediate` and `wavelength_coadd` back
   to `true` in `transfer_function.toml`.)
 - `calibration/cal_*.h5` — the calibration solution.
+- `logs/cal_<timestamp>_<pid>.log` — everything the run printed (including
+  worker processes and any error traceback), headed by the command, the code
+  version and the full config used. One file per run, so reruns never
+  overwrite an earlier log.
 
 Compare `mosaic_*.fits` to the simulated sky you put in (they share the
 reference WCS) to read off the transfer function. Sweep different simulated

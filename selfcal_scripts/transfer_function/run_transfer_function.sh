@@ -67,7 +67,7 @@ sed -E \
 
 echo "[tf] D$DETECTOR Ch$CHANNEL  frames=$REPROJ_FRAME_DIR"
 echo "[tf] ref.fits -> $OUTPUT_DIR/$RUN_NAME/ref.fits  (-> $REF_FITS)"
-echo "[tf] outputs  -> $OUTPUT_DIR/$RUN_NAME/{calibration,mosaic}/"
+echo "[tf] outputs  -> $OUTPUT_DIR/$RUN_NAME/{calibration,mosaic,logs}/"
 
 cd "$REPO"
 exec "$PY" -m selfcal_scripts.run --config "$CFG"
