@@ -189,7 +189,7 @@ class SPHERExInstrument:
             num_subchannels=num_subchannels, num_columns=num_columns,
             degree=degree, subch_lo=lo, subch_hi=hi)
 
-    def subchannel_poly_basis(self, det_chunk_map, num_columns, degree, lo, hi):
+    def subchannel_poly_basis(self, det_chunk_map, num_columns, degree, lo, hi, segments=None):
         """Hard poly-basis descriptor for a per-column subchannel polynomial
         offset (the ``poly_basis`` dict consumed by the instrument-agnostic core
         in ``selfcal.models.offset_basis``). This is the ONLY place the SPHEREx
@@ -197,16 +197,25 @@ class SPHERExInstrument:
         ``chunk_coord`` = subchannel (the polynomial coordinate), ``chunk_group``
         = column (one independent polynomial per column). The core sees only the
         abstract coord/group arrays. Used by spectral modes whose offset is a
-        degree-``degree`` Chebyshev in subchannel over the window ``[lo, hi]``."""
+        degree-``degree`` Chebyshev in subchannel over the window ``[lo, hi]`` —
+        or, with ``segments`` (a list of inclusive ``[lo, hi]`` subchannel
+        ranges inside the window), an independent degree-``degree`` Chebyshev on
+        each segment (see ``offset_basis.piecewise_cheb_shape_basis``)."""
         n_chunks = int(det_chunk_map.max()) + 1
         chunk_ids = np.arange(n_chunks)
-        return {
+        pb = {
             'degree': int(degree),
             'num_groups': int(num_columns),
             'coord_lo': int(lo), 'coord_hi': int(hi),
             'chunk_coord': chunk_ids // int(num_columns),
             'chunk_group': chunk_ids % int(num_columns),
         }
+        if segments:
+            segs = [(int(a), int(b)) for a, b in segments]
+            if segs[0][0] < int(lo) or segs[-1][1] > int(hi):
+                raise ValueError(f"segments {segs} must lie inside the window [{lo}, {hi}]")
+            pb['segments'] = segs
+        return pb
 
     # ---- readout-channel geometry (k2 mode) --------------------------------
     def readout_chunk_map(self, det_shape, col_start=60, col_width=64):
@@ -240,8 +249,19 @@ class SPHERExInstrument:
                 f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
 
     # ---- aux maps for spectral modes (per-pixel wavelength) ----------------
+    aux_keys = ('BC', 'BW')     # names of the entries aux() returns, in order
+
     def aux(self, det_inputs):
         return [det_inputs['det_BC'], det_inputs['det_BW']]
+
+    def subchannel_bc_edges(self, det_inputs, det_chunk_map, num_columns):
+        """BC bin edges between consecutive subchannels, for the per-subchannel
+        outlier clip (``outlier_subchannel_edges``). Inverts the chunk encoding
+        (group = chunk // num_col = subchannel) here, in the adapter."""
+        from selfcal.pipeline.npass import group_wavelength_edges
+        n_chunks = int(det_chunk_map.max()) + 1
+        group_of_chunk = np.arange(n_chunks) // int(num_columns)
+        return group_wavelength_edges(det_inputs['det_BC'], det_chunk_map, group_of_chunk)
 
     # ---- mosaic helpers ----------------------------------------------------
     def offset_render(self, inst_cfg, det_inputs, channel_inputs):

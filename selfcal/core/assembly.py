@@ -93,7 +93,10 @@ def _prep_lsqr(task_params):
         num_valid_pixels = valid_vals.shape[0]
 
         if num_valid_pixels == 0:
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0
+            # Same arity as the success return (the caller unpacks 6 and skips
+            # on an empty b); off_counts is None, as it is whenever there is no
+            # per-offset bookkeeping to report.
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 

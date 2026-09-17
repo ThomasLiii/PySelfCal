@@ -244,6 +244,105 @@ this whenever `use_per_frame_scalar=True`. For runs without the scalar,
 `compute_x0_from_Ab(A, b, ref_shape)` is the older full-offset warm
 start.
 
+## N-pass alternating solve (task `npass`)
+
+One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
+implemented as the runner task `npass` (`selfcal_scripts/runner/npass.py`;
+primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
+`selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
+
+```
+d_k(p) = Σ_j S_j(p)·c_j(λ_k(p)) + Σ_d a_{k,col(p),d} B_d(sub(p)) + s_k
+```
+
+J sky blocks `S_j` (continuum + line amplitudes; `c_j` = the line template at
+the observation's BC), a hard Chebyshev offset shape per column in subchannel,
+and a per-frame scalar. Given the offsets the sky is **block-diagonal** (one
+J×J normal system per pixel); given the sky the offsets are **independent per
+frame**. The joint problem is therefore solved by alternating least squares
+with each half exact:
+
+| pass | type | solves | mechanism | tiles |
+| --- | --- | --- | --- | --- |
+| 1 | INIT | `S, a, s` jointly | the legacy joint LSQR (`run_tiled` / `run_calibration`) | yes (memory) |
+| even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
+| odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
+
+`n = 1` **is** the legacy single solve (byte-equal; regression gate on a NEP
+production tile). `n = 2` is the two-pass recipe; `n = 4` the SEP 4-pass
+product. Why not just the joint LSQR: it *semi-converges* — the offsets
+converge fast, the low-wavelength-diversity pixels' continuum↔line split does
+not, and past that point the iterate drifts along the exact null spaces
+(uniform line floor ↔ static detector pattern; uniform sky ↔ scalars). Each
+SKY/OFFSET pass is an exact block minimization, so the objective is
+non-increasing in `n`, but drift along the null spaces is not excluded — the
+runner records per-pass monitors in `<stem>_npass_monitor.json` (per-block
+median / % positive / step RMS, offset DC, residual RMS, bright-cut
+fallbacks) and `stop_tol` can stop early; pick `n` from those, not by
+assumption. The remaining zero points (line floor, continuum DC) are
+unobservable from the data in any `n` and need the post-hoc anchors
+(`selfcal/line_floor.py`, `selfcal/zodi_anchor.py`).
+
+Why the SKY passes need no tiles: a pixel's normal equations are sums over its
+observations, so per-tile dumps over **disjoint** frame sets are additive and
+summing them is identical to a single full-field solve — no seam can exist.
+Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
+reads every frame of the field (`[tiled].full_reproj_dir`). Verified at full
+scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
+offsets with a completely different partition (3 vertical bands instead of 6
+blocks) reproduced the product to float32 rounding — 4–87 differing elements
+of 160.6 M, max 4.7e-10 against a p99 signal of 1.7–4.1e-2, Fisher and
+coverage byte-equal, and the median difference **exactly zero in every
+distance bin from either partition's boundaries**.
+
+**The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
+per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
+`subch_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+multi-line window (200–320) captured 3–5× less of the per-frame structure at the
+~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
+window (200–259): the wide fit is constrained by the red-end data, so red-end
+residuals pull the polynomial on the aromatic band, and what it cannot follow
+stays in the residual and projects onto the adjacent line templates as
+frame-coherent stripes (0.64 ×10⁻³ MJy/sr rms at 64–1024 px in the dim sky,
+aromatic–aliphatic stripe correlation +0.52, identical whether the per-pixel
+model is J=2 or J=4). Raising the global degree is *not* the answer — degree 8
+over 121 subchannels extrapolated to ±200 MJy/sr in frames with partial red-end
+coverage. `segments = [[200, 259], [260, 320]]` fits an independent degree-4
+shape on each range (the aromatic band gets exactly the narrow-window basis, the
+red end its own), with nothing to extrapolate. One segment equal to the window is
+bit-identical to the unsegmented basis.
+
+**Ordering matters when INIT is tiled** (`[passes].order`, default
+`sky_first`). Each INIT tile is an independent joint solve, so it picks its own
+gauge along the near-null directions; frames in neighbouring tiles come out on
+mutually inconsistent gauges. A SKY pass fed those offsets has to compromise,
+which puts smooth footprint-scale lobes within ~1 frame footprint of every INIT
+tile edge — and the next OFFSET pass then fits *to* the lobed sky, so the pair
+is self-consistent and the alternation drains it only slowly (still visible at
+pass 4). `order = "offset_first"` runs INIT → OFFSET → SKY → …, re-levelling
+every frame against the one stitched INIT sky before any exact sky exists; its
+first sky has no lobes (measured on the NEP: the pass-3-to-pass-5 step shows
+0.9–1.2× the far-field level at the edges, i.e. flat, versus 2.5–3.8× for the
+sky-first chain's maps). Use it whenever pass 1 is tiled; with an untiled INIT
+there is no gauge mismatch to fix and the extra OFFSET pass is close to a
+no-op. Note the parity: `offset_first` ends on a sky for **odd** `n`
+(`sky_first` for even `n`) — the runner warns when a schedule ends on an OFFSET
+pass, whose product carries no sky map.
+
+Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
+coverage, `sky_separability/<name>`; written by the same
+`selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
+`<stem>_pass{i}off.h5` (`offsets/map_0` + `frame_scalar` + `fit_ok` +
+`resid_rms`, consumable by `OffsetSubtractor`). Re-running the same config
+resumes at the first missing product. Hooks are POSTprocess functions
+(weights are computed on the raw data first); `SkySubtractor.window` handles
+subframes overhanging any map edge (a negative `ref_coords` start is a Python
+negative slice — the SEP LMC-streak bug).
+
+Wall on the 192-core box: SEP (19,269 frames, J=2): SKY pass ≈ 1.5 h (two
+halves + combine), OFFSET ≈ 50 min; NEP 1k probe (J=4, 121 subch): SKY ≈ 45
+min, OFFSET ≈ 4 min.
+
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the

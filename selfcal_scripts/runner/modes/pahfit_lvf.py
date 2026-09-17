@@ -14,7 +14,8 @@ staged tile):
     Same offset model, but the line profile is the MEASURED template
     G(lambda_c) = Drude intrinsic PAH line (x) SPHEREx Band-4 LVF response,
     tabulated vs channel centre (BC) in ``[params].line_template_npz`` (built by
-    ``selfcal_scripts/spectral_4pass/build_pah_template.py``). Dropped in via
+    ``selfcal_scripts/drivers/build_line_template.py``; shipped templates under
+    ``selfcal/instruments/spherex/data/line_templates/``). Dropped in via
     :class:`selfcal.models.profiles.TemplateProfile`; replaces the too-narrow
     Gaussian that let PAH leak into the offset term.
 
@@ -22,8 +23,8 @@ staged tile):
     Same sky, but the offset is a HARD degree-D Chebyshev polynomial-basis in
     subchannel per column (coefficients solved directly, no soft weight knob —
     the knob let the offset grow a spurious PAH bump and diverge under
-    iteration). The per-frame scalar owns the DC. This is the pass-1 recipe of
-    the spectral 4-pass chain (``selfcal_scripts/spectral_4pass``).
+    iteration). The per-frame scalar owns the DC. Equivalent to ``multiline`` with
+    a single ``[[params.lines]]`` block; the pass-1 recipe of the ``npass`` task.
 
 ``[params]`` keys: ``subch_poly_degree``, ``subch_poly_lo``, ``subch_poly_hi``
 (all three), ``subch_tot`` / ``subch_poly_weight`` / ``poly_degree`` /
