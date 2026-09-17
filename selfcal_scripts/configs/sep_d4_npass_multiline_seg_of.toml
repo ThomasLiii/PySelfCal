@@ -6,8 +6,10 @@
 # and preserved by every later pass. Iterations (100 vs 300) and the sky model (J=2 vs J=4 on
 # the same window) do not change them; the INIT offset basis does -- one deg-2 polynomial per
 # column over all 121 subchannels gives a robust stripe rms of 0.271e-3 in the dim part of S06,
-# the segmented basis 0.214, against 0.202 for the J=2 W/E INIT. The per-tile suffix matches
-# the E2 experiment's, so its S06 tile cal is reused and only the other five tiles are solved.
+# the segmented basis 0.214, against 0.202 for the J=2 W/E INIT. All six tiles are solved fresh
+# (tile suffix _SEP6seg_): the E2 experiment's S06 tile predates the 2026-09-17 merge of main's
+# statistical-equality solver, and tiles that are stitched must come from one code version
+# and one apply_n_threads.
 task = "npass"
 mode = "multiline"
 
@@ -15,7 +17,7 @@ output_dir = "/data3/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
 resolution_arcsec = 6.2
 cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
-suffix = "_multiline3_SEP6_E2seg_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+suffix = "_multiline3_SEP6seg_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
 oversample = 2
 skip_mosaic = true
 apply_n_threads = 32
