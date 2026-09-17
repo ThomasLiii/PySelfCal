@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Sanity-check a reprojected frame against the schema the selfcal pipeline reads.
 
-Run this on ONE of your fake-sky frames before launching a full run, so a schema
+Run this on ONE of your simulated-sky frames before launching a full run, so a schema
 mistake surfaces on 1 file instead of after processing 900. Optionally pass the
 matching real frame with --orig to confirm the injection preserved everything
 except sub_data (and preserved the footprint).
 
-    python verify_frame.py /scratch/tf/D3_fakesky_frames/exp_000000_det_0.h5 \
+    python verify_frame.py /scratch/tf/D3_simsky_frames/exp_000000_det_0.h5 \
         --orig /mnt/md124/.../reprojected/exp_000000_det_0.h5
 """
 import argparse

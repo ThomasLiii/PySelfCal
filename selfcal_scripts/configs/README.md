@@ -10,6 +10,13 @@ Each `.toml` here fully describes one pipeline run. Run it with:
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml --dry-run
 ```
 
+**Logs.** Every run (not `--dry-run`) writes its full console output — the
+main process, worker processes and any traceback — to
+`<output_dir>/<run_name>/logs/<task>_<YYYYmmdd-HHMMSS>_<pid>.log`, headed by
+the command, the git commit and the complete config text, while still printing
+to the terminal. `--log PATH` picks the file, `--no-log` turns it off. Configs
+without an `output_dir`/`run_name` log under `<cache_dir>/logs/`.
+
 The generic engine (`selfcal_scripts/runner/`) reads the config, asks the
 **instrument** for geometry and the **mode** for the calibration recipe, and
 sequences staging → setup_lsqr → apply_lsqr → save → mosaic. It never references
@@ -40,8 +47,13 @@ a telescope or a specific calibration variant by name.
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
-`skip_mosaic`, `reproj_override` (run directly against an existing reproj dir,
-no staging), `postprocess` (named subframe hook).
+`skip_mosaic`, `wavelength_coadd` (default `true`; `false` builds the mosaic
+without the LVF `wav_mean`/`wav_std` maps — they sigma-clip against the std
+map, so leaving it on requires `[mosaic]` `make_std_map` plus either
+`apply_sigma_clipping` (coadded inside the sigma-clip pass, no extra pass) or
+`cache_intermediate` (standalone coadd over the cache)), `reproj_override` (run directly
+against an existing reproj dir, no staging), `postprocess` (named subframe
+hook).
 
 **`[instrument]`** — instrument-specific. SPHEREx: `name = "spherex"`, `detector`,
 `num_sub`/`num_ch`/`num_col`, `calib_dir`, and exactly one channel selector:

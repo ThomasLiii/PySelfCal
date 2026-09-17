@@ -192,3 +192,83 @@ def merge_duplicates_inplace(blocks, arrays, starts):
         blk.indices = indices[g0:g0 + n]
         blk.has_canonical_format = True        # sorted + duplicate-free now
     return data, indices, nnz_before, g
+
+
+class ColSplitCSR:
+    """Row-blocks x column-ranges storage of one logical CSR matrix.
+
+    ``sub[b][t] = (data, indices, indptr)`` holds storage block ``b`` (rows
+    ``row_bounds[b]:row_bounds[b+1]``) restricted to columns
+    ``cuts[t]:cuts[t+1]``, with LOCAL int32 column ids (``col - cuts[t]``) and
+    a private int32 indptr. Every row's range-t segment is the row's sorted
+    entries restricted to that range, so the logical row-major, column-sorted
+    entry stream is, row by row, the concatenation of the T segments.
+
+    This is the layout the bit-equal parallel SpMV consumes (a column's whole
+    accumulation lives in one range); ``setup_lsqr`` emits it directly so no
+    solve-time partition build is needed.
+    """
+
+    def __init__(self, sub, row_bounds, cuts, shape):
+        self.sub = [list(b) for b in sub]
+        self.row_bounds = np.asarray(row_bounds, dtype=np.int64)
+        self.cuts = np.asarray(cuts, dtype=np.int64)
+        self.shape = (int(shape[0]), int(shape[1]))
+        assert len(self.sub) == len(self.row_bounds) - 1
+        assert all(len(b) == len(self.cuts) - 1 for b in self.sub)
+
+    @property
+    def nranges(self):
+        return len(self.cuts) - 1
+
+    @property
+    def nblocks(self):
+        return len(self.row_bounds) - 1
+
+    @property
+    def dtype(self):
+        return self.sub[0][0][0].dtype
+
+    @property
+    def nnz(self):
+        return int(sum(int(ip[-1]) for blk in self.sub for (_d, _i, ip) in blk))
+
+    def block_row_nnz(self, b):
+        """int64 per-row TOTAL nnz of block b (sum over ranges)."""
+        n = int(self.row_bounds[b + 1] - self.row_bounds[b])
+        out = np.zeros(n, dtype=np.int64)
+        for (_d, _i, ip) in self.sub[b]:
+            out += np.diff(ip)
+        return out
+
+    def __repr__(self):
+        return (f"<ColSplitCSR shape={self.shape} nnz={self.nnz} "
+                f"blocks={self.nblocks} ranges={self.nranges}>")
+
+
+def partition_block_csr(bcsr, cuts):
+    """Reference (copying) conversion BlockCSR -> ColSplitCSR.
+
+    Rows must be canonical (column-sorted, no duplicates). Pure data
+    movement: entries are taken in storage order and stable-filtered per
+    range. Used by tests and as a fallback; production storage is emitted
+    directly by ``setup_lsqr``.
+    """
+    cuts = np.asarray(cuts, dtype=np.int64)
+    nranges = len(cuts) - 1
+    sub = []
+    for blk in bcsr.blocks:
+        n_rows = blk.shape[0]
+        rid = np.searchsorted(cuts[1:-1], blk.indices, side='right')
+        row_of = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(blk.indptr))
+        per = []
+        for t in range(nranges):
+            m = rid == t
+            cnt = np.bincount(row_of[m], minlength=n_rows)
+            ip = np.zeros(n_rows + 1, dtype=np.int32)
+            np.cumsum(cnt, out=ip[1:])
+            per.append((blk.data[m].copy(),
+                        (blk.indices[m] - np.int32(cuts[t])).astype(np.int32),
+                        ip))
+        sub.append(per)
+    return ColSplitCSR(sub, bcsr.row_bounds, cuts, bcsr.shape)
