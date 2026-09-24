@@ -1,0 +1,29 @@
+# Optional local pre-commit hooks: `pip install pre-commit && pre-commit install`.
+# Mirrors the CI linters (ruff) so issues surface before a push. ruff config
+# (rules, excludes, line length) lives in pyproject.toml [tool.ruff].
+#
+# NOTE: while the package's pre-existing lint backlog is being cleared on a
+# dedicated cleanup branch, these hooks will flag existing issues on touched
+# files; that is intended (they keep NEW code clean). Remove `--exit-zero` once
+# the backlog is gone if you want the hook to hard-fail.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      # Lint (advisory while the backlog is cleared).
+      - id: ruff
+        args: [--exit-zero]
+      # Format check only — does not rewrite files in the hook; run
+      # `ruff format` manually as part of the formatting-cleanup branch.
+      - id: ruff-format
+        args: [--check]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict

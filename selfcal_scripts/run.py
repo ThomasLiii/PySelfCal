@@ -8,6 +8,11 @@ config, and dispatches on its ``task``. ``--dry-run`` loads + validates the
 config and resolves the instrument's jobs without executing the pipeline — a
 cheap way to confirm a config resolves to the intended jobs/mode, the same
 resolution the byte-equality regression checks in cache/refactor_gate/ verify.
+
+Every real run also writes its console output (including worker processes and
+any traceback) to ``<output_dir>/<run_name>/logs/<task>_<timestamp>_<pid>.log``,
+headed by the command, git commit and the full config text. ``--log PATH``
+chooses the file; ``--no-log`` turns it off.
 """
 import argparse
 import os
@@ -21,6 +26,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import logging
 import sys
+import time
 
 
 def main():
@@ -32,28 +38,54 @@ def main():
     ap.add_argument('--config', required=True, help='path to the run TOML config')
     ap.add_argument('--dry-run', action='store_true',
                     help='load config + resolve jobs without running the pipeline')
+    ap.add_argument('--log', metavar='PATH', default=None,
+                    help='log file for this run (default: <output_dir>/<run_name>/logs/'
+                         '<task>_<timestamp>_<pid>.log)')
+    ap.add_argument('--no-log', action='store_true', help='do not write a log file')
     args = ap.parse_args()
 
     from selfcal_scripts.runner.config import load_config, get_instrument
     from selfcal_scripts.runner import pipelines
 
     cfg = load_config(args.config)
+
+    run_log = None
+    if not args.dry_run and not args.no_log:
+        from selfcal_scripts.runner.runlog import default_log_path, start_run_log
+        log_path = args.log or default_log_path(cfg)
+        if log_path is None:
+            print("[run] no output_dir/run_name or cache_dir in the config: running without a log file")
+        else:
+            repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            run_log = start_run_log(log_path, config_path=args.config, repo=repo)
+            if run_log is not None:
+                print(f"[run] log: {run_log.path}")
     print(f"[run] task={cfg.task} instrument={cfg.instrument} mode={cfg.mode} "
           f"run_name={cfg.resolved_run_name()}")
 
     if args.dry_run:
         inst = get_instrument(cfg.instrument)
-        if cfg.task in ('cal', 'tiled'):
+        if cfg.task in ('cal', 'tiled', 'npass'):
             jobs = inst.jobs(cfg.instrument_cfg)
             print(f"[dry-run] {len(jobs)} job(s): {[j.name for j in jobs]}")
             from selfcal_scripts.runner.modes import get_mode
             mode = get_mode(cfg.mode)
             print(f"[dry-run] mode={mode.name} pipeline={mode.pipeline} "
                   f"mosaic_mode={mode.mosaic_mode} requires={mode.requires}")
+        if cfg.task == 'npass':
+            from selfcal_scripts.runner.npass import describe_schedule
+            for line in describe_schedule(cfg):
+                print(f"[dry-run] {line}")
         print("[dry-run] config OK")
         return
 
-    pipelines.run(cfg)
+    t0 = time.time()
+    try:
+        pipelines.run(cfg)
+    except BaseException as e:
+        print(f"[run] FAILED after {time.time() - t0:.1f} s: {type(e).__name__}: {e}", flush=True)
+        raise
+    print(f"[run] finished in {time.time() - t0:.1f} s", flush=True)
 
 
 if __name__ == "__main__":

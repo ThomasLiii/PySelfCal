@@ -3,7 +3,7 @@
 A run is fully described by one TOML file. The loader splits it into:
   * generic top-level scalars (task / instrument / mode / output paths / staging),
   * stage tables consumed verbatim as kwargs (``[calibration]`` ``[lsqr]``
-    ``[mosaic]`` ``[zodi]`` ``[reproject]`` ``[tiled]``),
+    ``[mosaic]`` ``[zodi]`` ``[reproject]`` ``[tiled]`` ``[passes]``),
   * ``[instrument]`` — instrument-specific knobs (SPHEREx: detector, num_*,
     channel/window selection, calib_dir),
   * ``[params]`` — mode knobs (poly degree/weight, reg weight, line params, ...).
@@ -35,6 +35,7 @@ class RunConfig:
     # Operational / gating knobs (optional):
     n_frames: int = None               # limit cal to the first N sorted reproj files
     skip_mosaic: bool = False          # cal only (no mosaic / wavelength)
+    wavelength_coadd: bool = True      # append the LVF wav_mean/wav_std maps
     reproj_override: str = None        # use this reproj dir directly (skip NVMe staging)
 
     instrument_cfg: dict = field(default_factory=dict)
@@ -45,6 +46,7 @@ class RunConfig:
     zodi: dict = field(default_factory=dict)
     reproject: dict = field(default_factory=dict)
     tiled: dict = field(default_factory=dict)
+    passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
 
     def resolved_run_name(self):
         det = self.instrument_cfg.get('detector')
@@ -59,11 +61,12 @@ _SCALAR_KEYS = {
     'task', 'mode', 'output_dir', 'run_name', 'resolution_arcsec',
     'cache_dir', 'suffix', 'oversample', 'staging', 'keep_nvme', 'hdd_io_limit',
     'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override',
+    'wavelength_coadd',
 }
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',
     'lsqr': 'lsqr', 'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject',
-    'tiled': 'tiled',
+    'tiled': 'tiled', 'passes': 'passes',
 }
 
 

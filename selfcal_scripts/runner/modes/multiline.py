@@ -98,13 +98,21 @@ class Multiline(PAHfit):
         from selfcal.models.offset_basis import n_coef
         p = cfg.params
         cm = det_inputs['det_chunk_map']
+        # Optional [params].subch_poly_segments = [[lo, hi], ...]: an independent
+        # degree-D Chebyshev per column on each segment (plus a level per segment
+        # after the first) instead of one polynomial over the whole window -- the
+        # joint solve's counterpart of [passes].offset.segments; see
+        # offset_basis.piecewise_cheb_shape_basis for why.
+        segments = p.get('subch_poly_segments')
         poly_basis = inst.subchannel_poly_basis(
             cm, int(cfg.instrument_cfg['num_col']),
             degree=int(p['subch_poly_degree']),
-            lo=int(p['subch_poly_lo']), hi=int(p['subch_poly_hi']))
+            lo=int(p['subch_poly_lo']), hi=int(p['subch_poly_hi']),
+            segments=segments)
         ncf = n_coef(poly_basis)
-        print(f"[multiline] hard poly-basis offset: degree={poly_basis['degree']} "
-              f"-> {ncf} coeffs/col x {poly_basis['num_groups']} col "
+        print(f"[multiline] hard poly-basis offset: degree={poly_basis['degree']}"
+              + (f" on {len(segments)} segments {segments}" if segments else "")
+              + f" -> {ncf} coeffs/col x {poly_basis['num_groups']} col "
               f"= {ncf * poly_basis['num_groups']} coeffs/frame "
               f"(no penalty weight, no profile orthogonalization; "
               f"the DC term is carried by the per-frame scalar)", flush=True)

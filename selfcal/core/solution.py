@@ -223,6 +223,29 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     return x0_full
 
 
+
+def _accumulate_runs(acc, cols, w):
+    """``acc[c] += w`` with np.bincount's exact arithmetic, run by run.
+
+    ``w`` is float64 in entry order; equal consecutive ``cols`` form runs.
+    For each run the sum is a sequential left fold seeded with the current
+    accumulator — computed as ``np.cumsum([acc[c], w_run...])[-1]`` — which
+    is bit-for-bit what ``np.bincount(cols, weights=w)`` produces when the
+    same entries are fed to it in one call (it too adds each weight to a
+    float64 slot in entry order, starting from 0.0).
+    """
+    if cols.size == 0:
+        return
+    starts = np.flatnonzero(np.diff(cols)) + 1
+    bounds = np.concatenate(([0], starts, [cols.size]))
+    for i in range(bounds.size - 1):
+        a, z = int(bounds[i]), int(bounds[i + 1])
+        col = int(cols[a])
+        run = np.empty(z - a + 1, dtype=np.float64)
+        run[0] = acc[col]
+        run[1:] = w[a:z]
+        acc[col] = np.cumsum(run)[-1]
+
 def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
                            ref_shape: tuple[int, int], scalar_col_start: int,
                            num_sky_blocks: int = 1,
@@ -276,7 +299,8 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
         ``compute_x0_from_Ab``.
     """
     from .blockcsr import BlockCSR
-    if not isinstance(A, (csr_matrix, BlockCSR)):
+    from .blockcsr import ColSplitCSR as _CS
+    if not isinstance(A, (csr_matrix, BlockCSR, _CS)):
         # COO input: fall back to the generic diag-LS (memory-heavy — it
         # materializes offset-block copies of every column), then zero the
         # chunk-offset block.
@@ -313,61 +337,104 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
     entries_per_row = max(1, int(A.nnz // max(1, n_rows_total)))
     chunk_rows = max(1, target_entries // entries_per_row)
 
+    from .blockcsr import ColSplitCSR, _csr_shell
+    walk_boundary = scalar_boundary   # boundary in the WALKED arrays' column ids
     if isinstance(A, csr_matrix):
         block_iter = [(A, 0)]
+    elif isinstance(A, ColSplitCSR):
+        # The scalar block is the highest column range: every scalar column
+        # lives in the LAST range, whose per-row segments hold exactly the
+        # scalar entries of the row in row order — the same selected sequence
+        # the full-row walk produces. Walk that range's arrays only, with the
+        # boundary expressed in its local ids.
+        last = A.nranges - 1
+        c_last = int(A.cuts[last])
+        if scalar_boundary < c_last:
+            raise ValueError("scalar block straddles a column-range cut; "
+                             "cannot restrict the x0 walk to the last range")
+        block_iter = []
+        for _bi in range(A.nblocks):
+            d, i, ip = A.sub[_bi][last]
+            nrows = int(A.row_bounds[_bi + 1] - A.row_bounds[_bi])
+            block_iter.append((_csr_shell(d, i, ip, (nrows, int(A.shape[1]) - c_last)),
+                               int(A.row_bounds[_bi])))
+        walk_boundary = scalar_boundary - c_last
     else:  # BlockCSR: blocks in global row order
         block_iter = [(blk, int(A.row_bounds[i]))
                       for i, blk in enumerate(A.blocks)]
 
-    sel_cols, sel_w2, sel_wb = [], [], []
-    for blk, row_off in block_iter:
-        indptr = blk.indptr
-        indices = blk.indices
-        data = blk.data
-        n_rows = blk.shape[0]
-        for r0 in range(0, n_rows, chunk_rows):
-            r1 = min(r0 + chunk_rows, n_rows)
-            s0, s1 = int(indptr[r0]), int(indptr[r1])
-            if s0 == s1:
-                continue
-            cols_c = indices[s0:s1]
-            keep = cols_c >= scalar_boundary
-            if not keep.any():
-                continue
-            d = data[s0:s1][keep]
-            sel_cols.append((cols_c[keep] - scalar_boundary).astype(np.int64,
-                                                                   copy=False))
-            # Square in the data's own dtype (f32 in production) to match
-            # the reference computation in compute_x0_from_Ab, which squares
-            # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
-            # of the bit-equality contract.
-            sel_w2.append(d * d)
-            counts = np.diff(indptr[r0:r1 + 1])
-            # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
-            # b (exactly-representable values only), and f32-value * f64 ->
-            # f64 gives the same result an f64 b would. No-op (view) when b
-            # is f64.
-            bvals = np.repeat(
-                b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
-                counts)[keep]
-            sel_wb.append(d * bvals)
+    # Streaming, bit-identical to ONE global np.bincount over all selected
+    # entries: bincount's per-column value is a sequential float64 left fold
+    # in entry order starting from 0.0 (0.0 + w0 is exactly w0), and so is
+    # np.cumsum. Every scalar column's entries come in consecutive runs (a
+    # frame's data rows are contiguous), so per chunk we cumsum each run
+    # with the column's carried accumulator prepended as the first element —
+    # ((acc + w_k) + w_k+1) + ... — which continues the exact same fold
+    # across chunk and block boundaries. No entry is ever materialised
+    # beyond one chunk (the concatenate-then-bincount form held ~20 B per
+    # selected entry plus concatenation copies: +43 GB at 1.8e9 rows).
+    AtA_diag = np.zeros(num_scalar_cols)
+    Atb = np.zeros(num_scalar_cols)
 
-    if sel_cols:
-        cat_cols = np.concatenate(sel_cols)
-        del sel_cols
-        cat_w2 = np.concatenate(sel_w2)
-        del sel_w2
-        cat_wb = np.concatenate(sel_wb)
-        del sel_wb
-        AtA_diag = np.bincount(cat_cols, weights=cat_w2,
-                               minlength=num_scalar_cols)
-        del cat_w2
-        Atb = np.bincount(cat_cols, weights=cat_wb,
-                          minlength=num_scalar_cols)
-        del cat_cols, cat_wb
-        scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
+    def _prep(args):
+        """Selection + products for one chunk — pure per chunk; the fold
+        below stays strictly in chunk order, so where this runs cannot
+        change a byte."""
+        blk, row_off, r0, r1 = args
+        indptr = blk.indptr
+        s0, s1 = int(indptr[r0]), int(indptr[r1])
+        if s0 == s1:
+            return None
+        cols_c = blk.indices[s0:s1]
+        keep = cols_c >= walk_boundary
+        if not keep.any():
+            return None
+        d = blk.data[s0:s1][keep]
+        c = cols_c[keep] - walk_boundary
+        # Square in the data's own dtype (f32 in production) to match
+        # the reference computation in compute_x0_from_Ab, which squares
+        # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
+        # of the bit-equality contract.
+        w2 = (d * d).astype(np.float64, copy=False)
+        counts = np.diff(indptr[r0:r1 + 1])
+        # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
+        # b (exactly-representable values only), and f32-value * f64 ->
+        # f64 gives the same result an f64 b would. No-op (view) when b
+        # is f64.
+        bvals = np.repeat(
+            b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
+            counts)[keep]
+        wb = d * bvals
+        return c, w2, wb
+
+    chunks = [(blk, row_off, r0, min(r0 + chunk_rows, blk.shape[0]))
+              for blk, row_off in block_iter
+              for r0 in range(0, blk.shape[0], chunk_rows)]
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fold(res):
+        if res is None:
+            return
+        c, w2, wb = res
+        _accumulate_runs(AtA_diag, c, w2)
+        _accumulate_runs(Atb, c, wb)
+
+    if len(chunks) > 1:
+        # Prep in a small thread window (the gathers/products release the
+        # GIL); folds applied strictly in chunk order.
+        with ThreadPoolExecutor(max_workers=3) as _ex:
+            q = deque()
+            for ch in chunks:
+                q.append(_ex.submit(_prep, ch))
+                if len(q) >= 3:
+                    _fold(q.popleft().result())
+            while q:
+                _fold(q.popleft().result())
     else:
-        scalars = np.zeros(num_scalar_cols)
+        for ch in chunks:
+            _fold(_prep(ch))
+    scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
 
     if active_mask is None:
         x0 = np.zeros(num_cols)
@@ -385,3 +452,74 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
             "inconsistent with A")
     x0_full[scalar_full_idx + scalar_col_start] = scalars
     return x0_full
+
+
+def solve_sky_closed_form(pixel_fisher, pixel_cross, pixel_rhs, pixel_counts,
+                          num_sky, num_sky_blocks, damp_weights=None):
+    """Exact per-pixel least-squares solution of a K=0 SKY-ONLY system.
+
+    With no offset unknowns the normal equations are block-diagonal: each sky
+    pixel is an independent J x J system built from the moments that
+    ``setup_lsqr`` already streams (``pixel_fisher`` = Σw²G_j², ``pixel_cross``
+    = Σw²G_iG_j, and ``pixel_rhs`` = Σw²G_j·v when ``sky_rhs_moments=True``).
+    Solving them directly replaces LSQR for this case, which matters because
+    LSQR only SEMI-converges on the block-diagonal problem: every pixel's 2x2
+    converges at its own rate set by its wavelength diversity, so at a fixed
+    ``iter_lim`` the low-diversity pixels are still mid-way along the
+    cont<->line valley (the Pearson -0.9 collapse seen on low-diversity tiles).
+    The closed form has no iteration count and therefore no such
+    field-dependence — the same recipe gives the converged answer on every
+    field, and because the solve is per-pixel it also does not need tiling.
+
+    Damping is applied exactly as the LSQR path does: coverage-weighted
+    Tikhonov ``damp_j * coverage`` added to the j-th diagonal (see
+    ``constraint_builders.sky_damping_block``), so results are comparable with
+    the iterative solve at convergence.
+
+    Parameters
+    ----------
+    pixel_fisher : (J*num_sky,) float64
+    pixel_cross : dict {(i,j): (num_sky,)} or, for J == 2, the bare (0,1) array
+    pixel_rhs : (J*num_sky,) float64
+    pixel_counts : (>= J*num_sky,) int — sky-block coverage (per-block slices)
+    num_sky, num_sky_blocks : int
+    damp_weights : sequence of J floats or None
+        Per-block damping weights (``damp_weight`` for block 0,
+        ``damp_weight_line`` / component weight for the rest). None/0 = none.
+
+    Returns
+    -------
+    x_sky : (J*num_sky,) float64
+        Block-stacked solution (block j at ``[j*num_sky:(j+1)*num_sky]``);
+        pixels with a singular (all-zero) normal block are 0.
+    """
+    J = int(num_sky_blocks)
+    if not isinstance(pixel_cross, dict):
+        pixel_cross = {(0, 1): np.asarray(pixel_cross)}
+    F = [np.asarray(pixel_fisher[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+         for j in range(J)]
+    r = [np.asarray(pixel_rhs[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+         for j in range(J)]
+    cov = [np.asarray(pixel_counts[j * num_sky:(j + 1) * num_sky], dtype=np.float64)
+           for j in range(J)]
+    dw = list(damp_weights) if damp_weights is not None else [0.0] * J
+    # normal matrix per pixel: M_jj = F_j + damp_j*cov_j ; M_ij = cross_ij
+    M = np.zeros((num_sky, J, J), dtype=np.float64)
+    for j in range(J):
+        M[:, j, j] = F[j] + (float(dw[j]) * cov[j] if dw[j] and dw[j] > 0 else 0.0)
+    for (i, j), c in pixel_cross.items():
+        M[:, i, j] = c
+        M[:, j, i] = c
+    rhs = np.stack(r, axis=1)                                   # (num_sky, J)
+    x = np.zeros((num_sky, J), dtype=np.float64)
+    if J == 2:
+        a, b, d = M[:, 0, 0], M[:, 0, 1], M[:, 1, 1]
+        det = a * d - b * b
+        ok = det > 0
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        x[:, 0] = (d * rhs[:, 0] - b * rhs[:, 1]) * inv
+        x[:, 1] = (a * rhs[:, 1] - b * rhs[:, 0]) * inv
+    else:
+        ok = np.linalg.det(M) > 0
+        x[ok] = np.linalg.solve(M[ok], rhs[ok][..., None])[..., 0]
+    return x.T.reshape(-1)

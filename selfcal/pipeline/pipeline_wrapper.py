@@ -24,6 +24,7 @@ from .. import _state
 from ..core import coadd
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file
+from ..io.cal_writer import write_sky_groups
 from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
                          parse_pixel_fisher_sky, apply_line_fisher_mask,
                          parse_line_separability)
@@ -31,6 +32,8 @@ from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
+from ..core.shmbuf import worker_pool_context
+from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
 from typing import TYPE_CHECKING
@@ -509,7 +512,8 @@ class Reprojector:
         # existing _hdd_io_semaphore is process-local, so use ProcessPool
         # for symmetry with batch_reproject. max_workers small to avoid HDD
         # seek thrash when files live on the RAID.
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        with ProcessPoolExecutor(max_workers=max_workers,
+                                 mp_context=worker_pool_context()) as ex:
             futures = {ex.submit(self._check_one, p): p for p in self.reproj_list}
             for fut in tqdm(as_completed(futures), total=len(futures),
                             desc='Checking reprojected files',
@@ -646,7 +650,8 @@ class Calibrator(Reprojector):
                    oversample_factor: int = 1,
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
-                   outlier_thresh: float = 3.0, ignore_list: list[int] | None = None,
+                   outlier_thresh: float = 3.0, outlier_subchannel_edges=None,
+                   ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
                    reg_weights: list[float] | None = None, adj_infos: list | None = None,
@@ -668,6 +673,7 @@ class Calibrator(Reprojector):
                    offset_model: OffsetModel | None = None,
                    sky_model: SkyModel | None = None,
                    compact_zero_columns: bool = True,
+                   sky_rhs_moments: bool = False,
                    batch_spill_dir: str | None = None) -> None:
         """Build the LSQR system for K chunk maps.
 
@@ -839,9 +845,16 @@ class Calibrator(Reprojector):
                 "removed in a future release.",
                 DeprecationWarning, stacklevel=2)
 
-        if not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
+        # K=0 (empty chunk_maps) is allowed ONLY for a sky-only solve: no offset
+        # columns, the offset already subtracted from the data (e.g. two-pass
+        # pass 2). Requires a sky_model + det_aux so there is still something to
+        # fit. Otherwise a non-empty chunk_maps list is required.
+        sky_only = (isinstance(chunk_maps, list) and len(chunk_maps) == 0
+                    and sky_model is not None)
+        if not sky_only and not (isinstance(chunk_maps, list) and len(chunk_maps) >= 1):
             raise ValueError(
-                "chunk_maps must be a non-empty list of ndarrays (or pass offset_model=)")
+                "chunk_maps must be a non-empty list of ndarrays (or pass "
+                "offset_model=), unless sky-only (empty chunk_maps + sky_model)")
         K = len(chunk_maps)
 
         def _check_len(name, val):
@@ -880,6 +893,7 @@ class Calibrator(Reprojector):
                 grid_valid_weight=grid_valid_weight,
                 apply_mask=apply_mask, apply_weight=apply_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh,
+                outlier_subchannel_edges=outlier_subchannel_edges,
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
@@ -898,6 +912,7 @@ class Calibrator(Reprojector):
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
+                sky_rhs_moments=sky_rhs_moments,
                 batch_spill_dir=batch_spill_dir)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -909,6 +924,7 @@ class Calibrator(Reprojector):
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
                 self.pixel_cross = None
+                self.pixel_rhs = None
                 self._pixel_spill = None
             else:
                 r = _setup_result
@@ -916,6 +932,7 @@ class Calibrator(Reprojector):
                 self.pixel_counts = r.pixel_counts
                 self.pixel_fisher = r.pixel_fisher
                 self.pixel_cross = r.pixel_cross
+                self.pixel_rhs = r.pixel_rhs
                 self.active_mask = r.active_mask
                 self.num_cols_full = (int(r.active_mask.size)
                                       if r.active_mask is not None else None)
@@ -941,6 +958,38 @@ class Calibrator(Reprojector):
         self.det_templates = self.layout.det_template_arr_list
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
+
+    def solve_sky_closed_form(self, damp_weight: float = 0.0,
+                              damp_weight_line: float | None = None) -> np.ndarray:
+        """Solve a K=0 SKY-ONLY system in closed form per pixel (no LSQR).
+
+        Requires ``setup_lsqr(chunk_maps=[], sky_model=..., sky_rhs_moments=True)``
+        so the per-pixel normal equations are complete. Sets ``self.x`` in the
+        full column layout (sky blocks only — there are no offset/scalar columns
+        in a K=0 solve) so ``save_calibration`` works unchanged.
+
+        Damping mirrors the LSQR path (coverage-weighted Tikhonov per block).
+        See :func:`selfcal.core.solution.solve_sky_closed_form` for why this
+        replaces the iterative solve for sky-only systems.
+        """
+        from ..core.solution import solve_sky_closed_form as _closed
+        if self.chunk_maps:
+            raise ValueError("solve_sky_closed_form is for K=0 sky-only systems "
+                             "(setup_lsqr(chunk_maps=[]))")
+        if getattr(self, 'pixel_rhs', None) is None:
+            raise ValueError("pixel_rhs missing — call setup_lsqr(..., sky_rhs_moments=True)")
+        self._materialize_pixel_state()
+        J = self.num_sky_blocks
+        num_sky = self.ref_shape[0] * self.ref_shape[1]
+        dws = [float(damp_weight)]
+        for comp in self.sky_model.components[1:]:
+            w = getattr(comp, 'damp_weight', None)
+            dws.append(float(damp_weight_line if w is None else w) if
+                       (damp_weight_line is not None or w is not None) else 0.0)
+        with timer("Closed-form sky solve"):
+            self.x = _closed(self.pixel_fisher, self.pixel_cross, self.pixel_rhs,
+                             self.pixel_counts, num_sky, J, damp_weights=dws)
+        return self.x
 
     def _materialize_pixel_state(self):
         """Load pixel_counts/fisher/cross if they are parked on scratch disk."""
@@ -1061,7 +1110,7 @@ class Calibrator(Reprojector):
                 _spill_dir = self._spill_pixel_state()
                 try:
                     self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
-                                                x0=_owned.pop(0), atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
+                                                x0=_owned.pop(0), a_owned=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                                                 solver=solver, use_float32=use_float32, n_threads=n_threads,
                                                 active_mask=active_mask_local,
                                                 num_cols_full=num_cols_full_local)
@@ -1285,62 +1334,16 @@ class Calibrator(Reprojector):
         cal_path = os.path.join(cal_dir, cal_file)
         with h5py.File(cal_path, 'w') as f:
             f.attrs['num_maps'] = K
-            f.attrs['num_sky_blocks'] = self.num_sky_blocks
-            f.attrs['schema_version'] = 3
-            f.attrs['sky_components'] = np.array(sky_names, dtype='S')
-            # --- v3: per-component sky blocks under sky/<name> (block 0 =
-            # continuum, 1.. = spectral components, each an arbitrary profile's
-            # per-pixel amplitude map). Saved RAW; the Fisher attr below is an
-            # informational read-time mask threshold, not applied destructively.
-            sky_grp = f.create_group('sky')
-            skycov_grp = f.create_group('sky_coverage')
-            skyfish_grp = f.create_group('sky_fisher')
-            for j, name in enumerate(sky_names):
-                sky_grp.create_dataset(name, data=sky_maps[j], compression='gzip')
-                skycov_grp.create_dataset(name, data=sky_coverages[j], compression='gzip')
-                if sky_fishers[j] is not None:
-                    skyfish_grp.create_dataset(name, data=sky_fishers[j].astype('float32'),
-                                               compression='gzip')
-            # Per-pixel SEPARABILITY I_P (each spectral block's Schur
-            # complement against all other sky blocks). Unlike the block's
-            # Fisher (a magnitude metric), I_P measures wavelength diversity —
-            # the quantity that bounds per-pixel amplitude variance and
-            # identifies the degenerate pixels that blow up under LSQR
-            # semi-convergence. Kept as a read-time diagnostic. One dataset per
-            # spectral block, sky_separability/<name>; for 2-block cals this is
-            # the single legacy dataset, byte-identical.
-            if (getattr(self, 'pixel_cross', None) is not None
-                    and self.num_sky_blocks >= 2 and self.pixel_fisher is not None):
-                sep_grp = f.create_group('sky_separability')
-                for j in range(1, self.num_sky_blocks):
-                    sep = parse_line_separability(
-                        self.pixel_cross, self.pixel_fisher, self.ref_shape,
-                        num_sky_blocks=self.num_sky_blocks, block=j)
-                    sep_grp.create_dataset(
-                        sky_names[j], data=sep.astype('float32'), compression='gzip')
-            # --- Back-compat hard-link aliases (v2 readers resolve transparently):
-            # skymap -> continuum; skymap_line -> the single spectral block when
-            # there is exactly one. h5py resolves these on read, so
-            # f['skymap'][...] etc. return identical values without duplicating data.
-            cont = sky_names[0]
-            f['skymap'] = sky_grp[cont]
-            f['skymap_coverage'] = skycov_grp[cont]
-            if cont in skyfish_grp:
-                f['skymap_fisher'] = skyfish_grp[cont]
-            extra_names = sky_names[1:]
-            if extra_names:
-                # Alias the LAST spectral block (the line; earlier extras are
-                # nuisance shapes like a continuum slope). Single-extra cals
-                # keep the exact v2 aliasing behavior.
-                ln = extra_names[-1]
-                f['skymap_line'] = sky_grp[ln]
-                f['skymap_line_coverage'] = skycov_grp[ln]
-                if ln in skyfish_grp:
-                    f['skymap_line_fisher'] = skyfish_grp[ln]
-            # Informational: recommended Fisher threshold for read-time masking.
-            # Not a contract — analysis is free to pick any threshold.
-            if self.line_fisher_threshold is not None:
-                f.attrs['line_fisher_threshold'] = float(self.line_fisher_threshold)
+            # v3 sky blocks (+ per-block separability + v2 aliases): ONE writer
+            # shared with the sky-only producers (selfcal.io.cal_writer).
+            write_sky_groups(
+                f, sky_names=sky_names, sky_maps=sky_maps, sky_coverages=sky_coverages,
+                sky_fishers=sky_fishers,
+                pixel_cross=(self.pixel_cross if (getattr(self, 'pixel_cross', None) is not None
+                                                  and self.pixel_fisher is not None) else None),
+                pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
+                num_sky_blocks=self.num_sky_blocks,
+                line_fisher_threshold=self.line_fisher_threshold)
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')
@@ -1539,7 +1542,8 @@ class Mosaicker(Reprojector):
         coadd_batch_size: int = 10, cache_dir: str = 'cache/',
         cache_intermediate: bool = False, det_aux: np.ndarray | None = None,
         preprocess_func: Callable | None = None, postprocess_func: Callable | None = None,
-        valid_chunk_thresh: float = 0.01) -> dict:
+        valid_chunk_thresh: float = 0.01,
+        wav_maps: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
         """Build coadded maps applying per-map calibration offsets.
 
         ``chunk_maps`` is a length-K list of (typically grid-resolution) chunk
@@ -1598,12 +1602,28 @@ class Mosaicker(Reprojector):
         valid_chunk_thresh : float, optional
             Minimum per-map coverage fraction below which a chunk's offset is
             zeroed out.
+        wav_maps : (np.ndarray, np.ndarray) or None, optional
+            ``(band centre, band width)`` detector-grid maps. When given
+            (requires ``make_std_map`` and ``apply_sigma_clipping``), the
+            sigma-clip pass also coadds their band-width-weighted per-pixel
+            mean and std, added as ``wav_mean_map`` / ``wav_std_map`` (unit
+            unset; the instrument's ``wavelength_append`` labels it).
 
         Returns
         -------
         dict
             ``self.maps`` — the ``mean_map`` / ``std_map`` / ``sc_mean_map``
-            entries (each a ``{'data', 'weight', 'aux', 'unit'}`` dict).
+            entries (each a ``{'data', 'weight', 'aux', 'unit'}`` dict), plus
+            the wavelength maps when ``wav_maps`` was given.
+
+        Notes
+        -----
+        The passes run through ``coadd.run_coadd_schedule``: one pass prepares
+        every frame, writes the intermediate cache (if ``cache_intermediate``)
+        and accumulates the mean; the std and sigma-clipped passes then read
+        the cache (or re-prepare the frames). Accumulation order is fixed
+        (batch order, frame order within a batch), so the maps depend only on
+        the frames and the batch sizes, not on ``max_workers``.
         """
         if ignore_list is None:
             ignore_list = []
@@ -1637,68 +1657,36 @@ class Mosaicker(Reprojector):
             else:
                 logger.warning("Warning: Calibration offsets not available. No offsets will be applied.")
 
-        # Bundle arguments common to all compute_coadd_map calls
-        common_kwargs = {
-            'ref_shape': self.ref_shape,
-            'file_list': self.reproj_list,
-            'offset_lists': offset_lists_param,
-            'apply_weight': apply_weight,
-            'apply_mask': apply_mask,
-            'chunk_maps': chunk_maps,
-            'max_workers': max_workers,
-            'grid_valid_weight': grid_valid_weight,
-            'ignore_list': ignore_list,
-            'oversample_factor': oversample_factor,
-            'det_offset_funcs': det_offset_funcs,
-            'cache_dir': cache_dir,
-            'use_cached': False,
-            'det_aux': det_aux,
-            'preprocess_func': preprocess_func,
-            'postprocess_func': postprocess_func
-        }
-
-        if cache_intermediate:
-            logger.info("Caching intermediate computations...")
-            with timer("Cache computation"):
-                cached_list = coadd.compute_coadd_map(
-                    mode='cache',
-                    batch_size=cache_batch_size,
-                    **common_kwargs
-                )
-            self.cached_list = cached_list
-            common_kwargs['file_list'] = cached_list
-            common_kwargs['use_cached'] = True
-
-        logger.info("Computing mean map...")
-        with timer("Mean map computation"):
-            self.maps['mean_map']['data'], self.maps['mean_map']['weight'], self.maps['mean_map']['aux'] = coadd.compute_coadd_map(
-                mode='mean', 
-                batch_size=coadd_batch_size,
-                **common_kwargs
-            )
-        
-        if make_std_map:
-            logger.info("Computing std map...")
-            with timer("Std map computation"):
-                self.maps['std_map']['data'], self.maps['std_map']['weight'], self.maps['std_map']['aux'] = coadd.compute_coadd_map(
-                    mode='std', 
-                    mean_map=self.maps['mean_map']['data'], 
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                )
-
-        if make_std_map and apply_sigma_clipping:
-            logger.info("Computing sigma-clipped mean map...")
-            
-            with timer("Sigma-clipped mean map computation"):
-                self.maps['sc_mean_map']['data'], self.maps['sc_mean_map']['weight'], self.maps['sc_mean_map']['aux'] = coadd.compute_coadd_map(
-                    mode='sigma_clip',
-                    mean_map=self.maps['mean_map']['data'],
-                    std_map=self.maps['std_map']['data'],
-                    sigma=sigma,
-                    batch_size=coadd_batch_size,
-                    **common_kwargs
-                    )
+        with timer("Mosaic coadd passes"):
+            maps, cached_list = coadd.run_coadd_schedule(
+                ref_shape=self.ref_shape,
+                file_list=self.reproj_list,
+                offset_lists=offset_lists_param,
+                apply_weight=apply_weight,
+                apply_mask=apply_mask,
+                chunk_maps=chunk_maps,
+                grid_valid_weight=grid_valid_weight,
+                max_workers=max_workers,
+                ignore_list=ignore_list,
+                det_offset_funcs=det_offset_funcs,
+                oversample_factor=oversample_factor,
+                cache_batch_size=cache_batch_size,
+                coadd_batch_size=coadd_batch_size,
+                cache_dir=cache_dir,
+                cache_intermediate=cache_intermediate,
+                det_aux=det_aux,
+                preprocess_func=preprocess_func,
+                postprocess_func=postprocess_func,
+                make_std_map=make_std_map,
+                apply_sigma_clipping=apply_sigma_clipping,
+                sigma=sigma,
+                wav_maps=wav_maps)
+        self.cached_list = cached_list
+        for name, entry in maps.items():
+            if name not in self.maps:
+                self.maps[name] = {'data': None, 'weight': None, 'aux': None, 'unit': None}
+            for key in ('data', 'weight', 'aux'):
+                self.maps[name][key] = entry.get(key)
 
         return self.maps
     
