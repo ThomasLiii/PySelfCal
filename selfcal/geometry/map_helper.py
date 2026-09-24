@@ -81,8 +81,15 @@ def make_weight(frame, sigma=1.4, floor=1e-4):
     weight = 1.0 / np.sqrt(abs_frame)
     return np.nan_to_num(weight, nan=0)
 
-def find_outliers(data, threshold=3):
-    '''Return 1 where outlier is detected, else return 0'''
+def find_outliers(data, threshold=3, threshold_neg=None):
+    '''Return 1 where outlier is detected, else return 0.
+
+    ``threshold`` bounds the bright (positive) side in nMAD units.
+    ``threshold_neg`` bounds the faint side; ``None`` (default) means symmetric
+    clipping at ``threshold`` — the historical behavior, bit-identical. Pass a
+    larger value (or ``np.inf``) to clip only the bright end, which keeps sky
+    noise intact while removing sources from a fit.
+    '''
     if np.all(np.isnan(data)):
         return np.zeros_like(data, dtype=bool)
     median = np.nanmedian(data)
@@ -90,7 +97,9 @@ def find_outliers(data, threshold=3):
     if nmad == 0:
         return np.zeros_like(data, dtype=bool)
     z_score = (data - median)/nmad
-    return np.abs(z_score) > threshold
+    if threshold_neg is None:
+        return np.abs(z_score) > threshold
+    return (z_score > threshold) | (z_score < -threshold_neg)
 
 def map_pixels(wcs_in, wcs_out, x_in, y_in):
     ra, dec = wcs_in.pixel_to_world_values(x_in, y_in)

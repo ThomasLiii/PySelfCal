@@ -13,6 +13,7 @@ import traceback
 
 import numpy as np
 from multiprocessing.shared_memory import SharedMemory
+from scipy.ndimage import binary_dilation
 
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, check_invalid
@@ -30,6 +31,11 @@ def _prep_lsqr(task_params):
     num_frames = task_params['num_frames']
     num_chunks_list = task_params['num_chunks_list']
     outlier_thresh = task_params['outlier_thresh']
+    outlier_dilate = task_params.get('outlier_dilate', 0)
+    outlier_dilate_thresh = task_params.get('outlier_dilate_thresh', 10.0)
+    star_mask_thresh = task_params.get('star_mask_thresh')
+    star_mask_radius = task_params.get('star_mask_radius', 0)
+    star_mask_min_area = task_params.get('star_mask_min_area', 30)
     reg_weight_list = task_params['reg_weight_list']
     offset_regularization = task_params['offset_regularization']
     adj_info_list = task_params['adj_info_list']
@@ -41,6 +47,12 @@ def _prep_lsqr(task_params):
     num_scalar_cols = task_params['num_scalar_cols']
     det_template_list = task_params['det_template_list']
     chunk_maps = task_params['chunk_maps']
+    # Optional per-frame relative flux conversion r_k = C_k / mean(C) (mean 1).
+    # The sky unknown is then a COMMON surface brightness while the offsets stay
+    # in native detector units: w*(S/r_k) + w*o + w*sigma = w*d, i.e. the exact
+    # r_k*d = S + r_k*o form. Normalizing to mean 1 keeps the sky in
+    # electron-like units so damping/regularization weights keep their meaning.
+    frame_flux_scale = task_params.get('frame_flux_scale')
     K = len(chunk_maps)
 
     ref_h, ref_w = ref_shape
@@ -69,9 +81,75 @@ def _prep_lsqr(task_params):
         sub_h, sub_w = sub_data.shape
 
         sub_valid = sub_weight > 0
-        if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
-            sub_out = find_outliers(np.where(sub_valid, sub_data, np.nan), threshold=outlier_thresh)
+        # ``outlier_thresh`` may be a scalar (symmetric nMAD clip, historical) or
+        # a (bright, faint) pair for asymmetric clipping — a hard bright-side cut
+        # removes sources from the fit without trimming sky noise.
+        if isinstance(outlier_thresh, (tuple, list)):
+            thresh_pos, thresh_neg = outlier_thresh
+        else:
+            thresh_pos, thresh_neg = outlier_thresh, None
+        if isinstance(thresh_pos, (int, float)) and thresh_pos > 0:
+            sub_out = find_outliers(np.where(sub_valid, sub_data, np.nan),
+                                    threshold=thresh_pos, threshold_neg=thresh_neg)
+            # A per-pixel threshold cannot remove an EXTENDED wing: most of a
+            # bright source's halo sits below the cut while still biasing the
+            # fit. Grow a mask of the genuinely BRIGHT pixels (a separate, much
+            # higher ``outlier_dilate_thresh``) to excise each source's
+            # neighbourhood. Dilating ``sub_out`` itself would be useless — at a
+            # hard clip it is mostly scattered noise pixels and would swallow
+            # the frame.
+            if outlier_dilate:
+                src = find_outliers(np.where(sub_valid, sub_data, np.nan),
+                                    threshold=outlier_dilate_thresh,
+                                    threshold_neg=np.inf)
+                sub_out |= binary_dilation(src, iterations=int(outlier_dilate))
             sub_valid &= ~sub_out
+        # Bright-star halo masking (FIT ONLY — the mosaic never sees this mask):
+        # around each bright PEAK (absolute threshold, so only genuine stars
+        # trigger; per-frame detectable, no catalog), excise a disk large enough
+        # to cover the low-level halo. The per-frame scalar is then estimated
+        # from clean sky, so the halo's frame-mean is no longer stolen from the
+        # sky term, and the halo flows untouched into the coadd (data - offsets).
+        if star_mask_thresh is not None and star_mask_radius > 0:
+            # Detect peaks on the PRE-clip validity: the bright-end outlier clip
+            # above has already removed saturated pixels from ``sub_valid``, so
+            # detecting on it would never find a star.
+            peaks = (sub_weight > 0) & (sub_data > star_mask_thresh)
+            if peaks.any():
+                from scipy.ndimage import label, center_of_mass
+                # One saturated star fragments into many components (blanked
+                # core, ring, diffraction spikes) — merge fragments within
+                # ~40 px into ONE component before labeling, so each STAR gets
+                # one disk rather than one per fragment.
+                merged = binary_dilation(peaks, iterations=20)
+                lab, nlab = label(merged)
+                if nlab > 0:
+                    # Qualify by AREA of saturated pixels, not peak height: the
+                    # detector saturates near ~130 ke- so every frame has a few
+                    # pixels at the ceiling (hot px, faint saturated stars) —
+                    # only genuinely bright stars saturate a large contiguous
+                    # region (>=30 px at 1.5" after core averaging).
+                    areas = np.array([int(((lab == i + 1) & peaks).sum())
+                                      for i in range(nlab)])
+                    qual = np.nonzero(areas >= star_mask_min_area)[0]
+                    order = qual[np.argsort(areas[qual])[::-1]][:3] + 1
+                    R = int(star_mask_radius)
+                    yy_d, xx_d = np.mgrid[-R:R + 1, -R:R + 1]
+                    disk = (yy_d ** 2 + xx_d ** 2) <= R * R
+                    n_valid0 = int(sub_valid.sum())
+                    # total-area guard: never mask more than 40% of the frame's
+                    # valid pixels — the scalar needs clean sky to fit
+                    for ci in order:
+                        cy, cx = center_of_mass(lab == ci)
+                        cy, cx = int(round(cy)), int(round(cx))
+                        y0, y1 = max(cy - R, 0), min(cy + R + 1, sub_h)
+                        x0, x1 = max(cx - R, 0), min(cx + R + 1, sub_w)
+                        trial = sub_valid.copy()
+                        trial[y0:y1, x0:x1] &= ~disk[
+                            y0 - (cy - R):y1 - (cy - R),
+                            x0 - (cx - R):x1 - (cx - R)]
+                        if trial.sum() >= 0.6 * n_valid0:
+                            sub_valid = trial
         valid_sub_coords = np.nonzero(sub_valid)
 
         sub_pix_indices = valid_sub_coords[0] * sub_w + valid_sub_coords[1]
@@ -111,10 +189,19 @@ def _prep_lsqr(task_params):
                     aux[k] = sub_aux[i][valid_sub_coords]
             sky_coeffs = [c.coefficients(aux) for c in sky_components]
 
-        if J == 1 and sky_coeffs[0] is None:
+        # Per-frame flux conversion folds into every sky component's coefficient
+        # (1/r_k), leaving the offset/scalar columns in native units.
+        inv_r = (1.0 / float(frame_flux_scale[index])
+                 if frame_flux_scale is not None else None)
+
+        if J == 1 and sky_coeffs[0] is None and inv_r is None:
             S_rows = np.arange(num_valid_pixels)
             S_cols = ref_pix_indices
             S_data = valid_weight
+        elif J == 1 and sky_coeffs[0] is None:
+            S_rows = np.arange(num_valid_pixels)
+            S_cols = ref_pix_indices
+            S_data = valid_weight * inv_r
         else:
             S_rows = np.repeat(np.arange(num_valid_pixels, dtype=np.int32), J)
             S_cols = np.empty(J * num_valid_pixels, dtype=np.int64)
@@ -122,7 +209,8 @@ def _prep_lsqr(task_params):
             for j in range(J):
                 S_cols[j::J] = j * num_sky + ref_pix_indices
                 cj = sky_coeffs[j]
-                S_data[j::J] = valid_weight if cj is None else valid_weight * cj
+                sdj = valid_weight if cj is None else valid_weight * cj
+                S_data[j::J] = sdj if inv_r is None else sdj * inv_r
 
         # --- Offset rows: one block per chunk map ---
         O_rows_parts, O_cols_parts, O_data_parts = [], [], []

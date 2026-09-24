@@ -48,15 +48,51 @@ class ConstraintBlock:
 
 
 def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                      weight=10.0):
+                      weight=10.0, group_rows=False):
     """Per-frame mean-offset anchor for chunk map ``m``.
 
     Constrains each frame's per-chunk offset mean toward ``mean_off`` (length
     num_frames) with the given Lagrange ``weight``. Caller must skip template-
     mode maps (no per-chunk offsets) and None ``mean_off``.
+
+    ``group_rows``: when several frames share one offset group (det_groups),
+    their per-frame rows are IDENTICAL (same columns, same weight, same target
+    when the targets agree). k identical rows contribute k·w²·11ᵀ to AᵀA and
+    k·w·β to Aᵀb — exactly one row with weight w·√k and rhs β·√k. Emitting
+    one row per group is therefore exact in the normal equations while cutting
+    nnz from frames×chunks to groups×chunks (3.8e9 → 4e6 at N=510 on EDFN —
+    the difference between a 5 h argsort that OOMs and nothing). Falls back to
+    per-frame rows for any group whose frames disagree on the target. Off by
+    default: the per-frame form is frozen by the byte-equality goldens.
     """
     mean_offsets_arr = np.asarray(mean_off)
     nc_m = num_chunks_m
+    if group_rows:
+        ftg = np.asarray(ftg_m).astype(np.int64)
+        groups = np.unique(ftg)
+        targets = mean_offsets_arr.astype(np.float64).flatten()
+        rows_l, cols_l, data_l, b_l = [], [], [], []
+        r = 0
+        chunk_idx = np.arange(nc_m, dtype=np.int64)
+        for g in groups:
+            members = np.nonzero(ftg == g)[0]
+            tg = targets[members]
+            if np.all(tg == tg[0]):
+                k = len(members)
+                w = weight * np.sqrt(k)
+                rows_l.append(np.full(nc_m, r, dtype=np.int64)); r += 1
+                cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
+                data_l.append(np.full(nc_m, w, dtype=np.float32))
+                b_l.append(tg[0] * nc_m * w)
+            else:  # disagreeing targets: keep the exact per-frame rows
+                for fi in members:
+                    rows_l.append(np.full(nc_m, r, dtype=np.int64)); r += 1
+                    cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
+                    data_l.append(np.full(nc_m, weight, dtype=np.float32))
+                    b_l.append(targets[fi] * nc_m * weight)
+        return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l),
+                               np.concatenate(data_l), np.array(b_l, dtype=np.float64),
+                               num_rows=r, nnz_per_row=nc_m)
     rows_local = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
     offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
     cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
@@ -65,17 +101,35 @@ def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
     return ConstraintBlock(rows_local, cols, data, b, num_rows=num_frames, nnz_per_row=nc_m)
 
 
-def sky_damping_block(block_index, weight, coverage, num_sky):
+def sky_damping_block(block_index, weight, coverage, num_sky, coverage_gate=None):
     """Coverage-weighted Tikhonov damping for sky block ``block_index``.
 
     block 0 = continuum, block 1+ = line components. Columns are
     ``block_index*num_sky + valid_pixels``; one nnz per damped pixel with
     ``data = sqrt(weight * coverage[pixel])``. Returns None if no covered pixel.
+
+    ``coverage_gate``: when set, the damping RAMPS OFF with coverage —
+    full ``weight`` at coverage 1, zero at ``coverage >= coverage_gate``
+    (linear in between). Rationale: the sky→0 prior exists to condition
+    poorly-covered edge pixels, but in well-covered regions it resolves the
+    near-degenerate frame-mean direction (sky DC over a frame footprint vs
+    the free per-frame scalar) toward the scalar — re-billing real sky-static
+    structure (stellar halos, faint cirrus) to the offsets, for ANY nonzero
+    weight. Gating restores exact unpenalized least squares where the data
+    are constraining, which provably keeps sky-static structure in the sky.
     """
     valid = np.nonzero(coverage)[0]
-    if len(valid) == 0:
-        return None
-    data = np.sqrt(weight * coverage[valid]).astype(np.float32)
+    if coverage_gate is not None:
+        ramp = 1.0 - (coverage - 1.0) / max(float(coverage_gate) - 1.0, 1.0)
+        eff = weight * np.clip(ramp, 0.0, 1.0)
+        valid = np.nonzero((coverage > 0) & (eff > 0))[0]
+        if len(valid) == 0:
+            return None
+        data = np.sqrt(eff[valid] * coverage[valid]).astype(np.float32)
+    else:
+        if len(valid) == 0:
+            return None
+        data = np.sqrt(weight * coverage[valid]).astype(np.float32)
     n = len(valid)
     cols = (block_index * num_sky + valid).astype(np.int64, copy=False)
     return ConstraintBlock(np.arange(n, dtype=np.int64), cols, data,
@@ -95,3 +149,67 @@ def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
     cols = (valid + num_sky_eff).astype(np.int64, copy=False)
     return ConstraintBlock(np.arange(n, dtype=np.int64), cols, data,
                            np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
+
+
+def lowpass_null_block(col_base, num_groups, num_chunks, basis, weight):
+    """Constraint rows forcing the LOW-ORDER content of a per-group chunk map
+    to zero: for every group g and every basis mode k,
+        sqrt(weight) * sum_c basis[c, k] * o[g, c] = 0.
+    With ``basis`` an orthonormal (num_chunks, n_modes) matrix (e.g. 2-D
+    Chebyshev modes up to some degree) and a large ``weight``, the map is
+    HIGH-PASS by construction: smooth structure cannot live in it, so it is
+    left for the (free) sky, while fine structure keeps whatever freedom the
+    ordinary damping allows. The block is the same for every group — one
+    (n_modes x num_chunks) pattern replicated ``num_groups`` times.
+    Columns are ``col_base + g*num_chunks + c``.
+    """
+    basis = np.asarray(basis, dtype=np.float64)
+    n_modes = basis.shape[1]
+    nz_c, nz_k = np.nonzero(np.abs(basis) > 1e-12)
+    vals = basis[nz_c, nz_k]
+    per_group_nnz = len(vals)
+    rows = np.empty(per_group_nnz * num_groups, dtype=np.int64)
+    cols = np.empty(per_group_nnz * num_groups, dtype=np.int64)
+    data = np.empty(per_group_nnz * num_groups, dtype=np.float32)
+    sw = np.sqrt(weight)
+    for g in range(num_groups):
+        sl = slice(g * per_group_nnz, (g + 1) * per_group_nnz)
+        rows[sl] = g * n_modes + nz_k
+        cols[sl] = col_base + g * num_chunks + nz_c
+        data[sl] = (sw * vals).astype(np.float32)
+    num_rows = num_groups * n_modes
+    # rows_local must be sorted by row for the CSR scatter: sort once.
+    order = np.argsort(rows, kind="stable")
+    rows, cols, data = rows[order], cols[order], data[order]
+    nnz_per_row = np.bincount(rows, minlength=num_rows)
+    return ConstraintBlock(rows, cols, data, np.zeros(num_rows, dtype=np.float64),
+                           num_rows=num_rows, nnz_per_row=nnz_per_row)
+
+
+def grouped_adjacency_block(m, adj_info, reg_weight, num_chunks_m, ftg_m, col_bases):
+    """Adjacency regularization rw*(O_i - O_j) = 0 for a det-GROUPED map, emitted
+    once per group instead of once per frame.
+
+    The worker emits these rows per frame; for a map shared by k frames of a
+    group that is k identical copies, whose normal-equation contribution
+    equals one copy with weight rw*sqrt(k). Exact in A^T A / A^T b; nnz drops
+    from frames x pairs to groups x pairs (7.5e9 -> 8.3e6 at N=510 on EDFN).
+    The caller must zero the worker-side reg_weight for this map.
+    """
+    chunk_i, chunk_j = (np.asarray(adj_info[0], dtype=np.int64),
+                        np.asarray(adj_info[1], dtype=np.int64))
+    npair = len(chunk_i)
+    ftg = np.asarray(ftg_m).astype(np.int64)
+    groups, counts = np.unique(ftg, return_counts=True)
+    rows_l, cols_l, data_l = [], [], []
+    r0 = 0
+    for g, k in zip(groups, counts):
+        base = col_bases[m] + g * num_chunks_m
+        w = np.float32(reg_weight * np.sqrt(k))
+        rows_l.append(np.repeat(np.arange(npair, dtype=np.int64) + r0, 2))
+        cols_l.append(np.stack([base + chunk_i, base + chunk_j], axis=1).reshape(-1))
+        data_l.append(np.tile(np.array([w, -w], dtype=np.float32), npair))
+        r0 += npair
+    return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l),
+                           np.concatenate(data_l), np.zeros(r0, dtype=np.float64),
+                           num_rows=r0, nnz_per_row=2)
