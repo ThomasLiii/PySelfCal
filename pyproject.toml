@@ -40,6 +40,10 @@ include = ["selfcal*"]
 # checkout (and in CI). Data-dependent regression lives in the byte-equality
 # gates (cache/refactor_gate/), which are run manually, not under pytest.
 testpaths = ["tests"]
+# Put the repo root on sys.path, as the tests' standalone runners do: shared
+# helpers are imported as ``tests.<module>``, and ``import selfcal`` resolves
+# to the checkout under test.
+pythonpath = ["."]
 addopts = "-ra"
 
 [tool.ruff]
