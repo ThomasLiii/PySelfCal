@@ -1,15 +1,8 @@
-# SEP D4, full NEP component set (J = 4), offset-first N-pass with a SEGMENTED offset basis in
-# BOTH the joint INIT solve ([params].subch_poly_segments, deg 2 per segment) and the per-frame
-# refit ([passes].offset.segments, deg 4 per segment, ridge 0.03).
-#
-# Why (S06 single-tile experiments, 2026-09-16): the J=4 dim-sky stripes are born in the INIT
-# and preserved by every later pass. Iterations (100 vs 300) and the sky model (J=2 vs J=4 on
-# the same window) do not change them; the INIT offset basis does -- one deg-2 polynomial per
-# column over all 121 subchannels gives a robust stripe rms of 0.271e-3 in the dim part of S06,
-# the segmented basis 0.214, against 0.202 for the J=2 W/E INIT. All six tiles are solved fresh
-# (tile suffix _SEP6seg_): the E2 experiment's S06 tile predates the 2026-09-17 merge of main's
-# statistical-equality solver, and tiles that are stitched must come from one code version
-# and one apply_n_threads.
+# SEP D4, full NEP component set (J = 4), offset-first N-pass, GLOBAL offset basis, SINGLE
+# COLUMN (num_col = 1): one deg-2 Chebyshev in subchannel per frame in the INIT joint solve and
+# one deg-4 per frame in the refit, instead of one per column (USER 2026-09-22). Otherwise
+# identical to sep_d4_npass_multiline_of.toml (6 frame-balanced tiles, iter 300, n = 5).
+# The frame tag carries NumCol1, so no product name collides with the NumCol3 runs.
 task = "npass"
 mode = "multiline"
 
@@ -17,7 +10,7 @@ output_dir = "/data3/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
 resolution_arcsec = 6.2
 cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
-suffix = "_multiline3_SEP6seg_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+suffix = "_multiline3_SEP6c1_{tile}_iter300_polybasisD2noortho_NumCol1_outThresh5_sigma2"
 oversample = 2
 skip_mosaic = true
 apply_n_threads = 32
@@ -27,7 +20,7 @@ name = "spherex"
 detector = 4
 num_sub = 10
 num_ch = 34
-num_col = 3
+num_col = 1
 subch_window = [200, 321]
 window_name = "Multiline3"
 
@@ -35,7 +28,6 @@ window_name = "Multiline3"
 subch_poly_degree = 2
 subch_poly_lo = 200
 subch_poly_hi = 320
-subch_poly_segments = [[200, 259], [260, 320]]
 line_fisher_threshold = 10.0
 
 [[params.lines]]
@@ -80,7 +72,7 @@ frame_glob = "exp_*_det_00.h5"
 frame_filter = "center"
 halo = 0
 nvme_subdir = "reproj_nvme_SEP_D4_npass"
-stitched_suffix = "_multiline3_SEP6segof_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+stitched_suffix = "_multiline3_SEP6c1of_STITCHED_iter300_polybasisD2noortho_NumCol1_outThresh5_sigma2"
 line = true
 rss_guardrail = true
 # frame-balanced over the 19,269 centres (3,205-3,217 per tile), disjoint
@@ -102,4 +94,4 @@ sky_merge = "combine"
 # INIT clip rather than the NEP's whole-frame 5 sigma
 init   = { outlier_thresh = 2.5, subch_clip = true, ignore_list = [21] }
 sky    = { outlier_thresh = 5.0, subch_clip = true }
-offset = { poly_degree = 4, outlier_thresh = 2.5, subch_clip = true, bright_cut = 0.05, min_pix = 5000, segments = [[200, 259], [260, 320]], ridge = 0.03 }
+offset = { poly_degree = 4, outlier_thresh = 2.5, subch_clip = true, bright_cut = 0.05, min_pix = 5000 }
