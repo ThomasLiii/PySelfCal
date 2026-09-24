@@ -663,6 +663,9 @@ class Calibrator(Reprojector):
                    preprocess_func: Callable | None = None,
                    weighted_damping: bool = False, damp_weight: float = 0.1,
                    damp_offset: float = 0.0,
+                   damp_offset_maps: list[float] | None = None,
+                   mean_offset_group_rows: bool = False,
+                   group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
                    spectral_fit: bool = False, line_center: float | None = None,
                    line_sigma: float | None = None,
@@ -773,6 +776,18 @@ class Calibrator(Reprojector):
             Base damping weight applied to the offset columns.
         damp_offset : float, optional
             Additive offset added to the per-column damping.
+        damp_offset_maps : list of float or None, optional
+            Per-map coverage-weighted offset damping (length K); maps with
+            weight 0 stay free, the per-frame scalar is never damped.
+            Mutually exclusive with ``damp_offset > 0``.
+        mean_offset_group_rows : bool, optional
+            Emit a det-grouped map's mean-offset anchor once per group
+            (weight ``w·√k``) instead of once per frame. Same normal
+            equations, far fewer nonzeros.
+        group_adjacency_maps : list of int or None, optional
+            Maps whose adjacency regularization is emitted once per group
+            (weight ``reg_weight·√k``) instead of once per frame. Same normal
+            equations, far fewer nonzeros; only useful for det-grouped maps.
         det_aux : np.ndarray or None, optional
             Auxiliary per-detector array carried alongside the data (e.g. a
             per-sample wavelength map for spectral fits).
@@ -890,7 +905,9 @@ class Calibrator(Reprojector):
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
-                damp_offset=damp_offset, det_aux=det_aux,
+                damp_offset=damp_offset, damp_offset_maps=damp_offset_maps,
+                mean_offset_group_rows=mean_offset_group_rows,
+                group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,

@@ -2,13 +2,17 @@
 
 These are the constraint rows appended in the parent process *after* the data
 rows (per-frame adjacency / polynomial constraints are emitted inside the
-worker and are not built by these helpers). Each builder returns a :class:`ConstraintBlock`
+worker and are not built by these helpers, except the grouped adjacency of
+``group_adjacency_maps``). Each builder returns a :class:`ConstraintBlock`
 (or ``None`` when it would be empty); ``setup_lsqr`` appends them in a fixed
 order that the CSR scatter depends on:
 
     1. per-map mean-offset anchors (one per chunk map)
-    2. sky damping, in sky-component order (continuum, then each line block)
-    3. offset damping
+    2. grouped adjacency, one block per map in ``group_adjacency_maps``
+       (absent by default)
+    3. sky damping, in sky-component order (continuum, then each line block)
+    4. offset damping (global ``damp_offset``, or per map with
+       ``damp_offset_maps``)
 
 Bit-identity contract: the exact cols/data/b values, dtypes, and nnz_per_row
 emitted here are frozen by the byte-equality regression goldens (reference
@@ -48,15 +52,51 @@ class ConstraintBlock:
 
 
 def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                      weight=10.0):
+                      weight=10.0, group_rows=False):
     """Per-frame mean-offset anchor for chunk map ``m``.
 
     Constrains each frame's per-chunk offset mean toward ``mean_off`` (length
     num_frames) with the given Lagrange ``weight``. Caller must skip template-
     mode maps (no per-chunk offsets) and None ``mean_off``.
+
+    ``group_rows``: when several frames share one offset group (det_groups),
+    their per-frame rows are identical (same columns, same weight, and the same
+    target when the targets agree). k identical rows contribute k·w²·11ᵀ to AᵀA
+    and k·w·β to Aᵀb, exactly what one row with weight w·√k and rhs β·√k
+    contributes. Emitting one row per group is therefore exact in the normal
+    equations while cutting nnz from frames×chunks to groups×chunks (3.8e9 →
+    4e6 for the N=510 Euclid EDFN solve). A group whose frames disagree on the
+    target keeps its per-frame rows. Off by default: the per-frame form is
+    frozen by the byte-equality goldens.
     """
     mean_offsets_arr = np.asarray(mean_off)
     nc_m = num_chunks_m
+    if group_rows:
+        ftg = np.asarray(ftg_m).astype(np.int64)
+        targets = mean_offsets_arr.astype(np.float64).flatten()
+        chunk_idx = np.arange(nc_m, dtype=np.int64)
+        rows_l, cols_l, data_l, b_l = [], [], [], []
+        r = 0
+        for g in np.unique(ftg):
+            members = np.nonzero(ftg == g)[0]
+            tg = targets[members]
+            if np.all(tg == tg[0]):
+                w = weight * np.sqrt(len(members))
+                rows_l.append(np.full(nc_m, r, dtype=np.int64))
+                cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
+                data_l.append(np.full(nc_m, w, dtype=np.float32))
+                b_l.append(tg[0] * nc_m * w)
+                r += 1
+            else:
+                for fi in members:
+                    rows_l.append(np.full(nc_m, r, dtype=np.int64))
+                    cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
+                    data_l.append(np.full(nc_m, weight, dtype=np.float32))
+                    b_l.append(targets[fi] * nc_m * weight)
+                    r += 1
+        return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l),
+                               np.concatenate(data_l), np.array(b_l, dtype=np.float64),
+                               num_rows=r, nnz_per_row=nc_m)
     rows_local = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
     offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
     cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
@@ -95,3 +135,31 @@ def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
     cols = (valid + num_sky_eff).astype(np.int64, copy=False)
     return ConstraintBlock(np.arange(n, dtype=np.int64), cols, data,
                            np.zeros(n, dtype=np.float64), num_rows=n, nnz_per_row=1)
+
+
+def grouped_adjacency_block(m, adj_info, reg_weight, num_chunks_m, ftg_m, col_bases):
+    """Adjacency regularization ``rw·(O_i − O_j) = 0`` for a det-grouped map,
+    emitted once per group instead of once per frame.
+
+    The worker emits these rows per frame, so a map shared by the k frames of
+    a group gets k identical copies; their normal-equation contribution equals
+    one copy with weight ``rw·√k``. Exact in AᵀA / Aᵀb, while nnz drops from
+    frames×pairs to groups×pairs (7.5e9 → 8.3e6 for the N=510 Euclid EDFN
+    solve). The caller must zero the worker-side ``reg_weight`` for this map.
+    """
+    chunk_i = np.asarray(adj_info[0], dtype=np.int64)
+    chunk_j = np.asarray(adj_info[1], dtype=np.int64)
+    npair = len(chunk_i)
+    groups, counts = np.unique(np.asarray(ftg_m).astype(np.int64), return_counts=True)
+    rows_l, cols_l, data_l = [], [], []
+    r0 = 0
+    for g, k in zip(groups, counts):
+        base = col_bases[m] + g * num_chunks_m
+        w = np.float32(reg_weight * np.sqrt(k))
+        rows_l.append(np.repeat(np.arange(npair, dtype=np.int64) + r0, 2))
+        cols_l.append(np.stack([base + chunk_i, base + chunk_j], axis=1).reshape(-1))
+        data_l.append(np.tile(np.array([w, -w], dtype=np.float32), npair))
+        r0 += npair
+    return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l),
+                           np.concatenate(data_l), np.zeros(r0, dtype=np.float64),
+                           num_rows=r0, nnz_per_row=2)
