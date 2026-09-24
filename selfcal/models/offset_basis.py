@@ -74,17 +74,7 @@ def cheb_shape_basis(subch, degree, lo, hi):
 
 
 def n_coef(pb):
-    """Number of solved coefficients per column for a poly_basis spec.
-
-    Two spec forms:
-      * Chebyshev-in-coordinate (``degree``/``coord_lo``/``coord_hi``): D coefs.
-      * Explicit ``basis_matrix`` (num_chunks, n_basis): the instrument supplies
-        arbitrary per-chunk basis columns (e.g. a mean-zero 2-D Chebyshev
-        product basis on a grid chunk map); ``chunk_coord`` must then be the
-        chunk index used to look rows up.
-    """
-    if 'basis_matrix' in pb:
-        return int(np.asarray(pb['basis_matrix']).shape[1])
+    """Number of solved coefficients per column for a poly_basis spec."""
     return int(pb['degree'])
 
 
@@ -96,15 +86,7 @@ def eval_offset_basis(coord, pb):
 
     Instrument-agnostic: ``coord`` is an abstract polynomial coordinate (the
     instrument decides what it means, e.g. SPHEREx subchannel via
-    ``pb['chunk_coord']``); this module never assumes a chunk encoding.
-
-    When the spec carries an explicit ``basis_matrix`` (num_chunks, n_basis),
-    ``coord`` is interpreted as the integer chunk index and the matching rows
-    are returned — same contract, arbitrary (e.g. 2-D) basis."""
-    if 'basis_matrix' in pb:
-        B = np.asarray(pb['basis_matrix'], dtype=np.float64)
-        idx = np.asarray(coord).astype(np.int64).ravel()
-        return B[idx]
+    ``pb['chunk_coord']``); this module never assumes a chunk encoding."""
     return cheb_shape_basis(coord, int(pb['degree']), pb['coord_lo'], pb['coord_hi'])
 
 

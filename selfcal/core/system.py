@@ -29,8 +29,7 @@ from .layout import SystemLayout
 from .spill import spill_pixel_state, PixelSpill
 from ..models.sky_model import SkyModel
 from .constraint_builders import (mean_offset_block, sky_damping_block,
-                                  offset_damping_block, lowpass_null_block,
-                                  grouped_adjacency_block)
+                                  offset_damping_block, grouped_adjacency_block)
 from .assembly import _prep_lsqr_batch_worker
 
 if TYPE_CHECKING:
@@ -68,7 +67,6 @@ class SetupResult(NamedTuple):
     pixel_cross: object
     active_mask: object = None
     pixel_spill: object = None
-    scalar_damp: object = None
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -76,12 +74,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                grid_valid_weight: np.ndarray | None = None,
                apply_mask: bool = True, apply_weight: bool = False,
                valid_threshold: float = 0.99,
-               outlier_thresh: float | None = 3, outlier_dilate: int = 0,
-               outlier_dilate_thresh: float = 10.0,
-               damp_coverage_gate: float | None = None,
-               star_mask_thresh: float | None = None,
-               star_mask_radius: int = 0, star_mask_min_area: int = 30,
-               max_workers: int = 20,
+               outlier_thresh: float | None = 3, max_workers: int = 20,
                ignore_list: list[int] | None = None, oversample_factor: int = 1,
                batch_size: int = 10, offset_regularization: bool = False,
                reg_weights: list[float] | None = None, adj_infos: list | None = None,
@@ -94,18 +87,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.1,
                damp_offset: float = 0.0,
-               damp_offset_maps: list | None = None,
-               lowpass_null: dict | None = None,
-               damp_scalar: float = 0.0,
+               damp_offset_maps: list[float] | None = None,
                mean_offset_group_rows: bool = False,
-               group_adjacency_maps: list | None = None,
+               group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
                spectral_fit: bool = False, line_center: float | None = None,
                line_sigma: float | None = None,
                damp_weight_line: float | None = None,
                sky_model: SkyModel | None = None,
                compact_zero_columns: bool = True,
-               frame_flux_scale: np.ndarray | None = None,
                batch_spill_dir: str | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
@@ -214,6 +204,23 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Coverage-weighted damping weight for the continuum sky block (default 0.1).
     damp_offset : float, optional
         Coverage-weighted damping weight for the offset columns; 0 disables it.
+    damp_offset_maps : list of float or None, optional
+        Per-map form of ``damp_offset`` (length K): map ``m`` is damped with
+        weight ``damp_offset_maps[m]`` and maps with weight 0 stay free; the
+        per-frame scalar is never damped. Use it to gauge a per-frame map
+        that should absorb only frame-unique artifacts while a
+        detector-fixed map stays undamped. Mutually exclusive with
+        ``damp_offset > 0``.
+    mean_offset_group_rows : bool, optional
+        Emit each det-grouped map's mean-offset anchor once per group with
+        weight ``w·√k`` instead of once per frame (k frames per group). The
+        normal equations are identical; nnz drops from frames×chunks to
+        groups×chunks. Default False keeps the per-frame rows.
+    group_adjacency_maps : list of int or None, optional
+        Maps whose adjacency regularization is emitted once per group with
+        weight ``reg_weight·√k`` instead of once per frame by the workers.
+        Same normal equations; nnz drops from frames×pairs to groups×pairs.
+        Only useful for det-grouped maps (a per-frame map has k = 1).
     det_aux : list of np.ndarray or None, optional
         Detector-grid auxiliary maps ``[BC_map]`` (optionally ``[BC_map, BW_map]``)
         required by a spectral ``sky_model`` to evaluate the line coefficient per
@@ -260,20 +267,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise TypeError("apply_mask must be a boolean")
     if not isinstance(apply_weight, bool):
         raise TypeError("apply_weight must be a boolean")
-    # Scalar -> symmetric nMAD clip; (bright, faint) pair -> asymmetric.
-    if isinstance(outlier_thresh, (tuple, list)):
-        if len(outlier_thresh) != 2 or not all(
-                isinstance(t, (int, float)) and t > 0 for t in outlier_thresh):
-            raise ValueError("outlier_thresh pair must be two positive numbers "
-                             "(bright, faint)")
-    elif not (isinstance(outlier_thresh, (int, float, type(None)))
-              and (outlier_thresh is None or outlier_thresh > 0)):
-        raise ValueError("outlier_thresh must be a positive number, a "
-                         "(bright, faint) pair, or None")
-    if frame_flux_scale is not None:
-        frame_flux_scale = np.asarray(frame_flux_scale, dtype=np.float64)
-        if not np.all(frame_flux_scale > 0):
-            raise ValueError("frame_flux_scale entries must be positive")
+    if not (isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0)):
+        raise ValueError("outlier_thresh must be a positive number or None")
     if not (isinstance(max_workers, int) and max_workers > 0):
         raise ValueError("max_workers must be a positive integer")
     if not isinstance(ignore_list, (list, np.ndarray)):
@@ -346,13 +341,22 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                       ('poly_basis_list', poly_basis_list)):
         if len(arr) != K:
             raise ValueError(f"{name} must have length {K} (got {len(arr)})")
+    if damp_offset_maps is not None:
+        if len(damp_offset_maps) != K:
+            raise ValueError(f"damp_offset_maps must have length {K} "
+                             f"(got {len(damp_offset_maps)})")
+        if any(w < 0 for w in damp_offset_maps):
+            raise ValueError("damp_offset_maps entries must be >= 0")
+        if damp_offset > 0:
+            raise ValueError("pass either damp_offset or damp_offset_maps, not both")
+    group_adjacency_maps = list(group_adjacency_maps or [])
+    for m in group_adjacency_maps:
+        if not (isinstance(m, (int, np.integer)) and 0 <= m < K):
+            raise ValueError(f"group_adjacency_maps entry {m!r} is not a map index in [0, {K})")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
-    if frame_flux_scale is not None and frame_flux_scale.shape != (num_frames,):
-        raise ValueError(f"frame_flux_scale must have shape ({num_frames},), "
-                         f"got {frame_flux_scale.shape}")
 
     # --- Spectral-fit mode: 2-block sky (continuum + line amplitude per pixel) ---
     # When spectral_fit is True, the sky block grows from num_sky to 2*num_sky:
@@ -432,19 +436,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
         'outlier_thresh': outlier_thresh,
-        'outlier_dilate': outlier_dilate,
-        'outlier_dilate_thresh': outlier_dilate_thresh,
-        'star_mask_thresh': star_mask_thresh,
-        'star_mask_radius': star_mask_radius,
-        'star_mask_min_area': star_mask_min_area,
         'num_chunks_list': num_chunks_list,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
         'offset_regularization': offset_regularization,
-        # maps whose adjacency is emitted ONCE PER GROUP in the parent (see
-        # grouped_adjacency_block) get reg_weight 0 on the worker side so the
-        # per-frame copies are not built.
-        'reg_weight_list': [0.0 if (group_adjacency_maps and m in group_adjacency_maps) else rw
+        # Maps in group_adjacency_maps get their adjacency once per group in
+        # the parent (grouped_adjacency_block), so the workers must not also
+        # emit the per-frame copies.
+        'reg_weight_list': [0.0 if m in group_adjacency_maps else rw
                             for m, rw in enumerate(reg_weights)],
         'adj_info_list': adj_infos,
         'poly_constraint_list': poly_constraints_list,
@@ -456,7 +455,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'scalar_col_start': scalar_col_start,
         'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
-        'frame_flux_scale': frame_flux_scale,
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
@@ -697,7 +695,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # Global constraint blocks (see selfcal.constraint_builders). Emission order
     # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
-    # sky damping (continuum, then line blocks) -> offset damping.
+    # grouped adjacency (group_adjacency_maps) -> sky damping (continuum, then
+    # line blocks) -> offset damping.
     constraint_blocks = []
 
     # --- Per-frame mean-offset constraints (one block per chunk map) ---
@@ -719,25 +718,25 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             col_bases, weight=constraint_weight,
             group_rows=mean_offset_group_rows).as_dict())
 
-    # --- Grouped adjacency regularization (det-grouped maps) ---
-    if group_adjacency_maps:
+    # --- Grouped adjacency (maps in group_adjacency_maps) ---
+    # Same conditions as the worker-side per-frame rows it replaces.
+    if offset_regularization:
         for m in group_adjacency_maps:
-            if reg_weights[m] > 0 and adj_infos[m] is not None:
-                blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
-                                              num_chunks_list[m], frame_to_group_list[m],
-                                              col_bases)
-                logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
-                            f"(one copy per group, weight x sqrt(k)) instead of per-frame")
-                constraint_blocks.append(blk.as_dict())
+            if (reg_weights[m] <= 0 or adj_infos[m] is None
+                    or det_template_arr_list[m] is not None
+                    or poly_basis_list[m] is not None):
+                continue
+            blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
+                                          num_chunks_list[m], frame_to_group_list[m],
+                                          col_bases)
+            logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
+                        f"(one copy per group, weight x sqrt(k))")
+            constraint_blocks.append(blk.as_dict())
 
     # --- Coverage-weighted sky damping (continuum, then each line block) ---
     if weighted_damping and damp_weight > 0:
-        if damp_coverage_gate is not None:
-            logger.info(f"Applying Coverage-Weighted Damping (continuum, gated off above coverage {damp_coverage_gate})...")
-        else:
-            logger.info("Applying Coverage-Weighted Damping (continuum)...")
-        blk = sky_damping_block(0, damp_weight, sky_pixel_counts, num_sky,
-                                coverage_gate=damp_coverage_gate)
+        logger.info("Applying Coverage-Weighted Damping (continuum)...")
+        blk = sky_damping_block(0, damp_weight, sky_pixel_counts, num_sky)
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 
@@ -754,31 +753,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 continue
             logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
             blk = sky_damping_block(
-                j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky,
-                coverage_gate=damp_coverage_gate)
+                j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
 
-    # --- Low-order null constraint (high-pass per-frame map) ---
-    if lowpass_null is not None:
-        m_lp = int(lowpass_null['map'])
-        logger.info(f"Applying low-order NULL constraint to map {m_lp}: "
-                    f"{np.asarray(lowpass_null['basis']).shape[1]} modes per group, "
-                    f"weight={lowpass_null['weight']} -> map is HIGH-PASS by construction")
-        blk = lowpass_null_block(col_bases[m_lp], num_offset_groups_list[m_lp],
-                                 num_chunks_list[m_lp], lowpass_null['basis'],
-                                 lowpass_null['weight'])
-        constraint_blocks.append(blk.as_dict())
-
     # --- Coverage-weighted offset damping ---
     if damp_offset_maps is not None:
-        # Per-map offset damping: damp only the listed maps (weight > 0), leaving
-        # the others — and always the per-frame scalar — free. This is the gauge
-        # for a per-frame offset map: the damped map absorbs frame-unique
-        # artifacts, while sky-static structure prefers the free sky and the
-        # static instrument pattern prefers the free detector-fixed map.
         for m, w_m in enumerate(damp_offset_maps):
-            if not w_m or w_m <= 0:
+            if w_m <= 0:
                 continue
             b0 = col_bases[m] - num_sky_eff
             b1 = col_bases[m + 1] - num_sky_eff
@@ -793,30 +775,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         blk = offset_damping_block(damp_offset, offset_pixel_counts[:n_offset_cols], num_sky_eff)
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
-
-    # --- Per-frame scalar ANCHOR damping ---
-    # Rows sqrt(damp_scalar * n_px_k) * scalar_k = b_k. Emitted with b = 0;
-    # the CALLER overwrites b with (row data) * (anchor target) after computing
-    # the warm start (see ``scalar_damp`` in SetupResult) — anchoring each
-    # frame's scalar toward its robust frame mean instead of toward zero
-    # (scalars carry the frame's real ~background DC, so a zero target would
-    # be wrong). Deviations from the anchor shrink by 1/(1+damp_scalar),
-    # closing the solver's freedom to re-bill sky structure (halo frame-means)
-    # or artifact-biased DC into the scalars.
-    scalar_damp_info = None
-    if damp_scalar and damp_scalar > 0 and num_scalar_cols > 0:
-        logger.info(f"Applying scalar ANCHOR damping (damp_scalar={damp_scalar}); "
-                    "targets set by the caller after warm start")
-        cov_sc = pixel_counts[scalar_col_start:scalar_col_start + num_scalar_cols]
-        blk = offset_damping_block(damp_scalar, cov_sc, scalar_col_start)
-        if blk is not None:
-            constraint_blocks.append(blk.as_dict())
-            scalar_damp_info = {
-                'num_rows': blk.num_rows,
-                'frame_ids': (blk.cols - scalar_col_start).astype(np.int64),
-                'row_data': blk.data.astype(np.float64),
-                'scalar_col_start': int(scalar_col_start),
-            }
 
 
     # ----------------------------------------------------------------
@@ -1168,10 +1126,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # that reshaping happens on restore instead (see PixelSpill.restore).
     if pixel_cross is not None and num_sky_blocks == 2:
         pixel_cross = pixel_cross[(0, 1)]
-    if scalar_damp_info is not None:
-        # the scalar block is appended LAST, so its b entries are the tail
-        scalar_damp_info['row_start'] = int(len(full_b) - scalar_damp_info['num_rows'])
-    return SetupResult(A=full_A, b=full_b, scalar_damp=scalar_damp_info,
+    return SetupResult(A=full_A, b=full_b,
                        pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
                        pixel_cross=pixel_cross,
                        active_mask=active_mask if compaction_active else None,

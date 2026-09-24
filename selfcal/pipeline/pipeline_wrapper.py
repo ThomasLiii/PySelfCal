@@ -658,6 +658,9 @@ class Calibrator(Reprojector):
                    preprocess_func: Callable | None = None,
                    weighted_damping: bool = False, damp_weight: float = 0.1,
                    damp_offset: float = 0.0,
+                   damp_offset_maps: list[float] | None = None,
+                   mean_offset_group_rows: bool = False,
+                   group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
                    spectral_fit: bool = False, line_center: float | None = None,
                    line_sigma: float | None = None,
@@ -665,18 +668,6 @@ class Calibrator(Reprojector):
                    offset_model: OffsetModel | None = None,
                    sky_model: SkyModel | None = None,
                    compact_zero_columns: bool = True,
-                   frame_flux_scale: np.ndarray | None = None,
-                   outlier_dilate: int = 0,
-                   outlier_dilate_thresh: float = 10.0,
-                   damp_coverage_gate: float | None = None,
-                   damp_offset_maps: list | None = None,
-                   lowpass_null: dict | None = None,
-                   damp_scalar: float = 0.0,
-                   mean_offset_group_rows: bool = False,
-                   group_adjacency_maps: list | None = None,
-                   star_mask_thresh: float | None = None,
-                   star_mask_radius: int = 0,
-                   star_mask_min_area: int = 30,
                    batch_spill_dir: str | None = None) -> None:
         """Build the LSQR system for K chunk maps.
 
@@ -779,6 +770,18 @@ class Calibrator(Reprojector):
             Base damping weight applied to the offset columns.
         damp_offset : float, optional
             Additive offset added to the per-column damping.
+        damp_offset_maps : list of float or None, optional
+            Per-map coverage-weighted offset damping (length K); maps with
+            weight 0 stay free, the per-frame scalar is never damped.
+            Mutually exclusive with ``damp_offset > 0``.
+        mean_offset_group_rows : bool, optional
+            Emit a det-grouped map's mean-offset anchor once per group
+            (weight ``w·√k``) instead of once per frame. Same normal
+            equations, far fewer nonzeros.
+        group_adjacency_maps : list of int or None, optional
+            Maps whose adjacency regularization is emitted once per group
+            (weight ``reg_weight·√k``) instead of once per frame. Same normal
+            equations, far fewer nonzeros; only useful for det-grouped maps.
         det_aux : np.ndarray or None, optional
             Auxiliary per-detector array carried alongside the data (e.g. a
             per-sample wavelength map for spectral fits).
@@ -888,31 +891,19 @@ class Calibrator(Reprojector):
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
-                damp_offset=damp_offset, det_aux=det_aux,
+                damp_offset=damp_offset, damp_offset_maps=damp_offset_maps,
+                mean_offset_group_rows=mean_offset_group_rows,
+                group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
                 spectral_fit=spectral_fit, line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
-                frame_flux_scale=frame_flux_scale,
-                outlier_dilate=outlier_dilate,
-                outlier_dilate_thresh=outlier_dilate_thresh,
-                damp_coverage_gate=damp_coverage_gate,
-                damp_offset_maps=damp_offset_maps,
-                lowpass_null=lowpass_null,
-                damp_scalar=damp_scalar,
-                mean_offset_group_rows=mean_offset_group_rows,
-                group_adjacency_maps=group_adjacency_maps,
-                star_mask_thresh=star_mask_thresh,
-                star_mask_radius=star_mask_radius,
-                star_mask_min_area=star_mask_min_area,
                 batch_spill_dir=batch_spill_dir)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
             # back as None and `pixel_spill` carries the handle; we leave them
             # there until save_calibration asks for them, so they never sit
             # alongside the CSR and apply_lsqr has nothing to spill.
-            self._scalar_damp = (_setup_result.scalar_damp
-                                 if _setup_result is not None else None)
             if _setup_result is None or _setup_result.A is None:
                 self.A, self.b = None, None
                 self.pixel_counts, self.pixel_fisher = None, None
@@ -994,26 +985,6 @@ class Calibrator(Reprojector):
         """Reload what _spill_pixel_state wrote and remove the scratch dir."""
         (self.pixel_counts, self.pixel_fisher,
          self.pixel_cross) = restore_pixel_state(spill_dir)
-
-
-    def anchor_scalars(self, x0: np.ndarray) -> None:
-        """Set the scalar ANCHOR damping targets from a full-layout warm start.
-
-        Requires :meth:`setup_lsqr` with ``damp_scalar > 0``; call before
-        :meth:`apply_lsqr`. Overwrites the placeholder b entries of the scalar
-        damping rows with (row weight) * (that frame's warm-start scalar), so
-        the damping pulls each scalar toward its robust frame mean rather than
-        toward zero (scalars carry each frame's real background DC)."""
-        info = getattr(self, '_scalar_damp', None)
-        if info is None:
-            raise RuntimeError("setup_lsqr was not run with damp_scalar > 0")
-        targets = np.asarray(x0, dtype=np.float64)[
-            info['scalar_col_start'] + info['frame_ids']]
-        vals = info['row_data'] * targets
-        self.b[info['row_start']:info['row_start'] + info['num_rows']] = \
-            vals.astype(self.b.dtype, copy=False)
-        logger.info("Scalar anchors set: %d frames, target median %.2f e-",
-                    len(targets), float(np.median(targets)))
 
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
