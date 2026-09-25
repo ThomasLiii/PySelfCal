@@ -6,6 +6,10 @@ config + an instrument's geometry. The generic engine talks only to this
 interface and resolves modes by name through ``get_mode`` — it never references a
 specific mode. Adding a calibration variant is a new module here with an
 ``@register_mode`` class; nothing else in the runner changes.
+
+Tiling and the N-pass schedule are NOT mode properties: any mode runs tiled
+when the config has a ``[tiling]`` table, and any mode with the two N-pass hooks
+(``clip_group_edges``, ``refit_poly_basis``) runs as task ``npass``.
 """
 import numpy as np
 
@@ -35,14 +39,12 @@ class CalMode:
     """Base class with the defaults the simplest (continuum) mode needs.
 
     Subclass + ``@register_mode("name")``; override only what differs. Class attrs:
-      pipeline    "cal" (the standard per-job loop) | "tiled" (TiledCalibration)
       mosaic_mode "full" (mosaic + wavelength append) | "no_wav" (mosaic only) |
                   "none" (skip mosaic)
       requires    capability tags the instrument must provide (e.g. "wavelength").
     """
 
     name = None
-    pipeline = "cal"
     mosaic_mode = "full"
     requires = ()
 
@@ -72,6 +74,25 @@ class CalMode:
         map rendered by the instrument's smooth offset renderer."""
         return ([det_inputs['grid_chunk_map']],
                 [inst.offset_render(cfg.instrument_cfg, det_inputs, ch_inputs)])
+
+    # ---- N-pass hooks (task 'npass', passes >= 2) ---------------------------
+    def clip_group_edges(self, cfg, inst, det_inputs):
+        """Aux-value bin edges of the grouped outlier clip (``subch_clip``): one
+        group per chunk row-band. Default: the instrument's per-row-band
+        wavelength edges."""
+        return inst.subchannel_bc_edges(det_inputs, det_inputs['det_chunk_map'],
+                                        cfg.instrument_cfg['num_col'])
+
+    def refit_poly_basis(self, cfg, inst, det_inputs, degree, segments=None):
+        """The per-frame polynomial offset basis of the OFFSET refit: a
+        degree-``degree`` polynomial in the chunk row coordinate per column over
+        the window ``[params].subch_poly_lo .. subch_poly_hi`` (optionally
+        piecewise on ``segments``). Default: the instrument's row-band basis."""
+        p = cfg.params
+        return inst.subchannel_poly_basis(
+            det_inputs['det_chunk_map'], int(cfg.instrument_cfg['num_col']),
+            degree=int(degree), lo=int(p['subch_poly_lo']), hi=int(p['subch_poly_hi']),
+            segments=segments)
 
 
 def _single_col_poly_block(cfg, inst, det_inputs, n_frames):

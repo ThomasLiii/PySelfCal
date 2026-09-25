@@ -42,8 +42,8 @@ a telescope or a specific calibration variant by name.
 
 ## Schema
 
-**Top-level (generic)** — `task` (`cal`|`tiled`|`npass`|`reproject`|`precompute`),
-`mode` (cal/tiled/npass only), `output_dir`, `run_name` (may contain `{detector}`),
+**Top-level (generic)** — `task` (`cal`|`mosaic`|`npass`|`reproject`|`precompute`;
+`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
@@ -80,7 +80,8 @@ tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 **Stage tables** — passed through verbatim as kwargs: `[calibration]` →
 `setup_lsqr`, `[lsqr]` → `apply_lsqr`, `[mosaic]` → `make_mosaic`,
 `[zodi]` (optional; set `pred_dir` to enable the post-cal anchor),
-`[reproject]` (reproject task), `[tiled]` (tiled task: `ref_shape`,
+`[reproject]` (reproject task), `[tiling]` (old spelling `[tiled]`; tiles the `cal`
+task: `ref_shape`,
 `full_reproj_dir`, `nvme_subdir`, `stitched_suffix`, and the tile geometry —
 EITHER a uniform grid `grid = [n_y, n_x]` + `overlap_px` + `tile_names`, OR an
 explicit `tiles = [{name, bbox=[y0,y1,x0,x1]}, ...]` list of arbitrary/overlapping
@@ -88,7 +89,7 @@ tiles for the adaptive-overlap layout; `line` toggles the spectral-block stitch)
 
 **`[passes]`** (npass task — the N-pass alternating solve, see the "N-pass
 alternating solve" section of [PIPELINE.md](../../PIPELINE.md)): `n` (number
-of passes; `1` == the legacy `cal`/`tiled` solve, byte-equal), `stop_tol`
+of passes; `1` == the `cal` solve, tiled or not, byte-equal), `stop_tol`
 (stop after a SKY pass whose per-block step RMS is below it; `0` = run all
 `n`), `sky_merge` (`combine` = exact additive moments, default; `stitch` =
 Fisher stitch, legacy), `order` (`sky_first` default, or `offset_first` =
@@ -112,10 +113,10 @@ segment a frame barely covers is held near zero instead of extrapolating —
 pair it with `segments` (SEP: `ridge = 0.03`). The joint INIT solve of the `multiline`
 mode takes the same segmentation as `[params].subch_poly_segments` (an independent
 degree-`subch_poly_degree` shape per column on each segment, plus a level per segment
-after the first). Pass 1 runs through `run_tiled` when
-`[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
-overlapping tiles are de-duplicated first-tile-wins), else through
-`run_calibration`. A re-run resumes: passes whose product exists are skipped.
+after the first). Pass 1 is the `cal` task on the same config — tiled when
+`[tiling]` is present (its tiles are then the memory tiling of every SKY pass;
+overlapping tiles are de-duplicated first-tile-wins). A re-run resumes: passes
+whose product exists are skipped.
 
 ## Adding a calibration variant (mode)
 

@@ -264,7 +264,7 @@ with each half exact:
 
 | pass | type | solves | mechanism | tiles |
 | --- | --- | --- | --- | --- |
-| 1 | INIT | `S, a, s` jointly | the legacy joint LSQR (`run_tiled` / `run_calibration`) | yes (memory) |
+| 1 | INIT | `S, a, s` jointly | the joint LSQR of the `cal` task (tiled when `[tiling]` is present) | yes (memory) |
 | even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
 | odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
 
@@ -287,7 +287,7 @@ Why the SKY passes need no tiles: a pixel's normal equations are sums over its
 observations, so per-tile dumps over **disjoint** frame sets are additive and
 summing them is identical to a single full-field solve — no seam can exist.
 Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
-reads every frame of the field (`[tiled].full_reproj_dir`). Verified at full
+reads every frame of the field (`[tiling].full_reproj_dir`). Verified at full
 scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
 offsets with a completely different partition (3 vertical bands instead of 6
 blocks) reproduced the product to float32 rounding — 4–87 differing elements

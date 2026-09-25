@@ -18,8 +18,8 @@ The config picks an **instrument** (a geometry adapter implementing the
 [`instruments/base.py`](instruments/base.py) `Instrument` protocol — SPHEREx
 specifics live in [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)),
 a **mode** (the calibration recipe; modes registry under
-`selfcal_scripts/runner/modes/`), and a **task** (`cal`/`tiled`/`reproject`/
-`precompute`). The run engine in `selfcal_scripts/runner/` is instrument- and
+`selfcal_scripts/runner/modes/`), and a **task** (`cal`, optionally tiled via
+`[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal_scripts/runner/` is instrument- and
 mode-agnostic: it talks only to the `Instrument` interface plus the `CalMode`
 interface, never to a telescope or variant by name. See
 [`../selfcal_scripts/configs/README.md`](../selfcal_scripts/configs/README.md)

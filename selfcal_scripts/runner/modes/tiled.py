@@ -2,9 +2,7 @@
 system. Same spectral sky as pahfit, but a single offset block with TWO
 poly-constraint groups: a column poly of degree ``poly_degree`` (default 1) and
 a subchannel poly of degree ``subch_poly_degree`` (production uses linear column
-+ cubic subchannel). ``pipeline="tiled"`` routes it through
-selfcal.pipeline.tiled.TiledCalibration (per-tile cal + Fisher stitch, no
-mosaic) instead of the standard per-job loop."""
++ cubic subchannel). Run it with a ``[tiling]`` table (per-tile cal + Fisher stitch, no mosaic)."""
 import numpy as np
 
 from .base import register_mode
@@ -13,7 +11,6 @@ from .pahfit import PAHfit
 
 @register_mode("tiled")
 class Tiled(PAHfit):
-    pipeline = "tiled"
     mosaic_mode = "none"
     requires = ("wavelength", "subchannel")
 

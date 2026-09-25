@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class RunConfig:
-    task: str                          # cal | tiled | reproject | precompute
+    task: str                          # cal | mosaic | npass | reproject | precompute ('tiled' = cal + [tiling])
     instrument: str = "spherex"
     mode: str = None                   # cal/tiled mode name (None for reproject/precompute)
     output_dir: str = None
@@ -45,8 +45,13 @@ class RunConfig:
     mosaic: dict = field(default_factory=dict)
     zodi: dict = field(default_factory=dict)
     reproject: dict = field(default_factory=dict)
-    tiled: dict = field(default_factory=dict)
+    tiling: dict = field(default_factory=dict)   # [tiling] — tile the field (task 'cal'); old spelling [tiled]
     passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
+
+    @property
+    def tiled(self):
+        """Old spelling of ``tiling``."""
+        return self.tiling
 
     def resolved_run_name(self):
         det = self.instrument_cfg.get('detector')
@@ -66,7 +71,7 @@ _SCALAR_KEYS = {
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',
     'lsqr': 'lsqr', 'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject',
-    'tiled': 'tiled', 'passes': 'passes',
+    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes',
 }
 
 
@@ -77,6 +82,8 @@ def load_config(path):
     kwargs = {}
     for k, v in raw.items():
         if k in _TABLE_KEYS:
+            if _TABLE_KEYS[k] in kwargs:
+                raise ValueError(f"{path}: both [tiling] and [tiled] given; keep one")
             kwargs[_TABLE_KEYS[k]] = v
         elif k in _SCALAR_KEYS:
             kwargs[k] = v
@@ -89,6 +96,11 @@ def load_config(path):
     cfg = RunConfig(**kwargs)
     # Instrument selector lives inside [instrument].name (defaults to spherex).
     cfg.instrument = cfg.instrument_cfg.get('name', cfg.instrument)
+    # task 'tiled' is the 'cal' task with a [tiling] table.
+    if cfg.task == 'tiled':
+        if not cfg.tiling:
+            raise ValueError(f"{path}: task = 'tiled' needs a [tiling] table")
+        cfg.task = 'cal'
     return cfg
 
 
