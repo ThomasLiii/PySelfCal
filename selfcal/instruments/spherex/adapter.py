@@ -13,7 +13,6 @@ Methods take plain dicts/args (an ``inst_cfg`` mapping = the TOML ``[instrument]
 table), not the runner's RunConfig, so the package stays independent of the runner.
 """
 import logging
-import os
 from dataclasses import dataclass
 from functools import partial
 

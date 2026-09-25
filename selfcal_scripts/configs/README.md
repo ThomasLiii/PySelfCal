@@ -24,7 +24,7 @@ a telescope or a specific calibration variant by name.
 
 ## The configs
 
-| Config | Task / mode | Replaces |
+| Config | Task / mode | Replaced driver (removed; see git history) |
 | --- | --- | --- |
 | `d4_aromatic` | cal / continuum | `drivers/run_cal.py` |
 | `d5` | cal / continuum | `experiments/run_cal_d5.py` |

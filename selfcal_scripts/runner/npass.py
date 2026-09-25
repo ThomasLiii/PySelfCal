@@ -49,7 +49,6 @@ import gc
 import os
 import time
 
-import numpy as np
 
 from selfcal_scripts.runner.config import get_instrument
 from selfcal_scripts.runner.modes.base import get_mode

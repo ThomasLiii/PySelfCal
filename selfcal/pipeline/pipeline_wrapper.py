@@ -6,12 +6,10 @@ import json
 import logging
 import os
 import shutil
-import sys
-import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import h5py
 import numpy as np
@@ -25,15 +23,12 @@ from ..core import coadd
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file
 from ..io.cal_writer import write_sky_groups
-from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
-                         parse_pixel_fisher_sky, apply_line_fisher_mask,
-                         parse_line_separability)
+from ..core.lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky
 from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
 from ..core.shmbuf import worker_pool_context
-from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
 from typing import TYPE_CHECKING

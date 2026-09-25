@@ -381,9 +381,9 @@ clarity:
     (vectorized bilinear-interp sparse CSR matrix), `compute_chunk_contrib`,
     `compute_chunk_adjacency`, `compute_crop`, `make_grid_chunk_map`
     (regular square grid for broadband instruments).
-  - Binning: `bin2d`, `bin2d_cv`, `bin2d_coo_matrix`, `upscale2d`.
+  - Binning: `bin2d`.
   - Splines: `linear_spline`, `mean_preserving_spline` (1D, `pchip` /
-    `akima` / `cubic`), `mean_preserving_spline_2d`, `arc_spline`.
+    `akima` / `cubic`), `mean_preserving_spline_2d`.
   - Validity: `check_invalid`, `get_valid_bounds`.
 
 - **[`geometry/wcs_helper.py`](geometry/wcs_helper.py)** — Reference frame
@@ -397,8 +397,6 @@ clarity:
     `projection_signature` guard against mismatched projections.
   - `save_to_fits` / `load_from_fits` persist reference frames as an
     empty FITS hdu with the WCS header.
-  - `upscale_wcs` rescales a WCS to a finer pixel grid while keeping
-    alignment (used for oversampled mosaics).
 
 ### Instrument-specific helpers (`instruments/`)
 

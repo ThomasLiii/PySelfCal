@@ -5,7 +5,7 @@ Same offset structure as continuum (column poly), but a 2-component sky
 (BC/BW), so it declares ``requires=("wavelength",)``. The line-Fisher mask
 threshold is recorded on the cal as an attribute (read-time, non-destructive).
 """
-from .base import register_mode, _single_col_poly_block
+from .base import register_mode
 from .continuum import Continuum
 
 

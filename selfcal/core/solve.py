@@ -634,20 +634,6 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
         # hence only when the caller handed A over (keep_state=False).
         return _make_parallel_operator_colsplit(bcsr, n_threads, _nranges)
 
-    """Thread-parallel matvec + bit-exact rmatvec for a BlockCSR.
-
-    matvec: rows are cut at the union of storage-block boundaries and an
-    ``n_threads``-way linspace; each piece is a zero-copy shell into one
-    storage block. A row's dot product depends only on its own entries, so
-    ANY row partition is bit-identical.
-
-    rmatvec: A^T @ y must reproduce the unified CSC scatter's per-element
-    addition ORDER, so blocks are scattered SEQUENTIALLY into one shared
-    output via scipy's raw ``csc_matvec`` kernel (a CSR block reinterpreted
-    as CSC is its transpose, and the kernel accumulates with ``+=``): the
-    same C loop as the one-matrix product, split at row boundaries.
-    Single-threaded, like the unified path's CSC-view rmatvec.
-    """
     m, n = bcsr.shape
     dtype = bcsr.dtype
     logger.info(f"Building parallel SpMV operator ({n_threads} threads, "

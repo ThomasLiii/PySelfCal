@@ -1,14 +1,10 @@
-import glob
 import logging
 import os
-import h5py
 from tqdm import tqdm
 import numpy as np
 
 from astropy.io import fits
-from astropy.io.votable import parse_single_table
 from astropy.wcs import WCS
-from astropy.coordinates import SkyCoord
 import astropy.units as u
 from reproject.mosaicking import find_optimal_celestial_wcs
 
@@ -178,18 +174,3 @@ def load_from_fits(file_path):
     ref_shape = (ref_header['NAXIS2'], ref_header['NAXIS1'])
     return ref_wcs, ref_shape
 
-def upscale_wcs(wcs, factor):
-    new_wcs = wcs.deepcopy()
-    
-    # Scale down pixel size
-    if new_wcs.wcs.has_cd():
-        new_wcs.wcs.cd /= factor
-    elif new_wcs.wcs.has_pc():
-        new_wcs.wcs.cdelt /= factor
-    else:
-        new_wcs.wcs.cdelt /= factor
-
-    # Shift reference pixel to preserve alignment
-    new_wcs.wcs.crpix *= factor
-
-    return new_wcs

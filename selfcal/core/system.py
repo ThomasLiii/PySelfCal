@@ -12,7 +12,6 @@ coverage/Fisher parsers.
 from __future__ import annotations
 
 import logging
-import mmap
 import os
 import shutil
 import tempfile
@@ -28,7 +27,7 @@ from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
                                 as_completed, TimeoutError as _FutTimeout)
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing.shared_memory import SharedMemory
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import csr_matrix
 from scipy.sparse import _sparsetools as _spt
 
 from .. import _state
@@ -1094,10 +1093,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     num_sky_eff = num_sky_blocks * num_sky
     sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
-    if num_sky_blocks == 2:
-        line_pixel_counts = pixel_counts[num_sky:2*num_sky]         # line amplitude coverage
-    else:
-        line_pixel_counts = None
     offset_pixel_counts = pixel_counts[num_sky_eff:]
 
     # Global constraint blocks (see selfcal.constraint_builders). Emission order
@@ -1186,7 +1181,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # These slices are views: left alive they would pin the whole
     # pixel_counts array through the CSR build even after it is spilled.
-    sky_pixel_counts = line_pixel_counts = offset_pixel_counts = None
+    sky_pixel_counts = offset_pixel_counts = None
 
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row

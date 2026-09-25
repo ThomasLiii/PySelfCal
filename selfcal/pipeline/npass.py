@@ -52,7 +52,7 @@ __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
     "OffsetSubtractor", "SkySubtractor",
     "refit_offsets_per_frame", "dump_moments", "combine_moments", "write_sky_cal",
-    "sky_monitors", "offset_monitors",
+    "sky_monitors", "offset_monitors", "append_monitor",
 ]
 
 

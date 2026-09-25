@@ -1,14 +1,11 @@
 import glob
 import logging
 import os
-import h5py
 from tqdm import tqdm
 import csv
 
-from astropy.io import fits
 from astropy.io.votable import parse_single_table
 from astropy.coordinates import SkyCoord
-import astropy.units as u
 
 from ... import _state
 

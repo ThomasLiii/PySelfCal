@@ -34,6 +34,17 @@ from tqdm import tqdm
 from .. import _state
 from .subframe import _prep_subframe
 
+# The striped turnstile handed to the coadd workers at pool creation — a
+# Condition plus one per-row-stripe batch counter — that orders the per-batch
+# flushes into the shared totals (see the comment in ``_coadd_batch_worker``).
+_coadd_turn = None
+
+
+def _init_coadd_worker(cond, counters):
+    """Pool initializer for the coadd workers."""
+    global _coadd_turn
+    _coadd_turn = (cond, counters)
+
 logger = logging.getLogger(__name__)
 
 CACHE_FORMAT = 'sparse-v1'
@@ -332,7 +343,7 @@ def _coadd_batch_worker(task):
             # batch order (deterministic) while different batches flush
             # different stripes concurrently (a wavefront) instead of
             # serialising on one lock.
-            cond, counters = _state._coadd_turn
+            cond, counters = _coadd_turn
             n_stripes = len(counters)
             stripe_h = -(-ref_shape[0] // n_stripes)
             cols = slice(win[2], win[3])
@@ -387,7 +398,7 @@ def _run_pass(*, ref_shape, files, offsets, source, accumulate, write_dir, wav, 
     cached, stats = [], []
     n_stripes = max(1, min(_FLUSH_STRIPES, ref_shape[0]))
     cond, counters = Condition(), Array('i', n_stripes, lock=False)
-    with Pool(processes=max_workers, initializer=_state._init_coadd_worker, initargs=(cond, counters)) as pool:
+    with Pool(processes=max_workers, initializer=_init_coadd_worker, initargs=(cond, counters)) as pool:
         for c, s in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks),
                          disable=not _state.progress_enabled):
             cached.extend(c)
