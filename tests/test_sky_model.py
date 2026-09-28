@@ -84,7 +84,8 @@ def test_skymodel_continuum_only():
 
 
 def test_skymodel_continuum_plus_pah():
-    sm = SkyModel.continuum_plus_pah_gaussian()
+    from selfcal.instruments.spherex.line_catalog import pah_3p29
+    sm = pah_3p29()
     assert sm.n_blocks == 2
     assert sm.names == ['continuum', 'pah_3p29']
     assert sm.aux_requirements == ('BC', 'BW')

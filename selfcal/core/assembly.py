@@ -78,8 +78,9 @@ def _prep_lsqr(task_params):
             # (find_outliers). Edges None (default) -> whole-frame, byte-identical.
             edges = task_params.get('outlier_subchannel_edges')
             aux_keys = task_params.get('aux_keys') or []
-            if edges is not None and sub_aux is not None and 'BC' in aux_keys:
-                bc_sub = sub_aux[aux_keys.index('BC')]
+            wl_key = task_params.get('outlier_aux_key', 'BC')
+            if edges is not None and sub_aux is not None and wl_key in aux_keys:
+                bc_sub = sub_aux[aux_keys.index(wl_key)]
                 groups = np.digitize(bc_sub, edges)
                 sub_out = find_outliers_grouped(masked, groups, threshold=outlier_thresh)
             else:

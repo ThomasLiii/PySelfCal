@@ -47,6 +47,7 @@ from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
 from ..models.offset_basis import eval_offset_basis
+from ..models.offset_structure import group_aux_edges
 
 __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
@@ -60,24 +61,9 @@ __all__ = [
 # small helpers
 # --------------------------------------------------------------------------- #
 def group_wavelength_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=50):
-    """Wavelength bin edges (midpoints between consecutive per-group mean
-    wavelengths) for the per-group outlier clip (``outlier_subchannel_edges``).
-
-    ``group_of_chunk[chunk]`` maps a chunk id to its clip group (SPHEREx: the
-    subchannel). Groups with fewer than ``min_pixels`` valid pixels are skipped.
-    """
-    w = np.asarray(det_wavelength, dtype=np.float64)
-    cm = np.asarray(det_chunk_map)
-    grp = np.where(cm >= 0, np.asarray(group_of_chunk)[np.maximum(cm, 0)], -1)
-    ngrp = int(grp.max()) + 1
-    mean = np.full(ngrp, np.nan)
-    valid = np.isfinite(w) & (w > 0) & (grp >= 0)
-    cnt = np.bincount(grp[valid].ravel(), minlength=ngrp)
-    sums = np.bincount(grp[valid].ravel(), weights=w[valid].ravel(), minlength=ngrp)
-    ok = cnt >= min_pixels
-    mean[ok] = sums[ok] / cnt[ok]
-    ws = np.sort(mean[ok])
-    return 0.5 * (ws[:-1] + ws[1:])
+    """Wavelength bin edges between consecutive chunk groups for the grouped
+    outlier clip — :func:`selfcal.models.offset_structure.group_aux_edges`."""
+    return group_aux_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=min_pixels)
 
 
 def sky_damp_weights(sky_model, damp_weight, damp_weight_line=None):

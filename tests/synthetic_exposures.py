@@ -1,11 +1,8 @@
-"""A minimal, telescope-free instrument for the runner tests.
-
-It implements exactly the surface the run engine and the ``continuum`` mode use
-today (see workspace/unify/audit/A_runner.md §4.1): a square detector, a grid
-chunk map (one axis of ``num_col`` columns per row-band), no wavelength maps, no
-spectral capability. Synthetic exposures are written as FITS files with the
-same HDU layout the engine's reprojection currently assumes (science image with
-a celestial WCS + ``FINAST`` in extension 1, an integer DQ mask in extension 2).
+"""Synthetic exposures for the runner tests: a smooth sky sampled by a 64-px
+square detector at random pointings, with injected per-frame chunk offsets and
+scalars, written as FITS files (science image + celestial WCS in extension 1,
+an integer DQ mask in extension 2) — the layout the built-in ``grid``
+instrument reads by default.
 """
 import os
 
@@ -13,63 +10,12 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from selfcal.geometry.map_helper import make_grid_chunk_map, compute_chunk_adjacency
+from selfcal.geometry.map_helper import make_grid_chunk_map
 
 DET = 64                     # detector side (px)
 N_CHUNK_SIDE = 4             # chunks per side -> 16 chunks
 PIX_ARCSEC = 20.0            # detector pixel scale
 REF_ARCSEC = 20.0            # reference-grid pixel scale used by the runner (resolution_arcsec)
-
-
-class ToyJob:
-    def __init__(self, name):
-        self.name, self.kind, self.value = name, 'all', None
-
-
-class ToyInstrument:
-    """Duck-typed Instrument: the members the engine + continuum mode call."""
-    name = 'toy'
-    capabilities = frozenset()
-    aux_keys = ()
-
-    def jobs(self, inst_cfg):
-        return [ToyJob(inst_cfg.get('job_name', 'All'))]
-
-    def frame_tag(self, inst_cfg):
-        return f"Toy{inst_cfg.get('detector', 0)}_N{N_CHUNK_SIDE}"
-
-    def detector_inputs(self, inst_cfg, oversample):
-        det_map = make_grid_chunk_map((DET, DET), N_CHUNK_SIDE).astype(np.int32)
-        grid_map = np.kron(det_map, np.ones((oversample, oversample), dtype=np.int32)) if oversample > 1 else det_map
-        return {'det_chunk_map': det_map, 'grid_chunk_map': grid_map}
-
-    def channel_inputs(self, inst_cfg, det_inputs, job):
-        det_w = np.ones((DET, DET), dtype=np.float32)
-        g = det_inputs['grid_chunk_map'].shape
-        return {'det_valid_mask_padded': det_w, 'det_valid_mask': det_w,
-                'grid_valid_weight': np.ones(g, dtype=np.float32), 'grid_valid_mask': np.ones(g, dtype=np.float32)}
-
-    # continuum mode helpers (SPHEREx spellings, generic content)
-    def column_adjacency(self, det_chunk_map, num_columns):
-        return compute_chunk_adjacency(det_chunk_map, reg_axis='both')
-
-    def column_poly_chains(self, det_chunk_map, num_columns, degree=1):
-        raise NotImplementedError("the toy instrument declares no polynomial chains")
-
-    def aux(self, det_inputs):
-        return None
-
-    def offset_render(self, inst_cfg, det_inputs, channel_inputs):
-        return None                      # block-constant chunk_to_det
-
-    def wavelength_maps(self, det_inputs):
-        return None
-
-    def wavelength_append(self, det_inputs, mm, maps, sigma):
-        return None
-
-    def precompute(self, inst_cfg):
-        pass
 
 
 # ---------------------------------------------------------------------------- synthetic exposures

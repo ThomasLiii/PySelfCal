@@ -32,6 +32,7 @@ batch_size; see regress_cal.py). --n-frames and --iter-lim must also match.
 Frame count / iters are kept small here: bit-identity does not need science
 convergence, only that the same code on the same inputs reproduces the arrays.
 """
+from selfcal.instruments.spherex.line_catalog import pah_3p29
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -168,7 +169,7 @@ def main():
         # the explicit sky_model= object API. Byte-equal to the spectral_fit
         # shim it replaces.
         from selfcal.models.sky_model import SkyModel
-        cc.setup_lsqr(sky_model=SkyModel.continuum_plus_pah_gaussian(), **common)
+        cc.setup_lsqr(sky_model=pah_3p29(), **common)
     print(f"setup_lsqr: {time.time() - t0:.2f} s  num_sky_blocks={cc.num_sky_blocks}")
 
     x0 = compute_x0_scalar_only(

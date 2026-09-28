@@ -8,13 +8,15 @@ Each task reads only a :class:`RunConfig`, resolved once into a
                with ``[tiling]``: per tile solve + Fisher stitch (no mosaic)
     mosaic     per job: mosaic of an existing cal
     npass      the N-pass alternating solve (INIT = a ``cal`` run) — see npass.py
-    reproject  FITS exposures -> reprojected frames + ref.fits
+    reproject  raw exposures -> reprojected frames + ref.fits, read the way the
+               instrument's ``exposure_layout`` says
     precompute the instrument's rarely-run geometry generator
 
-The names here never mention a telescope or a calibration variant: the
-instrument turns the config into geometry, the mode turns geometry into the
+The names here never mention a telescope or a calibration variant, and no
+``[instrument]`` key is read here: the instrument turns that table into
+geometry and an exposure layout, the mode turns geometry into the
 offset/sky/x0/mosaic recipe, and this file just sequences
-staging -> solve -> save -> mosaic -> cleanup.
+staging -> solve -> save -> mosaic -> hooks -> cleanup.
 
 Edits must keep calibration output byte-identical: run the gate set
 (``workspace/unify/scripts/run_gates.sh``, or the ``cache/refactor_gate``
@@ -23,7 +25,6 @@ configs through ``run.py`` + ``selfcal_scripts/drivers/diff_cal_h5.py``).
 import gc
 import glob as glob_module
 import os
-import re
 import time
 
 from . import staging
@@ -44,64 +45,34 @@ def run_calibration(cfg):
 
 
 def _run_plain(ctx):
-    cfg = ctx.cfg
+    cfg, inst = ctx.cfg, ctx.inst
     frame_dir = stage_run(ctx)
     cal_paths, mosaic_paths = [], []
     for job in ctx.jobs():
         t0 = time.time()
-        print(f"Processing {job.name} for detector {ctx.detector}...")
-        ch_inputs = ctx.channel_inputs(job)
+        print(f"Processing {job.name} ({ctx.frame_tag})...")
+        jobgeom = ctx.job_geometry(job)
         cal_path = ctx.cal_path(job)
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
             frames = frame_list(frame_dir, cfg.n_frames) if cfg.n_frames else None
-            cal_path = solve_job(ctx, job, ch_inputs, frame_dir=frame_dir, frames=frames,
+            cal_path = solve_job(ctx, job, jobgeom, frame_dir=frame_dir, frames=frames,
                                  cal_file=ctx.cal_file(job),
                                  hdd_reproj_dir=ctx.pipeline_config.reproj_dir)
         if not cfg.skip_mosaic and ctx.mode.mosaic_mode != 'none':
-            mosaic_paths.append(mosaic_job(
-                ctx, job, ch_inputs, cal_path=cal_path, frame_dir=frame_dir,
-                mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job)))
-            if cfg.zodi.get('pred_dir'):
-                _run_zodi_anchor(ctx, job, cal_path)
+            mos_path = mosaic_job(
+                ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
+                mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+            mosaic_paths.append(mos_path)
+            for hook in inst.postcal_hooks(cfg):
+                hook(ctx, job, cal_path, mos_path)
         cal_paths.append(cal_path)
         gc.collect()
-        print(f"Finished {job.name} for detector {ctx.detector} in {time.time() - t0:.2f} seconds.")
+        print(f"Finished {job.name} ({ctx.frame_tag}) in {time.time() - t0:.2f} seconds.")
         print("-" * 50 + "\n")
     unstage_run(ctx, frame_dir)
     return CalResult(cal_paths=cal_paths, mosaic_paths=mosaic_paths)
-
-
-def _run_zodi_anchor(ctx, job, cal_path):
-    """Optional post-cal zodi anchor (non-mutating; records into the per-detector
-    anchor file). Active only when [zodi].pred_dir is set."""
-    from selfcal.zodi_anchor import fit_anchor_for_channel, append_anchor_channel
-    cfg, detector = ctx.cfg, ctx.detector
-    job_tag, cal_file = ctx.stem(job), ctx.cal_file(job)
-    z = cfg.zodi
-    npz_path = os.path.join(z['pred_dir'], f'zodi_pred_{job_tag}.npz')
-    m = re.search(r'_Ch(\d+)_', cal_file)
-    if not os.path.exists(npz_path):
-        print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
-        return
-    if m is None:
-        print(f"Zodi anchor skipped for {job_tag}: not a single-channel job "
-              f"(cannot parse _Ch<n>_ from {cal_file}).")
-        return
-    ch_int = int(m.group(1))
-    clip_defaults = dict(clip_window_days=z.get('clip_window_days', 7.0),
-                         clip_sigma=z.get('clip_sigma', 3.0),
-                         clip_iters=z.get('clip_iters', 2))
-    print(f"Fitting zodi anchor from {npz_path}...")
-    fit = fit_anchor_for_channel(cal_path, npz_path, **clip_defaults)
-    run_dir = os.path.dirname(ctx.pipeline_config.cal_dir.rstrip('/'))
-    anchor_path = os.path.join(run_dir, 'zodi_anchor', f'anchor_D{detector}.h5')
-    append_anchor_channel(anchor_path, detector, ctx.pipeline_config.run_name, ch_int,
-                          fit, clip_defaults, anchor_method='raw')
-    print(f"  Ch{ch_int}: C={fit['intercept']:.4g} MJy/sr, slope={fit['slope']:.4f}, "
-          f"r={fit['pearson_r']:.4f}, inliers={fit['n_inliers']}/"
-          f"{fit['n_inliers']+fit['n_outliers']}  -> {anchor_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +81,8 @@ def _run_zodi_anchor(ctx, job, cal_path):
 def _run_tiled(ctx):
     cfg = ctx.cfg
     t = cfg.tiling
+    if not cfg.cache_dir:
+        raise ValueError("cache_dir is required for a tiled run (per-tile staging)")
     staging.set_hdd_io_limit(cfg.hdd_io_limit)
     if t.get('rss_guardrail', True):
         staging.start_rss_guardrail()
@@ -148,7 +121,7 @@ def _run_tiled(ctx):
     os.makedirs(nvme, exist_ok=True)
     results = {}
     for job in ctx.jobs():
-        ch_inputs = ctx.channel_inputs(job)
+        jobgeom = ctx.job_geometry(job)
 
         def run_tile(tile, files):
             cal_file = ctx.tile_cal_file(job, tile)
@@ -162,7 +135,7 @@ def _run_tiled(ctx):
                 staging.stage_files(files, nvme, cfg.hdd_io_limit)
             frames = sorted(os.path.join(nvme, os.path.basename(f)) for f in files)
             cal_path = solve_job(
-                ctx, job, ch_inputs, frame_dir=nvme, frames=frames, cal_file=cal_file,
+                ctx, job, jobgeom, frame_dir=nvme, frames=frames, cal_file=cal_file,
                 hdd_reproj_dir=ctx.pipeline_config.reproj_dir,
                 checkpoint=lambda label: staging.rss_checkpoint(f'{tile.name} {label}'))
             print(f"[tiled] === {tile.name} cal saved to {cal_path} ({time.time()-t0:.1f}s) ===",
@@ -198,6 +171,7 @@ def _run_tiled(ctx):
 # ---------------------------------------------------------------------------
 def run_mosaic(cfg):
     ctx = RunContext.build(cfg)
+    inst = ctx.inst
     frame_dir = stage_run(ctx)
     cal_paths, mosaic_paths = [], []
     for job in ctx.jobs():
@@ -205,22 +179,23 @@ def run_mosaic(cfg):
         cal_path = ctx.cal_path(job)
         if not os.path.exists(cal_path):
             raise FileNotFoundError(f"task 'mosaic' needs the cal file {cal_path}")
-        ch_inputs = ctx.channel_inputs(job)
-        print(f"Mosaicking {job.name} for detector {ctx.detector} from {cal_path}...")
-        mosaic_paths.append(mosaic_job(
-            ctx, job, ch_inputs, cal_path=cal_path, frame_dir=frame_dir,
-            mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job)))
-        if cfg.zodi.get('pred_dir'):
-            _run_zodi_anchor(ctx, job, cal_path)
+        jobgeom = ctx.job_geometry(job)
+        print(f"Mosaicking {job.name} ({ctx.frame_tag}) from {cal_path}...")
+        mos_path = mosaic_job(
+            ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
+            mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+        mosaic_paths.append(mos_path)
+        for hook in inst.postcal_hooks(cfg):
+            hook(ctx, job, cal_path, mos_path)
         cal_paths.append(cal_path)
         gc.collect()
-        print(f"Finished {job.name} for detector {ctx.detector} in {time.time() - t0:.2f} seconds.")
+        print(f"Finished {job.name} ({ctx.frame_tag}) in {time.time() - t0:.2f} seconds.")
     unstage_run(ctx, frame_dir)
     return CalResult(cal_paths=cal_paths, mosaic_paths=mosaic_paths)
 
 
 # ---------------------------------------------------------------------------
-# task = 'reproject'
+# task = 'reproject': raw exposures -> reprojected frames, per the instrument's layout
 # ---------------------------------------------------------------------------
 def run_reprojection(cfg):
     import numpy as np
@@ -229,27 +204,34 @@ def run_reprojection(cfg):
 
     ctx = RunContext.build(cfg, need_mode=False, need_geometry=False)
     r = cfg.reproject
-    detector = cfg.instrument_cfg['detector']
+    layout = ctx.inst.exposure_layout(cfg.instrument_cfg)
 
-    file_pattern = r['file_pattern'].format(detector=detector)
+    # The file pattern may carry [instrument] fields ("{detector}").
+    file_pattern = r['file_pattern'].format(**cfg.instrument_cfg)
     exposure_list = sorted(
         sum((glob_module.glob(d + file_pattern) for d in r['input_dirs']), []))
     print(f"Globbed {len(exposure_list)} candidate exposures")
 
-    finast_cache = os.path.join(
-        ctx.pipeline_config.output_dir, '_exposure_cache', f'finast_D{detector}.json')
-    exposure_list, dropped = filter_exposures_by_header(
-        exposure_list,
-        predicate=lambda h: h.get('FINAST', 2) == 0,
-        keys=['FINAST'], ext=1, cache_path=finast_cache,
-        max_workers=r.get('header_filter_workers', 16))
-    print(f"Kept {len(exposure_list)} exposures, dropped {len(dropped)} for poor astrometry")
+    if layout.header_predicate is not None:
+        cache = os.path.join(ctx.pipeline_config.output_dir, '_exposure_cache', f'{layout.cache_tag}.json')
+        exposure_list, dropped = filter_exposures_by_header(
+            exposure_list,
+            predicate=layout.header_predicate,
+            keys=list(layout.header_keys), ext=layout.header_ext, cache_path=cache,
+            max_workers=r.get('header_filter_workers', 16))
+        print(f"Kept {len(exposure_list)} exposures, dropped {len(dropped)} by the instrument's "
+              f"header filter")
 
     rr = pipeline_wrapper.Reprojector(ctx.pipeline_config, exposure_list=exposure_list)
     rr.define_reference(padding_pixels=r.get('padding_pixels', 100),
-                        use_ext=r.get('use_ext', [1]),
+                        use_ext=r.get('use_ext', list(layout.ref_use_ext)),
                         source_ref_path=r.get('source_ref_path'))
 
+    sci_ext_list = r.get('sci_ext_list', list(layout.sci_ext))
+    dq_ext_list = r.get('dq_ext_list', layout.dq_ext)
+    if dq_ext_list is None:
+        raise NotImplementedError("exposures without a data-quality extension are not supported yet "
+                                  "(give dq_ext in the instrument layout or [reproject].dq_ext_list)")
     max_workers = r.get('max_workers', 50)
     inner_parallel = r.get('inner_parallel', 1)
     print(f"Running reprojection with max_workers={max_workers}, "
@@ -257,10 +239,10 @@ def run_reprojection(cfg):
     rr.run_reproject(max_workers=max_workers,
                      reproj_func=r.get('reproj_func', 'exact'),
                      padding_percentage=r.get('padding_percentage', 0.05),
-                     sci_ext_list=r.get('sci_ext_list', [1]),
-                     dq_ext_list=r.get('dq_ext_list', [2]),
+                     sci_ext_list=sci_ext_list,
+                     dq_ext_list=list(dq_ext_list),
                      exp_idx_list=np.arange(0, len(exposure_list)),
-                     det_idx_list=[0] * len(exposure_list),
+                     det_idx_list=list(layout.detector_ids),
                      replace_existing=r.get('replace_existing', False),
                      reproject_kwargs={'parallel': inner_parallel})
     rr.status()
@@ -272,7 +254,7 @@ def run_reprojection(cfg):
 # task = 'precompute': the instrument's rarely-run geometry generator
 # ---------------------------------------------------------------------------
 def run_precompute(cfg):
-    from .config import get_instrument
+    from selfcal.instruments import get_instrument
     inst = get_instrument(cfg.instrument)
     inst.precompute(cfg.instrument_cfg)
 

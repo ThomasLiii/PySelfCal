@@ -71,7 +71,8 @@ def main():
             from selfcal_scripts.runner.modes import get_mode
             mode = get_mode(cfg.mode)
             tiling = ("explicit tiles" if cfg.tiling.get('tiles') else "grid") if cfg.tiling else "none"
-            print(f"[dry-run] mode={mode.name} mosaic_mode={mode.mosaic_mode} "
+            alias = f" (preset of {mode.name})" if mode.requested_name != mode.name else ""
+            print(f"[dry-run] mode={mode.requested_name}{alias} mosaic_mode={mode.mosaic_mode} "
                   f"requires={mode.requires} tiling={tiling}")
         if cfg.task == 'npass':
             from selfcal_scripts.runner.npass import describe_schedule

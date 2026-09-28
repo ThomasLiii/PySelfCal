@@ -1,28 +1,33 @@
-"""SPHEREx instrument adapter — all LVF / subchannel specifics behind one interface.
+"""SPHEREx instrument — all LVF / subchannel specifics behind the Instrument contract.
 
-The generic run engine (``selfcal_scripts.runner``) treats an instrument as a
-black box that turns a run config into the geometry the solver/mosaicker need:
-the per-"job" valid region, chunk maps, adjacency builders, aux maps, an offset
-renderer, and an optional wavelength-append hook. Everything SPHEREx-LVF-specific
-— subchannel windows, stripped chunk maps, BC/BW wavelength, ``wav_coadd``,
-column/subchannel adjacency, the H2RG readout-channel map — lives here, so the
-engine never imports it and a broadband instrument (no LVF) can plug in with none
-of this baggage. See ``selfcal.instruments.base.Instrument`` for the contract.
+The generic run engine treats an instrument as a black box that turns a run
+config into the geometry the solver/mosaicker need. Everything SPHEREx-LVF-
+specific — subchannel windows, the stripped (arc) chunk map and its
+``(subchannel, column)`` chunk axes, the H2RG readout-channel map, the BC/BW
+wavelength maps, the smooth arc offset renderer, the LVF wavelength coadd, the
+zodi anchor, the FINAST astrometry filter — lives here, so the engine never
+imports it and another instrument plugs in with none of this baggage. See
+:mod:`selfcal.instruments.base` for the contract.
 
 Methods take plain dicts/args (an ``inst_cfg`` mapping = the TOML ``[instrument]``
 table), not the runner's RunConfig, so the package stays independent of the runner.
 """
+from __future__ import annotations
+
 import logging
+import os
+import re
 from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
 
+from ...models.offset_structure import ChunkAxes
+from ..base import (Instrument, register_instrument, Job as _Job, ChunkMap, DetectorGeometry,
+                    JobGeometry, ExposureLayout)
 from .spherex_utility import (
     load_calibration, load_lvf_params, make_stripped_chunk_map,
     make_stripped_chunk_valid_mask, fast_vertical_dist,
-    compute_column_adjacency, compute_subchannel_adjacency,
-    compute_column_polynomial_chains, compute_subchannel_polynomial_chains,
     make_spherex_stripped_offset_map)
 from .wavemap import wav_coadd
 
@@ -43,12 +48,10 @@ SUBCH_WINDOWS = {
 
 
 @dataclass(frozen=True)
-class Job:
+class Job(_Job):
     """One unit of the channel loop: a name (feeds the cal/mosaic filename) + a
-    spatial selection (a subchannel window or a list of channel ids)."""
-    name: str
-    kind: str            # 'window' | 'channels'
-    value: object        # (lo, hi) for 'window'; list[int] for 'channels'
+    spatial selection (``kind`` 'window' -> ``value`` = (lo, hi) subchannels;
+    'channels' -> a list of channel ids)."""
 
 
 def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
@@ -81,13 +84,13 @@ def upsample_chunk_map(det_chunk_map, factor):
     return np.kron(det_chunk_map, np.ones((factor, factor), dtype=det_chunk_map.dtype))
 
 
-class SPHERExInstrument:
-    """SPHEREx (LVF) instrument adapter. ``capabilities`` lets modes that need
-    LVF features (per-pixel wavelength, subchannels) declare a requirement that
-    is checked against the instrument; a broadband adapter would omit them."""
+@register_instrument('spherex')
+class SPHERExInstrument(Instrument):
+    """SPHEREx (LVF) instrument. ``capabilities`` lets modes that need LVF
+    features (per-pixel wavelength, a spectral chunk axis) declare a
+    requirement that is checked against the instrument."""
 
-    name = 'spherex'
-    capabilities = frozenset({'wavelength', 'subchannel'})
+    capabilities = frozenset({'wavelength', 'spectral_axis', 'subchannel'})
 
     # ---- jobs (the channel loop) -------------------------------------------
     def jobs(self, inst_cfg):
@@ -124,9 +127,26 @@ class SPHERExInstrument:
         raise ValueError("[instrument] needs one of: windows / subch_window / "
                          "channels / channel_range")
 
+    # ---- frame tag (cal/mosaic filename component) -------------------------
+    def frame_tag(self, inst_cfg):
+        return (f"Detector{inst_cfg['detector']}_NumSub{inst_cfg['num_sub']}"
+                f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
+
+    # ---- raw exposures (reproject task) ------------------------------------
+    def exposure_layout(self, inst_cfg):
+        """L2b exposures: science in extension 1, DQ bitmask in extension 2, one
+        detector per file; keep only exposures with a converged astrometric
+        solution (``FINAST == 0``)."""
+        return ExposureLayout(
+            sci_ext=[1], dq_ext=[2], detector_ids=[0], ref_use_ext=(1,),
+            header_predicate=lambda h: h.get('FINAST', 2) == 0,
+            header_keys=('FINAST',), header_ext=1,
+            cache_tag=f"finast_D{inst_cfg['detector']}")
+
     # ---- detector-level geometry (built once per run) ----------------------
-    def detector_inputs(self, inst_cfg, oversample):
-        """LVF params, BC/BW, detector + grid stripped chunk maps, arc edges.
+    def detector_geometry(self, inst_cfg, oversample):
+        """LVF params, BC/BW, the stripped chunk map at detector + grid
+        resolution with its (subchannel, column) axes, the readout-channel map.
         NO adjacency (offset-structure-specific -> the mode builds it)."""
         det = inst_cfg['detector']
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
@@ -139,15 +159,26 @@ class SPHERExInstrument:
         det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(
             det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
             oversample_factor=1, lvf_params=lvf_params)
-        return {'lvf_params': lvf_params, 'det_BC': det_BC, 'det_BW': det_BW,
-                'grid_chunk_map': grid_chunk_map, 'det_chunk_map': det_chunk_map,
-                'r_edges': r_edges, 'x_edges': x_edges}
+        n_sub = (int(det_chunk_map.max()) + 1) // int(ncol)      # == ns * nch + 2 (padding subchannels)
+        # The chunk encoding chunk = subchannel * num_col + column, expressed
+        # ONCE as chunk axes: subchannels change along y (arcs), columns along x.
+        sub_axes = ChunkAxes.row_major(('subchannel', 'column'), (n_sub, int(ncol)), ('y', 'x'))
+        stripped = ChunkMap(name='subchannel', det=det_chunk_map, grid=grid_chunk_map, axes=sub_axes,
+                            adjacency_axes=('column',), spectral_axis='subchannel', group_axis='column')
+        det_ro, n_ro = make_readout_chunk_map(det_chunk_map.shape)
+        readout = ChunkMap(name='readout', det=det_ro, grid=upsample_chunk_map(det_ro, oversample),
+                           axes=ChunkAxes.row_major(('readout',), (n_ro,), ('x',)))
+        return DetectorGeometry(
+            shape=det_chunk_map.shape, chunk_maps={'subchannel': stripped, 'readout': readout},
+            primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
+            extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
+                   'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
 
     # ---- per-job geometry (valid masks + edge-distance weights) ------------
-    def channel_inputs(self, inst_cfg, det_inputs, job):
+    def job_geometry(self, inst_cfg, geom, job):
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        det_chunk_map = det_inputs['det_chunk_map']
-        grid_chunk_map = det_inputs['grid_chunk_map']
+        det_chunk_map = geom.chunk_map.det
+        grid_chunk_map = geom.chunk_map.grid
         kw = dict(num_subchannels=ns, num_channels=nch, num_columns=ncol)
         if job.kind == 'window':
             lo, hi = job.value
@@ -158,70 +189,72 @@ class SPHERExInstrument:
             raise ValueError(f"unknown job kind {job.kind!r}")
         cvm_pad = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=1)
         cvm = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=0)
-
         det_valid_mask = cvm[det_chunk_map]
-        det_valid_weight = fast_vertical_dist(det_valid_mask)
-        if np.max(det_valid_weight) > 0:
-            det_valid_weight /= np.max(det_valid_weight)
         det_valid_mask_padded = cvm_pad[det_chunk_map]
         grid_valid_mask = cvm[grid_chunk_map]
         grid_valid_weight = fast_vertical_dist(grid_valid_mask)
         if np.max(grid_valid_weight) > 0:
             grid_valid_weight /= np.max(grid_valid_weight)
-        return {'chunk_valid_mask_padded': cvm_pad, 'chunk_valid_mask': cvm,
-                'det_valid_mask': det_valid_mask, 'grid_valid_mask': grid_valid_mask,
-                'det_valid_mask_padded': det_valid_mask_padded,
-                'det_valid_weight': det_valid_weight, 'grid_valid_weight': grid_valid_weight}
+        # The solve weights every pixel of the padded window equally (the
+        # padding subchannels overlap the neighbouring jobs for stitching); the
+        # mosaic tapers with the distance to the window's arc edges.
+        return JobGeometry(det_valid_weight=det_valid_mask_padded, grid_valid_weight=grid_valid_weight,
+                           chunk_valid=cvm_pad, chunk_valid_strict=cvm,
+                           det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)
 
-    # ---- adjacency + poly-chain builders (modes call what they need) -------
-    def column_adjacency(self, det_chunk_map, num_columns):
-        return compute_column_adjacency(det_chunk_map, num_columns)
+    # ---- mosaic hooks ----------------------------------------------------------
+    def offset_renderer(self, inst_cfg, geom, jobgeom):
+        """Smooth subchannel-arc offset renderer for the mosaic (per job)."""
+        ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
+        x = geom.extra
+        return partial(
+            make_spherex_stripped_offset_map,
+            chunk_valid_mask=jobgeom.chunk_valid_strict,
+            lvf_params=x['lvf_params'], r_edges=x['r_edges'], x_edges=x['x_edges'],
+            tot_subchannels=ns * nch + 2, num_columns=ncol, fill_invalid=True)
 
-    def subchannel_adjacency(self, det_chunk_map, num_columns):
-        return compute_subchannel_adjacency(det_chunk_map, num_columns)
+    def aux_coadds(self, geom):
+        """(band centre, band width) LVF maps, coadded by the mosaic's sigma-clip pass."""
+        return geom.aux['BC'], geom.aux['BW']
 
-    def column_poly_chains(self, det_chunk_map, num_columns, degree=1):
-        return compute_column_polynomial_chains(det_chunk_map, num_columns, degree=degree)
+    def finalize_mosaic(self, geom, mm, maps, sigma):
+        """LVF wavelength maps for the full mosaic. When ``make_mosaic`` was given
+        the band maps (``wav_maps=self.aux_coadds(...)``) it has already coadded
+        them inside the sigma-clip pass and this only labels the units;
+        otherwise the standalone ``wav_coadd`` runs over the intermediate cache
+        (the pre-2026-09 path, which needs ``cache_intermediate``)."""
+        if 'wav_mean_map' in maps and maps['wav_mean_map'].get('data') is not None:
+            for k in ('wav_mean_map', 'wav_std_map'):
+                mm.maps[k]['unit'] = 'um'
+            return
+        import time
+        logger.info("Coadding wavelength maps...")
+        t00 = time.time()
+        wav_mean, wav_std = wav_coadd(
+            geom.aux['BC'], geom.aux['BW'],
+            mean_map=maps['mean_map']['data'], std_map=maps['std_map']['data'],
+            reproj_list=mm.reproj_list, cache_list=mm.cached_list,
+            ref_shape=maps['mean_map']['data'].shape, sigma=sigma,
+            batch_size=40, max_workers=30)
+        logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
+        mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
+                        'wav_std_map': {'data': wav_std, 'unit': 'um'}})
 
-    def subchannel_poly_chains(self, num_subchannels, num_columns, degree, lo, hi):
-        return compute_subchannel_polynomial_chains(
-            num_subchannels=num_subchannels, num_columns=num_columns,
-            degree=degree, subch_lo=lo, subch_hi=hi)
+    def data_unit(self, inst_cfg):
+        return 'MJy/sr'
 
-    def subchannel_poly_basis(self, det_chunk_map, num_columns, degree, lo, hi, segments=None):
-        """Hard poly-basis descriptor for a per-column subchannel polynomial
-        offset (the ``poly_basis`` dict consumed by the instrument-agnostic core
-        in ``selfcal.models.offset_basis``). This is the ONLY place the SPHEREx
-        chunk encoding ``chunk = subchannel*num_col + column`` is inverted:
-        ``chunk_coord`` = subchannel (the polynomial coordinate), ``chunk_group``
-        = column (one independent polynomial per column). The core sees only the
-        abstract coord/group arrays. Used by spectral modes whose offset is a
-        degree-``degree`` Chebyshev in subchannel over the window ``[lo, hi]`` —
-        or, with ``segments`` (a list of inclusive ``[lo, hi]`` subchannel
-        ranges inside the window), an independent degree-``degree`` Chebyshev on
-        each segment (see ``offset_basis.piecewise_cheb_shape_basis``)."""
-        n_chunks = int(det_chunk_map.max()) + 1
-        chunk_ids = np.arange(n_chunks)
-        pb = {
-            'degree': int(degree),
-            'num_groups': int(num_columns),
-            'coord_lo': int(lo), 'coord_hi': int(hi),
-            'chunk_coord': chunk_ids // int(num_columns),
-            'chunk_group': chunk_ids % int(num_columns),
-        }
-        if segments:
-            segs = [(int(a), int(b)) for a, b in segments]
-            if segs[0][0] < int(lo) or segs[-1][1] > int(hi):
-                raise ValueError(f"segments {segs} must lie inside the window [{lo}, {hi}]")
-            pb['segments'] = segs
-        return pb
+    # ---- named sky models ------------------------------------------------------
+    def line_catalog(self):
+        from .line_catalog import CATALOG
+        return dict(CATALOG)
 
-    # ---- readout-channel geometry (k2 mode) --------------------------------
-    def readout_chunk_map(self, det_shape, col_start=60, col_width=64):
-        return make_readout_chunk_map(det_shape, col_start=col_start, col_width=col_width)
-
-    def upsample_chunk_map(self, det_chunk_map, factor):
-        return upsample_chunk_map(det_chunk_map, factor)
+    # ---- post-calibration hooks ------------------------------------------------
+    def postcal_hooks(self, cfg):
+        """The optional zodi anchor (non-mutating; records into the per-detector
+        anchor file). Active only when the run config's ``[zodi].pred_dir`` is set."""
+        if cfg.zodi.get('pred_dir'):
+            return [zodi_anchor_hook]
+        return []
 
     # ---- precompute geometry params (rarely-run generator) -----------------
     def precompute(self, inst_cfg):
@@ -242,60 +275,35 @@ class SPHERExInstrument:
             lvf_params['filename'] = f'lvf_params_D{det}.npy'
             save_lvf_params(lvf_params, output_dir=out_dir)
 
-    # ---- frame tag (cal/mosaic filename component) -------------------------
-    def frame_tag(self, inst_cfg):
-        return (f"Detector{inst_cfg['detector']}_NumSub{inst_cfg['num_sub']}"
-                f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
 
-    # ---- aux maps for spectral modes (per-pixel wavelength) ----------------
-    aux_keys = ('BC', 'BW')     # names of the entries aux() returns, in order
-
-    def aux(self, det_inputs):
-        return [det_inputs['det_BC'], det_inputs['det_BW']]
-
-    def subchannel_bc_edges(self, det_inputs, det_chunk_map, num_columns):
-        """BC bin edges between consecutive subchannels, for the per-subchannel
-        outlier clip (``outlier_subchannel_edges``). Inverts the chunk encoding
-        (group = chunk // num_col = subchannel) here, in the adapter."""
-        from selfcal.pipeline.npass import group_wavelength_edges
-        n_chunks = int(det_chunk_map.max()) + 1
-        group_of_chunk = np.arange(n_chunks) // int(num_columns)
-        return group_wavelength_edges(det_inputs['det_BC'], det_chunk_map, group_of_chunk)
-
-    # ---- mosaic helpers ----------------------------------------------------
-    def offset_render(self, inst_cfg, det_inputs, channel_inputs):
-        """Smooth subchannel-arc offset renderer for the mosaic (per job)."""
-        ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        return partial(
-            make_spherex_stripped_offset_map,
-            chunk_valid_mask=channel_inputs['chunk_valid_mask'],
-            lvf_params=det_inputs['lvf_params'], r_edges=det_inputs['r_edges'],
-            x_edges=det_inputs['x_edges'], tot_subchannels=ns * nch + 2,
-            num_columns=ncol, fill_invalid=True)
-
-    def wavelength_maps(self, det_inputs):
-        """(band centre, band width) LVF maps, coadded by the mosaic's sigma-clip pass."""
-        return det_inputs['det_BC'], det_inputs['det_BW']
-
-    def wavelength_append(self, det_inputs, mm, maps, sigma):
-        """LVF wavelength maps for the full mosaic. When ``make_mosaic`` was given
-        the band maps (``wav_maps=self.wavelength_maps(...)``) it has already
-        coadded them inside the sigma-clip pass and this only labels the units;
-        otherwise the standalone ``wav_coadd`` runs over the intermediate cache
-        (the pre-2026-09 path, which needs ``cache_intermediate``)."""
-        if 'wav_mean_map' in maps and maps['wav_mean_map'].get('data') is not None:
-            for k in ('wav_mean_map', 'wav_std_map'):
-                mm.maps[k]['unit'] = 'um'
-            return
-        import time
-        logger.info("Coadding wavelength maps...")
-        t00 = time.time()
-        wav_mean, wav_std = wav_coadd(
-            det_inputs['det_BC'], det_inputs['det_BW'],
-            mean_map=maps['mean_map']['data'], std_map=maps['std_map']['data'],
-            reproj_list=mm.reproj_list, cache_list=mm.cached_list,
-            ref_shape=maps['mean_map']['data'].shape, sigma=sigma,
-            batch_size=40, max_workers=30)
-        logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
-        mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
-                        'wav_std_map': {'data': wav_std, 'unit': 'um'}})
+def zodi_anchor_hook(ctx, job, cal_path, mosaic_path):
+    """Post-cal zodi anchor for a single-channel job: fit the cal's frame
+    scalars against the zodipy prediction ``zodi_pred_<stem>.npz`` in
+    ``[zodi].pred_dir`` and record the channel in ``<run>/zodi_anchor/anchor_D<n>.h5``."""
+    from ...zodi_anchor import fit_anchor_for_channel, append_anchor_channel
+    cfg = ctx.cfg
+    detector = cfg.instrument_cfg['detector']
+    job_tag, cal_file = ctx.stem(job), ctx.cal_file(job)
+    z = cfg.zodi
+    npz_path = os.path.join(z['pred_dir'], f'zodi_pred_{job_tag}.npz')
+    m = re.search(r'_Ch(\d+)_', cal_file)
+    if not os.path.exists(npz_path):
+        print(f"Zodi anchor skipped for {job_tag}: {npz_path} not found.")
+        return
+    if m is None:
+        print(f"Zodi anchor skipped for {job_tag}: not a single-channel job "
+              f"(cannot parse _Ch<n>_ from {cal_file}).")
+        return
+    ch_int = int(m.group(1))
+    clip_defaults = dict(clip_window_days=z.get('clip_window_days', 7.0),
+                         clip_sigma=z.get('clip_sigma', 3.0),
+                         clip_iters=z.get('clip_iters', 2))
+    print(f"Fitting zodi anchor from {npz_path}...")
+    fit = fit_anchor_for_channel(cal_path, npz_path, **clip_defaults)
+    run_dir = os.path.dirname(ctx.pipeline_config.cal_dir.rstrip('/'))
+    anchor_path = os.path.join(run_dir, 'zodi_anchor', f'anchor_D{detector}.h5')
+    append_anchor_channel(anchor_path, detector, ctx.pipeline_config.run_name, ch_int,
+                          fit, clip_defaults, anchor_method='raw')
+    print(f"  Ch{ch_int}: C={fit['intercept']:.4g} MJy/sr, slope={fit['slope']:.4f}, "
+          f"r={fit['pearson_r']:.4f}, inliers={fit['n_inliers']}/"
+          f"{fit['n_inliers']+fit['n_outliers']}  -> {anchor_path}")

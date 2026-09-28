@@ -144,13 +144,13 @@ class _Run:
         self.p = cfg.passes
         self.ctx = ctx = RunContext.build(cfg)
         self.inst, self.mode = ctx.inst, ctx.mode
-        self.det_inputs = ctx.det_inputs
+        self.geom = ctx.geom
         self.job = ctx.single_job("task 'npass'")
-        self.ch_inputs = ctx.channel_inputs(self.job)
-        self.sky_model = self.mode.build_sky_model(cfg, self.inst, self.det_inputs)
-        self.det_aux = self.mode.det_aux(cfg, self.inst, self.det_inputs)
-        self.cm = self.det_inputs["det_chunk_map"]
-        self.grid_valid = self.ch_inputs["det_valid_mask_padded"]
+        self.jobgeom = ctx.job_geometry(self.job)
+        self.sky_model = self.mode.build_sky_model(cfg, self.inst, self.geom)
+        self.det_aux, self.aux_keys = ctx.aux_maps()
+        self.cm = self.geom.chunk_map.det
+        self.grid_valid = self.jobgeom.det_valid_weight
         base = cfg.tiling["stitched_suffix"] if cfg.tiling else cfg.suffix
         self.stem = "cal_" + ctx.stem(self.job, base)
         self.cal_dir = ctx.pipeline_config.cal_dir
@@ -168,7 +168,7 @@ class _Run:
 
     def edges(self):
         if self._edges is None:
-            self._edges = self.mode.clip_group_edges(self.cfg, self.inst, self.det_inputs)
+            self._edges = self.mode.clip_group_edges(self.cfg, self.inst, self.geom)
         return self._edges
 
     def product(self, i, kind):
@@ -249,7 +249,8 @@ class _Run:
             cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=nvme)
             cc.reproj_list = frame_list
             cc.setup_lsqr(chunk_maps=[], grid_valid_weight=self.grid_valid, oversample_factor=1,
-                          sky_model=self.sky_model, det_aux=self.det_aux,
+                          sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
+                          outlier_aux_key=self.geom.wavelength_key,
                           postprocess_func=subtract, outlier_thresh=float(opts["outlier_thresh"]),
                           outlier_subchannel_edges=edges, use_per_frame_scalar=False,
                           sky_rhs_moments=True, batch_spill_dir=cfg.cache_dir, **calk)
@@ -295,12 +296,12 @@ class _Run:
     def offset_pass(self, i, sky_cal, out):
         from selfcal.pipeline.npass import SkySubtractor, refit_offsets_per_frame
         opts = dict(_OFFSET_DEFAULTS, **self.p.get("offset", {}))
-        pb = self.mode.refit_poly_basis(self.cfg, self.inst, self.det_inputs,
+        pb = self.mode.refit_poly_basis(self.cfg, self.inst, self.geom,
                                         degree=int(opts["poly_degree"]),
                                         segments=opts.get("segments"))
         sky = SkySubtractor(sky_cal, self.sky_model,
                             export_dir=os.path.join(self.work_dir, f"sky_pass{i-1}"),
-                            aux_keys=getattr(self.inst, "aux_keys", ("BC", "BW")))
+                            aux_keys=tuple(self.aux_keys or ()))
         edges = self.edges() if opts.get("subch_clip") else None
         _, mon = refit_offsets_per_frame(
             self.all_frames, sky, det_chunk_map=self.cm, grid_valid=self.grid_valid,

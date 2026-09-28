@@ -14,7 +14,7 @@ continuum path) for :class:`ContinuumComponent`, or the line profile ``G(λ_i)``
 for :class:`LineComponent`.
 
 Bit-identity: ``SkyModel.continuum_only()`` reproduces the legacy
-``num_sky_blocks==1`` emission and ``SkyModel.continuum_plus_pah_gaussian()``
+``num_sky_blocks==1`` emission and ``SkyModel.continuum_plus_gaussian_line()``
 reproduces ``num_sky_blocks==2`` (component order [continuum, line], same
 interleave, same float ops). The row assembly (``selfcal.core.assembly``)
 consumes this model when emitting the per-observation sky coefficients; this
@@ -195,36 +195,24 @@ class SkyModel:
         return cls((ContinuumComponent(),))
 
     @classmethod
-    def continuum_plus_pah_gaussian(
-        cls, line_center: float | None = None, line_sigma: float | None = None
+    def continuum_plus_gaussian_line(
+        cls, name: str, center_um: float, sigma_um: float, *, wavelength_key: str,
+        width_key: str | None = None, fwhm_to_sigma: float = 2.355,
+        intrinsic_var_um2: float = 0.0,
     ) -> SkyModel:
-        """Reproduces ``num_sky_blocks == 2`` (continuum + PAH 3.29 µm Gaussian).
+        """Continuum + one Gaussian emission line (two sky blocks).
 
-        Defaults pull the SPHEREx PAH constants; per-pixel σ uses the BW map via
-        QuadratureSigma(2.355, 2.890e-4) when BW is supplied, else scalar
-        line_sigma — matching the legacy spectral_fit behavior exactly.
-
-        Parameters
-        ----------
-        line_center : float or None, optional
-            Line center in µm. ``None`` (default) uses the SPHEREx PAH constant
-            ``PAH_LINE_CENTER_UM``.
-        line_sigma : float or None, optional
-            Scalar fallback σ in µm, used when the BW width map is absent.
-            ``None`` (default) uses ``LINE_SIGMA_UM``.
-
-        Returns
-        -------
-        SkyModel
-            A two-component model ``[continuum, pah_3p29]``.
+        The line's per-pixel sigma comes from the instrument's band-width map
+        ``width_key`` (FWHM / ``fwhm_to_sigma``, in quadrature with the
+        intrinsic width ``intrinsic_var_um2``) when that map is supplied to the
+        solve, else the scalar ``sigma_um``. Instrument catalogues wrap this
+        with their constants (SPHEREx: ``instruments.spherex.line_catalog``).
         """
-        from ..instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
         from .profiles import GaussianProfile, QuadratureSigma
-        center = PAH_LINE_CENTER_UM if line_center is None else line_center
-        sigma = LINE_SIGMA_UM if line_sigma is None else line_sigma
-        profile = GaussianProfile(
-            center_um=center, sigma_um=sigma,
-            sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355,
-                                         intrinsic_var_um2=2.890e-4))
+        sigma_source = None
+        if width_key is not None:
+            sigma_source = QuadratureSigma(fwhm_key=width_key, fwhm_to_sigma=fwhm_to_sigma,
+                                           intrinsic_var_um2=intrinsic_var_um2)
+        profile = GaussianProfile(center_um=center_um, sigma_um=sigma_um, sigma_source=sigma_source)
         return cls((ContinuumComponent(),
-                    SpectralComponent(name='pah_3p29', profile=profile, wavelength_key='BC')))
+                    SpectralComponent(name=name, profile=profile, wavelength_key=wavelength_key)))

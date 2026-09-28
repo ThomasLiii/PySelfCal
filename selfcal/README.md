@@ -14,9 +14,12 @@ no editing Python:
 ./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml --dry-run  # resolve jobs+mode, no compute
 ```
 
-The config picks an **instrument** (a geometry adapter implementing the
-[`instruments/base.py`](instruments/base.py) `Instrument` protocol — SPHEREx
-specifics live in [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)),
+The config picks an **instrument** (`[instrument].name`, resolved through the
+registry in [`instruments/base.py`](instruments/base.py): a subclass of the
+`Instrument` ABC — the built-ins are `spherex`, whose specifics live in
+[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py), and the
+config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
+other packages register theirs through the `selfcal.instruments` entry-point group),
 a **mode** (the calibration recipe; modes registry under
 `selfcal_scripts/runner/modes/`), and a **task** (`cal`, optionally tiled via
 `[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal_scripts/runner/` is instrument- and
@@ -401,22 +404,35 @@ clarity:
 ### Instrument-specific helpers (`instruments/`)
 
 - **[`instruments/base.py`](instruments/base.py)** — The `Instrument`
-  protocol (a duck-typed `typing.Protocol`, not enforced). The selfcal core
-  takes plain arrays and callables and never imports `instruments`; an
-  instrument is a module that supplies geometry (chunk maps, valid masks,
-  aux maps, offset renderers) for a telescope. The generic run engine drives
-  a calibration entirely through this surface plus the `CalMode` interface.
-  A minimal new instrument needs only an exposure-list loader, its sci/DQ
-  ext conventions, and a chunk-map recipe (`make_grid_chunk_map` suffices for
-  a regular grid).
+  abstract base class + registry (`register_instrument`, `get_instrument`,
+  entry-point discovery) and the typed geometry it returns: `ChunkMap` (a
+  chunk partition at detector and grid resolution with the AXES of its chunk
+  grid — `selfcal.models.offset_structure.ChunkAxes` — plus which axes the
+  standard block regularises along, which is the spectral axis and which the
+  group axis), `DetectorGeometry` (chunk maps by name, named aux maps such as
+  a wavelength map), `JobGeometry` (per-job valid weights) and
+  `ExposureLayout` (how the reprojection stage reads a raw exposure). The
+  selfcal core takes plain arrays and never imports `instruments`; the run
+  engine drives a calibration entirely through this surface plus the
+  `CalMode` interface and reads no `[instrument]` key itself. Five methods
+  are required (`jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
+  `job_geometry`); the hooks (offset renderer, aux coadds, mosaic finaliser,
+  line catalogue, post-cal hooks, data unit, precompute) have defaults.
+
+- **[`instruments/grid.py`](instruments/grid.py)** — The built-in `grid`
+  instrument: any single-detector imager described entirely by the
+  `[instrument]` table (detector shape, chunk grid, extension numbers). The
+  test suite's end-to-end run uses it on synthetic exposures.
 
 - **[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)** — The
-  `SPHERExInstrument` reference implementation of the protocol: expands a
-  channel/window selection into jobs, builds detector-level geometry once per
-  run (LVF chunk maps, BC/BW aux, edges), supplies per-job valid masks +
-  weights, the per-map offset renderer for the mosaic step, and the
-  wavelength append. Also houses the readout-stripe chunk map
-  (`make_readout_chunk_map`) used by the K=2 readout mode.
+  `SPHERExInstrument` reference implementation: expands a channel/window
+  selection into jobs, builds detector-level geometry once per run (the LVF
+  stripped chunk map with its `(subchannel, column)` axes, the readout-channel
+  map, the BC/BW aux maps), supplies per-job valid masks + weights, the arc
+  offset renderer for the mosaic, the wavelength coadd + finaliser, the L2b
+  exposure layout (FINAST filter), the zodi-anchor post-cal hook and the
+  data unit. [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
+  holds the named sky models (`pah_3p29`).
 
 - **[`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py)** —
   SPHEREx LVF geometry and chunk-map construction.
@@ -558,10 +574,12 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   and `Calibrator` so the build and the parse cannot drift.
 - **Engine ↔ instrument ↔ mode separation.** The generic run engine never
   imports a telescope or names a calibration variant: it talks to the
-  `Instrument` protocol ([`instruments/base.py`](instruments/base.py)) and
-  the `CalMode` interface. Adding a telescope = one new instrument adapter;
-  adding a calibration variant = one new mode module — neither touches the
-  engine.
+  `Instrument` ABC ([`instruments/base.py`](instruments/base.py)) and the
+  `CalMode` interface, and modes express offset structure in the chunk
+  map's axes ([`models/offset_structure.py`](models/offset_structure.py)),
+  never in a telescope's vocabulary. Adding a telescope = an `[instrument]`
+  table for the built-in `grid`, or one `Instrument` subclass; adding a
+  calibration variant = one new mode module — neither touches the engine.
 - **Models over parallel lists.** `SkyModel` and `OffsetModel` bundle what
   used to be loose integers / parallel length-K kwargs. They lower to the
   identical flat kwargs (gated byte-equal) so the abstraction adds no
@@ -687,8 +705,11 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`io/reprojection.py`](io/reprojection.py) | Parallel batch reprojection onto the reference WCS. |
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
-| [`instruments/base.py`](instruments/base.py) | The `Instrument` protocol (duck-typed). |
-| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map. |
+| [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
+| [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
+| [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
+| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
+| [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named sky models (`pah_3p29`). |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |
 | [`instruments/euclid/exposures.py`](instruments/euclid/exposures.py) | Euclid exposure-list loaders. |

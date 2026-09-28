@@ -43,7 +43,7 @@ a telescope or a specific calibration variant by name.
 ## Schema
 
 **Top-level (generic)** — `task` (`cal`|`mosaic`|`npass`|`reproject`|`precompute`;
-`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only), `output_dir`, `run_name` (may contain `{detector}`),
+`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only; see *Modes* below), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
@@ -118,18 +118,33 @@ after the first). Pass 1 is the `cal` task on the same config — tiled when
 overlapping tiles are de-duplicated first-tile-wins). A re-run resumes: passes
 whose product exists are skipped.
 
+## Modes
+
+| mode | offset structure | sky | presets (historical names, same behaviour) |
+| --- | --- | --- | --- |
+| `continuum` | adjacency along the chunk map's adjacency axes + optional soft polynomial (`poly_weight`, `poly_degree`, `poly_axis`) + mean-zero anchor + per-frame scalar | continuum | — |
+| `spectral` | as `continuum` | continuum + line(s): `[[params.lines]]`, or `line_template_npz`, or a catalogue line `line` (default `pah_3p29`) | `pahfit` |
+| `spectral_softpoly` | + soft polynomial along the spectral axis: `spectral_poly_degree` / `_lo` / `_hi` / `_weight` (historical `subch_poly_*`) | as `spectral` | `pahfit_subch`, `pahfit_lvf`; `tiled` (column poly always on, spectral poly required, no mosaic) |
+| `spectral_polybasis` | hard Chebyshev basis in the spectral axis per group axis (no weight knob), optional `spectral_poly_segments` | as `spectral` | `pahfit_lvf_polybasis`, `multiline` |
+| `two_block_fixed` | primary map regularised along its spectral axis + a detector-fixed second map (`second_map`, default `readout`; `second_reg_weight`) | continuum | `k2_readout` |
+
+Modes read `[params]` only; the axes they refer to ("column", "subchannel",
+"row", "col") are declared by the instrument's chunk map, so a recipe runs on
+any instrument that declares the axes it needs (`requires` lists the
+capability tags: `wavelength`, `spectral_axis`).
+
 ## Adding a calibration variant (mode)
 
 Drop a module in `selfcal_scripts/runner/modes/`:
 
 ```python
-from .base import CalMode, register_mode
+from .base import CalMode, register_mode, standard_block
 
-@register_mode("my_variant")
+@register_mode("my_variant", "my_old_name")      # extra names are aliases
 class MyVariant(CalMode):
     requires = ()                       # e.g. ("wavelength",) for spectral
-    def build_offset_model(self, cfg, inst, det_inputs, ch_inputs, job, n_frames):
-        ...                             # build it from inst.* geometry helpers
+    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
+        ...                             # from geom.chunk_map (.det/.grid/.axes) + selfcal.models.offset_structure
 ```
 
 Add it to the import in `modes/__init__.py`. No engine edits. A config then sets
@@ -137,9 +152,28 @@ Add it to the import in `modes/__init__.py`. No engine edits. A config then sets
 
 ## Adding a telescope (instrument)
 
-Implement `selfcal.instruments.base.Instrument` (see
-`selfcal/instruments/spherex/adapter.py`) and register the name in
-`runner/config.get_instrument`. The generic modes (`continuum`) work against any
-instrument; LVF-specific modes declare `requires` capabilities the instrument
-must provide. Broadband instruments omit `wavelength`/`subchannel` and the
-generic engine skips the wavelength append automatically.
+**No code — the built-in `grid` instrument.** Any single-detector imager whose
+exposures carry a science image with a celestial WCS and a bitmask extension::
+
+    [instrument]
+    name = "grid"
+    detector_shape = [2048, 2048]   # rows, cols of the science array
+    chunks = [8, 8]                 # offset chunk grid
+    sci_ext = 1
+    dq_ext = 2
+    tag = "MyCam"                   # product-name tag
+
+Then `task = "reproject"` on the exposure directory and `task = "cal"` with
+`mode = "continuum"`; `tests/test_runner_e2e_toy.py` is a complete worked
+example on synthetic exposures.
+
+**With code.** Subclass `selfcal.instruments.Instrument` (five required
+methods: `jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
+`job_geometry`; hooks for the rest), decorate it with
+`@register_instrument("name")` — or publish it from your own package through
+the `selfcal.instruments` entry-point group — and select it with
+`[instrument].name`. `selfcal/instruments/spherex/adapter.py` is the full
+reference (chunk axes, wavelength maps, renderer, post-cal hooks),
+`selfcal/instruments/grid.py` the minimal one. Modes declare the capability
+tags they need; an instrument without them cannot run those modes, and the
+engine skips the wavelength coadd when the instrument has none.

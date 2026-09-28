@@ -18,10 +18,8 @@ FORBIDDEN = {
     'instruments': ('selfcal.pipeline', 'selfcal_scripts'),
 }
 # Audited violations still present (SYNTHESIS §0 / audits B R6, D R1); remove entries as they are fixed.
-KNOWN = {
-    ('models/sky_model.py', 'selfcal.instruments.spherex.spherex_utility'),
-    ('instruments/spherex/adapter.py', 'selfcal.pipeline.npass'),
-}
+KNOWN = set()
+
 
 
 def _resolve(module, level, importer_rel):

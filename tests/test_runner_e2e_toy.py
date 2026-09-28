@@ -1,4 +1,4 @@
-"""End-to-end through the RUN ENGINE with a telescope-free instrument.
+"""End-to-end through the RUN ENGINE with the built-in ``grid`` instrument (no telescope code).
 
 Synthetic FITS exposures -> ``reproject`` task -> ``cal`` task (continuum mode, mosaic
 with std + sigma-clip) -> ``mosaic`` task -> ``cal`` with ``[tiling]`` (two tiles +
@@ -25,8 +25,9 @@ from astropy.io import fits                                     # noqa: E402
 
 from selfcal import _state                                      # noqa: E402
 from selfcal_scripts.runner import config as runner_config      # noqa: E402
-from selfcal_scripts.runner import engine, pipelines            # noqa: E402
-from tests.toy_instrument import ToyInstrument, write_exposures, REF_ARCSEC, N_CHUNK_SIDE  # noqa: E402
+from selfcal_scripts.runner import pipelines                    # noqa: E402
+from selfcal.instruments import get_instrument                  # noqa: E402
+from tests.synthetic_exposures import write_exposures, REF_ARCSEC, N_CHUNK_SIDE, DET  # noqa: E402
 
 N_EXP = 14
 
@@ -53,7 +54,8 @@ def _write_config(path, task, out, cache, scalars=None, **tables):
     if task in ('cal', 'tiled', 'mosaic'):
         top['mode'] = 'continuum'
     top.update(scalars or {})
-    base = dict(instrument={'name': 'toy', 'detector': 0, 'num_col': N_CHUNK_SIDE},
+    base = dict(instrument={'name': 'grid', 'tag': 'Toy', 'detector_shape': [DET, DET], 'chunks': [N_CHUNK_SIDE],
+                            'sci_ext': 1, 'dq_ext': 2},
                 params={'reg_weight': 0.1},
                 calibration=dict(apply_mask=True, apply_weight=False, outlier_thresh=5.0, ignore_list=[],
                                  batch_size=4, offset_regularization=True, weighted_damping=True,
@@ -95,9 +97,6 @@ def _check_cal(cal_path, off_true, sc_true, n_exp):
 
 def test_toy_instrument_end_to_end():
     _state.set_progress(False)
-    orig_get = runner_config.get_instrument
-    runner_config.get_instrument = lambda name: ToyInstrument() if name == 'toy' else orig_get(name)
-    engine.get_instrument = runner_config.get_instrument
     tmp = tempfile.mkdtemp(prefix='selfcal_toy_')
     try:
         rng = np.random.default_rng(3)
@@ -106,10 +105,10 @@ def test_toy_instrument_end_to_end():
         out, cache = os.path.join(tmp, 'out'), os.path.join(tmp, 'cache')
         os.makedirs(cache, exist_ok=True)
         # --- reproject task
+        # extension numbers come from the instrument's exposure layout (the [instrument] table)
         rcfg = _write_config(os.path.join(tmp, 'reproject.toml'), 'reproject', out, cache, reproject=dict(
-            input_dirs=[exp_dir], file_pattern='/toy_exp_*_D{detector}.fits', use_ext=[1], sci_ext_list=[1],
-            dq_ext_list=[2], padding_pixels=8, max_workers=2, inner_parallel=1, reproj_func='interp',
-            padding_percentage=0.05, replace_existing=True, header_filter_workers=2))
+            input_dirs=[exp_dir], file_pattern='/toy_exp_*_D0.fits', padding_pixels=8, max_workers=2,
+            inner_parallel=1, reproj_func='interp', padding_percentage=0.05, replace_existing=True))
         reproj_dir = pipelines.run(rcfg)
         assert reproj_dir == os.path.join(out, 'toy_run', 'reprojected')
         frames = sorted(f for f in os.listdir(reproj_dir) if f.endswith('.h5'))
@@ -118,12 +117,13 @@ def test_toy_instrument_end_to_end():
         assert os.path.exists(ref)
         # --- cal task (+ mosaic)
         ccfg = _write_config(os.path.join(tmp, 'cal.toml'), 'cal', out, cache)
-        assert ccfg.instrument == 'toy'
+        assert ccfg.instrument == 'grid'
         res = pipelines.run(ccfg)
         assert len(res.cal_paths) == 1 and os.path.exists(res.cal_paths[0])
         assert res.sky_path == res.cal_paths[0]
         _check_cal(res.cal_paths[0], off_true, sc_true, N_EXP)
-        tag = ToyInstrument().frame_tag(ccfg.instrument_cfg)
+        tag = get_instrument('grid').frame_tag(ccfg.instrument_cfg)
+        assert tag == 'Toy_Chunks4x4'
         mos = os.path.join(out, 'toy_run', 'mosaic', f"mosaic_{tag}_All_t.fits")
         assert res.mosaic_paths == [mos] and os.path.exists(mos), os.listdir(os.path.join(out, 'toy_run', 'mosaic'))
         with fits.open(mos) as h:
@@ -153,11 +153,9 @@ def test_toy_instrument_end_to_end():
             assert f['skymap'].shape == (ny, nx)
             assert np.isfinite(f['skymap'][()]).sum() > 0
     finally:
-        runner_config.get_instrument = orig_get
-        engine.get_instrument = orig_get
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == '__main__':
     test_toy_instrument_end_to_end()
-    print("OK toy instrument: reproject -> cal -> mosaic -> mosaic task -> tiled cal through the run engine")
+    print("OK grid instrument: reproject -> cal -> mosaic -> mosaic task -> tiled cal through the run engine")

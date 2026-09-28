@@ -19,12 +19,12 @@ from dataclasses import dataclass, field
 @dataclass
 class RunConfig:
     task: str                          # cal | mosaic | npass | reproject | precompute ('tiled' = cal + [tiling])
-    instrument: str = "spherex"
+    instrument: str = None             # from [instrument].name (required)
     mode: str = None                   # cal/tiled mode name (None for reproject/precompute)
     output_dir: str = None
     run_name: str = None               # may contain "{detector}"
-    resolution_arcsec: float = 6.2
-    cache_dir: str = "/home/thomasli/selfcal-project/selfcal/cache/"
+    resolution_arcsec: float = None    # required for reproject / cal / mosaic / npass
+    cache_dir: str = None              # staging / scratch area (required for cal / mosaic / npass)
     suffix: str = ""
     oversample: int = 1
     staging: str = "copy"              # copy | reuse
@@ -95,7 +95,12 @@ def load_config(path):
         raise ValueError(f"{path} missing required 'task'")
     cfg = RunConfig(**kwargs)
     # Instrument selector lives inside [instrument].name (defaults to spherex).
-    cfg.instrument = cfg.instrument_cfg.get('name', cfg.instrument)
+    cfg.instrument = cfg.instrument_cfg.get('name')
+    if not cfg.instrument:
+        raise ValueError(f"{path}: [instrument] needs a 'name' (an instrument registered with "
+                         f"selfcal.instruments, e.g. \"spherex\" or \"grid\")")
+    if cfg.task != 'precompute' and cfg.resolution_arcsec is None:
+        raise ValueError(f"{path}: resolution_arcsec is required")
     # task 'tiled' is the 'cal' task with a [tiling] table.
     if cfg.task == 'tiled':
         if not cfg.tiling:
@@ -105,10 +110,9 @@ def load_config(path):
 
 
 def get_instrument(name):
-    if name == 'spherex':
-        from selfcal.instruments.spherex.adapter import SPHERExInstrument
-        return SPHERExInstrument()
-    raise ValueError(f"unknown instrument {name!r} (known: 'spherex')")
+    """The registered instrument (built-in or entry-point plugin); see selfcal.instruments."""
+    from selfcal.instruments import get_instrument as _get
+    return _get(name)
 
 
 # Named postprocess functions selectable from config (default None).

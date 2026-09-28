@@ -15,6 +15,10 @@ Every product name (cal, mosaic, mosaic cache, tile cals, stitched cal, N-pass
 products) comes from :class:`RunContext`, so the pieces of a run can never
 disagree about a file name.
 
+The engine reads no ``[instrument]`` key: the instrument turns that table into
+typed geometry (:class:`~selfcal.instruments.base.DetectorGeometry`,
+``JobGeometry``), the mode turns the geometry into the offset/sky recipe.
+
 Edits here must keep calibration output byte-identical — run
 ``workspace/unify/scripts/run_gates.sh`` (or the equivalent gate set) before
 committing. All numeric choices live in the TOML config and the mode/instrument
@@ -28,10 +32,11 @@ import os
 import shutil
 from dataclasses import dataclass, field
 
+from selfcal.instruments import get_instrument
 from selfcal.pipeline import pipeline_wrapper
 
 from . import staging
-from .config import get_instrument, get_postprocess
+from .config import get_postprocess
 from .modes import get_mode
 
 
@@ -58,16 +63,16 @@ def calibration_kwargs(cfg):
 class RunContext:
     """Everything a task resolves once from its config.
 
-    ``det_inputs`` is the instrument's detector-level geometry (chunk maps, aux
-    maps, edges) built once per run; per-job geometry comes from
-    :meth:`channel_inputs`. The ``stem`` / ``cal_*`` / ``mosaic_*`` methods are
+    ``geom`` is the instrument's detector-level geometry (chunk maps with their
+    axes, aux maps) built once per run; per-job geometry comes from
+    :meth:`job_geometry`. The ``stem`` / ``cal_*`` / ``mosaic_*`` methods are
     the ONE place product names are formed: ``<frame_tag>_<job.name><suffix>``.
     """
     cfg: object
     inst: object
     mode: object
     pipeline_config: pipeline_wrapper.PipelineConfig
-    det_inputs: dict
+    geom: object
     cal_kwargs: dict
     frame_tag: str
 
@@ -85,13 +90,12 @@ class RunContext:
             output_dir=cfg.output_dir,
             run_name=cfg.resolved_run_name(),
             resolution_arcsec=cfg.resolution_arcsec)
-        det_inputs = frame_tag = None
+        geom = frame_tag = None
         if need_geometry:
-            det_inputs = inst.detector_inputs(cfg.instrument_cfg, cfg.oversample)
+            geom = inst.detector_geometry(cfg.instrument_cfg, cfg.oversample)
             frame_tag = inst.frame_tag(cfg.instrument_cfg)
         return cls(cfg=cfg, inst=inst, mode=mode, pipeline_config=pc,
-                   det_inputs=det_inputs, cal_kwargs=calibration_kwargs(cfg),
-                   frame_tag=frame_tag)
+                   geom=geom, cal_kwargs=calibration_kwargs(cfg), frame_tag=frame_tag)
 
     # ---- geometry ---------------------------------------------------------
     def jobs(self):
@@ -104,12 +108,15 @@ class RunContext:
                              f"{len(jobs)} jobs: {[j.name for j in jobs]}")
         return jobs[0]
 
-    def channel_inputs(self, job):
-        return self.inst.channel_inputs(self.cfg.instrument_cfg, self.det_inputs, job)
+    def job_geometry(self, job):
+        return self.inst.job_geometry(self.cfg.instrument_cfg, self.geom, job)
 
-    @property
-    def detector(self):
-        return self.cfg.instrument_cfg.get('detector')
+    def aux_maps(self):
+        """``(det_aux list, aux_keys)`` the mode asks the solve to carry (``(None, None)`` if none)."""
+        aux = self.mode.aux_maps(self.cfg, self.inst, self.geom)
+        if not aux:
+            return None, None
+        return [aux[k] for k in aux], list(aux)
 
     # ---- naming (the one place) --------------------------------------------
     def stem(self, job, suffix=None):
@@ -171,6 +178,9 @@ def stage_run(ctx):
     if cfg.reproj_override:
         staging.set_hdd_io_limit(None)
         return cfg.reproj_override
+    if not cfg.cache_dir:
+        raise ValueError("cache_dir is required (the staging area for the reprojected frames), "
+                         "or give reproj_override")
     return staging.prepare_nvme(cfg, ctx.pipeline_config.reproj_dir, ctx.pipeline_config.run_name)
 
 
@@ -188,7 +198,7 @@ def frame_list(frame_dir, n_frames=None):
 # ---------------------------------------------------------------------------
 # Primitive 1: one joint solve -> one cal file
 # ---------------------------------------------------------------------------
-def solve_job(ctx, job, ch_inputs, *, frame_dir, cal_file, hdd_reproj_dir,
+def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
               frames=None, checkpoint=None):
     """setup_lsqr + apply_lsqr + save for one job over one frame list.
 
@@ -197,22 +207,24 @@ def solve_job(ctx, job, ch_inputs, *, frame_dir, cal_file, hdd_reproj_dir,
     it stays valid after the staged copy is cleaned up. ``checkpoint(label)`` is
     an optional progress/RSS hook called around the two heavy steps.
     """
-    cfg, inst, mode = ctx.cfg, ctx.inst, ctx.mode
+    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
     checkpoint = checkpoint or (lambda label: None)
     cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
     if frames is not None:
         cc.reproj_list = list(frames)
     n_frames = len(cc.reproj_list)
-    offset_model = mode.build_offset_model(cfg, inst, ctx.det_inputs, ch_inputs, job, n_frames)
-    sky_model = mode.build_sky_model(cfg, inst, ctx.det_inputs)
-    det_aux = mode.det_aux(cfg, inst, ctx.det_inputs)
+    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames)
+    sky_model = mode.build_sky_model(cfg, inst, geom)
+    det_aux, aux_keys = ctx.aux_maps()
     checkpoint('pre-setup_lsqr')
     cc.setup_lsqr(
         offset_model=offset_model,
-        grid_valid_weight=ch_inputs['det_valid_mask_padded'],
+        grid_valid_weight=jobgeom.det_valid_weight,
         oversample_factor=1,
         sky_model=sky_model,
         det_aux=det_aux,
+        aux_keys=aux_keys,
+        outlier_aux_key=geom.wavelength_key,
         batch_spill_dir=cfg.cache_dir,
         **ctx.cal_kwargs)
     checkpoint('post-setup_lsqr')
@@ -236,22 +248,25 @@ def solve_job(ctx, job, ch_inputs, *, frame_dir, cal_file, hdd_reproj_dir,
 # ---------------------------------------------------------------------------
 # Primitive 2: one cal -> one mosaic
 # ---------------------------------------------------------------------------
-def mosaic_job(ctx, job, ch_inputs, *, cal_path, frame_dir, mos_file, cache_dir):
+def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     """Coadd the frames of ``cal_path`` (read from ``frame_dir``) into
-    ``mos_file``; the wavelength maps ride along when the mode asks for a full
-    mosaic and the instrument has them."""
-    cfg, inst, mode = ctx.cfg, ctx.inst, ctx.mode
-    chunk_maps, det_offset_funcs = mode.mosaic_geometry(cfg, inst, ctx.det_inputs, ch_inputs)
-    mm = pipeline_wrapper.Mosaicker(ctx.pipeline_config, reproj_dir=frame_dir)
+    ``mos_file``; the instrument's aux coadds (SPHEREx: the wavelength maps)
+    ride along when the mode asks for a full mosaic and the instrument has them."""
+    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
+    chunk_maps, det_offset_funcs = mode.mosaic_geometry(cfg, inst, geom, jobgeom)
+    mm = pipeline_wrapper.Mosaicker(ctx.pipeline_config, reproj_dir=frame_dir,
+                                    unit=inst.data_unit(cfg.instrument_cfg))
     mm.load_calibration(cal_path=cal_path)
     mm.reproj_list = staging.remap_to_nvme(mm.reproj_list, frame_dir)
-    # `wavelength_coadd` (default true) selects the wav_mean/wav_std maps. They
-    # are sigma-clipped against the std map, so they need make_std_map; with
-    # apply_sigma_clipping they are coadded inside the sigma-clip pass (no extra
-    # pass, no cache needed), otherwise the standalone wavelength coadd runs
-    # over the intermediate cache. Say so here rather than fail deep inside.
+    # `wavelength_coadd` (default true) selects the instrument's aux coadds (the
+    # wav_mean/wav_std maps). They are sigma-clipped against the std map, so
+    # they need make_std_map; with apply_sigma_clipping they are coadded inside
+    # the sigma-clip pass (no extra pass, no cache needed), otherwise the
+    # standalone coadd runs over the intermediate cache. Say so here rather
+    # than fail deep inside the coadd.
     wav_maps = None
-    want_wav = mode.mosaic_mode == 'full' and cfg.wavelength_coadd
+    aux_coadds = inst.aux_coadds(geom) if mode.mosaic_mode == 'full' and cfg.wavelength_coadd else None
+    want_wav = aux_coadds is not None
     if want_wav:
         if not cfg.mosaic.get('make_std_map', False):
             raise ValueError(
@@ -260,7 +275,7 @@ def mosaic_job(ctx, job, ch_inputs, *, cal_path, frame_dir, mos_file, cache_dir)
                 "true, or set wavelength_coadd = false to build the mosaic "
                 "without the wav_mean/wav_std maps.")
         if cfg.mosaic.get('apply_sigma_clipping', False):
-            wav_maps = inst.wavelength_maps(ctx.det_inputs)
+            wav_maps = aux_coadds
         elif not cfg.mosaic.get('cache_intermediate', False):
             raise ValueError(
                 "wavelength_coadd = true needs [mosaic] apply_sigma_clipping = "
@@ -269,14 +284,14 @@ def mosaic_job(ctx, job, ch_inputs, *, cal_path, frame_dir, mos_file, cache_dir)
                 "wavelength_coadd = false.")
     maps = mm.make_mosaic(
         chunk_maps=chunk_maps,
-        grid_valid_weight=ch_inputs['grid_valid_weight'],
+        grid_valid_weight=jobgeom.grid_valid_weight,
         oversample_factor=cfg.oversample,
         det_offset_funcs=det_offset_funcs,
         cache_dir=cache_dir,
         wav_maps=wav_maps,
         **cfg.mosaic)
     if want_wav:
-        inst.wavelength_append(ctx.det_inputs, mm, maps, cfg.mosaic['sigma'])
+        inst.finalize_mosaic(geom, mm, maps, cfg.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
     del mm, maps
     if os.path.exists(cache_dir):

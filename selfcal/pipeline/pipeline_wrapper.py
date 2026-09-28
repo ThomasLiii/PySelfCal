@@ -662,6 +662,8 @@ class Calibrator(Reprojector):
                    mean_offset_group_rows: bool = False,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
+                   aux_keys: list[str] | None = None,
+                   outlier_aux_key: str | None = None,
                    spectral_fit: bool = False, line_center: float | None = None,
                    line_sigma: float | None = None,
                    damp_weight_line: float | None = None,
@@ -783,7 +785,15 @@ class Calibrator(Reprojector):
             Maps whose adjacency regularization is emitted once per group
             (weight ``reg_weight·√k``) instead of once per frame. Same normal
             equations, far fewer nonzeros; only useful for det-grouped maps.
-        det_aux : np.ndarray or None, optional
+        det_aux : list of np.ndarray or None, optional
+            Per-pixel aux maps on the detector grid, in ``aux_keys`` order.
+        aux_keys : list of str or None, optional
+            Names of the ``det_aux`` entries (the keys the sky model's components
+            read, e.g. an instrument's wavelength map). ``None`` keeps the
+            historical ``['BC', 'BW']`` positional convention.
+        outlier_aux_key : str or None, optional
+            Which aux map the grouped outlier clip (``outlier_subchannel_edges``)
+            bins on (default ``'BC'``).
             Auxiliary per-detector array carried alongside the data (e.g. a
             per-sample wavelength map for spectral fits).
         spectral_fit : bool, optional
@@ -863,23 +873,14 @@ class Calibrator(Reprojector):
         _check_len('det_templates', det_templates)
 
         # Resolve the sky model. sky_model= is the forward-looking API; the
-        # legacy spectral_fit flag is a deprecated shim that builds the
-        # equivalent SkyModel. Passed through to setup_lsqr, which derives
-        # num_sky_blocks / line damping / det_aux requirements from it.
-        if sky_model is not None:
-            if spectral_fit:
-                warnings.warn(
-                    "spectral_fit is ignored when sky_model is given; drop spectral_fit.",
-                    DeprecationWarning, stacklevel=2)
-            self.sky_model = sky_model
-        elif spectral_fit:
-            warnings.warn(
-                "spectral_fit=True is deprecated; pass "
-                "sky_model=SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma).",
-                DeprecationWarning, stacklevel=2)
-            self.sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
-        else:
-            self.sky_model = SkyModel.continuum_only()
+        # The sky is always an explicit SkyModel (continuum-only by default).
+        # The historical spectral_fit flag built a SPHEREx PAH model here; it is
+        # gone — build the model (e.g. from the instrument's line catalogue,
+        # ``selfcal.instruments.spherex.line_catalog.pah_3p29``) and pass it.
+        if spectral_fit:
+            raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
+                             "(e.g. selfcal.instruments.spherex.line_catalog.pah_3p29(line_center, line_sigma)).")
+        self.sky_model = sky_model if sky_model is not None else SkyModel.continuum_only()
 
         with timer("Setup LSQR"):
             _setup_result = setup_lsqr(
@@ -903,7 +904,8 @@ class Calibrator(Reprojector):
                 damp_offset=damp_offset, damp_offset_maps=damp_offset_maps,
                 mean_offset_group_rows=mean_offset_group_rows,
                 group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
-                spectral_fit=spectral_fit, line_center=line_center,
+                aux_keys=aux_keys, outlier_aux_key=outlier_aux_key,
+                line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
@@ -1451,7 +1453,8 @@ class Calibrator(Reprojector):
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
-    def __init__(self, config: PipelineConfig, reproj_dir: str | None = None) -> None:
+    def __init__(self, config: PipelineConfig, reproj_dir: str | None = None,
+                 unit: str = 'MJy/sr') -> None:
         """Load the reference WCS and reprojected file list for mosaicking.
 
         Parameters
@@ -1480,9 +1483,11 @@ class Mosaicker(Reprojector):
         self.skymap_coverage = None
         self.skymap_fisher = None
         self.skymap_line_fisher = None
-        self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
-                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
-                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
+        # `unit` = the calibrated data's unit (the instrument's data_unit) -> FITS BUNIT.
+        self.unit = unit
+        self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
+                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
+                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit}}
         self.mean_offset = 0.0  # mean of map-0 offsets over the valid mask, used in FITS header
 
     def load_calibration(self, cal_path: str) -> None:

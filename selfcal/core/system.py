@@ -265,6 +265,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                mean_offset_group_rows: bool = False,
                group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
+               aux_keys: list[str] | None = None,
+               outlier_aux_key: str | None = None,
                spectral_fit: bool = False, line_center: float | None = None,
                line_sigma: float | None = None,
                damp_weight_line: float | None = None,
@@ -562,11 +564,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # to passing that model explicitly. The model's components drive the
     # per-pixel sky row emission in the worker (continuum -> J=1 identity
     # fast path; +line -> interleave with the profile coefficient).
+    if spectral_fit:
+        raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
+                         "(an explicit SkyModel with the line component).")
     if sky_model is None:
-        if spectral_fit:
-            sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
-        else:
-            sky_model = SkyModel.continuum_only()
+        sky_model = SkyModel.continuum_only()
     num_sky_blocks = sky_model.n_blocks
     if num_sky_blocks > 1:
         # A spectral SkyModel (>=1 non-continuum block) needs the wavelength aux
@@ -577,13 +579,20 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             damp_weight_line = 3.0 * damp_weight
         if det_aux is None or len(det_aux) < 1:
             raise ValueError(
-                "A spectral SkyModel (>1 sky block) requires det_aux=[BC_map] "
-                "(or [BC_map, BW_map] for per-pixel σ). Pass BC_map from "
-                "selfcal.instruments.spherex.spherex_utility.load_calibration(band=detector).")
+                "A spectral SkyModel (>1 sky block) requires det_aux=[wavelength map] "
+                "(+ the band-width map for a per-pixel sigma), named by aux_keys.")
         logger.info(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
                     f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
-    # Positional det_aux -> named aux dict (SPHEREx convention: [BC, BW]).
-    aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
+    # det_aux is positional; aux_keys names the entries (the keys the sky
+    # model's components read). The historical default is ['BC', 'BW'].
+    if aux_keys is None:
+        aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
+    else:
+        aux_keys = list(aux_keys)
+        if det_aux is not None and len(aux_keys) != len(det_aux):
+            raise ValueError(f"aux_keys {aux_keys} does not match the {len(det_aux)} det_aux maps")
+    if outlier_aux_key is None:
+        outlier_aux_key = 'BC'
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
@@ -650,6 +659,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
+        'outlier_aux_key': outlier_aux_key,
         'line_center': line_center,
         'line_sigma': line_sigma,
     }
