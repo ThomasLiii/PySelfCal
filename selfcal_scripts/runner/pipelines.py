@@ -228,10 +228,7 @@ def run_reprojection(cfg):
                         source_ref_path=r.get('source_ref_path'))
 
     sci_ext_list = r.get('sci_ext_list', list(layout.sci_ext))
-    dq_ext_list = r.get('dq_ext_list', layout.dq_ext)
-    if dq_ext_list is None:
-        raise NotImplementedError("exposures without a data-quality extension are not supported yet "
-                                  "(give dq_ext in the instrument layout or [reproject].dq_ext_list)")
+    dq_ext_list = r.get('dq_ext_list', layout.dq_ext)      # None: no mask extension, every pixel valid
     max_workers = r.get('max_workers', 50)
     inner_parallel = r.get('inner_parallel', 1)
     print(f"Running reprojection with max_workers={max_workers}, "
@@ -240,7 +237,7 @@ def run_reprojection(cfg):
                      reproj_func=r.get('reproj_func', 'exact'),
                      padding_percentage=r.get('padding_percentage', 0.05),
                      sci_ext_list=sci_ext_list,
-                     dq_ext_list=list(dq_ext_list),
+                     dq_ext_list=None if dq_ext_list is None else list(dq_ext_list),
                      exp_idx_list=np.arange(0, len(exposure_list)),
                      det_idx_list=list(layout.detector_ids),
                      replace_existing=r.get('replace_existing', False),

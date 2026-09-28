@@ -247,7 +247,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                grid_valid_weight: np.ndarray | None = None,
                apply_mask: bool = True, apply_weight: bool = False,
                valid_threshold: float = 0.99,
-               outlier_thresh: float | None = 3, outlier_subchannel_edges=None,
+               outlier_thresh: float | None = 3, outlier_group_edges=None,
+               outlier_subchannel_edges=None,
                max_workers: int = 20,
                ignore_list: list[int] | None = None, oversample_factor: int = 1,
                batch_size: int = 10, offset_regularization: bool = False,
@@ -437,6 +438,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         active_mask, pixel_spill)``. Returns ``(None, None)`` instead when no
         valid data is found in any subframe.
     """
+    # outlier_group_edges: bin edges of the grouped outlier clip (groups = values
+    # of the chunk map's spectral axis); outlier_subchannel_edges is the
+    # historical spelling.
+    if outlier_group_edges is not None:
+        if outlier_subchannel_edges is not None:
+            raise ValueError("give outlier_group_edges or outlier_subchannel_edges, not both")
+        outlier_subchannel_edges = outlier_group_edges
     # Mutable-default normalization: an empty ignore_list means "ignore nothing".
     if ignore_list is None:
         ignore_list = []

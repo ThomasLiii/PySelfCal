@@ -300,12 +300,18 @@ def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     
     return interp_matrix.tocsr()
 
-def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
+def det_to_sub(det_data, sub_mapping=None, interp_matrix=None, sub_shape=None):
+    """A detector-grid map resampled onto a subframe, through the bilinear
+    ``interp_matrix`` (rows = subframe pixels, in row-major order; ``sub_shape``
+    gives the subframe shape, default: a square) or by direct interpolation at
+    the ``sub_mapping`` detector coordinates."""
     if interp_matrix is not None:
-        sub_width = np.sqrt(interp_matrix.shape[0]).astype(np.int32)
+        if sub_shape is None:
+            sub_width = np.sqrt(interp_matrix.shape[0]).astype(np.int32)
+            sub_shape = (sub_width, sub_width)
         det_data_flat = det_data.ravel()
         sub_data_flat = interp_matrix @ det_data_flat
-        sub_data = sub_data_flat.reshape(sub_width, sub_width)
+        sub_data = sub_data_flat.reshape(sub_shape)
     elif sub_mapping is not None:
         sub_data = map_coordinates(det_data, sub_mapping[::-1], order=1, output=np.float32)
     else:

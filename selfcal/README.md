@@ -167,8 +167,10 @@ clarity:
   `chunk_offsets` + `det_offset_funcs` lists for the mosaic path, applies
   a validity weight, and stamps NaNs to zero. Returns `chunk_contribs` as
   a length-K list (LSQR path). Hooks are provided for `preprocess_func`
-  and `postprocess_func` that operate on `locals()` for flexible per-frame
-  tweaks (e.g. bright-pixel masking).
+  and `postprocess_func`: each receives a `FrameContext` (the frame's
+  identity, `sub_data`, `sub_weight`, `sub_mapping`, `ref_coords`, and after
+  the offsets `sub_aux`) and returns the new `sub_data` — e.g. bright-pixel
+  masking, or the N-pass offset/sky subtractors.
 
 - **`setup_lsqr` (in [`core/system.py`](core/system.py))** — Sparse matrix
   construction. Builds `A`, `b`, and a per-map `pixel_counts` coverage list
@@ -341,15 +343,27 @@ clarity:
 - **[`io/reproj.py`](io/reproj.py)** — `load_reproj_file(file_path, fields)`
   reads a reprojected HDF5, transparently handling datasets, attributes, and
   derived `sub_wcs` / `det_wcs` objects, and encodes `(exp_idx, det_idx)`
-  parsed from the filename. Respects the global HDD I/O semaphore.
+  parsed from the filename (`reproj_basename` / `parse_reproj_basename` are
+  the one place that name is spelled). Respects the global HDD I/O semaphore.
+  A frame that cannot be read raises `FrameLoadError` — it is never silently
+  dropped.
+
+- **[`io/calfile.py`](io/calfile.py)** — `CalFile`: the one reader of every
+  calibration product (v3 named sky blocks, v2, the legacy v1 layout, stitched
+  cals, N-pass sky and offset products): `sky(name)`, `sky_coverage`,
+  `sky_fisher`, `sky_separability`, `offsets` (per map, per frame),
+  `frame_scalar`, `total_offsets()`, `reproj_list`, `chunk_maps`, `fit_ok`.
+  The mosaicker and the N-pass readers go through it.
 
 - **[`io/reprojection.py`](io/reprojection.py)** — `batch_reproject(...)`
   iterates over `(exposure, sci_ext, dq_ext)` tasks and calls
   `reproject_interp / reproject_exact / reproject_adaptive` (from the
   `reproject` package) in a process pool. For each detector, it sizes a
   square subframe big enough to contain the detector diagonal after
-  reprojection (with padding), reprojects both the science image and the DQ
-  bitmask, and writes a zstd-compressed HDF5 file per (exposure, detector)
+  reprojection (with padding), reprojects the science image, the detector
+  pixel coordinates and (when the exposure has one, `dq_ext` not None) the DQ
+  bitmask — detectors need not be square — and writes a zstd-compressed HDF5
+  file per (exposure, detector)
   containing `sub_data`, `sub_foot`, `sub_bitmask`, `sub_mapping`, and both
   the detector-frame and subframe WCS headers as attributes.
 
@@ -701,7 +715,8 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/offset_model.py`](models/offset_model.py) | `OffsetModel` / `OffsetBlock` per-map offset bundling. |
 | [`geometry/map_helper.py`](geometry/map_helper.py) | Bitmask, interp, chunk, spline, and binning utilities. |
 | [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load / upscale. |
-| [`io/reproj.py`](io/reproj.py) | `load_reproj_file` for reprojected HDF5s. |
+| [`io/reproj.py`](io/reproj.py) | `load_reproj_file` for reprojected HDF5s; the frame-name helpers; `FrameLoadError`. |
+| [`io/calfile.py`](io/calfile.py) | `CalFile`, the reader of every calibration product. |
 | [`io/reprojection.py`](io/reprojection.py) | Parallel batch reprojection onto the reference WCS. |
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |

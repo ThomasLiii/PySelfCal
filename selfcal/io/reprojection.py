@@ -16,6 +16,7 @@ from reproject import reproject_interp, reproject_exact, reproject_adaptive
 
 from .. import _state
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
+from .reproj import reproj_basename
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def _reproject_worker(task_params):
     replace_existing = task_params['replace_existing']
     reproject_kwargs = task_params['reproject_kwargs']
 
-    output_file = os.path.join(output_dir, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
+    output_file = os.path.join(output_dir, reproj_basename(exp_idx, det_idx))
     if not replace_existing and os.path.exists(output_file):
         return _result(task_params, output_file, success=True)
 
@@ -65,8 +66,9 @@ def _reproject_worker(task_params):
         with fits.open(file_path) as hdul:
             det_data = hdul[sci_ext].data
             det_header = hdul[sci_ext].header
-            det_bitmask = hdul[dq_ext].data
-        det_width = np.shape(det_data)[-1]
+            # dq_ext None: the instrument has no data-quality mask -> every pixel valid.
+            det_bitmask = hdul[dq_ext].data if dq_ext is not None else None
+        det_height, det_width = np.shape(det_data)[-2:]
         det_header_str = det_header.tostring().encode('utf-8')
         det_wcs = WCS(det_header)
 
@@ -95,10 +97,15 @@ def _reproject_worker(task_params):
             **reproject_kwargs
         )
 
-        # Process detector auxiliary data
-        det_expanded_mask = bit_to_bool(det_bitmask, expand_bits=True)
-        det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_width))
-        det_aux = np.stack((det_xmesh, det_ymesh, *det_expanded_mask), axis=0)
+        # Process detector auxiliary data: the detector pixel coordinates (so
+        # every reprojected pixel knows where it came from) and, when the
+        # exposure carries a mask, its bit planes, all reprojected together.
+        det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_height))
+        if det_bitmask is not None:
+            det_expanded_mask = bit_to_bool(det_bitmask, expand_bits=True)
+            det_aux = np.stack((det_xmesh, det_ymesh, *det_expanded_mask), axis=0)
+        else:
+            det_aux = np.stack((det_xmesh, det_ymesh), axis=0)
         sub_aux, _ = reproject_interp(
             (det_aux, det_wcs),
             sub_wcs,
@@ -106,9 +113,12 @@ def _reproject_worker(task_params):
             order='bilinear',
         )
         sub_mapping = sub_aux[0:2] # x, y
-        sub_expanded_mask_float = sub_aux[2:]
-        sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
-        sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
+        if det_bitmask is not None:
+            sub_expanded_mask_float = sub_aux[2:]
+            sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
+            sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
+        else:
+            sub_bitmask = np.zeros((sub_width, sub_width), dtype=np.int32)
 
         with h5py.File(tmp_file, 'w', libver='latest') as hf:
 
@@ -169,12 +179,11 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         Fraction of the mosaic width to pad
     num_processes : int, optional
         Number of parallel processes to use
-    ignore_flags : list or tup
-        List of strings describing the header keywords in data quality extension, flags corresponding listed will be ignored
     sci_ext_list : list or tup
         List of integers defining the extension in the fits files containing the science data
-    dq_ext_list : list or tup
-        List of integers defining the extension in the fits files containing the data quality bitmask
+    dq_ext_list : list or tup or None
+        List of integers defining the extension in the fits files containing the data quality bitmask;
+        ``None`` (or ``None`` entries) for exposures without a mask (every pixel valid)
     reproj_func : str
         Reproject function for reprojecting the science extensions
         - 'Exact': Slowest, conserves flux
@@ -207,8 +216,8 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
 
     if sci_ext_list is None:
         sci_ext_list = []
-    if dq_ext_list is None:
-        dq_ext_list = []
+    if dq_ext_list is None:                      # no mask extension: one None per science extension
+        dq_ext_list = [None] * len(sci_ext_list)
     if reproject_kwargs is None:
         reproject_kwargs = {}
 
@@ -263,7 +272,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
             'exp_idx': int(exp_idx),
             'det_idx': int(det_idx),
             'sci_ext': int(sci_ext),
-            'dq_ext': int(dq_ext),
+            'dq_ext': None if dq_ext is None else int(dq_ext),
             'ref_wcs': ref_wcs,
             'sub_width': sub_width,
             'output_dir': output_dir,

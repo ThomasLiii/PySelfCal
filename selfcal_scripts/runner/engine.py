@@ -326,7 +326,8 @@ def tiling_frames(tiling):
     """Every frame of the field, in exposure order, from ``full_reproj_dir``."""
     files = glob_module.glob(os.path.join(tiling['full_reproj_dir'],
                                           tiling.get('frame_glob', 'exp_*_det_00.h5')))
-    return sorted(files, key=lambda p: int(os.path.basename(p).split('_')[1]))
+    from selfcal.io.reproj import parse_reproj_basename
+    return sorted(files, key=lambda p: parse_reproj_basename(p)[0])
 
 
 def tile_assignment(tiling, ref_shape):

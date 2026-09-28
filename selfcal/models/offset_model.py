@@ -102,15 +102,19 @@ class OffsetModel:
 
     def __post_init__(self):
         object.__setattr__(self, 'blocks', tuple(self.blocks))
-        if len(self.blocks) < 1:
-            raise ValueError("OffsetModel needs at least one OffsetBlock")
         for i, b in enumerate(self.blocks):
             if not isinstance(b, OffsetBlock):
                 raise TypeError(f"blocks[{i}] is {type(b).__name__}, expected OffsetBlock")
 
+    @classmethod
+    def sky_only(cls) -> "OffsetModel":
+        """No offset blocks at all: a sky-only solve (the offsets already
+        subtracted from the data by a hook, e.g. the N-pass SKY pass)."""
+        return cls(())
+
     @property
     def num_maps(self) -> int:
-        """Number of offset blocks (maps) in the model."""
+        """Number of offset blocks (maps) in the model; 0 for a sky-only model."""
         return len(self.blocks)
 
     @property

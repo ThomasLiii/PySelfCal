@@ -15,6 +15,7 @@ import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import csr_matrix
 
+from ..io.reproj import FrameLoadError
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
 from ..models.offset_basis import eval_offset_basis, n_coef
@@ -292,6 +293,8 @@ def _prep_lsqr(task_params):
                 task_params['num_sky_blocks'] * ref_h * ref_w)
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
 
+    except FrameLoadError:
+        raise                                   # a missing/corrupt frame is fatal, never silently dropped
     except Exception as e:
         # Runs inside a ProcessPoolExecutor child (_prep_lsqr / the batch
         # worker): children have no configured logging handlers, so a logger

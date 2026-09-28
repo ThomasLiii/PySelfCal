@@ -367,9 +367,12 @@ subsequent reads.
 
 ## `cal_*.h5` schema (multi-chunk-map)
 
-Written by `Calibrator.save_calibration`, read by analysis scripts (via
-`zodi_utils.load_cal_offsets`) and `Mosaicker.load_calibration`. Schema
-varies by `num_maps`:
+Written by `Calibrator.save_calibration`. Read it with
+`selfcal.io.calfile.CalFile` (`sky(name)`, `offsets`, `frame_scalar`,
+`total_offsets()`, `reproj_list`, ...), which resolves every layout below (and
+the stitched / N-pass products); `Mosaicker.load_calibration` and the analysis
+scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
+`num_maps`:
 
 **Top-level (always present):**
 - `skymap` — `(ref_h, ref_w)` float32 — solved sky map

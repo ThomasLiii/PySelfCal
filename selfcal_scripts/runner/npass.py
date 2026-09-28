@@ -214,6 +214,7 @@ class _Run:
     # ---- SKY pass -----------------------------------------------------------
     def sky_pass(self, i, offsets_cals, out):
         from selfcal.pipeline import pipeline_wrapper
+        from selfcal.models.offset_model import OffsetModel
         from selfcal.pipeline.npass import (OffsetSubtractor, dump_moments, combine_moments,
                                            sky_damp_weights)
         cfg, ctx = self.cfg, self.ctx
@@ -248,11 +249,12 @@ class _Run:
                   flush=True)
             cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=nvme)
             cc.reproj_list = frame_list
-            cc.setup_lsqr(chunk_maps=[], grid_valid_weight=self.grid_valid, oversample_factor=1,
+            cc.setup_lsqr(offset_model=OffsetModel.sky_only(), grid_valid_weight=self.grid_valid,
+                          oversample_factor=1,
                           sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
                           outlier_aux_key=self.geom.wavelength_key,
                           postprocess_func=subtract, outlier_thresh=float(opts["outlier_thresh"]),
-                          outlier_subchannel_edges=edges, use_per_frame_scalar=False,
+                          outlier_group_edges=edges,
                           sky_rhs_moments=True, batch_spill_dir=cfg.cache_dir, **calk)
             if merge == "combine":
                 dump_moments(cc, piece)

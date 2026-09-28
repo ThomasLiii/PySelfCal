@@ -48,6 +48,7 @@ from ..core.solution import solve_sky_closed_form
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
 from ..models.offset_basis import eval_offset_basis
 from ..models.offset_structure import group_aux_edges
+from ..io.calfile import CalFile
 
 __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
@@ -108,12 +109,14 @@ class OffsetSubtractor:
         self.cm = None
         n_dup = 0
         for path in cal_paths:
-            with h5py.File(path, "r") as f:
-                off = f["offsets/map_0"][:]
-                sc = f["frame_scalar"][:] if "frame_scalar" in f else np.zeros(off.shape[0])
-                cm = f["chunk_maps/map_0"][:]
-                names = [_basename(r) for r in f["reproj_list"][:]]
-                ok = f["fit_ok"][:] if "fit_ok" in f else np.ones(off.shape[0], bool)
+            with CalFile(path) as cal:
+                off = cal.offsets[0]
+                sc = cal.frame_scalar
+                sc = np.zeros(off.shape[0]) if sc is None else sc
+                cm = cal.chunk_maps[0]
+                names = [_basename(r) for r in cal.reproj_list]
+                ok = cal.fit_ok
+                ok = np.ones(off.shape[0], bool) if ok is None else ok
             if self.cm is None:
                 self.cm = cm
             elif self.cm.shape != cm.shape or not np.array_equal(self.cm, cm):
@@ -131,13 +134,13 @@ class OffsetSubtractor:
               f"|median| {np.median(np.abs(vals))*1e3:.2f}, |max| {np.max(np.abs(vals))*1e3:.1f} "
               f"(1e-3 MJy/sr)", flush=True)
 
-    def __call__(self, loc):
-        sub_data = loc["sub_data"]
-        row = self.by_file.get(os.path.basename(loc["file"]))
+    def __call__(self, ctx):
+        sub_data = ctx.sub_data
+        row = self.by_file.get(os.path.basename(ctx.file))
         if row is None:
             return sub_data
         grid_off = chunk_to_det(self.cm, chunk_data=row)
-        sm = np.asarray(loc["sub_mapping"]).reshape(2, -1)      # [x, y] det coords
+        sm = np.asarray(ctx.sub_mapping).reshape(2, -1)         # [x, y] det coords
         sub_off = map_coordinates(grid_off, sm[::-1], order=1, mode="constant",
                                   cval=0.0).reshape(sub_data.shape)
         return sub_data - sub_off
@@ -222,9 +225,9 @@ class SkySubtractor:
             pred = pred + m * c
         return pred, on_map
 
-    def __call__(self, loc):
-        sub_data = loc["sub_data"]
-        pred, _ = self.predict(loc["ref_coords"], sub_data.shape, loc.get("sub_aux"))
+    def __call__(self, ctx):
+        sub_data = ctx.sub_data
+        pred, _ = self.predict(ctx.ref_coords, sub_data.shape, ctx.sub_aux)
         return sub_data - pred
 
 
