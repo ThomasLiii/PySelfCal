@@ -1002,11 +1002,27 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                  mp_context=worker_pool_context()) as executor:
             futures = {executor.submit(_prep_lsqr_batch_worker, batch): i
                        for i, batch in enumerate(batched_tasks)}
+            # Batches are handed to the collate threads in BATCH-ID order, not
+            # completion order: the per-pixel float64 moment sums (Fisher,
+            # cross, RHS) would otherwise round differently whenever the pool
+            # finishes batches in a different order -> the coverage / Fisher /
+            # separability maps were not byte-reproducible run to run on a
+            # busy box. A small reorder buffer parks early finishers until
+            # their predecessors arrive (the CSR placement is by batch id and
+            # was already order-independent).
+            _reorder, _next_id = {}, 0
             for future in tqdm(as_completed(futures), total=len(futures), desc="Building A, b matrix",
                                disable=not _state.progress_enabled):
                 batch_id = futures[future]
                 result = future.result()
                 if result is None:
+                    _reorder[batch_id] = None
+                    while _next_id in _reorder:
+                        _item = _reorder.pop(_next_id)
+                        _next_id += 1
+                        if _item is not None:
+                            for _q in _fam_qs:
+                                _q.put(_item)
                     continue
                 shm_infos = result['shm']
                 if 'files' in result:
@@ -1030,10 +1046,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                         'num_rows': result['num_rows'],
                     }
                 _br = batch_results[batch_id]
-                _item = (batch_id, result, _br['rows'], _br['cols'],
-                         _br['data'], _br['b'])
-                for _q in _fam_qs:
-                    _q.put(_item)
+                _reorder[batch_id] = (batch_id, result, _br['rows'], _br['cols'],
+                                      _br['data'], _br['b'])
+                while _next_id in _reorder:
+                    _item = _reorder.pop(_next_id)
+                    _next_id += 1
+                    if _item is not None:
+                        for _q in _fam_qs:
+                            _q.put(_item)
+        assert not _reorder, "assembly reorder buffer not drained"
         for _q in _fam_qs:
             _q.put(None)
         for _t in _fam_threads:
