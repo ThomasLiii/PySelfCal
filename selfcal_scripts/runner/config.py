@@ -47,6 +47,7 @@ class RunConfig:
     reproject: dict = field(default_factory=dict)
     tiling: dict = field(default_factory=dict)   # [tiling] — tile the field (task 'cal'); old spelling [tiled]
     passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
+    model: dict = field(default_factory=dict)    # [model] — the sky/offset terms for mode = 'model'
 
     @property
     def tiled(self):
@@ -71,7 +72,7 @@ _SCALAR_KEYS = {
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',
     'lsqr': 'lsqr', 'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject',
-    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes',
+    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes', 'model': 'model',
 }
 
 

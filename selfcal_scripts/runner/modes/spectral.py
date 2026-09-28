@@ -1,10 +1,11 @@
 """Spectral modes — continuum + emission-line amplitudes per pixel.
 
-Three recipes, each a step on the previous one; the sky is the same
-(continuum + N line blocks, §"the sky"), the offset structure differs:
+Three recipes, each a step on the previous one; the sky terms are the same
+(continuum + N line terms, see :func:`~.base.spectral_sky_terms`), the offset
+term differs:
 
 ``spectral`` (preset ``pahfit``)
-    the standard block of the continuum mode.
+    the standard free offset term of the continuum mode.
 ``spectral_softpoly`` (presets ``pahfit_subch``, ``pahfit_lvf``, ``tiled``)
     + a SOFT polynomial constraint along the chunk map's spectral axis (degree
     ``spectral_poly_degree`` over ``[spectral_poly_lo, spectral_poly_hi]``,
@@ -20,7 +21,7 @@ Three recipes, each a step on the previous one; the sky is the same
     per segment (see ``offset_basis.piecewise_cheb_shape_basis``).
 
 The sky
-    ``[[params.lines]]`` — one block per entry: ``name`` + either
+    ``[[params.lines]]`` — one term per entry: ``name`` + either
     ``template_npz`` (a realistic template: ``center_um`` / ``G_peaknorm``
     tabulated against the instrument's wavelength map; preferred) or
     ``center_um`` + ``sigma_um`` (analytic Gaussian) or ``center_um`` +
@@ -39,94 +40,24 @@ The sky
 
 Historical parameter spellings (``subch_poly_degree`` / ``_lo`` / ``_hi`` /
 ``_weight`` / ``subch_poly_segments``) are accepted everywhere the generic
-``spectral_poly_*`` names are.
+``spectral_poly_*`` names are. Any of these models can also be spelled out in
+full with ``mode = "model"`` (see ``modes/model.py``).
 """
-import os
-
 import numpy as np
 
-from .base import CalMode, register_mode, standard_block, param, spectral_window
+from selfcal.models.spec import ModelSpec, OffsetTerm, PolyConstraint
+
+from .base import register_mode, param, spectral_window, standard_offset_term, spectral_sky_terms
 from .continuum import Continuum
 
 GRAM_WARN = 0.7
 
 
-# ---------------------------------------------------------------------------
-# the sky
-# ---------------------------------------------------------------------------
-def _line_profile(spec, geom):
-    """One ``[[params.lines]]`` entry -> a SpectralProfile."""
-    from selfcal.models.profiles import TemplateProfile, GaussianProfile, QuadratureSigma
-    if 'template_npz' in spec:
-        d = np.load(spec['template_npz'])
-        key = 'G_peaknorm' if spec.get('template_norm', 'peak') == 'peak' else 'G'
-        return TemplateProfile(wave_um=np.asarray(d['center_um'], float),
-                               values=np.asarray(d[key], float))
-    if 'center_um' in spec:
-        if spec.get('sigma_um') is not None:
-            return GaussianProfile(center_um=float(spec['center_um']),
-                                   sigma_um=float(spec['sigma_um']))
-        if geom.width_key is None:
-            raise ValueError(f"line {spec.get('name')!r}: a per-pixel sigma needs an instrument "
-                             f"band-width map; give sigma_um instead")
-        return GaussianProfile(
-            center_um=float(spec['center_um']),
-            sigma_source=QuadratureSigma(
-                fwhm_key=geom.width_key, fwhm_to_sigma=2.355,
-                intrinsic_var_um2=float(spec.get('intrinsic_var_um2', 0.0))))
-    raise ValueError(f"line spec needs 'template_npz' or 'center_um': {spec}")
-
-
-def build_sky(cfg, inst, geom, tag):
-    """The spectral sky model of a config (see the module docstring)."""
-    from selfcal.models.sky_model import SkyModel, ContinuumComponent, SpectralComponent
-    from selfcal.models.profiles import TemplateProfile
-    p = cfg.params
-    if geom.wavelength_key is None:
-        raise ValueError(f"mode {tag!r} needs an instrument wavelength map")
-    lines = p.get('lines')
-    if lines:
-        components = [ContinuumComponent()]
-        for spec in lines:
-            name = spec['name']
-            dw = spec.get('damp_weight')
-            components.append(SpectralComponent(
-                name=name, profile=_line_profile(spec, geom),
-                wavelength_key=geom.wavelength_key,
-                damp_weight=None if dw is None else float(dw)))
-            src = os.path.basename(spec.get('template_npz', '')) or \
-                f"Gaussian@{spec.get('center_um')}um"
-            print(f"[{tag}] line {name!r}: {src} damp_weight="
-                  f"{dw if dw is not None else '(fallback damp_weight_line)'}", flush=True)
-        model = SkyModel(tuple(components))
-        _print_gram(cfg, geom, model, tag)
-        return model
-    npz = p.get('line_template_npz')
-    if npz:
-        d = np.load(npz)
-        key = 'G_peaknorm' if p.get('line_template_norm', 'peak') == 'peak' else 'G'
-        profile = TemplateProfile(wave_um=np.asarray(d['center_um'], float),
-                                  values=np.asarray(d[key], float))
-        print(f"[{tag}] line template {os.path.basename(npz)} [{key}]: "
-              f"{d['center_um'][0]:.3f}-{d['center_um'][-1]:.3f} um, "
-              f"peak coeff at BC={float(d['center_um'][np.argmax(d[key])]):.4f} um, "
-              f"FWHM={1e3*float(d['fwhm_conv']):.1f} nm", flush=True)
-        return SkyModel((ContinuumComponent(),
-                         SpectralComponent(name='pah_3p29', profile=profile,
-                                           wavelength_key=geom.wavelength_key)))
-    catalog = inst.line_catalog()
-    name = p.get('line', 'pah_3p29')
-    if name not in catalog:
-        raise ValueError(f"[params].line = {name!r} is not in the instrument's line catalogue "
-                         f"{sorted(catalog)}; give [[params.lines]] instead")
-    return catalog[name](p.get('line_center'), p.get('line_sigma'))
-
-
-def _print_gram(cfg, geom, model, tag):
+def print_gram(cfg, geom, model, tag):
     """Pre-flight: the profile Gram matrix over the window's spectral-axis values."""
     p = cfg.params
     cm = geom.chunk_map
-    if cm.spectral_axis is None or geom.width_key is None:
+    if cm.spectral_axis is None or geom.width_key is None or model.n_blocks < 2:
         return
     lo, hi = spectral_window(p)
     wl = np.asarray(geom.aux[geom.wavelength_key], dtype=np.float64)
@@ -166,29 +97,26 @@ def _print_gram(cfg, geom, model, tag):
         print(f"[{tag}] Gram check OK (all off-diagonals <= {GRAM_WARN}).", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# the recipes
-# ---------------------------------------------------------------------------
 @register_mode("spectral", "pahfit")
 class Spectral(Continuum):
-    """Standard offset block + spectral sky."""
+    """Standard offset term + spectral sky terms."""
     mosaic_mode = "full"
     requires = ("wavelength",)
 
+    def model_spec(self, cfg, inst, geom):
+        return ModelSpec(sky=tuple(spectral_sky_terms(cfg, geom)),
+                         offset=(standard_offset_term(cfg, geom),), scalar=True)
+
     def build_sky_model(self, cfg, inst, geom):
-        return build_sky(cfg, inst, geom, self.requested_name or self.name)
-
-    def aux_maps(self, cfg, inst, geom):
-        return dict(geom.aux)
-
-    def configure(self, cfg, cc):
-        cc.line_fisher_threshold = cfg.params.get('line_fisher_threshold', 10.0)
+        model = super().build_sky_model(cfg, inst, geom)
+        if cfg.params.get('lines'):
+            print_gram(cfg, geom, model, self.requested_name or self.name)
+        return model
 
 
-def spectral_poly_group(cfg, geom, *, required=False):
+def spectral_poly_constraint(cfg, geom, *, required=False):
     """The soft polynomial constraint along the spectral axis, or None when
     ``spectral_poly_weight`` is not set (and not required)."""
-    from selfcal.models.offset_structure import poly_chains_along
     p = cfg.params
     weight = param(p, 'spectral_poly_weight', 'subch_poly_weight')
     if weight is None:
@@ -199,24 +127,22 @@ def spectral_poly_group(cfg, geom, *, required=False):
     if cm.spectral_axis is None:
         raise ValueError("the spectral polynomial constraint needs a chunk map with a spectral axis")
     lo, hi = spectral_window(p)
-    degree = int(param(p, 'spectral_poly_degree', 'subch_poly_degree'))
-    chains, stencil = poly_chains_along(cm.axes, cm.spectral_axis, degree, lo, hi)
-    return {'chains': chains, 'stencil': stencil, 'weight': weight}
+    return PolyConstraint(axis=cm.spectral_axis, degree=int(param(p, 'spectral_poly_degree', 'subch_poly_degree')),
+                          weight=weight, lo=lo, hi=hi)
 
 
 @register_mode("spectral_softpoly", "pahfit_subch", "pahfit_lvf")
 class SpectralSoftPoly(Spectral):
-    """Standard block + soft polynomial along the spectral axis."""
+    """Standard offset term + soft polynomial along the spectral axis."""
     requires = ("wavelength", "spectral_axis")
     spectral_poly_required = False
     column_poly_default_weight = None
 
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
-        from selfcal.models.offset_model import OffsetModel
-        grp = spectral_poly_group(cfg, geom, required=self.spectral_poly_required)
-        block = standard_block(cfg, geom, n_frames, extra_poly_groups=[grp] if grp else (),
-                               column_poly_default_weight=self.column_poly_default_weight)
-        return OffsetModel([block], use_per_frame_scalar=True)
+    def model_spec(self, cfg, inst, geom):
+        pc = spectral_poly_constraint(cfg, geom, required=self.spectral_poly_required)
+        off = standard_offset_term(cfg, geom, extra_poly=(pc,) if pc else (),
+                                   column_poly_default_weight=self.column_poly_default_weight)
+        return ModelSpec(sky=tuple(spectral_sky_terms(cfg, geom)), offset=(off,), scalar=True)
 
 
 @register_mode("tiled")
@@ -231,29 +157,12 @@ class TiledPreset(SpectralSoftPoly):
 
 @register_mode("spectral_polybasis", "pahfit_lvf_polybasis", "multiline")
 class SpectralPolyBasis(Spectral):
-    """Hard polynomial-basis offset (no weight knob) + per-frame scalar."""
+    """Hard polynomial-basis offset term (no weight knob) + per-frame scalar."""
     requires = ("wavelength", "spectral_axis")
 
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
-        from selfcal.models.offset_model import OffsetModel, OffsetBlock
-        from selfcal.models.offset_basis import n_coef
-        from selfcal.models.offset_structure import poly_basis_along
+    def model_spec(self, cfg, inst, geom):
         p = cfg.params
-        cm = geom.chunk_map
-        if cm.spectral_axis is None or cm.group_axis is None:
-            raise ValueError("the polynomial-basis offset needs a chunk map with spectral and group axes")
         lo, hi = spectral_window(p)
-        segments = param(p, 'spectral_poly_segments', 'subch_poly_segments')
-        degree = int(param(p, 'spectral_poly_degree', 'subch_poly_degree'))
-        poly_basis = poly_basis_along(cm.axes, cm.spectral_axis, cm.group_axis, degree, lo, hi,
-                                      segments=segments)
-        ncf = n_coef(poly_basis)
-        tag = self.requested_name or self.name
-        print(f"[{tag}] hard poly-basis offset: degree={poly_basis['degree']}"
-              + (f" on {len(segments)} segments {segments}" if segments else "")
-              + f" -> {ncf} coeffs/{cm.group_axis} x {poly_basis['num_groups']} {cm.group_axis} "
-              f"= {ncf * poly_basis['num_groups']} coeffs/frame "
-              f"(no penalty weight, no profile orthogonalization; "
-              f"the DC term is carried by the per-frame scalar)", flush=True)
-        return OffsetModel([OffsetBlock(chunk_map=cm.det, poly_basis=poly_basis)],
-                           use_per_frame_scalar=True)
+        off = OffsetTerm(kind='polybasis', degree=int(param(p, 'spectral_poly_degree', 'subch_poly_degree')),
+                         lo=lo, hi=hi, segments=param(p, 'spectral_poly_segments', 'subch_poly_segments'))
+        return ModelSpec(sky=tuple(spectral_sky_terms(cfg, geom)), offset=(off,), scalar=True)

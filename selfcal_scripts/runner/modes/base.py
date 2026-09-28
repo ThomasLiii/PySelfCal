@@ -1,19 +1,18 @@
 """Calibration-mode contract + registry.
 
-A *mode* is the calibration recipe: how to assemble the offset model (including
-its regularisation), the sky model, the x0 init and the mosaic geometry from a
-run config + an instrument's geometry. The generic engine talks only to this
-interface and resolves modes by name through ``get_mode``; it never references
-a specific mode. Adding a calibration variant is a new module here with an
-``@register_mode`` class; nothing else in the runner changes.
+A *mode* is the calibration recipe. Since the model became data
+(:class:`selfcal.models.spec.ModelSpec`: sky terms + offset terms + their
+priors), a mode is simply the function that produces a spec from a run config
+and an instrument's geometry — :meth:`CalMode.model_spec`. Everything else
+(lowering the spec to the solver's objects, the aux maps, x0, the mosaic
+geometry) is shared here. The ``model`` mode reads the spec verbatim from the
+``[model]`` table; the named recipes are presets that build one from their
+shorter ``[params]``.
 
-Modes are written against the instrument-neutral geometry objects
-(:class:`~selfcal.instruments.base.DetectorGeometry` / ``JobGeometry``): the
-offset structure is expressed in the *axes* of the chunk grid ("adjacency along
-``column``", "degree-2 polynomial along the spectral axis per group") through
-:mod:`selfcal.models.offset_structure`, so every recipe runs on any instrument
-that declares the axes it needs. Modes read ``[params]`` only, never the
-``[instrument]`` table.
+The generic engine talks only to this interface and resolves modes by name
+through ``get_mode``; it never references a specific mode. Adding a recipe is
+a new module here with an ``@register_mode`` class overriding ``model_spec``;
+nothing else in the runner changes.
 
 Tiling and the N-pass schedule are NOT mode properties: any mode runs tiled
 when the config has a ``[tiling]`` table, and any mode with the two N-pass hooks
@@ -21,13 +20,11 @@ when the config has a ``[tiling]`` table, and any mode with the two N-pass hooks
 
 Names: the registered name of a mode is structural (``continuum``,
 ``spectral``, ``spectral_softpoly``, ``spectral_polybasis``,
-``two_block_fixed``); the historical SPHEREx names (``pahfit``,
+``two_block_fixed``, ``model``); the historical SPHEREx names (``pahfit``,
 ``pahfit_subch``, ``pahfit_lvf``, ``pahfit_lvf_polybasis``, ``multiline``,
 ``tiled``, ``k2_readout``) are registered presets of those recipes and keep
 their exact behaviour.
 """
-import numpy as np
-
 _MODE_REGISTRY = {}
 
 
@@ -75,9 +72,10 @@ def spectral_window(params):
 
 
 class CalMode:
-    """Base class with the defaults the simplest (continuum) mode needs.
+    """Base class: a recipe = a :class:`ModelSpec` producer.
 
-    Subclass + ``@register_mode("name")``; override only what differs. Class attrs:
+    Subclass + ``@register_mode("name")``; override ``model_spec`` (and, rarely,
+    ``configure`` / ``mosaic_geometry``). Class attrs:
       mosaic_mode "full" (mosaic + the instrument's aux coadds, e.g. wavelength
                   maps) | "no_wav" (mosaic only) | "none" (skip mosaic)
       requires    capability tags the instrument must provide (e.g. "wavelength").
@@ -88,19 +86,37 @@ class CalMode:
     mosaic_mode = "full"
     requires = ()
 
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
+    # ---- the recipe -----------------------------------------------------------------
+    def model_spec(self, cfg, inst, geom):
         raise NotImplementedError
 
+    def spec(self, cfg, inst, geom):
+        """The spec, built once per (mode instance, config)."""
+        cached = getattr(self, '_spec', None)
+        if cached is None or cached[0] is not cfg:
+            self._spec = (cfg, self.model_spec(cfg, inst, geom))
+        return self._spec[1]
+
+    # ---- shared lowering ------------------------------------------------------------------
+    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
+        return self.spec(cfg, inst, geom).build_offset_model(geom, n_frames, log=self._log)
+
     def build_sky_model(self, cfg, inst, geom):
-        from selfcal.models.sky_model import SkyModel
-        return SkyModel.continuum_only()
+        return self.spec(cfg, inst, geom).build_sky_model(geom, inst.line_catalog(), log=self._log)
 
     def aux_maps(self, cfg, inst, geom):
-        """Named per-pixel maps the solve needs (``{}`` for a continuum sky)."""
-        return {}
+        """Named per-pixel maps the solve needs: all of the instrument's when the
+        sky has spectral terms, none for a continuum-only sky."""
+        return dict(geom.aux) if self.spec(cfg, inst, geom).has_lines else {}
+
+    def x0_kind(self, cfg, inst, geom):
+        return self.spec(cfg, inst, geom).x0_kind
 
     def x0(self, cfg, cc):
-        from selfcal.core.solution import compute_x0_scalar_only
+        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
+        if getattr(self, '_spec', None) is not None and self._spec[1].x0_kind == 'from_Ab':
+            return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape,
+                                      active_mask=getattr(cc, "active_mask", None))
         return compute_x0_scalar_only(
             cc.A, cc.b, cc.ref_shape,
             scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
@@ -108,14 +124,26 @@ class CalMode:
             active_mask=getattr(cc, "active_mask", None))
 
     def configure(self, cfg, cc):
-        pass
+        """Post-solve settings recorded on the cal (default: the line-Fisher
+        threshold when the sky has spectral terms)."""
+        if getattr(self, '_spec', None) is not None and self._spec[1].has_lines:
+            cc.line_fisher_threshold = cfg.params.get('line_fisher_threshold', 10.0)
 
     def mosaic_geometry(self, cfg, inst, geom, jobgeom):
-        """(chunk_maps, offset renderers) for make_mosaic. Default: the primary
-        chunk map on the reference grid, rendered by the instrument's smooth
-        offset renderer (None = block-constant)."""
-        return ([geom.chunk_map.grid],
-                [inst.offset_renderer(cfg.instrument_cfg, geom, jobgeom)])
+        """(chunk_maps, offset renderers) for make_mosaic: every offset term's map
+        on the reference grid; the primary map rendered by the instrument's
+        smooth offset renderer, the others block-constant."""
+        spec = self.spec(cfg, inst, geom)
+        maps, funcs = [], []
+        for term in spec.offset:
+            cm = geom.chunk_maps[term.map] if term.map else geom.chunk_map
+            maps.append(cm.grid)
+            funcs.append(inst.offset_renderer(cfg.instrument_cfg, geom, jobgeom)
+                         if cm is geom.chunk_map else None)
+        return maps, funcs
+
+    def _log(self, *args, **kw):
+        print(*args, **kw)
 
     # ---- N-pass hooks (task 'npass', passes >= 2) ---------------------------
     def clip_group_edges(self, cfg, inst, geom):
@@ -140,36 +168,60 @@ class CalMode:
                                 segments=segments)
 
 
-def standard_block(cfg, geom, n_frames, *, extra_poly_groups=(), column_poly_default_weight=None):
-    """The standard single offset block: adjacency along the chunk map's
-    adjacency axes + an optional soft polynomial along ``[params].poly_axis``
-    (default: the first adjacency axis) + a per-frame mean-zero anchor.
-
-    The polynomial constraint is applied iff ``[params].poly_weight`` is set
-    (or ``column_poly_default_weight`` is given by the mode) and the axis has at
-    least ``degree + 2`` values; a soft polynomial along a shorter axis would
-    be vacuous (and the chain builder would raise), so it is skipped.
-    ``extra_poly_groups`` are appended after it (the spectral polynomial of the
-    soft-poly modes). Returns ``(OffsetBlock, poly_groups)``.
-    """
-    from selfcal.models.offset_model import OffsetBlock
-    from selfcal.models.offset_structure import adjacency_union, poly_chains_along
+# ---------------------------------------------------------------------------
+# building blocks the presets share
+# ---------------------------------------------------------------------------
+def standard_offset_term(cfg, geom, *, extra_poly=(), column_poly_default_weight=None):
+    """The standard offset term: free per (frame, chunk) on the primary map,
+    smoothness along the map's adjacency axes, an optional soft polynomial
+    along ``[params].poly_axis`` (default: the first adjacency axis) when
+    ``poly_weight`` is set (or the mode gives a default weight), a mean-zero
+    anchor. ``extra_poly`` constraints are appended (the spectral polynomial
+    of the soft-poly recipes)."""
+    from selfcal.models.spec import OffsetTerm, PolyConstraint
     p = cfg.params
     cm = geom.chunk_map
     adj_axes = tuple(param(p, 'adjacency_axes', default=cm.adjacency_axes))
-    adj = adjacency_union(cm.det, cm.axes, adj_axes) if adj_axes else None
-    poly_groups = []
+    poly = []
     weight = param(p, 'poly_weight', default=column_poly_default_weight)
     if weight is not None:
-        deg = int(param(p, 'poly_degree', default=1))
         axis = param(p, 'poly_axis', default=adj_axes[0] if adj_axes else None)
-        if axis is not None and cm.axes[axis].size >= deg + 2:
-            chains, stencil = poly_chains_along(cm.axes, axis, deg)
-            poly_groups.append({'chains': chains, 'stencil': stencil, 'weight': weight})
-        elif axis is not None:
-            print(f"[{cfg.mode}] axis {axis!r} has {cm.axes[axis].size} values < degree+2={deg + 2}: "
-                  f"skipping the (vacuous) polynomial constraint along it.")
-    poly_groups.extend(extra_poly_groups)
-    block = OffsetBlock(chunk_map=cm.det, adj_info=adj, reg_weight=p.get('reg_weight', 0.1),
-                        poly_constraints=poly_groups or None, mean_offset=np.zeros(n_frames))
-    return block
+        if axis is not None:
+            poly.append(PolyConstraint(axis=axis, degree=int(param(p, 'poly_degree', default=1)), weight=weight))
+    poly.extend(extra_poly)
+    return OffsetTerm(map=None, kind='free', reg_weight=p.get('reg_weight', 0.1), adjacency=adj_axes,
+                      poly=tuple(poly), mean_zero=True)
+
+
+def spectral_sky_terms(cfg, geom):
+    """The sky terms of the spectral recipes from ``[params]``: continuum +
+    ``[[params.lines]]`` entries, or a single ``line_template_npz`` line, or the
+    catalogue line ``[params].line`` (default ``pah_3p29``) with ``line_center``
+    / ``line_sigma`` overrides."""
+    from selfcal.models.spec import SkyTerm
+    p = cfg.params
+    terms = [SkyTerm('continuum')]
+    lines = p.get('lines')
+    if lines:
+        for spec in lines:
+            kw = dict(type='line', name=spec['name'], damp_weight=spec.get('damp_weight'))
+            if 'template_npz' in spec:
+                kw.update(template=spec['template_npz'], template_norm=spec.get('template_norm', 'peak'))
+            elif 'center_um' in spec:
+                kw.update(center_um=float(spec['center_um']))
+                if spec.get('sigma_um') is not None:
+                    kw['sigma_um'] = float(spec['sigma_um'])
+                else:
+                    kw['intrinsic_var_um2'] = float(spec.get('intrinsic_var_um2', 0.0))
+            else:
+                raise ValueError(f"line spec needs 'template_npz' or 'center_um': {spec}")
+            terms.append(SkyTerm(**kw))
+        return terms
+    npz = p.get('line_template_npz')
+    if npz:
+        terms.append(SkyTerm(type='line', name='pah_3p29', template=npz,
+                             template_norm=p.get('line_template_norm', 'peak')))
+        return terms
+    terms.append(SkyTerm(type='line', catalog=p.get('line', 'pah_3p29'),
+                         line_center=p.get('line_center'), line_sigma=p.get('line_sigma')))
+    return terms

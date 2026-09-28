@@ -118,7 +118,56 @@ after the first). Pass 1 is the `cal` task on the same config — tiled when
 overlapping tiles are de-duplicated first-tile-wins). A re-run resumes: passes
 whose product exists are skipped.
 
-## Modes
+## The model: sky terms + offset terms
+
+Every calibration fits ``data(frame, pixel) = Σ_j S_j(pixel)·c_j(λ) + Σ_m O_m(frame, chunk) + s(frame)``.
+The **S terms** are sky blocks (a continuum, and line terms = per-pixel amplitudes of a spectral
+profile), the **O terms** are per-frame offset blocks on the instrument's chunk maps, ``s`` the
+per-frame scalar. Each term carries its own priors and constraints. The named modes below are
+*presets* of that model; ``mode = "model"`` spells it out in a ``[model]`` table so a new
+combination needs no Python:
+
+```toml
+mode = "model"
+
+[model]
+scalar = true                     # per-frame scalar (the offset's DC)
+mosaic = "full"                   # full | no_wav | none
+
+[[model.sky]]
+type = "continuum"                # constant per pixel; damping = [calibration].damp_weight
+
+[[model.sky]]
+type = "line"                     # per-pixel amplitude x profile(λ)
+name = "aromatic"
+template = ".../aromatic_3p289.npz"   # or center_um + sigma_um | center_um + intrinsic_var_um2 | catalog = "pah_3p29"
+damp_weight = 5e-3                # prior: Tikhonov shrinkage of this block
+
+[[model.offset]]
+map = "subchannel"                # a chunk map of the instrument (omit: the primary map)
+kind = "free"                     # free (per frame & chunk) | polybasis (Chebyshev along an axis) | fixed (shared by all frames)
+reg_weight = 0.1                  # smoothness between neighbouring chunks
+adjacency = ["column"]            # along which axes chunks are neighbours (omit: the map's default)
+mean_zero = true                  # anchor: the per-frame mean over chunks is 0
+poly = [ { axis = "column", degree = 1, weight = 0.5 },                  # soft polynomial constraints
+         { axis = "subchannel", degree = 3, lo = 200, hi = 320, weight = 1.0 } ]
+
+[[model.offset]]
+map = "readout"
+kind = "fixed"                    # one offset vector shared by every frame (detector-fixed pattern)
+mean_zero = true
+```
+
+Term vocabulary — `kind = "free"`: `reg_weight` + `adjacency` (smoothness), `poly` (shape),
+`mean_zero` (anchor); `kind = "polybasis"`: `axis`, `group_axis` (defaults: the map's spectral and
+group axes), `degree`, `lo`, `hi`, `segments`; `kind = "fixed"`: as `free`, one vector for all
+frames. Line terms: `template` (npz `center_um` + `G`/`G_peaknorm`), or `center_um` + `sigma_um`, or
+`center_um` + `intrinsic_var_um2` (per-pixel width from the instrument's band-width map), or
+`catalog` (an entry of the instrument's line catalogue) with `line_center` / `line_sigma`.
+The axes named here are the ones the instrument's chunk map declares (SPHEREx: `subchannel`,
+`column`; the `grid` instrument: `row`, `col`). Implementation: `selfcal.models.spec`.
+
+## Modes (presets of the model)
 
 | mode | offset structure | sky | presets (historical names, same behaviour) |
 | --- | --- | --- | --- |
@@ -127,6 +176,7 @@ whose product exists are skipped.
 | `spectral_softpoly` | + soft polynomial along the spectral axis: `spectral_poly_degree` / `_lo` / `_hi` / `_weight` (historical `subch_poly_*`) | as `spectral` | `pahfit_subch`, `pahfit_lvf`; `tiled` (column poly always on, spectral poly required, no mosaic) |
 | `spectral_polybasis` | hard Chebyshev basis in the spectral axis per group axis (no weight knob), optional `spectral_poly_segments` | as `spectral` | `pahfit_lvf_polybasis`, `multiline` |
 | `two_block_fixed` | primary map regularised along its spectral axis + a detector-fixed second map (`second_map`, default `readout`; `second_reg_weight`) | continuum | `k2_readout` |
+| `model` | whatever the `[model]` table says | idem | — |
 
 Modes read `[params]` only; the axes they refer to ("column", "subchannel",
 "row", "col") are declared by the instrument's chunk map, so a recipe runs on
@@ -143,12 +193,16 @@ from .base import CalMode, register_mode, standard_block
 @register_mode("my_variant", "my_old_name")      # extra names are aliases
 class MyVariant(CalMode):
     requires = ()                       # e.g. ("wavelength",) for spectral
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
-        ...                             # from geom.chunk_map (.det/.grid/.axes) + selfcal.models.offset_structure
+    def model_spec(self, cfg, inst, geom):
+        return ModelSpec(sky=(SkyTerm('continuum'),),                     # the S terms
+                         offset=(OffsetTerm(kind='free', reg_weight=cfg.params['reg_weight'],
+                                            mean_zero=True),),             # the O terms + priors
+                         scalar=True)
 ```
 
 Add it to the import in `modes/__init__.py`. No engine edits. A config then sets
-`mode = "my_variant"`.
+`mode = "my_variant"`. (Most new combinations need no mode at all: write them in a
+`[model]` table with `mode = "model"`.)
 
 ## Adding a telescope (instrument)
 

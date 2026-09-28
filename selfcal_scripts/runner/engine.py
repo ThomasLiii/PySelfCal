@@ -94,6 +94,8 @@ class RunContext:
         if need_geometry:
             geom = inst.detector_geometry(cfg.instrument_cfg, cfg.oversample)
             frame_tag = inst.frame_tag(cfg.instrument_cfg)
+            if mode is not None:
+                mode.spec(cfg, inst, geom)        # the recipe, resolved once (fails early on a bad [model])
         return cls(cfg=cfg, inst=inst, mode=mode, pipeline_config=pc,
                    geom=geom, cal_kwargs=calibration_kwargs(cfg), frame_tag=frame_tag)
 

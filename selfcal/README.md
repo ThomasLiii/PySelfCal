@@ -721,6 +721,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
 | [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
+| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (sky terms + offset terms + priors), from a `[model]` table or a mode, lowered to `SkyModel` / `OffsetModel`. |
 | [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
 | [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
