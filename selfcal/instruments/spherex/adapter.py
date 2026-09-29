@@ -203,8 +203,11 @@ class SPHERExInstrument(Instrument):
                            det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)
 
     # ---- mosaic hooks ----------------------------------------------------------
-    def offset_renderer(self, inst_cfg, geom, jobgeom):
-        """Smooth subchannel-arc offset renderer for the mosaic (per job)."""
+    def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None):
+        """Smooth subchannel-arc offset renderer for the mosaic (per job) — for
+        the stripped map; the readout map renders block-constant."""
+        if map_name not in (None, geom.primary):
+            return None
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
         x = geom.extra
         return partial(

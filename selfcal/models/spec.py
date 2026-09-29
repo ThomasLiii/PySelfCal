@@ -42,7 +42,7 @@ from .sky_model import ContinuumComponent, SkyModel, SpectralComponent
 __all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'ModelSpec']
 
 SKY_TYPES = ('continuum', 'line')
-OFFSET_KINDS = ('free', 'polybasis', 'fixed')
+OFFSET_KINDS = ('free', 'polybasis', 'fixed', 'grouped')
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +104,18 @@ class OffsetTerm:
     (default: the map's group axis) over ``[lo, hi]``, optionally piecewise on
     ``segments``.
     ``kind='fixed'``: one offset vector shared by every frame (with the same
-    smoothness / anchor knobs as ``free``)."""
+    smoothness / anchor knobs as ``free``); ``kind='grouped'``: one offset
+    vector per frame group ``groups`` (a grouping the instrument provides,
+    e.g. ``'detector'`` = the frame's detector index, so a detector-fixed
+    pattern for a multi-detector camera).
+
+    Priors shared by every kind: ``damp`` (Tikhonov damping of this term's
+    offsets toward zero, 0 = none). ``exact_group_rows``: for fixed/grouped
+    terms, emit the mean-zero anchor and the adjacency rows once per group
+    instead of once per frame (exact, and far fewer rows; changes the matrix
+    structure, so it is a per-term choice). ``render``: which of the
+    instrument's offset renderers draws this term on the mosaic (None = the
+    instrument's default for the map)."""
     map: str | None = None
     kind: str = 'free'
     reg_weight: float = 0.0
@@ -118,6 +129,10 @@ class OffsetTerm:
     lo: int | None = None
     hi: int | None = None
     segments: tuple | None = None
+    damp: float = 0.0
+    groups: str | None = None
+    exact_group_rows: bool = False
+    render: str | None = None
 
     def __post_init__(self):
         if self.kind not in OFFSET_KINDS:
@@ -128,6 +143,10 @@ class OffsetTerm:
             object.__setattr__(self, 'adjacency', tuple(self.adjacency))
         if self.kind == 'polybasis' and self.degree is None:
             raise ValueError("a polybasis offset term needs a degree")
+        if self.kind == 'grouped' and not self.groups:
+            raise ValueError("a grouped offset term needs `groups` (a frame grouping, e.g. 'detector')")
+        if self.exact_group_rows and self.kind not in ('fixed', 'grouped'):
+            raise ValueError("exact_group_rows applies to fixed / grouped terms")
 
 
 # ---------------------------------------------------------------------------
@@ -214,11 +233,26 @@ class ModelSpec:
         return SkyModel(tuple(comps))
 
     # ---- lowering: offsets -------------------------------------------------------------------
-    def build_offset_model(self, geom, n_frames, log=print) -> OffsetModel:
-        blocks = [self._offset_block(term, geom, n_frames, log) for term in self.offset]
+    def build_offset_model(self, geom, n_frames, frame_groups=None, log=print) -> OffsetModel:
+        """``frame_groups``: ``{name: per-frame group id array}`` for the grouped
+        terms (the instrument's ``frame_groups(frames)``)."""
+        blocks = [self._offset_block(term, geom, n_frames, frame_groups or {}, log) for term in self.offset]
         return OffsetModel(blocks, use_per_frame_scalar=self.scalar)
 
-    def _offset_block(self, term, geom, n_frames, log):
+    def setup_kwargs(self) -> dict:
+        """The solver options the terms' priors imply beyond the OffsetModel:
+        per-map damping and the exact grouped rows. Empty when no term asks for
+        them (the historical recipes)."""
+        kw = {}
+        if any(t.damp for t in self.offset):
+            kw['damp_offset_maps'] = [float(t.damp) for t in self.offset]
+        exact = [m for m, t in enumerate(self.offset) if t.exact_group_rows]
+        if exact:
+            kw['mean_offset_group_rows'] = True
+            kw['group_adjacency_maps'] = exact
+        return kw
+
+    def _offset_block(self, term, geom, n_frames, frame_groups, log):
         cm = geom.chunk_maps[term.map] if term.map else geom.chunk_map
         if term.kind == 'polybasis':
             axis = term.axis or cm.spectral_axis
@@ -227,6 +261,9 @@ class ModelSpec:
                 raise ValueError(f"polybasis term on map {cm.name!r} needs axis, group_axis, lo, hi")
             pb = poly_basis_along(cm.axes, axis, group, int(term.degree), int(term.lo), int(term.hi),
                                   segments=term.segments)
+            log(f"[model] {cm.name}: polynomial-basis offset, degree {term.degree} in {axis!r} per "
+                f"{group!r} over [{term.lo}, {term.hi}]"
+                + (f", {len(term.segments)} segments" if term.segments else ""), flush=True)
             return OffsetBlock(chunk_map=cm.det, poly_basis=pb)
         # free / fixed: adjacency + soft polynomials + anchor
         axes = cm.adjacency_axes if term.adjacency is None else tuple(term.adjacency)
@@ -245,11 +282,22 @@ class ModelSpec:
                 continue
             chains, stencil = poly_chains_along(cm.axes, pc.axis, int(pc.degree), pc.lo, pc.hi)
             groups.append({'chains': chains, 'stencil': stencil, 'weight': pc.weight})
+        det_groups = None
+        if term.kind == 'fixed':
+            det_groups = np.zeros(n_frames, dtype=int)
+        elif term.kind == 'grouped':
+            if term.groups not in frame_groups:
+                raise ValueError(f"offset term on {cm.name!r} groups frames by {term.groups!r}, which the "
+                                 f"instrument does not provide (has {sorted(frame_groups)})")
+            det_groups = np.asarray(frame_groups[term.groups])
+            if det_groups.shape != (n_frames,):
+                raise ValueError(f"frame grouping {term.groups!r} has shape {det_groups.shape}, "
+                                 f"expected ({n_frames},)")
         return OffsetBlock(
             chunk_map=cm.det, adj_info=adj, reg_weight=term.reg_weight,
             poly_constraints=groups or None,
             mean_offset=np.zeros(n_frames) if term.mean_zero else None,
-            det_groups=np.zeros(n_frames, dtype=int) if term.kind == 'fixed' else None)
+            det_groups=det_groups)
 
 
 def _spectral_axis(geom, term):

@@ -235,10 +235,24 @@ class Instrument(ABC):
         """Validity + weights of one job."""
 
     # ---- hooks (defaults) -------------------------------------------------------
-    def offset_renderer(self, inst_cfg, geom, jobgeom) -> Callable | None:
-        """``(chunk_map, offsets) -> grid`` smooth renderer used by the mosaic for
-        the primary map; ``None`` = block-constant (``chunk_to_det``)."""
+    def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None) -> Callable | None:
+        """``(chunk_map, offsets) -> grid`` renderer the mosaic uses to draw the
+        offsets of chunk map ``map_name`` (None = the primary map); ``render``
+        names one of the instrument's renderers when the model asks for a
+        specific one. ``None`` = block-constant (``chunk_to_det``)."""
         return None
+
+    def frame_groups(self, frames) -> dict:
+        """Named per-frame groupings a grouped offset term can share an offset
+        over: ``{name: int array (n_frames,)}``. Default: ``'detector'`` = each
+        frame's detector index (from the reprojected frame's name)."""
+        from ..io.reproj import parse_reproj_basename
+        return {'detector': np.array([parse_reproj_basename(f)[1] for f in frames], dtype=np.int64)}
+
+    def hooks(self) -> dict:
+        """Named per-frame hook factories a config can select in ``[hooks]``:
+        ``{name: factory(**params) -> callable(FrameContext) -> sub_data}``."""
+        return {}
 
     def aux_coadds(self, geom) -> tuple | None:
         """The ``(band centre, band width)`` detector-grid maps whose per-pixel

@@ -176,7 +176,7 @@ def run_mosaic(cfg):
     cal_paths, mosaic_paths = [], []
     for job in ctx.jobs():
         t0 = time.time()
-        cal_path = ctx.cal_path(job)
+        cal_path = cfg.cal_override or ctx.cal_path(job)
         if not os.path.exists(cal_path):
             raise FileNotFoundError(f"task 'mosaic' needs the cal file {cal_path}")
         jobgeom = ctx.job_geometry(job)
@@ -242,6 +242,10 @@ def run_reprojection(cfg):
                      det_idx_list=list(layout.detector_ids),
                      replace_existing=r.get('replace_existing', False),
                      reproject_kwargs={'parallel': inner_parallel})
+    if r.get('check', False):
+        # Load-test every frame; broken ones are quarantined and logged.
+        rr.check_reproj_files(quarantine=True)
+        rr.get_reproj_files()
     rr.status()
     print("Reprojection complete")
     return ctx.pipeline_config.reproj_dir

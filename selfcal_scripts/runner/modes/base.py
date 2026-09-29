@@ -98,8 +98,18 @@ class CalMode:
         return self._spec[1]
 
     # ---- shared lowering ------------------------------------------------------------------
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames):
-        return self.spec(cfg, inst, geom).build_offset_model(geom, n_frames, log=self._log)
+    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames, frames=None):
+        """``frames``: the frame list (needed by grouped terms, which share an
+        offset over an instrument-defined frame grouping)."""
+        spec = self.spec(cfg, inst, geom)
+        groups = inst.frame_groups(frames) if frames is not None and any(
+            t.kind == 'grouped' for t in spec.offset) else None
+        return spec.build_offset_model(geom, n_frames, frame_groups=groups, log=self._log)
+
+    def setup_kwargs(self, cfg, inst, geom):
+        """Extra ``setup_lsqr`` options the model's priors imply (per-map damping,
+        exact grouped rows); empty for the historical recipes."""
+        return self.spec(cfg, inst, geom).setup_kwargs()
 
     def build_sky_model(self, cfg, inst, geom):
         return self.spec(cfg, inst, geom).build_sky_model(geom, inst.line_catalog(), log=self._log)
@@ -138,8 +148,8 @@ class CalMode:
         for term in spec.offset:
             cm = geom.chunk_maps[term.map] if term.map else geom.chunk_map
             maps.append(cm.grid)
-            funcs.append(inst.offset_renderer(cfg.instrument_cfg, geom, jobgeom)
-                         if cm is geom.chunk_map else None)
+            funcs.append(inst.offset_renderer(cfg.instrument_cfg, geom, jobgeom,
+                                              map_name=cm.name, render=term.render))
         return maps, funcs
 
     def _log(self, *args, **kw):

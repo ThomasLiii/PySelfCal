@@ -32,6 +32,8 @@ import os
 import shutil
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from selfcal.instruments import get_instrument
 from selfcal.pipeline import pipeline_wrapper
 
@@ -54,6 +56,29 @@ def calibration_kwargs(cfg):
     kw = dict(cfg.calibration)
     kw['postprocess_func'] = get_postprocess(cfg.postprocess)
     return kw
+
+
+def resolve_hook(cfg, inst, which):
+    """The per-frame hook ``[hooks].<which>`` (``pre_cal`` / ``post_cal`` /
+    ``post_mosaic``): a table ``{name = ..., <params>}`` naming one of the
+    instrument's hook factories (``inst.hooks()``) or the runner's named hooks;
+    ``None`` when the config has none."""
+    spec = (cfg.hooks or {}).get(which)
+    if not spec:
+        return None
+    if isinstance(spec, str):
+        spec = {'name': spec}
+    params = dict(spec)
+    name = params.pop('name', None)
+    if not name:
+        raise ValueError(f"[hooks].{which} needs a 'name'")
+    factories = dict(inst.hooks())
+    if name in factories:
+        return factories[name](**params)
+    fn = get_postprocess(name)
+    if params:
+        raise ValueError(f"hook {name!r} takes no parameters")
+    return fn
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +240,19 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
     if frames is not None:
         cc.reproj_list = list(frames)
     n_frames = len(cc.reproj_list)
-    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames)
+    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames, frames=cc.reproj_list)
     sky_model = mode.build_sky_model(cfg, inst, geom)
     det_aux, aux_keys = ctx.aux_maps()
+    cal_kwargs = dict(ctx.cal_kwargs)
+    cal_kwargs.update(mode.setup_kwargs(cfg, inst, geom))     # the model's extra solver options (if any)
+    pre = resolve_hook(cfg, inst, 'pre_cal')
+    post = resolve_hook(cfg, inst, 'post_cal')
+    if pre is not None:
+        cal_kwargs['preprocess_func'] = pre
+    if post is not None:
+        if cal_kwargs.get('postprocess_func') is not None:
+            raise ValueError("give either `postprocess` or [hooks].post_cal, not both")
+        cal_kwargs['postprocess_func'] = post
     checkpoint('pre-setup_lsqr')
     cc.setup_lsqr(
         offset_model=offset_model,
@@ -228,13 +263,16 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
         aux_keys=aux_keys,
         outlier_aux_key=geom.wavelength_key,
         batch_spill_dir=cfg.cache_dir,
-        **ctx.cal_kwargs)
+        **cal_kwargs)
     checkpoint('post-setup_lsqr')
     # List-pop hand-off: keeping a plain `x0` local would pin the full-layout
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
     _x0_owned = [mode.x0(cfg, cc)]
     checkpoint('pre-apply_lsqr')
-    cc.apply_lsqr(x0=_x0_owned.pop(), use_float32=True, n_threads=cfg.apply_n_threads, **cfg.lsqr)
+    # [lsqr] may override the float32 solve and the thread count.
+    lsqr_kwargs = dict(use_float32=True, n_threads=cfg.apply_n_threads)
+    lsqr_kwargs.update(cfg.lsqr)
+    cc.apply_lsqr(x0=_x0_owned.pop(), **lsqr_kwargs)
     checkpoint('post-apply_lsqr')
     mode.configure(cfg, cc)
     # Save with the permanent (HDD) paths so the cal stays valid after cleanup.
@@ -260,6 +298,23 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
                                     unit=inst.data_unit(cfg.instrument_cfg))
     mm.load_calibration(cal_path=cal_path)
     mm.reproj_list = staging.remap_to_nvme(mm.reproj_list, frame_dir)
+    # A cal solved on another grid (cal_override): frames it lists that have no
+    # reprojected file HERE are dropped, with their rows of every per-frame array
+    # (the solution is per frame / detector-plane, so it transfers).
+    keep = np.array([os.path.exists(f) for f in mm.reproj_list])
+    if not keep.all():
+        n_all = len(mm.reproj_list)
+        mm.reproj_list = [f for f, k in zip(mm.reproj_list, keep) if k]
+        for attr in ('offsets', 'offset_coverages', 'offset_coverage_fracs'):
+            arrs = getattr(mm, attr, None)
+            if arrs:
+                setattr(mm, attr, [a[keep] if (hasattr(a, 'shape') and len(a) == n_all) else a for a in arrs])
+        print(f"Dropped {int((~keep).sum())} cal frames with no reprojected file in {frame_dir} "
+              f"({int(keep.sum())} remain)")
+    mosaic_kwargs = dict(cfg.mosaic)
+    post = resolve_hook(cfg, inst, 'post_mosaic')
+    if post is not None:
+        mosaic_kwargs['postprocess_func'] = post
     # `wavelength_coadd` (default true) selects the instrument's aux coadds (the
     # wav_mean/wav_std maps). They are sigma-clipped against the std map, so
     # they need make_std_map; with apply_sigma_clipping they are coadded inside
@@ -291,7 +346,7 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
         det_offset_funcs=det_offset_funcs,
         cache_dir=cache_dir,
         wav_maps=wav_maps,
-        **cfg.mosaic)
+        **mosaic_kwargs)
     if want_wav:
         inst.finalize_mosaic(geom, mm, maps, cfg.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)

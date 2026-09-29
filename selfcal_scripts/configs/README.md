@@ -43,7 +43,9 @@ a telescope or a specific calibration variant by name.
 ## Schema
 
 **Top-level (generic)** — `task` (`cal`|`mosaic`|`npass`|`reproject`|`precompute`;
-`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only; see *Modes* below), `output_dir`, `run_name` (may contain `{detector}`),
+`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only; see *Modes* below),
+`cal_override` (mosaic task: apply this cal file, e.g. one solved on another grid; frames without a
+reprojected file here are dropped), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
@@ -80,7 +82,10 @@ tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 **Stage tables** — passed through verbatim as kwargs: `[calibration]` →
 `setup_lsqr`, `[lsqr]` → `apply_lsqr`, `[mosaic]` → `make_mosaic`,
 `[zodi]` (optional; set `pred_dir` to enable the post-cal anchor),
-`[reproject]` (reproject task), `[tiling]` (old spelling `[tiled]`; tiles the `cal`
+`[reproject]` (reproject task; `check = true` load-tests every frame and quarantines broken ones),
+`[hooks]` (per-frame hooks: `pre_cal`, `post_cal`, `post_mosaic`, each `{ name = ..., <params> }`
+naming one of the instrument's hook factories or the runner's `mask_bright_pixels`; the callable
+receives a `FrameContext`), `[tiling]` (old spelling `[tiled]`; tiles the `cal`
 task: `ref_shape`,
 `full_reproj_dir`, `nvme_subdir`, `stitched_suffix`, and the tile geometry —
 EITHER a uniform grid `grid = [n_y, n_x]` + `overlap_px` + `tile_names`, OR an
@@ -161,7 +166,10 @@ mean_zero = true
 Term vocabulary — `kind = "free"`: `reg_weight` + `adjacency` (smoothness), `poly` (shape),
 `mean_zero` (anchor); `kind = "polybasis"`: `axis`, `group_axis` (defaults: the map's spectral and
 group axes), `degree`, `lo`, `hi`, `segments`; `kind = "fixed"`: as `free`, one vector for all
-frames. Line terms: `template` (npz `center_um` + `G`/`G_peaknorm`), or `center_um` + `sigma_um`, or
+frames; `kind = "grouped"`: one vector per frame group `groups` (the instrument's frame groupings;
+every instrument provides `"detector"`). Any term: `damp` (Tikhonov damping toward 0),
+`exact_group_rows` (fixed/grouped: anchor + adjacency rows once per group), `render` (which of the
+instrument's mosaic renderers draws it). Line terms: `template` (npz `center_um` + `G`/`G_peaknorm`), or `center_um` + `sigma_um`, or
 `center_um` + `intrinsic_var_um2` (per-pixel width from the instrument's band-width map), or
 `catalog` (an entry of the instrument's line catalogue) with `line_center` / `line_sigma`.
 The axes named here are the ones the instrument's chunk map declares (SPHEREx: `subchannel`,
@@ -220,6 +228,12 @@ exposures carry a science image with a celestial WCS and a bitmask extension::
 Then `task = "reproject"` on the exposure directory and `task = "cal"` with
 `mode = "continuum"`; `tests/test_runner_e2e_toy.py` is a complete worked
 example on synthetic exposures.
+
+**Euclid NISP** is the built-in multi-detector example (`name = "euclid"`, `band`, `chunks`,
+`strips`, `tilt_strips`, `edge_zero_px`/`edge_ramp_px`): 16 detectors per exposure, a grid map
+plus column/row stripe and tilt maps, spline/strip/ramp renderers, electron units, the
+`star_position_mask` / `residual_mask` hooks. `workspace/unify/configs/gate_euclid_unify.toml` is the
+frozen EDFN recipe as a `[model]` table.
 
 **With code.** Subclass `selfcal.instruments.Instrument` (five required
 methods: `jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,

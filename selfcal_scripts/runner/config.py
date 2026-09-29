@@ -37,6 +37,7 @@ class RunConfig:
     skip_mosaic: bool = False          # cal only (no mosaic / wavelength)
     wavelength_coadd: bool = True      # append the LVF wav_mean/wav_std maps
     reproj_override: str = None        # use this reproj dir directly (skip NVMe staging)
+    cal_override: str = None           # mosaic task: apply this cal file (another run / resolution)
 
     instrument_cfg: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
@@ -48,6 +49,7 @@ class RunConfig:
     tiling: dict = field(default_factory=dict)   # [tiling] — tile the field (task 'cal'); old spelling [tiled]
     passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
     model: dict = field(default_factory=dict)    # [model] — the sky/offset terms for mode = 'model'
+    hooks: dict = field(default_factory=dict)    # [hooks] — pre_cal / post_cal / post_mosaic per-frame hooks
 
     @property
     def tiled(self):
@@ -66,13 +68,13 @@ class RunConfig:
 _SCALAR_KEYS = {
     'task', 'mode', 'output_dir', 'run_name', 'resolution_arcsec',
     'cache_dir', 'suffix', 'oversample', 'staging', 'keep_nvme', 'hdd_io_limit',
-    'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override',
+    'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override', 'cal_override',
     'wavelength_coadd',
 }
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',
     'lsqr': 'lsqr', 'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject',
-    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes', 'model': 'model',
+    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes', 'model': 'model', 'hooks': 'hooks',
 }
 
 

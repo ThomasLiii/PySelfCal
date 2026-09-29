@@ -724,6 +724,8 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (sky terms + offset terms + priors), from a `[model]` table or a mode, lowered to `SkyModel` / `OffsetModel`. |
 | [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
+| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: 16-detector exposure layout, grid/stripe/tilt chunk maps, edge taper, spline/strip/ramp renderers, electron units. |
+| [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`star_position_mask`, `residual_mask`). |
 | [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named sky models (`pah_3p29`). |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |

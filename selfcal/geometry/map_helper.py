@@ -4,7 +4,7 @@ import numpy as np
 
 from scipy.sparse import coo_matrix, csr_matrix
 
-from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
+from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline, griddata
 from scipy.ndimage import map_coordinates
 
 logger = logging.getLogger(__name__)
@@ -581,3 +581,41 @@ def make_grid_chunk_map(det_shape, n_chunks_per_side):
             chunk_map[y_edges[j]:y_edges[j + 1], x_edges[i]:x_edges[i + 1]] = chunk_id
             chunk_id += 1
     return chunk_map
+
+
+def fill_invalid_offsets(data):
+    """
+    Fills zeros in a 2D array using linear interpolation for the interior
+    and nearest-neighbor for extrapolation at the edges.
+    """
+    h, w = data.shape
+    y, x = np.mgrid[0:h, 0:w]
+    
+    # 1. Mask the zeros (the "bad" data)
+    mask = (data != 0)
+    
+    # If the whole thing is zeros or there are no zeros, return as is
+    if not np.any(mask) or np.all(mask):
+        return data
+
+    # 2. Extract valid points
+    points = np.array((y[mask], x[mask])).T
+    values = data[mask]
+    
+    # 3. Interpolate the entire grid
+    # 'linear' handles the interior bilinear logic
+    # We use 'nearest' for the points griddata can't reach (extrapolation)
+    # If points are collinear (e.g. valid data in only one column), Delaunay triangulation fails.
+    # In that case, we catch the Qhull precision error and fallback to 'nearest' immediately.
+    from scipy.spatial.qhull import QhullError
+    try:
+        filled = griddata(points, values, (y, x), method='linear')
+    except QhullError:
+        filled = griddata(points, values, (y, x), method='nearest')
+    
+    # 4. Fill remaining NaNs (edges/corners) with nearest neighbor extrapolation
+    nan_mask = np.isnan(filled)
+    if np.any(nan_mask):
+        filled[nan_mask] = griddata(points, values, (y[nan_mask], x[nan_mask]), method='nearest')
+        
+    return filled
