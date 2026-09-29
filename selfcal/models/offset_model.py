@@ -18,7 +18,7 @@ expands back to the exact parallel-list kwargs ``setup_lsqr`` already consumes,
 so driving ``setup_lsqr`` via an ``OffsetModel`` is numerically identical to
 calling it with the equivalent flat kwargs (verified byte-equal: rerunning a
 reference config through both spellings produces identical ``cal_*.h5`` output;
-regression harness in ``selfcal_scripts/benchmarks/run_cal_baseline_test.py`` +
+byte-equality gates in ``selfcal_scripts/gates/`` +
 ``selfcal_scripts/drivers/diff_cal_h5.py``). The flat parallel-list kwargs
 remain supported but are deprecated; new code should construct an
 ``OffsetModel``.
