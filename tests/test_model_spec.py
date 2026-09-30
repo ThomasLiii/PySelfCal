@@ -67,13 +67,14 @@ def test_model_table_equals_presets():
     preset = get_mode('continuum')
     cfg = _Cfg({'reg_weight': 0.2, 'poly_weight': 0.5, 'poly_degree': 1})
     spec = ModelSpec.from_config({
-        'sky': [{'type': 'continuum'}],
+        'sky': [{'name': 'continuum'}],
         'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'mean_zero': True,
                     'poly': [{'axis': 'row', 'degree': 1, 'weight': 0.5}]}],
         'scalar': True})
     _same_kwargs(preset.build_offset_model(cfg, inst, geom, None, None, n), spec.build_offset_model(geom, n))
-    assert preset.build_sky_model(cfg, inst, geom) == spec.build_sky_model(geom, inst.line_catalog())
-    assert spec.x0_kind == 'scalar_only' and not spec.has_lines and spec.requires(geom) == []
+    assert preset.build_sky_model(cfg, inst, geom) == spec.build_sky_model(geom, inst.coefficient_catalog())
+    assert spec.x0_kind == 'scalar_only' and not spec.has_coefficients
+    spec.check(geom)
     # a detector-fixed second term lowers to a shared (det_groups = 0) mean-zero block
     spec2 = ModelSpec(sky=(SkyTerm('continuum'),),
                       offset=(OffsetTerm(kind='free', reg_weight=0.1, mean_zero=True),
@@ -83,14 +84,16 @@ def test_model_table_equals_presets():
     assert om.num_maps == 2 and not om.use_per_frame_scalar and spec2.x0_kind == 'from_Ab'
     b = om.blocks[1]
     assert b.adj_info is None and np.array_equal(b.det_groups, np.zeros(n, dtype=int)) and b.mean_offset.shape == (n,)
-    # a line term needs a wavelength map: the grid instrument has none
-    spec3 = ModelSpec(sky=(SkyTerm('continuum'), SkyTerm('line', name='l', center_um=1.0, sigma_um=0.1)))
-    assert spec3.requires(geom) == ['wavelength']
-    try:
-        spec3.build_sky_model(geom)
-        raise AssertionError('expected a ValueError')
-    except ValueError as e:
-        assert 'wavelength' in str(e)
+    # a coefficient reads a data variable the instrument must provide: the grid instrument has none
+    spec3 = ModelSpec(sky=(SkyTerm(), SkyTerm('l', coefficient={'variable': 'wavelength', 'function': 'gaussian',
+                                                                  'center': 1.0, 'sigma': 0.1})))
+    assert spec3.has_coefficients
+    for call in (lambda: spec3.check(geom), lambda: spec3.build_sky_model(geom)):
+        try:
+            call()
+            raise AssertionError('expected a ValueError')
+        except ValueError as e:
+            assert 'wavelength' in str(e)
 
 
 def test_model_mode_end_to_end():
@@ -108,7 +111,7 @@ def test_model_mode_end_to_end():
                                             reproj_func='interp', padding_percentage=0.05, replace_existing=True))
         pipelines.run(rcfg)
         model = {'scalar': True, 'mosaic': 'no_wav',
-                 'sky': [{'type': 'continuum'}],
+                 'sky': [{'name': 'continuum'}],
                  'offset': [{'kind': 'free', 'reg_weight': 0.1, 'mean_zero': True,
                              'poly': [{'axis': 'col', 'degree': 1, 'weight': 0.5}]}]}
         ccfg = _write_config(os.path.join(tmp, 'cal.toml'), 'cal', out, cache, scalars={'mode': 'model'},

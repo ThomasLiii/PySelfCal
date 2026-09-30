@@ -1,8 +1,10 @@
-"""Spectral modes — continuum + emission-line amplitudes per pixel.
+"""Spectral presets — a constant sky term plus terms whose coefficients are
+functions of the instrument's wavelength variable (maps of emission features).
 
-Three recipes, each a step on the previous one; the sky terms are the same
-(continuum + N line terms, see :func:`~.base.spectral_sky_terms`), the offset
-term differs:
+These are presets of the general model (``mode = "model"``, where a sky term's
+coefficient is any function of any data variable). Three recipes, each a step
+on the previous one; the sky terms are the same (see
+:func:`~.base.spectral_sky_terms`), the offset term differs:
 
 ``spectral`` (preset ``pahfit``)
     the standard free offset term of the continuum mode.
@@ -22,15 +24,15 @@ term differs:
 
 The sky
     ``[[params.lines]]`` — one term per entry: ``name`` + either
-    ``template_npz`` (a realistic template: ``center_um`` / ``G_peaknorm``
-    tabulated against the instrument's wavelength map; preferred) or
-    ``center_um`` + ``sigma_um`` (analytic Gaussian) or ``center_um`` +
-    ``intrinsic_var_um2`` (per-pixel sigma from the instrument's band-width
-    map in quadrature); per-line ``damp_weight`` overrides
-    ``[calibration].damp_weight_line``.
-    Without ``lines``: ``line_template_npz`` (a single template line named
-    ``pah_3p29``), else the named catalogue line ``[params].line`` (default
-    ``pah_3p29``) from the instrument's ``line_catalog`` with the optional
+    ``template_npz`` (a tabulated coefficient of the wavelength: ``center_um``
+    / ``G_peaknorm`` — a realistic template; preferred) or ``center_um`` +
+    ``sigma_um`` (a Gaussian of the wavelength) or ``center_um`` +
+    ``intrinsic_var_um2`` (a Gaussian whose per-observation sigma comes from
+    the band-width variable in quadrature); per-entry ``damp_weight``
+    overrides ``[calibration].damp_weight_line``.
+    Without ``lines``: ``line_template_npz`` (one tabulated term named
+    ``pah_3p29``), else the catalogue coefficient ``[params].line`` (default
+    ``pah_3p29``) of the instrument's ``coefficient_catalog`` with the optional
     ``line_center`` / ``line_sigma`` overrides — the historical ``pahfit`` sky.
     Line profiles are used as-is (not orthogonalised against the continuum)
     and the continuum is flat per pixel; both alternatives were tested and
@@ -54,20 +56,21 @@ GRAM_WARN = 0.7
 
 
 def print_gram(cfg, geom, model, tag):
-    """Pre-flight: the profile Gram matrix over the window's spectral-axis values."""
+    """Pre-flight: the Gram matrix of the terms' coefficients, evaluated on the mean
+    of every data variable over each spectral-axis value of the window."""
     p = cfg.params
     cm = geom.chunk_map
-    if cm.spectral_axis is None or geom.width_key is None or model.n_blocks < 2:
+    if cm.spectral_axis is None or geom.wavelength_key is None or model.n_blocks < 2:
         return
     lo, hi = spectral_window(p)
     wl = np.asarray(geom.aux[geom.wavelength_key], dtype=np.float64)
-    bw = np.asarray(geom.aux[geom.width_key], dtype=np.float64)
     axis = cm.axes[cm.spectral_axis]
     sub_of_pix = axis.of_chunk[np.maximum(cm.det, 0)]
     valid = np.isfinite(wl) & (wl > 0) & (cm.det >= 0)
     cnts = np.bincount(sub_of_pix[valid].ravel(), minlength=axis.size)
     mean = {}
-    for key, m in ((geom.wavelength_key, wl), (geom.width_key, bw)):
+    for key, m in geom.aux.items():
+        m = np.asarray(m, dtype=np.float64)
         sums = np.bincount(sub_of_pix[valid].ravel(), weights=m[valid].ravel(), minlength=axis.size)
         mean[key] = np.where(cnts > 0, sums / np.maximum(cnts, 1), np.nan)
     grid = np.arange(lo, hi + 1)
@@ -75,7 +78,12 @@ def print_gram(cfg, geom, model, tag):
     aux = {k: v[grid][ok] for k, v in mean.items()}
     vecs, names = [], []
     for comp in model.components:
-        c = comp.coefficients(aux)
+        try:
+            c = comp.coefficients(aux)
+        except KeyError as e:
+            print(f"[{tag}] Gram check skipped: term {comp.name!r} reads {e} (not a detector-plane "
+                  f"variable)", flush=True)
+            return
         vecs.append(np.ones(ok.sum()) if c is None else np.asarray(c, float))
         names.append(comp.name)
     V = np.stack(vecs)

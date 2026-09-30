@@ -25,7 +25,7 @@ scalar = true
 mosaic = "full"
 
 [[model.sky]]
-type = "continuum"
+name = "continuum"
 
 [[model.offset]]
 map = "grid"

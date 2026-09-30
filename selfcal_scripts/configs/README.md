@@ -125,10 +125,11 @@ whose product exists are skipped.
 
 ## The model: sky terms + offset terms
 
-Every calibration fits ``data(frame, pixel) = Σ_j S_j(pixel)·c_j(λ) + Σ_m O_m(frame, chunk) + s(frame)``.
-The **S terms** are sky blocks (a continuum, and line terms = per-pixel amplitudes of a spectral
-profile), the **O terms** are per-frame offset blocks on the instrument's chunk maps, ``s`` the
-per-frame scalar. Each term carries its own priors and constraints. The named modes below are
+Every calibration fits ``data(frame, pixel) = Σ_j S_j(pixel)·c_j(v) + Σ_m O_m(frame, chunk) + s(frame)``.
+The **S terms** are per-pixel maps, each times a known multiplicative coefficient `c_j(v)`: any
+function of data variables `v` the instrument provides for every observation (SPHEREx:
+`wavelength`, `bandwidth`). A term without a coefficient is a constant sky. The **O terms** are
+per-frame offset blocks on the instrument's chunk maps, ``s`` the per-frame scalar. Each term carries its own priors and constraints. The named modes below are
 *presets* of that model; ``mode = "model"`` spells it out in a ``[model]`` table so a new
 combination needs no Python:
 
@@ -140,13 +141,17 @@ scalar = true                     # per-frame scalar (the offset's DC)
 mosaic = "full"                   # full | no_wav | none
 
 [[model.sky]]
-type = "continuum"                # constant per pixel; damping = [calibration].damp_weight
+name = "continuum"                # no coefficient: c = 1 (default damping [calibration].damp_weight)
 
 [[model.sky]]
-type = "line"                     # per-pixel amplitude x profile(λ)
-name = "aromatic"
-template = ".../aromatic_3p289.npz"   # or center_um + sigma_um | center_um + intrinsic_var_um2 | catalog = "pah_3p29"
-damp_weight = 5e-3                # prior: Tikhonov shrinkage of this block
+name = "aromatic"                 # the map of this term, times c(v):
+coefficient = { variable = "wavelength", function = "template", file = ".../aromatic_3p289.npz" }
+damp_weight = 5e-3                # prior: Tikhonov shrinkage of this map
+
+[[model.sky]]
+name = "mine"                     # ANY Python function of any data variable(s)
+coefficient = { variable = ["wavelength", "bandwidth"], function = "mypkg.shapes:smeared",
+                params = { center = 3.3 } }
 
 [[model.offset]]
 map = "subchannel"                # a chunk map of the instrument (omit: the primary map)
@@ -169,9 +174,23 @@ group axes), `degree`, `lo`, `hi`, `segments`; `kind = "fixed"`: as `free`, one 
 frames; `kind = "grouped"`: one vector per frame group `groups` (the instrument's frame groupings;
 every instrument provides `"detector"`). Any term: `damp` (Tikhonov damping toward 0),
 `exact_group_rows` (fixed/grouped: anchor + adjacency rows once per group), `render` (which of the
-instrument's mosaic renderers draws it). Line terms: `template` (npz `center_um` + `G`/`G_peaknorm`), or `center_um` + `sigma_um`, or
-`center_um` + `intrinsic_var_um2` (per-pixel width from the instrument's band-width map), or
-`catalog` (an entry of the instrument's line catalogue) with `line_center` / `line_sigma`.
+instrument's mosaic renderers draws it).
+
+Sky terms: `name`, `damp_weight`, and an optional `coefficient` — `variable` (a data variable, or a
+list of them: a key of the instrument's per-observation maps or an alias, `wavelength` /
+`bandwidth` on SPHEREx) and `function`, which is one of
+- `"package.module:name"` — any importable Python function, called `f(*variables, **params)` with
+  one array per variable (the values at every observation) and returning the coefficient per
+  observation (a scalar is broadcast); parameters go in `params = {...}`;
+- `"template"` — a tabulated function (linear interpolation, zero outside): inline `x` / `y`, or
+  `file` (npz with `x` / `y`, or keys `x_key` / `y_key`; the SPHEREx template files' `center_um` /
+  `G_peaknorm` are found automatically, `norm = "area"` selects `G`);
+- `"gaussian"` — `center` and `sigma`, or `width` = a data variable holding a per-observation FWHM
+  (`fwhm_to_sigma`, default 2.355; `intrinsic_var` added in quadrature);
+- `"linear"` — `(v - center) / halfwidth`;
+
+or `coefficient = { catalog = "<name>", <overrides> }` for a named coefficient of the instrument
+(SPHEREx: `pah_3p29`, overrides `center`, `sigma`).
 The axes named here are the ones the instrument's chunk map declares (SPHEREx: `subchannel`,
 `column`; the `grid` instrument: `row`, `col`). Implementation: `selfcal.models.spec`.
 
@@ -180,7 +199,7 @@ The axes named here are the ones the instrument's chunk map declares (SPHEREx: `
 | mode | offset structure | sky | presets (historical names, same behaviour) |
 | --- | --- | --- | --- |
 | `continuum` | adjacency along the chunk map's adjacency axes + optional soft polynomial (`poly_weight`, `poly_degree`, `poly_axis`) + mean-zero anchor + per-frame scalar | continuum | — |
-| `spectral` | as `continuum` | continuum + line(s): `[[params.lines]]`, or `line_template_npz`, or a catalogue line `line` (default `pah_3p29`) | `pahfit` |
+| `spectral` | as `continuum` | a constant term + terms with coefficients of the wavelength: `[[params.lines]]`, or `line_template_npz`, or a catalogue coefficient `line` (default `pah_3p29`) | `pahfit` |
 | `spectral_softpoly` | + soft polynomial along the spectral axis: `spectral_poly_degree` / `_lo` / `_hi` / `_weight` (historical `subch_poly_*`) | as `spectral` | `pahfit_subch`, `pahfit_lvf`; `tiled` (column poly always on, spectral poly required, no mosaic) |
 | `spectral_polybasis` | hard Chebyshev basis in the spectral axis per group axis (no weight knob), optional `spectral_poly_segments` | as `spectral` | `pahfit_lvf_polybasis`, `multiline` |
 | `two_block_fixed` | primary map regularised along its spectral axis + a detector-fixed second map (`second_map`, default `readout`; `second_reg_weight`) | continuum | `k2_readout` |

@@ -2,12 +2,15 @@
 
 The equation the solver fits is::
 
-    data(frame, pixel) = Σ_j S_j(pixel) · c_j(λ_pixel)   +   Σ_m O_m(frame, chunk_m(pixel))   +   s(frame)
+    data(frame, pixel) = Σ_j S_j(pixel) · c_j(v)   +   Σ_m O_m(frame, chunk_m(pixel))   +   s(frame)
 
-* **S terms** (:class:`SkyTerm`, one per sky block): a *continuum* (constant
-  per pixel, coefficient 1) or a *line* (per-pixel amplitude of a spectral
-  profile evaluated at the instrument's wavelength map). Prior: Tikhonov
-  damping ``damp_weight``.
+* **S terms** (:class:`SkyTerm`, one per sky block): a per-pixel map ``S_j``
+  times a known multiplicative coefficient ``c_j(v)`` — any function of data
+  variables ``v`` the instrument provides for every observation (SPHEREx: its
+  wavelength and band-width maps). No coefficient means ``c = 1`` (a constant
+  sky). The coefficient is a built-in shape (tabulated, Gaussian, linear), a
+  named entry of the instrument's coefficient catalogue, or ANY importable
+  Python function. Prior: Tikhonov damping ``damp_weight``.
 * **O terms** (:class:`OffsetTerm`, one per chunk map): how the per-frame
   offset is parameterised on that map and what pulls it —
   ``kind='free'`` (one unknown per frame and chunk) with *smoothness*
@@ -24,8 +27,8 @@ A :class:`ModelSpec` is built from the ``[model]`` table of a run config
 that produce a spec from their shorter ``[params]``), and lowered onto an
 instrument's geometry into the objects the solver consumes
 (:class:`~selfcal.models.sky_model.SkyModel`,
-:class:`~selfcal.models.offset_model.OffsetModel`). Adding a new profile shape
-is a new :class:`~selfcal.models.profiles.SpectralProfile`; adding a new way to
+:class:`~selfcal.models.offset_model.OffsetModel`). A new coefficient needs no
+change here — name any function ``"package.module:name"``; adding a new way to
 parameterise an offset is a new ``kind`` in :meth:`ModelSpec.build_offset_model`.
 """
 from __future__ import annotations
@@ -37,11 +40,11 @@ import numpy as np
 
 from .offset_model import OffsetBlock, OffsetModel
 from .offset_structure import adjacency_along, adjacency_union, poly_basis_along, poly_chains_along
-from .sky_model import ContinuumComponent, SkyModel, SpectralComponent
+from .sky_model import Coefficient, ImportedFunction, SkyComponent, SkyModel
 
-__all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'ModelSpec']
+__all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'ModelSpec', 'build_coefficient', 'resolve_variable']
 
-SKY_TYPES = ('continuum', 'line')
+BUILTIN_FUNCTIONS = ('template', 'gaussian', 'linear')
 OFFSET_KINDS = ('free', 'polybasis', 'fixed', 'grouped')
 
 
@@ -50,32 +53,35 @@ OFFSET_KINDS = ('free', 'polybasis', 'fixed', 'grouped')
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class SkyTerm:
-    """One sky block. ``type='continuum'``: constant per pixel. ``type='line'``:
-    per-pixel amplitude of a profile — a tabulated ``template`` (npz with
-    ``center_um`` and ``G`` / ``G_peaknorm``), a Gaussian ``center_um`` +
-    ``sigma_um``, a Gaussian with a per-pixel width from the instrument's
-    band-width map (``center_um`` + ``intrinsic_var_um2``), or a ``catalog``
-    entry of the instrument's line catalogue (optionally with ``line_center``
-    / ``line_sigma`` overrides). ``damp_weight``: Tikhonov prior of the block
-    (None = the run's default)."""
-    type: str = 'continuum'
+    """One sky term: a per-pixel map times ``coefficient``.
+
+    ``coefficient`` None: ``c = 1`` (a constant sky). Otherwise a
+    :class:`~selfcal.models.sky_model.Coefficient`, or its config form, a dict::
+
+        {variable = "wavelength",                  # data variable(s) the coefficient reads
+         function = "template" | "gaussian" | "linear" | "package.module:name",
+         <the function's parameters>}             # inline, or under params = {...}
+        {catalog = "pah_3p29", <overrides>}        # a named coefficient of the instrument
+
+    ``name`` (the product name of the map) defaults to ``continuum`` for a
+    constant term and to the catalogue entry for a catalogue coefficient.
+    ``damp_weight``: the term's Tikhonov prior (None = the solver default).
+    """
     name: str | None = None
+    coefficient: object = None
     damp_weight: float | None = None
-    template: str | None = None
-    template_norm: str = 'peak'
-    center_um: float | None = None
-    sigma_um: float | None = None
-    intrinsic_var_um2: float | None = None
-    fwhm_to_sigma: float = 2.355
-    catalog: str | None = None
-    line_center: float | None = None
-    line_sigma: float | None = None
 
     def __post_init__(self):
-        if self.type not in SKY_TYPES:
-            raise ValueError(f"sky term type must be one of {SKY_TYPES}, got {self.type!r}")
-        if self.type == 'line' and not (self.template or self.center_um is not None or self.catalog):
-            raise ValueError(f"line term {self.name!r} needs a template, a center_um or a catalog entry")
+        name = self.name
+        c = self.coefficient
+        if name is None:
+            if c is None:
+                name = 'continuum'
+            elif isinstance(c, dict) and 'catalog' in c:
+                name = str(c['catalog'])
+            else:
+                raise ValueError(f"a sky term with a coefficient needs a name: {c!r}")
+        object.__setattr__(self, 'name', str(name))
 
 
 @dataclass(frozen=True)
@@ -154,38 +160,40 @@ class OffsetTerm:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModelSpec:
-    sky: tuple = (SkyTerm('continuum'),)
+    sky: tuple = (SkyTerm(),)
     offset: tuple = ()
     scalar: bool = True
     mosaic: str = 'full'                 # full | no_wav | none
 
     def __post_init__(self):
         object.__setattr__(self, 'sky', tuple(
-            t if isinstance(t, SkyTerm) else SkyTerm(**t) for t in self.sky))
+            t if isinstance(t, SkyTerm) else _sky_term(t) for t in self.sky))
         object.__setattr__(self, 'offset', tuple(
             t if isinstance(t, OffsetTerm) else OffsetTerm(**t) for t in self.offset))
-        if not self.sky or self.sky[0].type != 'continuum':
-            raise ValueError("the first sky term must be the continuum")
+        if not self.sky:
+            raise ValueError("the model needs at least one sky term")
 
     # ---- from a config table -------------------------------------------------------
     @classmethod
     def from_config(cls, table: dict) -> ModelSpec:
-        """The ``[model]`` table: ``sky = [{type=...}, ...]``, ``offset = [{map=..., kind=...,
-        poly=[{axis=..., degree=..., weight=...}]}, ...]``, ``scalar``, ``mosaic``."""
+        """The ``[model]`` table: ``sky = [{name=..., coefficient={...}, damp_weight=...}, ...]``,
+        ``offset = [{map=..., kind=..., poly=[{axis=..., degree=..., weight=...}]}, ...]``,
+        ``scalar``, ``mosaic``."""
         t = dict(table)
-        sky = t.pop('sky', None) or [{'type': 'continuum'}]
+        sky = t.pop('sky', None) or [{}]
         offset = t.pop('offset', None) or []
         scalar = bool(t.pop('scalar', True))
         mosaic = str(t.pop('mosaic', 'full'))
         if t:
             raise ValueError(f"unknown [model] keys {sorted(t)}; expected sky / offset / scalar / mosaic")
-        return cls(sky=tuple(SkyTerm(**dict(s)) for s in sky),
+        return cls(sky=tuple(_sky_term(dict(s)) for s in sky),
                    offset=tuple(OffsetTerm(**dict(o)) for o in offset), scalar=scalar, mosaic=mosaic)
 
     # ---- properties ------------------------------------------------------------------------
     @property
-    def has_lines(self) -> bool:
-        return any(t.type == 'line' for t in self.sky)
+    def has_coefficients(self) -> bool:
+        """Whether any sky term has a coefficient (reads data variables)."""
+        return any(t.coefficient is not None for t in self.sky)
 
     @property
     def x0_kind(self) -> str:
@@ -193,43 +201,34 @@ class ModelSpec:
         has them, else from the normal equations' diagonal."""
         return 'scalar_only' if self.scalar else 'from_Ab'
 
-    def requires(self, geom) -> list[str]:
-        """Capability tags this model needs from the instrument."""
-        req = []
-        if self.has_lines:
-            req.append('wavelength')
-        if any(t.kind == 'polybasis' or any(p.axis == _spectral_axis(geom, t) for p in t.poly)
-               for t in self.offset if t.kind != 'fixed'):
-            req.append('spectral_axis')
-        return req
+    def check(self, geom, catalog=None):
+        """Raise a clear error when a term refers to something the instrument does
+        not provide: a data variable, a chunk map, a chunk axis, a catalogue entry."""
+        self.build_sky_model(geom, catalog, log=lambda *a, **k: None)
+        for term in self.offset:
+            cm = geom.chunk_maps.get(term.map) if term.map else geom.chunk_map
+            if cm is None:
+                raise ValueError(f"offset term map {term.map!r} is not a chunk map of the instrument "
+                                 f"({sorted(geom.chunk_maps)})")
+            names = list(cm.axes.names) if cm.axes is not None else []
+            axes = list(term.adjacency or ()) + [p.axis for p in term.poly]
+            if term.kind == 'polybasis':
+                axes += [term.axis or cm.spectral_axis, term.group_axis or cm.group_axis]
+            bad = [a for a in axes if a not in names]
+            if bad:
+                raise ValueError(f"offset term on {cm.name!r} names axes {bad}; the map's axes are {names}")
 
     # ---- lowering: sky ---------------------------------------------------------------------
-    def build_sky_model(self, geom, line_catalog=None, log=print) -> SkyModel:
+    def build_sky_model(self, geom, catalog=None, log=print) -> SkyModel:
+        """The solver's SkyModel: one component per term, coefficients resolved
+        against the instrument's data variables (``geom``) and its coefficient
+        catalogue."""
         comps = []
-        for i, term in enumerate(self.sky):
-            if term.type == 'continuum':
-                comps.append(ContinuumComponent(damp_weight=term.damp_weight)
-                             if term.damp_weight is not None else ContinuumComponent())
-                continue
-            if geom.wavelength_key is None:
-                raise ValueError(f"sky term {term.name or i!r} is a line but the instrument has no "
-                                 f"wavelength map")
-            if term.catalog:
-                cat = (line_catalog or {})
-                if term.catalog not in cat:
-                    raise ValueError(f"line catalogue entry {term.catalog!r} unknown (have {sorted(cat)})")
-                model = cat[term.catalog](term.line_center, term.line_sigma)
-                for c in model.components[1:]:
-                    comps.append(c if term.damp_weight is None else
-                                 SpectralComponent(name=c.name, profile=c.profile,
-                                                   wavelength_key=c.wavelength_key,
-                                                   damp_weight=float(term.damp_weight)))
-                continue
-            name = term.name or f'line_{i}'
-            comps.append(SpectralComponent(name=name, profile=_profile(term, geom, name, log),
-                                           wavelength_key=geom.wavelength_key,
-                                           damp_weight=None if term.damp_weight is None
-                                           else float(term.damp_weight)))
+        for term in self.sky:
+            coeff = None if term.coefficient is None else build_coefficient(
+                term.coefficient, geom, catalog=catalog, name=term.name, log=log)
+            comps.append(SkyComponent(name=term.name, coefficient=coeff,
+                                      damp_weight=None if term.damp_weight is None else float(term.damp_weight)))
         return SkyModel(tuple(comps))
 
     # ---- lowering: offsets -------------------------------------------------------------------
@@ -300,25 +299,109 @@ class ModelSpec:
             det_groups=det_groups)
 
 
-def _spectral_axis(geom, term):
-    cm = geom.chunk_maps[term.map] if term.map else geom.chunk_map
-    return cm.spectral_axis
+def _sky_term(d) -> SkyTerm:
+    d = dict(d)
+    if 'type' in d:
+        raise ValueError("sky terms have no `type`: give `name` and, for a term that is not constant, "
+                         "`coefficient = { variable = ..., function = ..., <parameters> }` "
+                         f"(got {d})")
+    return SkyTerm(**d)
 
 
-def _profile(term, geom, name, log):
-    from .profiles import GaussianProfile, QuadratureSigma, TemplateProfile
-    if term.template:
-        d = np.load(term.template)
-        key = 'G_peaknorm' if term.template_norm == 'peak' else 'G'
-        log(f"[model] line {name!r}: template {os.path.basename(term.template)} [{key}]: "
-            f"{d['center_um'][0]:.3f}-{d['center_um'][-1]:.3f} um", flush=True)
-        return TemplateProfile(wave_um=np.asarray(d['center_um'], float), values=np.asarray(d[key], float))
-    if term.sigma_um is not None:
-        return GaussianProfile(center_um=float(term.center_um), sigma_um=float(term.sigma_um))
-    if geom.width_key is None:
-        raise ValueError(f"line term {name!r}: a per-pixel width needs the instrument's band-width map; "
-                         f"give sigma_um instead")
-    return GaussianProfile(center_um=float(term.center_um),
-                           sigma_source=QuadratureSigma(fwhm_key=geom.width_key,
-                                                        fwhm_to_sigma=float(term.fwhm_to_sigma),
-                                                        intrinsic_var_um2=float(term.intrinsic_var_um2 or 0.0)))
+def resolve_variable(name, geom):
+    """The key of a data variable the instrument provides for every observation:
+    a key of ``geom.aux``, or an alias — ``wavelength`` (the instrument's
+    ``wavelength_key``), ``bandwidth`` (its ``width_key``)."""
+    aux = getattr(geom, 'aux', None) or {}
+    aliases = {}
+    if getattr(geom, 'wavelength_key', None):
+        aliases['wavelength'] = geom.wavelength_key
+    if getattr(geom, 'width_key', None):
+        aliases['bandwidth'] = geom.width_key
+    key = aliases.get(name, name)
+    if key not in aux:
+        avail = sorted(aux) + [f'{a} (= {k})' for a, k in aliases.items()]
+        raise ValueError(f"data variable {name!r} is not provided by the instrument "
+                         f"(variables: {avail or 'none'})")
+    return key
+
+
+def _hashable(v):
+    if isinstance(v, (list, tuple)):
+        return tuple(_hashable(x) for x in v)
+    if isinstance(v, dict):
+        return tuple(sorted((k, _hashable(x)) for k, x in v.items()))
+    return v
+
+
+def build_coefficient(spec, geom, catalog=None, name=None, log=print) -> Coefficient:
+    """A :class:`~selfcal.models.sky_model.Coefficient` from its config form (see
+    :class:`SkyTerm`), with variable names resolved against the instrument."""
+    if isinstance(spec, Coefficient):
+        keys = tuple(resolve_variable(v, geom) for v in spec.main_variables)
+        return Coefficient(keys[0] if isinstance(spec.variable, str) else keys, spec.function)
+    spec = dict(spec)
+    if 'catalog' in spec:
+        entry = spec.pop('catalog')
+        cat = catalog or {}
+        if entry not in cat:
+            raise ValueError(f"coefficient catalogue entry {entry!r} unknown (the instrument has {sorted(cat)})")
+        return cat[entry](**spec)
+    if 'variable' not in spec or 'function' not in spec:
+        raise ValueError(f"a coefficient needs `variable` and `function` (or `catalog`): {spec}")
+    variable = spec.pop('variable')
+    function = str(spec.pop('function'))
+    params = dict(spec.pop('params', None) or {})
+    params.update(spec)
+    many = isinstance(variable, (list, tuple))
+    keys = tuple(resolve_variable(v, geom) for v in variable) if many else resolve_variable(variable, geom)
+    if ':' in function:
+        return Coefficient(keys, ImportedFunction(function, _hashable(params)))
+    if function not in BUILTIN_FUNCTIONS:
+        raise ValueError(f"unknown coefficient function {function!r}: a built-in {BUILTIN_FUNCTIONS} "
+                         f"or a Python function 'package.module:name'")
+    if many:
+        raise ValueError(f"the built-in {function!r} takes one variable; got {list(variable)}")
+    return Coefficient(keys, _builtin(function, params, geom, name, log))
+
+
+def _builtin(function, p, geom, name, log):
+    from .profiles import GaussianProfile, LinearProfile, QuadratureSigma, TemplateProfile
+
+    def need(*keys):
+        missing = [k for k in keys if k not in p]
+        if missing:
+            raise ValueError(f"coefficient {function!r} of term {name!r} needs {missing}")
+
+    if function == 'template':
+        # A tabulated function (linear interpolation, zero outside): inline x / y, or an
+        # npz file with arrays x / y (keys x_key / y_key), or the SPHEREx template layout
+        # (center_um + G_peaknorm; norm = "area" -> G).
+        if 'file' in p:
+            d = np.load(p['file'])
+            x_key = p.get('x_key') or ('x' if 'x' in d else 'center_um')
+            y_key = p.get('y_key') or ('y' if 'y' in d else
+                                       ('G_peaknorm' if p.get('norm', 'peak') == 'peak' else 'G'))
+            x, y = d[x_key], d[y_key]
+            log(f"[model] {name!r}: tabulated coefficient {os.path.basename(p['file'])} [{y_key}] over "
+                f"{float(x[0]):.4g}..{float(x[-1]):.4g}", flush=True)
+        else:
+            need('x', 'y')
+            x, y = p['x'], p['y']
+        return TemplateProfile(wave_um=np.asarray(x, float), values=np.asarray(y, float))
+    if function == 'gaussian':
+        # exp(-(v - center)^2 / 2 sigma^2); sigma = sqrt((w / fwhm_to_sigma)^2 + intrinsic_var)
+        # per observation when `width` names a data variable w, else the scalar `sigma`.
+        need('center')
+        source = None
+        if p.get('width') is not None:
+            source = QuadratureSigma(fwhm_key=resolve_variable(p['width'], geom),
+                                     fwhm_to_sigma=float(p.get('fwhm_to_sigma', 2.355)),
+                                     intrinsic_var_um2=float(p.get('intrinsic_var') or 0.0))
+        elif p.get('sigma') is None:
+            raise ValueError(f"gaussian coefficient of term {name!r} needs `sigma` or `width`")
+        return GaussianProfile(center_um=float(p['center']),
+                               sigma_um=None if p.get('sigma') is None else float(p['sigma']),
+                               sigma_source=source)
+    need('center', 'halfwidth')                   # linear: (v - center) / halfwidth
+    return LinearProfile(center_um=float(p['center']), halfwidth_um=float(p['halfwidth']))

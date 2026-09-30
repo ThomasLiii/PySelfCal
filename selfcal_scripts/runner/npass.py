@@ -307,7 +307,7 @@ class _Run:
         edges = self.edges() if opts.get("subch_clip") else None
         _, mon = refit_offsets_per_frame(
             self.all_frames, sky, det_chunk_map=self.cm, grid_valid=self.grid_valid,
-            det_aux=self.det_aux, poly_basis=pb, edges=edges,
+            det_aux=self.det_aux, poly_basis=pb, edges=edges, edges_key=self.geom.wavelength_key,
             ignore_list=self.cfg.calibration.get("ignore_list", []),
             thresh=float(opts["outlier_thresh"]), bright_cut=opts.get("bright_cut"),
             min_pix=int(opts["min_pix"]), out_h5=out, max_workers=self.max_workers,

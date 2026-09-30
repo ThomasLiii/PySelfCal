@@ -26,7 +26,7 @@ What an instrument provides
   the job and the edge-taper weights the solve and the mosaic use;
 * optional **hooks**: a smooth chunk->grid offset renderer for the mosaic,
   per-pixel maps to coadd with the data, a mosaic finaliser, a catalogue of
-  named sky models, post-calibration hooks (SPHEREx: the zodi anchor), the
+  named coefficients, post-calibration hooks (SPHEREx: the zodi anchor), the
   data unit, and a rarely-run geometry precompute.
 
 The required surface is the five abstract methods; everything else has a
@@ -264,8 +264,9 @@ class Instrument(ABC):
         """Label / append instrument products on the finished mosaic (called
         only when the mode asks for a full mosaic and ``aux_coadds`` is set)."""
 
-    def line_catalog(self) -> dict[str, Callable]:
-        """Named sky-model factories a spectral mode can refer to by name."""
+    def coefficient_catalog(self) -> dict[str, Callable]:
+        """Named sky-term coefficients: ``{name: factory(**overrides) -> Coefficient}``,
+        referred to as ``coefficient = { catalog = "<name>" }``."""
         return {}
 
     def postcal_hooks(self, cfg) -> list[Callable]:

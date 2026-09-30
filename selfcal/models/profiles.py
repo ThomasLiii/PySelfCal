@@ -1,10 +1,13 @@
-"""Line-profile models for the spectral sky components.
+"""Ready-made coefficient functions for sky terms.
 
-A :class:`LineProfile` maps per-observation wavelengths (and optional auxiliary
-maps) to a dimensionless line-shape coefficient ``G`` (peak ≈ 1 at line center).
-The LSQR row for a spectral component multiplies the pixel weight by ``G`` (see
-:mod:`selfcal.models.sky_model` and the row assembly in
-:mod:`selfcal.core.assembly`).
+A sky term is a map times a coefficient ``c(v)`` of data variables
+(:mod:`selfcal.models.sky_model`); any callable works as the function. These
+classes are the common shapes — a Gaussian (optionally with a per-observation
+width read from a second variable), a tabulated function, a linear ramp — each
+evaluated as ``evaluate(x, obs)`` on the per-observation values ``x`` of its
+variable. Nothing restricts ``x`` to a wavelength; the field names (``*_um``)
+are historical. The LSQR row multiplies the pixel weight by the coefficient
+(row assembly in :mod:`selfcal.core.assembly`).
 
 Bit-identity contract (SPHEREx PAH 3.29 µm): the original inline computation
 in ``selfcal.core.assembly._prep_lsqr`` for the per-pixel Gaussian was::

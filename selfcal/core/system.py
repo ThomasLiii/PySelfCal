@@ -578,27 +578,27 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     if sky_model is None:
         sky_model = SkyModel.continuum_only()
     num_sky_blocks = sky_model.n_blocks
-    if num_sky_blocks > 1:
-        # A spectral SkyModel (>=1 non-continuum block) needs the wavelength aux
-        # map(s) and gets decoupled line-block damping by default (the line
-        # columns have smaller average coefficients than continuum, so ~3x more
-        # Tikhonov shrinkage at the same data S/N).
-        if damp_weight_line is None:
-            damp_weight_line = 3.0 * damp_weight
-        if det_aux is None or len(det_aux) < 1:
-            raise ValueError(
-                "A spectral SkyModel (>1 sky block) requires det_aux=[wavelength map] "
-                "(+ the band-width map for a per-pixel sigma), named by aux_keys.")
-        logger.info(f"Spectral mode ON: {num_sky_blocks} sky blocks {sky_model.names}, "
-                    f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
-    # det_aux is positional; aux_keys names the entries (the keys the sky
-    # model's components read). The historical default is ['BC', 'BW'].
+    # det_aux is positional; aux_keys names the entries: the data variables the
+    # sky terms' coefficients read (sampled at every observation). The
+    # historical default is ['BC', 'BW'].
     if aux_keys is None:
         aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
     else:
         aux_keys = list(aux_keys)
         if det_aux is not None and len(aux_keys) != len(det_aux):
             raise ValueError(f"aux_keys {aux_keys} does not match the {len(det_aux)} det_aux maps")
+    missing = [v for v in sky_model.required_variables if v not in aux_keys]
+    if missing:
+        raise ValueError(f"the sky terms' coefficients read the data variables {missing}, which are "
+                         f"not supplied (det_aux / aux_keys give {aux_keys})")
+    if num_sky_blocks > 1:
+        # Terms after the first default to their own damping weight
+        # damp_weight_line (a varying coefficient has a smaller average than
+        # 1, so ~3x more Tikhonov shrinkage at the same data S/N).
+        if damp_weight_line is None:
+            damp_weight_line = 3.0 * damp_weight
+        logger.info(f"Sky model: {num_sky_blocks} terms {sky_model.names}, "
+                    f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
     if outlier_aux_key is None:
         outlier_aux_key = 'BC'
 
@@ -1174,27 +1174,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                         f"(one copy per group, weight x sqrt(k))")
             constraint_blocks.append(blk.as_dict())
 
-    # --- Coverage-weighted sky damping (continuum, then each line block) ---
-    if weighted_damping and damp_weight > 0:
-        logger.info("Applying Coverage-Weighted Damping (continuum)...")
-        blk = sky_damping_block(0, damp_weight, sky_pixel_counts, num_sky)
-        if blk is not None:
-            constraint_blocks.append(blk.as_dict())
-
-        # --- SPECTRAL-BLOCK DAMPING (blocks 1..J-1) ---
-        # Each spectral component is damped by its own ``damp_weight`` when the
-        # component sets one, else by the shared ``damp_weight_line`` (for
-        # J == 2 this reduces exactly to the single shared ``damp_weight_line``).
-        for j in range(1, num_sky_blocks):
-            comp = sky_model.components[j]
-            w_j = getattr(comp, 'damp_weight', None)
-            if w_j is None:
-                w_j = damp_weight_line
-            if w_j is None or w_j <= 0:
+    # --- Coverage-weighted sky damping, one block per sky term ---
+    # Each term is damped by its own ``damp_weight`` when it sets one, else by
+    # ``damp_weight`` (first term) / ``damp_weight_line`` (the others) — the
+    # rule of SkyModel.damp_weights, shared with the closed-form sky solve.
+    if weighted_damping:
+        for j, w_j in enumerate(sky_model.damp_weights(damp_weight, damp_weight_line)):
+            if w_j <= 0:
                 continue
+            comp = sky_model.components[j]
             logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
-            blk = sky_damping_block(
-                j, w_j, pixel_counts[j * num_sky:(j + 1) * num_sky], num_sky)
+            counts_j = sky_pixel_counts if j == 0 else pixel_counts[j * num_sky:(j + 1) * num_sky]
+            blk = sky_damping_block(j, w_j, counts_j, num_sky)
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
 

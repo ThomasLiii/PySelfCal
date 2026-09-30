@@ -246,8 +246,8 @@ class SPHERExInstrument(Instrument):
     def data_unit(self, inst_cfg):
         return 'MJy/sr'
 
-    # ---- named sky models ------------------------------------------------------
-    def line_catalog(self):
+    # ---- named coefficients -------------------------------------------------
+    def coefficient_catalog(self):
         from .line_catalog import CATALOG
         return dict(CATALOG)
 

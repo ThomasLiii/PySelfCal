@@ -26,11 +26,14 @@ def make_truth(rng, ref_side=160):
 
 
 def write_exposures(out_dir, n_exp, rng, ra0=180.0, dec0=30.0, ref_side=160, noise=0.02,
-                    det_shape=(DET, DET), chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE), with_dq=True):
+                    det_shape=(DET, DET), chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE), with_dq=True,
+                    extra_term=None, offset_sigma=0.3, scalar_sigma=1.0):
     """Write ``n_exp`` FITS exposures (ext 1 sci + WCS + FINAST=0, ext 2 int32 DQ unless
     ``with_dq`` is False) of a ``det_shape`` detector partitioned into ``chunks`` (ny, nx)
     offset chunks, sampling a common sky at random pointings; returns
-    (paths, injected offsets, scalars)."""
+    (paths, injected offsets, scalars). ``extra_term = (S, c_det)`` adds a second
+    sky term: the reference-grid map ``S`` times ``c_det``, a coefficient per
+    DETECTOR pixel (so each sky pixel sees a different coefficient in every frame)."""
     from selfcal.instruments.grid import rect_grid_chunk_map
     os.makedirs(out_dir, exist_ok=True)
     sky = make_truth(rng, ref_side)
@@ -38,9 +41,9 @@ def write_exposures(out_dir, n_exp, rng, ra0=180.0, dec0=30.0, ref_side=160, noi
     ny, nx = chunks
     n_chunks = ny * nx
     chunk_map = rect_grid_chunk_map((H, W), ny, nx)
-    offsets = rng.normal(0, 0.3, size=(n_exp, n_chunks))
+    offsets = rng.normal(0, offset_sigma, size=(n_exp, n_chunks))
     offsets -= offsets.mean(axis=1, keepdims=True)          # mean-zero per frame (matches the anchor)
-    scalars = rng.normal(0, 1.0, size=n_exp)
+    scalars = rng.normal(0, scalar_sigma, size=n_exp)
     scale = PIX_ARCSEC / 3600.0
     paths = []
     for k in range(n_exp):
@@ -49,6 +52,9 @@ def write_exposures(out_dir, n_exp, rng, ra0=180.0, dec0=30.0, ref_side=160, noi
         ox = rng.integers(0, ref_side - W)
         det_true = sky[oy:oy + H, ox:ox + W]
         img = det_true + offsets[k][chunk_map] + scalars[k] + rng.normal(0, noise, size=(H, W))
+        if extra_term is not None:
+            s_map, c_det = extra_term
+            img = img + s_map[oy:oy + H, ox:ox + W] * c_det
         w = WCS(naxis=2)
         w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
         w.wcs.crpix = [W / 2 + 0.5 - ox, H / 2 + 0.5 - oy]         # so that sky pixel (0,0) maps consistently

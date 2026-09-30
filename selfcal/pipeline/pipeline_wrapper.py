@@ -987,11 +987,7 @@ class Calibrator(Reprojector):
         self._materialize_pixel_state()
         J = self.num_sky_blocks
         num_sky = self.ref_shape[0] * self.ref_shape[1]
-        dws = [float(damp_weight)]
-        for comp in self.sky_model.components[1:]:
-            w = getattr(comp, 'damp_weight', None)
-            dws.append(float(damp_weight_line if w is None else w) if
-                       (damp_weight_line is not None or w is not None) else 0.0)
+        dws = self.sky_model.damp_weights(damp_weight, damp_weight_line)
         with timer("Closed-form sky solve"):
             self.x = _closed(self.pixel_fisher, self.pixel_cross, self.pixel_rhs,
                              self.pixel_counts, num_sky, J, damp_weights=dws)

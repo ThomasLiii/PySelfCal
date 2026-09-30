@@ -112,12 +112,12 @@ class CalMode:
         return self.spec(cfg, inst, geom).setup_kwargs()
 
     def build_sky_model(self, cfg, inst, geom):
-        return self.spec(cfg, inst, geom).build_sky_model(geom, inst.line_catalog(), log=self._log)
+        return self.spec(cfg, inst, geom).build_sky_model(geom, inst.coefficient_catalog(), log=self._log)
 
     def aux_maps(self, cfg, inst, geom):
-        """Named per-pixel maps the solve needs: all of the instrument's when the
-        sky has spectral terms, none for a continuum-only sky."""
-        return dict(geom.aux) if self.spec(cfg, inst, geom).has_lines else {}
+        """The data variables the solve samples at every observation: all of the
+        instrument's when a sky term has a coefficient, none otherwise."""
+        return dict(geom.aux) if self.spec(cfg, inst, geom).has_coefficients else {}
 
     def x0_kind(self, cfg, inst, geom):
         return self.spec(cfg, inst, geom).x0_kind
@@ -134,9 +134,9 @@ class CalMode:
             active_mask=getattr(cc, "active_mask", None))
 
     def configure(self, cfg, cc):
-        """Post-solve settings recorded on the cal (default: the line-Fisher
-        threshold when the sky has spectral terms)."""
-        if getattr(self, '_spec', None) is not None and self._spec[1].has_lines:
+        """Post-solve settings recorded on the cal (default: the read-time Fisher
+        threshold for the terms after the first, when a sky term has a coefficient)."""
+        if getattr(self, '_spec', None) is not None and self._spec[1].has_coefficients:
             cc.line_fisher_threshold = cfg.params.get('line_fisher_threshold', 10.0)
 
     def mosaic_geometry(self, cfg, inst, geom, jobgeom):
@@ -204,34 +204,39 @@ def standard_offset_term(cfg, geom, *, extra_poly=(), column_poly_default_weight
 
 
 def spectral_sky_terms(cfg, geom):
-    """The sky terms of the spectral recipes from ``[params]``: continuum +
-    ``[[params.lines]]`` entries, or a single ``line_template_npz`` line, or the
-    catalogue line ``[params].line`` (default ``pah_3p29``) with ``line_center``
-    / ``line_sigma`` overrides."""
+    """The sky terms of the spectral presets from their ``[params]``: a constant
+    term, then one term per ``[[params.lines]]`` entry — a tabulated coefficient
+    of the wavelength (``template_npz``), a Gaussian of it (``center_um`` +
+    ``sigma_um``, or ``center_um`` + ``intrinsic_var_um2`` for a per-observation
+    width from the band-width variable) — or a single tabulated
+    ``line_template_npz`` term, or the catalogue coefficient ``[params].line``
+    (default ``pah_3p29``) with ``line_center`` / ``line_sigma`` overrides."""
     from selfcal.models.spec import SkyTerm
     p = cfg.params
     terms = [SkyTerm('continuum')]
     lines = p.get('lines')
     if lines:
         for spec in lines:
-            kw = dict(type='line', name=spec['name'], damp_weight=spec.get('damp_weight'))
             if 'template_npz' in spec:
-                kw.update(template=spec['template_npz'], template_norm=spec.get('template_norm', 'peak'))
+                coeff = {'variable': 'wavelength', 'function': 'template', 'file': spec['template_npz'],
+                         'norm': spec.get('template_norm', 'peak')}
             elif 'center_um' in spec:
-                kw.update(center_um=float(spec['center_um']))
+                coeff = {'variable': 'wavelength', 'function': 'gaussian', 'center': float(spec['center_um'])}
                 if spec.get('sigma_um') is not None:
-                    kw['sigma_um'] = float(spec['sigma_um'])
+                    coeff['sigma'] = float(spec['sigma_um'])
                 else:
-                    kw['intrinsic_var_um2'] = float(spec.get('intrinsic_var_um2', 0.0))
+                    coeff.update(width='bandwidth', intrinsic_var=float(spec.get('intrinsic_var_um2', 0.0)))
             else:
                 raise ValueError(f"line spec needs 'template_npz' or 'center_um': {spec}")
-            terms.append(SkyTerm(**kw))
+            terms.append(SkyTerm(name=spec['name'], coefficient=coeff, damp_weight=spec.get('damp_weight')))
         return terms
     npz = p.get('line_template_npz')
     if npz:
-        terms.append(SkyTerm(type='line', name='pah_3p29', template=npz,
-                             template_norm=p.get('line_template_norm', 'peak')))
+        terms.append(SkyTerm(name='pah_3p29', coefficient={
+            'variable': 'wavelength', 'function': 'template', 'file': npz,
+            'norm': p.get('line_template_norm', 'peak')}))
         return terms
-    terms.append(SkyTerm(type='line', catalog=p.get('line', 'pah_3p29'),
-                         line_center=p.get('line_center'), line_sigma=p.get('line_sigma')))
+    entry = p.get('line', 'pah_3p29')
+    terms.append(SkyTerm(name=entry, coefficient={'catalog': entry, 'center': p.get('line_center'),
+                                                  'sigma': p.get('line_sigma')}))
     return terms

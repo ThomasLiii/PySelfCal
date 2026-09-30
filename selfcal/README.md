@@ -319,18 +319,21 @@ clarity:
 
 ### Sky / offset models (`models/`)
 
-- **[`models/sky_model.py`](models/sky_model.py)** — `SkyModel` generalizes the
-  old hardcoded `num_sky_blocks` integer into an ordered tuple of named
-  `SkyComponent`s, each contributing one sky block. `ContinuumComponent`
-  carries the identity coefficient (`coeff = 1`, the bit-exact continuum
-  path); `SpectralComponent` (alias `LineComponent`) fits the per-pixel
-  amplitude of an arbitrary spectral profile via `coeff = profile(λ)`.
-  Factories `continuum_only()` and `continuum_plus_pah_gaussian()` reproduce
-  the two legacy configurations byte-for-byte.
-- **[`models/profiles.py`](models/profiles.py)** — `SpectralProfile` and
-  concrete subclasses (`GaussianProfile`, `TemplateProfile`), plus
-  `QuadratureSigma` (instrument-resolution-aware line width). A profile is
-  evaluated against a subframe's per-pixel wavelength aux map (`BC`/`BW`).
+- **[`models/sky_model.py`](models/sky_model.py)** — `SkyModel`: an ordered
+  tuple of named `SkyComponent`s, one sky block each. Every component is a
+  per-pixel map times an optional `Coefficient` — any function of named data
+  variables sampled at every observation (the instrument's `aux` maps):
+  `Coefficient(variable, function)` takes any picklable callable
+  `f(*arrays)` (`ImportedFunction` references one by import path) or an
+  object with `evaluate(x, obs)`. No coefficient is `c = 1` (the bit-exact
+  identity path). `SpectralComponent(name, profile, wavelength_key)` (alias
+  `LineComponent`) is the historical spelling of
+  `SkyComponent(name, Coefficient(wavelength_key, profile))`.
+  `SkyModel.damp_weights` is the one per-term damping rule.
+- **[`models/profiles.py`](models/profiles.py)** — ready-made coefficient
+  functions of one variable (`GaussianProfile`, `TemplateProfile`,
+  `LinearProfile`, with `QuadratureSigma` for a per-observation Gaussian
+  width read from a second variable); their field names are historical.
 - **[`models/offset_model.py`](models/offset_model.py)** — `OffsetModel` /
   `OffsetBlock` bundle the seven parallel length-K offset-config lists into
   one cohesive block per map. `OffsetModel.to_setup_kwargs()` lowers back to
@@ -446,7 +449,7 @@ clarity:
   offset renderer for the mosaic, the wavelength coadd + finaliser, the L2b
   exposure layout (FINAST filter), the zodi-anchor post-cal hook and the
   data unit. [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
-  holds the named sky models (`pah_3p29`).
+  holds the named coefficients (`pah_3p29`).
 
 - **[`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py)** —
   SPHEREx LVF geometry and chunk-map construction.
@@ -710,8 +713,8 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/solution.py`](core/solution.py) | `parse_x`, `encode_x`, `compute_x0_from_Ab`, `compute_x0_scalar_only`. |
 | [`core/layout.py`](core/layout.py) | `SystemLayout` — column layout of `x`. |
 | [`core/constraint_builders.py`](core/constraint_builders.py) | Mean-offset / sky / offset damping constraint rows. |
-| [`models/sky_model.py`](models/sky_model.py) | `SkyModel` + `SkyComponent` (continuum / spectral). |
-| [`models/profiles.py`](models/profiles.py) | `SpectralProfile`, `GaussianProfile`, `TemplateProfile`, `QuadratureSigma`. |
+| [`models/sky_model.py`](models/sky_model.py) | `SkyModel`, `SkyComponent` (a map times an optional `Coefficient`: any function of data variables), `ImportedFunction`. |
+| [`models/profiles.py`](models/profiles.py) | Ready-made coefficient functions: `GaussianProfile`, `TemplateProfile`, `LinearProfile`, `QuadratureSigma`. |
 | [`models/offset_model.py`](models/offset_model.py) | `OffsetModel` / `OffsetBlock` per-map offset bundling. |
 | [`geometry/map_helper.py`](geometry/map_helper.py) | Bitmask, interp, chunk, spline, and binning utilities. |
 | [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load / upscale. |
@@ -727,7 +730,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: 16-detector exposure layout, grid/stripe/tilt chunk maps, edge taper, spline/strip/ramp renderers, electron units. |
 | [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`star_position_mask`, `residual_mask`). |
 | [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
-| [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named sky models (`pah_3p29`). |
+| [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |
 | [`instruments/euclid/exposures.py`](instruments/euclid/exposures.py) | Euclid exposure-list loaders. |

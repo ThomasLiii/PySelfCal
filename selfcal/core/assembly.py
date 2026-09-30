@@ -102,20 +102,20 @@ def _prep_lsqr(task_params):
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
-        # --- Sky rows: one nnz per sky component per data row ---
+        # --- Sky rows: one nnz per sky term per data row ---
         # The sky block is J sub-blocks of num_sky columns each, one per
-        # SkyModel component (J=1 continuum-only, J=2 adds one spectral-line
-        # component; any J is supported). Each component j contributes a
-        # coefficient over the valid pixels:
-        #   - None  -> identity (continuum): store valid_weight directly.
-        #   - array -> e.g. line profile G(λ) (LineComponent), store w_i * coeff.
+        # SkyModel component (a map times a coefficient c_j of data variables;
+        # any J). Each component contributes its coefficient over the valid
+        # pixels:
+        #   - None  -> identity (a constant term): store valid_weight directly.
+        #   - array -> c_j(v) at each observation, store w_i * c_j.
         # Emission order is pixel-major with components interleaved
         # (S_cols[j::J] = j*num_sky + P). J==1 with an identity coefficient
         # takes the fast path (no interleave, no multiply) — it emits the
         # identical entry sequence, and after the final int32/float32 casts
         # identical bytes, to the general loop; preserve this equivalence
-        # when editing either path. aux maps (BC/BW) are sampled to the
-        # valid pixels and passed by name to each component.
+        # when editing either path. The data variables (the aux maps, e.g.
+        # BC/BW) are sampled to the valid pixels and passed by name.
         sky_components = task_params.get('sky_components')
         if sky_components is None:
             J = 1

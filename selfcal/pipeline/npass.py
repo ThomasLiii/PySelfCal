@@ -2,11 +2,11 @@
 
 Model, per frame *k* and reference pixel *p*::
 
-    d_k(p) = Σ_j S_j(p) c_j(λ_k(p)) + Σ_d a_{k,g(p),d} B_d(u(p)) + s_k
+    d_k(p) = Σ_j S_j(p) c_j(v_k(p)) + Σ_d a_{k,g(p),d} B_d(u(p)) + s_k
 
-with J sky blocks ``S_j`` (block 0 = continuum, ``c_0 ≡ 1``; the others are
-:class:`~selfcal.models.sky_model.SpectralComponent` amplitudes with profile
-coefficients ``c_j`` evaluated at the observation's wavelength), a per-frame
+with J sky terms ``S_j``, each a per-pixel map times its coefficient ``c_j``
+of the observation's data variables ``v`` (``c ≡ 1`` for a constant term; see
+:mod:`selfcal.models.sky_model`), a per-frame
 offset that is a mean-zero Chebyshev shape ``B_d`` in an abstract per-chunk
 coordinate ``u`` (SPHEREx: the subchannel) with one polynomial per group ``g``
 (SPHEREx: the detector column), and a per-frame scalar ``s_k``.
@@ -68,19 +68,10 @@ def group_wavelength_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pi
 
 
 def sky_damp_weights(sky_model, damp_weight, damp_weight_line=None):
-    """Per-block damping weights, mirroring ``Calibrator.solve_sky_closed_form``:
-    block 0 gets ``damp_weight``; each spectral component its own ``damp_weight``
-    if set, else ``damp_weight_line`` (0 when neither is given)."""
-    dws = [float(damp_weight or 0.0)]
-    for comp in sky_model.components[1:]:
-        w = getattr(comp, "damp_weight", None)
-        if w is not None:
-            dws.append(float(w))
-        elif damp_weight_line is not None:
-            dws.append(float(damp_weight_line))
-        else:
-            dws.append(0.0)
-    return dws
+    """Per-term damping weights (``SkyModel.damp_weights``: a term's own
+    ``damp_weight`` when set, else ``damp_weight`` for the first term and
+    ``damp_weight_line`` for the others)."""
+    return sky_model.damp_weights(damp_weight or 0.0, damp_weight_line)
 
 
 def _basename(p):
@@ -207,22 +198,23 @@ class SkySubtractor:
         return out, on_map
 
     def coefficients(self, sub_aux, shape):
-        """``c_j`` per subframe pixel for every block (block 0 is all ones)."""
+        """``c_j`` per subframe pixel for every term (None for a constant term)."""
         aux = {k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys)
                if sub_aux is not None and i < len(sub_aux)}
-        out = [None]                     # block 0: continuum, coefficient 1
-        for comp in self.sky_model.components[1:]:
+        out = []
+        for comp in self.sky_model.components:
             c = comp.coefficients(aux)
-            out.append(np.asarray(c, dtype=np.float64).reshape(shape))
+            out.append(None if c is None else np.asarray(c, dtype=np.float64).reshape(shape))
         return out
 
     def predict(self, rc, shape, sub_aux):
-        """Total modelled sky on the subframe grid (float64), and the on-map mask."""
+        """Total modelled sky ``Σ_j c_j S_j`` on the subframe grid (float64), and the on-map mask."""
         maps, on_map = self.window(rc, shape)
         coef = self.coefficients(sub_aux, shape)
-        pred = maps[0].astype(np.float64)
-        for m, c in zip(maps[1:], coef[1:]):
-            pred = pred + m * c
+        pred = None
+        for m, c in zip(maps, coef):
+            term = m.astype(np.float64) if c is None else m * c
+            pred = term if pred is None else pred + term
         return pred, on_map
 
     def __call__(self, ctx):
@@ -268,7 +260,7 @@ def _refit_frame(path):
         valid = sub_weight > 0
         if g["edges"] is not None:
             masked = np.where(valid, sub_data, np.nan)
-            groups = np.digitize(sub_aux[0], g["edges"])
+            groups = np.digitize(sub_aux[g["edges_aux_index"]], g["edges"])
             valid &= ~find_outliers_grouped(masked, groups, threshold=g["thresh"])
         pred, on_map = g["sky"].predict(ref_coords, sub_data.shape, sub_aux)
         valid &= on_map
@@ -319,7 +311,7 @@ def _refit_frame(path):
         return os.path.basename(path), None, np.nan, -1
 
 
-def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, poly_basis,
+def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, poly_basis, edges_key=None,
                             edges=None, ignore_list=(), thresh=2.5, bright_cut=0.05,
                             min_pix=5000, out_h5, max_workers=48, attrs=None, ridge=0.0):
     """OFFSET pass: refit every frame's offset against the fixed sky ``sky``
@@ -334,8 +326,11 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
     diagonal of DᵀD — see ``_refit_frame``; use it with a segmented basis, whose
     per-(segment, column) blocks a frame may barely cover.
     """
+    # the grouped clip bins on the instrument's wavelength variable (edges_key)
+    keys = list(getattr(sky, "aux_keys", ()) or ())
+    edges_aux_index = keys.index(edges_key) if (edges_key is not None and edges_key in keys) else 0
     state = dict(sky=sky, cm=np.asarray(det_chunk_map), grid_valid=grid_valid,
-                 det_aux=det_aux, poly_basis=poly_basis, edges=edges,
+                 det_aux=det_aux, poly_basis=poly_basis, edges=edges, edges_aux_index=edges_aux_index,
                  ignore_list=list(ignore_list), thresh=float(thresh),
                  bright_cut=bright_cut, min_pix=int(min_pix), ridge=float(ridge))
     n_chunks = len(poly_basis["chunk_group"])

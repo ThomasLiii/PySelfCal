@@ -34,14 +34,19 @@ def _ser(x):
     return x
 
 
-def _sky(model):
+def _sky(model, geom):
+    """Each sky term by what it COMPUTES, independent of how the component class is laid
+    out: name, damping, the variables it reads, and the hash of its coefficients evaluated
+    on a fixed probe of the instrument's real per-pixel maps (every 97th detector pixel)."""
+    aux = getattr(geom, 'aux', None) or {}
+    probe = {k: np.ascontiguousarray(np.asarray(v).ravel()[::97]) for k, v in aux.items()}
     out = []
     for c in model.components:
-        d = {'cls': type(c).__name__, 'name': c.name}
-        for k in ('wavelength_key', 'damp_weight', 'profile'):
-            if hasattr(c, k):
-                d[k] = _ser(getattr(c, k))
-        out.append(d)
+        coeff = c.coefficients(probe)
+        reads = getattr(c, 'aux_requirements', None) or ()
+        out.append({'name': c.name, 'damp_weight': getattr(c, 'damp_weight', None),
+                    'reads': tuple(sorted(reads)),
+                    'coeff': None if coeff is None else _h(np.asarray(coeff))})
     return out
 
 
@@ -62,9 +67,14 @@ def dump(out, config_path, mode_name=None):
     geom = ctx.geom if s2 else ctx.det_inputs
     snap = {'mode': mode.name, 'mosaic_mode': mode.mosaic_mode,
             'requires': tuple('spectral_axis' if r == 'subchannel' else r for r in mode.requires)}
-    om = mode.build_offset_model(cfg, inst, geom, jg, job, N_FRAMES)
+    import inspect
+    frames = [f'/probe/exp_{i:04d}_det_{i % 16:02d}.h5' for i in range(N_FRAMES)]   # for detector-grouped terms
+    if 'frames' in inspect.signature(mode.build_offset_model).parameters:
+        om = mode.build_offset_model(cfg, inst, geom, jg, job, N_FRAMES, frames=frames)
+    else:
+        om = mode.build_offset_model(cfg, inst, geom, jg, job, N_FRAMES)
     snap['offset'] = _ser(om.to_setup_kwargs())
-    snap['sky'] = _sky(mode.build_sky_model(cfg, inst, geom))
+    snap['sky'] = _sky(mode.build_sky_model(cfg, inst, geom), geom)
     if s2:
         aux = mode.aux_maps(cfg, inst, geom)
         snap['aux'] = None if not aux else [_h(a) for a in aux.values()]

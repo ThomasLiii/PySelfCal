@@ -13,13 +13,17 @@ polynomial along another axis — needs no Python::
     mosaic = "full"                         # full | no_wav | none
 
     [[model.sky]]
-    type = "continuum"
+    name = "continuum"                      # no coefficient: c = 1
 
     [[model.sky]]
-    type = "line"
-    name = "aromatic"
-    template = ".../aromatic_3p289.npz"     # or center_um + sigma_um | center_um + intrinsic_var_um2 | catalog = "pah_3p29"
+    name = "aromatic"                       # a map times a coefficient c(v) of data variable(s)
+    coefficient = { variable = "wavelength", function = "template", file = ".../aromatic_3p289.npz" }
     damp_weight = 5e-3
+
+    [[model.sky]]
+    name = "mine"                           # any Python function of any data variables
+    coefficient = { variable = ["wavelength", "bandwidth"], function = "mypkg.shapes:smeared",
+                    params = { center = 3.3 } }
 
     [[model.offset]]
     map = "subchannel"                      # a chunk map of the instrument (omit: the primary)
@@ -35,9 +39,8 @@ polynomial along another axis — needs no Python::
     kind = "fixed"
     mean_zero = true
 
-The capability tags the model needs (a wavelength map for line terms, a
-spectral axis for polynomials along it) are checked against the instrument
-when the spec is built.
+Every name the model uses — data variables, chunk maps, chunk axes,
+catalogue entries — is checked against the instrument when the spec is built.
 """
 from selfcal.models.spec import ModelSpec
 
@@ -53,9 +56,6 @@ class ModelMode(CalMode):
         if not cfg.model:
             raise ValueError("mode = \"model\" needs a [model] table (sky terms, offset terms, scalar)")
         spec = ModelSpec.from_config(cfg.model)
-        missing = [c for c in spec.requires(geom) if c not in inst.capabilities]
-        if missing:
-            raise ValueError(f"the [model] needs instrument capabilities {missing} that {inst.name!r} "
-                             f"does not provide (has {sorted(inst.capabilities)})")
+        spec.check(geom, inst.coefficient_catalog())      # variables, maps, axes, catalogue entries exist
         self.mosaic_mode = spec.mosaic
         return spec

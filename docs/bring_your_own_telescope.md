@@ -119,7 +119,7 @@ mode = "model"
 scalar = true                                    # per-frame scalar
 
 [[model.sky]]
-type = "continuum"
+name = "continuum"                               # no coefficient: a constant sky
 
 [[model.offset]]                                 # free per-frame offsets on the chunk grid
 kind = "free"
@@ -138,9 +138,20 @@ damp = 0.3                                       # Tikhonov prior toward 0
 Offset term kinds: `free` (one unknown per frame and chunk), `polybasis` (the offset IS a Chebyshev
 polynomial along an axis, one per value of another axis), `fixed` (one vector for all frames),
 `grouped` (one per frame group). Priors: `reg_weight` + `adjacency` (smoothness), `poly` (shape),
-`mean_zero` (anchor), `damp` (shrinkage). Sky terms: `continuum`, or `line` (a per-pixel amplitude of
-a spectral profile: a template, a Gaussian, or the instrument's catalogue) for instruments with a
-per-pixel wavelength map. Full vocabulary: `selfcal_scripts/configs/README.md`.
+`mean_zero` (anchor), `damp` (shrinkage). Sky terms: a map times an optional coefficient, which is
+any function of data variables the instrument provides for every observation:
+
+```toml
+[[model.sky]]
+name = "mine"
+coefficient = { variable = "u", function = "mypkg.shapes:my_shape", params = { power = 2.0 } }
+```
+
+where `my_shape(u, power)` is your own function of the per-observation values of `u` (built-in
+shapes `template`, `gaussian`, `linear` need no code). The variables come from the instrument's
+`DetectorGeometry.aux` maps; the `grid` instrument provides none, a subclass adds them (below).
+`tests/test_sky_coefficients.py` recovers such a term end to end. Full vocabulary:
+`selfcal_scripts/configs/README.md`.
 
 ## 3. With code: subclass `Instrument`
 
@@ -174,7 +185,8 @@ class MyCam(Instrument):
         cm = ChunkMap("grid", det, grid,
                       axes=ChunkAxes.row_major(("row", "col"), (8, 8), ("y", "x")),
                       adjacency_axes=("row", "col"))
-        return DetectorGeometry(shape=(2048, 2048), chunk_maps={"grid": cm}, primary="grid")
+        return DetectorGeometry(shape=(2048, 2048), chunk_maps={"grid": cm}, primary="grid",
+                                aux={"u": my_variable_map})   # data variables sky coefficients may read
 
     def job_geometry(self, cfg, geom, job):     # per-job validity weights
         ones = np.ones(geom.shape, dtype=np.float32)
@@ -183,7 +195,7 @@ class MyCam(Instrument):
 ```
 
 Optional hooks with defaults: `offset_renderer` (smooth chunk-to-pixel rendering for the mosaic),
-`aux_coadds` / `finalize_mosaic` (extra per-pixel maps to coadd), `line_catalog` (named sky models),
+`aux_coadds` / `finalize_mosaic` (extra per-pixel maps to coadd), `coefficient_catalog` (named coefficients),
 `hooks` (per-frame hook factories selectable in `[hooks]`), `postcal_hooks`, `data_unit`,
 `frame_groups` (groupings a `grouped` term can use; `"detector"` is provided), `precompute`.
 `selfcal/instruments/spherex/adapter.py` (spectral, non-rectangular chunks, wavelength maps) and
