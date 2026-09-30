@@ -24,6 +24,13 @@ What an instrument provides
   (a wavelength map for spectral fits; ``{}`` for broadband);
 * the **per-job geometry** (:class:`JobGeometry`): which pixels are valid for
   the job and the edge-taper weights the solve and the mosaic use;
+* **data variables** (:mod:`selfcal.models.variables`): detector maps
+  (``DetectorGeometry.aux``) and per-frame values (:meth:`frame_variables`:
+  time, filter, angle, ...) that the model's functions read by name, beside
+  the model's own variables and the built-ins (detector / sky coordinates);
+* an optional **exposure reader** (``ExposureLayout.reader``) for raw data
+  that is not a FITS image with a WCS, extra per-pixel planes, or detector
+  coordinates on a focal plane;
 * optional **hooks**: a smooth chunk->grid offset renderer for the mosaic,
   per-pixel maps to coadd with the data, a mosaic finaliser, a catalogue of
   named coefficients, post-calibration hooks (SPHEREx: the zodi anchor), the
@@ -183,13 +190,18 @@ class JobGeometry:
 class ExposureLayout:
     """How the reprojection stage reads a raw exposure file.
 
-    ``sci_ext`` / ``dq_ext``: the science and data-quality extensions of each
-    detector the file holds (``dq_ext=None``: no mask, all pixels valid);
-    ``detector_ids``: the detector index each entry yields; ``ref_use_ext``:
-    the extensions whose WCS define the reference frame; ``header_predicate``
-    keeps an exposure iff it returns True on the header of ``header_ext``
-    (``header_keys`` are the keys it reads, so the filter can be cached);
-    ``cache_tag`` names that cache."""
+    ``sci_ext`` / ``dq_ext``: the science and data-quality entries of each
+    detector frame the file holds (``dq_ext=None``: no mask, all pixels
+    valid) — FITS extension numbers for the default reader, anything the
+    instrument's ``reader`` understands otherwise (slice indices of a cube,
+    detector names, ...); ``detector_ids``: the detector index each entry
+    yields; ``ref_use_ext``: the entries whose WCS define the reference frame;
+    ``reader``: ``reader(path, sci_ext, dq_ext, header_only=False) ->
+    selfcal.io.frames.ExposureData`` (values, WCS header + metadata, mask,
+    extra per-pixel planes, detector coordinates; ``None`` = FITS
+    extensions); ``header_predicate`` keeps an exposure iff it returns True on
+    the FITS header of ``header_ext`` (``header_keys`` are the keys it reads,
+    so the filter can be cached); ``cache_tag`` names that cache."""
     sci_ext: list[int]
     dq_ext: list[int] | None
     detector_ids: list[int]
@@ -199,6 +211,7 @@ class ExposureLayout:
     header_ext: int = 1
     cache_tag: str = 'exposures'
     default_ignore_bits: tuple[int, ...] = ()
+    reader: Callable | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +255,30 @@ class Instrument(ABC):
         specific one. ``None`` = block-constant (``chunk_to_det``)."""
         return None
 
+    def frame_variable_names(self, inst_cfg) -> tuple[str, ...]:
+        """Names of the frame variables :meth:`frame_variables` provides (used to
+        check a model before any frame is read)."""
+        return ('exposure', 'detector')
+
+    def frame_variables(self, frames, inst_cfg=None) -> dict:
+        """Per-frame data variables the instrument defines: ``{name: (n_frames,)
+        array}`` — one value per frame (time, filter, angle, temperature, ...),
+        broadcast over the frame's observations and usable by any model
+        function and as an offset grouping. Default: ``exposure`` and
+        ``detector``, the indices in each frame's file name. Override (keeping
+        the defaults) to read header keywords (``selfcal.io.frames.
+        frame_header_values``), tables or anything else."""
+        from ..io.reproj import parse_reproj_basename
+        idx = np.array([parse_reproj_basename(f) for f in frames], dtype=np.int64).reshape(-1, 2)
+        return {'exposure': idx[:, 0], 'detector': idx[:, 1]}
+
     def frame_groups(self, frames) -> dict:
         """Named per-frame groupings a grouped offset term can share an offset
-        over: ``{name: int array (n_frames,)}``. Default: ``'detector'`` = each
-        frame's detector index (from the reprojected frame's name)."""
-        from ..io.reproj import parse_reproj_basename
-        return {'detector': np.array([parse_reproj_basename(f)[1] for f in frames], dtype=np.int64)}
+        over: ``{name: int array (n_frames,)}``. Default: the instrument's
+        integer frame variables (``detector`` = each frame's detector index,
+        ``exposure``)."""
+        return {k: v for k, v in self.frame_variables(frames).items()
+                if np.asarray(v).dtype.kind in 'iu'}
 
     def hooks(self) -> dict:
         """Named per-frame hook factories a config can select in ``[hooks]``:

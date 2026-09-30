@@ -130,6 +130,9 @@ def compare(pa, pb):
         d['requires'] = tuple('spectral_axis' if r == 'subchannel' else r for r in d.get('requires', ()))
         if isinstance(d.get('x0'), str) and d['x0'].endswith('.x0'):
             d['x0'] = 'from_Ab' if d['x0'].startswith('K2') else 'scalar_only'
+        off = d.get('offset')                     # pre-S6 snapshots: no per-map offset bases
+        if isinstance(off, dict) and 'basis_list' not in off and 'chunk_maps' in off:
+            off['basis_list'] = ('list', [None] * len(off['chunk_maps'][1]))
     fails = []
     _eq(a, b, '', fails)
     for f in fails[:20]:

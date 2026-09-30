@@ -16,6 +16,7 @@ from reproject import reproject_interp, reproject_exact, reproject_adaptive
 
 from .. import _state
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
+from .frames import read_exposure
 from .reproj import reproj_basename
 
 logger = logging.getLogger(__name__)
@@ -63,11 +64,14 @@ def _reproject_worker(task_params):
     reproj_func_dict = {'exact': reproject_exact, 'interp': reproject_interp, 'adaptive': reproject_adaptive}
 
     try:
-        with fits.open(file_path) as hdul:
-            det_data = hdul[sci_ext].data
-            det_header = hdul[sci_ext].header
-            # dq_ext None: the instrument has no data-quality mask -> every pixel valid.
-            det_bitmask = hdul[dq_ext].data if dq_ext is not None else None
+        # The instrument's reader (default: FITS sci/DQ extensions) returns the
+        # values, the WCS header, the mask (None: every pixel valid), extra
+        # per-pixel planes and, optionally, the detector coordinates of every
+        # pixel (a focal plane, a windowed read-out).
+        exp = read_exposure(task_params.get('reader'), file_path, sci_ext, dq_ext)
+        det_data = exp.data
+        det_header = exp.header
+        det_bitmask = exp.mask
         det_height, det_width = np.shape(det_data)[-2:]
         det_header_str = det_header.tostring().encode('utf-8')
         det_wcs = WCS(det_header)
@@ -100,7 +104,12 @@ def _reproject_worker(task_params):
         # Process detector auxiliary data: the detector pixel coordinates (so
         # every reprojected pixel knows where it came from) and, when the
         # exposure carries a mask, its bit planes, all reprojected together.
-        det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_height))
+        if exp.coords is not None:
+            det_xmesh, det_ymesh = (np.asarray(c, dtype=np.float64) for c in exp.coords)
+            if det_xmesh.shape != (det_height, det_width) or det_ymesh.shape != (det_height, det_width):
+                raise ValueError(f"reader coords must be two {(det_height, det_width)} arrays")
+        else:
+            det_xmesh, det_ymesh = np.meshgrid(np.arange(det_width), np.arange(det_height))
         if det_bitmask is not None:
             det_expanded_mask = bit_to_bool(det_bitmask, expand_bits=True)
             det_aux = np.stack((det_xmesh, det_ymesh, *det_expanded_mask), axis=0)
@@ -138,6 +147,14 @@ def _reproject_worker(task_params):
             hf.create_dataset('sub_bitmask', data=sub_bitmask, dtype=np.int32, chunks=sub_bitmask.shape, **comp_args)
             hf.create_dataset('sub_mapping', data=sub_mapping, dtype=np.float32, chunks=sub_mapping.shape, **comp_args)
 
+            # Extra per-pixel planes of the exposure (reader layers): reprojected
+            # bilinearly like the coordinates, stored as layers/<name>.
+            for lname, plane in (exp.layers or {}).items():
+                sub_plane, _ = reproject_interp((np.asarray(plane, dtype=np.float64), det_wcs), sub_wcs,
+                                                shape_out=(sub_width, sub_width), order='bilinear')
+                hf.create_dataset(f'layers/{lname}', data=sub_plane.astype(np.float32), dtype=np.float32,
+                                  chunks=sub_plane.shape, **comp_args)
+
             # 2. Save Metadata as Attributes
             hf.attrs['sub_header'] = sub_header_str
             hf.attrs['det_header'] = det_header_str
@@ -162,7 +179,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
                     output_dir='output/', padding_percentage=0.05, num_processes=1,
                     sci_ext_list=None, dq_ext_list=None, reproj_func='interp', exp_idx_list=None, det_idx_list=None,
                     replace_existing=False, reproject_kwargs=None,
-                    per_task_extensions=False):
+                    per_task_extensions=False, reader=None):
     """Reproject individual exposures to bounding boxes in reference frame, output sored in HDF5 files.
 
     Parameters
@@ -195,6 +212,9 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
         List of integers defining the detector index in the exposure_list, if None, will use the index of the in fits file
     replace_existing : bool, optional
         If True, will overwrite existing files in the output directory, default is False
+    reader : callable or None, optional
+        The instrument's exposure reader (``selfcal.io.frames``); ``None`` reads
+        FITS extensions ``sci_ext`` / ``dq_ext``.
     per_task_extensions : bool, optional
         If False (default), tasks = exposures x zip(sci_ext_list, dq_ext_list)
         (cross-product, the legacy semantics — exp_idx_list is indexed per
@@ -248,22 +268,27 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     logger.info(f'Starting batch reprojection. Output will be saved to: {output_dir}')
     # Determine sub-frame width based on a sample detector frame
     try:
-        with fits.open(exposure_list[0]) as hdul_sample:
-            # Assuming first science extension is representative
-            sci_ext_0 = sci_ext_list[0] if len(sci_ext_list) > 0 else 1
-            if sci_ext_0 >= len(hdul_sample):
-                raise ValueError(f'Sample FITS {exposure_list[0]} does not have extension {sci_ext_0}')
-            det_data_0 = hdul_sample[sci_ext_0].data
-            det_wcs_0 = WCS(hdul_sample[sci_ext_0].header)
+        # Assuming first science extension is representative
+        sci_ext_0 = sci_ext_list[0] if len(sci_ext_list) > 0 else 1
+        if reader is None:
+            with fits.open(exposure_list[0]) as hdul_sample:
+                if sci_ext_0 >= len(hdul_sample):
+                    raise ValueError(f'Sample FITS {exposure_list[0]} does not have extension {sci_ext_0}')
+                det_shape_0 = hdul_sample[sci_ext_0].data.shape
+                det_wcs_0 = WCS(hdul_sample[sci_ext_0].header)
+        else:
+            sample = read_exposure(reader, exposure_list[0], sci_ext_0, None, header_only=True)
+            det_shape_0 = sample.frame_shape
+            det_wcs_0 = WCS(sample.header)
     except Exception as e:
-        raise ValueError(f'Could not read sample FITS file {exposure_list[0]} to determine detector properties: {e}')
+        raise ValueError(f'Could not read sample exposure {exposure_list[0]} to determine detector properties: {e}')
 
     ref_reso = np.abs(proj_plane_pixel_scales(ref_wcs)[0]) # Assuming square pixels
     det_reso = np.abs(proj_plane_pixel_scales(det_wcs_0)[0])
 
     reso_ratio = ref_reso / det_reso
     # Calculate sub_width needed to contain the diagonal of the detector frame after reprojection, plus padding
-    sub_width = int(np.ceil(np.sqrt(2) * np.max(det_data_0.shape) / reso_ratio * (1 + 2 * padding_percentage)))
+    sub_width = int(np.ceil(np.sqrt(2) * np.max(det_shape_0) / reso_ratio * (1 + 2 * padding_percentage)))
 
     def _make_task(file_path, sci_ext, dq_ext, exp_idx, det_idx):
         return {
@@ -278,6 +303,7 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
             'output_dir': output_dir,
             'replace_existing': replace_existing,
             'reproject_kwargs': reproject_kwargs,
+            'reader': reader,
         }
 
     tasks = []

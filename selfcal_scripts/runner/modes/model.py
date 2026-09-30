@@ -56,6 +56,7 @@ class ModelMode(CalMode):
         if not cfg.model:
             raise ValueError("mode = \"model\" needs a [model] table (sky terms, offset terms, scalar)")
         spec = ModelSpec.from_config(cfg.model)
-        spec.check(geom, inst.coefficient_catalog())      # variables, maps, axes, catalogue entries exist
+        # variables, maps, axes, catalogue entries, prior terms exist
+        spec.check(geom, inst.coefficient_catalog(), frame_variables=self.frame_variable_names(cfg, inst))
         self.mosaic_mode = spec.mosaic
         return spec

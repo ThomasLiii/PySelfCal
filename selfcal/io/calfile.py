@@ -197,6 +197,18 @@ class CalFile:
     def offset_coverage_frac(self) -> list[np.ndarray]:
         return self._per_map('offset_coverage_frac', 'offset_coverage_frac')
 
+    def offset_basis(self, m) -> tuple[int, str] | None:
+        """``(n_basis, description)`` when map ``m``'s offsets are coefficients of
+        ``n_basis`` known functions of data variables per chunk (columns
+        ``chunk * n_basis + k``), else None (plain per-chunk offsets)."""
+        f = self._f
+        if 'offsets' not in f or f'map_{m}' not in f['offsets']:
+            return None
+        a = f['offsets'][f'map_{m}'].attrs
+        if 'n_basis' not in a:
+            return None
+        return int(a['n_basis']), _decode(a.get('basis', ''))
+
     @property
     def chunk_maps(self) -> list[np.ndarray]:
         """Per-map chunk maps stored with the cal (empty for the legacy schemas)."""

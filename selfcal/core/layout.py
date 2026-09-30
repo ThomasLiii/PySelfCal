@@ -73,7 +73,8 @@ class SystemLayout:
               det_groups_list: list[np.ndarray | None] | None = None,
               det_templates: list[np.ndarray | None] | None = None,
               use_per_frame_scalar: bool = False,
-              poly_basis_list: list[dict | None] | None = None) -> SystemLayout:
+              poly_basis_list: list[dict | None] | None = None,
+              basis_list: list | None = None) -> SystemLayout:
         """Compute the column layout from the setup inputs.
 
         ``det_groups_list`` / ``det_templates`` / ``poly_basis_list`` may be
@@ -111,6 +112,11 @@ class SystemLayout:
             Per-map hard polynomial-basis spec (with keys such as
             ``'num_groups'``) or ``None``; incompatible with ``det_groups_list``
             / ``det_templates`` for the same map.
+        basis_list : list | None, optional
+            Per-map :class:`~selfcal.models.offset_model.Basis` (``n`` functions
+            of data variables) or ``None``. A basis of ``n`` functions gives map
+            ``m`` ``n`` columns per chunk (``num_chunks := n_chunks * n``); ``n == 1``
+            leaves the layout unchanged.
 
         Returns
         -------
@@ -124,6 +130,8 @@ class SystemLayout:
             det_templates = [None] * K
         if poly_basis_list is None:
             poly_basis_list = [None] * K
+        if basis_list is None:
+            basis_list = [None] * K
 
         any_det_groups = any(g is not None for g in det_groups_list)
 
@@ -151,6 +159,11 @@ class SystemLayout:
                 det_template_arr_list.append(tmpl)
                 continue
             num_chunks_m = int(cm.max()) + 1
+            n_basis_m = 1 if basis_list[m] is None else int(basis_list[m].n)
+            if n_basis_m > 1:
+                if det_templates[m] is not None:
+                    raise ValueError(f"basis[{m}] of {n_basis_m} functions is incompatible with a template")
+                num_chunks_m *= n_basis_m
             if det_groups_list[m] is not None:
                 det_groups_arr = np.asarray(det_groups_list[m])
                 unique_groups, ftg = np.unique(det_groups_arr, return_inverse=True)

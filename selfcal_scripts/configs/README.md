@@ -123,15 +123,19 @@ after the first). Pass 1 is the `cal` task on the same config — tiled when
 overlapping tiles are de-duplicated first-tile-wins). A re-run resumes: passes
 whose product exists are skipped.
 
-## The model: sky terms + offset terms
+## The model: variables, sky terms, offset terms, priors
 
-Every calibration fits ``data(frame, pixel) = Σ_j S_j(pixel)·c_j(v) + Σ_m O_m(frame, chunk) + s(frame)``.
-The **S terms** are per-pixel maps, each times a known multiplicative coefficient `c_j(v)`: any
-function of data variables `v` the instrument provides for every observation (SPHEREx:
-`wavelength`, `bandwidth`). A term without a coefficient is a constant sky. The **O terms** are
-per-frame offset blocks on the instrument's chunk maps, ``s`` the per-frame scalar. Each term carries its own priors and constraints. The named modes below are
-*presets* of that model; ``mode = "model"`` spells it out in a ``[model]`` table so a new
-combination needs no Python:
+Every calibration fits, for each observation (one value of one frame on one reference pixel `P`),
+
+```
+data = Σ_j S_j[P]·c_j(v) + Σ_m Σ_k O_m[g_m(frame), chunk_m, k]·φ_mk(v) + s(frame)
+```
+
+The **S terms** are per-pixel maps, each times a known coefficient `c_j(v)`; the **O terms** are
+offsets on the instrument's chunk maps, shared by groups of frames, optionally times known
+functions `φ_mk(v)`; `s` is the per-frame scalar. `v` are **data variables**: named
+per-observation quantities from any source (below). Each term carries its own priors. The named
+modes are *presets* of this model; `mode = "model"` spells it out in a `[model]` table:
 
 ```toml
 mode = "model"
@@ -139,6 +143,11 @@ mode = "model"
 [model]
 scalar = true                     # per-frame scalar (the offset's DC)
 mosaic = "full"                   # full | no_wav | none
+weight = { variable = "variance", function = "mypkg.noise:inverse_sigma" }   # optional
+
+[model.variables]                 # data variables beyond the instrument's (see the table below)
+time     = { header = "MJD-AVG" }
+variance = { layer = "variance" }
 
 [[model.sky]]
 name = "continuum"                # no coefficient: c = 1 (default damping [calibration].damp_weight)
@@ -149,13 +158,13 @@ coefficient = { variable = "wavelength", function = "template", file = ".../arom
 damp_weight = 5e-3                # prior: Tikhonov shrinkage of this map
 
 [[model.sky]]
-name = "mine"                     # ANY Python function of any data variable(s)
-coefficient = { variable = ["wavelength", "bandwidth"], function = "mypkg.shapes:smeared",
-                params = { center = 3.3 } }
+name = "annual"                   # ANY Python function of any data variable(s)
+coefficient = { variable = "time", function = "mypkg.season:sine", params = { period = 365.25 } }
 
 [[model.offset]]
-map = "subchannel"                # a chunk map of the instrument (omit: the primary map)
-kind = "free"                     # free (per frame & chunk) | polybasis (Chebyshev along an axis) | fixed (shared by all frames)
+name = "chunks"                   # how priors refer to the term (default: the map's name)
+map = "subchannel"                # a chunk map of the instrument (omit: the primary; "detector": one chunk)
+kind = "free"                     # free | fixed | grouped (+ groups = <frame variable>) | polybasis
 reg_weight = 0.1                  # smoothness between neighbouring chunks
 adjacency = ["column"]            # along which axes chunks are neighbours (omit: the map's default)
 mean_zero = true                  # anchor: the per-frame mean over chunks is 0
@@ -166,22 +175,44 @@ poly = [ { axis = "column", degree = 1, weight = 0.5 },                  # soft 
 map = "readout"
 kind = "fixed"                    # one offset vector shared by every frame (detector-fixed pattern)
 mean_zero = true
+
+[[model.offset]]                  # a per-frame 2-D gradient: n known functions of variables
+map = "detector"
+kind = "free"
+basis = { variable = ["det_x", "det_y"], function = "mypkg.shapes:plane", n = 2 }
+
+[[model.prior]]                   # any linear rows on the unknowns of named terms
+term = "chunks"
+function = "frame_smoothness"     # ready-made (selfcal.models.priors) or "mypkg.mod:fn"
+variable = "time"
+weight = 0.2
 ```
 
-Term vocabulary — `kind = "free"`: `reg_weight` + `adjacency` (smoothness), `poly` (shape),
-`mean_zero` (anchor); `kind = "polybasis"`: `axis`, `group_axis` (defaults: the map's spectral and
-group axes), `degree`, `lo`, `hi`, `segments`; `kind = "fixed"`: as `free`, one vector for all
-frames; `kind = "grouped"`: one vector per frame group `groups` (the instrument's frame groupings;
-every instrument provides `"detector"`). Any term: `damp` (Tikhonov damping toward 0),
-`exact_group_rows` (fixed/grouped: anchor + adjacency rows once per group), `render` (which of the
-instrument's mosaic renderers draws it).
+**Data variables** — the built-ins `det_x`, `det_y` (detector position), `sky_x`, `sky_y`
+(reference pixel), `frame` (index); the instrument's detector maps (`DetectorGeometry.aux`;
+SPHEREx `BC`, `BW`, aliases `wavelength`, `bandwidth`) and frame values
+(`Instrument.frame_variables`; every instrument has `exposure` and `detector`); and the model's
+own, one `[model.variables]` entry each:
 
-Sky terms: `name`, `damp_weight`, and an optional `coefficient` — `variable` (a data variable, or a
-list of them: a key of the instrument's per-observation maps or an alias, `wavelength` /
-`bandwidth` on SPHEREx) and `function`, which is one of
+| form | one value per |
+| --- | --- |
+| `{ header = "KEY", default = ... }` — a keyword of each frame's stored header | frame |
+| `{ per_frame = "pkg.mod:fn" }` — `fn(frames, **params)`; with `inputs = [...]`, `fn(*frame variables)` | frame |
+| `{ detector = "pkg.mod:fn" \| "map.npy" \| "map.fits" }` — `fn(geom, **params)` | detector pixel |
+| `{ sky = "pkg.mod:fn" \| "map.npy" \| "map.fits" }` — `fn(ref_wcs, ref_shape, **params)` | reference pixel |
+| `{ sky_cal = "cal.h5", term = "continuum" }` — a solved sky | reference pixel |
+| `{ layer = "name" }` — the frame file's `layers/<name>` (written by an exposure reader) | observation |
+| `{ function = "pkg.mod:fn", inputs = [...] }` — `fn(*inputs, **params)` | observation |
+| `{ frame_function = "pkg.mod:fn" }` — `fn(frame, **params)`, the frame's data, coordinates, header | observation |
+
+Every form takes `params = {...}`.
+
+**Sky terms**: `name`, `damp_weight`, and an optional `coefficient` — `variable` (a data variable
+or a list of them) and `function`, which is one of
 - `"package.module:name"` — any importable Python function, called `f(*variables, **params)` with
   one array per variable (the values at every observation) and returning the coefficient per
-  observation (a scalar is broadcast); parameters go in `params = {...}`;
+  observation (a scalar is broadcast); parameters go in `params = {...}`; omitted = the variable
+  itself;
 - `"template"` — a tabulated function (linear interpolation, zero outside): inline `x` / `y`, or
   `file` (npz with `x` / `y`, or keys `x_key` / `y_key`; the SPHEREx template files' `center_um` /
   `G_peaknorm` are found automatically, `norm = "area"` selects `G`);
@@ -191,8 +222,36 @@ list of them: a key of the instrument's per-observation maps or an alias, `wavel
 
 or `coefficient = { catalog = "<name>", <overrides> }` for a named coefficient of the instrument
 (SPHEREx: `pah_3p29`, overrides `center`, `sigma`).
+
+**Offset terms** — `kind = "free"`: an offset per frame and chunk; `"fixed"`: one vector for all
+frames; `"grouped"`: one per group of frames with equal values of `groups` (any frame variable);
+`"polybasis"`: `axis`, `group_axis` (defaults: the map's spectral and group axes), `degree`,
+`lo`, `hi`, `segments`. Any kind may carry `coefficient` (one known function of data variables
+multiplying the offset at every observation) or — except polybasis — `basis`
+(`{variable, function, params, n}`: the unknowns are one coefficient per group × chunk ×
+function; `function` returns `n` arrays or an `(n_obs, n)` array). Priors: `reg_weight` +
+`adjacency` (smoothness), `poly` (shape), `mean_zero` (anchor; per function for a basis; it sums
+over every chunk of the map, so a term whose groups observe different parts of the map is better
+anchored by `damp`), `damp` (Tikhonov toward 0), `exact_group_rows` (fixed/grouped: anchor +
+adjacency rows once per group), `render` (which of the instrument's mosaic renderers draws it).
+
+**weight** — a function of data variables multiplying every observation's weight.
+
+**Priors** — `[[model.prior]]`: `term` (or `terms` = several: sky-term names, offset-term names,
+`scalar`), `function`, `weight`, and the function's parameters. The function receives one
+`selfcal.models.priors.TermInfo` per term (unknowns' shape and coverage, frame → group map,
+the solve's variables, chunk axes, `index(...)` → global unknown ids) and returns
+`(rows, cols, vals, rhs)`. Ready-made: `frame_smoothness` (`variable`, `power`,
+`covered_only`), `sky_smoothness` (`covered_only`), `toward_variable` (`variable`).
+
+**Grouped clip** — `[calibration] outlier_group_variable = "<data variable>"` and
+`outlier_group_edges = [...]`: each observation is judged against its own group's distribution
+(SPHEREx: the band-centre map binned into subchannels).
+
 The axes named here are the ones the instrument's chunk map declares (SPHEREx: `subchannel`,
-`column`; the `grid` instrument: `row`, `col`). Implementation: `selfcal.models.spec`.
+`column`; the `grid` instrument: `row`, `col`). Implementation: `selfcal.models.spec`,
+`selfcal.models.variables`, `selfcal.models.priors`. Worked examples of every kind of term:
+`tests/test_any_telescope.py` and `docs/bring_your_own_telescope.md`.
 
 ## Modes (presets of the model)
 

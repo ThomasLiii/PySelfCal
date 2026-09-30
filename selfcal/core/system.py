@@ -274,7 +274,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                sky_model: SkyModel | None = None,
                compact_zero_columns: bool = True,
                sky_rhs_moments: bool = False,
-               batch_spill_dir: str | None = None) -> SetupResult:
+               batch_spill_dir: str | None = None,
+               basis_list: list | None = None,
+               variables=None,
+               weight_function=None,
+               priors: list | None = None,
+               outlier_group_variable: str | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
@@ -410,26 +415,48 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Same normal equations; nnz drops from frames×pairs to groups×pairs.
         Only useful for det-grouped maps (a per-frame map has k = 1).
     det_aux : list of np.ndarray or None, optional
-        Detector-grid auxiliary maps ``[BC_map]`` (optionally ``[BC_map, BW_map]``)
-        required by a spectral ``sky_model`` to evaluate the line coefficient per
-        sub-pixel.
+        Detector-grid maps sampled at every observation — the *detector* data
+        variables (SPHEREx: its band-centre and band-width maps), named by
+        ``aux_keys`` (default: the sky model's variables in order).
+    aux_keys : list of str or None, optional
+        The names of the ``det_aux`` maps.
+    outlier_aux_key : str or None, optional
+        Historical name of ``outlier_group_variable``.
     spectral_fit : bool, optional
-        Deprecated shim: when True, lowers to a continuum+PAH-Gaussian
-        ``SkyModel``. Prefer passing ``sky_model=`` explicitly.
-    line_center : float or None, optional
-        Line-center wavelength for the ``spectral_fit`` shim.
-    line_sigma : float or None, optional
-        Line Gaussian sigma for the ``spectral_fit`` shim.
+        Removed: raises. Pass ``sky_model=``.
+    line_center, line_sigma : float or None, optional
+        Ignored (historical; the model carries its coefficients).
     damp_weight_line : float or None, optional
-        Damping weight for spectral (line) sky blocks; defaults to
-        ``3 * damp_weight`` when a spectral model is active.
+        Damping weight of the sky terms after the first that set none of their
+        own; defaults to ``3 * damp_weight`` when there are several terms.
     sky_model : SkyModel or None, optional
-        Forward-looking sky-model object driving per-pixel sky row emission;
-        defaults to continuum-only (or continuum+PAH when ``spectral_fit``).
+        The sky terms (each a map times a coefficient of data variables);
+        defaults to one constant term.
     batch_spill_dir : str or None, optional
         Directory for streaming each batch's bulk COO arrays to page-cache-backed
         files instead of SharedMemory (see the note above); ``None`` keeps the
         pure-SharedMemory behavior.
+    basis_list : list or None, optional
+        Per-map :class:`~selfcal.models.offset_model.Basis` (``n`` known
+        functions of data variables multiplying the map's offsets; see
+        ``OffsetBlock.basis``) or ``None``.
+    variables : selfcal.models.variables.VariableSet or None, optional
+        Data-variable sources beyond ``det_aux``: per-frame values, reference-
+        grid maps, stored layers, derived variables, frame functions (and more
+        detector maps). Every function of the model reads variables by name.
+    weight_function : object or None, optional
+        A function of data variables (``evaluate(obs) -> per-observation
+        array``, e.g. a ``Coefficient``) multiplying every observation's
+        weight (an inverse-variance weight from a stored variance layer, a
+        per-frame quality weight, ...).
+    priors : list of callable or None, optional
+        User prior rows: each ``prior(info)`` (``info`` a :class:`SystemInfo`:
+        the column layout and the per-column coverage) returns a
+        ``ConstraintBlock`` (or ``(rows_local, cols, data, b)``) or ``None``;
+        appended after the built-in constraint blocks.
+    outlier_group_variable : str or None, optional
+        The data variable the grouped clip bins with ``outlier_group_edges``
+        (the historical spelling is ``outlier_aux_key``).
 
     Returns
     -------
@@ -485,6 +512,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return [fill] * K if x is None else x
 
     reg_weights = _default(reg_weights, 0.0)
+    basis_list = _default(basis_list, None)
     adj_infos = _default(adj_infos, None)
     poly_constraints_list = _default(poly_constraints_list, None)
     mean_offsets_list = _default(mean_offsets_list, None)
@@ -533,7 +561,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                       ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates),
-                      ('poly_basis_list', poly_basis_list)):
+                      ('poly_basis_list', poly_basis_list),
+                      ('basis_list', basis_list)):
         if len(arr) != K:
             raise ValueError(f"{name} must have length {K} (got {len(arr)})")
     if damp_offset_maps is not None:
@@ -553,44 +582,82 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     num_sky = ref_h * ref_w
     num_frames = len(file_list)
 
-    # --- Spectral-fit mode: 2-block sky (continuum + line amplitude per pixel) ---
-    # When spectral_fit is True, the sky block grows from num_sky to 2*num_sky:
-    # x[:num_sky] is the continuum sky map, x[num_sky:2*num_sky] is the line
-    # amplitude map (PAH 3.29 μm by default). The data row for one observation
-    # of ref pixel P at LVF wavelength λ_i gains a second sky nnz:
+    # --- Sky model ---
+    # J sky terms: the sky block is J * num_sky columns, one map per term. The
+    # data row of observation i of reference pixel P carries one nnz per term,
     #
-    #   data_i = w_i * (sky_cont[P] + G(λ_i) * sky_line[P]) + offsets + scalar
+    #   data_i = w_i * Σ_j c_j(v_i) * S_j[P] + offsets + scalar,
     #
-    # where G(λ) is the Gaussian line profile (peak = 1 at line_center,
-    # sigma = line_sigma). λ_i is sampled per (frame, sub-pixel) via the
-    # det_aux plumbing: BC_map must be passed as det_aux[0]. Optionally
-    # det_aux[1] = BW_map gives per-pixel σ (mixed with PAH intrinsic).
-    # --- Sky model resolution ---
-    # sky_model= is the forward-looking API; the spectral_fit flag (+
-    # line_center / line_sigma) is a deprecated shim that lowers to the
-    # equivalent SkyModel, so callers using the flags get an identical system
-    # to passing that model explicitly. The model's components drive the
-    # per-pixel sky row emission in the worker (continuum -> J=1 identity
-    # fast path; +line -> interleave with the profile coefficient).
+    # with c_j any function of the observation's data variables v_i (detector
+    # maps, frame values, sky maps, stored layers, functions of those — see
+    # selfcal.models.variables); a constant term has c = 1 (the J=1 identity
+    # fast path in the worker).
     if spectral_fit:
         raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
                          "(an explicit SkyModel with the line component).")
     if sky_model is None:
         sky_model = SkyModel.continuum_only()
     num_sky_blocks = sky_model.n_blocks
-    # det_aux is positional; aux_keys names the entries: the data variables the
-    # sky terms' coefficients read (sampled at every observation). The
-    # historical default is ['BC', 'BW'].
+    # --- Data variables ---
+    # det_aux is positional; aux_keys names the entries (detector maps sampled
+    # at every observation). Unnamed maps take the sky model's variable names
+    # in order. `variables` adds every other source (per-frame values, sky
+    # maps, stored layers, derived variables, frame functions) and more
+    # detector maps, which join det_aux.
+    from ..models.variables import BUILTIN_VARIABLES, VariableSet
+    if variables is None:
+        variables = VariableSet()
     if aux_keys is None:
-        aux_keys = ['BC', 'BW'][:len(det_aux)] if det_aux is not None else []
+        if det_aux is not None:
+            # Unnamed maps are the sky model's variables in order; any beyond
+            # those are unused by the model and get neutral names.
+            names = list(sky_model.variables)
+            aux_keys = [names[i] if i < len(names) else f'aux{i}' for i in range(len(det_aux))]
+        else:
+            aux_keys = []
     else:
         aux_keys = list(aux_keys)
         if det_aux is not None and len(aux_keys) != len(det_aux):
             raise ValueError(f"aux_keys {aux_keys} does not match the {len(det_aux)} det_aux maps")
-    missing = [v for v in sky_model.required_variables if v not in aux_keys]
-    if missing:
-        raise ValueError(f"the sky terms' coefficients read the data variables {missing}, which are "
-                         f"not supplied (det_aux / aux_keys give {aux_keys})")
+    if variables.detector:
+        clash = [k for k in variables.detector if k in aux_keys]
+        if clash:
+            raise ValueError(f"detector variables {clash} are given both in det_aux and in variables")
+        det_aux = list(det_aux or []) + [np.asarray(variables.detector[k]) for k in variables.detector]
+        aux_keys = aux_keys + list(variables.detector)
+    if outlier_group_variable is not None:
+        if outlier_aux_key is not None and outlier_aux_key != outlier_group_variable:
+            raise ValueError("give outlier_group_variable or outlier_aux_key, not both")
+        outlier_aux_key = outlier_group_variable
+    if outlier_subchannel_edges is not None and outlier_aux_key is None:
+        raise ValueError("outlier_group_edges needs outlier_group_variable: the data variable the "
+                         "grouped clip bins")
+    available = set(aux_keys) | set(variables.names) | set(BUILTIN_VARIABLES)
+    wanted = {'the sky terms': list(sky_model.required_variables)}
+    for m, bm in enumerate(basis_list):
+        if bm is not None:
+            wanted[f'offset map {m}'] = list(bm.main_variables)
+    if weight_function is not None:
+        wanted['the observation weight'] = list(getattr(weight_function, 'main_variables', ()))
+    if outlier_subchannel_edges is not None:
+        wanted['the grouped clip'] = [outlier_aux_key]
+    for who, names in wanted.items():
+        missing = [v for v in names if v not in available]
+        if missing:
+            raise ValueError(f"{who} read the data variables {missing}, which are not supplied "
+                             f"(available: {sorted(available)})")
+    for name, d in variables.derived.items():
+        missing = [v for v in d.inputs if v not in available]
+        if missing:
+            raise ValueError(f"derived variable {name!r} reads {missing}, which are not supplied")
+    for name, vals in variables.frame.items():
+        if np.shape(vals) != (len(file_list),):
+            raise ValueError(f"frame variable {name!r} has shape {np.shape(vals)}, expected "
+                             f"({len(file_list)},) — one value per frame")
+    for name, m_ in variables.sky.items():
+        if tuple(np.shape(m_)) != tuple(ref_shape):
+            raise ValueError(f"sky variable {name!r} has shape {np.shape(m_)}, expected the "
+                             f"reference grid {tuple(ref_shape)}")
     if num_sky_blocks > 1:
         # Terms after the first default to their own damping weight
         # damp_weight_line (a varying coefficient has a smaller average than
@@ -599,8 +666,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             damp_weight_line = 3.0 * damp_weight
         logger.info(f"Sky model: {num_sky_blocks} terms {sky_model.names}, "
                     f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
-    if outlier_aux_key is None:
-        outlier_aux_key = 'BC'
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
@@ -612,7 +677,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list)
+        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list,
+        basis_list=basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
@@ -670,6 +736,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'outlier_aux_key': outlier_aux_key,
         'line_center': line_center,
         'line_sigma': line_sigma,
+        'basis_list': basis_list if any(b is not None for b in basis_list) else None,
+        'weight_function': weight_function,
+        'layer_names': tuple(variables.layers),
+        'derived_variables': dict(variables.derived) or None,
+        'frame_functions': dict(variables.frame_functions) or None,
     }
 
     # Move large arrays to shared memory so forked processes can access them
@@ -702,6 +773,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         common_params['det_aux_metas'] = det_aux_metas
         common_params['det_aux'] = None  # populated by worker from SHM
 
+    if variables.sky:
+        # Reference-grid variable maps, read at each observation's sky pixel.
+        sky_var_metas = {}
+        for vname, arr in variables.sky.items():
+            arr_f = np.ascontiguousarray(arr, dtype=np.float32)
+            shm_sv = SharedMemory(create=True, size=max(arr_f.nbytes, 1))
+            np.ndarray(arr_f.shape, dtype=arr_f.dtype, buffer=shm_sv.buf)[:] = arr_f
+            shm_objects.append(shm_sv)
+            sky_var_metas[vname] = (shm_sv.name, arr_f.shape, arr_f.dtype)
+        common_params['sky_var_metas'] = sky_var_metas
+
     if grid_valid_weight is not None:
         shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)
         np.ndarray(grid_valid_weight.shape, dtype=grid_valid_weight.dtype, buffer=shm_gvw.buf)[:] = grid_valid_weight
@@ -728,9 +810,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         common_params['adj_info_list'] = None  # populated by worker from SHM
 
     all_individual_tasks = []
+    frame_vars = {k: np.asarray(v) for k, v in variables.frame.items()}
     for index, reproj_file in enumerate(file_list):
         task_params = {'index': index, 'reproj_file': reproj_file}
         task_params.update(common_params)
+        if frame_vars:
+            task_params['frame_values'] = {k: v[index] for k, v in frame_vars.items()}
         all_individual_tasks.append(task_params)
 
     _spill_run_dir = None
@@ -1154,10 +1239,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
             continue
         logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
+        _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
         constraint_blocks.append(mean_offset_block(
             m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
             col_bases, weight=constraint_weight,
-            group_rows=mean_offset_group_rows).as_dict())
+            group_rows=mean_offset_group_rows, n_basis=_nb).as_dict())
 
     # --- Grouped adjacency (maps in group_adjacency_maps) ---
     # Same conditions as the worker-side per-frame rows it replaces.
@@ -1208,6 +1294,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if blk is not None:
             constraint_blocks.append(blk.as_dict())
 
+
+    # --- User priors (any linear rows on the unknowns), after the built-ins ---
+    if priors:
+        from .constraint_builders import SystemInfo, as_constraint_block
+        info = SystemInfo(layout=layout, pixel_counts=pixel_counts, sky_names=tuple(sky_model.names))
+        for i, prior in enumerate(priors):
+            blk = as_constraint_block(prior(info), total_cols, name=getattr(prior, 'name', f'prior {i}'))
+            if blk is None:
+                continue
+            logger.info(f"Applying prior {getattr(prior, 'name', i)}: {blk.num_rows} rows")
+            constraint_blocks.append(blk.as_dict())
 
     # These slices are views: left alive they would pin the whole
     # pixel_counts array through the CSR build even after it is spilled.

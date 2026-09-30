@@ -225,7 +225,7 @@ def run_reprojection(cfg):
     rr = pipeline_wrapper.Reprojector(ctx.pipeline_config, exposure_list=exposure_list)
     rr.define_reference(padding_pixels=r.get('padding_pixels', 100),
                         use_ext=r.get('use_ext', list(layout.ref_use_ext)),
-                        source_ref_path=r.get('source_ref_path'))
+                        source_ref_path=r.get('source_ref_path'), reader=layout.reader)
 
     sci_ext_list = r.get('sci_ext_list', list(layout.sci_ext))
     dq_ext_list = r.get('dq_ext_list', layout.dq_ext)      # None: no mask extension, every pixel valid
@@ -241,7 +241,8 @@ def run_reprojection(cfg):
                      exp_idx_list=np.arange(0, len(exposure_list)),
                      det_idx_list=list(layout.detector_ids),
                      replace_existing=r.get('replace_existing', False),
-                     reproject_kwargs={'parallel': inner_parallel})
+                     reproject_kwargs={'parallel': inner_parallel},
+                     reader=layout.reader)
     if r.get('check', False):
         # Load-test every frame; broken ones are quarantined and logged.
         rr.check_reproj_files(quarantine=True)

@@ -240,11 +240,27 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
     if frames is not None:
         cc.reproj_list = list(frames)
     n_frames = len(cc.reproj_list)
-    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames, frames=cc.reproj_list)
+    # The model's data variables beyond the instrument's detector maps (frame
+    # values, sky maps, stored layers, functions) — None for the historical recipes.
+    variables = mode.build_variables(cfg, inst, geom, cc.reproj_list, ref_shape=cc.ref_shape,
+                                     ref_wcs=cc.ref_wcs)
+    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames, frames=cc.reproj_list,
+                                           variables=variables)
     sky_model = mode.build_sky_model(cfg, inst, geom)
     det_aux, aux_keys = ctx.aux_maps()
     cal_kwargs = dict(ctx.cal_kwargs)
     cal_kwargs.update(mode.setup_kwargs(cfg, inst, geom))     # the model's extra solver options (if any)
+    if variables is not None:
+        cal_kwargs['variables'] = variables
+    weight_function = mode.build_weight(cfg, inst, geom)
+    if weight_function is not None:
+        cal_kwargs['weight_function'] = weight_function
+    priors = mode.build_priors(cfg, inst, geom, variables, n_frames)
+    if priors:
+        cal_kwargs['priors'] = priors
+    # The grouped clip bins the instrument's wavelength map unless the config
+    # names another data variable ([calibration].outlier_group_variable).
+    clip_variable = None if cal_kwargs.get('outlier_group_variable') else geom.wavelength_key
     pre = resolve_hook(cfg, inst, 'pre_cal')
     post = resolve_hook(cfg, inst, 'post_cal')
     if pre is not None:
@@ -261,7 +277,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
         sky_model=sky_model,
         det_aux=det_aux,
         aux_keys=aux_keys,
-        outlier_aux_key=geom.wavelength_key,
+        outlier_aux_key=clip_variable,
         batch_spill_dir=cfg.cache_dir,
         **cal_kwargs)
     checkpoint('post-setup_lsqr')
@@ -313,6 +329,14 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
               f"({int(keep.sum())} remain)")
     mosaic_kwargs = dict(cfg.mosaic)
     post = resolve_hook(cfg, inst, 'post_mosaic')
+    # Offset terms whose offsets are coefficients of known functions of data
+    # variables are not constant per chunk: the mosaic subtracts them at every
+    # observation (BasisOffsetSubtractor), and hands the chunk path zeros for
+    # them (plus the per-frame scalar on map 0, which the cal folds in there).
+    basis_hook = _basis_offset_hook(ctx, mm, cal_path, chunk_maps)
+    if basis_hook is not None:
+        from selfcal.pipeline.model_eval import ComposedHook
+        post = ComposedHook([basis_hook, post]) if post is not None else basis_hook
     if post is not None:
         mosaic_kwargs['postprocess_func'] = post
     # `wavelength_coadd` (default true) selects the instrument's aux coadds (the
@@ -354,6 +378,49 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir)
     return mos_path
+
+
+def _basis_offset_hook(ctx, mm, cal_path, chunk_maps):
+    """The mosaic's per-observation subtraction of the offset terms that carry
+    known functions of data variables (``coefficient`` / ``basis``), or None.
+    Rewrites those maps' entries of ``mm.offsets`` so the chunk path subtracts
+    only the per-frame scalar there."""
+    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
+    spec = mode.spec(cfg, inst, geom)
+    offset_model = spec.build_offset_model(geom, len(mm.reproj_list), log=lambda *a, **k: None,
+                                           catalog=inst.coefficient_catalog(),
+                                           frame_groups=_all_frame_groups(inst, cfg, mm.reproj_list),
+                                           frame_variables=mode.frame_variable_names(cfg, inst))
+    terms = [(m, b.basis, b.chunk_map) for m, b in enumerate(offset_model.blocks) if b.basis is not None]
+    if not terms:
+        return None
+    from selfcal.io.calfile import CalFile
+    from selfcal.pipeline.model_eval import BasisOffsetSubtractor
+    keep = [os.path.basename(p) for p in mm.reproj_list]
+    with CalFile(cal_path) as cal:
+        scalar = cal.frame_scalar
+        order = {os.path.basename(p): i for i, p in enumerate(cal.reproj_list)}
+    rows = np.array([order[k] for k in keep], dtype=np.int64)
+    for m, _, cm in terms:
+        n_chunks = int(np.asarray(chunk_maps[m]).max()) + 1
+        zeros = np.zeros((len(rows), n_chunks), dtype=np.float64)
+        if m == 0 and scalar is not None:
+            zeros += np.asarray(scalar)[rows][:, None]
+        mm.offsets[m] = zeros
+        mm.offset_coverage_fracs[m] = np.ones_like(zeros)
+    # The data variables over the mosaic's frames (the cal's, minus any without
+    # a reprojected file here); coefficients are looked up by the cal's order.
+    variables = mode.build_variables(cfg, inst, geom, list(mm.reproj_list), ref_shape=mm.ref_shape,
+                                     ref_wcs=mm.ref_wcs)
+    return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1,
+                                 frame_names=list(mm.reproj_list))
+
+
+def _all_frame_groups(inst, cfg, frames):
+    groups = dict(inst.frame_groups(frames))
+    for k, v in inst.frame_variables(frames, cfg.instrument_cfg).items():
+        groups.setdefault(k, v)
+    return groups
 
 
 # ---------------------------------------------------------------------------

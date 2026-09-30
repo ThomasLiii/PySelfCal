@@ -12,13 +12,23 @@ from .. import _state
 
 logger = logging.getLogger(__name__)
 
-def _load_det_wcs(fits_files, use_ext):
+def _load_det_wcs(fits_files, use_ext, reader=None):
+    """The WCS of every ``use_ext`` entry of every exposure: FITS headers, or the
+    headers an instrument's exposure reader returns (``selfcal.io.frames``)."""
     wcs_list = []
     files_to_process = fits_files
 
     for file_path in tqdm(files_to_process, desc='Loading corner WCS',
                           disable=not _state.progress_enabled):
         try:
+            if reader is not None:
+                from ..io.frames import read_exposure
+                for ext_idx in use_ext:
+                    exp = read_exposure(reader, file_path, ext_idx, None, header_only=True)
+                    w = WCS(exp.header)
+                    w.array_shape = exp.frame_shape
+                    wcs_list.append(w)
+                continue
             with fits.open(file_path) as hdul:
                 for ext_idx in use_ext:
                     wcs_list.append(WCS(hdul[ext_idx].header))
@@ -38,11 +48,12 @@ def _pad_wcs(wcs, shape, padding_pixels):
     return new_wcs, new_shape
 
 
-def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use_ext=(1, 10, 37, 46)):
+def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use_ext=(1, 10, 37, 46),
+                       reader=None):
     if not exposure_list:
         raise ValueError('No exposure files provided to define WCS.')
     logger.info('Defining optimal celestial WCS...')
-    wcs_list = _load_det_wcs(exposure_list, use_ext)
+    wcs_list = _load_det_wcs(exposure_list, use_ext, reader=reader)
     ref_wcs, ref_shape = find_optimal_celestial_wcs(wcs_list, resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
     ref_wcs, ref_shape = _pad_wcs(ref_wcs, ref_shape, padding_pixels)
     return ref_wcs, ref_shape
@@ -87,7 +98,7 @@ def projections_match(wcs_a, wcs_b, rtol=_PROJ_RTOL):
 
 
 def derive_reference_from(source_ref_path, exposure_list, padding_pixels=100,
-                          use_ext=(1,)):
+                          use_ext=(1,), reader=None):
     """Build a new ref WCS that shares the projection of ``source_ref_path``
     but is sized + recentered to contain ``exposure_list``.
 
@@ -114,7 +125,7 @@ def derive_reference_from(source_ref_path, exposure_list, padding_pixels=100,
     source_wcs, source_shape = load_from_fits(source_ref_path)
     logger.info(f'Deriving reference from {source_ref_path} '
                 f'(source shape {source_shape})')
-    wcs_list = _load_det_wcs(exposure_list, use_ext)
+    wcs_list = _load_det_wcs(exposure_list, use_ext, reader=reader)
 
     xs, ys = [], []
     for det_wcs in wcs_list:

@@ -138,22 +138,30 @@ class OffsetSubtractor:
 
 
 class SkySubtractor:
-    """Subtract a solved sky ``Σ_j S_j(p) c_j(λ)`` at each observation, for any
+    """Subtract a solved sky ``Σ_j S_j(p) c_j(v)`` at each observation, for any
     number of sky blocks.
 
     The J maps are exported once by the parent as ``.npy`` files and memory-
     mapped in each worker (page cache shared across the pool), so J large maps
     cost one copy, not one per worker. ``sky_model`` supplies the component
     names (``sky/<name>`` in the cal) and their coefficient functions;
-    ``aux_keys`` names the entries of the per-pixel aux list
-    (SPHEREx: ``('BC', 'BW')``).
+    ``aux_keys`` names the entries of the per-pixel aux list (default: the sky
+    model's variables in order). ``variables`` (a
+    :class:`~selfcal.models.variables.VariableSet`, frame values aligned with
+    ``frames``) lets the coefficients read every other kind of data variable
+    (per-frame values, sky maps, stored layers, functions); ``None`` keeps the
+    detector-map path.
     """
 
-    def __init__(self, sky_cal, sky_model, export_dir, aux_keys=("BC", "BW")):
+    def __init__(self, sky_cal, sky_model, export_dir, aux_keys=None, variables=None, frames=None):
         self.sky_cal = sky_cal
         self.sky_model = sky_model
         self.names = list(sky_model.names)
-        self.aux_keys = tuple(aux_keys)
+        self.aux_keys = tuple(sky_model.variables) if aux_keys is None else tuple(aux_keys)
+        self.variables = variables
+        self.frame_index = ({os.path.basename(f): i for i, f in enumerate(frames)}
+                            if frames is not None else None)
+        self._last = None
         self.export_dir = export_dir
         self.paths = {n: os.path.join(export_dir, f"{n}.npy") for n in self.names}
         self._maps = None
@@ -197,20 +205,46 @@ class SkySubtractor:
             on_map[ys:ye, xs:xe] = True
         return out, on_map
 
-    def coefficients(self, sub_aux, shape):
+    def coefficients(self, sub_aux, shape, ctx=None):
         """``c_j`` per subframe pixel for every term (None for a constant term)."""
-        aux = {k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys)
-               if sub_aux is not None and i < len(sub_aux)}
+        if self.variables is not None and ctx is not None:
+            from ..models.variables import FrameObservations, ObservationVariables
+            pixels = tuple(np.indices(shape).reshape(2, -1))
+            det = ({k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys) if i < len(sub_aux)}
+                   if sub_aux is not None else {})
+            i = (self.frame_index or {}).get(os.path.basename(ctx.file), 0)
+            v = self.variables
+            layers = {}
+            if v.layers:
+                from ..io.reproj import load_reproj_file
+                got = load_reproj_file(ctx.file, fields=[f'layers/{n}' for n in v.layers])
+                layers = {n: got[f'layers/{n}'] for n in v.layers}
+            fctx = (FrameObservations(file=ctx.file, index=i, pixels=pixels, ref_coords=ctx.ref_coords,
+                                      sub_data=ctx.sub_data, sub_weight=ctx.sub_weight,
+                                      sub_mapping=ctx.sub_mapping) if v.frame_functions else None)
+            aux = ObservationVariables(pixels, index=i, ref_coords=ctx.ref_coords, sub_mapping=ctx.sub_mapping,
+                                       detector=det, frame_values={k: np.asarray(a)[i] for k, a in v.frame.items()},
+                                       sky=v.sky, layers=layers, derived=v.derived,
+                                       frame_functions=v.frame_functions, context=fctx)
+        else:
+            aux = {k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys)
+                   if sub_aux is not None and i < len(sub_aux)}
         out = []
         for comp in self.sky_model.components:
             c = comp.coefficients(aux)
             out.append(None if c is None else np.asarray(c, dtype=np.float64).reshape(shape))
         return out
 
-    def predict(self, rc, shape, sub_aux):
-        """Total modelled sky ``Σ_j c_j S_j`` on the subframe grid (float64), and the on-map mask."""
+    def predict(self, rc, shape, sub_aux, ctx=None):
+        """Total modelled sky ``Σ_j c_j S_j`` on the subframe grid (float64), and the on-map mask.
+        Without ``ctx``, the prediction the last ``__call__`` made for the same
+        subframe is returned (the refit asks twice per frame)."""
+        last = self._last
+        if ctx is None and last is not None and last[3] is sub_aux and last[0] == (
+                tuple(np.asarray(rc).tolist()), tuple(shape)):
+            return last[1], last[2]
         maps, on_map = self.window(rc, shape)
-        coef = self.coefficients(sub_aux, shape)
+        coef = self.coefficients(sub_aux, shape, ctx=ctx)
         pred = None
         for m, c in zip(maps, coef):
             term = m.astype(np.float64) if c is None else m * c
@@ -219,7 +253,10 @@ class SkySubtractor:
 
     def __call__(self, ctx):
         sub_data = ctx.sub_data
-        pred, _ = self.predict(ctx.ref_coords, sub_data.shape, ctx.sub_aux)
+        pred, on_map = self.predict(ctx.ref_coords, sub_data.shape, ctx.sub_aux, ctx=ctx)
+        # (the same subframe's aux arrays, held so the identity check is sound)
+        self._last = ((tuple(np.asarray(ctx.ref_coords).tolist()), tuple(sub_data.shape)), pred, on_map,
+                      ctx.sub_aux)
         return sub_data - pred
 
 

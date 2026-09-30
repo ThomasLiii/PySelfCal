@@ -98,13 +98,29 @@ class CalMode:
         return self._spec[1]
 
     # ---- shared lowering ------------------------------------------------------------------
-    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames, frames=None):
+    @staticmethod
+    def frame_variable_names(cfg, inst):
+        """The instrument's frame-variable names (time, filter, ... ; default
+        ``exposure``, ``detector``)."""
+        return tuple(inst.frame_variable_names(cfg.instrument_cfg))
+
+    def build_offset_model(self, cfg, inst, geom, jobgeom, job, n_frames, frames=None, variables=None):
         """``frames``: the frame list (needed by grouped terms, which share an
-        offset over an instrument-defined frame grouping)."""
+        offset over the frames with equal values of a frame variable);
+        ``variables``: the solve's data variables (their frame variables are
+        groupings too)."""
         spec = self.spec(cfg, inst, geom)
-        groups = inst.frame_groups(frames) if frames is not None and any(
-            t.kind == 'grouped' for t in spec.offset) else None
-        return spec.build_offset_model(geom, n_frames, frame_groups=groups, log=self._log)
+        groups = None
+        if frames is not None and any(t.kind == 'grouped' for t in spec.offset):
+            groups = dict(inst.frame_groups(frames))
+            for k, v in inst.frame_variables(frames, cfg.instrument_cfg).items():
+                groups.setdefault(k, v)
+            if variables is not None:
+                for k, v in variables.frame.items():
+                    groups.setdefault(k, v)
+        return spec.build_offset_model(geom, n_frames, frame_groups=groups, log=self._log,
+                                       catalog=inst.coefficient_catalog(),
+                                       frame_variables=self.frame_variable_names(cfg, inst))
 
     def setup_kwargs(self, cfg, inst, geom):
         """Extra ``setup_lsqr`` options the model's priors imply (per-map damping,
@@ -112,12 +128,38 @@ class CalMode:
         return self.spec(cfg, inst, geom).setup_kwargs()
 
     def build_sky_model(self, cfg, inst, geom):
-        return self.spec(cfg, inst, geom).build_sky_model(geom, inst.coefficient_catalog(), log=self._log)
+        return self.spec(cfg, inst, geom).build_sky_model(
+            geom, inst.coefficient_catalog(), log=self._log,
+            frame_variables=self.frame_variable_names(cfg, inst))
 
     def aux_maps(self, cfg, inst, geom):
-        """The data variables the solve samples at every observation: all of the
-        instrument's when a sky term has a coefficient, none otherwise."""
-        return dict(geom.aux) if self.spec(cfg, inst, geom).has_coefficients else {}
+        """The detector maps the solve samples at every observation: all of the
+        instrument's when anything in the model reads data variables, none
+        otherwise."""
+        return dict(geom.aux) if self.spec(cfg, inst, geom).needs_variables else {}
+
+    def build_variables(self, cfg, inst, geom, frames, ref_shape=None, ref_wcs=None):
+        """The solve's data variables beyond the instrument's detector maps (a
+        :class:`~selfcal.models.variables.VariableSet`): the model's
+        ``[model.variables]`` and the instrument's frame variables. ``None`` when
+        the model reads none of them (the historical recipes)."""
+        spec = self.spec(cfg, inst, geom)
+        fnames = set(self.frame_variable_names(cfg, inst))
+        if not spec.variables and not (spec.referenced_variables() & fnames):
+            return None
+        fv = inst.frame_variables(frames, cfg.instrument_cfg)
+        return spec.build_variables(geom, frames, ref_shape=ref_shape, ref_wcs=ref_wcs,
+                                    frame_variables=fv, log=self._log)
+
+    def build_weight(self, cfg, inst, geom):
+        """The observation weight of the model (a function of data variables) or None."""
+        return self.spec(cfg, inst, geom).build_weight(
+            geom, inst.coefficient_catalog(), frame_variables=self.frame_variable_names(cfg, inst),
+            log=self._log)
+
+    def build_priors(self, cfg, inst, geom, variables, n_frames):
+        """The model's ``[[model.prior]]`` rows as ``setup_lsqr(priors=...)`` callables."""
+        return self.spec(cfg, inst, geom).build_priors(geom, variables=variables, n_frames=n_frames)
 
     def x0_kind(self, cfg, inst, geom):
         return self.spec(cfg, inst, geom).x0_kind
@@ -143,10 +185,11 @@ class CalMode:
         """(chunk_maps, offset renderers) for make_mosaic: every offset term's map
         on the reference grid; the primary map rendered by the instrument's
         smooth offset renderer, the others block-constant."""
+        from selfcal.models.spec import chunk_map_of
         spec = self.spec(cfg, inst, geom)
         maps, funcs = [], []
         for term in spec.offset:
-            cm = geom.chunk_maps[term.map] if term.map else geom.chunk_map
+            cm = chunk_map_of(term, geom)
             maps.append(cm.grid)
             funcs.append(inst.offset_renderer(cfg.instrument_cfg, geom, jobgeom,
                                               map_name=cm.name, render=term.render))

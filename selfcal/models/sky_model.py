@@ -6,14 +6,15 @@ one observation ``i`` of reference pixel ``P`` is::
     data_i = w_i * Σ_j c_j(v_i) * S_j[P]  +  offsets  +  scalar
 
 ``S_j`` (one value per reference pixel) is solved; ``c_j`` is a KNOWN function
-of variables ``v_i`` that the data provides for every observation — named
-per-observation quantities the instrument supplies (``DetectorGeometry.aux``,
-detector-plane maps sampled at each observation: SPHEREx gives its wavelength
-map ``BC`` and band-width map ``BW``). A term without a coefficient
-(``c = 1``) is a constant sky. Nothing here knows what a variable means: a
-coefficient that is a spectral template of the wavelength makes ``S_j`` the
-map of an emission feature, but the same machinery takes any function of any
-variable the instrument provides.
+of *data variables* ``v_i`` — named per-observation quantities from any source
+(:mod:`selfcal.models.variables`): detector maps sampled at each observation
+(SPHEREx: its wavelength map ``BC`` and band-width map ``BW``), per-frame
+values (time, filter, a half-wave-plate angle), reference-grid maps, planes
+stored with the frames, the built-in coordinates, or functions of those. A
+term without a coefficient (``c = 1``) is a constant sky. Nothing here knows
+what a variable means: a spectral template of the wavelength makes ``S_j`` the
+map of an emission feature, ``sin(2πt/P)`` of the time an annual modulation,
+``cos 2ψ`` of a polariser angle a Stokes map.
 
 A term's coefficient is a :class:`Coefficient`: the names of the variables it
 reads and the function applied to them. The function is any picklable
@@ -111,8 +112,18 @@ class Coefficient:
                 out.append(k)
         return tuple(out)
 
+    def describe(self) -> str:
+        """``function(variables)`` — how the coefficient reads, for logs and product metadata."""
+        f = self.function
+        if isinstance(f, ImportedFunction):
+            fname = f.path
+        else:
+            g = getattr(f, 'fn', f)
+            fname = getattr(g, '__qualname__', None) or type(g).__name__
+        return f"{fname}({', '.join(self.main_variables)})"
+
     def evaluate(self, obs: dict) -> np.ndarray:
-        """The coefficient at every observation of ``obs`` (a dict of equal-length arrays)."""
+        """The coefficient at every observation of ``obs`` (a mapping of equal-length arrays)."""
         f = self.function
         names = self.main_variables
         if hasattr(f, 'evaluate'):

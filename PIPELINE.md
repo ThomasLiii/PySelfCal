@@ -37,19 +37,24 @@ of this file explains what each knob *does*; the names match the TOML keys.
 
 ## Calibration model
 
-The selfcal model is per-pixel:
+The selfcal model is per observation (one value of frame `k` on reference pixel `p_i`):
 
 ```
-observed[i] = sky(p_i) + Σ_m offset^(m)[g_m(k), c_m(i)] + scalar[k] + noise
+observed[i] = Σ_j sky_j(p_i)·c_j(v_i) + Σ_m Σ_n offset^(m)[g_m(k), c_m(i), n]·φ_mn(v_i) + scalar[k] + noise
 ```
 
 where:
-- `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case).
-- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`).
+- `v_i` are the observation's **data variables** (detector maps such as SPHEREx's band centre,
+  per-frame values such as the time, reference-grid maps, stored layers, the built-in
+  coordinates, functions of those); `c_j` and `φ_mn` are any known functions of them
+  (`selfcal/models/variables.py`, `[model.variables]`).
+- `j` indexes **sky terms** (one map each; `c = 1` for a constant sky).
+- `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case); `φ = 1` (one function) is the classic chunk offset.
+- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`, or group by any per-frame value).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
 - `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / pahfit / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
-For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution.
+For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see `selfcal_scripts/configs/README.md` and `docs/bring_your_own_telescope.md`.
 
 ## Calibration pipeline tuning
 
@@ -386,6 +391,12 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 - `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int32 — pixel count per (frame, chunk)
 - `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float32 — fraction of chunk pixels actually covered per frame
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
+- a map whose offset term carries known functions of data variables (a `coefficient` or a
+  `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
+  num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the
+  function and its variables); `CalFile.offset_basis(m)` returns `(n, description)`. Such an
+  offset is not constant per chunk — the mosaic evaluates it per observation
+  (`selfcal.pipeline.model_eval.BasisOffsetSubtractor`).
 
 **Legacy schema (pre-multi-chunk-maps, still readable):**
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
@@ -395,9 +406,14 @@ Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` gro
 ## Reprojected `*.h5` schema
 
 Written by `Reprojector.run_reproject` (one file per (exposure,
-detector)). Filename pattern: `exp_{exp_idx:04d}_det_{det_idx:02d}.h5`;
-`load_reproj_file` parses the indices back out of the basename — keep the
-pattern stable. Compressed with Zstd + byte-shuffle via `hdf5plugin`.
+detector)), or directly by `selfcal.io.frames.write_frame` for data that do not
+come from a WCS imager — the file is the solver's input contract. Filename
+pattern: `exp_{exp_idx:04d}_det_{det_idx:02d}.h5`; `load_reproj_file` parses
+the indices back out of the basename — keep the pattern stable. Compressed
+with Zstd + byte-shuffle via `hdf5plugin`. Raw exposures are read through the
+instrument's exposure reader (`ExposureLayout.reader`, default: FITS science +
+DQ extensions), which may also return extra per-pixel planes and the
+detector coordinates of every pixel (a focal plane, a windowed read-out).
 
 Datasets:
 - `sub_data` `(sub_w, sub_w)` float32 — reprojected science image.
@@ -409,11 +425,20 @@ Datasets:
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
   the chunk map and (b) sample per-pixel `det_BC` / `det_BW` for the
-  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`).
+  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`). With a
+  reader that returns coordinates, these are the reader's (e.g. focal-plane)
+  coordinates.
+- `layers/<name>` `(sub_w, sub_w)` float32 — optional per-observation planes
+  (a variance, a per-frame wavelength map, ...) from the reader, reprojected
+  bilinearly; the source of *layer* data variables (`[model.variables]
+  name = { layer = "name" }`).
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
-  `load_reproj_file` reconstructs `sub_wcs` / `det_wcs` on demand.
+  `load_reproj_file` reconstructs `sub_wcs` / `det_wcs` on demand. The
+  keywords of `det_header` are the source of *header* frame variables
+  (`[model.variables] time = { header = "MJD-AVG" }`,
+  `selfcal.io.frames.frame_header_values`).
 - `file_path` (str) — path to the source FITS the subframe came from.
 - `ref_coords` `(4,)` int32 — `[y_min, y_max, x_min, x_max]` in the
   reference frame, where `sub_data` should be splatted back. Can extend

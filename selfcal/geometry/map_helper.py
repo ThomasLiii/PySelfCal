@@ -182,8 +182,14 @@ def chunk_to_det(chunk_map, chunk_data, needed=None):
     ``chunk_data[chunk_map].ravel()[needed]`` without the full-grid render.
     """
     if needed is not None:
-        return chunk_data[chunk_map.ravel()[needed]]
+        ids = chunk_map.ravel()[needed]
+        vals = chunk_data[ids]
+        if ids.size and ids.min() < 0:                # outside every chunk: no offset
+            vals = np.where(ids >= 0, vals, 0)
+        return vals
     det_offset = chunk_data[chunk_map]
+    if chunk_map.size and chunk_map.min() < 0:
+        det_offset = np.where(chunk_map >= 0, det_offset, 0)
     return det_offset
 
 def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
@@ -340,9 +346,17 @@ def _parse_chunk_map(chunk_map):
     chunk_map_flat = chunk_map.ravel()
     total_rows = chunk_map_flat.size
     total_cols = chunk_map_flat.max() + 1
-    indptr = np.arange(total_rows + 1)
-    indices = chunk_map_flat
-    data = np.ones(total_rows, dtype=np.float32)
+    inside = chunk_map_flat >= 0
+    if inside.all():
+        indptr = np.arange(total_rows + 1)
+        indices = chunk_map_flat
+        data = np.ones(total_rows, dtype=np.float32)
+    else:
+        # -1 marks pixels outside every chunk (a gap between detectors, a
+        # masked region): their rows stay empty.
+        indptr = np.concatenate([[0], np.cumsum(inside)])
+        indices = chunk_map_flat[inside]
+        data = np.ones(indices.size, dtype=np.float32)
     chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
 
     if len(_chunk_map_parsed_cache) > 8:

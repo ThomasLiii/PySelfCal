@@ -142,7 +142,12 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     extras : dict or None
         If given, receives ``extras['sub_mapping']`` (the raw detector
         coordinate map of the frame) for callers that need it after the
-        call, e.g. the coadd's band-centre/width sampling.
+        call, e.g. the coadd's band-centre/width sampling. When it holds
+        ``extras['layers']`` (names), those per-observation planes of the
+        frame file (``layers/<name>``, written by the reprojection or by
+        :func:`selfcal.io.frames.write_frame`) are read in the same file
+        access and returned as ``extras['layer_values']`` (``{name: array}``
+        on the subframe grid) — the source of *layer* data variables.
 
     Returns
     -------
@@ -164,7 +169,15 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
         fields.append('sub_bitmask')
+    layer_names = tuple(extras.get('layers') or ()) if extras is not None else ()
+    fields.extend(f'layers/{name}' for name in layer_names)
     result = load_reproj_file(file, fields=fields)
+    if layer_names:
+        missing = [n for n in layer_names if result.get(f'layers/{n}') is None]
+        if missing:
+            raise ValueError(f"frame {file} has no layer(s) {missing}: a data variable reads them "
+                             f"(write them with the reader's layers or selfcal.io.frames.write_frame)")
+        extras['layer_values'] = {n: result[f'layers/{n}'] for n in layer_names}
 
     sub_data = result['sub_data']
     ref_coords = result['ref_coords']

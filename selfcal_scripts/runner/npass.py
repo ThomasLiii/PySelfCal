@@ -166,6 +166,22 @@ class _Run:
         self.tile_frames = None       # {tile_name: [hdd paths]}
         self.all_frames = None        # [hdd paths] of the whole field
 
+    def variables_for(self, frames):
+        """The model's data variables over ``frames`` beyond the detector maps
+        (frame values, sky maps, layers, functions); None for the historical
+        recipes, which read detector maps only."""
+        spec = self.mode.spec(self.cfg, self.inst, self.geom)
+        if any(t.coefficient is not None or t.basis is not None for t in spec.offset):
+            raise ValueError("the N-pass OFFSET pass refits a polynomial basis per frame; a model whose "
+                             "offset terms carry a coefficient or a basis runs as task 'cal'")
+        if not spec.variables and not (spec.referenced_variables()
+                                       & set(self.mode.frame_variable_names(self.cfg, self.inst))):
+            return None
+        from selfcal.geometry import wcs_helper
+        ref_wcs, ref_shape = wcs_helper.load_from_fits(self.ctx.pipeline_config.ref_path)
+        return self.mode.build_variables(self.cfg, self.inst, self.geom, list(frames), ref_shape=ref_shape,
+                                         ref_wcs=ref_wcs)
+
     def edges(self):
         if self._edges is None:
             self._edges = self.mode.clip_group_edges(self.cfg, self.inst, self.geom)
@@ -249,6 +265,9 @@ class _Run:
                   flush=True)
             cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=nvme)
             cc.reproj_list = frame_list
+            variables = self.variables_for(frame_list)
+            if variables is not None:
+                calk['variables'] = variables
             cc.setup_lsqr(offset_model=OffsetModel.sky_only(), grid_valid_weight=self.grid_valid,
                           oversample_factor=1,
                           sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
@@ -301,9 +320,11 @@ class _Run:
         pb = self.mode.refit_poly_basis(self.cfg, self.inst, self.geom,
                                         degree=int(opts["poly_degree"]),
                                         segments=opts.get("segments"))
+        variables = self.variables_for(self.all_frames)
         sky = SkySubtractor(sky_cal, self.sky_model,
                             export_dir=os.path.join(self.work_dir, f"sky_pass{i-1}"),
-                            aux_keys=tuple(self.aux_keys or ()))
+                            aux_keys=tuple(self.aux_keys or ()), variables=variables,
+                            frames=self.all_frames if variables is not None else None)
         edges = self.edges() if opts.get("subch_clip") else None
         _, mon = refit_offsets_per_frame(
             self.all_frames, sky, det_chunk_map=self.cm, grid_valid=self.grid_valid,

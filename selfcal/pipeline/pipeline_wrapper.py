@@ -110,7 +110,7 @@ class Reprojector:
 
     def define_reference(self, padding_pixels: int = 100, use_ext: tuple[int, ...] = (1,),
                          source_ref_path: str | None = None,
-                         verify_projection: bool = True) -> None:
+                         verify_projection: bool = True, reader=None) -> None:
         '''Define the smallest WCS oriented north-up, east-left frame that
         contains all exposures.
 
@@ -141,6 +141,9 @@ class Reprojector:
         verify_projection : bool, optional
             When an existing ref and ``source_ref_path`` are both present,
             assert their projections match before reusing the existing ref.
+        reader : callable or None, optional
+            The instrument's exposure reader (``selfcal.io.frames``) whose
+            headers carry the WCS; ``None`` reads FITS headers.
 
         Returns
         -------
@@ -163,7 +166,7 @@ class Reprojector:
                 source_ref_path=source_ref_path,
                 exposure_list=self.exposure_list,
                 padding_pixels=padding_pixels,
-                use_ext=use_ext,
+                use_ext=use_ext, reader=reader,
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             logger.info(f"Reference WCS saved to {self.config.ref_path}")
@@ -173,7 +176,7 @@ class Reprojector:
                 exposure_list=self.exposure_list,
                 resolution_arcsec=self.config.resolution_arcsec,
                 padding_pixels=padding_pixels,
-                use_ext=use_ext
+                use_ext=use_ext, reader=reader
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             logger.info(f"Reference WCS saved to {self.config.ref_path}")
@@ -355,7 +358,7 @@ class Reprojector:
                       exp_idx_list: list[int] | None = None,
                       det_idx_list: list[int] | None = None,
                       output_dir: str | None = None, replace_existing: bool = False,
-                      reproject_kwargs: dict | None = None) -> None:
+                      reproject_kwargs: dict | None = None, reader=None) -> None:
         """Build per-(exposure, extension) reprojection tasks, dispatch the
         pending subset, write the run manifest, and log any worker failures.
 
@@ -453,7 +456,7 @@ class Reprojector:
                     exp_idx_list=pending_exp,
                     det_idx_list=pending_det,
                     replace_existing=replace_existing,
-                    reproject_kwargs=reproject_kwargs,
+                    reproject_kwargs=reproject_kwargs, reader=reader,
                     per_task_extensions=True,
                 )
         else:
@@ -673,8 +676,19 @@ class Calibrator(Reprojector):
                    sky_model: SkyModel | None = None,
                    compact_zero_columns: bool = True,
                    sky_rhs_moments: bool = False,
-                   batch_spill_dir: str | None = None) -> None:
+                   batch_spill_dir: str | None = None,
+                   variables=None, weight_function=None, priors: list | None = None,
+                   outlier_group_variable: str | None = None) -> None:
         """Build the LSQR system for K chunk maps.
+
+        ``variables`` (a :class:`~selfcal.models.variables.VariableSet`) adds
+        data-variable sources beyond ``det_aux`` (per-frame values, sky maps,
+        stored layers, derived variables, frame functions);
+        ``weight_function`` multiplies every observation's weight by a function
+        of data variables; ``priors`` are user prior rows (see
+        :func:`selfcal.core.system.setup_lsqr`). An ``offset_model`` block with a
+        ``basis`` makes that map's offsets coefficients of known functions of
+        data variables.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
         configuration arguments (``reg_weights``, ``adj_infos``,
@@ -839,8 +853,11 @@ class Calibrator(Reprojector):
             poly_constraints_list = om['poly_constraints_list']
             mean_offsets_list = om['mean_offsets_list']
             poly_basis_list = om['poly_basis_list']
+            basis_list = om['basis_list']
             use_per_frame_scalar = om['use_per_frame_scalar']
-        elif chunk_maps is not None:
+        else:
+            basis_list = None
+        if offset_model is None and chunk_maps is not None:
             warnings.warn(
                 "Passing the offset configuration as flat kwargs (chunk_maps, "
                 "det_groups_list, adj_infos, poly_constraints_list, "
@@ -919,7 +936,10 @@ class Calibrator(Reprojector):
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
                 sky_rhs_moments=sky_rhs_moments,
-                batch_spill_dir=batch_spill_dir)
+                batch_spill_dir=batch_spill_dir,
+                basis_list=basis_list, variables=variables,
+                weight_function=weight_function, priors=priors,
+                outlier_group_variable=outlier_group_variable)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
             # back as None and `pixel_spill` carries the handle; we leave them
@@ -956,8 +976,9 @@ class Calibrator(Reprojector):
             self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
             num_frames=num_frames, det_groups_list=det_groups_list,
             det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar,
-            poly_basis_list=poly_basis_list)
+            poly_basis_list=poly_basis_list, basis_list=basis_list)
         self.chunk_maps = chunk_maps
+        self.basis_list = list(basis_list) if basis_list is not None else [None] * len(chunk_maps)
         self.frame_to_groups = self.layout.frame_to_group_list
         self.num_offset_groups_list = self.layout.num_offset_groups_list
         self.num_chunks_list = self.layout.num_chunks_list
@@ -1351,8 +1372,14 @@ class Calibrator(Reprojector):
             cov_grp = f.create_group('offset_coverage')
             frac_grp = f.create_group('offset_coverage_frac')
             cm_grp = f.create_group('chunk_maps')
+            basis_list = getattr(self, 'basis_list', None) or [None] * K
             for m in range(K):
-                offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                ds_m = offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                if basis_list[m] is not None:
+                    # The map's offsets are coefficients of known functions of data
+                    # variables: per frame, n_chunks * n_basis values (chunk-major).
+                    ds_m.attrs['n_basis'] = int(basis_list[m].n)
+                    ds_m.attrs['basis'] = basis_list[m].coefficient.describe()
                 cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
                 frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')

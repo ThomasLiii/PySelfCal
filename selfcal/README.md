@@ -1,10 +1,15 @@
 # selfcal
 
-A self-calibration and mosaicking pipeline for astronomical imaging, designed
-primarily for the SPHEREx survey (with some Euclid helpers). It solves
-simultaneously for a common sky map and per-frame/per-chunk detector offsets
-by casting the problem as a large, sparse linear least-squares problem, then
-builds final co-added mean / std / sigma-clipped mosaic products.
+A self-calibration and mosaicking pipeline for astronomical imaging — any
+telescope, from SPHEREx (linear-variable-filter spectral imaging) and Euclid
+(multi-detector broadband) to one that does not exist yet. It solves
+simultaneously for sky maps and per-frame / per-chunk instrumental offsets by
+casting the problem as a large, sparse linear least-squares problem, then
+builds co-added mean / std / sigma-clipped mosaic products. Every function of
+the model (sky coefficients, offset bases, weights, groupings, priors) reads
+named per-observation *data variables* from pluggable sources, so a new
+instrument or model is a set of high-level functions, never a core edit — see
+[`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md).
 
 The reference entry point is the **generic runner** — one TOML config per run,
 no editing Python:
@@ -40,27 +45,30 @@ classes in [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py):
 
 ## What the pipeline does
 
-Given many overlapping detector exposures of the same patch of sky, the flux
-observed at a given sky pixel can be modeled as
+Given many overlapping detector exposures of the same patch of sky, every
+observation `i` (one value of frame `k` on reference pixel `p_i`, seen at a
+detector position) is modelled as
 
 ```
-d_i = Σ_c coeff_c(λ_i) * s_c(p_i) + Σ_m o^(m)_{g_m(k)}(c_m(i)) + σ_k + eps_i
+d_i = Σ_c coeff_c(v_i) * s_c(p_i) + Σ_m Σ_j o^(m)_{g_m(k)}(c_m(i), j) * φ_mj(v_i) + σ_k + eps_i
 ```
 
 where:
-- `s_c(p)` is the per-pixel amplitude of sky component `c` at pixel `p`
-  (shared across all frames), and `coeff_c(λ_i)` is that component's
-  per-observation coefficient. For a continuum-only solve there is a single
-  component with `coeff = 1`, recovering the classic `s(p_i)` term. Spectral
-  components (e.g. a PAH line) carry a profile coefficient `G(λ_i)`. The set
-  of components is described by a `SkyModel` (see
-  [`models/sky_model.py`](models/sky_model.py)).
-- `o^(m)_g(c)` is an additive offset for chunk `c` in group `g` under chunk
-  map `m`. The sum runs over `K` user-supplied chunk maps (`K=1` is the
-  legacy single-map case).
-- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity;
-  set via `det_groups_list[m]` to lock multiple frames to one offset
-  vector).
+- `v_i` are the observation's **data variables**
+  ([`models/variables.py`](models/variables.py)): the built-in coordinates,
+  detector maps (SPHEREx: the band-centre and band-width maps), per-frame
+  values (time, filter, an angle, a temperature), reference-grid maps, planes
+  stored with the frame, and functions of those or of the whole frame.
+- `s_c(p)` is the per-pixel amplitude of sky component `c` (shared across all
+  frames), and `coeff_c(v_i)` is that component's known coefficient — any
+  function of data variables; `coeff = 1` for a constant sky. The set of
+  components is a `SkyModel` ([`models/sky_model.py`](models/sky_model.py)).
+- `o^(m)_g(c, j)` is an offset for chunk `c` in frame group `g` under chunk
+  map `m`, times `n_m` known functions `φ_mj` of data variables (an `OffsetBlock`
+  `basis`; `n_m = 1`, `φ = 1` is the classic chunk offset). The sum runs over
+  `K` chunk maps.
+- `g_m(k)` is the frame→group mapping for map `m` (identity by default; any
+  per-frame value groups frames — the detector, the exposure, the night).
 - `σ_k` is an optional per-frame DC scalar (added when
   `use_per_frame_scalar=True`).
 - `eps_i` is noise.
@@ -335,11 +343,22 @@ clarity:
   `LinearProfile`, with `QuadratureSigma` for a per-observation Gaussian
   width read from a second variable); their field names are historical.
 - **[`models/offset_model.py`](models/offset_model.py)** — `OffsetModel` /
-  `OffsetBlock` bundle the seven parallel length-K offset-config lists into
+  `OffsetBlock` bundle the parallel length-K offset-config lists into
   one cohesive block per map. `OffsetModel.to_setup_kwargs()` lowers back to
   the exact flat kwargs `setup_lsqr` consumes (numerically identical, gated
-  byte-equal). The flat-kwarg API remains supported as the deprecated
+  byte-equal). A block's `basis` (`Basis`: `n` known functions of data
+  variables) makes its unknowns one coefficient per group × chunk × function;
+  `n = 1` is a *coefficient* (a pattern times the temperature, a gain times a
+  previous sky). The flat-kwarg API remains supported as the deprecated
   transitional spelling.
+- **[`models/variables.py`](models/variables.py)** — data variables:
+  `VariableSet` declares the sources of a solve (detector maps, per-frame
+  values, reference-grid maps, stored layers, derived functions, frame
+  functions); `ObservationVariables` evaluates them lazily for one frame's
+  observations — the row assembly, the mosaic and the N-pass share it.
+- **[`models/priors.py`](models/priors.py)** — user priors: a function of
+  `TermInfo`s returning linear rows on the unknowns (ready-made:
+  `frame_smoothness`, `sky_smoothness`, `toward_variable`).
 
 ### I/O & state (`io/`, `_state.py`)
 
@@ -724,7 +743,11 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
 | [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
-| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (sky terms + offset terms + priors), from a `[model]` table or a mode, lowered to `SkyModel` / `OffsetModel`. |
+| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (variables, sky terms, offset terms, weight, priors), from a `[model]` table or a mode, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
+| [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
+| [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
+| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `write_frame` (the frame-file contract), `frame_header_values`. |
+| [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
 | [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
 | [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: 16-detector exposure layout, grid/stripe/tilt chunk maps, edge taper, spline/strip/ramp renderers, electron units. |
