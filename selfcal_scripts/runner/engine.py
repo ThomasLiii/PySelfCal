@@ -334,9 +334,15 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     # observation (BasisOffsetSubtractor), and hands the chunk path zeros for
     # them (plus the per-frame scalar on map 0, which the cal folds in there).
     basis_hook = _basis_offset_hook(ctx, mm, cal_path, chunk_maps)
-    if basis_hook is not None:
+    # The model's observation weight (a row weight w) weights the coadd by w², as
+    # in the solve.
+    weight_hook = _observation_weight_hook(ctx, mm)
+    hooks = [h for h in (basis_hook, post, weight_hook) if h is not None]
+    if len(hooks) > 1:
         from selfcal.pipeline.model_eval import ComposedHook
-        post = ComposedHook([basis_hook, post]) if post is not None else basis_hook
+        post = ComposedHook(hooks)
+    elif hooks:
+        post = hooks[0]
     if post is not None:
         mosaic_kwargs['postprocess_func'] = post
     # `wavelength_coadd` (default true) selects the instrument's aux coadds (the
@@ -410,10 +416,30 @@ def _basis_offset_hook(ctx, mm, cal_path, chunk_maps):
         mm.offset_coverage_fracs[m] = np.ones_like(zeros)
     # The data variables over the mosaic's frames (the cal's, minus any without
     # a reprojected file here); coefficients are looked up by the cal's order.
-    variables = mode.build_variables(cfg, inst, geom, list(mm.reproj_list), ref_shape=mm.ref_shape,
-                                     ref_wcs=mm.ref_wcs)
-    return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1,
+    return BasisOffsetSubtractor(cal_path, terms, variables=_mosaic_variables(ctx, mm), oversample_factor=1,
                                  frame_names=list(mm.reproj_list))
+
+
+def _mosaic_variables(ctx, mm):
+    """The data variables over the mosaic's frames, with the instrument's detector
+    maps (the solve passes those separately), for the mosaic-side evaluators."""
+    from selfcal.models.variables import VariableSet
+    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
+    vs = mode.build_variables(cfg, inst, geom, list(mm.reproj_list), ref_shape=mm.ref_shape,
+                              ref_wcs=mm.ref_wcs) or VariableSet()
+    extra = {k: v for k, v in (geom.aux or {}).items() if k not in vs.detector}
+    return vs.merged(detector=extra) if extra else vs
+
+
+def _observation_weight_hook(ctx, mm):
+    """The mosaic's per-observation weight from the model's ``weight``, or None."""
+    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
+    weight = mode.build_weight(cfg, inst, geom)
+    if weight is None:
+        return None
+    from selfcal.pipeline.model_eval import ObservationWeight
+    return ObservationWeight(weight, variables=_mosaic_variables(ctx, mm), frame_names=list(mm.reproj_list),
+                             det_shape=geom.shape)
 
 
 def _all_frame_groups(inst, cfg, frames):

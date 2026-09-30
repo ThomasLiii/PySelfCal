@@ -21,7 +21,8 @@ class FrameContext:
 
     ``stage`` is ``'pre'`` (right after loading: no offsets subtracted, no
     weights, no aux maps yet) or ``'post'`` (after offsets, weights and aux
-    maps). ``sub_mapping`` holds the detector ``(x, y)`` coordinates of every
+    maps). A ``'post'`` hook may instead return ``(sub_data, sub_weight)`` to
+    reweight the observations too (e.g. an inverse-variance weight). ``sub_mapping`` holds the detector ``(x, y)`` coordinates of every
     subframe pixel; ``ref_coords`` the subframe's ``[y0, y1, x0, x1]`` on the
     reference grid. Dict-style access (``ctx['sub_data']``) is kept for
     hooks written against the old ``locals()`` contract.
@@ -366,10 +367,15 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
             chunk_contribs = [compute_chunk_contrib(cm, interp_matrix) for cm in chunk_maps]
 
     if postprocess_func is not None:
-        sub_data = postprocess_func(FrameContext(
+        out = postprocess_func(FrameContext(
             stage='post', file=file, exp_idx=exp_idx, det_idx=det_idx, ref_coords=ref_coords,
             sub_data=sub_data, sub_weight=sub_weight, sub_mapping=sub_mapping, chunk_maps=chunk_maps,
             sub_aux=sub_aux))
+        if isinstance(out, tuple):              # (sub_data, sub_weight): the hook reweights too
+            sub_data, new_weight = out
+            sub_weight = np.asarray(new_weight, dtype=sub_weight.dtype)
+        else:
+            sub_data = out
 
     # Check for NaNs and set corresponding weights to 0
     nan_mask = np.isnan(sub_data)

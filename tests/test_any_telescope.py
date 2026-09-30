@@ -515,8 +515,10 @@ def test_data_cube_slices():
         n_exp = 16
         exp_dir = os.path.join(tmp, 'exposures')
         os.makedirs(exp_dir)
+        pointings = []
         for k in range(n_exp):
             oy, ox = rng.integers(0, REF - H), rng.integers(0, REF - W)
+            pointings.append((int(oy), int(ox)))
             off = rng.normal(0, 0.2, cm.max() + 1)                   # shared by the exposure's slices
             cube, var = [], []
             for s, lam in enumerate(waves):
@@ -537,7 +539,7 @@ def test_data_cube_slices():
                      'coefficient': {'variable': 'wave', 'function': 'tests.test_any_telescope:gaussian_line'}}],
             'offset': [{'kind': 'grouped', 'groups': 'exposure', 'reg_weight': 0.05, 'mean_zero': True}],
         }
-        out, res = _run(tmp, _grid_inst(name='toy_ifu', tag='Cube'), model, n_exp, exp_dir)
+        out, res = _run(tmp, _grid_inst(name='toy_ifu', tag='Cube'), model, n_exp, exp_dir, mosaic=True)
         from selfcal.io.reproj import load_reproj_file
         frames = sorted(p for p in os.listdir(os.path.join(out, 'toy_run', 'reprojected')) if p.endswith('.h5'))
         assert len(frames) == 4 * n_exp
@@ -556,6 +558,22 @@ def test_data_cube_slices():
         r, slope = _agreement(g, t)
         print(f"cube slices: line map r = {r:.4f}, slope {slope:.3f} ({g.size} px)")
         assert r > 0.98 and abs(slope - 1) < 0.08, (r, slope)
+        # The mosaic weights every observation by the model's weight squared (1/σ²,
+        # σ read from the stored variance layer): a pixel's coadd weight is the sum
+        # of 1/σ² over the slices covering it.
+        with fits.open(res.mosaic_paths[0]) as hdul:
+            wmap = np.asarray(hdul['MEAN_MAP_WEIGHT'].data, dtype=np.float64)
+        expected = np.zeros((REF, REF))
+        inv_var = 1.0 / sigma ** 2
+        for oy, ox in pointings:
+            expected[oy:oy + H, ox:ox + W] += len(waves) * inv_var
+        ok = wmap > 0
+        m, e = _truth_values(out, wmap, ok, expected)
+        inner = e > 0
+        ratio = m[inner] / e[inner]
+        print(f"cube mosaic weights / Σ 1/σ²: median {np.median(ratio):.4f}, 5-95% "
+              f"{np.percentile(ratio, 5):.4f}..{np.percentile(ratio, 95):.4f}")
+        assert abs(np.median(ratio) - 1) < 0.01, np.median(ratio)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

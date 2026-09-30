@@ -394,3 +394,36 @@ def test_grouped_clip_on_any_variable(tmp_path):
     with pytest.raises(ValueError, match='outlier_group_variable'):
         setup_lsqr(frames, (H + 4, W), outlier_group_edges=[8.0], **common)
 
+
+# ---------------------------------------------------------------------------
+# the observation weight outside the solve; hooks that reweight
+# ---------------------------------------------------------------------------
+def inverse(x):
+    return 1.0 / np.asarray(x)
+
+
+def test_observation_weight_hook_and_composition():
+    from selfcal.core.subframe import FrameContext
+    from selfcal.pipeline.model_eval import ComposedHook, ObservationWeight
+    frames = ['/x/exp_0000_det_00.h5', '/x/exp_0001_det_00.h5']
+    hook = ObservationWeight(Coefficient('sigma', inverse), variables=VariableSet(frame={'sigma': np.array([2.0, 4.0])}),
+                             frame_names=frames)
+    xy = np.stack(np.meshgrid(np.arange(3.0), np.arange(2.0)))          # detector x, y of a 2 x 3 subframe
+
+    def ctx():
+        return FrameContext(stage='post', file=frames[1], exp_idx=1, det_idx=0, ref_coords=[0, 2, 0, 3],
+                            sub_data=np.ones((2, 3)), sub_weight=np.full((2, 3), 0.5), sub_mapping=xy)
+    data, weight = hook(ctx())
+    assert np.allclose(weight, 0.5 / 16.0) and np.allclose(data, 1.0)      # w = 1/σ = 1/4 -> w² = 1/16
+    out = ComposedHook([lambda c: c.sub_data + 1.0, hook])(ctx())
+    assert isinstance(out, tuple) and np.allclose(out[0], 2.0) and np.allclose(out[1], 0.5 / 16.0)
+    assert np.allclose(ComposedHook([lambda c: c.sub_data * 3.0])(ctx()), 3.0)   # no reweighting: an array
+
+
+def test_post_hook_may_reweight(tmp_path):
+    from selfcal.core.subframe import _prep_subframe
+    from selfcal.io.frames import standard_frame_path, write_frame
+    x, y = np.meshgrid(np.arange(4.0), np.arange(3.0))
+    p = write_frame(standard_frame_path(str(tmp_path), 0, 0), np.full((3, 4), 7.0), [0, 3, 0, 4], np.stack([x, y]))
+    rc, data, weight, _, _ = _prep_subframe(p, postprocess_func=lambda c: (c.sub_data, c.sub_weight * 0.25))
+    assert np.allclose(weight, 0.25) and np.allclose(data, 7.0) and weight.dtype == np.float32

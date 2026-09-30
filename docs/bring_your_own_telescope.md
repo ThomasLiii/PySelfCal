@@ -197,7 +197,8 @@ file, index, observation pixels, `sub_mapping` (detector coordinates), `raw()` (
   function multiplying the offset at every observation) or `basis` (`n` functions: the unknowns are
   one coefficient per group × chunk × function), and the built-in priors `reg_weight` +
   `adjacency`, `poly`, `mean_zero` (per function for a basis), `damp`, `exact_group_rows`.
-* **weight**: a function of data variables multiplying every observation's weight.
+* **weight**: a function of data variables multiplying every observation's row weight (`1/σ`
+  for an inverse-variance fit); the mosaic coadds with its square, like the solve.
 * **prior**: `term` (or `terms`, for a relation between terms: sky-term names, offset-term names,
   `scalar`), `function`, `weight`, and the function's parameters. A prior function receives one
   `TermInfo` per term (the unknowns' shape, their coverage, the frame → group map, the solve's
@@ -358,7 +359,6 @@ directory.
   their offsets through a `grouped` term (e.g. `groups = "exposure"`).
 * The sky is a 2-D grid (a WCS image). Another pixelisation (HEALPix) can be flattened to one row
   of `N` pixels; each frame then stores the range of pixel indices it touches.
-* The mosaic coadds the data with the `[mosaic]` weights; the model's `weight` shapes the solve.
 
 ## 7. Where things are
 

@@ -235,7 +235,8 @@ over every chunk of the map, so a term whose groups observe different parts of t
 anchored by `damp`), `damp` (Tikhonov toward 0), `exact_group_rows` (fixed/grouped: anchor +
 adjacency rows once per group), `render` (which of the instrument's mosaic renderers draws it).
 
-**weight** — a function of data variables multiplying every observation's weight.
+**weight** — a function of data variables multiplying every observation's row weight (`1/σ`
+for an inverse-variance fit); the mosaic coadds with its square, like the solve.
 
 **Priors** — `[[model.prior]]`: `term` (or `terms` = several: sky-term names, offset-term names,
 `scalar`), `function`, `weight`, and the function's parameters. The function receives one

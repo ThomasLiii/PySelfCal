@@ -20,7 +20,7 @@ from ..io.calfile import CalFile
 from ..io.reproj import load_reproj_file
 from ..models.variables import FrameObservations, ObservationVariables
 
-__all__ = ['frame_observations', 'BasisOffsetSubtractor', 'ComposedHook']
+__all__ = ['frame_observations', 'BasisOffsetSubtractor', 'ObservationWeight', 'ComposedHook']
 
 
 def frame_observations(ctx, index, variables, pixels=None, oversample_factor=1, det_shape=None,
@@ -119,13 +119,53 @@ class BasisOffsetSubtractor:
         return sub_data
 
 
+class ObservationWeight:
+    """A frame hook multiplying every observation's coadd weight by the model's
+    observation weight to the power ``power`` (default 2: the model's weight is a
+    row weight ``w`` — ``1/σ`` for an inverse-variance fit — which enters the
+    least squares as ``w²``, so the mosaic's weighted mean matches the solve).
+
+    ``weight``: the model's weight function (``evaluate(obs)``); ``variables``:
+    the data variables, frame values aligned with ``frame_names``; ``det_shape``:
+    the detector grid the detector maps live on."""
+
+    def __init__(self, weight, variables=None, frame_names=None, det_shape=None, oversample_factor=1,
+                 power=2.0):
+        self.weight = weight
+        self.variables = variables
+        self.index = ({os.path.basename(p): i for i, p in enumerate(frame_names)}
+                      if frame_names is not None else {})
+        self.det_shape = None if det_shape is None else tuple(det_shape)
+        self.oversample_factor = oversample_factor
+        self.power = float(power)
+
+    def __call__(self, ctx):
+        i = self.index.get(os.path.basename(ctx.file), 0)
+        obs, _ = frame_observations(ctx, i, self.variables, oversample_factor=self.oversample_factor,
+                                    det_shape=self.det_shape)
+        factor = np.zeros(np.shape(ctx.sub_data), dtype=np.float64)
+        if obs.n:
+            w = np.abs(np.asarray(self.weight.evaluate(obs), dtype=np.float64)) ** self.power
+            rows, cols = obs.pixels
+            factor[rows, cols] = np.where(np.isfinite(w), w, 0.0)
+        return ctx.sub_data, np.asarray(ctx.sub_weight) * factor
+
+
 class ComposedHook:
-    """Several frame hooks applied in order (each returns the new ``sub_data``)."""
+    """Several frame hooks applied in order. Each returns the new ``sub_data``,
+    or ``(sub_data, sub_weight)``; the composition returns the tuple when any
+    hook reweighted."""
 
     def __init__(self, hooks):
         self.hooks = [h for h in hooks if h is not None]
 
     def __call__(self, ctx):
+        reweighted = False
         for h in self.hooks:
-            ctx.sub_data = h(ctx)
-        return ctx.sub_data
+            out = h(ctx)
+            if isinstance(out, tuple):
+                ctx.sub_data, ctx.sub_weight = out
+                reweighted = True
+            else:
+                ctx.sub_data = out
+        return (ctx.sub_data, ctx.sub_weight) if reweighted else ctx.sub_data
