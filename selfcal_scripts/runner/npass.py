@@ -105,7 +105,7 @@ def _init_cfg(cfg, edges_fn=None):
     if over.get("subch_clip"):
         if edges_fn is None:
             raise ValueError("[passes].init.subch_clip needs the mode's clip-group edges")
-        cal["outlier_subchannel_edges"] = edges_fn()
+        cal["outlier_group_edges"] = edges_fn()
     return dataclasses.replace(cfg, calibration=cal)
 
 
@@ -238,8 +238,10 @@ class _Run:
         merge = self.p.get("sky_merge", "combine")
         edges = self.edges() if opts.get("subch_clip") else None
         calk = dict(ctx.cal_kwargs)
-        for k in ("outlier_thresh", "outlier_subchannel_edges", "postprocess_func"):
+        for k in ("outlier_thresh", "outlier_group_edges", "outlier_subchannel_edges", "postprocess_func"):
             calk.pop(k, None)
+        if not (calk.get("outlier_group_variable") or calk.get("outlier_aux_key")):
+            calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = sky_damp_weights(self.sky_model, self.damp_weight, self.damp_weight_line)
         nvme = (ctx.tiling_nvme_dir() if cfg.tiling
                 else (cfg.reproj_override or os.path.dirname(self.all_frames[0])))
@@ -271,7 +273,6 @@ class _Run:
             cc.setup_lsqr(offset_model=OffsetModel.sky_only(), grid_valid_weight=self.grid_valid,
                           oversample_factor=1,
                           sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
-                          outlier_aux_key=self.geom.wavelength_key,
                           postprocess_func=subtract, outlier_thresh=float(opts["outlier_thresh"]),
                           outlier_group_edges=edges,
                           sky_rhs_moments=True, batch_spill_dir=cfg.cache_dir, **calk)

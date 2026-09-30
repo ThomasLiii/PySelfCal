@@ -30,10 +30,10 @@ import re
 import sys
 import time
 
-import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
+from selfcal.io.calfile import CalFile
 from selfcal.zodi_anchor import (fit_anchor_for_channel, write_anchor,
                                 smooth_anchor_file)
 
@@ -110,11 +110,12 @@ def build_one_run(run_dir, out_dir, clip, cal_glob_pat='cal_*.h5',
         if not os.path.exists(npz):
             skipped.append((ch, 'npz missing'))
             continue
-        with h5py.File(cal, 'r') as f:
-            if 'zodi_anchor_C' in f.attrs:
-                skipped.append((ch, 'cal still anchored in-place '
-                                    '(revert first)'))
-                continue
+        with CalFile(cal) as c:
+            anchored_in_place = 'zodi_anchor_C' in c.attrs
+        if anchored_in_place:
+            skipped.append((ch, 'cal still anchored in-place '
+                                '(revert first)'))
+            continue
         try:
             res = fit_anchor_for_channel(
                 cal, npz,

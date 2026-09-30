@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 
 from selfcal.pipeline.pipeline_wrapper import Calibrator
-from selfcal.models.sky_model import SkyModel, ContinuumComponent, LineComponent
+from selfcal.models.sky_model import Coefficient, ContinuumComponent, SkyComponent, SkyModel
 from selfcal.models.profiles import GaussianProfile, TemplateProfile
 
 
@@ -46,9 +46,8 @@ def test_nsky3_save_load_roundtrip():
     J = 3
     sky_model = SkyModel((
         ContinuumComponent(),
-        LineComponent(name='pah_3p29', profile=GaussianProfile(3.29, 0.04)),
-        LineComponent(name='aliphatic', profile=TemplateProfile(
-            np.linspace(3.3, 3.5, 6), np.ones(6))),
+        SkyComponent('pah_3p29', Coefficient('BC', GaussianProfile(3.29, 0.04))),
+        SkyComponent('aliphatic', Coefficient('BC', TemplateProfile(np.linspace(3.3, 3.5, 6), np.ones(6)))),
     ))
     rng = np.random.default_rng(7)
     sky_vals = rng.standard_normal(J * num_sky)
@@ -103,7 +102,7 @@ def test_single_line_keeps_legacy_skymap_line_alias():
     num_sky = 25
     num_frames, num_chunks = 3, 2
     sky_model = SkyModel((ContinuumComponent(),
-                          LineComponent(name='pah_3p29', profile=GaussianProfile(3.29, 0.04))))
+                          SkyComponent('pah_3p29', Coefficient('BC', GaussianProfile(3.29, 0.04)))))
     rng = np.random.default_rng(1)
     x = rng.standard_normal(2 * num_sky + num_frames * num_chunks + num_frames)
     pc = (rng.random(len(x)) * 5).astype(np.int64)

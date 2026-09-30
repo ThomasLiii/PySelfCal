@@ -27,6 +27,7 @@ from selfcal import _state                                      # noqa: E402
 from selfcal_scripts.runner import config as runner_config      # noqa: E402
 from selfcal_scripts.runner import pipelines                    # noqa: E402
 from selfcal.instruments import get_instrument                  # noqa: E402
+from selfcal.io.calfile import CalFile                          # noqa: E402
 from tests.synthetic_exposures import write_exposures, REF_ARCSEC, N_CHUNK_SIDE, DET  # noqa: E402
 
 N_EXP = 14
@@ -149,9 +150,9 @@ def test_toy_instrument_end_to_end():
         assert sorted(tres.tiles) == ['E', 'W'] and tres.stitched == tres.sky_path
         for p in list(tres.tiles.values()) + [tres.stitched]:
             assert os.path.exists(p), p
-        with h5py.File(tres.stitched, 'r') as f:
-            assert f['skymap'].shape == (ny, nx)
-            assert np.isfinite(f['skymap'][()]).sum() > 0
+        with CalFile(tres.stitched) as cal:
+            assert cal.ref_shape == (ny, nx)
+            assert np.isfinite(cal.sky(0)).sum() > 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

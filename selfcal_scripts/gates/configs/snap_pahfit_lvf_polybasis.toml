@@ -2,7 +2,7 @@
 # Continuum + PAH 3.29um line amplitude; 40-subch window (210-250); NumCol=5;
 # 100 LSQR iters; outputs to /data3, keeps the NVMe cache.
 task = "cal"
-mode = "pahfit_lvf_polybasis"
+mode = "spectral_polybasis"
 
 output_dir = "/data3/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
@@ -25,9 +25,9 @@ subch_window = [210, 250]
 window_name = "Aromatic_PAHfit"
 
 [params]
-subch_poly_degree = 2
-subch_poly_lo = 210
-subch_poly_hi = 249
+spectral_poly_degree = 2
+spectral_poly_lo = 210
+spectral_poly_hi = 249
 line_template_npz = "/home/thomasli/selfcal-project/selfcal-memopt/selfcal/instruments/spherex/data/line_templates/aromatic_3p289.npz"
 poly_degree = 1
 poly_weight = 0.5

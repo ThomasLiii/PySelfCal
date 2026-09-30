@@ -99,9 +99,10 @@ public API is re-exported from [`__init__.py`](__init__.py):
 
 ```python
 from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
-from selfcal import SkyModel, ContinuumComponent, SpectralComponent
+from selfcal import SkyModel, SkyComponent, ContinuumComponent, Coefficient, ImportedFunction
 from selfcal import GaussianProfile, TemplateProfile
-from selfcal import OffsetModel, OffsetBlock, SystemLayout
+from selfcal import OffsetModel, OffsetBlock, Basis, SystemLayout
+from selfcal import VariableSet, Derived, FrameFunction
 from selfcal import TiledCalibration, TileSpec, make_tile_grid
 ```
 
@@ -630,7 +631,7 @@ A minimal programmatic flow mirrors what the runner does internally:
 ```python
 import numpy as np
 from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
-from selfcal import set_hdd_io_limit
+from selfcal import OffsetModel, OffsetBlock, SkyModel, set_hdd_io_limit
 from selfcal.core.solution import compute_x0_scalar_only
 
 cfg = PipelineConfig(
@@ -644,16 +645,17 @@ rr = Reprojector(cfg, exposure_list=fits_paths)
 rr.define_reference(padding_pixels=100, use_ext=[1])
 rr.run_reproject(max_workers=50, sci_ext_list=[1], dq_ext_list=[2])
 
-# Calibration (K=1, with per-frame scalar)
+# Calibration: one offset map, smooth between neighbouring chunks, the per-frame
+# mean anchored at 0, plus an explicit per-frame scalar (the offset's DC)
 cc = Calibrator(cfg)
 num_frames_run = len(cc.reproj_list)
 cc.setup_lsqr(
-    chunk_maps=[det_chunk_map],
+    offset_model=OffsetModel(
+        blocks=(OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info, reg_weight=0.1,
+                            mean_offset=np.zeros(num_frames_run)),),
+        use_per_frame_scalar=True),
+    sky_model=SkyModel.continuum_only(),
     grid_valid_weight=weight,
-    adj_infos=[adj_info],
-    reg_weights=[0.1],
-    mean_offsets_list=[np.zeros(num_frames_run)],   # pin per-frame mean to 0
-    use_per_frame_scalar=True,                       # explicit per-frame DC scalar
     offset_regularization=True,
     weighted_damping=True, damp_weight=0.1,
     outlier_thresh=5.0,
@@ -663,7 +665,7 @@ x0 = compute_x0_scalar_only(
     cc.A, cc.b, cc.ref_shape,
     scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
 )
-cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr',
+cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr', damp=0,
               use_float32=True, n_threads=48)
 cal_path = cc.save_calibration(cal_file='cal.h5')
 
@@ -684,25 +686,13 @@ maps = mm.make_mosaic(
 mm.save_mosaic(mos_file='mosaic.fits', overwrite=True)
 ```
 
-The same setup can be expressed with the forward-looking model objects:
-
-```python
-from selfcal import OffsetModel, OffsetBlock, SkyModel
-cc.setup_lsqr(
-    offset_model=OffsetModel(
-        blocks=(OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info,
-                            reg_weight=0.1,
-                            mean_offset=np.zeros(num_frames_run)),),
-        use_per_frame_scalar=True),
-    sky_model=SkyModel.continuum_only(),
-    grid_valid_weight=weight, offset_regularization=True,
-    weighted_damping=True, damp_weight=0.1, outlier_thresh=5.0,
-    batch_size=50, max_workers=48,
-)
-```
-
-For a K=2 example (LVF chunks + detector-fixed readout-channel stripes
-shared across all frames), see the `k2_readout` mode / config:
+Sky terms with coefficients, offset bases, data variables beyond the detector
+maps and user priors are further `setup_lsqr` arguments (`sky_model`, a block's
+`basis`, `variables`, `priors`); see
+[`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md). The
+flat per-map keyword lists (`chunk_maps=`, `adj_infos=`, ...) are still accepted
+but deprecated. For a K=2 example (LVF chunks + detector-fixed readout-channel
+stripes shared across all frames), see the `two_block_fixed` mode and
 [`../selfcal_scripts/configs/k2_readout.toml`](../selfcal_scripts/configs/k2_readout.toml).
 
 ## Dependencies

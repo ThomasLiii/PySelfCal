@@ -52,7 +52,7 @@ where:
 - `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case); `φ = 1` (one function) is the classic chunk offset.
 - `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`, or group by any per-frame value).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / pahfit / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / spectral / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
 For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see `selfcal_scripts/configs/README.md` and `docs/bring_your_own_telescope.md`.
 
@@ -93,29 +93,34 @@ poly_degree = 1              # omit poly_weight to disable the column poly-const
 poly_weight = 0.5
 ```
 
-Plus the always-list `setup_lsqr` arguments:
+Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
+(the runner builds it from the mode; `Calibrator.setup_lsqr` still accepts the older flat per-map
+lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
+`mean_offsets_list=` / `det_groups_list=` / `det_templates=`, deprecated — they remain the native
+arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
 
 ```python
 cc.setup_lsqr(
-    chunk_maps=[det_chunk_map],       # list of K chunk maps
-    adj_infos=[adj_info],              # list, one per map; None to skip
-    poly_constraints_list=None,        # optional, see below
-    mean_offsets_list=[np.zeros(num_frames)],  # mean-anchor for each map
-    use_per_frame_scalar=True,         # adds per-frame DC scalar column
-    ...,
+    offset_model=OffsetModel(
+        blocks=(OffsetBlock(chunk_map=det_chunk_map,           # chunk_maps[m]
+                            adj_info=adj_info, reg_weight=0.1,  # adj_infos[m], reg_weights[m]
+                            poly_constraints=None,              # poly_constraints_list[m]
+                            mean_offset=np.zeros(num_frames)),),  # mean_offsets_list[m]
+        use_per_frame_scalar=True),                             # per-frame DC scalar column
+    sky_model=SkyModel.continuum_only(),
     **calibration_kwargs,
 )
 ```
 
-Key knobs:
+Key knobs (per map `m`; the block field is named in parentheses):
 
-- **`reg_weights[m]`** + **`adj_infos[m]`** adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `SPHERExUtility.py`:
+- **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `SPHERExUtility.py`:
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
 
-- **`poly_constraints_list[m]`** (optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
+- **`poly_constraints_list[m]`** (`poly_constraints`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
-- **`mean_offsets_list[m]`** — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `lsqr.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
+- **`mean_offsets_list[m]`** (`mean_offset`) — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `lsqr.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
 
 - **`use_per_frame_scalar=True`** — adds an explicit `num_frames` block to `x` (one scalar per frame) decoupled from `det_groups_list`. Combined with mean-zero anchors on all maps, this pushes per-frame DC entirely into the scalar so chunk offsets only carry within-frame structure. **Required for narrow channels** (D3 Ch17 etc.) where sparse chunk coverage was previously letting per-frame DC leak into scan-stripe residuals.
 
@@ -218,9 +223,11 @@ so cal filenames are deterministically
 
 Beyond the default per-frame, per-chunk solve, `Calibrator.setup_lsqr`
 supports restricted-solve modes that the mainline `continuum` mode does not use
-but exist in the API (the `k2_readout` mode uses `det_groups_list`):
+but exist in the API (the `two_block_fixed` mode, preset `k2_readout`, uses
+`det_groups_list`; in a `[model]` table they are the `fixed` / `grouped` offset kinds). Each is
+an `OffsetBlock` field (named in parentheses):
 
-- **Locked offsets via `det_groups_list[m]`.** Pass an array of length
+- **Locked offsets via `det_groups_list[m]`** (`det_groups`). Pass an array of length
   `num_frames` giving a group ID per frame for map `m`; frames in the same
   group share one offset vector. Reduces unknowns from
   `num_frames * num_chunks_m` to `num_groups_m * num_chunks_m`. Useful when
@@ -229,13 +236,13 @@ but exist in the API (the `k2_readout` mode uses `det_groups_list`):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — the `k2_readout` mode / `configs/k2_readout.toml`).
-- **Template-amplitude mode via `det_templates[m]`.** Requires
+  stripes — the `two_block_fixed` mode / `configs/k2_readout.toml`).
+- **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
   one scalar amplitude `alpha` per frame. Spatial regularization rows are
   skipped automatically for this map.
-- **Mean-offset constraint via `mean_offsets_list[m]`.** Length-`num_frames`
+- **Mean-offset constraint via `mean_offsets_list[m]`** (`mean_offset`). Length-`num_frames`
   array of target mean values; `setup_lsqr` appends soft constraint rows
   pulling each frame's chunk-offset mean toward the target. Constraint
   weight is hardcoded at 10.0 in `lsqr.py`. For K≥2 the mean-anchor on
@@ -302,7 +309,7 @@ distance bin from either partition's boundaries**.
 
 **The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
 per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
-`subch_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+`spectral_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
 multi-line window (200–320) captured 3–5× less of the per-frame structure at the
 ~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
 window (200–259): the wide fit is constrained by the red-end data, so red-end

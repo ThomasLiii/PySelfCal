@@ -2,7 +2,7 @@
 # D4 AromaticPAHfit NumCol5, first 150 frames, iter_lim=20, no mosaic.
 # Diff against goldens/cal_Detector4_..._AromaticPAHfit_gate_golden.h5.
 task = "cal"
-mode = "pahfit"
+mode = "spectral"
 
 output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"

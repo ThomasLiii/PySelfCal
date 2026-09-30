@@ -14,7 +14,6 @@ import argparse
 import os
 import sys
 
-import h5py
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
@@ -32,7 +31,7 @@ if _SELFCAL_ROOT not in sys.path:
 
 from selfcal.io.reproj import load_reproj_file
 from selfcal.instruments.spherex.spherex_utility import make_stripped_chunk_map, load_lvf_params
-from zodi_utils import data_path, cal_path
+from zodi_utils import data_path, cal_path, cal_reproj_list
 
 NUM_SUB, NUM_CH, NUM_COL = 10, 34, 3
 TOT_SUB = NUM_SUB * NUM_CH + 2
@@ -92,8 +91,7 @@ def build(detector):
     print(f'chunk centroids computed: {n_valid}/{N_CHUNKS} populated')
 
     # Reuse the reproj list from any one cal file (channel 17 is fine).
-    with h5py.File(cal_path(detector, 17), 'r') as f:
-        reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+    reproj_list = cal_reproj_list(detector, 17)
     n_exp = len(reproj_list)
     print(f'{n_exp} exposures to project')
 

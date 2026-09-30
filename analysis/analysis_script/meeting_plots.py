@@ -32,7 +32,6 @@ import argparse
 import os
 import sys
 
-import h5py
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -65,8 +64,7 @@ MIN_FIT_POINTS = 50
 
 def load_channel_offsets(detector, channel):
     """Load (offset_cube, padded_mask) for one channel."""
-    with h5py.File(cal_path(detector, channel), 'r') as f:
-        off = load_cal_offsets(f)[0].reshape(-1, TOT_SUB, NUM_COL)
+    off = load_cal_offsets(cal_path(detector, channel))[0].reshape(-1, TOT_SUB, NUM_COL)
     padded = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=NUM_SUB, num_channels=NUM_CH,
         num_columns=NUM_COL, subchannel_padding=1,

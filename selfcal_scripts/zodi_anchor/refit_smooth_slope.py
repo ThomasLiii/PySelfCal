@@ -42,12 +42,12 @@ import re
 import sys
 import warnings
 
-import h5py
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
+from selfcal.io.calfile import CalFile
 from selfcal.zodi_anchor import (
     compute_full_dc,
     load_anchor,
@@ -143,10 +143,10 @@ def _find_anchor(run_dir):
 
 def _load_cal_npz(cal_path, npz_path):
     """Return (full_dc, zodi_pred, mjds, wavelength_um) for one channel."""
-    with h5py.File(cal_path, 'r') as f:
-        fs = f['frame_scalar'][:].astype(np.float64)
-        om0 = f['offsets/map_0'][:].astype(np.float64)
-        cm0 = f['offset_coverage/map_0'][:].astype(np.float64)
+    with CalFile(cal_path) as cal:
+        fs = cal.frame_scalar.astype(np.float64)
+        om0 = cal.offsets[0].astype(np.float64)
+        cm0 = cal.offset_coverage[0].astype(np.float64)
     fdc = compute_full_dc(fs, om0, cm0)
     with np.load(npz_path, allow_pickle=False) as z:
         zp = z['zodi_pred'].astype(np.float64)

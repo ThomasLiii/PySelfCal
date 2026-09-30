@@ -286,4 +286,4 @@ class SkyModel:
                                            intrinsic_var_um2=intrinsic_var_um2)
         profile = GaussianProfile(center_um=center_um, sigma_um=sigma_um, sigma_source=sigma_source)
         return cls((ContinuumComponent(),
-                    SpectralComponent(name=name, profile=profile, wavelength_key=wavelength_key)))
+                    SkyComponent(name=name, coefficient=Coefficient(wavelength_key, profile))))

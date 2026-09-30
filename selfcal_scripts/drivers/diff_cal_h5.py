@@ -84,7 +84,7 @@ def diff(a_path, b_path):
         for k in ('skymap', 'skymap_coverage', 'reproj_list'):
             failures += _diff_array(k, A[k][...], B[k][...])
 
-        # Optional spectral-fit datasets (spectral_fit=True / num_sky_blocks==2):
+        # Optional second-sky-block datasets (num_sky_blocks >= 2, v2 alias names):
         # the line-amplitude sky block + Fisher diagnostics. Compare when present
         # in BOTH files; flag when present in only one — a refactor that
         # silently drops the line block must make this diff exit nonzero (the

@@ -30,20 +30,20 @@ a telescope or a specific calibration variant by name.
 | `d5` | cal / continuum | `experiments/run_cal_d5.py` |
 | `damp0p5` | cal / continuum | `experiments/run_cal_damp0p5.py` |
 | `damp_offset` | cal / continuum | `experiments/run_cal_damp_offset.py` |
-| `pahfit` | cal / pahfit | `experiments/run_cal_pahfit.py` |
-| `k2_readout` | cal / k2_readout | `experiments/run_cal_k2_readout.py` |
-| `tiled_nep` | tiled / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
-| `multiline_nep` | tiled / multiline | (workspace `spectral-pah-fit` campaign) |
-| `sep_d4_npass` | npass / multiline (J=2, W/E tiles, n=8) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
-| `nep_d4_npass` | npass / multiline (J=4, 16 overlap tiles, n=4) | passes 2+ on top of `multiline_nep` |
-| `nep_d4_probe1k_npass` | npass / multiline (J=4, 1k-frame probe) | the multiline stability probe |
+| `pahfit` | cal / spectral | `experiments/run_cal_pahfit.py` |
+| `k2_readout` | cal / two_block_fixed | `experiments/run_cal_k2_readout.py` |
+| `tiled_nep` | cal + `[tiling]` / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
+| `multiline_nep` | cal + `[tiling]` / spectral_polybasis (J=4) | (workspace `spectral-pah-fit` campaign) |
+| `sep_d4_npass` | npass / spectral_polybasis (J=2, W/E tiles, n=8) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
+| `nep_d4_npass` | npass / spectral_polybasis (J=4, 16 overlap tiles, n=8) | passes 2+ on top of `multiline_nep` |
+| `nep_d4_probe1k_npass` | npass / spectral_polybasis (J=4, 1k-frame probe) | the multiline stability probe |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
 | `precompute` | precompute | `drivers/precompute_lvf_params.py` |
 
 ## Schema
 
-**Top-level (generic)** — `task` (`cal`|`mosaic`|`npass`|`reproject`|`precompute`;
-`tiled` is accepted as an alias of `cal` + `[tiling]`), `mode` (cal/mosaic/npass only; see *Modes* below),
+**Top-level (generic)** — `task` (`cal`|`mosaic`|`npass`|`reproject`|`precompute`; the
+historical `tiled` is read as `cal` + `[tiling]`), `mode` (cal/mosaic/npass only; see *Modes* below),
 `cal_override` (mosaic task: apply this cal file, e.g. one solved on another grid; frames without a
 reprojected file here are dropped), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
@@ -63,21 +63,20 @@ hook).
 `subch_window = [lo, hi]` (+ `window_name`) / `channels = [[1],[2]]` /
 `channel_range = [lo, hi]`.
 
-**`[params]`** — mode knobs. continuum/pahfit: `reg_weight`, `poly_degree`,
-`poly_weight` (omit `poly_weight` to disable the column poly-constraint),
-`line_fisher_threshold` (pahfit). pahfit_subch/pahfit_lvf: the above +
-`subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/`subch_poly_hi`/`subch_tot`;
-pahfit_lvf adds `line_template_npz` (+ `line_template_norm`); pahfit_lvf_polybasis
-uses the hard poly-basis offset (`subch_poly_degree`/`_lo`/`_hi`, no weight) with
-the template sky (== `multiline` with one `[[params.lines]]` block).
-k2_readout: `reg_weight`, `readout_reg_weight`.
-tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
-`subch_poly_hi`/`subch_tot`. multiline: `subch_poly_degree`/`subch_poly_lo`/
-`subch_poly_hi` (hard poly-basis offset), `line_fisher_threshold`, and one
-`[[params.lines]]` table per spectral block — each with `name`, a profile
-(`template_npz` = realistic peak-normalized template, or `center_um` [+`sigma_um`
-| `intrinsic_var_um2`] for an analytic Gaussian), and optional per-line
-`damp_weight` (falls back to `[calibration].damp_weight_line`).
+**`[params]`** — mode knobs. `continuum` / `spectral`: `reg_weight`, `poly_degree`,
+`poly_weight` (omit `poly_weight` to disable the column poly-constraint), `poly_axis`,
+`adjacency_axes`, `line_fisher_threshold` (spectral). `spectral_softpoly`: the above +
+`spectral_poly_degree` / `spectral_poly_weight` / `spectral_poly_lo` / `spectral_poly_hi`.
+`spectral_polybasis`: the hard poly-basis offset (`spectral_poly_degree` / `_lo` / `_hi`, optional
+`spectral_poly_segments`; no weight), `line_fisher_threshold`. `tiled`: as `spectral_softpoly`
+(column poly always on). `two_block_fixed`: `reg_weight`, `second_map` (default `readout`),
+`second_reg_weight`. The spectral modes' sky: one `[[params.lines]]` table per spectral term —
+each with `name`, a profile (`template_npz` = realistic peak-normalized template, or `center_um`
+[+ `sigma_um` | `intrinsic_var_um2`] for an analytic Gaussian), and optional per-line
+`damp_weight` (falls back to `[calibration].damp_weight_line`); without `lines`,
+`line_template_npz` (+ `line_template_norm`) or the catalogue coefficient `line` (default
+`pah_3p29`) with `line_center` / `line_sigma`. The historical spellings `subch_poly_*` and
+`readout_reg_weight` are still read.
 
 **Stage tables** — passed through verbatim as kwargs: `[calibration]` →
 `setup_lsqr`, `[lsqr]` → `apply_lsqr`, `[mosaic]` → `make_mosaic`,
@@ -107,7 +106,7 @@ subch_clip, ignore_list}` (pass 1 only; omit to reproduce the legacy clip),
 `sky = {outlier_thresh, subch_clip}`, `offset = {poly_degree, outlier_thresh,
 subch_clip, bright_cut, min_pix, segments}` — `segments` (optional, e.g.
 `[[200, 259], [260, 320]]`, inclusive subchannel ranges inside
-`subch_poly_lo..hi`) fits an independent degree-`poly_degree` Chebyshev per
+`spectral_poly_lo..hi`) fits an independent degree-`poly_degree` Chebyshev per
 column on each segment instead of one over the whole window; use it when the
 window is wide, since a single polynomial over ~120 subchannels resolves 2×
 less per-frame subchannel structure than the same degree over 60 and a higher
@@ -115,9 +114,9 @@ global degree extrapolates wildly wherever a frame's coverage is partial (see
 PIPELINE.md); `ridge` (default `0` = plain least squares) adds a Tikhonov term
 on the shape/level coefficients, λ² = ridge² × the median diagonal of DᵀD, so a
 segment a frame barely covers is held near zero instead of extrapolating —
-pair it with `segments` (SEP: `ridge = 0.03`). The joint INIT solve of the `multiline`
-mode takes the same segmentation as `[params].subch_poly_segments` (an independent
-degree-`subch_poly_degree` shape per column on each segment, plus a level per segment
+pair it with `segments` (SEP: `ridge = 0.03`). The joint INIT solve of the `spectral_polybasis`
+mode takes the same segmentation as `[params].spectral_poly_segments` (an independent
+degree-`spectral_poly_degree` shape per column on each segment, plus a level per segment
 after the first). Pass 1 is the `cal` task on the same config — tiled when
 `[tiling]` is present (its tiles are then the memory tiling of every SKY pass;
 overlapping tiles are de-duplicated first-tile-wins). A re-run resumes: passes

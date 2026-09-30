@@ -23,3 +23,8 @@ compare every dataset / extension exactly.
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so. The assembly folds its per-pixel moments deterministically (batch-id order),
 so two runs of the same tree are byte-identical on any box load.
+
+The `configs/*_golden.toml` files are records of how each golden was produced by the tree that
+made it (some on the frozen baseline worktree); they keep that tree's config spelling
+(`mode = "multiline"`, `[tiled]`, `subch_poly_*`) and are not run by the gate scripts. The gate
+configs themselves use the current spelling.

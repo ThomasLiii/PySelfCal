@@ -260,7 +260,8 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
         cal_kwargs['priors'] = priors
     # The grouped clip bins the instrument's wavelength map unless the config
     # names another data variable ([calibration].outlier_group_variable).
-    clip_variable = None if cal_kwargs.get('outlier_group_variable') else geom.wavelength_key
+    if not (cal_kwargs.get('outlier_group_variable') or cal_kwargs.get('outlier_aux_key')):
+        cal_kwargs['outlier_group_variable'] = geom.wavelength_key
     pre = resolve_hook(cfg, inst, 'pre_cal')
     post = resolve_hook(cfg, inst, 'post_cal')
     if pre is not None:
@@ -277,7 +278,6 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
         sky_model=sky_model,
         det_aux=det_aux,
         aux_keys=aux_keys,
-        outlier_aux_key=clip_variable,
         batch_spill_dir=cfg.cache_dir,
         **cal_kwargs)
     checkpoint('post-setup_lsqr')
