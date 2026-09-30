@@ -10,6 +10,13 @@ Each `.toml` here fully describes one pipeline run. Run it with:
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml --dry-run
 ```
 
+**Logs.** Every run (not `--dry-run`) writes its full console output — the
+main process, worker processes and any traceback — to
+`<output_dir>/<run_name>/logs/<task>_<YYYYmmdd-HHMMSS>_<pid>.log`, headed by
+the command, the git commit and the complete config text, while still printing
+to the terminal. `--log PATH` picks the file, `--no-log` turns it off. Configs
+without an `output_dir`/`run_name` log under `<cache_dir>/logs/`.
+
 The generic engine (`selfcal_scripts/runner/`) reads the config, asks the
 **instrument** for geometry and the **mode** for the calibration recipe, and
 sequences staging → setup_lsqr → apply_lsqr → save → mosaic. It never references
@@ -27,18 +34,26 @@ a telescope or a specific calibration variant by name.
 | `k2_readout` | cal / k2_readout | `experiments/run_cal_k2_readout.py` |
 | `tiled_nep` | tiled / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
 | `multiline_nep` | tiled / multiline | (workspace `spectral-pah-fit` campaign) |
+| `sep_d4_npass` | npass / multiline (J=2, W/E tiles, n=8) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
+| `nep_d4_npass` | npass / multiline (J=4, 16 overlap tiles, n=4) | passes 2+ on top of `multiline_nep` |
+| `nep_d4_probe1k_npass` | npass / multiline (J=4, 1k-frame probe) | the multiline stability probe |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
 | `precompute` | precompute | `drivers/precompute_lvf_params.py` |
 
 ## Schema
 
-**Top-level (generic)** — `task` (`cal`|`tiled`|`reproject`|`precompute`),
-`mode` (cal/tiled only), `output_dir`, `run_name` (may contain `{detector}`),
+**Top-level (generic)** — `task` (`cal`|`tiled`|`npass`|`reproject`|`precompute`),
+`mode` (cal/tiled/npass only), `output_dir`, `run_name` (may contain `{detector}`),
 `resolution_arcsec`, `cache_dir`, `suffix`, `oversample`, `staging`
 (`copy`|`reuse`), `keep_nvme`, `hdd_io_limit`, `apply_n_threads`. Optional
 operational knobs: `n_frames` (limit to first N sorted reproj files),
-`skip_mosaic`, `reproj_override` (run directly against an existing reproj dir,
-no staging), `postprocess` (named subframe hook).
+`skip_mosaic`, `wavelength_coadd` (default `true`; `false` builds the mosaic
+without the LVF `wav_mean`/`wav_std` maps — they sigma-clip against the std
+map, so leaving it on requires `[mosaic]` `make_std_map` plus either
+`apply_sigma_clipping` (coadded inside the sigma-clip pass, no extra pass) or
+`cache_intermediate` (standalone coadd over the cache)), `reproj_override` (run directly
+against an existing reproj dir, no staging), `postprocess` (named subframe
+hook).
 
 **`[instrument]`** — instrument-specific. SPHEREx: `name = "spherex"`, `detector`,
 `num_sub`/`num_ch`/`num_col`, `calib_dir`, and exactly one channel selector:
@@ -48,7 +63,12 @@ no staging), `postprocess` (named subframe hook).
 
 **`[params]`** — mode knobs. continuum/pahfit: `reg_weight`, `poly_degree`,
 `poly_weight` (omit `poly_weight` to disable the column poly-constraint),
-`line_fisher_threshold` (pahfit). k2_readout: `reg_weight`, `readout_reg_weight`.
+`line_fisher_threshold` (pahfit). pahfit_subch/pahfit_lvf: the above +
+`subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/`subch_poly_hi`/`subch_tot`;
+pahfit_lvf adds `line_template_npz` (+ `line_template_norm`); pahfit_lvf_polybasis
+uses the hard poly-basis offset (`subch_poly_degree`/`_lo`/`_hi`, no weight) with
+the template sky (== `multiline` with one `[[params.lines]]` block).
+k2_readout: `reg_weight`, `readout_reg_weight`.
 tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 `subch_poly_hi`/`subch_tot`. multiline: `subch_poly_degree`/`subch_poly_lo`/
 `subch_poly_hi` (hard poly-basis offset), `line_fisher_threshold`, and one
@@ -65,6 +85,37 @@ tiled: the above + `subch_poly_degree`/`subch_poly_weight`/`subch_poly_lo`/
 EITHER a uniform grid `grid = [n_y, n_x]` + `overlap_px` + `tile_names`, OR an
 explicit `tiles = [{name, bbox=[y0,y1,x0,x1]}, ...]` list of arbitrary/overlapping
 tiles for the adaptive-overlap layout; `line` toggles the spectral-block stitch).
+
+**`[passes]`** (npass task — the N-pass alternating solve, see the "N-pass
+alternating solve" section of [PIPELINE.md](../../PIPELINE.md)): `n` (number
+of passes; `1` == the legacy `cal`/`tiled` solve, byte-equal), `stop_tol`
+(stop after a SKY pass whose per-block step RMS is below it; `0` = run all
+`n`), `sky_merge` (`combine` = exact additive moments, default; `stitch` =
+Fisher stitch, legacy), `order` (`sky_first` default, or `offset_first` =
+INIT → OFFSET → SKY → … — prefer it whenever pass 1 is **tiled**, it removes
+the seam-adjacent lobes the per-tile INIT gauges otherwise leave in the first
+exact sky; it ends on a sky for odd `n`), `keep_moments` (retain the per-tile
+moment dumps, ~23 GB each at J=4; they are deleted after the combine by
+default), and the per-pass-type clip knobs `init = {outlier_thresh,
+subch_clip, ignore_list}` (pass 1 only; omit to reproduce the legacy clip),
+`sky = {outlier_thresh, subch_clip}`, `offset = {poly_degree, outlier_thresh,
+subch_clip, bright_cut, min_pix, segments}` — `segments` (optional, e.g.
+`[[200, 259], [260, 320]]`, inclusive subchannel ranges inside
+`subch_poly_lo..hi`) fits an independent degree-`poly_degree` Chebyshev per
+column on each segment instead of one over the whole window; use it when the
+window is wide, since a single polynomial over ~120 subchannels resolves 2×
+less per-frame subchannel structure than the same degree over 60 and a higher
+global degree extrapolates wildly wherever a frame's coverage is partial (see
+PIPELINE.md); `ridge` (default `0` = plain least squares) adds a Tikhonov term
+on the shape/level coefficients, λ² = ridge² × the median diagonal of DᵀD, so a
+segment a frame barely covers is held near zero instead of extrapolating —
+pair it with `segments` (SEP: `ridge = 0.03`). The joint INIT solve of the `multiline`
+mode takes the same segmentation as `[params].subch_poly_segments` (an independent
+degree-`subch_poly_degree` shape per column on each segment, plus a level per segment
+after the first). Pass 1 runs through `run_tiled` when
+`[tiled]` is present (its tiles are then the memory tiling of every SKY pass;
+overlapping tiles are de-duplicated first-tile-wins), else through
+`run_calibration`. A re-run resumes: passes whose product exists are skipped.
 
 ## Adding a calibration variant (mode)
 

@@ -1,0 +1,109 @@
+# SEP D4 with the FULL NEP component set (aromatic 3.289 + aliphatic 3.400 +
+# plateau 3.470 um, J = 4), N-PASS with offset-first ordering.
+#
+# Why this is not a variant of sep_d4_npass.toml: that run's subchannel window
+# (200-259) spans BC 3.161-3.430 um, which does not contain the plateau centre
+# (3.470) at all and cuts the aliphatic's red wing. The full component set needs
+# the NEP window (200-320 -> BC 3.161-3.724 um), which is a different offset
+# model and a different sky model, so pass 1 is a FRESH joint solve -- the
+# existing J=2 W/E cals cannot be reused.
+#
+# Tiling: 121 subchannels x J=4 makes the 2 W/E halves (~9,600 frames each) far
+# too large; INIT is split into 6 frame-balanced tiles (~3,210 frames each,
+# matching the 2,937-frame NEP big6 tiles that measured 240 GB peak). The
+# structure mirrors NEP big6: 3 y-bands x 2 x-columns, disjoint, halo 0. The
+# middle band is thinner than a frame footprint (3,157 px) -- as on NEP, that
+# truncates wavelength diversity in the INIT only; the OFFSET pass re-levels
+# every frame against one sky and the SKY passes are exact full-field solves.
+task = "npass"
+mode = "multiline"
+
+output_dir = "/data3/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+cache_dir = "/home/thomasli/selfcal-project/selfcal/cache/"
+suffix = "_multiline3_SEP6_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+oversample = 2
+skip_mosaic = true
+apply_n_threads = 32
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 3
+subch_window = [200, 321]
+window_name = "Multiline3"
+
+[params]
+subch_poly_degree = 2
+subch_poly_lo = 200
+subch_poly_hi = 320
+line_fisher_threshold = 10.0
+
+[[params.lines]]
+name = "aromatic"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aromatic_3p289.npz"
+damp_weight = 5e-3
+
+[[params.lines]]
+name = "aliphatic"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/aliphatic_3p400.npz"
+damp_weight = 5e-3
+
+[[params.lines]]
+name = "plateau"
+template_npz = "/home/thomasli/selfcal-project/selfcal/selfcal/instruments/spherex/data/line_templates/plateau_3p470.npz"
+damp_weight = 5e-3
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 5e-3
+max_workers = 48
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 300
+precondition = true
+solver = "lsqr"
+
+[tiled]
+ref_shape = [12343, 12303]
+full_reproj_dir = "/mnt/md124/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/reprojected"
+frame_glob = "exp_*_det_00.h5"
+frame_filter = "center"
+halo = 0
+nvme_subdir = "reproj_nvme_SEP_D4_npass"
+stitched_suffix = "_multiline3_SEP6of_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2"
+line = true
+rss_guardrail = true
+# frame-balanced over the 19,269 centres (3,205-3,217 per tile), disjoint
+tiles = [
+  { name = "S01", bbox = [0, 5031, 0, 6294] },
+  { name = "S02", bbox = [0, 5031, 6294, 12303] },
+  { name = "S03", bbox = [5031, 6508, 0, 6376] },
+  { name = "S04", bbox = [5031, 6508, 6376, 12303] },
+  { name = "S05", bbox = [6508, 12343, 0, 5375] },
+  { name = "S06", bbox = [6508, 12343, 5375, 12303] },
+]
+
+[passes]
+n = 5                     # INIT, OFFSET, SKY, OFFSET, SKY -- odd n ends on a sky
+order = "offset_first"
+stop_tol = 0.0
+sky_merge = "combine"
+# the SEP field contains the LMC; keep the SEP recipe's tighter per-subchannel
+# INIT clip rather than the NEP's whole-frame 5 sigma
+init   = { outlier_thresh = 2.5, subch_clip = true, ignore_list = [21] }
+sky    = { outlier_thresh = 5.0, subch_clip = true }
+offset = { poly_degree = 4, outlier_thresh = 2.5, subch_clip = true, bright_cut = 0.05, min_pix = 5000 }

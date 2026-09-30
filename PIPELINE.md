@@ -122,15 +122,80 @@ Key knobs:
 - For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape)` — diagonal-LS over the full offset region.
 - `iter_lim=50` is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
 - `precondition=True` (column-norm) is essential — much faster convergence.
+- **The transpose product, and what "statistical equality" means here.**
+  `A^T @ y` is a scatter into output columns, so it cannot be threaded
+  without changing the order in which each column's contributions are
+  summed. The default kernel is ROW-SPLIT: each thread owns a contiguous row
+  range and a private output buffer, and the buffers are reduced in a fixed
+  order afterwards. That is deterministic for a given thread count (the same
+  config on the same machine reproduces the same bytes) but not bit-identical
+  to the one-chain sequential product: a float32 reassociation of ~1e-7 per
+  product that reaches the converged maps at ~1e-6 of their own values;
+  integer coverage, Fisher and separability outputs are untouched. Measured
+  on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
+  (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
+  capped so the private buffers stay under `SELFCAL_RMATVEC_BUFFER_GB`
+  (default 16); `SELFCAL_PARALLEL_RMATVEC=<n>` pins it, and `=1` selects the
+  sequential kernel — the byte-exact verification mode the pre-2026-09-10
+  goldens were made with. In practice the count equals `apply_n_threads` for
+  every production tile: the buffer cap binds only when compaction is off
+  (803 M uncompacted columns x 32 threads would want 103 GB), so all tiles of
+  one mosaic are treated identically — but **keep `apply_n_threads` fixed
+  across the tiles you intend to stitch**, since the solution depends on the
+  count at the reassociation level. How much depends on how converged the
+  solve is: a converged 1k-frame solve moves by ~1e-6 of each pixel's noise,
+  while a deliberately under-converged 30-iteration template fit moves by
+  ~1e-3 of it — and two different thread counts differ from each other by as
+  much as either differs from the sequential kernel.
+- **Column compaction is always on**, template-mode maps included. The solve
+  runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
+  tile), which removes ~17 GB of n-space vectors and is what makes the
+  row-split buffers affordable. The compact solve differs from the
+  uncompacted one at ~5e-6 relative (n-space reductions regroup), the same
+  class of difference as the row-split product. `compact_zero_columns=False`
+  is a debugging escape hatch.
+- **Column-partitioned storage.** Above the `SELFCAL_BLOCK_NNZ` threshold,
+  `setup_lsqr` writes the matrix as **storage blocks x column ranges** (one
+  block per spill batch and per constraint block), placing rows with scipy's
+  `coo_tocsr` in one pass per block. The default is ONE range, i.e.
+  block-major storage with one int32 indptr per block (the same bytes per row
+  as a plain `BlockCSR`, but built without the int64 global indptr and with
+  the per-row sorts threaded). `SELFCAL_RMATVEC_SPLIT=<T>` cuts T column
+  ranges, which only the sequential verification kernel uses (one thread per
+  range folds its columns in the sequential order — the byte-equal parallel
+  transpose product of the 2026-09 byte-equality rounds); T ranges hold
+  `(T-1) * 4 B/row` more indptr, and `SELFCAL_SPLIT_EXTRA_GB` (default 24)
+  halves T until that fits.
 - **Memory env knobs** (defaults need no tuning): `SELFCAL_BLOCK_NNZ` —
-  nnz threshold at which `setup_lsqr` emits an int32 `BlockCSR` instead of a
+  nnz threshold at which `setup_lsqr` emits int32 block storage instead of a
   unified CSR (default `2**31`, the point where scipy would force int64
   indices; outputs are bit-identical either way). `SELFCAL_SPILL_MIN_GB`
   (default 4) / `SELFCAL_SPILL_DIR` (default system tmp) — `Calibrator.apply_lsqr`
   spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
   duration of the solve when they exceed the threshold (exact byte
   round-trip; ~1 min I/O against a multi-hour production solve).
+- **Process pools & the parallel scatter.** Every worker pool (assembly,
+  Phase-4a CSR scatter, coadd) runs on the **forkserver** start method
+  (`SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
+  escape hatch only). Forking a pool from the runner's multi-threaded process
+  can hand a child the stderr lock in a locked state (the RSS guardrail prints
+  every 15 s); the child then hangs at exit and the parent joins it forever —
+  a production tile lost 6 h to this on 2026-09-09. Consequences: (1) entry
+  scripts MUST keep their run code under `if __name__ == "__main__":`
+  (children re-import the main module, the standard multiprocessing rule);
+  (2) shared arrays reach workers as explicit `selfcal.core.shmbuf.SharedBuffer`
+  handles (memfd-backed, fd-passed — no `/dev/shm` size cap), never by fork
+  inheritance. The scatter: `SELFCAL_SCATTER_WORKERS` (default `min(8,
+  max_workers)`; `0`/`1` = the byte-identical serial path) and
+  `SELFCAL_SCATTER_TIMEOUT_S` (default 1800 per batch) — on timeout or a
+  broken pool the remaining batches are re-scattered serially, so an
+  unattended run degrades to slow, never to a hang. Serial and parallel
+  scatters are element-wise identical (pure data movement).
 - `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. Default `n_threads=48` (tuned 2026-05).
+- The solver's elementwise vector updates (`x += t1*w`, `u *= alfa`, ...)
+  run across `SELFCAL_VEC_THREADS` threads (default 8; serial below 16 M
+  elements). Each element depends only on its own inputs, so the split is
+  bit-identical; the reductions (norms) stay one ordered pass.
 
 `det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
 
@@ -178,6 +243,105 @@ the per-frame scalar block seeded from the diagonal-LS estimate. Use
 this whenever `use_per_frame_scalar=True`. For runs without the scalar,
 `compute_x0_from_Ab(A, b, ref_shape)` is the older full-offset warm
 start.
+
+## N-pass alternating solve (task `npass`)
+
+One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
+implemented as the runner task `npass` (`selfcal_scripts/runner/npass.py`;
+primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
+`selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
+
+```
+d_k(p) = Σ_j S_j(p)·c_j(λ_k(p)) + Σ_d a_{k,col(p),d} B_d(sub(p)) + s_k
+```
+
+J sky blocks `S_j` (continuum + line amplitudes; `c_j` = the line template at
+the observation's BC), a hard Chebyshev offset shape per column in subchannel,
+and a per-frame scalar. Given the offsets the sky is **block-diagonal** (one
+J×J normal system per pixel); given the sky the offsets are **independent per
+frame**. The joint problem is therefore solved by alternating least squares
+with each half exact:
+
+| pass | type | solves | mechanism | tiles |
+| --- | --- | --- | --- | --- |
+| 1 | INIT | `S, a, s` jointly | the legacy joint LSQR (`run_tiled` / `run_calibration`) | yes (memory) |
+| even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
+| odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
+
+`n = 1` **is** the legacy single solve (byte-equal; regression gate on a NEP
+production tile). `n = 2` is the two-pass recipe; `n = 4` the SEP 4-pass
+product. Why not just the joint LSQR: it *semi-converges* — the offsets
+converge fast, the low-wavelength-diversity pixels' continuum↔line split does
+not, and past that point the iterate drifts along the exact null spaces
+(uniform line floor ↔ static detector pattern; uniform sky ↔ scalars). Each
+SKY/OFFSET pass is an exact block minimization, so the objective is
+non-increasing in `n`, but drift along the null spaces is not excluded — the
+runner records per-pass monitors in `<stem>_npass_monitor.json` (per-block
+median / % positive / step RMS, offset DC, residual RMS, bright-cut
+fallbacks) and `stop_tol` can stop early; pick `n` from those, not by
+assumption. The remaining zero points (line floor, continuum DC) are
+unobservable from the data in any `n` and need the post-hoc anchors
+(`selfcal/line_floor.py`, `selfcal/zodi_anchor.py`).
+
+Why the SKY passes need no tiles: a pixel's normal equations are sums over its
+observations, so per-tile dumps over **disjoint** frame sets are additive and
+summing them is identical to a single full-field solve — no seam can exist.
+Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
+reads every frame of the field (`[tiled].full_reproj_dir`). Verified at full
+scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
+offsets with a completely different partition (3 vertical bands instead of 6
+blocks) reproduced the product to float32 rounding — 4–87 differing elements
+of 160.6 M, max 4.7e-10 against a p99 signal of 1.7–4.1e-2, Fisher and
+coverage byte-equal, and the median difference **exactly zero in every
+distance bin from either partition's boundaries**.
+
+**The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
+per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
+`subch_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+multi-line window (200–320) captured 3–5× less of the per-frame structure at the
+~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
+window (200–259): the wide fit is constrained by the red-end data, so red-end
+residuals pull the polynomial on the aromatic band, and what it cannot follow
+stays in the residual and projects onto the adjacent line templates as
+frame-coherent stripes (0.64 ×10⁻³ MJy/sr rms at 64–1024 px in the dim sky,
+aromatic–aliphatic stripe correlation +0.52, identical whether the per-pixel
+model is J=2 or J=4). Raising the global degree is *not* the answer — degree 8
+over 121 subchannels extrapolated to ±200 MJy/sr in frames with partial red-end
+coverage. `segments = [[200, 259], [260, 320]]` fits an independent degree-4
+shape on each range (the aromatic band gets exactly the narrow-window basis, the
+red end its own), with nothing to extrapolate. One segment equal to the window is
+bit-identical to the unsegmented basis.
+
+**Ordering matters when INIT is tiled** (`[passes].order`, default
+`sky_first`). Each INIT tile is an independent joint solve, so it picks its own
+gauge along the near-null directions; frames in neighbouring tiles come out on
+mutually inconsistent gauges. A SKY pass fed those offsets has to compromise,
+which puts smooth footprint-scale lobes within ~1 frame footprint of every INIT
+tile edge — and the next OFFSET pass then fits *to* the lobed sky, so the pair
+is self-consistent and the alternation drains it only slowly (still visible at
+pass 4). `order = "offset_first"` runs INIT → OFFSET → SKY → …, re-levelling
+every frame against the one stitched INIT sky before any exact sky exists; its
+first sky has no lobes (measured on the NEP: the pass-3-to-pass-5 step shows
+0.9–1.2× the far-field level at the edges, i.e. flat, versus 2.5–3.8× for the
+sky-first chain's maps). Use it whenever pass 1 is tiled; with an untiled INIT
+there is no gauge mismatch to fix and the extra OFFSET pass is close to a
+no-op. Note the parity: `offset_first` ends on a sky for **odd** `n`
+(`sky_first` for even `n`) — the runner warns when a schedule ends on an OFFSET
+pass, whose product carries no sky map.
+
+Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
+coverage, `sky_separability/<name>`; written by the same
+`selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
+`<stem>_pass{i}off.h5` (`offsets/map_0` + `frame_scalar` + `fit_ok` +
+`resid_rms`, consumable by `OffsetSubtractor`). Re-running the same config
+resumes at the first missing product. Hooks are POSTprocess functions
+(weights are computed on the raw data first); `SkySubtractor.window` handles
+subframes overhanging any map edge (a negative `ref_coords` start is a Python
+negative slice — the SEP LMC-streak bug).
+
+Wall on the 192-core box: SEP (19,269 frames, J=2): SKY pass ≈ 1.5 h (two
+halves + combine), OFFSET ≈ 50 min; NEP 1k probe (J=4, 121 subch): SKY ≈ 45
+min, OFFSET ≈ 4 min.
 
 ## NVMe staging pattern
 
@@ -241,8 +405,8 @@ Datasets:
 - `sub_mapping` `(2, sub_w, sub_w)` float32 — for each subframe pixel,
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
-  the chunk map and (b) sample per-pixel `det_BC` / `det_BW` in
-  `wav_coadd`.
+  the chunk map and (b) sample per-pixel `det_BC` / `det_BW` for the
+  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`).
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
@@ -256,12 +420,17 @@ Sub-frame side length sized to fit the detector diagonal at mosaic
 resolution:
 `sub_width = ceil(sqrt(2) * det_width / (ref_reso/det_reso) * (1 + 2*padding_percentage))`.
 
-Cached intermediates from `coadd.compute_coadd_map(mode='cache')` live in
-`cache_dir` as `cached_<original>.h5` and follow the same schema, but the
-arrays are tightly cropped to the nonzero-weight bbox; an extra
-`sub_bbox` `[rmin, rmax, cmin, cmax]` records that crop in original
-sub-frame coordinates so `wav_coadd` can crop `sub_mapping` to match
-before `map_coordinates`.
+Cached intermediates from the mosaic's cache pass live in `cache_dir` as
+`cached_<original>.h5` in the **sparse** format (`attrs['format'] =
+'sparse-v1'`): only the frame's nonzero-weight pixels are stored —
+`ref_coords` (the nonzero-weight bbox in reference coordinates),
+`sub_bbox` `[rmin, rmax, cmin, cmax]` (the same bbox in original sub-frame
+coordinates), `attrs['shape']` (bbox shape), `mask` (packed bits of
+`weight != 0` over the bbox, row-major), and value vectors in that order:
+`data`, `weight`, optional `aux` `(K, n)`, and `bc` / `bw` (per-pixel LVF
+band centre / width, present when the mosaic was asked for wavelength
+maps). `coadd.read_cached_frame` / `load_cached_frame_dense` read this and
+the legacy dense format (cropped `sub_data` / `sub_weight` arrays).
 
 ## Mosaic `*.fits` schema
 
@@ -272,8 +441,9 @@ header. `EXTNAME` is one of:
 - `MEAN_MAP`, `MEAN_MAP_WEIGHT` — weighted mean and `sum(weight)`.
 - `STD_MAP`, `STD_MAP_WEIGHT` — weighted std and weight.
 - `SC_MEAN_MAP`, `SC_MEAN_MAP_WEIGHT` — sigma-clipped mean and weight.
-- `WAV_MEAN_MAP`, `WAV_STD_MAP` — appended via `Mosaicker.append_maps`
-  after `wav_coadd` (BUNIT=`um`).
+- `WAV_MEAN_MAP`, `WAV_STD_MAP` — LVF wavelength maps (BUNIT=`um`),
+  coadded inside the sigma-clip pass (`make_mosaic(wav_maps=...)`) or, when
+  sigma clipping is off, by the standalone `wav_coadd` over the cache.
 
 Header keys to know:
 - `BUNIT` — taken from `Mosaicker.maps[name]['unit']` (`'MJy/sr'` for sky

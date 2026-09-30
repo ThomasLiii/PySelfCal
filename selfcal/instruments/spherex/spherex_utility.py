@@ -638,7 +638,9 @@ def make_stripped_chunk_valid_mask(ch=None, subch=None, num_subchannels=10, num_
     chunk_valid_mask = make_chunk_valid_mask(subchannel_valid_mask, num_columns=num_columns)
     return chunk_valid_mask
 
-def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=False):
+def _stripped_offset_spline(chunk_offset, chunk_valid_mask, r_edges, x_edges, tot_subchannels,
+                            num_columns, fill_invalid):
+    """The mean-preserving (arc radius, x) spline of one frame's chunk offsets."""
     reshaped_offset = chunk_offset.reshape(tot_subchannels, num_columns)[1:-1]
     reshaped_valid_mask = chunk_valid_mask.reshape(tot_subchannels, num_columns)[1:-1]
 
@@ -650,7 +652,21 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     trimmed_r_edges = r_edges[y_slice.start : y_slice.stop + 1]
     trimmed_x_edges = x_edges[x_slice.start : x_slice.stop + 1]
 
-    spl = mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, x_degree=3, y_degree=3)
+    return mean_preserving_spline_2d(trimmed_r_edges, trimmed_x_edges, trimmed_offset, x_degree=3, y_degree=3)
+
+
+def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, lvf_params, r_edges, x_edges, tot_subchannels, num_columns, fill_invalid=False, needed=None):
+    """Render one frame's chunk offsets as a smooth detector-grid offset map.
+
+    ``needed`` (flat indices into the grid) evaluates the spline only at those
+    pixels and returns them as a 1-D array in that order.  The spline is
+    evaluated pointwise, and the pixel coordinates are the same ``arange``
+    values the full mesh is built from, so the subset is bit-identical to
+    ``full.ravel()[needed]`` — the mosaic uses it because a single-channel
+    frame samples ~3 % of the grid.
+    """
+    spl = _stripped_offset_spline(chunk_offset, chunk_valid_mask, r_edges, x_edges,
+                                  tot_subchannels, num_columns, fill_invalid)
 
     xc, yc = lvf_params['xc'], lvf_params['yc']
 
@@ -659,7 +675,14 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     subpixel_shift = 0.5 / oversample_factor
     det_size = 2040
     increment = 1 / oversample_factor
-    x_mesh, y_mesh = np.meshgrid(np.arange(subpixel_shift, det_size+subpixel_shift, increment), np.arange(subpixel_shift, det_size+subpixel_shift, increment))
+    axis = np.arange(subpixel_shift, det_size+subpixel_shift, increment)
+    if needed is not None:
+        ii, jj = np.divmod(np.asarray(needed), w)
+        x_pts = axis[jj]
+        y_pts = axis[ii]
+        r_pts = np.sqrt((y_pts - yc)**2 + (x_pts - xc)**2)
+        return spl(r_pts, x_pts)
+    x_mesh, y_mesh = np.meshgrid(axis, axis)
     r_mesh = np.sqrt((y_mesh - yc)**2 + (x_mesh - xc)**2)
     
     offset_map = spl(r_mesh, x_mesh)

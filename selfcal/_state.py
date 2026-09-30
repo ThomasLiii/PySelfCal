@@ -9,12 +9,14 @@ __all__ = ["set_hdd_io_limit", "set_progress"]
 # on a RAID array, seek thrashing kills throughput. Uses multiprocessing.BoundedSemaphore
 # so it works across both threads (ThreadPoolExecutor) and forked processes (Pool).
 _hdd_io_semaphore = None
-_coadd_flush_lock = None
+_coadd_turn = None
 
-def _init_coadd_worker(lock):
-    """Pool initializer: store the multiprocessing Lock as a module global."""
-    global _coadd_flush_lock
-    _coadd_flush_lock = lock
+def _init_coadd_worker(cond, counters):
+    """Pool initializer for the coadd workers: the striped turnstile — a
+    Condition plus one per-row-stripe batch counter — that orders the
+    per-batch flushes into the shared totals."""
+    global _coadd_turn
+    _coadd_turn = (cond, counters)
 
 def set_hdd_io_limit(n: int | None) -> None:
     """Set the max number of concurrent file reads from slow storage.
