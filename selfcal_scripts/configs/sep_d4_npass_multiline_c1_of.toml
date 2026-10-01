@@ -4,7 +4,7 @@
 # identical to sep_d4_npass_multiline_of.toml (6 frame-balanced tiles, iter 300, n = 5).
 # The frame tag carries NumCol1, so no product name collides with the NumCol3 runs.
 task = "npass"
-mode = "multiline"
+mode = "spectral_polybasis"
 
 output_dir = "/data3/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
@@ -25,9 +25,9 @@ subch_window = [200, 321]
 window_name = "Multiline3"
 
 [params]
-subch_poly_degree = 2
-subch_poly_lo = 200
-subch_poly_hi = 320
+spectral_poly_degree = 2
+spectral_poly_lo = 200
+spectral_poly_hi = 320
 line_fisher_threshold = 10.0
 
 [[params.lines]]
@@ -65,7 +65,7 @@ iter_lim = 300
 precondition = true
 solver = "lsqr"
 
-[tiled]
+[tiling]
 ref_shape = [12343, 12303]
 full_reproj_dir = "/mnt/md124/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/reprojected"
 frame_glob = "exp_*_det_00.h5"

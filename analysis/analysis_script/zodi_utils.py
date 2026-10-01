@@ -25,6 +25,7 @@ _SELFCAL_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
+from selfcal.io.calfile import CalFile
 from selfcal.io.reproj import load_reproj_file
 from selfcal.instruments.spherex.spherex_utility import make_stripped_chunk_valid_mask
 
@@ -118,23 +119,21 @@ def load_cal_offsets(path_or_file):
     ``det_groups``) is folded into map 0 so single-map analysis code that
     only reads ``[0]`` sees the same total bias the legacy schema baked in.
 
-    Accepts either a path-like or an already-open ``h5py.File``.
+    Accepts a path-like, an open :class:`selfcal.io.calfile.CalFile`, or an
+    already-open ``h5py.File``; the reading is ``CalFile.total_offsets``.
     """
-    if isinstance(path_or_file, h5py.File):
-        return _read_cal_offsets(path_or_file)
-    with h5py.File(path_or_file, 'r') as f:
-        return _read_cal_offsets(f)
+    if isinstance(path_or_file, CalFile):
+        return dict(enumerate(path_or_file.total_offsets()))
+    path = path_or_file.filename if isinstance(path_or_file, h5py.File) else path_or_file
+    with CalFile(path) as cal:
+        return dict(enumerate(cal.total_offsets()))
 
 
-def _read_cal_offsets(f):
-    if 'offsets' in f:
-        K = int(f.attrs.get('num_maps', len(f['offsets'])))
-        offsets = {m: f['offsets'][f'map_{m}'][:] for m in range(K)}
-        if 'frame_scalar' in f:
-            scalar = f['frame_scalar'][:][:, None]
-            offsets[0] = offsets[0] + scalar
-        return offsets
-    return {0: f['offset'][:]}
+def cal_reproj_list(detector, channel):
+    """The per-frame reprojected-file paths of one channel's cal (the axis-0
+    order of its offsets)."""
+    with CalFile(cal_path(detector, channel)) as cal:
+        return cal.reproj_list
 
 
 def load_single_channel_offset(detector, channel,
@@ -163,10 +162,9 @@ def load_single_channel_offset(detector, channel,
     reproj_list : list[str]
         Per-frame reproj HDF5 paths (axis-0 ordering of `raw_offset`).
     """
-    path = cal_path(detector, channel)
-    with h5py.File(path, 'r') as f:
-        raw_offset = load_cal_offsets(f)[0]
-        reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+    with CalFile(cal_path(detector, channel)) as cal:
+        raw_offset = load_cal_offsets(cal)[0]
+        reproj_list = cal.reproj_list
     if apply_anchor:
         if load_anchor_for(detector) is None:
             print(f"  [zodi_utils] apply_anchor=True but no anchor file for "

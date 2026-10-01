@@ -2,6 +2,8 @@
 
 import inspect
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.ndimage import map_coordinates
 
@@ -9,6 +11,38 @@ from ..io.reproj import load_reproj_file
 from ..geometry.map_helper import (bit_to_bool, make_weight, make_linear_interp_matrix,
                         chunk_to_det, det_to_sub, compute_chunk_contrib)
 
+
+
+@dataclass
+class FrameContext:
+    """What a per-frame hook (``preprocess_func`` / ``postprocess_func`` of
+    ``setup_lsqr`` / ``make_mosaic``) receives: the frame's identity and its
+    subframe arrays. A hook returns the (possibly modified) ``sub_data``.
+
+    ``stage`` is ``'pre'`` (right after loading: no offsets subtracted, no
+    weights, no aux maps yet) or ``'post'`` (after offsets, weights and aux
+    maps). A ``'post'`` hook may instead return ``(sub_data, sub_weight)`` to
+    reweight the observations too (e.g. an inverse-variance weight). ``sub_mapping`` holds the detector ``(x, y)`` coordinates of every
+    subframe pixel; ``ref_coords`` the subframe's ``[y0, y1, x0, x1]`` on the
+    reference grid. Dict-style access (``ctx['sub_data']``) is kept for
+    hooks written against the old ``locals()`` contract.
+    """
+    stage: str
+    file: str
+    exp_idx: int
+    det_idx: int
+    ref_coords: object
+    sub_data: np.ndarray
+    sub_weight: np.ndarray
+    sub_mapping: object
+    chunk_maps: object = ()
+    sub_aux: object = None
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
 def _valid_row_mask(coords_yx, grid_valid_weight):
     """Rows whose bilinear sample of ``grid_valid_weight`` is finite and > 0.
@@ -109,7 +143,12 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     extras : dict or None
         If given, receives ``extras['sub_mapping']`` (the raw detector
         coordinate map of the frame) for callers that need it after the
-        call, e.g. the coadd's band-centre/width sampling.
+        call, e.g. the coadd's band-centre/width sampling. When it holds
+        ``extras['layers']`` (names), those per-observation planes of the
+        frame file (``layers/<name>``, written by the reprojection or by
+        :func:`selfcal.io.frames.write_frame`) are read in the same file
+        access and returned as ``extras['layer_values']`` (``{name: array}``
+        on the subframe grid) — the source of *layer* data variables.
 
     Returns
     -------
@@ -131,7 +170,15 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:
         fields.append('sub_bitmask')
+    layer_names = tuple(extras.get('layers') or ()) if extras is not None else ()
+    fields.extend(f'layers/{name}' for name in layer_names)
     result = load_reproj_file(file, fields=fields)
+    if layer_names:
+        missing = [n for n in layer_names if result.get(f'layers/{n}') is None]
+        if missing:
+            raise ValueError(f"frame {file} has no layer(s) {missing}: a data variable reads them "
+                             f"(write them with the reader's layers or selfcal.io.frames.write_frame)")
+        extras['layer_values'] = {n: result[f'layers/{n}'] for n in layer_names}
 
     sub_data = result['sub_data']
     ref_coords = result['ref_coords']
@@ -143,7 +190,9 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         extras['sub_mapping'] = sub_mapping
 
     if preprocess_func is not None:
-        sub_data = preprocess_func(locals())
+        sub_data = preprocess_func(FrameContext(
+            stage='pre', file=file, exp_idx=exp_idx, det_idx=det_idx, ref_coords=ref_coords,
+            sub_data=sub_data, sub_weight=sub_weight, sub_mapping=sub_mapping, chunk_maps=chunk_maps))
 
     # Compute bilinear interpolation matrix for mapping between chunk and subframe.
     # Infer the detector-grid shape from whichever detector-space input is
@@ -290,13 +339,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                 else:
                     total_grid_offset = total_grid_offset + grid_offset_m
             if total_grid_offset is not None:
-                sub_offset = det_to_sub(total_grid_offset, interp_matrix=interp_matrix)
+                sub_offset = det_to_sub(total_grid_offset, interp_matrix=interp_matrix, sub_shape=sub_data.shape)
                 sub_data -= sub_offset
 
         # Apply valid weight
         if grid_valid_weight is not None:
             if interp_matrix is not None:
-                sub_valid_weight = det_to_sub(grid_valid_weight, interp_matrix=interp_matrix)
+                sub_valid_weight = det_to_sub(grid_valid_weight, interp_matrix=interp_matrix, sub_shape=sub_data.shape)
                 sub_weight *= sub_valid_weight
             else:
                 # no row can carry weight (empty bbox on the mosaic path)
@@ -305,7 +354,8 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         sub_aux = None
         if det_aux is not None:
             if interp_matrix is not None:
-                sub_aux = np.array([det_to_sub(det_aux_data, interp_matrix=interp_matrix) for det_aux_data in det_aux])
+                sub_aux = np.array([det_to_sub(det_aux_data, interp_matrix=interp_matrix, sub_shape=sub_data.shape)
+                                    for det_aux_data in det_aux])
             else:
                 sub_aux = np.zeros((len(det_aux),) + sub_data.shape, dtype=np.float32)
 
@@ -317,7 +367,15 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
             chunk_contribs = [compute_chunk_contrib(cm, interp_matrix) for cm in chunk_maps]
 
     if postprocess_func is not None:
-        sub_data = postprocess_func(locals())
+        out = postprocess_func(FrameContext(
+            stage='post', file=file, exp_idx=exp_idx, det_idx=det_idx, ref_coords=ref_coords,
+            sub_data=sub_data, sub_weight=sub_weight, sub_mapping=sub_mapping, chunk_maps=chunk_maps,
+            sub_aux=sub_aux))
+        if isinstance(out, tuple):              # (sub_data, sub_weight): the hook reweights too
+            sub_data, new_weight = out
+            sub_weight = np.asarray(new_weight, dtype=sub_weight.dtype)
+        else:
+            sub_data = out
 
     # Check for NaNs and set corresponding weights to 0
     nan_mask = np.isnan(sub_data)

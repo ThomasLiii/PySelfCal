@@ -2,11 +2,11 @@
 
 Model, per frame *k* and reference pixel *p*::
 
-    d_k(p) = Σ_j S_j(p) c_j(λ_k(p)) + Σ_d a_{k,g(p),d} B_d(u(p)) + s_k
+    d_k(p) = Σ_j S_j(p) c_j(v_k(p)) + Σ_d a_{k,g(p),d} B_d(u(p)) + s_k
 
-with J sky blocks ``S_j`` (block 0 = continuum, ``c_0 ≡ 1``; the others are
-:class:`~selfcal.models.sky_model.SpectralComponent` amplitudes with profile
-coefficients ``c_j`` evaluated at the observation's wavelength), a per-frame
+with J sky terms ``S_j``, each a per-pixel map times its coefficient ``c_j``
+of the observation's data variables ``v`` (``c ≡ 1`` for a constant term; see
+:mod:`selfcal.models.sky_model`), a per-frame
 offset that is a mean-zero Chebyshev shape ``B_d`` in an abstract per-chunk
 coordinate ``u`` (SPHEREx: the subchannel) with one polynomial per group ``g``
 (SPHEREx: the detector column), and a per-frame scalar ``s_k``.
@@ -47,12 +47,14 @@ from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
 from ..models.offset_basis import eval_offset_basis
+from ..models.offset_structure import group_aux_edges
+from ..io.calfile import CalFile
 
 __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
     "OffsetSubtractor", "SkySubtractor",
     "refit_offsets_per_frame", "dump_moments", "combine_moments", "write_sky_cal",
-    "sky_monitors", "offset_monitors",
+    "sky_monitors", "offset_monitors", "append_monitor",
 ]
 
 
@@ -60,40 +62,16 @@ __all__ = [
 # small helpers
 # --------------------------------------------------------------------------- #
 def group_wavelength_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=50):
-    """Wavelength bin edges (midpoints between consecutive per-group mean
-    wavelengths) for the per-group outlier clip (``outlier_subchannel_edges``).
-
-    ``group_of_chunk[chunk]`` maps a chunk id to its clip group (SPHEREx: the
-    subchannel). Groups with fewer than ``min_pixels`` valid pixels are skipped.
-    """
-    w = np.asarray(det_wavelength, dtype=np.float64)
-    cm = np.asarray(det_chunk_map)
-    grp = np.where(cm >= 0, np.asarray(group_of_chunk)[np.maximum(cm, 0)], -1)
-    ngrp = int(grp.max()) + 1
-    mean = np.full(ngrp, np.nan)
-    valid = np.isfinite(w) & (w > 0) & (grp >= 0)
-    cnt = np.bincount(grp[valid].ravel(), minlength=ngrp)
-    sums = np.bincount(grp[valid].ravel(), weights=w[valid].ravel(), minlength=ngrp)
-    ok = cnt >= min_pixels
-    mean[ok] = sums[ok] / cnt[ok]
-    ws = np.sort(mean[ok])
-    return 0.5 * (ws[:-1] + ws[1:])
+    """Wavelength bin edges between consecutive chunk groups for the grouped
+    outlier clip — :func:`selfcal.models.offset_structure.group_aux_edges`."""
+    return group_aux_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=min_pixels)
 
 
 def sky_damp_weights(sky_model, damp_weight, damp_weight_line=None):
-    """Per-block damping weights, mirroring ``Calibrator.solve_sky_closed_form``:
-    block 0 gets ``damp_weight``; each spectral component its own ``damp_weight``
-    if set, else ``damp_weight_line`` (0 when neither is given)."""
-    dws = [float(damp_weight or 0.0)]
-    for comp in sky_model.components[1:]:
-        w = getattr(comp, "damp_weight", None)
-        if w is not None:
-            dws.append(float(w))
-        elif damp_weight_line is not None:
-            dws.append(float(damp_weight_line))
-        else:
-            dws.append(0.0)
-    return dws
+    """Per-term damping weights (``SkyModel.damp_weights``: a term's own
+    ``damp_weight`` when set, else ``damp_weight`` for the first term and
+    ``damp_weight_line`` for the others)."""
+    return sky_model.damp_weights(damp_weight or 0.0, damp_weight_line)
 
 
 def _basename(p):
@@ -122,12 +100,14 @@ class OffsetSubtractor:
         self.cm = None
         n_dup = 0
         for path in cal_paths:
-            with h5py.File(path, "r") as f:
-                off = f["offsets/map_0"][:]
-                sc = f["frame_scalar"][:] if "frame_scalar" in f else np.zeros(off.shape[0])
-                cm = f["chunk_maps/map_0"][:]
-                names = [_basename(r) for r in f["reproj_list"][:]]
-                ok = f["fit_ok"][:] if "fit_ok" in f else np.ones(off.shape[0], bool)
+            with CalFile(path) as cal:
+                off = cal.offsets[0]
+                sc = cal.frame_scalar
+                sc = np.zeros(off.shape[0]) if sc is None else sc
+                cm = cal.chunk_maps[0]
+                names = [_basename(r) for r in cal.reproj_list]
+                ok = cal.fit_ok
+                ok = np.ones(off.shape[0], bool) if ok is None else ok
             if self.cm is None:
                 self.cm = cm
             elif self.cm.shape != cm.shape or not np.array_equal(self.cm, cm):
@@ -145,35 +125,43 @@ class OffsetSubtractor:
               f"|median| {np.median(np.abs(vals))*1e3:.2f}, |max| {np.max(np.abs(vals))*1e3:.1f} "
               f"(1e-3 MJy/sr)", flush=True)
 
-    def __call__(self, loc):
-        sub_data = loc["sub_data"]
-        row = self.by_file.get(os.path.basename(loc["file"]))
+    def __call__(self, ctx):
+        sub_data = ctx.sub_data
+        row = self.by_file.get(os.path.basename(ctx.file))
         if row is None:
             return sub_data
         grid_off = chunk_to_det(self.cm, chunk_data=row)
-        sm = np.asarray(loc["sub_mapping"]).reshape(2, -1)      # [x, y] det coords
+        sm = np.asarray(ctx.sub_mapping).reshape(2, -1)         # [x, y] det coords
         sub_off = map_coordinates(grid_off, sm[::-1], order=1, mode="constant",
                                   cval=0.0).reshape(sub_data.shape)
         return sub_data - sub_off
 
 
 class SkySubtractor:
-    """Subtract a solved sky ``Σ_j S_j(p) c_j(λ)`` at each observation, for any
+    """Subtract a solved sky ``Σ_j S_j(p) c_j(v)`` at each observation, for any
     number of sky blocks.
 
     The J maps are exported once by the parent as ``.npy`` files and memory-
     mapped in each worker (page cache shared across the pool), so J large maps
     cost one copy, not one per worker. ``sky_model`` supplies the component
     names (``sky/<name>`` in the cal) and their coefficient functions;
-    ``aux_keys`` names the entries of the per-pixel aux list
-    (SPHEREx: ``('BC', 'BW')``).
+    ``aux_keys`` names the entries of the per-pixel aux list (default: the sky
+    model's variables in order). ``variables`` (a
+    :class:`~selfcal.models.variables.VariableSet`, frame values aligned with
+    ``frames``) lets the coefficients read every other kind of data variable
+    (per-frame values, sky maps, stored layers, functions); ``None`` keeps the
+    detector-map path.
     """
 
-    def __init__(self, sky_cal, sky_model, export_dir, aux_keys=("BC", "BW")):
+    def __init__(self, sky_cal, sky_model, export_dir, aux_keys=None, variables=None, frames=None):
         self.sky_cal = sky_cal
         self.sky_model = sky_model
         self.names = list(sky_model.names)
-        self.aux_keys = tuple(aux_keys)
+        self.aux_keys = tuple(sky_model.variables) if aux_keys is None else tuple(aux_keys)
+        self.variables = variables
+        self.frame_index = ({os.path.basename(f): i for i, f in enumerate(frames)}
+                            if frames is not None else None)
+        self._last = None
         self.export_dir = export_dir
         self.paths = {n: os.path.join(export_dir, f"{n}.npy") for n in self.names}
         self._maps = None
@@ -217,28 +205,58 @@ class SkySubtractor:
             on_map[ys:ye, xs:xe] = True
         return out, on_map
 
-    def coefficients(self, sub_aux, shape):
-        """``c_j`` per subframe pixel for every block (block 0 is all ones)."""
-        aux = {k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys)
-               if sub_aux is not None and i < len(sub_aux)}
-        out = [None]                     # block 0: continuum, coefficient 1
-        for comp in self.sky_model.components[1:]:
+    def coefficients(self, sub_aux, shape, ctx=None):
+        """``c_j`` per subframe pixel for every term (None for a constant term)."""
+        if self.variables is not None and ctx is not None:
+            from ..models.variables import FrameObservations, ObservationVariables
+            pixels = tuple(np.indices(shape).reshape(2, -1))
+            det = ({k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys) if i < len(sub_aux)}
+                   if sub_aux is not None else {})
+            i = (self.frame_index or {}).get(os.path.basename(ctx.file), 0)
+            v = self.variables
+            layers = {}
+            if v.layers:
+                from ..io.reproj import load_reproj_file
+                got = load_reproj_file(ctx.file, fields=[f'layers/{n}' for n in v.layers])
+                layers = {n: got[f'layers/{n}'] for n in v.layers}
+            fctx = (FrameObservations(file=ctx.file, index=i, pixels=pixels, ref_coords=ctx.ref_coords,
+                                      sub_data=ctx.sub_data, sub_weight=ctx.sub_weight,
+                                      sub_mapping=ctx.sub_mapping) if v.frame_functions else None)
+            aux = ObservationVariables(pixels, index=i, ref_coords=ctx.ref_coords, sub_mapping=ctx.sub_mapping,
+                                       detector=det, frame_values={k: np.asarray(a)[i] for k, a in v.frame.items()},
+                                       sky=v.sky, layers=layers, derived=v.derived,
+                                       frame_functions=v.frame_functions, context=fctx)
+        else:
+            aux = {k: np.asarray(sub_aux[i]) for i, k in enumerate(self.aux_keys)
+                   if sub_aux is not None and i < len(sub_aux)}
+        out = []
+        for comp in self.sky_model.components:
             c = comp.coefficients(aux)
-            out.append(np.asarray(c, dtype=np.float64).reshape(shape))
+            out.append(None if c is None else np.asarray(c, dtype=np.float64).reshape(shape))
         return out
 
-    def predict(self, rc, shape, sub_aux):
-        """Total modelled sky on the subframe grid (float64), and the on-map mask."""
+    def predict(self, rc, shape, sub_aux, ctx=None):
+        """Total modelled sky ``Σ_j c_j S_j`` on the subframe grid (float64), and the on-map mask.
+        Without ``ctx``, the prediction the last ``__call__`` made for the same
+        subframe is returned (the refit asks twice per frame)."""
+        last = self._last
+        if ctx is None and last is not None and last[3] is sub_aux and last[0] == (
+                tuple(np.asarray(rc).tolist()), tuple(shape)):
+            return last[1], last[2]
         maps, on_map = self.window(rc, shape)
-        coef = self.coefficients(sub_aux, shape)
-        pred = maps[0].astype(np.float64)
-        for m, c in zip(maps[1:], coef[1:]):
-            pred = pred + m * c
+        coef = self.coefficients(sub_aux, shape, ctx=ctx)
+        pred = None
+        for m, c in zip(maps, coef):
+            term = m.astype(np.float64) if c is None else m * c
+            pred = term if pred is None else pred + term
         return pred, on_map
 
-    def __call__(self, loc):
-        sub_data = loc["sub_data"]
-        pred, _ = self.predict(loc["ref_coords"], sub_data.shape, loc.get("sub_aux"))
+    def __call__(self, ctx):
+        sub_data = ctx.sub_data
+        pred, on_map = self.predict(ctx.ref_coords, sub_data.shape, ctx.sub_aux, ctx=ctx)
+        # (the same subframe's aux arrays, held so the identity check is sound)
+        self._last = ((tuple(np.asarray(ctx.ref_coords).tolist()), tuple(sub_data.shape)), pred, on_map,
+                      ctx.sub_aux)
         return sub_data - pred
 
 
@@ -279,7 +297,7 @@ def _refit_frame(path):
         valid = sub_weight > 0
         if g["edges"] is not None:
             masked = np.where(valid, sub_data, np.nan)
-            groups = np.digitize(sub_aux[0], g["edges"])
+            groups = np.digitize(sub_aux[g["edges_aux_index"]], g["edges"])
             valid &= ~find_outliers_grouped(masked, groups, threshold=g["thresh"])
         pred, on_map = g["sky"].predict(ref_coords, sub_data.shape, sub_aux)
         valid &= on_map
@@ -330,7 +348,7 @@ def _refit_frame(path):
         return os.path.basename(path), None, np.nan, -1
 
 
-def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, poly_basis,
+def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, poly_basis, edges_key=None,
                             edges=None, ignore_list=(), thresh=2.5, bright_cut=0.05,
                             min_pix=5000, out_h5, max_workers=48, attrs=None, ridge=0.0):
     """OFFSET pass: refit every frame's offset against the fixed sky ``sky``
@@ -345,8 +363,11 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
     diagonal of DᵀD — see ``_refit_frame``; use it with a segmented basis, whose
     per-(segment, column) blocks a frame may barely cover.
     """
+    # the grouped clip bins on the instrument's wavelength variable (edges_key)
+    keys = list(getattr(sky, "aux_keys", ()) or ())
+    edges_aux_index = keys.index(edges_key) if (edges_key is not None and edges_key in keys) else 0
     state = dict(sky=sky, cm=np.asarray(det_chunk_map), grid_valid=grid_valid,
-                 det_aux=det_aux, poly_basis=poly_basis, edges=edges,
+                 det_aux=det_aux, poly_basis=poly_basis, edges=edges, edges_aux_index=edges_aux_index,
                  ignore_list=list(ignore_list), thresh=float(thresh),
                  bright_cut=bright_cut, min_pix=int(min_pix), ridge=float(ridge))
     n_chunks = len(poly_basis["chunk_group"])

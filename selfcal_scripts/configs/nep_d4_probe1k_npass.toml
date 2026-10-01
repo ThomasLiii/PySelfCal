@@ -6,7 +6,7 @@
 # under an EXACT sky solve is the physics risk; judge all four blocks here
 # before the full-NEP run.
 task = "npass"
-mode = "multiline"
+mode = "spectral_polybasis"
 output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
 resolution_arcsec = 6.2
@@ -27,9 +27,9 @@ subch_window = [200, 321]
 window_name = "Multiline3"
 
 [params]
-subch_poly_degree = 2
-subch_poly_lo = 200
-subch_poly_hi = 320
+spectral_poly_degree = 2
+spectral_poly_lo = 200
+spectral_poly_hi = 320
 line_fisher_threshold = 10.0
 
 [[params.lines]]

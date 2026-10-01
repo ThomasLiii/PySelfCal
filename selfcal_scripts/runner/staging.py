@@ -8,6 +8,7 @@ the engine stays readable.
 """
 import glob as glob_module
 import os
+from contextlib import contextmanager
 import shutil
 import sys
 import threading
@@ -17,6 +18,16 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 from selfcal._state import set_hdd_io_limit
+
+
+@contextmanager
+def hdd_throttle(limit):
+    """Throttle concurrent HDD reads to ``limit`` inside the block; unthrottled after."""
+    set_hdd_io_limit(limit)
+    try:
+        yield
+    finally:
+        set_hdd_io_limit(None)
 
 
 def nvme_dir(cache_dir, run_name):
@@ -66,8 +77,8 @@ def prepare_nvme(cfg, reproj_dir, run_name):
     """
     nvme = nvme_dir(cfg.cache_dir, run_name)
     if cfg.staging == 'copy':
-        set_hdd_io_limit(cfg.hdd_io_limit)
-        stage_copy(reproj_dir, nvme, cfg.hdd_io_limit)
+        with hdd_throttle(cfg.hdd_io_limit):
+            stage_copy(reproj_dir, nvme, cfg.hdd_io_limit)
     elif cfg.staging == 'reuse':
         if not os.path.isdir(nvme):
             raise RuntimeError(

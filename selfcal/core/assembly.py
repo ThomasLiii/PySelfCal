@@ -15,9 +15,11 @@ import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import csr_matrix
 
+from ..io.reproj import FrameLoadError
 from .subframe import _prep_subframe
 from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
 from ..models.offset_basis import eval_offset_basis, n_coef
+from ..models.variables import FrameObservations, ObservationVariables
 
 
 def _prep_lsqr(task_params):
@@ -50,6 +52,7 @@ def _prep_lsqr(task_params):
 
     try:
         # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
+        extras = {'layers': task_params.get('layer_names') or ()}
         ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux = _prep_subframe(
             file=reproj_file,
             chunk_offsets=None,
@@ -64,24 +67,49 @@ def _prep_lsqr(task_params):
             oversample_factor=task_params['oversample_factor'],
             valid_threshold=task_params['valid_threshold'],
             postprocess_func=task_params['postprocess_func'],
-            preprocess_func=task_params['preprocess_func']
+            preprocess_func=task_params['preprocess_func'],
+            extras=extras,
         )
 
         sub_h, sub_w = sub_data.shape
+        aux_keys = task_params.get('aux_keys') or []
+
+        def observations(pixels):
+            """The data variables at the subframe ``pixels`` (lazy; see models.variables)."""
+            det = {k: sub_aux[i] for i, k in enumerate(aux_keys)} if sub_aux is not None else {}
+            ctx = None
+            if task_params.get('frame_functions'):
+                ctx = FrameObservations(file=reproj_file, index=index, pixels=pixels, ref_coords=ref_coords,
+                                        sub_data=sub_data, sub_weight=sub_weight,
+                                        sub_mapping=extras.get('sub_mapping'))
+            return ObservationVariables(
+                pixels, index=index, ref_coords=ref_coords, sub_mapping=extras.get('sub_mapping'),
+                detector=det, frame_values=task_params.get('frame_values'),
+                sky=task_params.get('sky_variables'), layers=extras.get('layer_values'),
+                derived=task_params.get('derived_variables'),
+                frame_functions=task_params.get('frame_functions'), context=ctx)
 
         sub_valid = sub_weight > 0
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
             masked = np.where(sub_valid, sub_data, np.nan)
-            # Per-subchannel clip: when subchannel BC edges are supplied and the
-            # BC aux is available, judge each pixel against its OWN subchannel's
-            # sky (find_outliers_grouped) instead of the frame-wide distribution
-            # (find_outliers). Edges None (default) -> whole-frame, byte-identical.
+            # Grouped clip: when group edges and a grouping variable are given,
+            # judge each pixel against its OWN group's distribution
+            # (find_outliers_grouped; SPHEREx: the subchannel, binned from the
+            # band-centre map) instead of the frame-wide one (find_outliers).
+            # Edges None (default) -> whole-frame, byte-identical. A detector
+            # variable is binned on the subframe grid (the historical path);
+            # any other variable at the frame's valid pixels.
             edges = task_params.get('outlier_subchannel_edges')
-            aux_keys = task_params.get('aux_keys') or []
-            if edges is not None and sub_aux is not None and 'BC' in aux_keys:
-                bc_sub = sub_aux[aux_keys.index('BC')]
+            wl_key = task_params.get('outlier_aux_key')
+            if edges is not None and sub_aux is not None and wl_key in aux_keys:
+                bc_sub = sub_aux[aux_keys.index(wl_key)]
                 groups = np.digitize(bc_sub, edges)
                 sub_out = find_outliers_grouped(masked, groups, threshold=outlier_thresh)
+            elif edges is not None and wl_key is not None:
+                pix = np.nonzero(sub_valid)
+                groups = np.digitize(observations(pix)[wl_key], edges)
+                sub_out = np.zeros(sub_valid.shape, dtype=bool)
+                sub_out[pix] = find_outliers_grouped(sub_data[pix], groups, threshold=outlier_thresh)
             else:
                 sub_out = find_outliers(masked, threshold=outlier_thresh)
             sub_valid &= ~sub_out
@@ -100,33 +128,60 @@ def _prep_lsqr(task_params):
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
-        # --- Sky rows: one nnz per sky component per data row ---
-        # The sky block is J sub-blocks of num_sky columns each, one per
-        # SkyModel component (J=1 continuum-only, J=2 adds one spectral-line
-        # component; any J is supported). Each component j contributes a
-        # coefficient over the valid pixels:
-        #   - None  -> identity (continuum): store valid_weight directly.
-        #   - array -> e.g. line profile G(λ) (LineComponent), store w_i * coeff.
-        # Emission order is pixel-major with components interleaved
-        # (S_cols[j::J] = j*num_sky + P). J==1 with an identity coefficient
-        # takes the fast path (no interleave, no multiply) — it emits the
-        # identical entry sequence, and after the final int32/float32 casts
-        # identical bytes, to the general loop; preserve this equivalence
-        # when editing either path. aux maps (BC/BW) are sampled to the
-        # valid pixels and passed by name to each component.
+        # --- Data variables of the valid observations (evaluated on demand) ---
+        # Everything a model function reads — sky coefficients, offset bases,
+        # the observation weight — is a function of these (see
+        # selfcal.models.variables). Nothing is computed unless read.
+        obs = observations(valid_sub_coords)
         sky_components = task_params.get('sky_components')
+        basis_list = task_params.get('basis_list') or [None] * K
+        weight_function = task_params.get('weight_function')
+        factors = []                     # per-observation factors that must be finite
+        if weight_function is not None:
+            wf = np.asarray(weight_function.evaluate(obs), dtype=np.float32)
+            factors.append(wf)
         if sky_components is None:
             J = 1
             sky_coeffs = [None]
         else:
             J = len(sky_components)
-            aux = {}
-            if sub_aux is not None:
-                aux_keys = task_params.get('aux_keys') or []
-                for i, k in enumerate(aux_keys):
-                    aux[k] = sub_aux[i][valid_sub_coords]
-            sky_coeffs = [c.coefficients(aux) for c in sky_components]
+            sky_coeffs = [c.coefficients(obs) for c in sky_components]
+            factors.extend(c for c in sky_coeffs if c is not None)
+        basis_vals = [None if bm is None else bm.evaluate(obs) for bm in basis_list]
+        factors.extend(b for b in basis_vals if b is not None)
+        # An observation whose weight, coefficient or basis value is not finite
+        # carries no information: drop it (weight 0; its rows vanish below)
+        # instead of letting a NaN into the matrix.
+        bad = None
+        for fv in factors:
+            nf = ~np.isfinite(fv)
+            if nf.any():
+                nf = nf if nf.ndim == 1 else nf.any(axis=1)
+                bad = nf if bad is None else (bad | nf)
+        if bad is not None:
+            valid_weight = np.where(bad, np.float32(0), valid_weight).astype(valid_weight.dtype)
+            if weight_function is not None:
+                wf = np.where(bad, np.float32(0), wf)
+            sky_coeffs = [None if c is None else np.where(bad, 0, c).astype(c.dtype) for c in sky_coeffs]
+            basis_vals = [None if b is None else np.where(bad[:, None], 0, b).astype(b.dtype)
+                          for b in basis_vals]
+        if weight_function is not None:
+            valid_weight = (valid_weight * wf).astype(valid_weight.dtype)
 
+        # --- Sky rows: one nnz per sky term per data row ---
+        # The sky block is J sub-blocks of num_sky columns each, one per
+        # SkyModel component (a map times a coefficient c_j of data variables;
+        # any J). Each component contributes its coefficient over the valid
+        # pixels:
+        #   - None  -> identity (a constant term): store valid_weight directly.
+        #   - array -> c_j(v) at each observation, store w_i * c_j.
+        # Emission order is pixel-major with components interleaved
+        # (S_cols[j::J] = j*num_sky + P). J==1 with an identity coefficient
+        # takes the fast path (no interleave, no multiply) — it emits the
+        # identical entry sequence, and after the final int32/float32 casts
+        # identical bytes, to the general loop; preserve this equivalence
+        # when editing either path. The coefficients were evaluated above from
+        # the observations' data variables.
         if J == 1 and sky_coeffs[0] is None:
             S_rows = np.arange(num_valid_pixels)
             S_cols = ref_pix_indices
@@ -155,12 +210,14 @@ def _prep_lsqr(task_params):
             chunk_idx_m = sliced_m.row[nz_m]
             sub_idx_m = sliced_m.col[nz_m]
             chunk_vals_m = sliced_m.data[nz_m]
+            phi_m = basis_vals[m]
             if det_template_list[m] is not None:
                 # Template mode: one alpha column per frame for this map
                 O_rows_parts.append(sub_idx_m)
                 O_cols_parts.append(np.full(len(chunk_idx_m), col_bases[m] + index, dtype=np.int64))
-                O_data_parts.append(valid_weight[sub_idx_m] * chunk_vals_m
-                                    * det_template_list[m][group_idx_list[m], chunk_idx_m])
+                _tv = (valid_weight[sub_idx_m] * chunk_vals_m
+                       * det_template_list[m][group_idx_list[m], chunk_idx_m])
+                O_data_parts.append(_tv if phi_m is None else _tv * phi_m[sub_idx_m, 0])
             elif poly_basis_list[m] is not None:
                 # Hard poly-basis: the offset is a polynomial in an abstract
                 # per-chunk COORDINATE (``chunk_coord``), independent per per-chunk
@@ -174,12 +231,26 @@ def _prep_lsqr(task_params):
                 grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
                 B = eval_offset_basis(coord, pb)                                 # (n, ncf)
                 w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
+                if phi_m is not None:
+                    w_cv = w_cv * phi_m[sub_idx_m, 0]
                 base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
                 coeff_base = grp * ncf                                           # + k below
                 for k in range(ncf):
                     O_rows_parts.append(sub_idx_m)
                     O_cols_parts.append(base + coeff_base + k)
                     O_data_parts.append(w_cv * B[:, k])
+            elif phi_m is not None:
+                # Basis of n known functions of data variables: one unknown per
+                # (group, chunk, function), column g*(n_chunks*n) + c*n + k, entry
+                # w * chunk_val * phi_k(v). n == 1 (a coefficient) keeps the
+                # plain block's columns.
+                nb = phi_m.shape[1]
+                _fw = valid_weight[sub_idx_m] * chunk_vals_m
+                base = col_bases[m] + group_idx_list[m] * num_chunks_list[m]
+                for k in range(nb):
+                    O_rows_parts.append(sub_idx_m)
+                    O_cols_parts.append(base + chunk_idx_m * nb + k)
+                    O_data_parts.append(_fw * phi_m[sub_idx_m, k])
             else:
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
                 O_rows_parts.append(sub_idx_m)
@@ -291,6 +362,8 @@ def _prep_lsqr(task_params):
                 task_params['num_sky_blocks'] * ref_h * ref_w)
         return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
 
+    except FrameLoadError:
+        raise                                   # a missing/corrupt frame is fatal, never silently dropped
     except Exception as e:
         # Runs inside a ProcessPoolExecutor child (_prep_lsqr / the batch
         # worker): children have no configured logging handlers, so a logger
@@ -360,6 +433,15 @@ def _prep_lsqr_batch_worker(batch_params):
             det_aux.append(np.ndarray(shape, dtype=dtype, buffer=shm.buf))
             shm_handles.append(shm)
         shm_arrays['det_aux'] = det_aux
+
+    sky_var_metas = sub_tasks[0].get('sky_var_metas')
+    if sky_var_metas:
+        sky_vars = {}
+        for vname, (name, shape, dtype) in sky_var_metas.items():
+            shm = SharedMemory(name=name)
+            sky_vars[vname] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+            shm_handles.append(shm)
+        shm_arrays['sky_variables'] = sky_vars
 
     if 'gvw_shm_name' in sub_tasks[0]:
         shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])

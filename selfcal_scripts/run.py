@@ -65,13 +65,15 @@ def main():
 
     if args.dry_run:
         inst = get_instrument(cfg.instrument)
-        if cfg.task in ('cal', 'tiled', 'npass'):
+        if cfg.task in ('cal', 'mosaic', 'npass'):
             jobs = inst.jobs(cfg.instrument_cfg)
             print(f"[dry-run] {len(jobs)} job(s): {[j.name for j in jobs]}")
             from selfcal_scripts.runner.modes import get_mode
             mode = get_mode(cfg.mode)
-            print(f"[dry-run] mode={mode.name} pipeline={mode.pipeline} "
-                  f"mosaic_mode={mode.mosaic_mode} requires={mode.requires}")
+            tiling = ("explicit tiles" if cfg.tiling.get('tiles') else "grid") if cfg.tiling else "none"
+            alias = f" (preset of {mode.name})" if mode.requested_name != mode.name else ""
+            print(f"[dry-run] mode={mode.requested_name}{alias} mosaic_mode={mode.mosaic_mode} "
+                  f"requires={mode.requires} tiling={tiling}")
         if cfg.task == 'npass':
             from selfcal_scripts.runner.npass import describe_schedule
             for line in describe_schedule(cfg):

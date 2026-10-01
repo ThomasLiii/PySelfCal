@@ -18,7 +18,7 @@ expands back to the exact parallel-list kwargs ``setup_lsqr`` already consumes,
 so driving ``setup_lsqr`` via an ``OffsetModel`` is numerically identical to
 calling it with the equivalent flat kwargs (verified byte-equal: rerunning a
 reference config through both spellings produces identical ``cal_*.h5`` output;
-regression harness in ``selfcal_scripts/benchmarks/run_cal_baseline_test.py`` +
+byte-equality gates in ``selfcal_scripts/gates/`` +
 ``selfcal_scripts/drivers/diff_cal_h5.py``). The flat parallel-list kwargs
 remain supported but are deprecated; new code should construct an
 ``OffsetModel``.
@@ -37,7 +37,61 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ['OffsetBlock', 'OffsetModel']
+__all__ = ['Basis', 'OffsetBlock', 'OffsetModel']
+
+
+@dataclass(frozen=True)
+class Basis:
+    """``n`` known functions of data variables, evaluated at every observation.
+
+    ``coefficient`` (a :class:`~selfcal.models.sky_model.Coefficient`) names the
+    variables and the function. The function returns, for the ``n_obs``
+    observations of a frame, an ``(n_obs, n)`` array, a sequence of ``n``
+    per-observation arrays (or scalars), or — for ``n == 1`` — one array.
+    :meth:`evaluate` always returns ``(n_obs, n)`` float32.
+    """
+    coefficient: object
+    n: int = 1
+
+    def __post_init__(self):
+        if int(self.n) < 1:
+            raise ValueError(f"a basis needs n >= 1 functions (got {self.n})")
+        object.__setattr__(self, 'n', int(self.n))
+
+    @property
+    def variables(self) -> tuple:
+        return self.coefficient.variables
+
+    @property
+    def main_variables(self) -> tuple:
+        return self.coefficient.main_variables
+
+    def evaluate(self, obs) -> np.ndarray:
+        c = self.coefficient
+        names = c.main_variables
+        x0 = obs[names[0]]
+        n_obs = int(np.shape(x0)[0])
+        f = c.function
+        v = f.evaluate(x0, obs) if hasattr(f, 'evaluate') else f(*[obs[k] for k in names])
+        return as_basis_values(v, n_obs, self.n)
+
+
+def as_basis_values(v, n_obs, n):
+    """Normalise a basis function's result to ``(n_obs, n)`` float32."""
+    if isinstance(v, (list, tuple)):
+        if len(v) != n:
+            raise ValueError(f"a basis of {n} functions returned {len(v)} columns")
+        cols = [np.broadcast_to(np.asarray(c, dtype=np.float64), (n_obs,)) for c in v]
+        return np.stack(cols, axis=1).astype(np.float32)
+    a = np.asarray(v)
+    if a.ndim == 0 and n == 1:
+        return np.full((n_obs, 1), a, dtype=np.float32)
+    if a.ndim == 1 and n == 1 and a.shape[0] == n_obs:
+        return a.astype(np.float32).reshape(n_obs, 1)
+    if a.ndim == 2 and a.shape == (n_obs, n):
+        return a.astype(np.float32)
+    raise ValueError(f"a basis of {n} function(s) over {n_obs} observations returned shape {a.shape}; "
+                     f"expected ({n_obs}, {n}), {n} arrays" + (" or one array" if n == 1 else ""))
 
 
 @dataclass(frozen=True)
@@ -81,6 +135,18 @@ class OffsetBlock:
         ``chunk_group`` (per-chunk coordinate / group-index arrays). When set,
         ``adj_info``/``reg_weight``/``poly_constraints`` for this block are
         ignored (the polynomial is exact, no weight knob).
+    basis : Basis or None
+        ``n`` known functions of data variables multiplying the block
+        (:class:`Basis`). The block's unknowns become one coefficient per
+        (frame group, chunk, function) — column ``g*(n_chunks*n) + c*n + k`` —
+        and observation ``i`` of chunk ``c`` contributes
+        ``chunk_weight(i, c) * phi_k(v_i)``. ``n == 1`` is a *coefficient*: the
+        chunk offset times a known function (a detector pattern times the
+        frame's temperature, a per-frame gain times a previous sky, ...); the
+        column layout is then the plain block's. ``adj_info`` and
+        ``poly_constraints`` are given in the expanded column space (the
+        lowering expands chunk pairs over the functions). ``None``: the
+        classic block (``phi = 1``).
     """
 
     chunk_map: np.ndarray
@@ -91,6 +157,16 @@ class OffsetBlock:
     poly_constraints: object = None
     mean_offset: object = None
     poly_basis: object = None
+    basis: object = None
+
+    def __post_init__(self):
+        b = self.basis
+        if b is None:
+            return
+        if self.poly_basis is not None and b.n != 1:
+            raise ValueError("a hard poly-basis block takes a coefficient (a basis of one function) only")
+        if self.template is not None and b.n != 1:
+            raise ValueError("a template block takes a coefficient (a basis of one function) only")
 
 
 @dataclass(frozen=True)
@@ -102,15 +178,19 @@ class OffsetModel:
 
     def __post_init__(self):
         object.__setattr__(self, 'blocks', tuple(self.blocks))
-        if len(self.blocks) < 1:
-            raise ValueError("OffsetModel needs at least one OffsetBlock")
         for i, b in enumerate(self.blocks):
             if not isinstance(b, OffsetBlock):
                 raise TypeError(f"blocks[{i}] is {type(b).__name__}, expected OffsetBlock")
 
+    @classmethod
+    def sky_only(cls) -> "OffsetModel":
+        """No offset blocks at all: a sky-only solve (the offsets already
+        subtracted from the data by a hook, e.g. the N-pass SKY pass)."""
+        return cls(())
+
     @property
     def num_maps(self) -> int:
-        """Number of offset blocks (maps) in the model."""
+        """Number of offset blocks (maps) in the model; 0 for a sky-only model."""
         return len(self.blocks)
 
     @property
@@ -132,8 +212,8 @@ class OffsetModel:
             The parallel-list ``setup_lsqr`` kwargs: ``chunk_maps``,
             ``det_groups_list``, ``det_templates``, ``reg_weights``,
             ``adj_infos``, ``poly_constraints_list``, ``mean_offsets_list``,
-            ``poly_basis_list`` (each a length-K list indexed by map ``m``),
-            plus the model-level ``use_per_frame_scalar`` flag.
+            ``poly_basis_list``, ``basis_list`` (each a length-K list indexed
+            by map ``m``), plus the model-level ``use_per_frame_scalar`` flag.
         """
         return {
             'chunk_maps': [b.chunk_map for b in self.blocks],
@@ -144,5 +224,6 @@ class OffsetModel:
             'poly_constraints_list': [b.poly_constraints for b in self.blocks],
             'mean_offsets_list': [b.mean_offset for b in self.blocks],
             'poly_basis_list': [b.poly_basis for b in self.blocks],
+            'basis_list': [b.basis for b in self.blocks],
             'use_per_frame_scalar': self.use_per_frame_scalar,
         }

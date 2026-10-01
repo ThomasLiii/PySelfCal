@@ -3,7 +3,7 @@
 # Block 1: detector-fixed per-readout-channel offsets (mean-anchored).
 # Mean-map-only mosaic (no std / sigma-clip / wavelength). NVMe kept for re-runs.
 task = "cal"
-mode = "k2_readout"
+mode = "two_block_fixed"
 
 output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_nep_qr2_det{detector}_6p2arcsec"
@@ -26,7 +26,7 @@ channels = [[3]]
 
 [params]
 reg_weight = 0.1
-readout_reg_weight = 0.0
+second_reg_weight = 0.0
 
 [calibration]
 apply_mask = true

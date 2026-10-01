@@ -11,6 +11,31 @@ from .. import _state
 
 logger = logging.getLogger(__name__)
 
+__all__ = ['load_reproj_file', 'reproj_basename', 'parse_reproj_basename', 'FrameLoadError']
+
+
+def reproj_basename(exp_idx, det_idx):
+    """The file name of a reprojected frame: ``exp_<exposure>_det_<detector>.h5``
+    (the ONE place this convention is spelled; parsers use :func:`parse_reproj_basename`)."""
+    return f'exp_{int(exp_idx):04d}_det_{int(det_idx):02d}.h5'
+
+
+def parse_reproj_basename(name):
+    """``(exp_idx, det_idx)`` of a reprojected frame's file name (or path)."""
+    stem = os.path.basename(name)
+    if stem.endswith('.h5'):
+        stem = stem[:-3]
+    parts = stem.split('_')
+    try:
+        return int(parts[1]), int(parts[3])
+    except (IndexError, ValueError):
+        raise ValueError(f"{name!r} is not a reprojected frame name (expected exp_<n>_det_<m>.h5)") from None
+
+
+class FrameLoadError(RuntimeError):
+    """A reprojected frame could not be read. Raised instead of silently
+    dropping the frame: a missing or corrupt frame changes the solution."""
+
 try:  # optional fast decode of shuffle+zstd datasets (numcodecs ships with zarr)
     from numcodecs import Zstd as _Zstd
     from numcodecs.shuffle import Shuffle as _Shuffle
@@ -72,7 +97,6 @@ def load_reproj_file(file_path, fields):
         raise TypeError("fields must be a list or tuple of strings")
 
     data = {}
-    is_file_missing = False
 
     sem = _state._hdd_io_semaphore
     if sem is not None:
@@ -114,25 +138,19 @@ def load_reproj_file(file_path, fields):
                     data[key] = None
 
         # Parse indices from filename
-        det_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-1])
-        exp_idx = int(os.path.basename(file_path).replace('.h5', '').split('_')[-3])
-        data['det_idx'] = det_idx
-        data['exp_idx'] = exp_idx
+        data['exp_idx'], data['det_idx'] = parse_reproj_basename(file_path)
     except Exception as e:
         # load_reproj_file runs inside _prep_subframe, which executes in
         # multiprocessing children (_prep_lsqr in core/assembly, the coadd
-        # workers in core/coadd). Those children have no configured logging
-        # handlers, so keep print() — a logger call would silently swallow
-        # this fallback report.
-        print(f"Error loading {file_path}: {e}. Will use placeholders.")
-        is_file_missing = True
-        for key in fields:
-            data[key] = None
-        det_idx = None
-        exp_idx = None
+        # workers in core/coadd). The error is raised, not turned into
+        # placeholders: a frame that silently vanished would change the
+        # solution without a trace. Children have no logging handlers, so
+        # also print() the file so the failure is visible in the run log.
+        print(f"Error loading {file_path}: {e}")
+        raise FrameLoadError(f"cannot read reprojected frame {file_path}: {e}") from e
     finally:
         if sem is not None:
             sem.release()
 
-    data['_is_missing_'] = is_file_missing
+    data['_is_missing_'] = False       # kept for older callers; a failed load raises FrameLoadError
     return data

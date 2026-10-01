@@ -2,11 +2,9 @@ import logging
 
 import numpy as np
 
-from scipy.ndimage import gaussian_filter
 from scipy.sparse import coo_matrix, csr_matrix
 
-from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline
-from scipy.optimize import minimize
+from scipy.interpolate import PchipInterpolator, CubicSpline, Akima1DInterpolator, RectBivariateSpline, griddata
 from scipy.ndimage import map_coordinates
 
 logger = logging.getLogger(__name__)
@@ -123,11 +121,6 @@ def find_outliers_grouped(data, group_ids, threshold=3):
         fo[sel[np.abs((d - med) / nmad) > threshold]] = True
     return out
 
-def map_pixels(wcs_in, wcs_out, x_in, y_in):
-    ra, dec = wcs_in.pixel_to_world_values(x_in, y_in)
-    x_out, y_out = wcs_out.world_to_pixel_values(ra, dec)
-    return x_out, y_out
-
 def compute_chunk_edges(det_shape, chunk_size):
     '''Split detector into chunks and return edge of chunks'''
     det_h, det_w = det_shape
@@ -168,81 +161,6 @@ def bin2d(arr, bin_factor, bin_func=np.mean):
         
     return binned
 
-def bin2d_cv(arr, bin_factor):
-    """
-    Bins a 2D array using cv2.resize.
-    This is only appropriate for mean-binning.
-    """
-    # Lazy import: opencv-python is only needed by this cv2-backed binner, so it
-    # stays out of the module-import path (and off the dependency list for the
-    # rest of the package).
-    try:
-        import cv2
-    except ImportError as e:
-        raise ImportError(
-            "bin2d_cv requires opencv-python (cv2); install it with "
-            "`pip install opencv-python` to use the cv2-backed binner."
-        ) from e
-
-    if arr.ndim != 2:
-        raise ValueError("OpenCV resize only suitable for 2D arrays in this context.")
-
-    h, w = arr.shape
-    if not (h % bin_factor == 0 and w % bin_factor == 0):
-        # cv2.resize can handle this, but it's not a true 'binning'
-        # if the dimensions are not multiples.
-        logger.warning("Warning: Dimensions not divisible by bin_factor. Result is a resize, not a clean bin.")
-
-    h_new, w_new = h // bin_factor, w // bin_factor
-    
-    # INTER_AREA is the key for averaging-like downsampling
-    binned = cv2.resize(arr.astype(np.float32), (w_new, h_new), interpolation=cv2.INTER_AREA)
-    
-    return binned
-
-def bin2d_coo_matrix(mat, height, width, bin_factor):
-    """
-    Fast binning of a COO sparse matrix shaped (N, height * width), where the second axis is a flattened 2D grid.
-    Performs 2D average pooling with bin_factor.
-    """
-    if not isinstance(mat, coo_matrix):
-        raise TypeError("Input must be COO format")
-    if not (height % bin_factor == 0 and width % bin_factor == 0):
-        raise ValueError
-
-    row, flat_col, data = mat.row, mat.col, mat.data
-
-    # Vectorized 2D binning map (fast index transform)
-    new_width = width // bin_factor
-    i_bin = (flat_col // width) // bin_factor
-    j_bin = (flat_col % width) // bin_factor
-    new_col = i_bin * new_width + j_bin
-
-    # Compute binned matrix with summed data
-    binned = coo_matrix((data, (row, new_col)), shape=(mat.shape[0], (height // bin_factor) * (width // bin_factor)))
-
-    # Normalize to get average
-    binned.data /= (bin_factor * bin_factor)
-    # Duplicates (several source pixels landing in one output bin) are left
-    #  unsummed on purpose: scipy treats duplicate COO entries as implicitly
-    #  summed, and any conversion (tocsr/todense/matvec) performs that sum, so
-    #  sum_duplicates() here would only canonicalize storage at extra cost.
-    return binned
-
-def make_footprint(sub_data, ref_coords, ref_shape, exp_offset=None):
-    '''Compute footprint, weighted by exp_offset if given'''
-    N = len(sub_data)
-    footprint = np.zeros(ref_shape)
-
-    for i in range(N):
-        (y_min, y_max, x_min, x_max) = ref_coords[i]
-        p = ~check_invalid(sub_data[i])
-        if exp_offset is not None:
-            p = p.astype(np.float32) * exp_offset[i]
-        footprint[y_min:y_max, x_min:x_max] += p
-    
-    return footprint
-
 def compute_crop(ref_shape, coords):
     y_min, y_max, x_min, x_max = coords
     H, W = ref_shape
@@ -264,8 +182,14 @@ def chunk_to_det(chunk_map, chunk_data, needed=None):
     ``chunk_data[chunk_map].ravel()[needed]`` without the full-grid render.
     """
     if needed is not None:
-        return chunk_data[chunk_map.ravel()[needed]]
+        ids = chunk_map.ravel()[needed]
+        vals = chunk_data[ids]
+        if ids.size and ids.min() < 0:                # outside every chunk: no offset
+            vals = np.where(ids >= 0, vals, 0)
+        return vals
     det_offset = chunk_data[chunk_map]
+    if chunk_map.size and chunk_map.min() < 0:
+        det_offset = np.where(chunk_map >= 0, det_offset, 0)
     return det_offset
 
 def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
@@ -382,12 +306,18 @@ def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     
     return interp_matrix.tocsr()
 
-def det_to_sub(det_data, sub_mapping=None, interp_matrix=None):
+def det_to_sub(det_data, sub_mapping=None, interp_matrix=None, sub_shape=None):
+    """A detector-grid map resampled onto a subframe, through the bilinear
+    ``interp_matrix`` (rows = subframe pixels, in row-major order; ``sub_shape``
+    gives the subframe shape, default: a square) or by direct interpolation at
+    the ``sub_mapping`` detector coordinates."""
     if interp_matrix is not None:
-        sub_width = np.sqrt(interp_matrix.shape[0]).astype(np.int32)
+        if sub_shape is None:
+            sub_width = np.sqrt(interp_matrix.shape[0]).astype(np.int32)
+            sub_shape = (sub_width, sub_width)
         det_data_flat = det_data.ravel()
         sub_data_flat = interp_matrix @ det_data_flat
-        sub_data = sub_data_flat.reshape(sub_width, sub_width)
+        sub_data = sub_data_flat.reshape(sub_shape)
     elif sub_mapping is not None:
         sub_data = map_coordinates(det_data, sub_mapping[::-1], order=1, output=np.float32)
     else:
@@ -416,9 +346,17 @@ def _parse_chunk_map(chunk_map):
     chunk_map_flat = chunk_map.ravel()
     total_rows = chunk_map_flat.size
     total_cols = chunk_map_flat.max() + 1
-    indptr = np.arange(total_rows + 1)
-    indices = chunk_map_flat
-    data = np.ones(total_rows, dtype=np.float32)
+    inside = chunk_map_flat >= 0
+    if inside.all():
+        indptr = np.arange(total_rows + 1)
+        indices = chunk_map_flat
+        data = np.ones(total_rows, dtype=np.float32)
+    else:
+        # -1 marks pixels outside every chunk (a gap between detectors, a
+        # masked region): their rows stay empty.
+        indptr = np.concatenate([[0], np.cumsum(inside)])
+        indices = chunk_map_flat[inside]
+        data = np.ones(indices.size, dtype=np.float32)
     chunk_map_parsed = csr_matrix((data, indices, indptr), shape=(total_rows, total_cols))
 
     if len(_chunk_map_parsed_cache) > 8:
@@ -488,89 +426,6 @@ def mean_preserving_spline(x_edge, y_mean, method='cubic'):
 
     return f_spline
 
-
-def arc_spline(x_sample, y_sample, return_params=False):
-    if len(x_sample) != len(y_sample):
-        raise ValueError("x and y must be the same length.")
-
-    def _arc_cost(params, x, y):
-        xc, yc, R = params
-        distances = np.sqrt((x - xc)**2 + (y - yc)**2)
-        errors = distances - R
-        return np.sum(errors**2)
-
-    yc_guess = 10000  # the LVF edge arcs are shallow (R ~ 1e4 px), so the circle center sits far above the detector; seed it there
-    xc_guess = np.median(x_sample)
-    R_guess = np.mean(np.sqrt((x_sample - xc_guess)**2 + (y_sample - yc_guess)**2))
-
-    initial_guess = [xc_guess, yc_guess, R_guess]
-
-    # Run the optimization (non-linear least squares)
-    result = minimize(
-        _arc_cost,
-        initial_guess,
-        args=(x_sample, y_sample),
-        method='Nelder-Mead' # A robust method for this type of problem
-    )
-
-    if not result.success:
-        raise RuntimeError(f"Arc fitting optimization failed: {result.message}")
-
-    # Extract the fitted parameters
-    xc_fit, yc_fit, R_fit = result.x
-
-    spl = lambda x: -np.sqrt(R_fit**2 - (x - xc_fit)**2) + yc_fit
-    if return_params:
-        return spl, (xc_fit, yc_fit, R_fit)
-    return spl
-
-def upscale2d(array, upscale_factor):
-    # Ensure input is a numpy array
-    array = np.array(array, dtype=float)
-    h, w = array.shape
-    
-    # Calculate new dimensions
-    new_h, new_w = h * upscale_factor, w * upscale_factor
-    
-    # generate grid coordinates for the new array
-    # We want to map indices 0 to new_h-1 back to 0 to h-1
-    # aligning the centers of the corner pixels
-    r_idx = np.linspace(0, h - 1, new_h)
-    c_idx = np.linspace(0, w - 1, new_w)
-    
-    # Get vertical and horizontal indices for the grid
-    # r and c are float indices in the original array space
-    r, c = np.meshgrid(r_idx, c_idx, indexing='ij')
-    
-    # Get the integer parts (top-left neighbor)
-    r0 = np.floor(r).astype(int)
-    c0 = np.floor(c).astype(int)
-    
-    # Get the neighbor to the right/bottom, clamping to edge
-    r1 = np.minimum(r0 + 1, h - 1)
-    c1 = np.minimum(c0 + 1, w - 1)
-    
-    # Calculate weights (fractional parts)
-    dr = r - r0
-    dc = c - c0
-    
-    # Get the values of the four neighbors
-    # Ia: Top-left, Ib: Top-right
-    # Ic: Bottom-left, Id: Bottom-right
-    Ia = array[r0, c0]
-    Ib = array[r0, c1]
-    Ic = array[r1, c0]
-    Id = array[r1, c1]
-    
-    # Perform bilinear interpolation
-    # Interpolate top row (wa) and bottom row (wb)
-    wa = (1 - dc) * Ia + dc * Ib
-    wb = (1 - dc) * Ic + dc * Id
-    
-    # Interpolate vertically between top and bottom
-    result = (1 - dr) * wa + dr * wb
-    
-    return result
 
 def compute_chunk_adjacency(chunk_map, reg_axis='both'):
     """
@@ -740,3 +595,41 @@ def make_grid_chunk_map(det_shape, n_chunks_per_side):
             chunk_map[y_edges[j]:y_edges[j + 1], x_edges[i]:x_edges[i + 1]] = chunk_id
             chunk_id += 1
     return chunk_map
+
+
+def fill_invalid_offsets(data):
+    """
+    Fills zeros in a 2D array using linear interpolation for the interior
+    and nearest-neighbor for extrapolation at the edges.
+    """
+    h, w = data.shape
+    y, x = np.mgrid[0:h, 0:w]
+    
+    # 1. Mask the zeros (the "bad" data)
+    mask = (data != 0)
+    
+    # If the whole thing is zeros or there are no zeros, return as is
+    if not np.any(mask) or np.all(mask):
+        return data
+
+    # 2. Extract valid points
+    points = np.array((y[mask], x[mask])).T
+    values = data[mask]
+    
+    # 3. Interpolate the entire grid
+    # 'linear' handles the interior bilinear logic
+    # We use 'nearest' for the points griddata can't reach (extrapolation)
+    # If points are collinear (e.g. valid data in only one column), Delaunay triangulation fails.
+    # In that case, we catch the Qhull precision error and fallback to 'nearest' immediately.
+    from scipy.spatial.qhull import QhullError
+    try:
+        filled = griddata(points, values, (y, x), method='linear')
+    except QhullError:
+        filled = griddata(points, values, (y, x), method='nearest')
+    
+    # 4. Fill remaining NaNs (edges/corners) with nearest neighbor extrapolation
+    nan_mask = np.isnan(filled)
+    if np.any(nan_mask):
+        filled[nan_mask] = griddata(points, values, (y[nan_mask], x[nan_mask]), method='nearest')
+        
+    return filled

@@ -18,13 +18,13 @@ from dataclasses import dataclass, field
 
 @dataclass
 class RunConfig:
-    task: str                          # cal | tiled | reproject | precompute
-    instrument: str = "spherex"
+    task: str                          # cal | mosaic | npass | reproject | precompute ('tiled' = cal + [tiling])
+    instrument: str = None             # from [instrument].name (required)
     mode: str = None                   # cal/tiled mode name (None for reproject/precompute)
     output_dir: str = None
     run_name: str = None               # may contain "{detector}"
-    resolution_arcsec: float = 6.2
-    cache_dir: str = "/home/thomasli/selfcal-project/selfcal/cache/"
+    resolution_arcsec: float = None    # required for reproject / cal / mosaic / npass
+    cache_dir: str = None              # staging / scratch area (required for cal / mosaic / npass)
     suffix: str = ""
     oversample: int = 1
     staging: str = "copy"              # copy | reuse
@@ -37,6 +37,7 @@ class RunConfig:
     skip_mosaic: bool = False          # cal only (no mosaic / wavelength)
     wavelength_coadd: bool = True      # append the LVF wav_mean/wav_std maps
     reproj_override: str = None        # use this reproj dir directly (skip NVMe staging)
+    cal_override: str = None           # mosaic task: apply this cal file (another run / resolution)
 
     instrument_cfg: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
@@ -45,8 +46,15 @@ class RunConfig:
     mosaic: dict = field(default_factory=dict)
     zodi: dict = field(default_factory=dict)
     reproject: dict = field(default_factory=dict)
-    tiled: dict = field(default_factory=dict)
+    tiling: dict = field(default_factory=dict)   # [tiling] — tile the field (task 'cal'); old spelling [tiled]
     passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
+    model: dict = field(default_factory=dict)    # [model] — the sky/offset terms for mode = 'model'
+    hooks: dict = field(default_factory=dict)    # [hooks] — pre_cal / post_cal / post_mosaic per-frame hooks
+
+    @property
+    def tiled(self):
+        """Old spelling of ``tiling``."""
+        return self.tiling
 
     def resolved_run_name(self):
         det = self.instrument_cfg.get('detector')
@@ -60,13 +68,13 @@ class RunConfig:
 _SCALAR_KEYS = {
     'task', 'mode', 'output_dir', 'run_name', 'resolution_arcsec',
     'cache_dir', 'suffix', 'oversample', 'staging', 'keep_nvme', 'hdd_io_limit',
-    'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override',
+    'apply_n_threads', 'postprocess', 'n_frames', 'skip_mosaic', 'reproj_override', 'cal_override',
     'wavelength_coadd',
 }
 _TABLE_KEYS = {
     'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration',
     'lsqr': 'lsqr', 'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject',
-    'tiled': 'tiled', 'passes': 'passes',
+    'tiling': 'tiling', 'tiled': 'tiling', 'passes': 'passes', 'model': 'model', 'hooks': 'hooks',
 }
 
 
@@ -77,6 +85,8 @@ def load_config(path):
     kwargs = {}
     for k, v in raw.items():
         if k in _TABLE_KEYS:
+            if _TABLE_KEYS[k] in kwargs:
+                raise ValueError(f"{path}: both [tiling] and [tiled] given; keep one")
             kwargs[_TABLE_KEYS[k]] = v
         elif k in _SCALAR_KEYS:
             kwargs[k] = v
@@ -88,15 +98,24 @@ def load_config(path):
         raise ValueError(f"{path} missing required 'task'")
     cfg = RunConfig(**kwargs)
     # Instrument selector lives inside [instrument].name (defaults to spherex).
-    cfg.instrument = cfg.instrument_cfg.get('name', cfg.instrument)
+    cfg.instrument = cfg.instrument_cfg.get('name')
+    if not cfg.instrument:
+        raise ValueError(f"{path}: [instrument] needs a 'name' (an instrument registered with "
+                         f"selfcal.instruments, e.g. \"spherex\" or \"grid\")")
+    if cfg.task != 'precompute' and cfg.resolution_arcsec is None:
+        raise ValueError(f"{path}: resolution_arcsec is required")
+    # task 'tiled' is the 'cal' task with a [tiling] table.
+    if cfg.task == 'tiled':
+        if not cfg.tiling:
+            raise ValueError(f"{path}: task = 'tiled' needs a [tiling] table")
+        cfg.task = 'cal'
     return cfg
 
 
 def get_instrument(name):
-    if name == 'spherex':
-        from selfcal.instruments.spherex.adapter import SPHERExInstrument
-        return SPHERExInstrument()
-    raise ValueError(f"unknown instrument {name!r} (known: 'spherex')")
+    """The registered instrument (built-in or entry-point plugin); see selfcal.instruments."""
+    from selfcal.instruments import get_instrument as _get
+    return _get(name)
 
 
 # Named postprocess functions selectable from config (default None).

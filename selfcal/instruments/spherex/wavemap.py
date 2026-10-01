@@ -2,14 +2,13 @@ import logging
 import numpy as np
 import glob
 import os
-import h5py
 from astropy.io import fits
 from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
 from ... import _state
-from ...geometry.map_helper import compute_crop, check_invalid
+from ...geometry.map_helper import compute_crop
 from ...io.reproj import load_reproj_file
 from ...core.coadd import load_cached_frame_dense
 from .spherex_utility import load_calibration

@@ -31,7 +31,7 @@ File-name roles:
   `zodi_pred_*.npz`, write `anchor_D{N}.h5`. No cal/mosaic mutation.
   (The cal runner does the same per channel inline when a config sets
   `[zodi].pred_dir`, via `append_anchor_channel`.)
-- `diag_*` — read-only diagnostics; read the anchor file (+ cal/npz as
+- `diag_*` (archived under `archive/scripts/zodi_anchor/`) — read-only diagnostics; read the anchor file (+ cal/npz as
   needed). Never modify cal/mosaic files.
 - `revert_anchor.py` — historical migration: undo a legacy in-place
   anchor on cal+mosaic (symmetric inverse), returning them to pristine

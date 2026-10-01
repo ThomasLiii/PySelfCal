@@ -40,7 +40,7 @@ missing); the dense hub stays hard-partitioned (diversity already high, and a
 full-overlap disk there exceeds the memory budget). Result: aliphatic I_P<25
 masked fraction 16.6% -> 12.9%, interior seam stripes gone (the residual is the
 genuine shallow rim). Layout: `design_overlap_tiles.py` (reproduces the config's
-inline `[tiled].tiles`); `prod_tiles_overlap.npz` is the shipped layout.
+inline `[tiling].tiles`); `prod_tiles_overlap.npz` is the shipped layout.
 
 ## Analysis scripts (this dir)
 

@@ -1,5 +1,5 @@
 # SEP D4, full NEP component set (J = 4), offset-first N-pass with a SEGMENTED offset basis in
-# BOTH the joint INIT solve ([params].subch_poly_segments, deg 2 per segment) and the per-frame
+# BOTH the joint INIT solve ([params].spectral_poly_segments, deg 2 per segment) and the per-frame
 # refit ([passes].offset.segments, deg 4 per segment, ridge 0.03).
 #
 # Why (S06 single-tile experiments, 2026-09-16): the J=4 dim-sky stripes are born in the INIT
@@ -11,7 +11,7 @@
 # statistical-equality solver, and tiles that are stitched must come from one code version
 # and one apply_n_threads.
 task = "npass"
-mode = "multiline"
+mode = "spectral_polybasis"
 
 output_dir = "/data3/thomasli/selfcal/outputs/"
 run_name = "SPHEREx_SEP_2025_D{detector}_6p2arcsec"
@@ -32,10 +32,10 @@ subch_window = [200, 321]
 window_name = "Multiline3"
 
 [params]
-subch_poly_degree = 2
-subch_poly_lo = 200
-subch_poly_hi = 320
-subch_poly_segments = [[200, 259], [260, 320]]
+spectral_poly_degree = 2
+spectral_poly_lo = 200
+spectral_poly_hi = 320
+spectral_poly_segments = [[200, 259], [260, 320]]
 line_fisher_threshold = 10.0
 
 [[params.lines]]
@@ -73,7 +73,7 @@ iter_lim = 300
 precondition = true
 solver = "lsqr"
 
-[tiled]
+[tiling]
 ref_shape = [12343, 12303]
 full_reproj_dir = "/mnt/md124/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/reprojected"
 frame_glob = "exp_*_det_00.h5"

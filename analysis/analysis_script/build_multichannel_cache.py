@@ -18,7 +18,6 @@ import argparse
 import os
 import sys
 
-import h5py
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -35,6 +34,7 @@ _SELFCAL_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if _SELFCAL_ROOT not in sys.path:
     sys.path.insert(0, _SELFCAL_ROOT)
 
+from selfcal.io.calfile import CalFile
 from selfcal.io.reproj import load_reproj_file
 from selfcal.instruments.spherex.spherex_utility import make_stripped_chunk_valid_mask
 
@@ -84,9 +84,9 @@ def _extract_header_and_pa(reproj_path):
 
 def _load_channel_cal(detector, channel):
     """Return offset cube + valid-subchannel index list for one channel."""
-    with h5py.File(cal_path(detector, channel), 'r') as f:
-        off = load_cal_offsets(f)[0]                   # (N, 342*3)
-        reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+    with CalFile(cal_path(detector, channel)) as cal:
+        off = load_cal_offsets(cal)[0]                 # (N, 342*3)
+        reproj_list = cal.reproj_list
     off = off.reshape(off.shape[0], TOT_SUB, NUM_COL)  # (N, 342, 3)
     mask = make_stripped_chunk_valid_mask(
         ch=[channel], num_subchannels=NUM_SUB, num_channels=NUM_CH,
