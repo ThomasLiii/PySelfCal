@@ -175,10 +175,9 @@ class EuclidInstrument(Instrument):
 
         - ``grid``: ``chunks`` x ``chunks`` square cells (default 40; chunk id
           ``row * chunks + col``) with the axes ``row`` and ``col``, regularised along
-          both by default. ``chunks`` should divide the detector side (40 and 60
-          divide 2040); otherwise the map built by
-          :func:`~selfcal.geometry.map_helper.make_grid_chunk_map` does not match the
-          ``chunks`` x ``chunks`` axes.
+          both by default. When ``chunks`` does not divide the detector side (40 and
+          60 divide 2040), the cell sides differ by at most one pixel
+          (:func:`~selfcal.geometry.map_helper.make_grid_chunk_map`).
         - ``col_strips`` / ``row_strips``: ``strips`` (default ``chunks``) vertical /
           horizontal strips, for the per-frame readout stripes.
         - ``col_tilt`` / ``row_tilt``: ``tilt_strips`` (default 60) strips whose
