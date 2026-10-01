@@ -146,8 +146,8 @@ def extract_edge_samples(BC_map, channel_edges):
     that minimises ``|BC_map[:, x] - wavelength|``. Returns ``(edge_x, edge_y)``, two float32
     arrays of shape ``(len(channel_edges), BC_map.shape[1])``. For the last edge the central
     columns, ``650 < x < BC_map.shape[0] - 650``, where that arc can run below row 0, are set
-    to NaN in both; the mask written for the first edge (``x < 50`` and
-    ``x > BC_map.shape[0] - 50``) can never hold, so the first edge keeps every column.
+    to NaN in both; for the first edge, the outer columns ``x < 50`` and
+    ``x > BC_map.shape[0] - 50``, where that arc can run past the last row.
     """
     edge_x_list = []
     edge_y_list = []
@@ -161,7 +161,7 @@ def extract_edge_samples(BC_map, channel_edges):
             edge_y[edge_mask] = np.nan
             edge_x[edge_mask] = np.nan
         elif i == 0:
-            edge_mask = (edge_x < 50) & (edge_x > BC_map.shape[0]-50)
+            edge_mask = (edge_x < 50) | (edge_x > BC_map.shape[0]-50)
             edge_y[edge_mask] = np.nan
             edge_x[edge_mask] = np.nan
 

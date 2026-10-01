@@ -50,11 +50,16 @@ def test_grid_map_adjacency_and_chains():
 
 
 @pytest.mark.parametrize('det,ncol', [(4, 3), (4, 5)])
-def test_reproduces_spherex_builders(det, ncol):
+def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     from selfcal.instruments.spherex import spherex_utility as su
     from selfcal.pipeline.npass import group_wavelength_edges
     from selfcal import _state
     _state.set_progress(False)
+    # The chunk maps come from the shipped LVF fit; with a fit given, the band-centre map
+    # only sets their shape, so a blank one stands in for the calibration files (which
+    # exist only on the processing host). Real and blank give identical maps (D1-D6).
+    blank = np.zeros((2040, 2040), dtype=np.float32)
+    monkeypatch.setattr(su, 'load_calibration', lambda band, calibration_dir=None: (blank, blank))
 
     def legacy_poly_basis(det_chunk_map, num_columns, degree, lo, hi, segments=None):
         # the pre-S2 SPHERExInstrument.subchannel_poly_basis, verbatim
