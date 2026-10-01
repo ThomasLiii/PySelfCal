@@ -39,7 +39,7 @@ Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli
 
 Install editable: `pip install -e .` (uses `pyproject.toml`; package is `selfcal`); `pip install -e ".[docs]"` adds the documentation toolchain.
 
-Docs: `mkdocs serve` (live preview) or `DISABLE_MKDOCS_2_WARNING=true mkdocs build --strict` (what CI runs; fails on a broken link, a missing anchor or an unresolved cross-reference in a page or a docstring).
+Docs: `mkdocs serve` (live preview) or `DISABLE_MKDOCS_2_WARNING=true mkdocs build --strict` (what CI runs; fails on a broken link, a missing anchor or an unresolved cross-reference in a page or a docstring). Published to https://thomasliii.github.io/PySelfCal/ by `.github/workflows/docs.yml` on every push to `main`.
 
 Pipeline runs are launched via the **generic runner** — pick/edit a TOML config, run a `.sh` (no editing Python):
 

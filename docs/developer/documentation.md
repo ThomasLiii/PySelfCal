@@ -124,4 +124,8 @@ every docstring of the project once its package is loaded:
 
 ## Hosting
 
-The site is not published anywhere yet; build it locally with `mkdocs serve`.
+The site is published on GitHub Pages, at <https://thomasliii.github.io/PySelfCal/>.
+[`.github/workflows/docs.yml`](https://github.com/ThomasLiii/PySelfCal/blob/main/.github/workflows/docs.yml)
+builds it with `mkdocs build --strict` on every push to `main` and deploys the result; it can also
+be started by hand from the repository's Actions tab. The `docs` job of the CI workflow builds it
+on every pull request, so a change that breaks the site is caught before it is merged.

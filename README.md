@@ -28,8 +28,9 @@ One TOML config per run, one command:
 
 ## Documentation
 
-The documentation site is built from [`docs/`](docs/) and the docstrings: `mkdocs serve` after
-installing the docs extra. Its sources can also be read here:
+The documentation is at <https://thomasliii.github.io/PySelfCal/>. It is built from
+[`docs/`](docs/) and the docstrings (`mkdocs serve` previews it after installing the docs extra),
+and its sources can also be read here:
 
 - [`docs/getting-started/quickstart.md`](docs/getting-started/quickstart.md): a first run on
   simulated data.
