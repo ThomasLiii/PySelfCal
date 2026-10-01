@@ -316,7 +316,7 @@ class SPHERExInstrument(Instrument):
         calib_dir = inst_cfg.get('calib_dir', SPHEREX_CALIB_DIR)
         for det in inst_cfg['detectors']:
             det_BC, _ = load_calibration(band=det, calibration_dir=calib_dir)
-            _, lvf_params = make_fiducial_chunk_map(
+            _, lvf_params, _ = make_fiducial_chunk_map(
                 det, det_BC, num_subchannels=ns, num_channels=nch, oversample_factor=1)
             lvf_params['filename'] = f'lvf_params_D{det}.npy'
             save_lvf_params(lvf_params, output_dir=out_dir)
