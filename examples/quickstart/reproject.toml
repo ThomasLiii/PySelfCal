@@ -1,0 +1,23 @@
+# Quickstart, step 2: reproject the simulated exposures onto one reference grid.
+#   ./selfcal_scripts/run.sh examples/quickstart/reproject.toml
+# Relative paths are used as written, i.e. relative to the directory you run from
+# (the repository root in the quickstart).
+task = "reproject"
+output_dir = "quickstart_output"      # products go to <output_dir>/<run_name>/
+run_name = "quickstart"
+resolution_arcsec = 10.0              # pixel scale of the reference grid (ref.fits)
+
+[instrument]                          # how to read an exposure; identical in cal.toml
+name = "grid"                         # the built-in, config-only instrument
+tag = "Sim"                           # first part of the product names
+detector_shape = [64, 64]             # rows, columns of the science image
+chunks = [4, 4]                       # offset chunks (rows, columns): 16 chunks of 16 x 16 pixels
+sci_ext = 1                           # FITS extension with the image and its WCS
+dq_ext = 2                            # FITS extension with the integer DQ mask
+
+[reproject]
+input_dirs = ["quickstart_output/exposures"]
+file_pattern = "/sim_*.fits"          # glob appended to each input dir
+reproj_func = "interp"                # interp (bilinear) | exact (flux-conserving) | adaptive
+padding_pixels = 8                    # margin around the exposures' footprint in ref.fits
+max_workers = 2                       # worker processes

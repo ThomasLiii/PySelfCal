@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import posixpath
 import re
 from pathlib import Path
