@@ -114,7 +114,7 @@ data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory
 | Output | Where it goes |
 |---|---|
 | Metadata cache (`metadata_D{N}.h5`) | `<repo>/cache/zodi_anchor/` (gitignored). Path is set by `DEFAULT_METADATA_CACHE_TEMPLATE` in `build_predictions.py`. |
-| Diagnostic figures | `<repo>/figures/zodi_anchor/...` (gitignored). All scripts that emit PNGs accept an `--out-dir`. |
+| Diagnostic figures | `<repo>/figures/zodi_anchor/...` (gitignored). `refit_smooth_slope.py` writes `figures/zodi_anchor/refit_smooth_slope.png` under the working directory unless given `--out-plot`; `smooth_anchor.py --plot` writes `anchor_D{N}_smooth.png` next to the anchor file unless given a path. |
 | `zodi_pred_<tag>.npz` files | `<run>/zodi_preds/`. The expensive zodipy output; cache + cross-env hand-off (zodipy needs the `selfcal-zodipy`/numpy<2 env; the fit + consumer run in `selfcal`). Referenced by the anchor file (path + sha + len), not copied into it. |
 | Anchor file (`anchor_D{N}.h5`) | `<run>/zodi_anchor/`. The fit result (summary-only, one file per detector). Cal+mosaic stay pristine. |
 | Anchored cal+mosaic | **Not written by default.** The shift is applied in-memory by `load_anchor()` / `load_anchored_mosaic()`. For a materialized FITS (ds9 / sharing), `materialize_anchored_mosaic.py` writes anchored copies to `<run>/anchored_mosaics/` — never overwriting pipeline outputs. |

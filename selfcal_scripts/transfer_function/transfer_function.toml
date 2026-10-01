@@ -62,9 +62,8 @@ solver = "lsqr"
 # no std / sigma-clipped maps (and wavelength_coadd = false above, since the
 # wav maps are per-pixel effective wavelength, not flux). The CALIBRATION recipe above is untouched:
 # this only stops computing maps the transfer function does not read, and
-# MEAN_MAP is the same map either way — to within the coadd's own
-# run-to-run non-determinism, since it accumulates in worker-completion
-# order and so is not bit-reproducible in any configuration. Set
+# MEAN_MAP is the same map either way: the coadd accumulates in a fixed
+# (batch) order, so the maps depend only on the frames and the batch sizes. Set
 # make_std_map/apply_sigma_clipping/cache_intermediate back to true to get
 # the full fiducial mosaic.
 apply_mask = true

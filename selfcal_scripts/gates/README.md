@@ -7,7 +7,7 @@ the configs), and writes `workspace/unify/logs/gates_<tag>.log`:
 | step | config | what | reference |
 | --- | --- | --- | --- |
 | pytest | — | the test suite | — |
-| continuum | `configs/gate_continuum_unify.toml` | D3 Ch17 NumCol3, 300 frames, iter 20 | `cal_..._Ch17_gate_golden_stat.h5` |
+| continuum | `configs/gate_continuum_unify.toml` | D3 Ch17 NumCol3, 300 frames, iter 50 | `cal_..._Ch17_gate_golden_stat.h5` |
 | spectral | `configs/gate_spectral_unify.toml` | D4 AromaticPAHfit NumCol5, 150 frames, iter 20 | `cal_..._AromaticPAHfit_gate_golden_stat.h5` |
 | e2e | `configs/gate_e2e.toml` | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps) | `*_unify_e2e_golden.{h5,fits}` |
 | npass probe | `configs/gate_npass3_unify.toml` | multiline J=4, n=3: INIT + closed-form SKY + per-frame OFFSET refit | `*_unify_npass3_golden{,_pass2sky,_pass3off}.h5` |
