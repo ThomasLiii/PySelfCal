@@ -525,13 +525,15 @@ def rweighted_slope_smooth(wavelengths, slope, intercept, pearson_r,
 
     Returns
     -------
-    dict with (all in INPUT order):
-      slope_final, C_final : smoothed arrays (raw where clean)
-      contaminated : bool mask (r < r_threshold)
-      slope_curve : the clean-fit slope spline evaluated at every channel
-                    (for plotting/inspection)
-      extrapolated : bool mask, True where a flagged channel lies outside
-                     the clean-channel wavelength span (spline extrapolated)
+    dict
+        All arrays in INPUT order:
+
+        - ``slope_final``, ``C_final``: smoothed arrays (raw where clean)
+        - ``contaminated``: bool mask (r < r_threshold)
+        - ``slope_curve``: the clean-fit slope spline evaluated at every
+          channel (for plotting/inspection)
+        - ``extrapolated``: bool mask, True where a flagged channel lies
+          outside the clean-channel wavelength span (spline extrapolated)
     """
     from scipy.interpolate import UnivariateSpline
     wl = np.asarray(wavelengths, float)

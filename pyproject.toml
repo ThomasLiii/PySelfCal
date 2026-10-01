@@ -31,6 +31,16 @@ dependencies = [
 # and imports without it.
 mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
 dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
+# The documentation site (mkdocs.yml): `mkdocs build --strict` / `mkdocs serve`.
+# MkDocs 2 drops the plugin system the site is built on, hence the pin.
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["selfcal*"]

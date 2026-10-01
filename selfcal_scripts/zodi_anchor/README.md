@@ -104,10 +104,10 @@ data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory
 
 | Script | Purpose |
 |---|---|
-| [`diag_zodi_spectrum.py`](diag_zodi_spectrum.py) | Per-detector 4-panel spectrum (mean(full_DC)/mean(zodi_pred)/slope·mean(zodi_pred), C, slope, Pearson r vs wavelength) read **entirely from the anchor file** — instant, no cal/npz I/O. `--anchor` or `--run-dir`; `--max-ch` drops airglow-blown channels. |
-| [`diag_plot_cross_channel.py`](diag_plot_cross_channel.py) | Cross-channel continuity: loads pristine cals, applies the anchor **in-memory** from the anchor file, plots per-chunk continuity across the LVF boundaries. `--run-dir` (auto-locates the anchor file) or `--cal-glob` + `--anchor`. |
-| [`diag_compare_zodi_vs_scalar.py`](diag_compare_zodi_vs_scalar.py) | Per-channel scatter: `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Re-fits from the pristine cal + npz (matches the stored anchor fit). Sanity-check that the linear fit makes sense. |
-| [`diag_compare_models.py`](diag_compare_models.py) | Run multiple zodi IPD models against the same cal files; side-by-side plot + `compare_models_summary.json` of per-model slope/intercept/r per channel. |
+| `diag_zodi_spectrum.py` | Per-detector 4-panel spectrum (mean(full_DC)/mean(zodi_pred)/slope·mean(zodi_pred), C, slope, Pearson r vs wavelength) read **entirely from the anchor file** — instant, no cal/npz I/O. `--anchor` or `--run-dir`; `--max-ch` drops airglow-blown channels. |
+| `diag_plot_cross_channel.py` | Cross-channel continuity: loads pristine cals, applies the anchor **in-memory** from the anchor file, plots per-chunk continuity across the LVF boundaries. `--run-dir` (auto-locates the anchor file) or `--cal-glob` + `--anchor`. |
+| `diag_compare_zodi_vs_scalar.py` | Per-channel scatter: `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Re-fits from the pristine cal + npz (matches the stored anchor fit). Sanity-check that the linear fit makes sense. |
+| `diag_compare_models.py` | Run multiple zodi IPD models against the same cal files; side-by-side plot + `compare_models_summary.json` of per-model slope/intercept/r per channel. |
 
 ## Output locations (not in this directory)
 
