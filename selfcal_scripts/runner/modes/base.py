@@ -40,6 +40,15 @@ def register_mode(name, *aliases):
 
 
 def get_mode(name):
+    """Return a new instance of the mode registered as ``name``.
+
+    ``name`` is a recipe's registered name or one of its aliases (the historical
+    SPHEREx names). The instance's ``name`` is the class's registered name and
+    its ``requested_name`` the ``name`` given: ``get_mode("pahfit")`` returns a
+    :class:`~selfcal_scripts.runner.modes.spectral.Spectral` whose ``name`` is
+    ``"spectral"``. Raises ``ValueError``, listing the registered names, when
+    ``name`` is unknown.
+    """
     if name not in _MODE_REGISTRY:
         raise ValueError(
             f"unknown mode {name!r}; available: {sorted(_MODE_REGISTRY)}")
@@ -49,6 +58,7 @@ def get_mode(name):
 
 
 def available_modes():
+    """Return the sorted list of every registered mode name, aliases included."""
     return sorted(_MODE_REGISTRY)
 
 
@@ -88,6 +98,16 @@ class CalMode:
 
     # ---- the recipe -----------------------------------------------------------------
     def model_spec(self, cfg, inst, geom):
+        """Build the recipe's :class:`~selfcal.models.spec.ModelSpec` from the config and geometry.
+
+        Every mode overrides this; the base class raises ``NotImplementedError``.
+        ``cfg`` is the run config (:class:`~selfcal_scripts.runner.config.RunConfig`:
+        the presets read ``cfg.params``, the ``model`` mode ``cfg.model``), ``inst``
+        the :class:`~selfcal.instruments.base.Instrument` and ``geom`` its
+        :class:`~selfcal.instruments.base.DetectorGeometry` (chunk maps with their
+        axes, detector maps). Callers go through :meth:`spec`, which caches the
+        result.
+        """
         raise NotImplementedError
 
     def spec(self, cfg, inst, geom):
@@ -128,6 +148,14 @@ class CalMode:
         return self.spec(cfg, inst, geom).setup_kwargs()
 
     def build_sky_model(self, cfg, inst, geom):
+        """Lower the spec's sky terms to the solver's :class:`~selfcal.models.sky_model.SkyModel`.
+
+        One component per sky term, in order. Variable names resolve against the
+        data variables (built-ins, the instrument's detector maps and frame
+        variables, the model's own) and catalogue coefficients against
+        ``inst.coefficient_catalog()``; a ``template`` coefficient reads its file
+        here. An unknown name raises ``ValueError``.
+        """
         return self.spec(cfg, inst, geom).build_sky_model(
             geom, inst.coefficient_catalog(), log=self._log,
             frame_variables=self.frame_variable_names(cfg, inst))
@@ -162,9 +190,27 @@ class CalMode:
         return self.spec(cfg, inst, geom).build_priors(geom, variables=variables, n_frames=n_frames)
 
     def x0_kind(self, cfg, inst, geom):
+        """Return how :meth:`x0` starts the solve: ``'scalar_only'`` or ``'from_Ab'``.
+
+        ``'scalar_only'`` when the model has the per-frame scalar, ``'from_Ab'``
+        otherwise (:attr:`~selfcal.models.spec.ModelSpec.x0_kind`).
+        """
         return self.spec(cfg, inst, geom).x0_kind
 
     def x0(self, cfg, cc):
+        """Return the LSQR starting vector for the system ``cc`` has assembled.
+
+        ``cc`` is the :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` after
+        ``setup_lsqr``. With the per-frame scalar (``'scalar_only'``), each frame's
+        scalar starts at the weighted mean of its data and everything else at zero
+        (:func:`~selfcal.core.solution.compute_x0_scalar_only`). Otherwise
+        (``'from_Ab'``), the first sky block starts at zero and every later column
+        at its own diagonal least-squares estimate
+        (:func:`~selfcal.core.solution.compute_x0_from_Ab`, called with one sky
+        block). The result is float64 in the full (uncompacted) column layout.
+        ``cfg`` is unused: the choice follows the spec :meth:`spec` cached, and is
+        ``'scalar_only'`` when none has been built.
+        """
         from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
         if getattr(self, '_spec', None) is not None and self._spec[1].x0_kind == 'from_Ab':
             return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape,

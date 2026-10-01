@@ -51,6 +51,7 @@ class TermInfo:
 
     @property
     def size(self) -> int:
+        """The number of the term's unknowns (the product of ``shape``)."""
         return int(np.prod(self.shape))
 
     def index(self, *idx) -> np.ndarray:

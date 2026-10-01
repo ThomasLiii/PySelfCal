@@ -359,9 +359,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     compact_zero_columns : bool, optional
         Enable the early drop of zero-coverage columns from the assembled
         CSR (default True); ``apply_lsqr`` then skips its own full-nnz
-        column elimination. Automatically skipped when any map uses template
-        mode, or when a constraint row touches an otherwise-uncovered
-        column. Set False to keep the uncompacted column layout and let
+        column elimination. Automatically skipped when a constraint row
+        touches an otherwise-uncovered column. Set False to keep the uncompacted column layout and let
         ``apply_lsqr`` compact instead (debug aid for isolating a suspected
         regression to the compaction step).
     apply_mask : bool, optional

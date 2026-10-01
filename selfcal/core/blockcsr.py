@@ -46,10 +46,12 @@ class BlockCSR:
 
     @property
     def dtype(self):
+        """Data type of the stored values (the first block's ``data`` dtype)."""
         return self.blocks[0].data.dtype
 
     @property
     def nnz(self):
+        """Total number of stored entries over all row-blocks (explicit zeros included)."""
         return int(sum(blk.nnz for blk in self.blocks))
 
     def __repr__(self):
@@ -219,18 +221,22 @@ class ColSplitCSR:
 
     @property
     def nranges(self):
+        """Number of column ranges ``T`` (``len(cuts) - 1``)."""
         return len(self.cuts) - 1
 
     @property
     def nblocks(self):
+        """Number of storage row-blocks (``len(row_bounds) - 1``)."""
         return len(self.row_bounds) - 1
 
     @property
     def dtype(self):
+        """Data type of the stored values (the ``data`` dtype of block 0, range 0)."""
         return self.sub[0][0][0].dtype
 
     @property
     def nnz(self):
+        """Total number of stored entries over all (row-block, column-range) pieces."""
         return int(sum(int(ip[-1]) for blk in self.sub for (_d, _i, ip) in blk))
 
     def block_row_nnz(self, b):

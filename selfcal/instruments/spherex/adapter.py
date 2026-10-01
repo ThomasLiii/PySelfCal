@@ -129,6 +129,14 @@ class SPHERExInstrument(Instrument):
 
     # ---- frame tag (cal/mosaic filename component) -------------------------
     def frame_tag(self, inst_cfg):
+        """Return the product-name tag ``Detector<d>_NumSub<s>_NumCh<c>_NumCol<k>``.
+
+        The numbers are the required ``[instrument]`` keys ``detector``,
+        ``num_sub``, ``num_ch`` and ``num_col``, e.g.
+        ``Detector4_NumSub10_NumCh34_NumCol10``. A job's products are named
+        ``cal_<tag>_<job><suffix>.h5`` and ``mosaic_<tag>_<job><suffix>.fits``
+        (:class:`~selfcal_scripts.runner.engine.RunContext`), where ``<job>`` is
+        the job name (``Ch17``, ``Aromatic``, ...)."""
         return (f"Detector{inst_cfg['detector']}_NumSub{inst_cfg['num_sub']}"
                 f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
 
@@ -176,6 +184,25 @@ class SPHERExInstrument(Instrument):
 
     # ---- per-job geometry (valid masks + edge-distance weights) ------------
     def job_geometry(self, inst_cfg, geom, job):
+        """Return the valid masks and the solve and mosaic weights of one job's subchannels.
+
+        A ``'window'`` job (``value = (lo, hi)``) selects subchannels ``lo`` to
+        ``hi - 1``, indexed over all ``num_sub * num_ch + 2`` subchannels of the
+        stripped map (``0`` and the last are the padding subchannels). A
+        ``'channels'`` job selects the ``num_sub`` subchannels of each listed
+        channel (numbered from 1), and its padded set adds one subchannel on each
+        side, which overlaps the neighbouring channels for stitching; a window
+        job's padded and strict sets are the same. A selected subchannel is
+        selected in every column. Any other ``kind`` raises ``ValueError``.
+
+        ``det_valid_weight``, the solve's weight, is the padded set's 0/1 mask on
+        the detector grid. The mosaic's ``grid_valid_weight`` (on the primary
+        map's ``grid``) tapers the strict set linearly with each pixel's distance
+        in rows to the set's edge
+        (:func:`~selfcal.instruments.spherex.spherex_utility.fast_vertical_dist`),
+        divided by its maximum. ``chunk_valid`` / ``chunk_valid_strict`` hold the
+        padded / strict sets per chunk of the primary map, and ``det_valid_mask``
+        / ``grid_valid_mask`` the strict set on the two grids."""
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
         det_chunk_map = geom.chunk_map.det
         grid_chunk_map = geom.chunk_map.grid
@@ -244,10 +271,26 @@ class SPHERExInstrument(Instrument):
                         'wav_std_map': {'data': wav_std, 'unit': 'um'}})
 
     def data_unit(self, inst_cfg):
+        """Return ``'MJy/sr'``, the surface-brightness unit of SPHEREx data, for any ``inst_cfg``.
+
+        The mosaic writes it as the ``BUNIT`` of its mean, std and sigma-clipped
+        mean maps."""
         return 'MJy/sr'
 
     # ---- named coefficients -------------------------------------------------
     def coefficient_catalog(self):
+        """Return the catalogue of named SPHEREx coefficients; its one entry is ``pah_3p29``.
+
+        ``pah_3p29``
+        (:func:`~selfcal.instruments.spherex.line_catalog.pah_3p29_coefficient`)
+        is a Gaussian of the band-centre map ``BC`` at the PAH 3.29 um feature,
+        whose per-observation width combines the band-width map ``BW`` with the
+        intrinsic PAH width. A ``[model]`` term selects it with
+        ``coefficient = { catalog = "pah_3p29" }``, optionally overriding the
+        factory's ``center`` and ``sigma`` (um); the spectral modes select an
+        entry with ``[params].line`` (default ``pah_3p29``) when they are given
+        no ``lines`` or ``line_template_npz``. Each call returns a new copy of
+        :data:`~selfcal.instruments.spherex.line_catalog.CATALOG`."""
         from .line_catalog import CATALOG
         return dict(CATALOG)
 

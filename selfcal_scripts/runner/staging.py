@@ -31,6 +31,10 @@ def hdd_throttle(limit):
 
 
 def nvme_dir(cache_dir, run_name):
+    """Return the run's staging directory for its frames, ``<cache_dir>/reproj_nvme_<run_name>``.
+
+    Only the path is formed here; :func:`prepare_nvme` creates and fills it.
+    """
     return os.path.join(cache_dir, f'reproj_nvme_{run_name}')
 
 
@@ -178,6 +182,15 @@ def _rss_guardrail_loop(mem_total_kb, abort_threshold_kb):
 
 
 def start_rss_guardrail():
+    """Start a daemon thread that ends the process before it exhausts the machine's memory.
+
+    Every :data:`RSS_POLL_SEC` (15 s) the thread prints this process's hard RSS
+    (``RssAnon`` + ``RssShmem`` from ``/proc/self/status``), its peak and ``VmRSS`` to stderr.
+    Once the hard RSS reaches :data:`RSS_ABORT_FRACTION` (85%) of ``MemTotal`` it prints a
+    message and exits at once with ``os._exit(2)``: a logged exit instead of a kernel OOM kill
+    with no traceback. Worker processes are not counted, and each call starts another thread.
+    The tiled ``cal`` task starts one unless ``[tiling].rss_guardrail = false``.
+    """
     mem_total_kb = _read_meminfo_kb('MemTotal')
     abort_threshold_kb = int(mem_total_kb * RSS_ABORT_FRACTION)
     total_gb = mem_total_kb / 1024 / 1024
@@ -192,6 +205,13 @@ def start_rss_guardrail():
 
 
 def rss_checkpoint(label):
+    """Print one line with this process's hard RSS, ``VmRSS`` and peak, tagged ``label``.
+
+    The peak is the larger of the current hard RSS and the highest value the guardrail thread
+    has recorded (only the current value when no guardrail runs). The tiled ``cal`` task calls
+    it at start-up when it starts the guardrail, and before and after each tile's
+    ``setup_lsqr`` and ``apply_lsqr``.
+    """
     rss_kb, vmrss_kb = _read_self_rss_kb()
     peak_kb = max(rss_kb, _RSS_STATE['peak_kb'])
     print(f'[RSS] checkpoint {label!r}: hard={rss_kb/1024/1024:.1f} GB  '

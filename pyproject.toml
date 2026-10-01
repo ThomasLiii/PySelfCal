@@ -31,6 +31,16 @@ dependencies = [
 # and imports without it.
 mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
 dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
+# The documentation site (mkdocs.yml): `mkdocs build --strict` / `mkdocs serve`.
+# MkDocs 2 drops the plugin system the site is built on, hence the pin.
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["selfcal*"]
@@ -38,7 +48,7 @@ include = ["selfcal*"]
 [tool.pytest.ini_options]
 # The suite is self-contained: no /mnt or /data dependency, so it runs on any
 # checkout (and in CI). Data-dependent regression lives in the byte-equality
-# gates (cache/refactor_gate/), which are run manually, not under pytest.
+# gates (selfcal_scripts/gates/), which are run manually, not under pytest.
 testpaths = ["tests"]
 # Put the repo root on sys.path, as the tests' standalone runners do: shared
 # helpers are imported as ``tests.<module>``, and ``import selfcal`` resolves

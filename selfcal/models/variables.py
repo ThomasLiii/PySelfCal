@@ -115,6 +115,7 @@ class VariableSet:
                 + self.layers + tuple(self.derived) + tuple(self.frame_functions))
 
     def provides(self, name) -> bool:
+        """Whether ``name`` is a variable of the set (the built-ins always are)."""
         return name in self.names
 
     def scope(self, name) -> str:
@@ -142,6 +143,7 @@ class VariableSet:
 
     @property
     def is_empty(self) -> bool:
+        """Whether the set declares no source at all (only the built-ins are available)."""
         return not (self.detector or self.frame or self.sky or self.layers or self.derived
                     or self.frame_functions)
 
@@ -244,6 +246,12 @@ class ObservationVariables(Mapping):
         return len(self._names())
 
     def get(self, name, default=None):
+        """The values of variable ``name``, or ``default`` when the frame does not have it.
+
+        Availability is decided by membership (``name in self``), so an error raised
+        while computing an available variable, such as a missing input of a derived
+        variable, propagates instead of becoming ``default``.
+        """
         return self[name] if name in self else default
 
     def __getitem__(self, name):

@@ -44,6 +44,11 @@ class ConstraintBlock:
     nnz_per_row: object  # int (uniform) or ndarray (per-row)
 
     def as_dict(self):
+        """Return the block as the dict the CSR scatter consumes, keyed by field name.
+
+        The arrays are shared with the block, not copied;
+        :func:`~selfcal.core.system.setup_lsqr` collects one such dict per block.
+        """
         return {
             'rows_local': self.rows_local,
             'cols': self.cols,

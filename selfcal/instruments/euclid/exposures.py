@@ -1,3 +1,13 @@
+"""Helpers in this module build lists of Euclid exposure file paths for reprojection.
+
+Each returns a ``list`` of path strings: :func:`load_from_radius` keeps the rows of a
+VOTable exposure catalogue that lie within a radius of a target, :func:`load_from_csv`
+reads the first column of a CSV file, and :func:`load_from_directory` globs one
+directory. Such a list is the ``exposure_list`` of
+:class:`~selfcal.pipeline.pipeline_wrapper.Reprojector`. The helpers are independent of
+:class:`~selfcal.instruments.euclid.adapter.EuclidInstrument` and of the runner, whose
+``reproject`` task globs ``[reproject].input_dirs`` with ``file_pattern`` instead.
+"""
 import glob
 import logging
 import os
@@ -12,6 +22,18 @@ from ... import _state
 logger = logging.getLogger(__name__)
 
 def load_from_radius(vot_table_path, target_ra_deg, target_dec_deg, radius_deg, exp_base_dir, contain_pattern=''):
+    """Return the exposures of a VOTable catalogue that lie within a radius of a target.
+
+    The columns of the first table in ``vot_table_path`` are read by position,
+    counted from 0: column 1 is the exposure file path relative to ``exp_base_dir``,
+    columns 3 and 4 are its RA and Dec in degrees. A row is kept when its angular separation from
+    (``target_ra_deg``, ``target_dec_deg``) is less than ``radius_deg`` degrees and
+    its path contains the substring ``contain_pattern`` (the default ``''`` matches
+    every path). The result holds ``os.path.join(exp_base_dir, path)`` for each kept
+    row, in table order; the files are not checked. RA and Dec must be ``float64``
+    columns: a row whose RA or Dec has another type (``float32``, integer, masked),
+    whose path is not a string, or that has fewer than five columns is skipped with
+    a logged warning. Raises ``FileNotFoundError`` when the VOTable does not exist."""
     logger.info(f'Loading exposures from VOTable: {vot_table_path}')
     # Ensure VOTable file exists
     if not os.path.exists(vot_table_path):
@@ -37,6 +59,13 @@ def load_from_radius(vot_table_path, target_ra_deg, target_dec_deg, radius_deg, 
     return exposure_list
 
 def load_from_csv(csv_path):
+    """Return the exposure paths listed in the first column of a CSV file.
+
+    Each row whose first field is not blank contributes that field, stripped of
+    surrounding whitespace, in file order; the other columns are ignored. There is
+    no header handling: a header line is returned as an entry too. The paths are
+    returned as written, neither joined to a directory nor checked. Raises
+    ``FileNotFoundError`` when ``csv_path`` does not exist."""
     logger.info(f'Loading exposures from CSV: {csv_path}')
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f'CSV file not found: {csv_path}')
@@ -49,6 +78,13 @@ def load_from_csv(csv_path):
     return exposure_list
 
 def load_from_directory(exp_dir, contain_pattern=''):
+    """Return the paths of the entries of ``exp_dir`` whose names contain ``contain_pattern``.
+
+    The result is ``glob.glob(os.path.join(exp_dir, f'*{contain_pattern}*'))``: paths
+    prefixed with ``exp_dir``, in file-system order (not sorted), subdirectories
+    included and hidden names (starting with ``.``) left out; glob wildcards in
+    ``contain_pattern`` keep their meaning. The default ``''`` lists every entry.
+    Raises ``NotADirectoryError`` when ``exp_dir`` is not a directory."""
     logger.info(f'Loading exposures from directory: {exp_dir} with pattern {contain_pattern}')
     if not os.path.isdir(exp_dir):
         raise NotADirectoryError(f'Exposure directory not found: {exp_dir}')

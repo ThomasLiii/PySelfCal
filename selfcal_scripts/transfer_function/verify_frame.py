@@ -6,8 +6,8 @@ mistake surfaces on 1 file instead of after processing 900. Optionally pass the
 matching real frame with --orig to confirm the injection preserved everything
 except sub_data (and preserved the footprint).
 
-    python verify_frame.py /scratch/tf/D3_simsky_frames/exp_000000_det_0.h5 \
-        --orig /mnt/md124/.../reprojected/exp_000000_det_0.h5
+    python verify_frame.py /scratch/tf/D3_simsky_frames/exp_0000_det_00.h5 \
+        --orig /mnt/md124/.../reprojected/exp_0000_det_00.h5
 """
 import argparse
 import os

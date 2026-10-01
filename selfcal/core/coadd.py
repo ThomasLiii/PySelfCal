@@ -158,6 +158,19 @@ _CACHE_KEYS = ('ref_coords', 'sub_bbox', 'mask', 'data', 'weight', 'aux', 'bc', 
 
 
 def write_cached_frame(path, frame):
+    """Write a sparse frame to an intermediate-cache HDF5 file in the ``sparse-v1`` format.
+
+    ``frame`` is a dict from :func:`sparsify_frame`, optionally with the
+    ``bc`` / ``bw`` vectors added by :func:`sample_band_maps`. The file at
+    ``path`` is created or overwritten. It holds the attributes ``format``
+    (:data:`CACHE_FORMAT`) and ``shape`` (the bbox shape, int32), and one
+    dataset for each of ``ref_coords``, ``sub_bbox``, ``mask``, ``data``,
+    ``weight``, ``aux``, ``bc`` and ``bw`` that ``frame`` holds, written
+    without HDF5 timestamps (``track_times=False``). ``flat`` is not stored:
+    :func:`read_cached_frame` rebuilds it from ``mask``. The cache pass of the
+    coadd writes one such file per frame with any nonzero weight, named
+    ``cached_<frame file name>`` in the cache directory.
+    """
     with h5py.File(path, 'w') as hf:
         hf.attrs['format'] = CACHE_FORMAT
         hf.attrs['shape'] = np.asarray(frame['shape'], dtype=np.int32)

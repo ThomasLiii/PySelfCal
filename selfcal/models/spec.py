@@ -112,12 +112,27 @@ class VariableSpec:
 
     @property
     def scope(self) -> str:
+        """What the variable's values are indexed by.
+
+        ``'frame'`` (a ``header`` or ``per_frame`` source), ``'detector'``, ``'sky'``
+        (also ``sky_cal``), ``'layer'``, ``'derived'`` (a ``function`` source) or
+        ``'frame_function'``."""
         return {'header': 'frame', 'per_frame': 'frame', 'detector': 'detector', 'sky': 'sky',
                 'sky_cal': 'sky', 'layer': 'layer', 'function': 'derived',
                 'frame_function': 'frame_function'}[self.source]
 
     @classmethod
     def from_config(cls, name, d) -> VariableSpec:
+        """The ``[model.variables]`` entry ``name = d`` as a :class:`VariableSpec`.
+
+        ``d`` holds exactly one source key of :data:`VARIABLE_SOURCES`, whose value
+        becomes ``value``, and optionally ``inputs`` (a string is one input),
+        ``params`` (stored as a hashable tuple of pairs), ``term`` and ``default``.
+        A ``layer`` source given as ``true`` (or empty) reads the layer named like
+        the variable. A :class:`VariableSpec` is returned unchanged. Raises
+        ``ValueError`` for no or several source keys, an unknown key, or a
+        ``function`` source without ``inputs``.
+        """
         if isinstance(d, VariableSpec):
             return d
         d = dict(d)
@@ -259,6 +274,7 @@ class OffsetTerm:
 
     @property
     def n_basis(self) -> int:
+        """The number of known functions per chunk: the ``n`` of ``basis``, 1 without one."""
         if self.basis is None:
             return 1
         b = self.basis
@@ -280,6 +296,14 @@ class PriorSpec:
 
     @classmethod
     def from_config(cls, d) -> PriorSpec:
+        """One ``[[model.prior]]`` table as a :class:`PriorSpec`.
+
+        ``term`` (or ``terms``; a string is one term) and ``function`` are required;
+        ``params``, ``weight`` (default 1.0) and ``name`` are optional, and any other
+        key is an inline parameter of the function, merged into ``params``. A
+        :class:`PriorSpec` is returned unchanged; a table without a term or a
+        function raises ``ValueError``.
+        """
         if isinstance(d, PriorSpec):
             return d
         d = dict(d)
@@ -297,6 +321,13 @@ class PriorSpec:
         return cls(terms=terms, function=function, params=_hashable(params), weight=weight, name=name)
 
     def callable(self):
+        """The prior function itself, resolved from ``function``.
+
+        A bare name (no ``:``) is taken from :mod:`selfcal.models.priors`, the
+        module of the ready-made priors (``ValueError`` when it has no such name);
+        an import path ``"package.module:name"`` is imported
+        (:func:`load_function`); a callable is returned as is.
+        """
         f = self.function
         if isinstance(f, str) and ':' not in f:
             from . import priors
@@ -312,6 +343,30 @@ class PriorSpec:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModelSpec:
+    """A self-calibration model: sky and offset terms, scalar, variables, weight, priors.
+
+    ``sky`` holds the sky terms (:class:`SkyTerm`; at least one, by default one
+    constant ``continuum`` term) and ``offset`` the offset terms
+    (:class:`OffsetTerm`; none by default). ``scalar`` adds the per-frame scalar
+    ``s(frame)``. ``variables`` are the model's own data variables
+    (:class:`VariableSpec`), ``weight`` an optional function of data variables
+    that multiplies every observation's weight (a
+    :class:`~selfcal.models.sky_model.Coefficient` or its config form), and
+    ``priors`` the prior functions (:class:`PriorSpec`). ``mosaic`` tells the
+    runner's ``model`` mode what to make after the solve: ``'full'`` (the mosaic
+    and the instrument's auxiliary coadds, such as wavelength maps),
+    ``'no_wav'`` (the mosaic only) or ``'none'``. Terms, variables and priors may
+    be given in their config forms (dicts; ``variables`` as ``{name: table}``),
+    which are converted on construction. The constructor raises ``ValueError``
+    when there is no sky term, or when a variable is defined twice or named like
+    a built-in.
+
+    Build one from a ``[model]`` table (:meth:`from_config`) or in Python (as the
+    runner's preset modes do), validate it against an instrument (:meth:`check`)
+    and lower it into the solver's inputs with :meth:`build_sky_model`,
+    :meth:`build_offset_model`, :meth:`build_variables`, :meth:`build_weight`,
+    :meth:`build_priors` and :meth:`setup_kwargs`.
+    """
     sky: tuple = (SkyTerm(),)
     offset: tuple = ()
     scalar: bool = True

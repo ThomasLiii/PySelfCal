@@ -4,7 +4,7 @@ Each `.toml` here fully describes one pipeline run. Run it with:
 
 ```bash
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml
-# or the per-run launcher:
+# or the per-run launcher, where the config has one:
 ./selfcal_scripts/launch/<name>.sh
 # validate without running (resolves jobs + mode, no compute):
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml --dry-run
@@ -34,7 +34,7 @@ a telescope or a specific calibration variant by name.
 | `k2_readout` | cal / two_block_fixed | `experiments/run_cal_k2_readout.py` |
 | `tiled_nep` | cal + `[tiling]` / tiled | `drivers/chunked_NEP/run_cal_tiled_NEP.py` |
 | `multiline_nep` | cal + `[tiling]` / spectral_polybasis (J=4) | (workspace `spectral-pah-fit` campaign) |
-| `sep_d4_npass` | npass / spectral_polybasis (J=2, W/E tiles, n=8) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
+| `sep_d4_npass` | npass / spectral_polybasis (J=2, W/E tiles, n=4) | the SEP 4-pass chain (workspace `spectral-pah-fit` / `sky-closed-form` campaigns) |
 | `nep_d4_npass` | npass / spectral_polybasis (J=4, 16 overlap tiles, n=8) | passes 2+ on top of `multiline_nep` |
 | `nep_d4_probe1k_npass` | npass / spectral_polybasis (J=4, 1k-frame probe) | the multiline stability probe |
 | `reproject_d4` | reproject | `drivers/run_reproject.py` |
@@ -274,7 +274,9 @@ capability tags: `wavelength`, `spectral_axis`).
 Drop a module in `selfcal_scripts/runner/modes/`:
 
 ```python
-from .base import CalMode, register_mode, standard_block
+from selfcal.models.spec import ModelSpec, OffsetTerm, SkyTerm
+
+from .base import CalMode, register_mode
 
 @register_mode("my_variant", "my_old_name")      # extra names are aliases
 class MyVariant(CalMode):
@@ -293,15 +295,17 @@ Add it to the import in `modes/__init__.py`. No engine edits. A config then sets
 ## Adding a telescope (instrument)
 
 **No code — the built-in `grid` instrument.** Any single-detector imager whose
-exposures carry a science image with a celestial WCS and a bitmask extension::
+exposures carry a science image with a celestial WCS and, optionally, a bitmask extension:
 
-    [instrument]
-    name = "grid"
-    detector_shape = [2048, 2048]   # rows, cols of the science array
-    chunks = [8, 8]                 # offset chunk grid
-    sci_ext = 1
-    dq_ext = 2
-    tag = "MyCam"                   # product-name tag
+```toml
+[instrument]
+name = "grid"
+detector_shape = [2048, 2048]   # rows, cols of the science array
+chunks = [8, 8]                 # offset chunk grid
+sci_ext = 1
+dq_ext = 2                      # omit (or -1) if the exposures carry no mask
+tag = "MyCam"                   # product-name tag
+```
 
 Then `task = "reproject"` on the exposure directory and `task = "cal"` with
 `mode = "continuum"`; `tests/test_runner_e2e_toy.py` is a complete worked
@@ -310,7 +314,7 @@ example on synthetic exposures.
 **Euclid NISP** is the built-in multi-detector example (`name = "euclid"`, `band`, `chunks`,
 `strips`, `tilt_strips`, `edge_zero_px`/`edge_ramp_px`): 16 detectors per exposure, a grid map
 plus column/row stripe and tilt maps, spline/strip/ramp renderers, electron units, the
-`star_position_mask` / `residual_mask` hooks. `workspace/unify/configs/gate_euclid_unify.toml` is the
+`star_position_mask` / `residual_mask` hooks. `selfcal_scripts/gates/configs/gate_euclid_unify.toml` is the
 frozen EDFN recipe as a `[model]` table.
 
 **With code.** Subclass `selfcal.instruments.Instrument` (five required

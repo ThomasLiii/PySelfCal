@@ -311,9 +311,9 @@ def read_mycam(path, sci_ext, dq_ext=None, header_only=False):
                         layers={"variance": var}, coords=(x_focal, y_focal))
 ```
 
-`sci_ext` / `dq_ext` are whatever the layout lists — extension numbers, slice indices, detector
-names; the reader interprets them. The reprojection, the reference-frame definition and everything
-downstream use the reader; nothing else changes.
+`sci_ext` / `dq_ext` are the integers the layout lists — extension numbers, slice indices,
+detector numbers; the reader interprets them. The reprojection, the reference-frame definition and
+everything downstream use the reader; nothing else changes.
 
 Optional hooks with defaults: `offset_renderer` (smooth chunk-to-pixel rendering for the mosaic),
 `aux_coadds` / `finalize_mosaic` (extra per-pixel maps to coadd), `coefficient_catalog` (named

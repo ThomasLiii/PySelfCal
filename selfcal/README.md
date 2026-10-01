@@ -22,7 +22,8 @@ no editing Python:
 The config picks an **instrument** (`[instrument].name`, resolved through the
 registry in [`instruments/base.py`](instruments/base.py): a subclass of the
 `Instrument` ABC — the built-ins are `spherex`, whose specifics live in
-[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py), and the
+[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py), `euclid`
+(16-detector NISP, [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py)) and the
 config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
 other packages register theirs through the `selfcal.instruments` entry-point group),
 a **mode** (the calibration recipe; modes registry under
@@ -147,7 +148,8 @@ the real homes below.
   `TileSpec` + `make_tile_grid`: a reusable tiled-calibration wrapper that
   splits a large reference frame into overlapping tiles, calibrates each
   tile independently (assigning frames per tile via center / overlap
-  filters), then stitches the per-tile mosaics back into one. Replaces the
+  filters), then merges the per-tile cal files' sky maps into one stitched
+  cal (Fisher-weighted inverse-variance average). Replaces the
   former chunked-NEP copy-paste driver.
 
 ### Core computation (`core/`)
@@ -186,8 +188,10 @@ clarity:
   by running `_prep_lsqr_batch_worker` processes that share large arrays
   (per-map `chunk_maps[m]`, `grid_valid_weight`, per-map `adj_infos[m]`)
   via `multiprocessing.shared_memory` to avoid pickling. Each worker
-  emits its partial rows/cols/data/b into new shared segments which the
-  main process stitches into a single COO matrix **in batch-id order**
+  emits its partial rows/cols/data/b into new shared segments (or, with
+  `batch_spill_dir` — the runner passes its `cache_dir` — into files on
+  scratch) which the main process places into one CSR matrix (a `BlockCSR` /
+  `ColSplitCSR` above `SELFCAL_BLOCK_NNZ`) **in batch-id order**
   (deterministic across runs). `col_bases` (length `K+1` array) marks
   the column boundary between maps and the optional scalar block; the
   full column layout is computed once by `SystemLayout`. Supported features:
@@ -381,9 +385,10 @@ clarity:
 - **[`io/reprojection.py`](io/reprojection.py)** — `batch_reproject(...)`
   iterates over `(exposure, sci_ext, dq_ext)` tasks and calls
   `reproject_interp / reproject_exact / reproject_adaptive` (from the
-  `reproject` package) in a process pool. For each detector, it sizes a
-  square subframe big enough to contain the detector diagonal after
-  reprojection (with padding), reprojects the science image, the detector
+  `reproject` package) in a process pool. It sizes one square subframe for
+  every frame, big enough to contain the diagonal of a sample detector (the
+  first exposure's first science entry) after reprojection (with padding).
+  For each frame it reprojects the science image, the detector
   pixel coordinates and (when the exposure has one, `dq_ext` not None) the DQ
   bitmask — detectors need not be square — and writes a zstd-compressed HDF5
   file per (exposure, detector)
@@ -405,9 +410,13 @@ clarity:
     reads; set via `set_hdd_io_limit(n)`. Essential when many workers do
     random reads on a RAID array, where seek thrashing kills
     throughput.
-  - `_coadd_turn` — the `(Condition, Value)` turnstile that orders the
-    coadd workers' per-batch flushes; pushed into worker processes via the
-    `_init_coadd_worker` pool initializer.
+  - `progress_enabled` — whether library calls draw tqdm progress bars;
+    set via `set_progress(enabled)`.
+
+  (The turnstile that orders the coadd workers' per-batch flushes,
+  `_coadd_turn` — a `Condition` and per-stripe batch counters — lives in
+  [`core/coadd.py`](core/coadd.py) and reaches the workers through the
+  `_init_coadd_worker` pool initializer.)
 
 ### Geometry, masking, and interpolation helpers (`geometry/`)
 
@@ -415,7 +424,7 @@ clarity:
   numerical utilities.
   - Bitmask: `bit_to_bool` / `bool_to_bit`, with optional `ignore_list`
     and per-bit expansion.
-  - Weighting: `make_weight` (inverse-square), `find_outliers`
+  - Weighting: `make_weight` (Poisson weight `1/sqrt(|d| + floor)`), `find_outliers`
     (nMAD-based).
   - Chunk machinery: `chunk_to_det`, `det_to_sub`, `make_linear_interp_matrix`
     (vectorized bilinear-interp sparse CSR matrix), `compute_chunk_contrib`,
@@ -435,8 +444,8 @@ clarity:
   - `derive_reference_from` builds a reference WCS aligned to an existing
     one (so cal outputs land on a shared grid); `projections_match` /
     `projection_signature` guard against mismatched projections.
-  - `save_to_fits` / `load_from_fits` persist reference frames as an
-    empty FITS hdu with the WCS header.
+  - `save_to_fits` / `load_from_fits` persist reference frames as a
+    zero-filled primary FITS image of the grid's shape carrying the WCS header.
 
 ### Instrument-specific helpers (`instruments/`)
 
@@ -454,7 +463,7 @@ clarity:
   `CalMode` interface and reads no `[instrument]` key itself. Five methods
   are required (`jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
   `job_geometry`); the hooks (offset renderer, aux coadds, mosaic finaliser,
-  line catalogue, post-cal hooks, data unit, precompute) have defaults.
+  coefficient catalogue, post-cal hooks, data unit, precompute) have defaults.
 
 - **[`instruments/grid.py`](instruments/grid.py)** — The built-in `grid`
   instrument: any single-detector imager described entirely by the
@@ -601,8 +610,9 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   multi-channel detector), so the downstream passes are linear in true
   signal and the cache is a few per cent of the frames' size.
 - **Zero-column elimination and column-norm preconditioning.**
-  `apply_lsqr` drops all-zero columns before the solve (so unseen sky
-  pixels and inactive chunks do not bloat the iterate), then rescales
+  `setup_lsqr` drops all-zero columns before the solve (so unseen sky
+  pixels and inactive chunks do not bloat the iterate; `apply_lsqr` does it
+  for a matrix that arrives uncompacted), then `apply_lsqr` rescales the
   remaining columns to unit norm. This is the standard Jacobi
   preconditioner for least squares and greatly improves LSMR/LSQR
   convergence.
@@ -664,6 +674,8 @@ cc.setup_lsqr(
 x0 = compute_x0_scalar_only(
     cc.A, cc.b, cc.ref_shape,
     scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+    num_sky_blocks=cc.num_sky_blocks,
+    active_mask=cc.active_mask,       # setup_lsqr compacted the zero columns
 )
 cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr', damp=0,
               use_float32=True, n_threads=48)
@@ -697,17 +709,18 @@ stripes shared across all frames), see the `two_block_fixed` mode and
 
 ## Dependencies
 
-Declared in [`../pyproject.toml`](../pyproject.toml) (Python >= 3.9). Key
+Declared in [`../pyproject.toml`](../pyproject.toml) (Python >= 3.11). Key
 runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 `hdf5plugin`, `threadpoolctl`, `tqdm`, `opencv-python` (cv2),
-`scikit-image`, `mpsplines`.
+`scikit-image`, `matplotlib`; `mpsplines` is an optional extra
+(`[mpsplines]`, git-only), needed only for `interp_1d(method='mp_external')`.
 
 ## File index
 
 | File | Purpose |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Curated public API re-exports + package docstring. |
-| [`_state.py`](_state.py) | Shared I/O semaphore and the coadd flush turnstile. |
+| [`_state.py`](_state.py) | Shared HDD I/O semaphore and the progress-bar switch. |
 | [`config.py`](config.py) | Path resolution + `SelfCalConfigError`. |
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
@@ -726,7 +739,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/profiles.py`](models/profiles.py) | Ready-made coefficient functions: `GaussianProfile`, `TemplateProfile`, `LinearProfile`, `QuadratureSigma`. |
 | [`models/offset_model.py`](models/offset_model.py) | `OffsetModel` / `OffsetBlock` per-map offset bundling. |
 | [`geometry/map_helper.py`](geometry/map_helper.py) | Bitmask, interp, chunk, spline, and binning utilities. |
-| [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load / upscale. |
+| [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load. |
 | [`io/reproj.py`](io/reproj.py) | `load_reproj_file` for reprojected HDF5s; the frame-name helpers; `FrameLoadError`. |
 | [`io/calfile.py`](io/calfile.py) | `CalFile`, the reader of every calibration product. |
 | [`io/reprojection.py`](io/reprojection.py) | Parallel batch reprojection onto the reference WCS. |

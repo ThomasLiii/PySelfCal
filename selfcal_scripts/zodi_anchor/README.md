@@ -104,17 +104,17 @@ data, hdr = load_anchored_mosaic(mosaic_path, anchor)   # MEAN_MAP +C in memory
 
 | Script | Purpose |
 |---|---|
-| [`diag_zodi_spectrum.py`](diag_zodi_spectrum.py) | Per-detector 4-panel spectrum (mean(full_DC)/mean(zodi_pred)/slope·mean(zodi_pred), C, slope, Pearson r vs wavelength) read **entirely from the anchor file** — instant, no cal/npz I/O. `--anchor` or `--run-dir`; `--max-ch` drops airglow-blown channels. |
-| [`diag_plot_cross_channel.py`](diag_plot_cross_channel.py) | Cross-channel continuity: loads pristine cals, applies the anchor **in-memory** from the anchor file, plots per-chunk continuity across the LVF boundaries. `--run-dir` (auto-locates the anchor file) or `--cal-glob` + `--anchor`. |
-| [`diag_compare_zodi_vs_scalar.py`](diag_compare_zodi_vs_scalar.py) | Per-channel scatter: `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Re-fits from the pristine cal + npz (matches the stored anchor fit). Sanity-check that the linear fit makes sense. |
-| [`diag_compare_models.py`](diag_compare_models.py) | Run multiple zodi IPD models against the same cal files; side-by-side plot + `compare_models_summary.json` of per-model slope/intercept/r per channel. |
+| `diag_zodi_spectrum.py` | Per-detector 4-panel spectrum (mean(full_DC)/mean(zodi_pred)/slope·mean(zodi_pred), C, slope, Pearson r vs wavelength) read **entirely from the anchor file** — instant, no cal/npz I/O. `--anchor` or `--run-dir`; `--max-ch` drops airglow-blown channels. |
+| `diag_plot_cross_channel.py` | Cross-channel continuity: loads pristine cals, applies the anchor **in-memory** from the anchor file, plots per-chunk continuity across the LVF boundaries. `--run-dir` (auto-locates the anchor file) or `--cal-glob` + `--anchor`. |
+| `diag_compare_zodi_vs_scalar.py` | Per-channel scatter: `zodi_pred` vs the cal's recovered `full_DC` (frame_scalar + chunk leakage). Re-fits from the pristine cal + npz (matches the stored anchor fit). Sanity-check that the linear fit makes sense. |
+| `diag_compare_models.py` | Run multiple zodi IPD models against the same cal files; side-by-side plot + `compare_models_summary.json` of per-model slope/intercept/r per channel. |
 
 ## Output locations (not in this directory)
 
 | Output | Where it goes |
 |---|---|
 | Metadata cache (`metadata_D{N}.h5`) | `<repo>/cache/zodi_anchor/` (gitignored). Path is set by `DEFAULT_METADATA_CACHE_TEMPLATE` in `build_predictions.py`. |
-| Diagnostic figures | `<repo>/figures/zodi_anchor/...` (gitignored). All scripts that emit PNGs accept an `--out-dir`. |
+| Diagnostic figures | `<repo>/figures/zodi_anchor/...` (gitignored). `refit_smooth_slope.py` writes `figures/zodi_anchor/refit_smooth_slope.png` under the working directory unless given `--out-plot`; `smooth_anchor.py --plot` writes `anchor_D{N}_smooth.png` next to the anchor file unless given a path. |
 | `zodi_pred_<tag>.npz` files | `<run>/zodi_preds/`. The expensive zodipy output; cache + cross-env hand-off (zodipy needs the `selfcal-zodipy`/numpy<2 env; the fit + consumer run in `selfcal`). Referenced by the anchor file (path + sha + len), not copied into it. |
 | Anchor file (`anchor_D{N}.h5`) | `<run>/zodi_anchor/`. The fit result (summary-only, one file per detector). Cal+mosaic stay pristine. |
 | Anchored cal+mosaic | **Not written by default.** The shift is applied in-memory by `load_anchor()` / `load_anchored_mosaic()`. For a materialized FITS (ds9 / sharing), `materialize_anchored_mosaic.py` writes anchored copies to `<run>/anchored_mosaics/` — never overwriting pipeline outputs. |

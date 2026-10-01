@@ -9,8 +9,8 @@ whose raw data look different — another file format, an external pointing
 solution, a data cube whose slices are frames, a variance or wavelength plane
 per exposure, detectors placed on a common focal plane, windowed or binned
 read-outs — supplies its own reader (``ExposureLayout.reader``); the
-reprojection never changes. ``sci_ext`` / ``dq_ext`` are whatever the
-instrument's layout lists (extension numbers, slice indices, detector names):
+reprojection never changes. ``sci_ext`` / ``dq_ext`` are the integers the
+instrument's layout lists (extension numbers, slice indices, detector numbers):
 the reader interprets them.
 
 **The frame file.** Every reprojected frame is one HDF5 file (the solver's,
@@ -65,6 +65,8 @@ class ExposureData:
 
     @property
     def frame_shape(self) -> tuple:
+        """The frame's ``(H, W)``: from ``data``, else ``shape``, else the header's
+        ``(NAXIS2, NAXIS1)``."""
         if self.data is not None:
             return tuple(np.shape(self.data)[-2:])
         if self.shape is not None:

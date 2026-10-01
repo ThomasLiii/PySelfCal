@@ -49,10 +49,26 @@ from .base import CalMode, register_mode
 
 @register_mode("model")
 class ModelMode(CalMode):
+    """The ``model`` mode reads the whole model from the config's ``[model]`` table.
+
+    It declares no capability tags; :meth:`model_spec` checks every name the
+    model uses against the instrument instead. Once the spec is built, the
+    instance's ``mosaic_mode`` is the table's ``mosaic`` value (``full``,
+    ``no_wav`` or ``none``; default ``full``).
+    """
     mosaic_mode = "full"
     requires = ()
 
     def model_spec(self, cfg, inst, geom):
+        """Return the spec of the ``[model]`` table, checked against the instrument.
+
+        :meth:`~selfcal.models.spec.ModelSpec.from_config` parses ``cfg.model`` and
+        :meth:`~selfcal.models.spec.ModelSpec.check` resolves every name it uses.
+        Raises ``ValueError`` when the table is missing or empty, or when the check
+        finds a data variable, chunk map, chunk axis, catalogue entry or prior term
+        that neither the instrument nor the model provides. Sets
+        ``self.mosaic_mode`` to the table's ``mosaic``.
+        """
         if not cfg.model:
             raise ValueError("mode = \"model\" needs a [model] table (sky terms, offset terms, scalar)")
         spec = ModelSpec.from_config(cfg.model)

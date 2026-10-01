@@ -84,6 +84,7 @@ class ChunkAxes:
         raise KeyError(f"no chunk axis {name!r} (axes: {self.names})")
 
     def others(self, name):
+        """The axes other than ``name``, in order (a list of :class:`ChunkAxis`)."""
         return [a for a in self._axes if a.name != name]
 
     def __repr__(self):
