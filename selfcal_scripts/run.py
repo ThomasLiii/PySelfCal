@@ -7,7 +7,7 @@ in-process LSQR threadpool is the only source of parallelism), loads the TOML
 config, and dispatches on its ``task``. ``--dry-run`` loads + validates the
 config and resolves the instrument's jobs without executing the pipeline — a
 cheap way to confirm a config resolves to the intended jobs/mode, the same
-resolution the byte-equality regression checks in cache/refactor_gate/ verify.
+resolution the byte-equality gates (``selfcal_scripts/gates/``) verify.
 
 Every real run also writes its console output (including worker processes and
 any traceback) to ``<output_dir>/<run_name>/logs/<task>_<timestamp>_<pid>.log``,
