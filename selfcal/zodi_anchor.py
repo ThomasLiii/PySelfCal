@@ -381,6 +381,10 @@ class Anchor:
         return float(self.channels[ch]['C_final'])
 
     def slope(self, ch):
+        """Final zodi-fit slope for a channel (smoothing-aware).
+
+        A validation number (about 1 when the zodi model captures the per-frame
+        variation); the ``apply_to_*`` methods shift by :meth:`C` only."""
         return float(self.channels[ch]['slope_final'])
 
     def apply_to_mosaic_array(self, data, weight, ch):

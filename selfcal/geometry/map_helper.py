@@ -1,3 +1,15 @@
+"""These array helpers handle bit masks, pixel weights, chunk maps, resampling and splines.
+
+A *chunk map* is an integer image over the detector pixels holding each pixel's chunk id
+(``-1``: outside every chunk); a *subframe* is a frame's box on the reference grid of
+:mod:`selfcal.geometry.wcs_helper`. Main entry points: :func:`bit_to_bool` and
+:func:`bool_to_bit` (data-quality bits), :func:`make_weight` and :func:`find_outliers`
+(pixel weights and clipping), :func:`make_linear_interp_matrix` and :func:`det_to_sub`
+(detector grid to subframe), :func:`chunk_to_det`, :func:`compute_chunk_contrib` and
+:func:`compute_chunk_adjacency` (chunk maps), :func:`mean_preserving_spline_2d` (a smooth
+render of per-chunk means). Callers include :mod:`selfcal.core.subframe`,
+:mod:`selfcal.core.assembly`, :mod:`selfcal.io.reprojection` and the instruments.
+"""
 import logging
 
 import numpy as np
@@ -10,6 +22,39 @@ from scipy.ndimage import map_coordinates
 logger = logging.getLogger(__name__)
 
 def bit_to_bool(bitmask_array, ignore_list=None, bitmask_header=None, invert=False, expand_bits=False):
+    """Turn an integer data-quality bit mask into boolean flags, ignoring chosen bits.
+
+    By default the result is True where any bit outside ``ignore_list`` is set (a
+    flagged pixel). ``invert=True`` negates every returned value; the combined mask
+    then marks the pixels to keep, the form :mod:`selfcal.core.subframe` multiplies
+    into the pixel weights. The per-bit form lets :mod:`selfcal.io.reprojection`
+    resample each bit plane separately before :func:`bool_to_bit` packs them again.
+
+    Parameters
+    ----------
+    bitmask_array : ndarray of int
+        The bit mask: any shape, but ``(H, W)`` for the per-bit form without
+        ``bitmask_header``.
+    ignore_list : list or None, optional
+        Bits that never flag a pixel: bit numbers, or flag names when
+        ``bitmask_header`` is given. ``None`` ignores none.
+    bitmask_header : dict or None, optional
+        ``{flag name: bit number}``, used to look up ``ignore_list`` and to name the
+        planes of the per-bit form.
+    invert : bool, optional
+        Return the logical NOT of the result.
+    expand_bits : bool, optional
+        Return one boolean plane per bit instead of one combined mask.
+
+    Returns
+    -------
+    ndarray of bool or dict
+        ``expand_bits=False``: an array of the shape of ``bitmask_array``.
+        ``expand_bits=True``: a ``(32, H, W)`` array whose plane ``k`` is True where
+        bit ``k`` is set (the planes of ignored bits are all False, all True after
+        ``invert``); with ``bitmask_header``, a dict ``{name: bool array}`` over the
+        named flags that are not ignored.
+    """
     # By default, 1 indicates bad pixels and 0 indicates good pixels.
     # If invert=True, this is flipped.
     if ignore_list is None:
@@ -162,6 +207,15 @@ def bin2d(arr, bin_factor, bin_func=np.mean):
     return binned
 
 def compute_crop(ref_shape, coords):
+    """Return the slices that crop a subframe and the reference grid to their overlap.
+
+    ``coords = (y_min, y_max, x_min, x_max)`` places the subframe on a grid of shape
+    ``ref_shape = (H, W)`` (half-open, like a frame file's ``ref_coords``) and may
+    extend past the grid's edges. Returns ``(sub_crop, ref_crop)``, two ``(rows,
+    columns)`` slice tuples, so ``ref_map[ref_crop] += sub_map[sub_crop]`` adds the
+    in-bounds part. Assumes the box overlaps the grid: for a box wholly outside it a
+    slice stop goes negative (NumPy counts it from the end) and the crops need not match.
+    """
     y_min, y_max, x_min, x_max = coords
     H, W = ref_shape
 
@@ -375,6 +429,12 @@ def compute_chunk_contrib(chunk_map, interp_matrix=None):
         return chunk_map_parsed
 
 def check_invalid(arr):
+    """Flag invalid entries: ``-9999`` in an integer array, NaN in a float array.
+
+    Returns a boolean array of the shape of ``arr``; any other dtype (bool included)
+    raises ``ValueError``. Matrix assembly (:mod:`selfcal.core.assembly`) uses it to
+    drop the entries of rows whose right-hand-side value is invalid.
+    """
     if np.issubdtype(arr.dtype, np.integer):
         invalid = arr == -9999
     elif np.issubdtype(arr.dtype, np.floating):
@@ -384,6 +444,14 @@ def check_invalid(arr):
     return invalid
 
 def linear_spline(x_sample, y_sample):
+    """Return a function ``f(x)`` that interpolates the samples linearly.
+
+    ``f(x)`` is ``np.interp(x, x_sample, y_sample)``: ``x_sample`` must increase, and
+    outside its range ``f`` returns the end values. It joins point samples, so unlike
+    :func:`mean_preserving_spline` it does not preserve bin means; it is the
+    ``method='linear'`` option of
+    :func:`~selfcal.instruments.spherex.spherex_utility.interp_1d`.
+    """
     def interpolator(x):
         return np.interp(x, x_sample, y_sample)
     return interpolator

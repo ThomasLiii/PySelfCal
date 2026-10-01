@@ -39,9 +39,11 @@ class FrameContext:
     sub_aux: object = None
 
     def __getitem__(self, key):
+        """Return the field named ``key``; an unknown name raises ``AttributeError``."""
         return getattr(self, key)
 
     def get(self, key, default=None):
+        """Return the field named ``key``, or ``default`` when the context has no such field."""
         return getattr(self, key, default)
 
 def _valid_row_mask(coords_yx, grid_valid_weight):

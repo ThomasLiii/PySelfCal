@@ -82,6 +82,15 @@ def _header(config_path, repo):
 
 
 class RunLog:
+    """An active run log: this process's stdout and stderr copied into the file ``path``.
+
+    Made by :func:`start_run_log`, which points file descriptors 1 and 2 at a pipe read by a
+    ``tee -a <path>`` process; ``tee`` appends everything to the log and writes it to the
+    original stdout, so stderr output also reaches the console through stdout. :meth:`stop`
+    (registered with ``atexit``) points the descriptors back. The constructor takes the ``tee``
+    process, the saved duplicates of the original descriptors 1 and 2, and a duplicate of the
+    pipe's read end, which :meth:`stop` polls until ``tee`` has read everything.
+    """
     def __init__(self, path, tee, saved_fds, drain_fd):
         self.path = path
         self._tee = tee

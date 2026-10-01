@@ -1,3 +1,16 @@
+"""Three classes implement the pipeline's stages: reprojection, calibration and mosaicking.
+
+- :class:`PipelineConfig` — the run's output paths and reference pixel scale.
+- :class:`Reprojector` — defines the reference grid and reprojects the exposures onto
+  it, one frame file per exposure and detector (:mod:`selfcal.io.reprojection`).
+- :class:`Calibrator` — builds and solves the least-squares system for the sky and the
+  offsets (:mod:`selfcal.core.system`, :mod:`selfcal.core.solve`) and writes the
+  calibration file.
+- :class:`Mosaicker` — subtracts a calibration's offsets from the frames and coadds
+  them (:mod:`selfcal.core.coadd`) into a multi-extension FITS mosaic.
+
+The run engine (:mod:`selfcal_scripts.runner`) drives these classes from a TOML config.
+"""
 from __future__ import annotations
 
 import datetime
@@ -56,6 +69,12 @@ _REPROJ_QUARANTINE_NAME = 'quarantine'
 
 @contextmanager
 def timer(description):
+    """Log the wall-clock duration of a ``with`` block.
+
+    On normal exit it logs ``"<description> finished in 12.34 seconds."`` at
+    INFO level on the ``selfcal.pipeline.pipeline_wrapper`` logger, timed with
+    ``time.perf_counter``. Nothing is logged when the block raises.
+    """
     start = time.perf_counter() # distinct from time.time(), better for execution duration
     yield
     elapsed = time.perf_counter() - start
@@ -63,6 +82,38 @@ def timer(description):
 
 @dataclass
 class PipelineConfig:
+    """Output paths and reference pixel scale shared by the stages of one run.
+
+    The paths left as ``None`` are filled in on creation, under the run
+    directory ``<output_dir>/<run_name>``. Creating the object does not touch
+    the disk.
+
+    Parameters
+    ----------
+    output_dir : str
+        Parent directory of the run directory.
+    run_name : str
+        Name of the run directory.
+    resolution_arcsec : float
+        Pixel scale, in arcsec, of a reference grid that
+        :meth:`Reprojector.define_reference` computes from scratch. Not used
+        when the grid is loaded from ``ref_path`` or derived from a source
+        reference.
+    ref_path : str, optional
+        Reference-grid FITS file (WCS and shape), loaded or written by
+        :meth:`Reprojector.define_reference` and loaded by :class:`Calibrator`
+        and :class:`Mosaicker`. Default ``<output_dir>/<run_name>/ref.fits``.
+    reproj_dir : str, optional
+        Directory of the frame files and of the reprojection bookkeeping.
+        Default ``<output_dir>/<run_name>/reprojected``.
+    cal_dir : str, optional
+        Where :meth:`Calibrator.save_calibration` writes, and
+        :meth:`Calibrator.load_calibration` reads ``cal.h5``, when no path is
+        given. Default ``<output_dir>/<run_name>/calibration``.
+    mos_dir : str, optional
+        Where :meth:`Mosaicker.save_mosaic` writes when no directory is given.
+        Default ``<output_dir>/<run_name>/mosaic``.
+    """
     output_dir: str
     run_name: str
     resolution_arcsec: float
@@ -84,6 +135,24 @@ class PipelineConfig:
             self.mos_dir = os.path.join(base_path, 'mosaic')
 
 class Reprojector:
+    """Reprojection stage: defines the reference grid and reprojects exposures onto it.
+
+    An instance holds the run configuration, the input exposure paths
+    (``exposure_list``) and the reference grid (``ref_wcs``, ``ref_shape``).
+    :meth:`define_reference` loads the grid from ``config.ref_path``, or
+    derives or computes one and saves it there. :meth:`run_reproject` then
+    reprojects every (exposure, extension) pair onto the grid with
+    :func:`selfcal.io.reprojection.batch_reproject`, one frame file
+    ``exp_<exposure>_det_<detector>.h5`` per pair, by default skipping pairs
+    whose file already exists. :meth:`run_reproject` and
+    :meth:`get_reproj_files` set ``reproj_list``, the sorted frame paths.
+    ``config.reproj_dir`` also holds the bookkeeping that :meth:`status`
+    reports: ``manifest.json``, ``failed.jsonl`` and ``quarantine/``.
+
+    Creating an instance creates ``config.reproj_dir`` if it is missing.
+    :class:`Calibrator` and :class:`Mosaicker` subclass it to share the frame
+    list and the reference grid.
+    """
     def __init__(self, config: PipelineConfig, exposure_list: list[str] | None = None) -> None:
         '''Initialize path to reference WCS and reprojected files.
 
@@ -587,6 +656,23 @@ class Reprojector:
             self.exp_idx_list.append(exp_idx)
         
 class Calibrator(Reprojector):
+    """Calibration stage: solves jointly for the sky and the instrument's additive offsets.
+
+    An instance works on the frame files of ``reproj_dir`` (default
+    ``config.reproj_dir``) and on the reference grid saved at
+    ``config.ref_path``, which must exist. :meth:`setup_lsqr` assembles the
+    sparse system ``A x = b`` from the frames in ``reproj_list``; the unknowns
+    ``x`` are, in order, the sky maps (one block of reference-grid pixels per
+    sky component), the offsets of each chunk map and an optional per-frame
+    scalar. :meth:`apply_lsqr` solves the system iteratively (LSMR by
+    default), or :meth:`solve_sky_closed_form` solves a sky-only system pixel
+    by pixel, and :meth:`save_calibration` writes the calibration file.
+    :meth:`load_calibration` reads a saved one back into ``x``; the ``get_*``
+    methods split ``x`` into sky maps and offsets.
+
+    ``reproj_list`` may be reassigned before :meth:`setup_lsqr` to solve a
+    subset of the frames; the calibration file records the list.
+    """
     def __init__(self, config: PipelineConfig, reproj_dir: str | None = None) -> None:
         """Load the reference WCS and reprojected file list for calibration.
 
@@ -1023,6 +1109,7 @@ class Calibrator(Reprojector):
         self._pixel_spill = None
 
     def __del__(self):
+        """Delete the per-pixel coverage and Fisher arrays if still parked on scratch disk."""
         # A Calibrator dropped without ever saving (an aborted tile, a failed
         # solve) would otherwise leave its parked pixel-state arrays behind
         # on scratch disk — full-reference-grid float64 arrays that reach
@@ -1485,6 +1572,19 @@ class Calibrator(Reprojector):
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
+    """Mosaic stage: coadds the frames, minus a calibration's offsets, on the reference grid.
+
+    An instance reads the reference grid saved at ``config.ref_path``, which
+    must exist, and starts with the frame files of ``reproj_dir`` (default
+    ``config.reproj_dir``). :meth:`load_calibration` reads a calibration file
+    and replaces ``reproj_list`` with the frame paths recorded in it.
+    :meth:`make_mosaic` subtracts each frame's offsets and coadds the frames
+    into ``maps``: a mean map and, optionally, standard-deviation and
+    sigma-clipped mean maps. :meth:`append_maps` adds further named maps and
+    :meth:`save_mosaic` writes them all to one multi-extension FITS file, by
+    default in ``config.mos_dir``. ``unit`` (default ``'MJy/sr'``) is the
+    ``BUNIT`` of the mean, standard-deviation and sigma-clipped maps.
+    """
     def __init__(self, config: PipelineConfig, reproj_dir: str | None = None,
                  unit: str = 'MJy/sr') -> None:
         """Load the reference WCS and reprojected file list for mosaicking.

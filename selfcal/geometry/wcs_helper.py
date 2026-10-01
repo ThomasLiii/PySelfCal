@@ -1,3 +1,15 @@
+"""These functions build, save and load the reference grid all frames are reprojected onto.
+
+The reference grid is a celestial WCS plus an ``(ny, nx)`` shape. :func:`find_optimal_frame`
+fits a new north-up grid around a set of exposures; :func:`derive_reference_from` keeps an
+existing grid's projection and only resizes it to new exposures, so separate runs share one
+pixel grid; :func:`projections_match` (built on :func:`projection_signature`) tests whether
+two grids share a projection. :func:`save_to_fits` and :func:`load_from_fits` store the grid
+as a FITS file, a run's ``ref.fits``.
+:meth:`~selfcal.pipeline.pipeline_wrapper.Reprojector.define_reference` chooses between these
+routes, and :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` and
+:class:`~selfcal.pipeline.pipeline_wrapper.Mosaicker` load the saved grid.
+"""
 import logging
 import os
 from tqdm import tqdm
@@ -50,6 +62,41 @@ def _pad_wcs(wcs, shape, padding_pixels):
 
 def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use_ext=(1, 10, 37, 46),
                        reader=None):
+    """Fit a new reference grid that covers every exposure, padded on all four sides.
+
+    Reads the WCS of the ``use_ext`` entries of each exposure and passes them to
+    ``reproject.mosaicking.find_optimal_celestial_wcs``, which returns a TAN projection
+    in the celestial frame of the first WCS, north up and east left, at
+    ``resolution_arcsec``; the grid is then widened by ``padding_pixels`` on each side
+    (CRPIX shifts by ``padding_pixels``). An exposure that cannot be read is skipped
+    with a logged warning; ``ValueError`` is raised when ``exposure_list`` is empty or
+    no WCS could be read.
+
+    Parameters
+    ----------
+    exposure_list : list[str]
+        Exposure file paths.
+    resolution_arcsec : float
+        Pixel scale of the grid, in arcsec.
+    padding_pixels : int
+        Pixels added on each side; each axis grows by ``2 * padding_pixels``.
+    use_ext : iterable[int]
+        The entries of each exposure whose WCS are read: FITS extension numbers, or
+        whatever ``reader`` accepts. The default is the Euclid NISP layout: the science
+        extensions (``3k + 1``) of the four corner detectors 0, 3, 12 and 15. The runner
+        passes the instrument's :attr:`~selfcal.instruments.base.ExposureLayout.ref_use_ext`
+        unless the ``[reproject]`` table sets ``use_ext``.
+    reader : callable or None
+        The instrument's exposure reader (:mod:`selfcal.io.frames`), called with
+        ``header_only=True``; ``None`` reads the FITS headers.
+
+    Returns
+    -------
+    ref_wcs : astropy.wcs.WCS
+        The grid's WCS.
+    ref_shape : tuple of int
+        The grid's shape, ``(ny, nx)``.
+    """
     if not exposure_list:
         raise ValueError('No exposure files provided to define WCS.')
     logger.info('Defining optimal celestial WCS...')
@@ -165,6 +212,12 @@ def derive_reference_from(source_ref_path, exposure_list, padding_pixels=100,
 
 
 def save_to_fits(wcs, shape, filename):
+    """Write a reference grid to ``filename`` as a FITS file, replacing any existing file.
+
+    The primary HDU holds the header of ``wcs`` and a float64 array of zeros of
+    ``shape`` (``(ny, nx)``), so the file is as large as a float64 image of the grid.
+    Missing parent directories are created. :func:`load_from_fits` reads it back.
+    """
     output_dir = os.path.dirname(filename)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -177,6 +230,12 @@ def save_to_fits(wcs, shape, filename):
 
 
 def load_from_fits(file_path):
+    """Load a reference grid saved by :func:`save_to_fits` as ``(ref_wcs, (ny, nx))``.
+
+    The WCS comes from the primary header and the shape from its ``NAXIS2`` and
+    ``NAXIS1`` keywords; the data array is not read. A missing file raises
+    ``FileNotFoundError``.
+    """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f'Reference WCS file not found: {file_path}')
     logger.info(f'Loading reference frame from: {file_path}')

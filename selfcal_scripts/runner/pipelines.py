@@ -19,8 +19,8 @@ offset/sky/x0/mosaic recipe, and this file just sequences
 staging -> solve -> save -> mosaic -> hooks -> cleanup.
 
 Edits must keep calibration output byte-identical: run the gate set
-(``workspace/unify/scripts/run_gates.sh``, or the ``cache/refactor_gate``
-configs through ``run.py`` + ``selfcal_scripts/drivers/diff_cal_h5.py``).
+(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``; see the
+README there).
 """
 import gc
 import glob as glob_module
@@ -170,6 +170,16 @@ def _run_tiled(ctx):
 # task = 'mosaic': mosaic of an existing cal, per job
 # ---------------------------------------------------------------------------
 def run_mosaic(cfg):
+    """Run task ``mosaic``: coadd the frames of each job's existing cal file into a mosaic.
+
+    The cal is the job's ``cal_<stem>.h5`` or, when set, ``cal_override`` (the same file for
+    every job, e.g. a cal solved on another grid; its frames without a reprojected file in this
+    run are dropped). A missing cal raises ``FileNotFoundError``. The frames are staged as for
+    task ``cal``, each mosaic is written as ``mosaic_<stem>.fits`` (replacing an existing one)
+    and the instrument's post-cal hooks run after it (SPHEREx: the zodi anchor, when
+    ``[zodi].pred_dir`` is set). Returns a :class:`~.engine.CalResult` with the cal and mosaic
+    path of each job.
+    """
     ctx = RunContext.build(cfg)
     inst = ctx.inst
     frame_dir = stage_run(ctx)
@@ -198,6 +208,20 @@ def run_mosaic(cfg):
 # task = 'reproject': raw exposures -> reprojected frames, per the instrument's layout
 # ---------------------------------------------------------------------------
 def run_reprojection(cfg):
+    """Run task ``reproject``: reproject the raw exposures onto the run's reference grid.
+
+    The exposures are the sorted matches of ``[reproject].file_pattern`` (its ``{...}`` fields
+    filled from ``[instrument]``, e.g. ``{detector}``) appended to each of
+    ``[reproject].input_dirs``, read as the instrument's
+    :meth:`~selfcal.instruments.base.Instrument.exposure_layout` says. An instrument with a
+    header filter drops exposures first (SPHEREx keeps ``FINAST == 0``), caching the header
+    reads in ``<output_dir>/_exposure_cache/<cache_tag>.json``. The reference WCS is the run's
+    ``ref.fits``: reused when it exists, otherwise derived from ``source_ref_path`` or fitted
+    to the exposures, then written. Each (exposure, detector) frame becomes one
+    ``exp_<exposure>_det_<detector>.h5`` file in the run's ``reprojected/`` directory; files
+    already there are skipped unless ``replace_existing``, and ``check = true`` load-tests
+    every file afterwards and quarantines broken ones. Returns the ``reprojected/`` directory.
+    """
     import numpy as np
     from selfcal.io.exposure_filter import filter_exposures_by_header
     from selfcal.pipeline import pipeline_wrapper
@@ -256,6 +280,13 @@ def run_reprojection(cfg):
 # task = 'precompute': the instrument's rarely-run geometry generator
 # ---------------------------------------------------------------------------
 def run_precompute(cfg):
+    """Run task ``precompute``: the instrument's rarely-run geometry generator.
+
+    Calls the instrument's :meth:`~selfcal.instruments.base.Instrument.precompute` with the
+    ``[instrument]`` table. SPHEREx writes the LVF parameter file ``lvf_params_D<N>.npy`` of
+    each detector in ``[instrument].detectors``; an instrument without a generator raises
+    ``NotImplementedError``.
+    """
     from selfcal.instruments import get_instrument
     inst = get_instrument(cfg.instrument)
     inst.precompute(cfg.instrument_cfg)
@@ -265,6 +296,13 @@ def run_precompute(cfg):
 # task = 'npass': the N-pass alternating solve (scheduler in npass.py)
 # ---------------------------------------------------------------------------
 def run_npass(cfg):
+    """Run task ``npass``: the N-pass alternating solve, with :func:`run_calibration` as pass 1.
+
+    Delegates to :func:`.npass.run_npass` (the schedule is set by ``[passes]``) and returns its
+    dict: ``products`` (pass number to product: the list of pass-1 cals, then one file per
+    pass), ``final`` (the latest sky product) and, unless ``n = 1``, ``monitor`` (the path of
+    the per-pass monitor JSON).
+    """
     from .npass import run_npass as _run
     return _run(cfg, run_calibration=run_calibration)
 
@@ -279,6 +317,18 @@ _TASKS = {
 
 
 def run(cfg):
+    """Run the task named by ``cfg.task`` and return its result.
+
+    - ``cal``: :func:`run_calibration`, a :class:`~.engine.CalResult`;
+    - ``mosaic``: :func:`run_mosaic`, a :class:`~.engine.CalResult`;
+    - ``npass``: :func:`run_npass`, the scheduler's dict of products;
+    - ``reproject``: :func:`run_reprojection`, the reprojected-frame directory;
+    - ``precompute``: :func:`run_precompute`, None.
+
+    Any other task raises ``ValueError`` (:func:`~.config.load_config` has already turned
+    ``tiled`` into ``cal``). ``python -m selfcal_scripts.run`` calls this after loading the
+    config.
+    """
     if cfg.task not in _TASKS:
         raise ValueError(f"unknown task {cfg.task!r}; known: {sorted(_TASKS)}")
     return _TASKS[cfg.task](cfg)

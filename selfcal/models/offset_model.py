@@ -60,13 +60,27 @@ class Basis:
 
     @property
     def variables(self) -> tuple:
+        """Every data variable the basis may read: its coefficient's main variables and
+        any its function reads by name."""
         return self.coefficient.variables
 
     @property
     def main_variables(self) -> tuple:
+        """The data variables the function is applied to, in argument order (always read)."""
         return self.coefficient.main_variables
 
     def evaluate(self, obs) -> np.ndarray:
+        """The ``n`` functions at the observations of ``obs``, as an ``(n_obs, n)`` float32 array.
+
+        ``obs`` maps variable names to one value per observation (one frame's
+        :class:`~selfcal.models.variables.ObservationVariables`); ``n_obs`` is the
+        length of the first main variable. A function with an ``evaluate`` method
+        (a profile of :mod:`selfcal.models.profiles`) is called as
+        ``evaluate(x, obs)``, with ``x`` the first main variable's values; any other
+        function with the main variables' values as positional arguments.
+        :func:`as_basis_values` normalises the result and raises ``ValueError`` when
+        its shape does not fit.
+        """
         c = self.coefficient
         names = c.main_variables
         x0 = obs[names[0]]

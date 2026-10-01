@@ -38,6 +38,14 @@ class CalFile:
     """A calibration product (``cal_*.h5``) opened for reading."""
 
     def __init__(self, path):
+        """Open the ``cal_*.h5`` file at ``path`` (a ``str`` or path-like) read-only.
+
+        ``FileNotFoundError`` is raised when ``path`` is not an existing file. The
+        instance keeps ``path`` as a ``str`` and ``attrs``, a dict of the file's root
+        attributes with ``bytes`` values decoded to ``str``. The file stays open until
+        :meth:`close` or the end of a ``with`` block. Apart from ``attrs`` nothing is
+        cached: every property access reads the file again.
+        """
         self.path = str(path)
         if not os.path.isfile(self.path):
             raise FileNotFoundError(self.path)
@@ -46,6 +54,7 @@ class CalFile:
 
     # ---- lifecycle ---------------------------------------------------------------
     def close(self):
+        """Close the HDF5 file; calling it again does nothing."""
         if self._f is not None:
             self._f.close()
             self._f = None
@@ -62,6 +71,11 @@ class CalFile:
     # ---- schema ----------------------------------------------------------------------
     @property
     def schema_version(self) -> int:
+        """Layout version (3, 2 or 1), inferred from the datasets the file holds.
+
+        3 if there is a ``sky`` group, 2 if there is an ``offsets`` group or a
+        ``skymap`` dataset, else 1; the ``schema_version`` attribute is not read.
+        """
         f = self._f
         if 'sky' in f:
             return 3
@@ -71,10 +85,17 @@ class CalFile:
 
     @property
     def has_sky(self) -> bool:
+        """Whether the file holds a sky map (a ``sky`` group or a ``skymap`` dataset)."""
         return 'sky' in self._f or 'skymap' in self._f
 
     @property
     def sky_names(self) -> list[str]:
+        """Names of the sky blocks in block order; block 0 is the continuum.
+
+        v3: the ``sky_components`` attribute, else the keys of the ``sky`` group.
+        v2: ``['continuum']``, plus ``'line'`` when ``skymap_line`` exists. ``[]``
+        when the file holds no sky.
+        """
         f = self._f
         if 'sky' in f:
             if 'sky_components' in f.attrs:
@@ -89,10 +110,12 @@ class CalFile:
 
     @property
     def num_sky_blocks(self) -> int:
+        """Number of sky blocks: the ``num_sky_blocks`` attribute, else ``len(sky_names)``."""
         return int(self.attrs.get('num_sky_blocks', len(self.sky_names)))
 
     @property
     def ref_shape(self) -> tuple[int, int] | None:
+        """Reference-grid shape ``(ref_h, ref_w)`` of the sky maps; None when there is no sky."""
         f = self._f
         if 'sky' in f:
             return tuple(f['sky'][self.sky_names[0]].shape)
@@ -121,14 +144,32 @@ class CalFile:
         return ds[()]
 
     def sky_coverage(self, which=0) -> np.ndarray | None:
+        """The number of observations of each reference pixel in sky block ``which``.
+
+        A ``ref_shape`` array, or None when the file stores no coverage for the block.
+        """
         ds = self._sky_dataset('sky_coverage', 'skymap_coverage', 'skymap_line_coverage', which)
         return None if ds is None else ds[()]
 
     def sky_fisher(self, which=0) -> np.ndarray | None:
+        """The Fisher information of each reference pixel in sky block ``which``.
+
+        The sum over the pixel's observations of the squared weighted coefficient
+        (``Σ w² c²``; ``c = 1`` for the continuum), as a ``ref_shape`` array, or None
+        when the file stores none for the block.
+        """
         ds = self._sky_dataset('sky_fisher', 'skymap_fisher', 'skymap_line_fisher', which)
         return None if ds is None else ds[()]
 
     def sky_separability(self, which) -> np.ndarray | None:
+        """The separability ``I_P`` of spectral sky block ``which``, or None when absent.
+
+        ``I_P`` is the block's Fisher information left after the other sky blocks are
+        profiled out of each pixel (a Schur complement). It measures the diversity of
+        the coefficients a pixel is observed with: a pixel seen many times at one
+        wavelength has a large Fisher information but ``I_P = 0``, so line maps are
+        masked on ``I_P``. Only spectral blocks have one; there is no v2 alias.
+        """
         f = self._f
         name = self.sky_names[which] if isinstance(which, int) else which
         if 'sky_separability' in f and name in f['sky_separability']:
@@ -137,12 +178,21 @@ class CalFile:
 
     @property
     def line_fisher_threshold(self) -> float | None:
+        """The recommended read-time Fisher threshold for the line map, or None.
+
+        The ``line_fisher_threshold`` root attribute. The stored line maps are raw;
+        :func:`~selfcal.core.system.apply_line_fisher_mask` applies a threshold.
+        """
         v = self.attrs.get('line_fisher_threshold')
         return None if v is None else float(v)
 
     # ---- frames ---------------------------------------------------------------------------
     @property
     def reproj_list(self) -> list[str]:
+        """The frame files of the solve, in the row order of every per-frame dataset.
+
+        ``[]`` when the file has no ``reproj_list`` dataset.
+        """
         f = self._f
         if 'reproj_list' not in f:
             return []
@@ -150,6 +200,7 @@ class CalFile:
 
     @property
     def n_frames(self) -> int:
+        """The number of frames: the length of ``reproj_list``, else map 0's rows, else 0."""
         f = self._f
         if 'reproj_list' in f:
             return int(f['reproj_list'].shape[0])
@@ -158,6 +209,7 @@ class CalFile:
 
     @property
     def frame_scalar(self) -> np.ndarray | None:
+        """The per-frame scalar offset, shape ``(n_frames,)``, or None when the solve had none."""
         f = self._f
         return f['frame_scalar'][()] if 'frame_scalar' in f else None
 
@@ -170,6 +222,11 @@ class CalFile:
     # ---- offset blocks -------------------------------------------------------------------
     @property
     def num_maps(self) -> int:
+        """The number of offset maps; 1 for a legacy single-``offset`` file, 0 without offsets.
+
+        The ``num_maps`` root attribute when present, else the size of the
+        ``offsets`` group.
+        """
         f = self._f
         if 'offsets' in f:
             return int(self.attrs.get('num_maps', len(f['offsets'])))
@@ -191,10 +248,22 @@ class CalFile:
 
     @property
     def offset_coverage(self) -> list[np.ndarray]:
+        """Per-map ``(n_frames, n_chunks)`` counts of the observations of each offset.
+
+        Template and polynomial-basis maps, whose unknowns are not one per chunk,
+        store ones. A map whose offsets multiply ``n_basis > 1`` functions
+        (:meth:`offset_basis`) has ``n_chunks * n_basis`` columns, one per unknown.
+        """
         return self._per_map('offset_coverage', 'offset_coverage')
 
     @property
     def offset_coverage_frac(self) -> list[np.ndarray]:
+        """Per-map ``(n_frames, n_chunks)`` coverage as a fraction of each chunk's pixels.
+
+        :attr:`offset_coverage` divided by the chunk's size in detector pixels.
+        Template and polynomial-basis maps store ones; a map with ``n_basis > 1``
+        functions stores its :attr:`offset_coverage` counts undivided, as floats.
+        """
         return self._per_map('offset_coverage_frac', 'offset_coverage_frac')
 
     def offset_basis(self, m) -> tuple[int, str] | None:
@@ -226,6 +295,7 @@ class CalFile:
 
     # ---- summary ------------------------------------------------------------------------------
     def describe(self) -> str:
+        """A short text summary: schema, sky blocks and grid, offset maps, frames, attributes."""
         lines = [f'{os.path.basename(self.path)}: schema v{self.schema_version}',
                  f'  sky blocks: {self.sky_names} on {self.ref_shape}',
                  f'  offset maps: {self.num_maps}, frames: {self.n_frames}, '
@@ -238,4 +308,5 @@ class CalFile:
 
 
 def open_cal(path) -> CalFile:
+    """Open a cal file for reading; the same as ``CalFile(path)``."""
     return CalFile(path)

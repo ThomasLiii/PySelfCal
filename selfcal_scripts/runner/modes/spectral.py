@@ -112,10 +112,24 @@ class Spectral(Continuum):
     requires = ("wavelength",)
 
     def model_spec(self, cfg, inst, geom):
+        """Return a spec: the spectral sky terms, the standard offset term, the per-frame scalar.
+
+        The sky terms come from :func:`spectral_sky_terms`, the offset term from
+        :func:`standard_offset_term` (as in the ``continuum`` mode).
+        """
         return ModelSpec(sky=tuple(spectral_sky_terms(cfg, geom)),
                          offset=(standard_offset_term(cfg, geom),), scalar=True)
 
     def build_sky_model(self, cfg, inst, geom):
+        """Build the base class's sky model and, when ``[params].lines`` is set, print its Gram check.
+
+        :func:`print_gram` prints the normalised Gram matrix of the terms'
+        coefficients over the ``[params]`` spectral window and warns about pairs
+        with ``|r| > GRAM_WARN`` (0.7). It needs that window (``spectral_poly_lo``
+        / ``spectral_poly_hi``) and raises ``ValueError`` without it, unless the
+        chunk map has no spectral axis or the instrument no wavelength map, which
+        skips the check.
+        """
         model = super().build_sky_model(cfg, inst, geom)
         if cfg.params.get('lines'):
             print_gram(cfg, geom, model, self.requested_name or self.name)
@@ -147,6 +161,17 @@ class SpectralSoftPoly(Spectral):
     column_poly_default_weight = None
 
     def model_spec(self, cfg, inst, geom):
+        """Return the :class:`Spectral` spec plus a soft polynomial along the spectral axis.
+
+        :func:`spectral_poly_constraint` builds the constraint from ``[params]``
+        ``spectral_poly_weight`` / ``_degree`` / ``_lo`` / ``_hi`` (historical
+        ``subch_poly_*``), and it is appended to the standard offset term's
+        constraints. Without ``spectral_poly_weight`` it is left out or, when the
+        class sets ``spectral_poly_required`` (the ``tiled`` preset), a
+        ``ValueError`` is raised. ``column_poly_default_weight`` (0.5 for
+        ``tiled``) turns on the standard term's own polynomial when
+        ``poly_weight`` is not given.
+        """
         pc = spectral_poly_constraint(cfg, geom, required=self.spectral_poly_required)
         off = standard_offset_term(cfg, geom, extra_poly=(pc,) if pc else (),
                                    column_poly_default_weight=self.column_poly_default_weight)
@@ -169,6 +194,17 @@ class SpectralPolyBasis(Spectral):
     requires = ("wavelength", "spectral_axis")
 
     def model_spec(self, cfg, inst, geom):
+        """Return a spec: the spectral sky terms, a polynomial-basis offset, the per-frame scalar.
+
+        The offset term (``kind='polybasis'``, on the primary map) is a mean-zero
+        Chebyshev shape of degrees 1 to ``spectral_poly_degree`` in the map's
+        spectral axis, one per value of its group axis, over the window
+        ``[spectral_poly_lo, spectral_poly_hi]``. ``spectral_poly_segments``
+        (``[[lo, hi], ...]``) makes it piecewise: a shape per segment, plus a level
+        for each segment after the first. The historical ``subch_poly_*`` names are
+        read too. There is no weight knob and no smoothness or mean-zero row: the
+        per-frame scalar carries each frame's DC.
+        """
         p = cfg.params
         lo, hi = spectral_window(p)
         off = OffsetTerm(kind='polybasis', degree=int(param(p, 'spectral_poly_degree', 'subch_poly_degree')),

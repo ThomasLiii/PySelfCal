@@ -126,9 +126,20 @@ class RunContext:
 
     # ---- geometry ---------------------------------------------------------
     def jobs(self):
+        """The run's jobs: the instrument's expansion of the ``[instrument]`` table.
+
+        A list of :class:`~selfcal.instruments.base.Job`. SPHEREx gives one per selected channel,
+        channel group or subchannel window; ``grid`` and ``euclid`` give one. The ``cal`` and
+        ``mosaic`` tasks loop over it; ``npass`` uses :meth:`single_job`.
+        """
         return self.inst.jobs(self.cfg.instrument_cfg)
 
     def single_job(self, what):
+        """The run's single job, for a task that handles one job only (``npass``).
+
+        Raises ``ValueError`` when the ``[instrument]`` table resolves to any other number of
+        jobs; ``what`` names the task in that message (e.g. ``"task 'npass'"``).
+        """
         jobs = self.jobs()
         if len(jobs) != 1:
             raise ValueError(f"{what} runs one job per config; [instrument] resolves to "
@@ -136,6 +147,12 @@ class RunContext:
         return jobs[0]
 
     def job_geometry(self, job):
+        """The :class:`~selfcal.instruments.base.JobGeometry` of ``job``: valid pixels and weights.
+
+        The instrument builds it from the ``[instrument]`` table and the detector geometry
+        ``geom``. :func:`solve_job` uses its ``det_valid_weight``, :func:`mosaic_job` its
+        ``grid_valid_weight``.
+        """
         return self.inst.job_geometry(self.cfg.instrument_cfg, self.geom, job)
 
     def aux_maps(self):
@@ -147,31 +164,75 @@ class RunContext:
 
     # ---- naming (the one place) --------------------------------------------
     def stem(self, job, suffix=None):
+        """The stem of every product name of ``job``: ``<frame_tag>_<job.name><suffix>``.
+
+        ``suffix`` defaults to the config's top-level ``suffix``. :meth:`cal_file`,
+        :meth:`mosaic_file` and :meth:`mosaic_cache_dir` wrap the stem, the N-pass products extend
+        it, and the SPHEREx zodi hook reads ``zodi_pred_<stem>.npz``. Example (SPHEREx, detector 4,
+        channel 17): ``Detector4_NumSub10_NumCh34_NumCol3_Ch17<suffix>``.
+        """
         suffix = self.cfg.suffix if suffix is None else suffix
         return f'{self.frame_tag}_{job.name}{suffix}'
 
     def cal_file(self, job, suffix=None):
+        """The cal file name of ``job``, ``cal_<stem>.h5`` (see :meth:`cal_path`)."""
         return f'cal_{self.stem(job, suffix)}.h5'
 
     def cal_path(self, job, suffix=None):
+        """The full path of ``job``'s cal file: :meth:`cal_file` in the run's cal directory.
+
+        That directory is ``pipeline_config.cal_dir``, ``<output_dir>/<run_name>/calibration``.
+        The untiled ``cal`` task skips the solve when this file exists; the ``mosaic`` task reads
+        it unless ``cal_override`` is set.
+        """
         return os.path.join(self.pipeline_config.cal_dir, self.cal_file(job, suffix))
 
     def mosaic_file(self, job, suffix=None):
+        """The mosaic file name of ``job``, ``mosaic_<stem>.fits`` (see :meth:`mosaic_path`)."""
         return f'mosaic_{self.stem(job, suffix)}.fits'
 
     def mosaic_path(self, job, suffix=None):
+        """The full path of ``job``'s mosaic: :meth:`mosaic_file` in the run's mosaic directory.
+
+        That directory is ``pipeline_config.mos_dir``, ``<output_dir>/<run_name>/mosaic``, where
+        :func:`mosaic_job` saves the mosaic.
+        """
         return os.path.join(self.pipeline_config.mos_dir, self.mosaic_file(job, suffix))
 
     def mosaic_cache_dir(self, job, suffix=None):
+        """The directory of ``job``'s intermediate mosaic cache: ``<cache_dir>cache_<stem>``.
+
+        The coadd writes it only when ``[mosaic].cache_intermediate`` is true, and
+        :func:`mosaic_job` deletes it after saving the mosaic. The two parts are joined as
+        strings, so ``cache_dir`` needs its trailing ``/`` (as in the shipped configs) for the
+        directory to land inside it.
+        """
         return f'{self.cfg.cache_dir}cache_{self.stem(job, suffix)}'
 
     def tile_cal_file(self, job, tile):
+        """The cal file name of a tile: :meth:`cal_file` with ``suffix.format(tile=tile.name)``.
+
+        ``tile`` is a :class:`~selfcal.pipeline.tiled.TileSpec`. The top-level ``suffix`` of a
+        tiled config therefore carries a ``{tile}`` placeholder; without one, every tile of the
+        job gets the same file name.
+        """
         return self.cal_file(job, self.cfg.suffix.format(tile=tile.name))
 
     def stitched_cal_path(self, job):
+        """The path of ``job``'s stitched cal: :meth:`cal_path` with ``[tiling].stitched_suffix``.
+
+        The tiled ``cal`` task writes the Fisher stitch of its tile cals there, and skips the
+        stitch when that file exists.
+        """
         return self.cal_path(job, self.cfg.tiling['stitched_suffix'])
 
     def tiling_nvme_dir(self):
+        """The staging directory of a tiled run: ``[tiling].nvme_subdir`` under ``cache_dir``.
+
+        The tiled ``cal`` task copies each tile's frames there before solving the tile, and the
+        N-pass SKY passes of a tiled run stage into it too. The engine never deletes it, and
+        staging skips files already present, so frames copied once are reused.
+        """
         return os.path.join(self.cfg.cache_dir, self.cfg.tiling['nvme_subdir'])
 
 
@@ -189,6 +250,7 @@ class CalResult:
 
     @property
     def sky_path(self):
+        """The one cal that holds the run's sky: the stitched cal, else the only cal, else None."""
         if self.stitched:
             return self.stitched
         return self.cal_paths[0] if len(self.cal_paths) == 1 else None
@@ -212,6 +274,13 @@ def stage_run(ctx):
 
 
 def unstage_run(ctx, frame_dir):
+    """Undo :func:`stage_run`: delete the staged copy of the frames unless the config keeps it.
+
+    With ``reproj_override`` it does nothing (the frames were read in place). Otherwise
+    :func:`~selfcal_scripts.runner.staging.cleanup_nvme` keeps ``frame_dir`` when
+    ``staging = "reuse"`` (another run staged it) or ``keep_nvme = true``, and deletes it
+    otherwise. The untiled ``cal`` task and the ``mosaic`` task call it after their last job.
+    """
     if not ctx.cfg.reproj_override:
         staging.cleanup_nvme(ctx.cfg, frame_dir)
 

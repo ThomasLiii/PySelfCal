@@ -134,12 +134,33 @@ class EuclidInstrument(Instrument):
 
     # ---- run layout ------------------------------------------------------------
     def jobs(self, inst_cfg):
+        """Return one job, named after ``[instrument].band`` (default ``Y``).
+
+        The band only names the products (``cal_<frame_tag>_<band><suffix>.h5``)
+        and selects no data: the exposures are chosen at reprojection by the
+        ``[reproject]`` file pattern, which can refer to it as ``{band}`` (e.g.
+        ``"/*_{band}*.fits"``)."""
         return [Job(name=str(inst_cfg.get('band', 'Y')))]
 
     def frame_tag(self, inst_cfg):
+        """Return the product-name tag, ``[instrument].tag`` (default ``EDFN``).
+
+        With the job name it forms every product name, e.g. ``cal_EDFN_Y<suffix>.h5``
+        and ``mosaic_EDFN_Y<suffix>.fits``."""
         return str(inst_cfg.get('tag', 'EDFN'))
 
     def exposure_layout(self, inst_cfg):
+        """Return the layout of a NISP exposure file of ``detectors`` (default 16) detectors.
+
+        Detector ``k`` (0-based) has its science image in FITS extension ``3k + 1``
+        and its data-quality mask in ``3k + 3``, and its reprojected frames carry
+        detector index ``k``. The WCS of the extensions in ``ref_use_ext`` (default
+        ``[1, 10, 37, 46]``, the science extensions of detectors 0, 3, 12 and 15;
+        ``[reproject].use_ext`` overrides it) defines the reference frame. There is no
+        header filter and no custom reader. ``default_ignore_bits`` records the DQ bits
+        11 and 15 (:data:`~selfcal.instruments.euclid.conventions.DQ_IGNORE`), but
+        nothing reads it: the bits a run ignores are the ``ignore_list`` of its
+        ``[calibration]`` and ``[mosaic]`` tables."""
         n = int(inst_cfg.get('detectors', ec.N_DETECTORS))
         return ExposureLayout(
             sci_ext=[int(e) for e in ec.sci_ext_list(n)], dq_ext=[int(e) for e in ec.dq_ext_list(n)],
@@ -150,6 +171,26 @@ class EuclidInstrument(Instrument):
 
     # ---- geometry -------------------------------------------------------------------
     def detector_geometry(self, inst_cfg, oversample):
+        """Return the five chunk maps of a NISP detector, the square ``grid`` being primary.
+
+        - ``grid``: ``chunks`` x ``chunks`` square cells (default 40; chunk id
+          ``row * chunks + col``) with the axes ``row`` and ``col``, regularised along
+          both by default. ``chunks`` should divide the detector side (40 and 60
+          divide 2040); otherwise the map built by
+          :func:`~selfcal.geometry.map_helper.make_grid_chunk_map` does not match the
+          ``chunks`` x ``chunks`` axes.
+        - ``col_strips`` / ``row_strips``: ``strips`` (default ``chunks``) vertical /
+          horizontal strips, for the per-frame readout stripes.
+        - ``col_tilt`` / ``row_tilt``: ``tilt_strips`` (default 60) strips whose
+          ``strip`` axis is the spectral axis, so that a degree-1 ``polybasis`` term
+          on one is a single linear ramp per frame.
+
+        The strip maps have the axes ``strip`` and ``all`` (a single group) and no
+        default adjacency. The detector is ``det_shape`` pixels (default 2040 x 2040);
+        each map is also built on the reference grid, every detector pixel replicated
+        into an ``oversample`` x ``oversample`` block. There are no aux maps (the sky is
+        broadband); ``extra`` holds ``n_side``, ``n_strips``, ``n_tilt`` and
+        ``det_shape`` for the renderers."""
         det_shape = tuple(int(v) for v in inst_cfg.get('det_shape', ec.DET_SHAPE))
         n = int(inst_cfg.get('chunks', 40))
         n_strips = int(inst_cfg.get('strips', n))
@@ -174,6 +215,15 @@ class EuclidInstrument(Instrument):
                                        'det_shape': det_shape})
 
     def job_geometry(self, inst_cfg, geom, job):
+        """Return the job's pixel weights: 1 everywhere, or an optional taper at the detector edges.
+
+        With ``edge_zero_px`` > 0 the weight is ``clip((d - edge_zero_px) /
+        max(edge_ramp_px, 1), 0, 1)``, where ``d`` is a pixel's distance in pixels from
+        the nearest detector edge (0 for the outermost pixels; see
+        :func:`make_edge_taper_weight`); ``edge_ramp_px`` alone has no effect. The same
+        weight serves the solve (detector grid) and, replicated into blocks of the
+        oversampling factor, the mosaic (reference grid). Every chunk of the primary
+        map is valid, and ``job`` is not read."""
         zero_px = int(inst_cfg.get('edge_zero_px', 0))
         ramp_px = int(inst_cfg.get('edge_ramp_px', 0))
         if zero_px > 0:
@@ -188,6 +238,24 @@ class EuclidInstrument(Instrument):
 
     # ---- mosaic ----------------------------------------------------------------------------
     def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None):
+        """Return the function that draws one chunk map's offsets for the mosaic, or ``None``.
+
+        The mosaic calls it per frame as ``renderer(chunk_map, offsets)`` and
+        subtracts the image it returns. ``render`` (an offset term's ``render`` key)
+        picks the renderer; when it is ``None`` the map does (``map_name=None`` is the
+        primary map, ``grid``):
+
+        - ``'spline'``, the default for ``grid``: :func:`make_grid_offset_map`, a
+          mean-preserving 2-D spline;
+        - ``'strip'``, the default for ``col_strips`` / ``row_strips``:
+          :func:`make_free_strip_offset_map`, constant over each strip;
+        - ``'ramp'``, the default for ``col_tilt`` / ``row_tilt``:
+          :func:`make_strip_offset_map`, a line fitted to the strip values, along x
+          for a map whose name starts with ``col`` and along y otherwise;
+        - ``'constant'``, or a map with no default: ``None``, which the mosaic renders
+          constant over each chunk.
+
+        Any other ``render`` raises ``ValueError``; ``jobgeom`` is not read."""
         det_shape = geom.extra['det_shape']
         name = map_name or geom.primary
         render = render or {'grid': 'spline', 'col_strips': 'strip', 'row_strips': 'strip',
@@ -203,9 +271,16 @@ class EuclidInstrument(Instrument):
         raise ValueError(f"unknown renderer {render!r} for map {name!r} (spline | strip | ramp | constant)")
 
     def data_unit(self, inst_cfg):
+        """Return ``'electron'``, written as the mosaic ``BUNIT``."""
         return 'electron'
 
     # ---- hooks ---------------------------------------------------------------------------------
     def hooks(self):
+        """Return the recipe's per-frame hook factories, ``star_position_mask`` and ``residual_mask``.
+
+        A run config selects one by name as ``pre_cal``, ``post_cal`` or ``post_mosaic``
+        in its ``[hooks]`` table; the entry's other keys are the factory's parameters
+        (see :mod:`~selfcal.instruments.euclid.hooks`). The dict is a copy of
+        :data:`~selfcal.instruments.euclid.hooks.HOOKS`."""
         from .hooks import HOOKS
         return dict(HOOKS)

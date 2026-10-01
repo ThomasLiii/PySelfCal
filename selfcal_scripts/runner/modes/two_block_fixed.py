@@ -15,10 +15,29 @@ from .base import CalMode, register_mode, param
 
 @register_mode("two_block_fixed", "k2_readout")
 class TwoBlockFixed(CalMode):
+    """The ``two_block_fixed`` mode fits a free primary offset plus a detector-fixed second offset.
+
+    It requires the ``spectral_axis`` capability and makes the mosaic without
+    the instrument's aux coadds (``mosaic_mode = "no_wav"``). The module
+    docstring describes the model; :meth:`model_spec` builds it.
+    """
     mosaic_mode = "no_wav"
     requires = ("spectral_axis",)
 
     def model_spec(self, cfg, inst, geom):
+        """Return a spec: a constant sky, a free primary offset, a detector-fixed second offset.
+
+        The primary term is free per frame, with smoothness rows of weight
+        ``[params].reg_weight`` (default 0.1) between neighbouring chunks one step
+        apart along the spectral axis, and no mean-zero anchor. The second term, on
+        ``[params].second_map`` (default ``readout``), is one offset vector shared
+        by every frame, anchored at mean zero. ``second_reg_weight`` (historical
+        ``readout_reg_weight``, default 0.0) becomes its ``reg_weight``, which adds
+        no rows because the term has no adjacency axes. There is no per-frame
+        scalar, so :meth:`~selfcal_scripts.runner.modes.base.CalMode.x0` uses
+        ``'from_Ab'``. Raises ``ValueError`` when ``second_map`` is not a chunk map
+        of the instrument or the primary map has no spectral axis.
+        """
         p = cfg.params
         cm = geom.chunk_map
         second = p.get('second_map', 'readout')

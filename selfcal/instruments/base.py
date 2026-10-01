@@ -98,6 +98,14 @@ def get_instrument(name: str) -> "Instrument":
 
 
 def available_instruments() -> list[str]:
+    """Return the sorted names of all registered instruments, plugins included.
+
+    The ``selfcal.instruments`` entry points are loaded first (a plugin that
+    fails to load is skipped with a logged warning), so the list holds the
+    built-ins, any instrument registered in this process with
+    :func:`register_instrument`, and those published by installed packages.
+    Each name is a valid ``[instrument].name`` and argument of
+    :func:`get_instrument`."""
     _load_entry_points()
     return sorted(_INSTRUMENT_REGISTRY)
 
@@ -116,9 +124,10 @@ class Job:
 
 @dataclass(frozen=True)
 class ChunkMap:
-    """A chunk partition of the detector at detector resolution (``det``) and on
-    the (possibly oversampled) reference-pixel grid (``grid``), with the axes
-    of its chunk grid. ``-1`` marks pixels outside every chunk.
+    """A chunk partition of the detector at detector resolution (``det``) and
+    sampled ``oversample`` times per detector pixel along each axis (``grid``,
+    what the mosaic samples), with the axes of its chunk grid. ``-1`` marks
+    pixels outside every chunk.
 
     ``adjacency_axes``: the axes along which the standard offset block
     regularises neighbouring chunks by default (SPHEREx: ``('column',)``; a
@@ -136,6 +145,7 @@ class ChunkMap:
 
     @property
     def n_chunks(self) -> int:
+        """The number of chunks: the largest chunk id in ``det`` plus one."""
         return int(self.det.max()) + 1
 
 
@@ -160,10 +170,12 @@ class DetectorGeometry:
 
     @property
     def chunk_map(self) -> ChunkMap:
+        """The primary chunk map ``chunk_maps[primary]``, used by offset terms that name no map."""
         return self.chunk_maps[self.primary]
 
     @property
     def aux_keys(self) -> tuple[str, ...]:
+        """The names of the ``aux`` maps, in the order :attr:`aux_list` returns the maps."""
         return tuple(self.aux)
 
     @property
@@ -175,8 +187,8 @@ class DetectorGeometry:
 @dataclass(frozen=True)
 class JobGeometry:
     """Per-job validity + weights. ``det_valid_weight`` (detector grid) is the
-    solve's per-pixel valid weight; ``grid_valid_weight`` (reference grid) the
-    mosaic's; ``chunk_valid`` / ``chunk_valid_strict`` are per chunk of the
+    solve's per-pixel valid weight; ``grid_valid_weight`` (the detector grid
+    sampled ``oversample`` times per pixel along each axis) the mosaic's; ``chunk_valid`` / ``chunk_valid_strict`` are per chunk of the
     primary map (the padded set overlaps neighbouring jobs for stitching)."""
     det_valid_weight: np.ndarray
     grid_valid_weight: np.ndarray
@@ -192,9 +204,9 @@ class ExposureLayout:
 
     ``sci_ext`` / ``dq_ext``: the science and data-quality entries of each
     detector frame the file holds (``dq_ext=None``: no mask, all pixels
-    valid) — FITS extension numbers for the default reader, anything the
+    valid) — FITS extension numbers for the default reader, any integer the
     instrument's ``reader`` understands otherwise (slice indices of a cube,
-    detector names, ...); ``detector_ids``: the detector index each entry
+    detector numbers, ...); ``detector_ids``: the detector index each entry
     yields; ``ref_use_ext``: the entries whose WCS define the reference frame;
     ``reader``: ``reader(path, sci_ext, dq_ext, header_only=False) ->
     selfcal.io.frames.ExposureData`` (values, WCS header + metadata, mask,
