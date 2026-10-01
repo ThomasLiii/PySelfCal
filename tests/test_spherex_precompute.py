@@ -2,8 +2,10 @@
 
 Regression: the adapter unpacked two of the three values ``make_fiducial_chunk_map``
 returns, so the task failed before writing anything. The calibration files are
-replaced by a blank band-centre map and the arc fit by the shipped Detector 1 fit
-(``make_fiducial_chunk_map`` itself runs, so its real return value is unpacked).
+replaced by a blank band-centre map, the SPHEREx channel table by the channel edges
+of the shipped Detector 1 fit (every 20th of its 341 subchannel edges), and the arc
+fit by that fit (``make_fiducial_chunk_map`` itself runs, so its real return value
+is unpacked). Nothing reads files that exist only on the processing host.
 Runnable as a script or under pytest.
 """
 import os
@@ -28,7 +30,13 @@ def _run(out_dir, monkeypatch=None):
     def blank_calibration(band, calibration_dir=None):
         return np.zeros((2040, 2040), dtype=np.float32), None
 
-    patches = [(su, 'make_fiducial_chunk_map', with_shipped_fit), (adapter, 'load_calibration', blank_calibration)]
+    edges = np.asarray(shipped['wave_edges'])[::20]
+
+    def shipped_channel_edges(band, channel_file=None):
+        return edges.copy()
+
+    patches = [(su, 'make_fiducial_chunk_map', with_shipped_fit), (adapter, 'load_calibration', blank_calibration),
+               (su, 'extract_spherex_channel_edges', shipped_channel_edges)]
     saved = [(mod, name, getattr(mod, name)) for mod, name, _ in patches]
     for mod, name, value in patches:
         if monkeypatch is not None:
