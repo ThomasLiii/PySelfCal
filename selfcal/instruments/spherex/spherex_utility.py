@@ -32,11 +32,14 @@ from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
 logger = logging.getLogger(__name__)
 
 
-# Canonical on-host paths for the SPHEREx spectral-calibration products. These
-# are fallback defaults only: external users set $SELFCAL_SPHEREX_CALIB_DIR /
-# $SELFCAL_SPHEREX_CHANNEL_FILE or pass explicit paths (see selfcal.config).
+# The SPHEREx spectral-calibration maps (BC / BW) live on the processing host; this
+# is a fallback default only: external users set $SELFCAL_SPHEREX_CALIB_DIR or pass
+# an explicit path (see selfcal.config). The channel table (102 channels, 17 per
+# band: lmin / lmean / lmax ...) ships with the package; $SELFCAL_SPHEREX_CHANNEL_FILE
+# or an explicit path overrides it.
 DEFAULT_CALIBRATION_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
-DEFAULT_CHANNEL_FILE = '/home/thomasli/spherex/spherex_channels.csv'
+DEFAULT_CHANNEL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'data', 'spherex_channels.csv')
 
 
 def load_calibration(band, calibration_dir=None):
@@ -115,7 +118,8 @@ def extract_spherex_channel_edges(band, channel_file=None):
     Reads the table with astropy (columns ``band``, ``lmin``, ``lmax``) and returns the
     ``lmin`` of each of the band's channels, in table order, followed by the last channel's
     ``lmax``: 18 edges for the 17 channels of a band. The table resolves from
-    ``channel_file``, then ``$SELFCAL_SPHEREX_CHANNEL_FILE``, then ``DEFAULT_CHANNEL_FILE``.
+    ``channel_file``, then ``$SELFCAL_SPHEREX_CHANNEL_FILE``, then ``DEFAULT_CHANNEL_FILE``,
+    the table shipped with the package (``data/spherex_channels.csv``).
     """
     channel_file = resolve_path(
         channel_file, env_var=ENV_SPHEREX_CHANNEL_FILE,
@@ -161,6 +165,12 @@ def extract_edge_samples(BC_map, channel_edges):
             edge_y[edge_mask] = np.nan
             edge_x[edge_mask] = np.nan
         elif i == 0:
+            # Known limitation (2026-10, left as is): the first arc runs past the last row
+            # on more columns than this window covers (D4: 129 clipped columns, 99 masked),
+            # and argmin returns the clipped last row there. Masking every sample that sits
+            # on the first or last row would be stricter. It only matters when the LVF
+            # params are regenerated (task `precompute`): the shipped fits used the old,
+            # never-firing `&` mask, and the `|` refit moves D4's arcs by <= 0.29 px.
             edge_mask = (edge_x < 50) | (edge_x > BC_map.shape[0]-50)
             edge_y[edge_mask] = np.nan
             edge_x[edge_mask] = np.nan

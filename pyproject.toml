@@ -87,8 +87,9 @@ check_untyped_defs = false
 warn_unused_ignores = true
 
 [tool.setuptools.package-data]
-# Ship the SPHEREx LVF arc-fit parameters + multi-line spectral templates.
-"selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz"]
+# Ship the SPHEREx LVF arc-fit parameters, multi-line spectral templates and channel table.
+"selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz",
+                                 "data/spherex_channels.csv"]
 # PEP 561 marker: advertise the package's inline type hints to downstream
 # type checkers (mypy/pyright) and IDEs.
 "selfcal" = ["py.typed"]
