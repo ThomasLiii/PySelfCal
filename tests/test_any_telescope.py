@@ -295,7 +295,7 @@ def _agreement(a, b, demean=True):
 def _run(tmp, inst, model, n_exp, exp_dir, pattern='/toy_exp_*.fits', calibration=None, lsqr=None,
          mosaic=False):
     """Reproject + calibrate (+ mosaic) through the runner, as a user would."""
-    from selfcal_scripts.runner import pipelines
+    from selfcal.run import pipelines
     from tests.test_runner_e2e_toy import _write_config
     out, cache = os.path.join(tmp, 'out'), os.path.join(tmp, 'cache')
     os.makedirs(cache, exist_ok=True)

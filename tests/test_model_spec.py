@@ -16,8 +16,8 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 from selfcal import _state                                      # noqa: E402
 from selfcal.instruments import get_instrument                  # noqa: E402
 from selfcal.models.spec import ModelSpec, SkyTerm, OffsetTerm  # noqa: E402
-from selfcal_scripts.runner.modes import get_mode               # noqa: E402
-from selfcal_scripts.runner import pipelines                    # noqa: E402
+from selfcal.run.modes import get_mode               # noqa: E402
+from selfcal.run import pipelines                    # noqa: E402
 from tests.synthetic_exposures import write_exposures           # noqa: E402
 from tests.test_runner_e2e_toy import _write_config             # noqa: E402
 

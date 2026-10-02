@@ -4,7 +4,7 @@
 :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` and
 :class:`~selfcal.pipeline.pipeline_wrapper.Mosaicker` run the three stages (frame files, then a
 ``cal_*.h5`` file, then a mosaic) with :mod:`selfcal.io` and :mod:`selfcal.core`; the run engine
-(:mod:`selfcal_scripts.runner`) drives them from a TOML config.
+(:mod:`selfcal.run`) drives them from a TOML config.
 
 - :mod:`~selfcal.pipeline.pipeline_wrapper`: the three stage classes and
   :class:`~selfcal.pipeline.pipeline_wrapper.PipelineConfig`, the paths of a run.

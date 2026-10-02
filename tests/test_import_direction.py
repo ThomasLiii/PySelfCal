@@ -1,5 +1,6 @@
-"""Layering rule: the numerical layers never import the instrument layer, and the
-instrument layer never imports the pipeline/runner layers. Scanned by AST (incl.
+"""Layering rule: the numerical layers never import the instrument layer, the
+instrument layer never imports the pipeline/run layers, and the run engine
+(``selfcal.run``) never imports the scripts. Scanned by AST (incl.
 function-level imports). Known violations are listed with their audit reference and
 must only ever shrink."""
 import ast
@@ -10,12 +11,13 @@ PKG = os.path.join(_REPO, 'selfcal')
 
 FORBIDDEN = {
     # importer prefix (relative to selfcal/) : forbidden imported module prefixes
-    'core': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal_scripts'),
-    'models': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal_scripts'),
-    'geometry': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal_scripts'),
-    'io': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal_scripts'),
-    'pipeline': ('selfcal.instruments', 'selfcal_scripts'),
-    'instruments': ('selfcal.pipeline', 'selfcal_scripts'),
+    'core': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
+    'models': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
+    'geometry': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
+    'io': ('selfcal.instruments', 'selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
+    'pipeline': ('selfcal.instruments', 'selfcal.run', 'selfcal_scripts'),
+    'instruments': ('selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
+    'run': ('selfcal_scripts',),          # the run engine sits on top of the library
 }
 # Audited violations still present (SYNTHESIS §0 / audits B R6, D R1); remove entries as they are fixed.
 KNOWN = set()

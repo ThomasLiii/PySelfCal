@@ -19,8 +19,8 @@ The engine reads no ``[instrument]`` key: the instrument turns that table into
 typed geometry (:class:`~selfcal.instruments.base.DetectorGeometry`,
 ``JobGeometry``), the mode turns the geometry into the offset/sky recipe.
 
-Edits here must keep calibration output byte-identical — run
-``workspace/unify/scripts/run_gates.sh`` (or the equivalent gate set) before
+Edits here must keep calibration output byte-identical — run the gates
+(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``) before
 committing. All numeric choices live in the TOML config and the mode/instrument
 objects; this module only sequences them.
 """
@@ -231,7 +231,8 @@ class RunContext:
 
         The tiled ``cal`` task copies each tile's frames there before solving the tile, and the
         N-pass SKY passes of a tiled run stage into it too. The engine never deletes it, and
-        staging skips files already present, so frames copied once are reused.
+        staging keeps complete copies already present, so frames copied once are reused. It must
+        be a directory the pipeline made (:func:`~selfcal.run.staging.claim`).
         """
         return os.path.join(self.cfg.cache_dir, self.cfg.tiling['nvme_subdir'])
 
@@ -277,7 +278,7 @@ def unstage_run(ctx, frame_dir):
     """Undo :func:`stage_run`: delete the staged copy of the frames unless the config keeps it.
 
     With ``reproj_override`` it does nothing (the frames were read in place). Otherwise
-    :func:`~selfcal_scripts.runner.staging.cleanup_nvme` keeps ``frame_dir`` when
+    :func:`~selfcal.run.staging.cleanup_nvme` keeps ``frame_dir`` when
     ``staging = "reuse"`` (another run staged it) or ``keep_nvme = true``, and deletes it
     otherwise. The untiled ``cal`` task and the ``mosaic`` task call it after their last job.
     """
@@ -542,11 +543,12 @@ def resolve_tiles(tiling, ref_shape):
 
 
 def tiling_frames(tiling):
-    """Every frame of the field, in exposure order, from ``full_reproj_dir``."""
+    """Every frame of the field (every detector), in (exposure, detector) order, from
+    ``full_reproj_dir``; ``[tiling].frame_glob`` (default ``exp_*_det_*.h5``) narrows it."""
     files = glob_module.glob(os.path.join(tiling['full_reproj_dir'],
-                                          tiling.get('frame_glob', 'exp_*_det_00.h5')))
+                                          tiling.get('frame_glob', 'exp_*_det_*.h5')))
     from selfcal.io.reproj import parse_reproj_basename
-    return sorted(files, key=lambda p: parse_reproj_basename(p)[0])
+    return sorted(files, key=parse_reproj_basename)
 
 
 def tile_assignment(tiling, ref_shape):

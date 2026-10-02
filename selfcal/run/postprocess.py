@@ -12,9 +12,8 @@ import numpy as np
 def mask_bright_pixels(ctx):
     """NaN out pixels above the 25th percentile of the valid (weight>0) data in a
     subframe. The 25th-percentile threshold and in-place NaN masking are
-    intentional and must not change — this is the same helper the regression
-    harness (selfcal_scripts/benchmarks/run_cal_baseline_test.py) carries, and
-    any run that opts in relies on this exact behavior for comparable outputs."""
+    intentional and must not change: any run that opts in relies on this exact
+    behavior for comparable outputs."""
     sub_data = ctx.sub_data
     sub_weight = ctx.sub_weight
 

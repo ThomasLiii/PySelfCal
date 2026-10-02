@@ -43,6 +43,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 from scipy.ndimage import map_coordinates
 
+from ..core.shmbuf import worker_pool_context
 from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
@@ -173,6 +174,14 @@ class SkySubtractor:
                 if not os.path.exists(self.paths[n]):
                     np.save(self.paths[n], np.nan_to_num(src[:].astype(np.float32)))
             self.shape = tuple(f["skymap"].shape)
+
+    def __getstate__(self):
+        # What a worker process receives: the paths, not the maps a process has mapped or the last
+        # prediction it cached (each worker maps the exported .npy files itself).
+        state = dict(self.__dict__)
+        state['_maps'] = None
+        state['_last'] = None
+        return state
 
     # --- worker side ---------------------------------------------------------
     def _load(self):
@@ -383,8 +392,8 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
     print(f"[npass] OFFSET refit: {len(frames)} frames, {basis_desc} x "
           f"{poly_basis['num_groups']} groups + DC, clip {thresh}, bright cut {bright_cut}"
           + (f", ridge {ridge:g}" if ridge else ""), flush=True)
-    with ProcessPoolExecutor(max_workers=max_workers, initializer=_refit_init,
-                             initargs=(state,)) as ex:
+    with ProcessPoolExecutor(max_workers=max_workers, initializer=_refit_init, initargs=(state,),
+                             mp_context=worker_pool_context()) as ex:
         for i, (name, fit, r, n) in enumerate(ex.map(_refit_frame, frames, chunksize=8)):
             if fit is not None:
                 offsets[i], scalars[i] = fit

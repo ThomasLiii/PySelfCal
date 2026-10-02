@@ -346,7 +346,9 @@ frames and their pixels. The [Pipeline runbook](pipeline.md) covers the knobs; i
 - **NVMe staging.** Before a `cal` or `mosaic` task reads the frames, the runner copies them to
   `<cache_dir>/reproj_nvme_<run_name>` on fast storage (at most `hdd_io_limit` concurrent reads
   from the slow disk) and deletes the copy at the end unless `keep_nvme = true`; the cal file
-  records the frames' permanent paths. See [NVMe staging pattern](pipeline.md#nvme-staging-pattern).
+  records the frames' permanent paths. Each frame is copied atomically, and the runner only stages
+  into, or deletes, a directory it created (marked by a `.selfcal-staging.json` file). See
+  [NVMe staging pattern](pipeline.md#nvme-staging-pattern).
 - **Tiling.** A `[tiling]` table splits the reference grid into tiles: a grid with `overlap_px`, or
   an explicit list of boxes, which may overlap. Each tile takes the frames whose footprint centre
   falls inside it (or, with `frame_filter = "overlap"`, every frame that overlaps it) and is solved

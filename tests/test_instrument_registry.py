@@ -12,7 +12,7 @@ if _REPO not in sys.path:
 from selfcal.instruments import (get_instrument, available_instruments, register_instrument,   # noqa: E402
                                  Instrument, Job, DetectorGeometry, JobGeometry, ExposureLayout)
 from selfcal.instruments.grid import GridInstrument                                          # noqa: E402
-from selfcal_scripts.runner.modes import get_mode                                            # noqa: E402
+from selfcal.run.modes import get_mode                                            # noqa: E402
 
 
 def test_builtin_instruments():

@@ -1,7 +1,7 @@
 """Generate the site's virtual pages at build time (run by mkdocs-gen-files).
 
-1. The API reference: one page per public module of ``selfcal`` and of the run
-   engine ``selfcal_scripts.runner``, and ``reference/SUMMARY.md`` for the
+1. The API reference: one page per public module of ``selfcal`` (the run
+   engine ``selfcal.run`` included), and ``reference/SUMMARY.md`` for the
    navigation (mkdocs-literate-nav).
 2. The guides that live next to the code (``PIPELINE.md``, the package and
    config READMEs, ...): each is imported at a site path with its relative links
@@ -24,7 +24,7 @@ log = logging.getLogger("mkdocs.plugins.gen_pages")
 ROOT = Path(__file__).resolve().parents[2]
 REPO_URL = "https://github.com/ThomasLiii/PySelfCal"
 BRANCH = "main"
-API_ROOTS = ["selfcal", "selfcal_scripts/runner"]
+API_ROOTS = ["selfcal"]
 
 # repository path -> site path of the guides imported from outside docs/
 GUIDES = {
@@ -66,17 +66,14 @@ MODULES = _module_pages()
 
 REFERENCE_INDEX = """# API reference
 
-The reference is generated from the docstrings of two packages:
-
-- [`selfcal`](selfcal/index.md): the library. The model
-  ([`selfcal.models`](selfcal/models/index.md)), the solver
-  ([`selfcal.core`](selfcal/core/index.md)), instruments
-  ([`selfcal.instruments`](selfcal/instruments/index.md)), file I/O
-  ([`selfcal.io`](selfcal/io/index.md)) and the calibration and mosaic passes
-  ([`selfcal.pipeline`](selfcal/pipeline/index.md)).
-- [`selfcal_scripts.runner`](selfcal_scripts/runner/index.md): the run engine
-  behind `selfcal_scripts/run.sh`. It covers the TOML run config, tasks, modes
-  and N-pass scheduling.
+The reference is generated from the docstrings of the [`selfcal`](selfcal/index.md)
+package: the model ([`selfcal.models`](selfcal/models/index.md)), the solver
+([`selfcal.core`](selfcal/core/index.md)), instruments
+([`selfcal.instruments`](selfcal/instruments/index.md)), file I/O
+([`selfcal.io`](selfcal/io/index.md)), the calibration and mosaic passes
+([`selfcal.pipeline`](selfcal/pipeline/index.md)) and the run engine
+([`selfcal.run`](selfcal/run/index.md)) behind `selfcal_scripts/run.sh`: the TOML run config,
+tasks, modes and N-pass scheduling.
 
 Each page documents one module. A page opens with the module docstring, then
 summary tables of its classes and functions, then every public object with its

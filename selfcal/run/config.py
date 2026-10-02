@@ -153,7 +153,7 @@ def get_postprocess(name):
     """Return the per-subframe postprocess function called ``name``, or None when it is None.
 
     The only name defined is ``"mask_bright_pixels"``
-    (:func:`~selfcal_scripts.runner.postprocess.mask_bright_pixels`); any other raises
+    (:func:`~selfcal.run.postprocess.mask_bright_pixels`); any other raises
     ``ValueError``. The engine uses it for the top-level ``postprocess`` key (the function goes
     to ``setup_lsqr`` as ``postprocess_func``) and for a ``[hooks]`` entry that names none of
     the instrument's hook factories.
@@ -161,6 +161,6 @@ def get_postprocess(name):
     if name is None:
         return None
     if name == 'mask_bright_pixels':
-        from selfcal_scripts.runner.postprocess import mask_bright_pixels
+        from .postprocess import mask_bright_pixels
         return mask_bright_pixels
     raise ValueError(f"unknown postprocess func {name!r}")

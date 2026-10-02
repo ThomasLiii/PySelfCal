@@ -4,9 +4,9 @@ the MEASURED SPHEREx spectral response (band-general LVFResponse kernel).
 G(lambda_c) = int L(lambda) R(lambda; lambda_c) dlambda, tabulated vs channel
 center (BC) — what selfcal uses as the per-pixel line coefficient. Saves npz
 with center_um / G / G_peaknorm / fwhm_conv (the ``template_npz`` schema
-loaded by the runner's spectral-fit modes — see
-``selfcal_scripts/runner/modes/multiline.py``, which reads ``center_um`` and
-``G``/``G_peaknorm``) plus a diagnostic PNG (intrinsic | response | template).
+loaded by the runner's spectral-fit modes — see ``spectral_sky_terms`` in
+``selfcal/run/modes/base.py`` and the ``template`` coefficient of
+``selfcal.models.spec``, which read ``center_um`` and ``G``/``G_peaknorm``) plus a diagnostic PNG (intrinsic | response | template).
 
 Intrinsic shapes:
   drude  --center-um C --fwhm-um F     (Draine Drude; PAH-like broad features)

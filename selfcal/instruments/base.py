@@ -2,7 +2,7 @@
 
 The numerical layers (``selfcal.core``, ``models``, ``geometry``, ``io``) take
 plain arrays and callables and never import this package. The run engine
-(``selfcal_scripts.runner``) drives a calibration entirely through the
+(``selfcal.run``) drives a calibration entirely through the
 :class:`Instrument` interface below plus the ``CalMode`` recipe interface; it
 never names a telescope. A new instrument is one subclass registered with
 :func:`register_instrument` (or published through the ``selfcal.instruments``

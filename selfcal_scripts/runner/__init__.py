@@ -1,11 +1,21 @@
-"""selfcal_scripts.runner — the generic, instrument-agnostic run engine.
+"""The run engine's old import path: the engine is now :mod:`selfcal.run`.
 
-A run is a TOML config + ``python -m selfcal_scripts.run --config <file>``. The
-config picks an instrument (geometry), a mode (calibration recipe), and a task
-(cal / tiled / reproject / precompute); the engine sequences the rest. Adding a
-calibration variant is a new mode module; adding a telescope is a new instrument
-adapter — neither touches the engine. See ``configs/`` for examples and the
-repo's PIPELINE.md for the schema.
+Every module of the engine is aliased here (``selfcal_scripts.runner.engine`` IS
+``selfcal.run.engine``), so scripts and out-of-tree modes written against this path keep
+working and share the engine's state: a mode registered through either name lands in the one
+registry. New code imports :mod:`selfcal.run`.
 """
-from .config import RunConfig, load_config, get_instrument  # noqa: F401
-from .pipelines import run  # noqa: F401
+import importlib as _importlib
+import sys as _sys
+
+from selfcal.run import RunConfig, get_instrument, load_config, run  # noqa: F401
+
+_MODULES = ('config', 'engine', 'pipelines', 'npass', 'staging', 'runlog', 'postprocess',
+            'modes', 'modes.base', 'modes.continuum', 'modes.spectral', 'modes.two_block_fixed',
+            'modes.model')
+for _name in _MODULES:
+    _module = _importlib.import_module(f'selfcal.run.{_name}')
+    _sys.modules[f'{__name__}.{_name}'] = _module
+    if '.' not in _name:
+        globals()[_name] = _module
+del _name, _module

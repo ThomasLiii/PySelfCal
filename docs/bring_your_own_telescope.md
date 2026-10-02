@@ -370,7 +370,7 @@ directory.
 | generic offset-structure builders on chunk axes | `selfcal/models/offset_structure.py` |
 | the instrument contract + registry | `selfcal/instruments/base.py` |
 | exposure readers, the frame file, header values | `selfcal/io/frames.py` |
-| the run engine (config → tasks) | `selfcal_scripts/runner/` |
+| the run engine (config → tasks) | `selfcal/run/` |
 | calibration-file reader | `selfcal/io/calfile.py` |
 | config schema | `selfcal_scripts/configs/README.md` |
 | on-disk products, tuning knobs | `PIPELINE.md` |

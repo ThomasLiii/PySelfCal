@@ -52,7 +52,7 @@ ordinary relative repository links, so they work on GitHub and on the site.
 
 ### The API reference
 
-`gen_pages.py` writes one page per public module of `selfcal` and of `selfcal_scripts.runner`.
+`gen_pages.py` writes one page per public module of `selfcal` (the run engine `selfcal.run` included).
 A package (`__init__.py`) becomes `reference/<package path>/index.md`, a module becomes
 `reference/<module path>.md`, and modules whose name starts with an underscore are skipped. It
 also writes `reference/SUMMARY.md`, the navigation that mkdocs-literate-nav reads, and the overview

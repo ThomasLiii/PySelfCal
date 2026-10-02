@@ -5,15 +5,25 @@ fast parallel reads, remap the cal/mosaic file lists onto it, and (optionally)
 clean it up afterward. Tiled runs additionally use the RSS guardrail below
 (their per-tile peak can approach machine memory). Both behaviors live here so
 the engine stays readable.
+
+A staging directory belongs to the pipeline only when it carries the marker file
+:data:`STAGE_MARKER`, written when the directory is created (:func:`claim`). Frames
+are copied into it atomically (a temporary name, renamed when complete), so an
+interrupted copy never leaves a truncated frame behind. A directory that holds
+files but no marker was made by something else (frames linked by hand, a test
+fixture, another tool's copy): staging refuses to copy into it, and cleanup never
+deletes it.
 """
 import glob as glob_module
+import json
 import os
-from contextlib import contextmanager
 import shutil
+import socket
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from tqdm import tqdm
 
@@ -38,16 +48,64 @@ def nvme_dir(cache_dir, run_name):
     return os.path.join(cache_dir, f'reproj_nvme_{run_name}')
 
 
+STAGE_MARKER = '.selfcal-staging.json'
+
+
+def is_staging_dir(path):
+    """Whether ``path`` is a staging directory the pipeline made (it holds :data:`STAGE_MARKER`)."""
+    return os.path.isfile(os.path.join(path, STAGE_MARKER))
+
+
+def claim(stage_dir, source_dir):
+    """Make ``stage_dir`` a staging directory for frames from ``source_dir``, or confirm it is one.
+
+    A missing or empty directory is created and marked with :data:`STAGE_MARKER` (a small JSON
+    file naming the source, host, process and time); a marked one is used as it is, so an
+    interrupted staging resumes. Raises ``RuntimeError`` for a directory that holds files but no
+    marker: it was not made by the pipeline, so copying frames into it could mix data sets and
+    cleaning it up would delete it. Returns ``stage_dir``.
+    """
+    if is_staging_dir(stage_dir):
+        return stage_dir
+    if os.path.isdir(stage_dir) and os.listdir(stage_dir):
+        raise RuntimeError(
+            f"{stage_dir} holds files but was not made by selfcal staging (it has no {STAGE_MARKER}): "
+            f"refusing to copy frames into it, and it would never be cleaned up. Read the frames there "
+            f"in place (reproj_override = \"{stage_dir}\", or staging = \"reuse\"), move it away, or, if "
+            f"it is a staged copy of {source_dir} made before staging directories were marked, mark it: "
+            f"echo '{{}}' > {os.path.join(stage_dir, STAGE_MARKER)}")
+    os.makedirs(stage_dir, exist_ok=True)
+    marker = os.path.join(stage_dir, STAGE_MARKER)
+    tmp = f'{marker}.{os.getpid()}'
+    with open(tmp, 'w') as f:
+        json.dump({'source': os.path.abspath(source_dir), 'host': socket.gethostname(), 'pid': os.getpid(),
+                   'created': time.strftime('%Y-%m-%dT%H:%M:%S')}, f)
+    os.replace(tmp, marker)
+    return stage_dir
+
+
 def _copy_one(src_path, dst_dir):
+    """Copy one frame into ``dst_dir``, atomically. A copy already there is kept when its size
+    matches the source (a staging that resumes); anything else is copied again."""
     dst_path = os.path.join(dst_dir, os.path.basename(src_path))
-    if not os.path.exists(dst_path):
-        shutil.copy2(src_path, dst_path)
+    try:
+        if os.path.getsize(dst_path) == os.path.getsize(src_path):
+            return dst_path
+    except FileNotFoundError:
+        pass
+    tmp = f'{dst_path}.part-{os.getpid()}-{threading.get_ident()}'
+    try:
+        shutil.copy2(src_path, tmp)
+        os.replace(tmp, dst_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return dst_path
 
 
 def stage_copy(reproj_dir, nvme_reproj_dir, hdd_io_limit):
-    """Copy every ``*.h5`` from the HDD reproj dir to NVMe (idempotent)."""
-    os.makedirs(nvme_reproj_dir, exist_ok=True)
+    """Copy every ``*.h5`` from the HDD reproj dir to NVMe (idempotent; see :func:`claim`)."""
+    claim(nvme_reproj_dir, reproj_dir)
     hdd_files = sorted(glob_module.glob(os.path.join(reproj_dir, '*.h5')))
     print(f"Copying {len(hdd_files)} reproj files to NVMe ({nvme_reproj_dir})...")
     t_copy = time.time()
@@ -59,8 +117,9 @@ def stage_copy(reproj_dir, nvme_reproj_dir, hdd_io_limit):
 
 
 def stage_files(files, nvme_reproj_dir, hdd_io_limit):
-    """Copy a specific list of files to NVMe (tiled per-tile staging)."""
-    os.makedirs(nvme_reproj_dir, exist_ok=True)
+    """Copy a specific list of files to NVMe (tiled per-tile staging; see :func:`claim`)."""
+    if files:
+        claim(nvme_reproj_dir, os.path.dirname(files[0]))
     with ThreadPoolExecutor(max_workers=hdd_io_limit or 20) as ex:
         for _ in tqdm(ex.map(lambda p: _copy_one(p, nvme_reproj_dir), files),
                       total=len(files), desc="HDD->NVMe", unit="file"):
@@ -96,14 +155,20 @@ def prepare_nvme(cfg, reproj_dir, run_name):
 
 def cleanup_nvme(cfg, nvme_reproj_dir):
     """Remove the NVMe scratch dir unless the config opts to keep it (or reuses
-    a dir it does not own)."""
+    a dir it does not own). A directory without :data:`STAGE_MARKER` was not made
+    by the pipeline and is never removed."""
     if cfg.staging == 'reuse' or cfg.keep_nvme:
         if os.path.exists(nvme_reproj_dir):
             print(f"NVMe reproj cache preserved at {nvme_reproj_dir}.")
         return
-    if os.path.exists(nvme_reproj_dir):
-        shutil.rmtree(nvme_reproj_dir)
-        print("NVMe reproj cache cleaned up.")
+    if not os.path.exists(nvme_reproj_dir):
+        return
+    if not is_staging_dir(nvme_reproj_dir):
+        print(f"NVMe reproj cache {nvme_reproj_dir} kept: it was not made by selfcal staging "
+              f"(no {STAGE_MARKER}).")
+        return
+    shutil.rmtree(nvme_reproj_dir)
+    print("NVMe reproj cache cleaned up.")
 
 
 # --------------------------------------------------------------------------
