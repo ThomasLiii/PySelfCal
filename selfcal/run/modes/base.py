@@ -45,7 +45,7 @@ def get_mode(name):
     ``name`` is a recipe's registered name or one of its aliases (the historical
     SPHEREx names). The instance's ``name`` is the class's registered name and
     its ``requested_name`` the ``name`` given: ``get_mode("pahfit")`` returns a
-    :class:`~selfcal_scripts.runner.modes.spectral.Spectral` whose ``name`` is
+    :class:`~selfcal.run.modes.spectral.Spectral` whose ``name`` is
     ``"spectral"``. Raises ``ValueError``, listing the registered names, when
     ``name`` is unknown.
     """
@@ -101,7 +101,7 @@ class CalMode:
         """Build the recipe's :class:`~selfcal.models.spec.ModelSpec` from the config and geometry.
 
         Every mode overrides this; the base class raises ``NotImplementedError``.
-        ``cfg`` is the run config (:class:`~selfcal_scripts.runner.config.RunConfig`:
+        ``cfg`` is the run config (:class:`~selfcal.run.config.RunConfig`:
         the presets read ``cfg.params``, the ``model`` mode ``cfg.model``), ``inst``
         the :class:`~selfcal.instruments.base.Instrument` and ``geom`` its
         :class:`~selfcal.instruments.base.DetectorGeometry` (chunk maps with their

@@ -165,7 +165,7 @@ class GridWithVariable(GridInstrument):
 
 
 def test_arbitrary_coefficient_end_to_end():
-    from selfcal_scripts.runner import pipelines
+    from selfcal.run import pipelines
     from tests.synthetic_exposures import write_exposures
     from tests.test_runner_e2e_toy import _write_config
     _state.set_progress(False)

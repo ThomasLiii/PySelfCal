@@ -26,9 +26,10 @@ per-frame scalar), `damp_weight_line=5e-3`, iter300.
 
 `task="tiled"` builds the full field as 16 **adaptive-overlap** tiles (Fisher-
 stitched). For a compact probe region set `task="cal"` + `reproj_override` +
-`n_frames` — the `multiline` mode is identical either way. The mode is
-`selfcal_scripts/runner/modes/multiline.py`; the SPHEREx chunk encoding lives in
-`SpherexAdapter.subchannel_poly_basis`, keeping the offset-basis core agnostic.
+`n_frames` — the `multiline` mode is identical either way. The mode is the
+`multiline` preset of `spectral_polybasis` (`selfcal/run/modes/spectral.py`); the offset
+structure is expressed in the chunk map's axes (`selfcal.models.offset_structure`),
+keeping the offset-basis core agnostic.
 
 ## Why adaptive-overlap tiling
 

@@ -135,7 +135,7 @@ class SPHERExInstrument(Instrument):
         ``num_sub``, ``num_ch`` and ``num_col``, e.g.
         ``Detector4_NumSub10_NumCh34_NumCol10``. A job's products are named
         ``cal_<tag>_<job><suffix>.h5`` and ``mosaic_<tag>_<job><suffix>.fits``
-        (:class:`~selfcal_scripts.runner.engine.RunContext`), where ``<job>`` is
+        (:class:`~selfcal.run.engine.RunContext`), where ``<job>`` is
         the job name (``Ch17``, ``Aromatic``, ...)."""
         return (f"Detector{inst_cfg['detector']}_NumSub{inst_cfg['num_sub']}"
                 f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")

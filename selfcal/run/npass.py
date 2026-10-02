@@ -243,9 +243,10 @@ class _Run:
         if not (calk.get("outlier_group_variable") or calk.get("outlier_aux_key")):
             calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = sky_damp_weights(self.sky_model, self.damp_weight, self.damp_weight_line)
-        nvme = (ctx.tiling_nvme_dir() if cfg.tiling
-                else (cfg.reproj_override or os.path.dirname(self.all_frames[0])))
-        os.makedirs(nvme, exist_ok=True)
+        if cfg.tiling:
+            nvme = staging.claim(ctx.tiling_nvme_dir(), cfg.tiling['full_reproj_dir'])
+        else:
+            nvme = cfg.reproj_override or os.path.dirname(self.all_frames[0])
         mom_dir = os.path.join(self.work_dir, "moments"); os.makedirs(mom_dir, exist_ok=True)
         subtract = OffsetSubtractor(offsets_cals)
         pieces = []

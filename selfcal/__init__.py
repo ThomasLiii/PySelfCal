@@ -35,7 +35,7 @@ A sky term modulated by the season, read from each frame's time::
     cc.setup_lsqr(..., sky_model=SkyModel((SkyComponent('continuum'), annual)),
                   variables=VariableSet(frame={'time': mjd_per_frame}))
 
-The run engine (``selfcal_scripts.runner``) drives all of this from a TOML
+The run engine (``selfcal.run``) drives all of this from a TOML
 config with a ``[model]`` table; see ``docs/bring_your_own_telescope.md``.
 """
 __version__ = "0.1.0"

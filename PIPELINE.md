@@ -27,7 +27,7 @@ of a driver into TOML tables:
 | `lsqr_kwargs` | `[lsqr]` |
 | `mosaic_kwargs` | `[mosaic]` |
 | `FILE_SUFFIX`, oversample, NVMe staging | top-level `suffix` / `oversample` / `staging` / `keep_nvme` |
-| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal_scripts/runner/modes/`) |
+| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal/run/modes/`) |
 
 The offset-model *structure* (which adjacency, poly groups, K=2 readout block) is
 chosen by the **mode**, not a flat kwarg — that is the one conceptual change. The
@@ -263,7 +263,7 @@ start. Pass `active_mask` whenever `setup_lsqr` compacted the zero columns (the 
 ## N-pass alternating solve (task `npass`)
 
 One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
-implemented as the runner task `npass` (`selfcal_scripts/runner/npass.py`;
+implemented as the runner task `npass` (`selfcal/run/npass.py`;
 primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
 `selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
 
@@ -362,24 +362,33 @@ min, OFFSET ≈ 4 min.
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
-heads. The pattern (in `selfcal_scripts/runner/staging.py`, driven by the
+heads. The pattern (in `selfcal/run/staging.py`, driven by the
 top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
 
 1. `set_hdd_io_limit(20)` — throttle the initial HDD copy
 2. Copy `*.h5` to `{CACHE_DIR}/reproj_nvme_{run_name}/` via
-   `ThreadPoolExecutor`
+   `ThreadPoolExecutor`. Each frame is copied under a temporary name and
+   renamed when complete, so an interrupted copy never leaves a truncated
+   frame; a complete copy already there (same size) is kept, so a staging
+   resumes. The directory is marked with a `.selfcal-staging.json` file when
+   it is created; a directory that holds files but no marker (frames linked
+   by hand, a test fixture, another tool's copy) is refused.
 3. `set_hdd_io_limit(None)` — NVMe handles massive parallelism
 4. Pass `reproj_dir=nvme_reproj_dir` to `Calibrator` / `Mosaicker`
 5. Before `save_calibration`, swap `cc.reproj_list` basenames back to HDD
    paths so the cal file remains valid after NVMe cleanup
-6. `shutil.rmtree(nvme_reproj_dir)` at the end
+6. `shutil.rmtree(nvme_reproj_dir)` at the end, unless `keep_nvme = true` or
+   `staging = "reuse"`, and only for a marked directory
+
+A tiled run stages each tile's frames into `[tiling].nvme_subdir` under
+`cache_dir`, under the same marker rule, and never deletes it.
 
 `set_hdd_io_limit(n)` installs a `multiprocessing.BoundedSemaphore` in
 `selfcal/_state.py:_hdd_io_semaphore`, which `ThreadPoolExecutor` workers
-and fork-started `Pool` workers acquire inside `load_reproj_file`; the
-forkserver pools (assembly, scatter) start without it, so their reads are
-not throttled. `set_hdd_io_limit(None)` takes effect immediately for any
-subsequent reads.
+and fork-started `Pool` workers (reprojection) acquire inside
+`load_reproj_file`; the forkserver pools (assembly, scatter, coadd, the
+N-pass refit) start without it, so their reads are not throttled.
+`set_hdd_io_limit(None)` takes effect immediately for any subsequent reads.
 
 ## `cal_*.h5` schema (multi-chunk-map)
 

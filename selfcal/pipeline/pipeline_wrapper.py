@@ -9,7 +9,7 @@
 - :class:`Mosaicker` — subtracts a calibration's offsets from the frames and coadds
   them (:mod:`selfcal.core.coadd`) into a multi-extension FITS mosaic.
 
-The run engine (:mod:`selfcal_scripts.runner`) drives these classes from a TOML config.
+The run engine (:mod:`selfcal.run`) drives these classes from a TOML config.
 """
 from __future__ import annotations
 

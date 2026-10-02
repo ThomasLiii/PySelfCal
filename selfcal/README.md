@@ -27,8 +27,8 @@ registry in [`instruments/base.py`](instruments/base.py): a subclass of the
 config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
 other packages register theirs through the `selfcal.instruments` entry-point group),
 a **mode** (the calibration recipe; modes registry under
-`selfcal_scripts/runner/modes/`), and a **task** (`cal`, optionally tiled via
-`[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal_scripts/runner/` is instrument- and
+`selfcal/run/modes/`), and a **task** (`cal`, optionally tiled via
+`[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal/run/` is instrument- and
 mode-agnostic: it talks only to the `Instrument` interface plus the `CalMode`
 interface, never to a telescope or variant by name. See
 [`../selfcal_scripts/configs/README.md`](../selfcal_scripts/configs/README.md)

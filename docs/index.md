@@ -120,7 +120,7 @@ wavelength maps). Each run also writes a log to `logs/`.
   configuration alone to an `Instrument` subclass.
 - [Pipeline runbook](guide/pipeline.md): tuning knobs, the N-pass solve, staging, and the on-disk
   formats of the frame, calibration and mosaic files.
-- [API reference](reference/index.md): every module of `selfcal` and of the run engine
-  `selfcal_scripts.runner`, generated from the docstrings.
+- [API reference](reference/index.md): every module of `selfcal`, the run engine
+  `selfcal.run` included, generated from the docstrings.
 
 The [Glossary](guide/glossary.md) defines the terms used throughout.

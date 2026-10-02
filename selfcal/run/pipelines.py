@@ -117,8 +117,7 @@ def _run_tiled(ctx):
         print(f"[tiled] {tile.name}: {len(files)} frames "
               f"({100*len(files)/n_all:.1f}% of {n_all})", flush=True)
 
-    nvme = ctx.tiling_nvme_dir()
-    os.makedirs(nvme, exist_ok=True)
+    nvme = staging.claim(ctx.tiling_nvme_dir(), t['full_reproj_dir'])
     results = {}
     for job in ctx.jobs():
         jobgeom = ctx.job_geometry(job)

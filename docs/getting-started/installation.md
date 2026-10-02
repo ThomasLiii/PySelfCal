@@ -49,7 +49,7 @@ pip install -e .
 ## Check the install
 
 ```bash
-python -c "import selfcal, selfcal_scripts.runner; print(selfcal.__file__)"
+python -c "import selfcal, selfcal.run; print(selfcal.__file__)"
 pytest -q tests/test_runner_e2e_toy.py      # about 10 s
 ```
 

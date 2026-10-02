@@ -23,7 +23,6 @@ Design (see selfcal/README.md, "Mosaic / coadd engine"):
 import logging
 import os
 import time
-from multiprocessing import Pool, Condition, Array
 from multiprocessing.shared_memory import SharedMemory
 
 import h5py
@@ -32,6 +31,7 @@ from scipy.ndimage import map_coordinates
 from tqdm import tqdm
 
 from .. import _state
+from .shmbuf import worker_pool_context
 from .subframe import _prep_subframe
 
 # The striped turnstile handed to the coadd workers at pool creation — a
@@ -410,8 +410,11 @@ def _run_pass(*, ref_shape, files, offsets, source, accumulate, write_dir, wav, 
     t0 = time.perf_counter()
     cached, stats = [], []
     n_stripes = max(1, min(_FLUSH_STRIPES, ref_shape[0]))
-    cond, counters = Condition(), Array('i', n_stripes, lock=False)
-    with Pool(processes=max_workers, initializer=_init_coadd_worker, initargs=(cond, counters)) as pool:
+    # forkserver workers (selfcal.core.shmbuf): a pool forked from a threaded process can inherit a
+    # held lock and hang; the turnstile is made in the pool's own context so it can be handed over.
+    ctx = worker_pool_context()
+    cond, counters = ctx.Condition(), ctx.Array('i', n_stripes, lock=False)
+    with ctx.Pool(processes=max_workers, initializer=_init_coadd_worker, initargs=(cond, counters)) as pool:
         for c, s in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks),
                          disable=not _state.progress_enabled):
             cached.extend(c)

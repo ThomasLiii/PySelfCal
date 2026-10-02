@@ -17,11 +17,11 @@ Usage:
   config_equivalence.py baseline <out_dir> [config.toml ...]   # default: every shipped config
   config_equivalence.py compare <dir_a> <dir_b>
 """
+import contextlib
 import glob
 import hashlib
 import inspect
 import io
-import contextlib
 import json
 import os
 import sys
@@ -43,18 +43,18 @@ def _sig_defaults(fn):
 
 def _defaults():
     from selfcal.pipeline.pipeline_wrapper import Calibrator, Mosaicker
-    from selfcal_scripts.runner import npass as rnp
+    from selfcal.run import npass as rnp
     return {
         'calibration': _sig_defaults(Calibrator.setup_lsqr),
         # the engine passes use_float32=True and n_threads=apply_n_threads unless [lsqr] overrides them
         'lsqr': {**_sig_defaults(Calibrator.apply_lsqr), 'use_float32': True},
         'mosaic': _sig_defaults(Mosaicker.make_mosaic),
-        # selfcal_scripts/runner/pipelines.py run_reprojection
+        # selfcal/run/pipelines.py run_reprojection
         'reproject': dict(padding_pixels=100, max_workers=50, inner_parallel=1, reproj_func='exact',
                           padding_percentage=0.05, replace_existing=False, check=False,
                           header_filter_workers=16, source_ref_path=None),
         # engine.py tiling_frames / tile_assignment, pipelines.py run_tiled
-        'tiling': dict(frame_glob='exp_*_det_00.h5', frame_filter='center', halo=0, rss_guardrail=True,
+        'tiling': dict(frame_glob='exp_*_det_*.h5', frame_filter='center', halo=0, rss_guardrail=True,
                        line=True, only_tiles=None),
         # npass.py
         'passes': dict(n=4, order='sky_first', stop_tol=0.0, sky_merge='combine', keep_moments=False,
@@ -88,7 +88,7 @@ def _merge(defaults, given):
 
 def effective(cfg):
     """Everything the engine reads from ``cfg`` (a RunConfig), defaults filled, normalised."""
-    from selfcal_scripts.runner.config import RunConfig
+    from selfcal.run.config import RunConfig
     D = _defaults()
     top = {}
     for name, f in RunConfig.__dataclass_fields__.items():
@@ -165,8 +165,8 @@ def snapshot(cfg):
         return None
     _memoize_geometry()
     from selfcal import _state
+    from selfcal.run.engine import RunContext
     from selfcal_scripts.gates import mode_lowering_snapshot as mls
-    from selfcal_scripts.runner.engine import RunContext
     _state.set_progress(False)
     with contextlib.redirect_stdout(io.StringIO()):
         ctx = RunContext.build(cfg)
@@ -199,7 +199,7 @@ def _stem(path):
 
 
 def baseline(out_dir, paths):
-    from selfcal_scripts.runner.config import load_config
+    from selfcal.run.config import load_config
     os.makedirs(out_dir, exist_ok=True)
     ok = 0
     for p in paths:
@@ -227,7 +227,9 @@ def compare_dirs(a, b):
     for n in names:
         pa, pb = os.path.join(a, n), os.path.join(b, n)
         if not (os.path.exists(pa) and os.path.exists(pb)):
-            print(f'MISSING {n}'); bad += 1; continue
+            print(f'MISSING {n}')
+            bad += 1
+            continue
         ra, rb = json.load(open(pa)), json.load(open(pb))
         d = diff(ra['effective'], rb['effective']) + diff(ra.get('snapshot'), rb.get('snapshot'), 'snapshot')
         print(('EQUAL   ' if not d else 'DIFFERS ') + n)

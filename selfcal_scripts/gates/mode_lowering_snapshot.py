@@ -53,9 +53,9 @@ def _sky(model, geom):
 def dump(out, config_path, mode_name=None):
     from selfcal import _state
     _state.set_progress(False)
-    from selfcal_scripts.runner.config import load_config
-    from selfcal_scripts.runner.modes import get_mode
-    from selfcal_scripts.runner.engine import RunContext
+    from selfcal.run.config import load_config
+    from selfcal.run.modes import get_mode
+    from selfcal.run.engine import RunContext
     cfg = load_config(config_path)
     if mode_name:
         cfg.mode = mode_name

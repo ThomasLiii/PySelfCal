@@ -2,7 +2,7 @@
 
 Synthetic FITS exposures -> ``reproject`` task -> ``cal`` task (continuum mode, mosaic
 with std + sigma-clip) -> ``mosaic`` task -> ``cal`` with ``[tiling]`` (two tiles +
-Fisher stitch), all via ``selfcal_scripts.runner.pipelines.run`` on configs written
+Fisher stitch), all via ``selfcal.run.pipelines.run`` on configs written
 as TOML and loaded by ``load_config``. Proves the engine runs without SPHEREx and
 that the recovered per-frame offsets track the injected ones.
 Runnable as ``python tests/test_runner_e2e_toy.py`` or under pytest (~10 s).
@@ -24,8 +24,8 @@ import h5py                                                     # noqa: E402
 from astropy.io import fits                                     # noqa: E402
 
 from selfcal import _state                                      # noqa: E402
-from selfcal_scripts.runner import config as runner_config      # noqa: E402
-from selfcal_scripts.runner import pipelines                    # noqa: E402
+from selfcal.run import config as runner_config      # noqa: E402
+from selfcal.run import pipelines                    # noqa: E402
 from selfcal.instruments import get_instrument                  # noqa: E402
 from selfcal.io.calfile import CalFile                          # noqa: E402
 from tests.synthetic_exposures import write_exposures, REF_ARCSEC, N_CHUNK_SIDE, DET  # noqa: E402

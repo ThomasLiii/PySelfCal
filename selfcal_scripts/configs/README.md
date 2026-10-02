@@ -17,7 +17,7 @@ the command, the git commit and the complete config text, while still printing
 to the terminal. `--log PATH` picks the file, `--no-log` turns it off. Configs
 without an `output_dir`/`run_name` log under `<cache_dir>/logs/`.
 
-The generic engine (`selfcal_scripts/runner/`) reads the config, asks the
+The generic engine (`selfcal/run/`) reads the config, asks the
 **instrument** for geometry and the **mode** for the calibration recipe, and
 sequences staging → setup_lsqr → apply_lsqr → save → mosaic. It never references
 a telescope or a specific calibration variant by name.
@@ -271,7 +271,7 @@ capability tags: `wavelength`, `spectral_axis`).
 
 ## Adding a calibration variant (mode)
 
-Drop a module in `selfcal_scripts/runner/modes/`:
+Drop a module in `selfcal/run/modes/`:
 
 ```python
 from selfcal.models.spec import ModelSpec, OffsetTerm, SkyTerm

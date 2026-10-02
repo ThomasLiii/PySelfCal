@@ -18,7 +18,7 @@ import h5py                                                     # noqa: E402
 
 from selfcal import _state                                      # noqa: E402
 from selfcal.io.calfile import CalFile                          # noqa: E402
-from selfcal_scripts.runner import pipelines                    # noqa: E402
+from selfcal.run import pipelines                    # noqa: E402
 from tests.synthetic_exposures import write_exposures           # noqa: E402
 from tests.test_runner_e2e_toy import _write_config, _degauge   # noqa: E402
 
@@ -77,7 +77,7 @@ def test_frame_context_hooks():
                        ref_coords=np.array([0, 10, 0, 10]), sub_data=np.ones((2, 2)), sub_weight=np.ones((2, 2)),
                        sub_mapping=np.zeros((2, 2, 2)), sub_aux=None)
     assert ctx['sub_data'] is ctx.sub_data and ctx.get('sub_aux') is None and ctx.get('nope', 1) == 1
-    from selfcal_scripts.runner.postprocess import mask_bright_pixels
+    from selfcal.run.postprocess import mask_bright_pixels
     ctx.sub_data = np.array([[1.0, 2.0], [3.0, 4.0]])
     out = mask_bright_pixels(ctx)
     assert np.isnan(out).sum() == 3 and out[0, 0] == 1.0

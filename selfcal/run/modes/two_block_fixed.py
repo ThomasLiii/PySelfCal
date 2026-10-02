@@ -34,7 +34,7 @@ class TwoBlockFixed(CalMode):
         by every frame, anchored at mean zero. ``second_reg_weight`` (historical
         ``readout_reg_weight``, default 0.0) becomes its ``reg_weight``, which adds
         no rows because the term has no adjacency axes. There is no per-frame
-        scalar, so :meth:`~selfcal_scripts.runner.modes.base.CalMode.x0` uses
+        scalar, so :meth:`~selfcal.run.modes.base.CalMode.x0` uses
         ``'from_Ab'``. Raises ``ValueError`` when ``second_map`` is not a chunk map
         of the instrument or the primary map has no spectral axis.
         """
