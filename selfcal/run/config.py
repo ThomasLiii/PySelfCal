@@ -28,13 +28,17 @@ class RunConfig:
     ``make_mosaic``; the instrument interprets ``instrument_cfg`` and the mode ``params``
     (mode ``model``: ``model``).
 
+    The Python API (:mod:`selfcal.run.lower`) builds the same object from its settings, and may
+    give ``instrument`` as an instrument object, ``[hooks]`` entries as hook objects, an explicit
+    frame list (``frame_files``) and a staging directory (``stage_dir``).
+
     Products go under ``<output_dir>/<run_name>/`` (see :meth:`resolved_run_name`).
     ``cache_dir`` is the scratch area (staged frames, solver spill files, mosaic caches); end
     it with ``/``, because a mosaic's cache directory is ``<cache_dir>cache_<stem>``. The keys
     are described in the run configuration guide, ``selfcal_scripts/configs/README.md``.
     """
     task: str                          # cal | mosaic | npass | reproject | precompute ('tiled' = cal + [tiling])
-    instrument: str = None             # from [instrument].name (required)
+    instrument: object = None          # from [instrument].name (required); the Python API may give an instrument object
     mode: str = None                   # cal/tiled mode name (None for reproject/precompute)
     output_dir: str = None
     run_name: str = None               # may contain "{detector}"
@@ -65,6 +69,9 @@ class RunConfig:
     passes: dict = field(default_factory=dict)   # [passes] — the N-pass alternating solve (task = 'npass')
     model: dict = field(default_factory=dict)    # [model] — the sky/offset terms for mode = 'model'
     hooks: dict = field(default_factory=dict)    # [hooks] — pre_cal / post_cal / post_mosaic per-frame hooks
+    # Set by the Python API only (no TOML key):
+    frame_files: list = None           # the frames to solve (by file name, under the frame directory)
+    stage_dir: str = None              # the staging directory (default <cache_dir>/reproj_nvme_<run_name>)
 
     @property
     def tiled(self):

@@ -90,6 +90,22 @@ sigma = 3.0
 ./selfcal_scripts/run.sh cal.toml             # run (from the repository root)
 ```
 
+The same calibration configured in Python, with settings that are checked when they are built (see
+[The Python API](guide/python-api.md); its defaults are production's, such as 50-frame batches,
+where the TOML above leaves the library's):
+
+```python
+import selfcal as sc
+
+camera = sc.Camera((2048, 2048), chunks=(8, 8), dq_ext=2, tag="MyCam")
+field = sc.Field("/data/runs/mycam_field1", camera, pixel_scale=1.0, compute=sc.Compute("/scratch/selfcal"))
+recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(100, clip=3.0), coadd=sc.Coadd(clip=3.0))
+
+if __name__ == "__main__":
+    print(field.plan(recipe))            # the jobs, products and frames, the model resolved; nothing run
+    result = field.calibrate(recipe)
+```
+
 The `task` key selects the step; a job is one unit of the instrument's loop (a SPHEREx channel or
 window; the `grid` instrument has one, `All`). Paths are relative to `<output_dir>/<run_name>/`.
 
@@ -114,6 +130,8 @@ wavelength maps). Each run also writes a log to `logs/`.
 - [Quickstart](getting-started/quickstart.md): a first run on simulated exposures, from the raw
   FITS files to the mosaic, checked against the injected truth.
 - [How selfcal works](guide/concepts.md): the method, the model, the priors and the mosaic.
+- [The Python API](guide/python-api.md): runs configured in Python: the field, the model, the recipe,
+  the machine, plans, records and results.
 - [Run configuration](guide/configuration.md): the config schema, the tasks, the modes and the
   `[model]` table.
 - [Bring your own telescope](bring_your_own_telescope.md): a new instrument or model, from

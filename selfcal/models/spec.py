@@ -196,8 +196,9 @@ class SkyTerm:
 class PolyConstraint:
     """A soft polynomial constraint: along ``axis`` the offset is pulled toward a
     degree-``degree`` polynomial (finite-difference rows of weight ``weight``),
-    optionally only over the window ``[lo, hi]`` of that axis."""
-    axis: str
+    optionally only over the window ``[lo, hi]`` of that axis. ``axis=None``: the
+    first axis the term is smoothed along (the standard term's default)."""
+    axis: str | None = None
     degree: int = 1
     weight: float = 1.0
     lo: int | None = None
@@ -508,7 +509,11 @@ class ModelSpec:
         for term in self.offset:
             cm = _chunk_map(term, geom)
             names = list(cm.axes.names) if cm.axes is not None else []
-            axes = list(term.adjacency or ()) + [p.axis for p in term.poly]
+            smooth_axes = cm.adjacency_axes if term.adjacency is None else tuple(term.adjacency)
+            if any(p.axis is None for p in term.poly) and not smooth_axes:
+                raise ValueError(f"offset term on {cm.name!r}: a polynomial constraint without an axis follows "
+                                 f"the term's first smoothing axis, and the term is smoothed along none")
+            axes = list(term.adjacency or ()) + [p.axis for p in term.poly if p.axis is not None]
             if term.kind == 'polybasis':
                 axes += [term.axis or cm.spectral_axis, term.group_axis or cm.group_axis]
             bad = [a for a in axes if a not in names]
@@ -611,12 +616,16 @@ class ModelSpec:
             adj = adjacency_union(cm.det, cm.axes, axes) if axes else None
         groups = []
         for pc in term.poly:
-            size = cm.axes[pc.axis].size
+            axis = pc.axis if pc.axis is not None else (axes[0] if axes else None)
+            if axis is None:
+                raise ValueError(f"offset term on {cm.name!r}: a polynomial constraint without an axis follows "
+                                 f"the term's first smoothing axis, and the term is smoothed along none")
+            size = cm.axes[axis].size
             if size < pc.degree + 2:
-                log(f"[model] axis {pc.axis!r} has {size} values < degree+2={pc.degree + 2}: "
+                log(f"[model] axis {axis!r} has {size} values < degree+2={pc.degree + 2}: "
                     f"skipping the (vacuous) polynomial constraint along it.")
                 continue
-            chains, stencil = poly_chains_along(cm.axes, pc.axis, int(pc.degree), pc.lo, pc.hi)
+            chains, stencil = poly_chains_along(cm.axes, axis, int(pc.degree), pc.lo, pc.hi)
             groups.append({'chains': chains, 'stencil': stencil, 'weight': pc.weight})
         nb = 1 if basis is None else basis.n
         if nb > 1:

@@ -148,6 +148,21 @@ class ChunkMap:
         """The number of chunks: the largest chunk id in ``det`` plus one."""
         return int(self.det.max()) + 1
 
+    @classmethod
+    def rectangles(cls, name, shape, chunks, axes=('row', 'col'), adjacency=None, group_axis=None) -> ChunkMap:
+        """``ny x nx`` rectangular chunks over a detector of ``shape`` (chunk id ``row * nx + col``;
+        sides differ by at most one pixel), at detector resolution (``grid`` is ``det``:
+        ``selfcal.instruments.contract.Geometry`` oversamples it). ``axes`` names the chunk rows and
+        columns; the chunks are smoothed along both unless ``adjacency`` says otherwise, and
+        ``group_axis`` (default the first axis) indexes a polynomial basis's groups."""
+        from .grid import rect_grid_chunk_map
+        ny, nx = (int(v) for v in chunks)
+        det = rect_grid_chunk_map(tuple(int(v) for v in shape), ny, nx)
+        axes = tuple(axes)
+        return cls(name=name, det=det, grid=det, axes=ChunkAxes.row_major(axes, (ny, nx), ('y', 'x')),
+                   adjacency_axes=axes if adjacency is None else tuple(adjacency), spectral_axis=None,
+                   group_axis=group_axis or axes[0])
+
 
 @dataclass(frozen=True)
 class DetectorGeometry:

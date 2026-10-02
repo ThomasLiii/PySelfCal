@@ -103,7 +103,8 @@ from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
 from selfcal import SkyModel, SkyComponent, ContinuumComponent, Coefficient, ImportedFunction
 from selfcal import GaussianProfile, TemplateProfile
 from selfcal import OffsetModel, OffsetBlock, Basis, SystemLayout
-from selfcal import VariableSet, Derived, FrameFunction
+from selfcal import VariableSet
+from selfcal.models.variables import Derived, FrameFunction   # (sc.Derived / sc.FrameFunction: the Python API's sources)
 from selfcal import TiledCalibration, TileSpec, make_tile_grid
 ```
 
@@ -721,7 +722,11 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | --- | --- |
 | [`__init__.py`](__init__.py) | Curated public API re-exports + package docstring. |
 | [`_state.py`](_state.py) | Shared HDD I/O semaphore and the progress-bar switch. |
-| [`config.py`](config.py) | Path resolution + `SelfCalConfigError`. |
+| [`config/`](config/__init__.py) | The settings base class of the Python API (`base.py`), function references for the worker processes (`functions.py`), path resolution + `SelfCalConfigError` (`paths.py`). |
+| [`priors.py`](priors.py) | Ready-made priors of the Python API (`sc.priors.frame_smoothness`, ...). |
+| [`models/model.py`](models/model.py) | The Python API's model: `Model`, `Sky`, `Offsets`, `Poly`, functions, data-variable sources, `Prior`, the presets; lowers to `ModelSpec`. |
+| [`run/`](run/__init__.py) | The run engine (TOML configs) and the Python API's actions: `recipe.py` (`Recipe`, `Fit`, `Coadd`, `Numerics`, `Clip`, `ChunkGroups`), `schedule.py` (`Tiles`, `Passes`), `compute.py`, `field.py` (`Field` and its actions), `lower.py` (objects -> `RunConfig`), `plan.py`, `records.py`, `result.py`, `convert.py` (TOML -> objects). |
+| [`instruments/contract.py`](instruments/contract.py), [`instruments/camera.py`](instruments/camera.py) | Instruments as settings: the `Instrument` base for new telescopes, `Camera`; SPHEREx and Euclid in `spherex/settings.py`, `euclid/settings.py`. |
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
 | [`pipeline/tiled.py`](pipeline/tiled.py) | `TiledCalibration`, `TileSpec`, `make_tile_grid`, stitching. |

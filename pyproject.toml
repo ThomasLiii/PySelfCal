@@ -72,6 +72,10 @@ select = ["F", "E", "I"]
 # reflowing them adds no value. Ruff still reports genuinely over-long code.
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# the package's names are imported under TYPE_CHECKING only (they load lazily, PEP 562)
+"selfcal/__init__.py" = ["F401"]
+
 [tool.mypy]
 # Type-check the annotated PUBLIC surface (Tier 3) without drowning in the
 # untyped internals of a numeric codebase. ignore_missing_imports tolerates the

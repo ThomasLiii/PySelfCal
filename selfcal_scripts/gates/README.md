@@ -20,6 +20,19 @@ for a config, so a refactor of the modes/instruments is checked without a solve
 (`configs/snap_*.toml` cover the modes without a shipped config). `h5_diff.py` / `fits_diff.py`
 compare every dataset / extension exactly.
 
+`python_gates.py` is the same gate set written with the [Python API](../../docs/guide/python-api.md)
+(each gate a function: `python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e |
+npass3 | euclid | m13`); its products carry a `py` suffix and `run_python_gates.sh <tag> [gate ...]`
+compares them with the same goldens (`SELFCAL_REPO` picks the tree). The script imports numpy
+before selfcal on purpose: the actions pin the threads themselves.
+
+`config_equivalence.py` checks the configuration layer without a solve: `baseline` / `compare`
+record what the engine reads from every shipped config and what its mode lowers to on the real
+geometry (before and after an engine change); `typed` converts each config to the Python API's
+objects, lowers them again and compares what the engine does with each (the library calls with
+defaults filled, per-term damping, offset rows, sky coefficients, jobs, product paths, frames,
+staging, tiles, passes).
+
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so. The assembly folds its per-pixel moments deterministically (batch-id order),
 so two runs of the same tree are byte-identical on any box load.

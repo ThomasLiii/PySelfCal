@@ -44,6 +44,7 @@ nav:
       - Tutorials: getting-started/tutorials.md
   - User guide:
       - How selfcal works: guide/concepts.md
+      - The Python API: guide/python-api.md
       - Run configuration: guide/configuration.md
       - Bring your own telescope: bring_your_own_telescope.md
       - Pipeline runbook: guide/pipeline.md

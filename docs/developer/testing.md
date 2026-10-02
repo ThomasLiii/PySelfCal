@@ -32,6 +32,7 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | Area | File | Checks |
 | --- | --- | --- |
 | End to end | `test_runner_e2e_toy.py` | every runner task on synthetic exposures with the `grid` instrument: `reproject`, `cal` and its mosaic, `mosaic`, `cal` with `[tiling]` and the Fisher stitch; the recovered offsets track the injected ones |
+| | `test_python_api.py` | the [Python API](../guide/python-api.md): settings checked when built; models, presets and instruments lowered to the run engine's config; a run through the API (calibrate and its mosaic, the mosaic action, a tiled solve) makes the same bytes as the same run from TOML; the run-script rules (the `__main__` guard, importable functions) |
 | | `test_quickstart_example.py` | the [quickstart](../getting-started/quickstart.md) example runs and recovers its injected offsets |
 | | `test_grid_nomask_nonsquare.py` | a non-square detector without a data-quality extension through reproject, cal and mosaic; the `CalFile` reader and typed hooks on the product |
 | | `test_any_telescope.py` | seven instruments and models adapted with high-level functions only (see [Tutorials](../getting-started/tutorials.md#one-instrument-one-example)) |
@@ -54,7 +55,9 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | Run engine | `test_tiled.py` | tile geometry and the assignment of frames to tiles |
 | | `test_npass_primitives.py` | the primitives of the N-pass alternating solve on a sky-only system |
 | | `test_runlog.py` | the per-run log file |
-| Code layout | `test_import_direction.py` | layering: the numerical layers never import the instrument layer, and the instrument layer never imports the pipeline or runner layers |
+| | `test_staging.py` | frames are staged atomically, only into or out of a directory the pipeline made; a tiled run's default frame pattern takes every detector |
+| | `test_runner_shim.py` | the engine's old import path `selfcal_scripts.runner` is an alias of `selfcal.run` (one mode registry) |
+| Code layout | `test_import_direction.py` | layering: `selfcal.config` imports no other layer, the numerical layers never import the instrument layer, the instrument layer never imports the pipeline or run layers, and the run engine never imports the scripts |
 
 `tests/synthetic_exposures.py` is the shared helper that writes synthetic FITS exposures for the
 runner tests.
