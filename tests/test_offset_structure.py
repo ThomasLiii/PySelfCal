@@ -55,15 +55,12 @@ def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     from selfcal.pipeline.npass import group_wavelength_edges
     from selfcal import _state
     _state.set_progress(False)
-    # The chunk maps come from the shipped LVF fit. The calibration files and the SPHEREx
-    # channel table exist only on the processing host, so stand-ins replace them: with a
-    # fit given the band-centre map only sets the shape (a blank one), and the band's 18
-    # channel edges are every 20th of the fit's 341 subchannel edges. Both give maps
-    # identical to the real files' for D1-D6 (checked on the processing host).
+    # The chunk maps come from the shipped LVF fit and the shipped channel table. The
+    # calibration files exist only on the processing host; with a fit given, the
+    # band-centre map only sets the shape, so a blank one stands in (identical maps for
+    # D1-D6, checked on the processing host).
     blank = np.zeros((2040, 2040), dtype=np.float32)
     monkeypatch.setattr(su, 'load_calibration', lambda band, calibration_dir=None: (blank, blank))
-    edges = np.asarray(su.load_lvf_params(f'lvf_params_D{det}.npy')['wave_edges'])[::20]
-    monkeypatch.setattr(su, 'extract_spherex_channel_edges', lambda band, channel_file=None: edges.copy())
 
     def legacy_poly_basis(det_chunk_map, num_columns, degree, lo, hi, segments=None):
         # the pre-S2 SPHERExInstrument.subchannel_poly_basis, verbatim

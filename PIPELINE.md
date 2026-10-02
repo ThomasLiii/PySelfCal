@@ -62,7 +62,8 @@ Chunk geometry (the `[instrument]` TOML table):
 
 - `num_sub`, `num_ch` (`NumSub`, `NumCh` in the product names) — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
-  channel edges come from the 17-band `spherex_channels.csv` table;
+  channel edges come from the SPHEREx channel table (17 channels per band),
+  `selfcal/instruments/spherex/data/spherex_channels.csv`, shipped with the package;
   `NumCh=34` is the 17 edges interpolated 2×.
 - `num_col` (`NumCol`) — spatial divisions perpendicular to wavelength. **Primary knob
   for zodi-gradient resolution.** Too few (1–3) leaves intra-column
