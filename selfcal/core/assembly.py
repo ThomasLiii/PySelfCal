@@ -110,6 +110,12 @@ def _prep_lsqr(task_params):
                 groups = np.digitize(observations(pix)[wl_key], edges)
                 sub_out = np.zeros(sub_valid.shape, dtype=bool)
                 sub_out[pix] = find_outliers_grouped(sub_data[pix], groups, threshold=outlier_thresh)
+            elif task_params.get('outlier_chunk_groups') is not None:
+                # Chunk groups: each pixel is judged within the group of the chunk of map 0
+                # that contributes most to it.
+                sub_out = find_outliers_grouped(
+                    masked, chunk_group_of_pixels(chunk_contribs[0], task_params['outlier_chunk_groups'],
+                                                  sub_data.shape), threshold=outlier_thresh)
             else:
                 sub_out = find_outliers(masked, threshold=outlier_thresh)
             sub_valid &= ~sub_out
@@ -400,6 +406,16 @@ def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
     rows = np.repeat(np.arange(n_rows, dtype=np.int32), np.diff(A.indptr))
     return (rows.astype(np.int32, copy=False), A.indices.astype(np.int32, copy=False),
             A.data.astype(np.float32, copy=False), (off_ids.astype(np.int64), off_cnt))
+
+def chunk_group_of_pixels(chunk_contrib, chunk_groups, shape):
+    """The group of each subframe pixel: ``chunk_groups`` of the chunk contributing most to it
+    (``chunk_contrib``: chunks x pixels), -1 where no chunk contributes."""
+    c = chunk_contrib.tocsc()
+    dominant = np.asarray(c.argmax(axis=0)).ravel()
+    covered = np.diff(c.indptr) > 0
+    groups = np.where(covered, np.asarray(chunk_groups)[dominant], -1)
+    return groups.reshape(shape)
+
 
 def _prep_lsqr_batch_worker(batch_params):
     """Wrapper to process a list (batch) of subframes in a single worker process."""

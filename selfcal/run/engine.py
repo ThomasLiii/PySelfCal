@@ -35,11 +35,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from selfcal.instruments import get_instrument
+from selfcal.instruments.base import Instrument
 from selfcal.pipeline import pipeline_wrapper
 
 from . import staging
 from .config import get_postprocess
 from .modes import get_mode
+
+
+def resolve_instrument(instrument):
+    """The engine instrument of a run config: a registered name, or an instrument object as is."""
+    return instrument if isinstance(instrument, Instrument) else get_instrument(instrument)
 
 
 def check_requires(mode, inst):
@@ -66,6 +72,8 @@ def resolve_hook(cfg, inst, which):
     spec = (cfg.hooks or {}).get(which)
     if not spec:
         return None
+    if callable(spec):                     # a hook object (the Python API)
+        return spec
     if isinstance(spec, str):
         spec = {'name': spec}
     params = dict(spec)
@@ -106,7 +114,7 @@ class RunContext:
         """Resolve the config. ``need_geometry=False`` (reprojection) skips the
         detector geometry and the frame tag, which need calibration data the
         reprojection stage does not."""
-        inst = get_instrument(cfg.instrument)
+        inst = resolve_instrument(cfg.instrument)
         mode = None
         if need_mode:
             mode = get_mode(cfg.mode)
@@ -292,6 +300,33 @@ def frame_list(frame_dir, n_frames=None):
     return files[:n_frames] if n_frames else files
 
 
+def clip_groups(ctx, groups):
+    """The ``setup_lsqr`` keywords of an outlier clip over chunk groups (the Python API's
+    ``Clip(per=...)``): ``{"along": axis}``, ``{"chunk": True}`` or ``{"mapping": [...]}``, on the
+    primary chunk map. Along the primary map's spectral axis of an instrument with a wavelength map,
+    the clip bins the wavelength between the axis values' wavelengths (the N-pass passes' clip,
+    ``subch_clip``); otherwise each pixel is judged within the group of its dominant chunk."""
+    cm, geom = ctx.geom.chunk_map, ctx.geom
+    if groups.get('map') not in (None, cm.name):
+        raise ValueError(f"clip groups {groups}: groups of the primary chunk map ({cm.name!r}) only")
+    axis = groups.get('along')
+    if axis is not None and axis == cm.spectral_axis and geom.wavelength_key:
+        return {'outlier_group_edges': ctx.mode.clip_group_edges(ctx.cfg, ctx.inst, geom)}
+    n = cm.n_chunks
+    if axis is not None:
+        names = list(cm.axes.names) if cm.axes is not None else []
+        if axis not in names:
+            raise ValueError(f"clip groups along {axis!r}: the primary chunk map's axes are {names}")
+        mapping = np.asarray(cm.axes[axis].of_chunk)[:n]
+    elif groups.get('chunk'):
+        mapping = np.arange(n)
+    else:
+        mapping = np.asarray(groups['mapping'])
+        if mapping.shape != (n,):
+            raise ValueError(f"clip groups: a mapping of {mapping.shape[0]} chunks; the primary chunk map has {n}")
+    return {'outlier_chunk_groups': mapping.astype(np.int64)}
+
+
 # ---------------------------------------------------------------------------
 # Primitive 1: one joint solve -> one cal file
 # ---------------------------------------------------------------------------
@@ -328,6 +363,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
     priors = mode.build_priors(cfg, inst, geom, variables, n_frames)
     if priors:
         cal_kwargs['priors'] = priors
+    groups = cal_kwargs.pop('outlier_groups', None)
+    if groups is not None:
+        cal_kwargs.update(clip_groups(ctx, groups))
     # The grouped clip bins the instrument's wavelength map unless the config
     # names another data variable ([calibration].outlier_group_variable).
     if not (cal_kwargs.get('outlier_group_variable') or cal_kwargs.get('outlier_aux_key')):

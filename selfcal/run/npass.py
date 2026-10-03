@@ -102,6 +102,8 @@ def _init_cfg(cfg, edges_fn=None):
     for k in ("outlier_thresh", "ignore_list"):
         if k in over:
             cal[k] = over[k]
+    if "subch_clip" in over and not over["subch_clip"]:
+        cal.pop("outlier_groups", None)          # the first pass clips per frame
     if over.get("subch_clip"):
         if edges_fn is None:
             raise ValueError("[passes].init.subch_clip needs the mode's clip-group edges")

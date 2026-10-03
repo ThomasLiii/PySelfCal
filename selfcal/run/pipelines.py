@@ -56,7 +56,10 @@ def _run_plain(ctx):
         if os.path.exists(cal_path):
             print(f"Calibration file {cal_path} already exists. Skipping calibration.")
         else:
-            frames = frame_list(frame_dir, cfg.n_frames) if cfg.n_frames else None
+            if cfg.frame_files:
+                frames = [os.path.join(frame_dir, os.path.basename(f)) for f in cfg.frame_files]
+            else:
+                frames = frame_list(frame_dir, cfg.n_frames) if cfg.n_frames else None
             cal_path = solve_job(ctx, job, jobgeom, frame_dir=frame_dir, frames=frames,
                                  cal_file=ctx.cal_file(job),
                                  hdd_reproj_dir=ctx.pipeline_config.reproj_dir)
@@ -286,9 +289,8 @@ def run_precompute(cfg):
     each detector in ``[instrument].detectors``; an instrument without a generator raises
     ``NotImplementedError``.
     """
-    from selfcal.instruments import get_instrument
-    inst = get_instrument(cfg.instrument)
-    inst.precompute(cfg.instrument_cfg)
+    from .engine import resolve_instrument
+    resolve_instrument(cfg.instrument).precompute(cfg.instrument_cfg)
 
 
 # ---------------------------------------------------------------------------

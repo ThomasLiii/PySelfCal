@@ -764,7 +764,7 @@ class Calibrator(Reprojector):
                    sky_rhs_moments: bool = False,
                    batch_spill_dir: str | None = None,
                    variables=None, weight_function=None, priors: list | None = None,
-                   outlier_group_variable: str | None = None) -> None:
+                   outlier_group_variable: str | None = None, outlier_chunk_groups=None) -> None:
         """Build the LSQR system for K chunk maps.
 
         ``variables`` (a :class:`~selfcal.models.variables.VariableSet`) adds
@@ -1025,7 +1025,8 @@ class Calibrator(Reprojector):
                 batch_spill_dir=batch_spill_dir,
                 basis_list=basis_list, variables=variables,
                 weight_function=weight_function, priors=priors,
-                outlier_group_variable=outlier_group_variable)
+                outlier_group_variable=outlier_group_variable,
+                outlier_chunk_groups=outlier_chunk_groups)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
             # back as None and `pixel_spill` carries the handle; we leave them

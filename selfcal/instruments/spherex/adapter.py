@@ -155,10 +155,13 @@ class SPHERExInstrument(Instrument):
     def detector_geometry(self, inst_cfg, oversample):
         """LVF params, BC/BW, the stripped chunk map at detector + grid
         resolution with its (subchannel, column) axes, the readout-channel map.
-        NO adjacency (offset-structure-specific -> the mode builds it)."""
+        NO adjacency (offset-structure-specific -> the mode builds it).
+        ``[instrument]`` ``calib_dir`` / ``lvf_dir`` choose the directories of the
+        calibration maps and the LVF parameters (default: see
+        :func:`~selfcal.instruments.spherex.spherex_utility.load_lvf_params`)."""
         det = inst_cfg['detector']
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        lvf_params = load_lvf_params(f'lvf_params_D{det}.npy')
+        lvf_params = load_lvf_params(f'lvf_params_D{det}.npy', input_dir=inst_cfg.get('lvf_dir'))
         det_BC, det_BW = load_calibration(
             band=det, calibration_dir=inst_cfg.get('calib_dir', SPHEREX_CALIB_DIR))
         grid_chunk_map, _, _, _ = make_stripped_chunk_map(

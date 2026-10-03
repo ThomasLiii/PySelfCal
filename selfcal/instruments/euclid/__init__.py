@@ -11,4 +11,16 @@ Importing :mod:`selfcal.instruments` registers the instrument; a run config sele
   and ``residual_mask``.
 - :mod:`~selfcal.instruments.euclid.exposures`: lists of exposure files from a VOTable catalogue,
   a CSV file or a directory.
+- :mod:`~selfcal.instruments.euclid.settings`: Euclid as settings of the Python API,
+  :class:`~selfcal.instruments.euclid.settings.Euclid` (available from this package, with the hook
+  classes: ``euclid.Euclid``, ``euclid.StarMask``, ``euclid.ResidualMask``).
 """
+_EXPORTS = {'Euclid': 'settings', 'StarMask': 'hooks', 'ResidualMask': 'hooks'}
+
+
+def __getattr__(name):
+    # Loaded on first use, so worker processes importing the instrument stay light.
+    if name in _EXPORTS:
+        import importlib
+        return getattr(importlib.import_module(f'{__name__}.{_EXPORTS[name]}'), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

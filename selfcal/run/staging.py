@@ -138,7 +138,7 @@ def prepare_nvme(cfg, reproj_dir, run_name):
     previously-staged dir exists (the owning run staged it). Either way the HDD
     I/O throttle is disabled afterward (NVMe handles massively parallel reads).
     """
-    nvme = nvme_dir(cfg.cache_dir, run_name)
+    nvme = getattr(cfg, 'stage_dir', None) or nvme_dir(cfg.cache_dir, run_name)
     if cfg.staging == 'copy':
         with hdd_throttle(cfg.hdd_io_limit):
             stage_copy(reproj_dir, nvme, cfg.hdd_io_limit)

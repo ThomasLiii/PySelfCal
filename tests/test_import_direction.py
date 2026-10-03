@@ -18,6 +18,9 @@ FORBIDDEN = {
     'pipeline': ('selfcal.instruments', 'selfcal.run', 'selfcal_scripts'),
     'instruments': ('selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
     'run': ('selfcal_scripts',),          # the run engine sits on top of the library
+    # the settings base and function references: the lowest layer, importing no other
+    'config': ('selfcal.core', 'selfcal.models', 'selfcal.geometry', 'selfcal.io', 'selfcal.instruments',
+               'selfcal.pipeline', 'selfcal.run', 'selfcal_scripts'),
 }
 # Audited violations still present (SYNTHESIS §0 / audits B R6, D R1); remove entries as they are fixed.
 KNOWN = set()

@@ -279,7 +279,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                variables=None,
                weight_function=None,
                priors: list | None = None,
-               outlier_group_variable: str | None = None) -> SetupResult:
+               outlier_group_variable: str | None = None,
+               outlier_chunk_groups=None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
@@ -456,6 +457,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     outlier_group_variable : str or None, optional
         The data variable the grouped clip bins with ``outlier_group_edges``
         (the historical spelling is ``outlier_aux_key``).
+    outlier_chunk_groups : array of int or None, optional
+        A group per chunk of the first chunk map: the clip judges each pixel
+        within the group of the chunk that contributes most to it. Exclusive
+        with ``outlier_group_edges``.
 
     Returns
     -------
@@ -628,6 +633,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if outlier_aux_key is not None and outlier_aux_key != outlier_group_variable:
             raise ValueError("give outlier_group_variable or outlier_aux_key, not both")
         outlier_aux_key = outlier_group_variable
+    if outlier_chunk_groups is not None:
+        if outlier_subchannel_edges is not None:
+            raise ValueError("give outlier_group_edges or outlier_chunk_groups, not both")
+        n0 = int(np.max(chunk_maps[0])) + 1
+        if np.shape(outlier_chunk_groups) != (n0,):
+            raise ValueError(f"outlier_chunk_groups has shape {np.shape(outlier_chunk_groups)}: one group per "
+                             f"chunk of the first chunk map ({n0},)")
     if outlier_subchannel_edges is not None and outlier_aux_key is None:
         raise ValueError("outlier_group_edges needs outlier_group_variable: the data variable the "
                          "grouped clip bins")
@@ -704,6 +716,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'valid_threshold': valid_threshold,
         'outlier_thresh': outlier_thresh,
         'outlier_subchannel_edges': outlier_subchannel_edges,
+        'outlier_chunk_groups': None if outlier_chunk_groups is None else np.asarray(outlier_chunk_groups,
+                                                                                        dtype=np.int64),
         'num_chunks_list': num_chunks_list,
         'num_frames': num_frames,
         'ref_shape': ref_shape,
