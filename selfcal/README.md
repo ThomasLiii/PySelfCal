@@ -1,10 +1,15 @@
 # selfcal
 
-A self-calibration and mosaicking pipeline for astronomical imaging, designed
-primarily for the SPHEREx survey (with some Euclid helpers). It solves
-simultaneously for a common sky map and per-frame/per-chunk detector offsets
-by casting the problem as a large, sparse linear least-squares problem, then
-builds final co-added mean / std / sigma-clipped mosaic products.
+A self-calibration and mosaicking pipeline for astronomical imaging — any
+telescope, from SPHEREx (linear-variable-filter spectral imaging) and Euclid
+(multi-detector broadband) to one that does not exist yet. It solves
+simultaneously for sky maps and per-frame / per-chunk instrumental offsets by
+casting the problem as a large, sparse linear least-squares problem, then
+builds co-added mean / std / sigma-clipped mosaic products. Every function of
+the model (sky coefficients, offset bases, weights, groupings, priors) reads
+named per-observation *data variables* from pluggable sources, so a new
+instrument or model is a set of high-level functions, never a core edit — see
+[`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md).
 
 The reference entry point is the **generic runner** — one TOML config per run,
 no editing Python:
@@ -14,12 +19,16 @@ no editing Python:
 ./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml --dry-run  # resolve jobs+mode, no compute
 ```
 
-The config picks an **instrument** (a geometry adapter implementing the
-[`instruments/base.py`](instruments/base.py) `Instrument` protocol — SPHEREx
-specifics live in [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)),
+The config picks an **instrument** (`[instrument].name`, resolved through the
+registry in [`instruments/base.py`](instruments/base.py): a subclass of the
+`Instrument` ABC — the built-ins are `spherex`, whose specifics live in
+[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py), `euclid`
+(16-detector NISP, [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py)) and the
+config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
+other packages register theirs through the `selfcal.instruments` entry-point group),
 a **mode** (the calibration recipe; modes registry under
-`selfcal_scripts/runner/modes/`), and a **task** (`cal`/`tiled`/`reproject`/
-`precompute`). The run engine in `selfcal_scripts/runner/` is instrument- and
+`selfcal/run/modes/`), and a **task** (`cal`, optionally tiled via
+`[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal/run/` is instrument- and
 mode-agnostic: it talks only to the `Instrument` interface plus the `CalMode`
 interface, never to a telescope or variant by name. See
 [`../selfcal_scripts/configs/README.md`](../selfcal_scripts/configs/README.md)
@@ -37,27 +46,30 @@ classes in [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py):
 
 ## What the pipeline does
 
-Given many overlapping detector exposures of the same patch of sky, the flux
-observed at a given sky pixel can be modeled as
+Given many overlapping detector exposures of the same patch of sky, every
+observation `i` (one value of frame `k` on reference pixel `p_i`, seen at a
+detector position) is modelled as
 
 ```
-d_i = Σ_c coeff_c(λ_i) * s_c(p_i) + Σ_m o^(m)_{g_m(k)}(c_m(i)) + σ_k + eps_i
+d_i = Σ_c coeff_c(v_i) * s_c(p_i) + Σ_m Σ_j o^(m)_{g_m(k)}(c_m(i), j) * φ_mj(v_i) + σ_k + eps_i
 ```
 
 where:
-- `s_c(p)` is the per-pixel amplitude of sky component `c` at pixel `p`
-  (shared across all frames), and `coeff_c(λ_i)` is that component's
-  per-observation coefficient. For a continuum-only solve there is a single
-  component with `coeff = 1`, recovering the classic `s(p_i)` term. Spectral
-  components (e.g. a PAH line) carry a profile coefficient `G(λ_i)`. The set
-  of components is described by a `SkyModel` (see
-  [`models/sky_model.py`](models/sky_model.py)).
-- `o^(m)_g(c)` is an additive offset for chunk `c` in group `g` under chunk
-  map `m`. The sum runs over `K` user-supplied chunk maps (`K=1` is the
-  legacy single-map case).
-- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity;
-  set via `det_groups_list[m]` to lock multiple frames to one offset
-  vector).
+- `v_i` are the observation's **data variables**
+  ([`models/variables.py`](models/variables.py)): the built-in coordinates,
+  detector maps (SPHEREx: the band-centre and band-width maps), per-frame
+  values (time, filter, an angle, a temperature), reference-grid maps, planes
+  stored with the frame, and functions of those or of the whole frame.
+- `s_c(p)` is the per-pixel amplitude of sky component `c` (shared across all
+  frames), and `coeff_c(v_i)` is that component's known coefficient — any
+  function of data variables; `coeff = 1` for a constant sky. The set of
+  components is a `SkyModel` ([`models/sky_model.py`](models/sky_model.py)).
+- `o^(m)_g(c, j)` is an offset for chunk `c` in frame group `g` under chunk
+  map `m`, times `n_m` known functions `φ_mj` of data variables (an `OffsetBlock`
+  `basis`; `n_m = 1`, `φ = 1` is the classic chunk offset). The sum runs over
+  `K` chunk maps.
+- `g_m(k)` is the frame→group mapping for map `m` (identity by default; any
+  per-frame value groups frames — the detector, the exposure, the night).
 - `σ_k` is an optional per-frame DC scalar (added when
   `use_per_frame_scalar=True`).
 - `eps_i` is noise.
@@ -88,9 +100,11 @@ public API is re-exported from [`__init__.py`](__init__.py):
 
 ```python
 from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
-from selfcal import SkyModel, ContinuumComponent, SpectralComponent
+from selfcal import SkyModel, SkyComponent, ContinuumComponent, Coefficient, ImportedFunction
 from selfcal import GaussianProfile, TemplateProfile
-from selfcal import OffsetModel, OffsetBlock, SystemLayout
+from selfcal import OffsetModel, OffsetBlock, Basis, SystemLayout
+from selfcal import VariableSet
+from selfcal.models.variables import Derived, FrameFunction   # (sc.Derived / sc.FrameFunction: the Python API's sources)
 from selfcal import TiledCalibration, TileSpec, make_tile_grid
 ```
 
@@ -135,7 +149,8 @@ the real homes below.
   `TileSpec` + `make_tile_grid`: a reusable tiled-calibration wrapper that
   splits a large reference frame into overlapping tiles, calibrates each
   tile independently (assigning frames per tile via center / overlap
-  filters), then stitches the per-tile mosaics back into one. Replaces the
+  filters), then merges the per-tile cal files' sky maps into one stitched
+  cal (Fisher-weighted inverse-variance average). Replaces the
   former chunked-NEP copy-paste driver.
 
 ### Core computation (`core/`)
@@ -164,16 +179,20 @@ clarity:
   `chunk_offsets` + `det_offset_funcs` lists for the mosaic path, applies
   a validity weight, and stamps NaNs to zero. Returns `chunk_contribs` as
   a length-K list (LSQR path). Hooks are provided for `preprocess_func`
-  and `postprocess_func` that operate on `locals()` for flexible per-frame
-  tweaks (e.g. bright-pixel masking).
+  and `postprocess_func`: each receives a `FrameContext` (the frame's
+  identity, `sub_data`, `sub_weight`, `sub_mapping`, `ref_coords`, and after
+  the offsets `sub_aux`) and returns the new `sub_data` — e.g. bright-pixel
+  masking, or the N-pass offset/sky subtractors.
 
 - **`setup_lsqr` (in [`core/system.py`](core/system.py))** — Sparse matrix
   construction. Builds `A`, `b`, and a per-map `pixel_counts` coverage list
   by running `_prep_lsqr_batch_worker` processes that share large arrays
   (per-map `chunk_maps[m]`, `grid_valid_weight`, per-map `adj_infos[m]`)
   via `multiprocessing.shared_memory` to avoid pickling. Each worker
-  emits its partial rows/cols/data/b into new shared segments which the
-  main process stitches into a single COO matrix **in batch-id order**
+  emits its partial rows/cols/data/b into new shared segments (or, with
+  `batch_spill_dir` — the runner passes its `cache_dir` — into files on
+  scratch) which the main process places into one CSR matrix (a `BlockCSR` /
+  `ColSplitCSR` above `SELFCAL_BLOCK_NNZ`) **in batch-id order**
   (deterministic across runs). `col_bases` (length `K+1` array) marks
   the column boundary between maps and the optional scalar block; the
   full column layout is computed once by `SystemLayout`. Supported features:
@@ -314,39 +333,66 @@ clarity:
 
 ### Sky / offset models (`models/`)
 
-- **[`models/sky_model.py`](models/sky_model.py)** — `SkyModel` generalizes the
-  old hardcoded `num_sky_blocks` integer into an ordered tuple of named
-  `SkyComponent`s, each contributing one sky block. `ContinuumComponent`
-  carries the identity coefficient (`coeff = 1`, the bit-exact continuum
-  path); `SpectralComponent` (alias `LineComponent`) fits the per-pixel
-  amplitude of an arbitrary spectral profile via `coeff = profile(λ)`.
-  Factories `continuum_only()` and `continuum_plus_pah_gaussian()` reproduce
-  the two legacy configurations byte-for-byte.
-- **[`models/profiles.py`](models/profiles.py)** — `SpectralProfile` and
-  concrete subclasses (`GaussianProfile`, `TemplateProfile`), plus
-  `QuadratureSigma` (instrument-resolution-aware line width). A profile is
-  evaluated against a subframe's per-pixel wavelength aux map (`BC`/`BW`).
+- **[`models/sky_model.py`](models/sky_model.py)** — `SkyModel`: an ordered
+  tuple of named `SkyComponent`s, one sky block each. Every component is a
+  per-pixel map times an optional `Coefficient` — any function of named data
+  variables sampled at every observation (the instrument's `aux` maps):
+  `Coefficient(variable, function)` takes any picklable callable
+  `f(*arrays)` (`ImportedFunction` references one by import path) or an
+  object with `evaluate(x, obs)`. No coefficient is `c = 1` (the bit-exact
+  identity path). `SpectralComponent(name, profile, wavelength_key)` (alias
+  `LineComponent`) is the historical spelling of
+  `SkyComponent(name, Coefficient(wavelength_key, profile))`.
+  `SkyModel.damp_weights` is the one per-term damping rule.
+- **[`models/profiles.py`](models/profiles.py)** — ready-made coefficient
+  functions of one variable (`GaussianProfile`, `TemplateProfile`,
+  `LinearProfile`, with `QuadratureSigma` for a per-observation Gaussian
+  width read from a second variable); their field names are historical.
 - **[`models/offset_model.py`](models/offset_model.py)** — `OffsetModel` /
-  `OffsetBlock` bundle the seven parallel length-K offset-config lists into
+  `OffsetBlock` bundle the parallel length-K offset-config lists into
   one cohesive block per map. `OffsetModel.to_setup_kwargs()` lowers back to
   the exact flat kwargs `setup_lsqr` consumes (numerically identical, gated
-  byte-equal). The flat-kwarg API remains supported as the deprecated
+  byte-equal). A block's `basis` (`Basis`: `n` known functions of data
+  variables) makes its unknowns one coefficient per group × chunk × function;
+  `n = 1` is a *coefficient* (a pattern times the temperature, a gain times a
+  previous sky). The flat-kwarg API remains supported as the deprecated
   transitional spelling.
+- **[`models/variables.py`](models/variables.py)** — data variables:
+  `VariableSet` declares the sources of a solve (detector maps, per-frame
+  values, reference-grid maps, stored layers, derived functions, frame
+  functions); `ObservationVariables` evaluates them lazily for one frame's
+  observations — the row assembly, the mosaic and the N-pass share it.
+- **[`models/priors.py`](models/priors.py)** — user priors: a function of
+  `TermInfo`s returning linear rows on the unknowns (ready-made:
+  `frame_smoothness`, `sky_smoothness`, `toward_variable`).
 
 ### I/O & state (`io/`, `_state.py`)
 
 - **[`io/reproj.py`](io/reproj.py)** — `load_reproj_file(file_path, fields)`
   reads a reprojected HDF5, transparently handling datasets, attributes, and
   derived `sub_wcs` / `det_wcs` objects, and encodes `(exp_idx, det_idx)`
-  parsed from the filename. Respects the global HDD I/O semaphore.
+  parsed from the filename (`reproj_basename` / `parse_reproj_basename` are
+  the one place that name is spelled). Respects the global HDD I/O semaphore.
+  A frame that cannot be read raises `FrameLoadError` — it is never silently
+  dropped.
+
+- **[`io/calfile.py`](io/calfile.py)** — `CalFile`: the one reader of every
+  calibration product (v3 named sky blocks, v2, the legacy v1 layout, stitched
+  cals, N-pass sky and offset products): `sky(name)`, `sky_coverage`,
+  `sky_fisher`, `sky_separability`, `offsets` (per map, per frame),
+  `frame_scalar`, `total_offsets()`, `reproj_list`, `chunk_maps`, `fit_ok`.
+  The mosaicker and the N-pass readers go through it.
 
 - **[`io/reprojection.py`](io/reprojection.py)** — `batch_reproject(...)`
   iterates over `(exposure, sci_ext, dq_ext)` tasks and calls
   `reproject_interp / reproject_exact / reproject_adaptive` (from the
-  `reproject` package) in a process pool. For each detector, it sizes a
-  square subframe big enough to contain the detector diagonal after
-  reprojection (with padding), reprojects both the science image and the DQ
-  bitmask, and writes a zstd-compressed HDF5 file per (exposure, detector)
+  `reproject` package) in a process pool. It sizes one square subframe for
+  every frame, big enough to contain the diagonal of a sample detector (the
+  first exposure's first science entry) after reprojection (with padding).
+  For each frame it reprojects the science image, the detector
+  pixel coordinates and (when the exposure has one, `dq_ext` not None) the DQ
+  bitmask — detectors need not be square — and writes a zstd-compressed HDF5
+  file per (exposure, detector)
   containing `sub_data`, `sub_foot`, `sub_bitmask`, `sub_mapping`, and both
   the detector-frame and subframe WCS headers as attributes.
 
@@ -365,9 +411,13 @@ clarity:
     reads; set via `set_hdd_io_limit(n)`. Essential when many workers do
     random reads on a RAID array, where seek thrashing kills
     throughput.
-  - `_coadd_turn` — the `(Condition, Value)` turnstile that orders the
-    coadd workers' per-batch flushes; pushed into worker processes via the
-    `_init_coadd_worker` pool initializer.
+  - `progress_enabled` — whether library calls draw tqdm progress bars;
+    set via `set_progress(enabled)`.
+
+  (The turnstile that orders the coadd workers' per-batch flushes,
+  `_coadd_turn` — a `Condition` and per-stripe batch counters — lives in
+  [`core/coadd.py`](core/coadd.py) and reaches the workers through the
+  `_init_coadd_worker` pool initializer.)
 
 ### Geometry, masking, and interpolation helpers (`geometry/`)
 
@@ -375,15 +425,15 @@ clarity:
   numerical utilities.
   - Bitmask: `bit_to_bool` / `bool_to_bit`, with optional `ignore_list`
     and per-bit expansion.
-  - Weighting: `make_weight` (inverse-square), `find_outliers`
+  - Weighting: `make_weight` (Poisson weight `1/sqrt(|d| + floor)`), `find_outliers`
     (nMAD-based).
   - Chunk machinery: `chunk_to_det`, `det_to_sub`, `make_linear_interp_matrix`
     (vectorized bilinear-interp sparse CSR matrix), `compute_chunk_contrib`,
     `compute_chunk_adjacency`, `compute_crop`, `make_grid_chunk_map`
     (regular square grid for broadband instruments).
-  - Binning: `bin2d`, `bin2d_cv`, `bin2d_coo_matrix`, `upscale2d`.
+  - Binning: `bin2d`.
   - Splines: `linear_spline`, `mean_preserving_spline` (1D, `pchip` /
-    `akima` / `cubic`), `mean_preserving_spline_2d`, `arc_spline`.
+    `akima` / `cubic`), `mean_preserving_spline_2d`.
   - Validity: `check_invalid`, `get_valid_bounds`.
 
 - **[`geometry/wcs_helper.py`](geometry/wcs_helper.py)** — Reference frame
@@ -395,30 +445,41 @@ clarity:
   - `derive_reference_from` builds a reference WCS aligned to an existing
     one (so cal outputs land on a shared grid); `projections_match` /
     `projection_signature` guard against mismatched projections.
-  - `save_to_fits` / `load_from_fits` persist reference frames as an
-    empty FITS hdu with the WCS header.
-  - `upscale_wcs` rescales a WCS to a finer pixel grid while keeping
-    alignment (used for oversampled mosaics).
+  - `save_to_fits` / `load_from_fits` persist reference frames as a
+    zero-filled primary FITS image of the grid's shape carrying the WCS header.
 
 ### Instrument-specific helpers (`instruments/`)
 
 - **[`instruments/base.py`](instruments/base.py)** — The `Instrument`
-  protocol (a duck-typed `typing.Protocol`, not enforced). The selfcal core
-  takes plain arrays and callables and never imports `instruments`; an
-  instrument is a module that supplies geometry (chunk maps, valid masks,
-  aux maps, offset renderers) for a telescope. The generic run engine drives
-  a calibration entirely through this surface plus the `CalMode` interface.
-  A minimal new instrument needs only an exposure-list loader, its sci/DQ
-  ext conventions, and a chunk-map recipe (`make_grid_chunk_map` suffices for
-  a regular grid).
+  abstract base class + registry (`register_instrument`, `get_instrument`,
+  entry-point discovery) and the typed geometry it returns: `ChunkMap` (a
+  chunk partition at detector and grid resolution with the AXES of its chunk
+  grid — `selfcal.models.offset_structure.ChunkAxes` — plus which axes the
+  standard block regularises along, which is the spectral axis and which the
+  group axis), `DetectorGeometry` (chunk maps by name, named aux maps such as
+  a wavelength map), `JobGeometry` (per-job valid weights) and
+  `ExposureLayout` (how the reprojection stage reads a raw exposure). The
+  selfcal core takes plain arrays and never imports `instruments`; the run
+  engine drives a calibration entirely through this surface plus the
+  `CalMode` interface and reads no `[instrument]` key itself. Five methods
+  are required (`jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
+  `job_geometry`); the hooks (offset renderer, aux coadds, mosaic finaliser,
+  coefficient catalogue, post-cal hooks, data unit, precompute) have defaults.
+
+- **[`instruments/grid.py`](instruments/grid.py)** — The built-in `grid`
+  instrument: any single-detector imager described entirely by the
+  `[instrument]` table (detector shape, chunk grid, extension numbers). The
+  test suite's end-to-end run uses it on synthetic exposures.
 
 - **[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)** — The
-  `SPHERExInstrument` reference implementation of the protocol: expands a
-  channel/window selection into jobs, builds detector-level geometry once per
-  run (LVF chunk maps, BC/BW aux, edges), supplies per-job valid masks +
-  weights, the per-map offset renderer for the mosaic step, and the
-  wavelength append. Also houses the readout-stripe chunk map
-  (`make_readout_chunk_map`) used by the K=2 readout mode.
+  `SPHERExInstrument` reference implementation: expands a channel/window
+  selection into jobs, builds detector-level geometry once per run (the LVF
+  stripped chunk map with its `(subchannel, column)` axes, the readout-channel
+  map, the BC/BW aux maps), supplies per-job valid masks + weights, the arc
+  offset renderer for the mosaic, the wavelength coadd + finaliser, the L2b
+  exposure layout (FINAST filter), the zodi-anchor post-cal hook and the
+  data unit. [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
+  holds the named coefficients (`pah_3p29`).
 
 - **[`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py)** —
   SPHEREx LVF geometry and chunk-map construction.
@@ -550,8 +611,9 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   multi-channel detector), so the downstream passes are linear in true
   signal and the cache is a few per cent of the frames' size.
 - **Zero-column elimination and column-norm preconditioning.**
-  `apply_lsqr` drops all-zero columns before the solve (so unseen sky
-  pixels and inactive chunks do not bloat the iterate), then rescales
+  `setup_lsqr` drops all-zero columns before the solve (so unseen sky
+  pixels and inactive chunks do not bloat the iterate; `apply_lsqr` does it
+  for a matrix that arrives uncompacted), then `apply_lsqr` rescales the
   remaining columns to unit norm. This is the standard Jacobi
   preconditioner for least squares and greatly improves LSMR/LSQR
   convergence.
@@ -560,10 +622,12 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   and `Calibrator` so the build and the parse cannot drift.
 - **Engine ↔ instrument ↔ mode separation.** The generic run engine never
   imports a telescope or names a calibration variant: it talks to the
-  `Instrument` protocol ([`instruments/base.py`](instruments/base.py)) and
-  the `CalMode` interface. Adding a telescope = one new instrument adapter;
-  adding a calibration variant = one new mode module — neither touches the
-  engine.
+  `Instrument` ABC ([`instruments/base.py`](instruments/base.py)) and the
+  `CalMode` interface, and modes express offset structure in the chunk
+  map's axes ([`models/offset_structure.py`](models/offset_structure.py)),
+  never in a telescope's vocabulary. Adding a telescope = an `[instrument]`
+  table for the built-in `grid`, or one `Instrument` subclass; adding a
+  calibration variant = one new mode module — neither touches the engine.
 - **Models over parallel lists.** `SkyModel` and `OffsetModel` bundle what
   used to be loose integers / parallel length-K kwargs. They lower to the
   identical flat kwargs (gated byte-equal) so the abstraction adds no
@@ -578,7 +642,7 @@ A minimal programmatic flow mirrors what the runner does internally:
 ```python
 import numpy as np
 from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
-from selfcal import set_hdd_io_limit
+from selfcal import OffsetModel, OffsetBlock, SkyModel, set_hdd_io_limit
 from selfcal.core.solution import compute_x0_scalar_only
 
 cfg = PipelineConfig(
@@ -592,16 +656,17 @@ rr = Reprojector(cfg, exposure_list=fits_paths)
 rr.define_reference(padding_pixels=100, use_ext=[1])
 rr.run_reproject(max_workers=50, sci_ext_list=[1], dq_ext_list=[2])
 
-# Calibration (K=1, with per-frame scalar)
+# Calibration: one offset map, smooth between neighbouring chunks, the per-frame
+# mean anchored at 0, plus an explicit per-frame scalar (the offset's DC)
 cc = Calibrator(cfg)
 num_frames_run = len(cc.reproj_list)
 cc.setup_lsqr(
-    chunk_maps=[det_chunk_map],
+    offset_model=OffsetModel(
+        blocks=(OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info, reg_weight=0.1,
+                            mean_offset=np.zeros(num_frames_run)),),
+        use_per_frame_scalar=True),
+    sky_model=SkyModel.continuum_only(),
     grid_valid_weight=weight,
-    adj_infos=[adj_info],
-    reg_weights=[0.1],
-    mean_offsets_list=[np.zeros(num_frames_run)],   # pin per-frame mean to 0
-    use_per_frame_scalar=True,                       # explicit per-frame DC scalar
     offset_regularization=True,
     weighted_damping=True, damp_weight=0.1,
     outlier_thresh=5.0,
@@ -610,8 +675,10 @@ cc.setup_lsqr(
 x0 = compute_x0_scalar_only(
     cc.A, cc.b, cc.ref_shape,
     scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+    num_sky_blocks=cc.num_sky_blocks,
+    active_mask=cc.active_mask,       # setup_lsqr compacted the zero columns
 )
-cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr',
+cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr', damp=0,
               use_float32=True, n_threads=48)
 cal_path = cc.save_calibration(cal_file='cal.h5')
 
@@ -632,41 +699,34 @@ maps = mm.make_mosaic(
 mm.save_mosaic(mos_file='mosaic.fits', overwrite=True)
 ```
 
-The same setup can be expressed with the forward-looking model objects:
-
-```python
-from selfcal import OffsetModel, OffsetBlock, SkyModel
-cc.setup_lsqr(
-    offset_model=OffsetModel(
-        blocks=(OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info,
-                            reg_weight=0.1,
-                            mean_offset=np.zeros(num_frames_run)),),
-        use_per_frame_scalar=True),
-    sky_model=SkyModel.continuum_only(),
-    grid_valid_weight=weight, offset_regularization=True,
-    weighted_damping=True, damp_weight=0.1, outlier_thresh=5.0,
-    batch_size=50, max_workers=48,
-)
-```
-
-For a K=2 example (LVF chunks + detector-fixed readout-channel stripes
-shared across all frames), see the `k2_readout` mode / config:
+Sky terms with coefficients, offset bases, data variables beyond the detector
+maps and user priors are further `setup_lsqr` arguments (`sky_model`, a block's
+`basis`, `variables`, `priors`); see
+[`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md). The
+flat per-map keyword lists (`chunk_maps=`, `adj_infos=`, ...) are still accepted
+but deprecated. For a K=2 example (LVF chunks + detector-fixed readout-channel
+stripes shared across all frames), see the `two_block_fixed` mode and
 [`../selfcal_scripts/configs/k2_readout.toml`](../selfcal_scripts/configs/k2_readout.toml).
 
 ## Dependencies
 
-Declared in [`../pyproject.toml`](../pyproject.toml) (Python >= 3.9). Key
+Declared in [`../pyproject.toml`](../pyproject.toml) (Python >= 3.11). Key
 runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 `hdf5plugin`, `threadpoolctl`, `tqdm`, `opencv-python` (cv2),
-`scikit-image`, `mpsplines`.
+`scikit-image`, `matplotlib`; `mpsplines` is an optional extra
+(`[mpsplines]`, git-only), needed only for `interp_1d(method='mp_external')`.
 
 ## File index
 
 | File | Purpose |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Curated public API re-exports + package docstring. |
-| [`_state.py`](_state.py) | Shared I/O semaphore and the coadd flush turnstile. |
-| [`config.py`](config.py) | Path resolution + `SelfCalConfigError`. |
+| [`_state.py`](_state.py) | Shared HDD I/O semaphore and the progress-bar switch. |
+| [`config/`](config/__init__.py) | The settings base class of the Python API (`base.py`), function references for the worker processes (`functions.py`), path resolution + `SelfCalConfigError` (`paths.py`). |
+| [`priors.py`](priors.py) | Ready-made priors of the Python API (`sc.priors.frame_smoothness`, ...). |
+| [`models/model.py`](models/model.py) | The Python API's model: `Model`, `Sky`, `Offsets`, `Poly`, functions, data-variable sources, `Prior`, the presets; lowers to `ModelSpec`. |
+| [`run/`](run/__init__.py) | The run engine (TOML configs) and the Python API's actions: `recipe.py` (`Recipe`, `Fit`, `Coadd`, `Numerics`, `Clip`, `ChunkGroups`), `schedule.py` (`Tiles`, `Passes`), `compute.py`, `field.py` (`Field` and its actions), `lower.py` (objects -> `RunConfig`), `plan.py`, `records.py`, `result.py`, `convert.py` (TOML -> objects). |
+| [`instruments/contract.py`](instruments/contract.py), [`instruments/camera.py`](instruments/camera.py) | Instruments as settings: the `Instrument` base for new telescopes, `Camera`; SPHEREx and Euclid in `spherex/settings.py`, `euclid/settings.py`. |
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
 | [`pipeline/tiled.py`](pipeline/tiled.py) | `TiledCalibration`, `TileSpec`, `make_tile_grid`, stitching. |
@@ -680,17 +740,28 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/solution.py`](core/solution.py) | `parse_x`, `encode_x`, `compute_x0_from_Ab`, `compute_x0_scalar_only`. |
 | [`core/layout.py`](core/layout.py) | `SystemLayout` — column layout of `x`. |
 | [`core/constraint_builders.py`](core/constraint_builders.py) | Mean-offset / sky / offset damping constraint rows. |
-| [`models/sky_model.py`](models/sky_model.py) | `SkyModel` + `SkyComponent` (continuum / spectral). |
-| [`models/profiles.py`](models/profiles.py) | `SpectralProfile`, `GaussianProfile`, `TemplateProfile`, `QuadratureSigma`. |
+| [`models/sky_model.py`](models/sky_model.py) | `SkyModel`, `SkyComponent` (a map times an optional `Coefficient`: any function of data variables), `ImportedFunction`. |
+| [`models/profiles.py`](models/profiles.py) | Ready-made coefficient functions: `GaussianProfile`, `TemplateProfile`, `LinearProfile`, `QuadratureSigma`. |
 | [`models/offset_model.py`](models/offset_model.py) | `OffsetModel` / `OffsetBlock` per-map offset bundling. |
 | [`geometry/map_helper.py`](geometry/map_helper.py) | Bitmask, interp, chunk, spline, and binning utilities. |
-| [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load / upscale. |
-| [`io/reproj.py`](io/reproj.py) | `load_reproj_file` for reprojected HDF5s. |
+| [`geometry/wcs_helper.py`](geometry/wcs_helper.py) | Reference WCS construction / derive / save / load. |
+| [`io/reproj.py`](io/reproj.py) | `load_reproj_file` for reprojected HDF5s; the frame-name helpers; `FrameLoadError`. |
+| [`io/calfile.py`](io/calfile.py) | `CalFile`, the reader of every calibration product. |
 | [`io/reprojection.py`](io/reprojection.py) | Parallel batch reprojection onto the reference WCS. |
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
-| [`instruments/base.py`](instruments/base.py) | The `Instrument` protocol (duck-typed). |
-| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map. |
+| [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
+| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (variables, sky terms, offset terms, weight, priors), from a `[model]` table or a mode, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
+| [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
+| [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
+| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `write_frame` (the frame-file contract), `frame_header_values`. |
+| [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
+| [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
+| [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
+| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: 16-detector exposure layout, grid/stripe/tilt chunk maps, edge taper, spline/strip/ramp renderers, electron units. |
+| [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`star_position_mask`, `residual_mask`). |
+| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
+| [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |
 | [`instruments/euclid/exposures.py`](instruments/euclid/exposures.py) | Euclid exposure-list loaders. |

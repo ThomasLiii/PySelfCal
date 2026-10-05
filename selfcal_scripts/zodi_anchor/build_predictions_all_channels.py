@@ -24,7 +24,6 @@ import os
 import sys
 import time
 
-import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 from astropy.io import fits
@@ -47,6 +46,7 @@ from build_predictions import (  # noqa: E402
     extract_metadata_for_reproj_list,
     save_predictions_npz,
 )
+from selfcal.io.calfile import CalFile  # noqa: E402
 from selfcal.instruments.spherex.spherex_utility import (  # noqa: E402
     make_stripped_chunk_map, load_lvf_params,
 )
@@ -133,10 +133,9 @@ def main():
     print(f"file-suffix:   {args.file_suffix}")
 
     # Reference cal: get reproj_list only.
-    with h5py.File(args.reference_cal, 'r') as f:
-        reproj_list_bytes = f['reproj_list'][:]
-    reproj_paths = [s.decode() if isinstance(s, (bytes, np.bytes_)) else s
-                    for s in reproj_list_bytes]
+    with CalFile(args.reference_cal) as cal:
+        reproj_paths = cal.reproj_list
+    reproj_list_bytes = np.array(reproj_paths, dtype='S')
     print(f"{len(reproj_paths)} reproj files in reference cal.")
 
     # lvf_params + det_BC + det_chunk_map (all derivable; no cal data needed).

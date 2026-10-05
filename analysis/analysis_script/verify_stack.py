@@ -21,7 +21,6 @@ import argparse
 import os
 import sys
 
-import h5py
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
@@ -45,7 +44,7 @@ from selfcal.instruments.spherex.spherex_utility import (
     load_calibration,
 )
 from scipy.interpolate import interp1d
-from zodi_utils import data_path, fig_path, cal_path
+from zodi_utils import data_path, fig_path, cal_path, cal_reproj_list
 
 N_CHUNKS = (10 * 34 + 2) * 3
 
@@ -74,8 +73,7 @@ def _stack_batch(args):
 
 def main(detector, n_frames, n_workers, batch_size, seed, reuse_cache=False):
     # Pull reproj_list (shared across all 17 channels of this detector).
-    with h5py.File(cal_path(detector, 1), 'r') as f:
-        reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
+    reproj_list = cal_reproj_list(detector, 1)
     n_total = len(reproj_list)
     print(f'{n_total} exposures available')
     if n_frames is not None and n_frames < n_total:

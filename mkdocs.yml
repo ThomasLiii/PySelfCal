@@ -1,0 +1,123 @@
+site_name: selfcal
+site_description: Self-calibration and mosaicking for imaging telescopes
+site_url: https://thomasliii.github.io/PySelfCal/
+repo_url: https://github.com/ThomasLiii/PySelfCal
+repo_name: ThomasLiii/PySelfCal
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+exclude_docs: |
+  scripts/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Tutorials: getting-started/tutorials.md
+  - User guide:
+      - How selfcal works: guide/concepts.md
+      - The Python API: guide/python-api.md
+      - Run configuration: guide/configuration.md
+      - Bring your own telescope: bring_your_own_telescope.md
+      - Pipeline runbook: guide/pipeline.md
+      - Glossary: guide/glossary.md
+  - Tools:
+      - Zodiacal-light anchor: tools/zodi-anchor.md
+      - Transfer function: tools/transfer-function.md
+      - Transfer function details: tools/transfer-function-details.md
+  - Developer guide:
+      - Architecture: developer/architecture.md
+      - Testing: developer/testing.md
+      - Regression gates: developer/gates.md
+      - Documentation: developer/documentation.md
+  - API reference: reference/
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/scripts/gen_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - autorefs:
+      resolve_closest: true
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: numpy
+            docstring_options:
+              warn_unknown_params: false
+              warn_missing_types: false
+            extensions:
+              - docs/scripts/griffe_rst.py:RstMarkup
+            filters: ["!^_[^_]", "!^__(all|post_init|repr|str|hash|eq)__$"]
+            show_if_no_docstring: true
+            show_root_heading: true
+            show_root_full_path: true
+            show_source: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            summary: true
+            heading_level: 1
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn

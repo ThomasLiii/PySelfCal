@@ -31,6 +31,16 @@ dependencies = [
 # and imports without it.
 mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
 dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
+# The documentation site (mkdocs.yml): `mkdocs build --strict` / `mkdocs serve`.
+# MkDocs 2 drops the plugin system the site is built on, hence the pin.
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["selfcal*"]
@@ -38,7 +48,7 @@ include = ["selfcal*"]
 [tool.pytest.ini_options]
 # The suite is self-contained: no /mnt or /data dependency, so it runs on any
 # checkout (and in CI). Data-dependent regression lives in the byte-equality
-# gates (cache/refactor_gate/), which are run manually, not under pytest.
+# gates (selfcal_scripts/gates/), which are run manually, not under pytest.
 testpaths = ["tests"]
 # Put the repo root on sys.path, as the tests' standalone runners do: shared
 # helpers are imported as ``tests.<module>``, and ``import selfcal`` resolves
@@ -62,6 +72,10 @@ select = ["F", "E", "I"]
 # reflowing them adds no value. Ruff still reports genuinely over-long code.
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# the package's names are imported under TYPE_CHECKING only (they load lazily, PEP 562)
+"selfcal/__init__.py" = ["F401"]
+
 [tool.mypy]
 # Type-check the annotated PUBLIC surface (Tier 3) without drowning in the
 # untyped internals of a numeric codebase. ignore_missing_imports tolerates the
@@ -77,8 +91,9 @@ check_untyped_defs = false
 warn_unused_ignores = true
 
 [tool.setuptools.package-data]
-# Ship the SPHEREx LVF arc-fit parameters + multi-line spectral templates.
-"selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz"]
+# Ship the SPHEREx LVF arc-fit parameters, multi-line spectral templates and channel table.
+"selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz",
+                                 "data/spherex_channels.csv"]
 # PEP 561 marker: advertise the package's inline type hints to downstream
 # type checkers (mypy/pyright) and IDEs.
 "selfcal" = ["py.typed"]

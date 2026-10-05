@@ -7,9 +7,15 @@ Plots a single row of 3 panels (poly_off_fixed / poly_k1_fixed / poly_k2_fixed)
 and a 4-panel breakdown for poly_k2_fixed (scalar / map0 / map1 / sum).
 """
 import os
-import h5py
+import sys
+
 import numpy as np
 import matplotlib.pyplot as plt
+
+_SELFCAL_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _SELFCAL_ROOT not in sys.path:
+    sys.path.insert(0, _SELFCAL_ROOT)
+from selfcal.io.calfile import CalFile  # noqa: E402
 
 CAL_DIR = '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_nep_qr2_det5_6p2arcsec/calibration/'
 FIG_DIR = '/home/thomasli/selfcal-project/selfcal/figures/cc_figure/'
@@ -23,14 +29,10 @@ VARIANTS = [
 
 def total_mean_det(fp):
     """Return (scalar_mean, total_det_map, components_dict)."""
-    with h5py.File(fp, 'r') as f:
-        scalar_mean = float(np.mean(f['frame_scalar'][:]))
-        num_maps = int(f.attrs['num_maps'])
-        per_map = []  # list of (chunk_map, mean_per_chunk)
-        for k in range(num_maps):
-            chunk_map = f[f'chunk_maps/map_{k}'][:]
-            off = f[f'offsets/map_{k}'][:]
-            per_map.append((chunk_map, off.mean(axis=0)))
+    with CalFile(fp) as cal:
+        scalar_mean = float(np.mean(cal.frame_scalar))
+        # list of (chunk_map, mean_per_chunk)
+        per_map = [(cm, off.mean(axis=0)) for cm, off in zip(cal.chunk_maps, cal.offsets)]
     total = np.full_like(per_map[0][0], scalar_mean, dtype=np.float64)
     comps = {'scalar': np.full_like(total, scalar_mean)}
     for k, (cm, mpc) in enumerate(per_map):

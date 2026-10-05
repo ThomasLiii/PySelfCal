@@ -9,7 +9,7 @@
 # null-space planar mode; iter200 is the better stopping point). Fisher stitch.
 # max_workers / apply_n_threads trimmed to 24 to lower peak memory + stay polite
 # under the contending job.
-task = "tiled"
+task = "cal"
 mode = "tiled"
 
 output_dir = "/data3/thomasli/selfcal/outputs/"
@@ -34,11 +34,10 @@ window_name = "Aromatic_PAHfit"
 poly_degree = 1
 poly_weight = 0.5
 reg_weight = 0.1
-subch_poly_degree = 3
-subch_poly_weight = 100.0
-subch_poly_lo = 200
-subch_poly_hi = 259
-subch_tot = 342
+spectral_poly_degree = 3
+spectral_poly_weight = 100.0
+spectral_poly_lo = 200
+spectral_poly_hi = 259
 line_fisher_threshold = 10.0
 
 [calibration]
@@ -61,7 +60,7 @@ iter_lim = 200
 precondition = true
 solver = "lsqr"
 
-[tiled]
+[tiling]
 ref_shape = [12343, 12303]
 grid = [4, 4]
 overlap_px = 50

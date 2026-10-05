@@ -204,7 +204,7 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
 
     Pure read + fit; never mutates cal or mosaic. Shared by
     selfcal_scripts/zodi_anchor/build_anchor.py and the cal runner's inline
-    anchor step (``_run_zodi_anchor`` in ``selfcal_scripts/runner/pipelines.py``,
+    anchor step (``_run_zodi_anchor`` in ``selfcal/run/pipelines.py``,
     enabled when the run config sets ``[zodi].pred_dir``).
 
     Returns a dict of the per-channel summary scalars destined for the
@@ -336,7 +336,7 @@ def append_anchor_channel(out_path, detector, source_run, channel,
 
     Creates the file (and root attrs + channels group) if absent. Used by
     the cal runner's inline anchor step (``_run_zodi_anchor`` in
-    ``selfcal_scripts/runner/pipelines.py``, enabled by ``[zodi].pred_dir``
+    ``selfcal/run/pipelines.py``, enabled by ``[zodi].pred_dir``
     in the run config), which fits channels sequentially and grows the
     detector anchor file as each finishes. Safe to re-run for a channel
     (overwrites its group).
@@ -381,6 +381,10 @@ class Anchor:
         return float(self.channels[ch]['C_final'])
 
     def slope(self, ch):
+        """Final zodi-fit slope for a channel (smoothing-aware).
+
+        A validation number (about 1 when the zodi model captures the per-frame
+        variation); the ``apply_to_*`` methods shift by :meth:`C` only."""
         return float(self.channels[ch]['slope_final'])
 
     def apply_to_mosaic_array(self, data, weight, ch):
@@ -525,13 +529,15 @@ def rweighted_slope_smooth(wavelengths, slope, intercept, pearson_r,
 
     Returns
     -------
-    dict with (all in INPUT order):
-      slope_final, C_final : smoothed arrays (raw where clean)
-      contaminated : bool mask (r < r_threshold)
-      slope_curve : the clean-fit slope spline evaluated at every channel
-                    (for plotting/inspection)
-      extrapolated : bool mask, True where a flagged channel lies outside
-                     the clean-channel wavelength span (spline extrapolated)
+    dict
+        All arrays in INPUT order:
+
+        - ``slope_final``, ``C_final``: smoothed arrays (raw where clean)
+        - ``contaminated``: bool mask (r < r_threshold)
+        - ``slope_curve``: the clean-fit slope spline evaluated at every
+          channel (for plotting/inspection)
+        - ``extrapolated``: bool mask, True where a flagged channel lies
+          outside the clean-channel wavelength span (spline extrapolated)
     """
     from scipy.interpolate import UnivariateSpline
     wl = np.asarray(wavelengths, float)

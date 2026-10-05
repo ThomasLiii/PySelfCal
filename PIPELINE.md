@@ -27,7 +27,7 @@ of a driver into TOML tables:
 | `lsqr_kwargs` | `[lsqr]` |
 | `mosaic_kwargs` | `[mosaic]` |
 | `FILE_SUFFIX`, oversample, NVMe staging | top-level `suffix` / `oversample` / `staging` / `keep_nvme` |
-| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal_scripts/runner/modes/`) |
+| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal/run/modes/`) |
 
 The offset-model *structure* (which adjacency, poly groups, K=2 readout block) is
 chosen by the **mode**, not a flat kwarg — that is the one conceptual change. The
@@ -37,29 +37,35 @@ of this file explains what each knob *does*; the names match the TOML keys.
 
 ## Calibration model
 
-The selfcal model is per-pixel:
+The selfcal model is per observation (one value of frame `k` on reference pixel `p_i`):
 
 ```
-observed[i] = sky(p_i) + Σ_m offset^(m)[g_m(k), c_m(i)] + scalar[k] + noise
+observed[i] = Σ_j sky_j(p_i)·c_j(v_i) + Σ_m Σ_n offset^(m)[g_m(k), c_m(i), n]·φ_mn(v_i) + scalar[k] + noise
 ```
 
 where:
-- `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case).
-- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`).
+- `v_i` are the observation's **data variables** (detector maps such as SPHEREx's band centre,
+  per-frame values such as the time, reference-grid maps, stored layers, the built-in
+  coordinates, functions of those); `c_j` and `φ_mn` are any known functions of them
+  (`selfcal/models/variables.py`, `[model.variables]`).
+- `j` indexes **sky terms** (one map each; `c = 1` for a constant sky).
+- `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case); `φ = 1` (one function) is the classic chunk offset.
+- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`, or group by any per-frame value).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / pahfit / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / spectral / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
-For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution.
+For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see `selfcal_scripts/configs/README.md` and `docs/bring_your_own_telescope.md`.
 
 ## Calibration pipeline tuning
 
 Chunk geometry (the `[instrument]` TOML table):
 
-- `NumSub`, `NumCh` — wavelength (radial) divisions; 10×34 is well-tuned.
+- `num_sub`, `num_ch` (`NumSub`, `NumCh` in the product names) — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
-  channel edges come from the 17-band `spherex_channels.csv` table;
+  channel edges come from the SPHEREx channel table (17 channels per band),
+  `selfcal/instruments/spherex/data/spherex_channels.csv`, shipped with the package;
   `NumCh=34` is the 17 edges interpolated 2×.
-- `NumCol` — spatial divisions perpendicular to wavelength. **Primary knob
+- `num_col` (`NumCol`) — spatial divisions perpendicular to wavelength. **Primary knob
   for zodi-gradient resolution.** Too few (1–3) leaves intra-column
   residuals; too many (≥9) adds noise artifacts because each chunk has
   fewer pixels to estimate from. Production uses `NumCol=1` for narrow
@@ -88,29 +94,34 @@ poly_degree = 1              # omit poly_weight to disable the column poly-const
 poly_weight = 0.5
 ```
 
-Plus the always-list `setup_lsqr` arguments:
+Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
+(the runner builds it from the mode; `Calibrator.setup_lsqr` still accepts the older flat per-map
+lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
+`mean_offsets_list=` / `det_groups_list=` / `det_templates=`, deprecated — they remain the native
+arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
 
 ```python
 cc.setup_lsqr(
-    chunk_maps=[det_chunk_map],       # list of K chunk maps
-    adj_infos=[adj_info],              # list, one per map; None to skip
-    poly_constraints_list=None,        # optional, see below
-    mean_offsets_list=[np.zeros(num_frames)],  # mean-anchor for each map
-    use_per_frame_scalar=True,         # adds per-frame DC scalar column
-    ...,
+    offset_model=OffsetModel(
+        blocks=(OffsetBlock(chunk_map=det_chunk_map,           # chunk_maps[m]
+                            adj_info=adj_info, reg_weight=0.1,  # adj_infos[m], reg_weights[m]
+                            poly_constraints=None,              # poly_constraints_list[m]
+                            mean_offset=np.zeros(num_frames)),),  # mean_offsets_list[m]
+        use_per_frame_scalar=True),                             # per-frame DC scalar column
+    sky_model=SkyModel.continuum_only(),
     **calibration_kwargs,
 )
 ```
 
-Key knobs:
+Key knobs (per map `m`; the block field is named in parentheses):
 
-- **`reg_weights[m]`** + **`adj_infos[m]`** adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `SPHERExUtility.py`:
+- **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `selfcal/instruments/spherex/spherex_utility.py` (the modes build the same pairs with `selfcal.models.offset_structure.adjacency_along`):
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
 
-- **`poly_constraints_list[m]`** (optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
+- **`poly_constraints_list[m]`** (`poly_constraints`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
-- **`mean_offsets_list[m]`** — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `lsqr.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
+- **`mean_offsets_list[m]`** (`mean_offset`) — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `selfcal/core/system.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
 
 - **`use_per_frame_scalar=True`** — adds an explicit `num_frames` block to `x` (one scalar per frame) decoupled from `det_groups_list`. Combined with mean-zero anchors on all maps, this pushes per-frame DC entirely into the scalar so chunk offsets only carry within-frame structure. **Required for narrow channels** (D3 Ch17 etc.) where sparse chunk coverage was previously letting per-frame DC leak into scan-stripe residuals.
 
@@ -118,8 +129,8 @@ Key knobs:
 
 `lsqr_kwargs`:
 
-- Use **`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)])`** for the warm start when `use_per_frame_scalar=True`. It seeds *only* the scalar block from the diagonal-LS estimate (≈ weighted mean of valid `b` per frame), leaving chunks and sky at 0. Critical to avoid scan-stripe regressions on narrow channels.
-- For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape)` — diagonal-LS over the full offset region.
+- Use **`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)], num_sky_blocks=cc.num_sky_blocks, active_mask=cc.active_mask)`** for the warm start when `use_per_frame_scalar=True`. It seeds *only* the scalar block from the diagonal-LS estimate (≈ weighted mean of valid `b` per frame), leaving chunks and sky at 0. Critical to avoid scan-stripe regressions on narrow channels. `active_mask` is required because `setup_lsqr` compacts the zero columns by default; `x0` comes back in the full column layout `apply_lsqr` expects.
+- For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape, active_mask=cc.active_mask)` — diagonal-LS over the full offset region.
 - `iter_lim=50` is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
 - `precondition=True` (column-norm) is essential — much faster convergence.
 - **The transpose product, and what "statistical equality" means here.**
@@ -174,11 +185,15 @@ Key knobs:
   spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
   duration of the solve when they exceed the threshold (exact byte
   round-trip; ~1 min I/O against a multi-hour production solve).
-- **Process pools & the parallel scatter.** Every worker pool (assembly,
-  Phase-4a CSR scatter, coadd) runs on the **forkserver** start method
-  (`SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
-  escape hatch only). Forking a pool from the runner's multi-threaded process
-  can hand a child the stderr lock in a locked state (the RSS guardrail prints
+- **Process pools & the parallel scatter.** The assembly and Phase-4a CSR
+  scatter pools (and the frame check of the `reproject` task) run on the
+  **forkserver** start method (`selfcal.core.shmbuf.worker_pool_context`;
+  `SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
+  escape hatch only); the other pools (coadd, reprojection, N-pass OFFSET
+  refit, the standalone `wav_coadd`) use `multiprocessing`'s default start
+  method (`fork` on Linux before Python 3.14). Forking a pool from the
+  runner's multi-threaded process can hand a child the stderr lock in a
+  locked state (the RSS guardrail prints
   every 15 s); the child then hangs at exit and the parent joins it forever —
   a production tile lost 6 h to this on 2026-09-09. Consequences: (1) entry
   scripts MUST keep their run code under `if __name__ == "__main__":`
@@ -191,13 +206,13 @@ Key knobs:
   broken pool the remaining batches are re-scattered serially, so an
   unattended run degrades to slow, never to a hang. Serial and parallel
   scatters are element-wise identical (pure data movement).
-- `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. Default `n_threads=48` (tuned 2026-05).
+- `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. The runner passes `apply_n_threads` (default 48, tuned 2026-05); `Calibrator.apply_lsqr` itself defaults to `n_threads=32`.
 - The solver's elementwise vector updates (`x += t1*w`, `u *= alfa`, ...)
   run across `SELFCAL_VEC_THREADS` threads (default 8; serial below 16 M
   elements). Each element depends only on its own inputs, so the split is
   bit-identical; the reductions (norms) stay one ordered pass.
 
-`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR always solves block-constant chunk offsets regardless. Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
+`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
 
 **Channel / window selection** lives in `[instrument]` (de-mixed into typed keys,
 one per run): `channels = [[14],[15]]` (one calibration run per entry),
@@ -213,9 +228,11 @@ so cal filenames are deterministically
 
 Beyond the default per-frame, per-chunk solve, `Calibrator.setup_lsqr`
 supports restricted-solve modes that the mainline `continuum` mode does not use
-but exist in the API (the `k2_readout` mode uses `det_groups_list`):
+but exist in the API (the `two_block_fixed` mode, preset `k2_readout`, uses
+`det_groups_list`; in a `[model]` table they are the `fixed` / `grouped` offset kinds). Each is
+an `OffsetBlock` field (named in parentheses):
 
-- **Locked offsets via `det_groups_list[m]`.** Pass an array of length
+- **Locked offsets via `det_groups_list[m]`** (`det_groups`). Pass an array of length
   `num_frames` giving a group ID per frame for map `m`; frames in the same
   group share one offset vector. Reduces unknowns from
   `num_frames * num_chunks_m` to `num_groups_m * num_chunks_m`. Useful when
@@ -224,30 +241,29 @@ but exist in the API (the `k2_readout` mode uses `det_groups_list`):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — the `k2_readout` mode / `configs/k2_readout.toml`).
-- **Template-amplitude mode via `det_templates[m]`.** Requires
+  stripes — the `two_block_fixed` mode / `configs/k2_readout.toml`).
+- **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
   one scalar amplitude `alpha` per frame. Spatial regularization rows are
   skipped automatically for this map.
-- **Mean-offset constraint via `mean_offsets_list[m]`.** Length-`num_frames`
+- **Mean-offset constraint via `mean_offsets_list[m]`** (`mean_offset`). Length-`num_frames`
   array of target mean values; `setup_lsqr` appends soft constraint rows
   pulling each frame's chunk-offset mean toward the target. Constraint
-  weight is hardcoded at 10.0 in `lsqr.py`. For K≥2 the mean-anchor on
-  maps 1..K-1 is how you break the K-1 shift degeneracy (see
-  [selfcal/README.md](selfcal/README.md)).
+  weight is hardcoded at 10.0 in `selfcal/core/system.py`. For K≥2 the
+  mean-anchor on maps 1..K-1 is how you break the K-1 shift degeneracy.
 
-`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start)` (in
+`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks, active_mask)` (in
 `selfcal/core/solution.py`) returns a warm-start `x0` with sky+offsets=0 and
 the per-frame scalar block seeded from the diagonal-LS estimate. Use
 this whenever `use_per_frame_scalar=True`. For runs without the scalar,
-`compute_x0_from_Ab(A, b, ref_shape)` is the older full-offset warm
-start.
+`compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks, active_mask)` is the older full-offset warm
+start. Pass `active_mask` whenever `setup_lsqr` compacted the zero columns (the default).
 
 ## N-pass alternating solve (task `npass`)
 
 One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
-implemented as the runner task `npass` (`selfcal_scripts/runner/npass.py`;
+implemented as the runner task `npass` (`selfcal/run/npass.py`;
 primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
 `selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
 
@@ -264,7 +280,7 @@ with each half exact:
 
 | pass | type | solves | mechanism | tiles |
 | --- | --- | --- | --- | --- |
-| 1 | INIT | `S, a, s` jointly | the legacy joint LSQR (`run_tiled` / `run_calibration`) | yes (memory) |
+| 1 | INIT | `S, a, s` jointly | the joint LSQR of the `cal` task (tiled when `[tiling]` is present) | yes (memory) |
 | even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
 | odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
 
@@ -287,7 +303,7 @@ Why the SKY passes need no tiles: a pixel's normal equations are sums over its
 observations, so per-tile dumps over **disjoint** frame sets are additive and
 summing them is identical to a single full-field solve — no seam can exist.
 Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
-reads every frame of the field (`[tiled].full_reproj_dir`). Verified at full
+reads every frame of the field (`[tiling].full_reproj_dir`). Verified at full
 scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
 offsets with a completely different partition (3 vertical bands instead of 6
 blocks) reproduced the product to float32 rounding — 4–87 differing elements
@@ -297,7 +313,7 @@ distance bin from either partition's boundaries**.
 
 **The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
 per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
-`subch_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+`spectral_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
 multi-line window (200–320) captured 3–5× less of the per-frame structure at the
 ~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
 window (200–259): the wide fit is constrained by the red-end data, so red-end
@@ -346,43 +362,65 @@ min, OFFSET ≈ 4 min.
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
-heads. The pattern (in `selfcal_scripts/runner/staging.py`, driven by the
+heads. The pattern (in `selfcal/run/staging.py`, driven by the
 top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
 
 1. `set_hdd_io_limit(20)` — throttle the initial HDD copy
 2. Copy `*.h5` to `{CACHE_DIR}/reproj_nvme_{run_name}/` via
-   `ThreadPoolExecutor`
+   `ThreadPoolExecutor`. Each frame is copied under a temporary name and
+   renamed when complete, so an interrupted copy never leaves a truncated
+   frame; a complete copy already there (same size) is kept, so a staging
+   resumes. The directory is marked with a `.selfcal-staging.json` file when
+   it is created; a directory that holds files but no marker (frames linked
+   by hand, a test fixture, another tool's copy) is refused.
 3. `set_hdd_io_limit(None)` — NVMe handles massive parallelism
 4. Pass `reproj_dir=nvme_reproj_dir` to `Calibrator` / `Mosaicker`
 5. Before `save_calibration`, swap `cc.reproj_list` basenames back to HDD
    paths so the cal file remains valid after NVMe cleanup
-6. `shutil.rmtree(nvme_reproj_dir)` at the end
+6. `shutil.rmtree(nvme_reproj_dir)` at the end, unless `keep_nvme = true` or
+   `staging = "reuse"`, and only for a marked directory
+
+A tiled run stages each tile's frames into `[tiling].nvme_subdir` under
+`cache_dir`, under the same marker rule, and never deletes it.
 
 `set_hdd_io_limit(n)` installs a `multiprocessing.BoundedSemaphore` in
-`selfcal/_state.py:_hdd_io_semaphore`, which both `ThreadPoolExecutor`
-workers and forked `Pool` workers acquire inside `load_reproj_file`. So
-the throttle works regardless of which parallelism mode the consumer
-uses, and `set_hdd_io_limit(None)` takes effect immediately for any
-subsequent reads.
+`selfcal/_state.py:_hdd_io_semaphore`, which `ThreadPoolExecutor` workers
+and fork-started `Pool` workers (reprojection) acquire inside
+`load_reproj_file`; the forkserver pools (assembly, scatter, coadd, the
+N-pass refit) start without it, so their reads are not throttled.
+`set_hdd_io_limit(None)` takes effect immediately for any subsequent reads.
 
 ## `cal_*.h5` schema (multi-chunk-map)
 
-Written by `Calibrator.save_calibration`, read by analysis scripts (via
-`zodi_utils.load_cal_offsets`) and `Mosaicker.load_calibration`. Schema
-varies by `num_maps`:
+Written by `Calibrator.save_calibration`. Read it with
+`selfcal.io.calfile.CalFile` (`sky(name)`, `offsets`, `frame_scalar`,
+`total_offsets()`, `reproj_list`, ...), which resolves every layout below (and
+the stitched / N-pass products); `Mosaicker.load_calibration` and the analysis
+scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
+`num_maps`:
 
 **Top-level (always present):**
-- `skymap` — `(ref_h, ref_w)` float32 — solved sky map
-- `skymap_coverage` — `(ref_h, ref_w)` int32 — frames touching each pixel
+- `sky/<name>`, `sky_coverage/<name>`, `sky_fisher/<name>` — `(ref_h, ref_w)` — map, coverage and
+  Fisher information of each sky term (schema v3: attrs `schema_version = 3`, `num_sky_blocks`,
+  `sky_components` = the term names, first term first); `sky_separability/<name>` for every term
+  after the first when there are several
+- `skymap` — `(ref_h, ref_w)` float32 — solved sky map (a hard link to the first sky term; `skymap_coverage` / `skymap_fisher` likewise, and `skymap_line*` link the last term when there are several)
+- `skymap_coverage` — `(ref_h, ref_w)` int64 — frames touching each pixel
 - `reproj_list` — list of HDD paths to the reprojected files (dataset of bytes)
 - `num_maps` (attr) — number of chunk maps `K`
-- `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when `use_per_frame_scalar=True`)
+- `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when the solve has one: `use_per_frame_scalar=True`, or a map with `det_groups`)
 
 **Groups (one dataset per map):**
 - `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
-- `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int32 — pixel count per (frame, chunk)
-- `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float32 — fraction of chunk pixels actually covered per frame
+- `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map)
+- `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of chunk pixels actually covered per frame (float32 ones for a template or polynomial-basis map)
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
+- a map whose offset term carries known functions of data variables (a `coefficient` or a
+  `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
+  num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the
+  function and its variables); `CalFile.offset_basis(m)` returns `(n, description)`. Such an
+  offset is not constant per chunk — the mosaic evaluates it per observation
+  (`selfcal.pipeline.model_eval.BasisOffsetSubtractor`).
 
 **Legacy schema (pre-multi-chunk-maps, still readable):**
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
@@ -392,9 +430,14 @@ Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` gro
 ## Reprojected `*.h5` schema
 
 Written by `Reprojector.run_reproject` (one file per (exposure,
-detector)). Filename pattern: `exp_{exp_idx:04d}_det_{det_idx:02d}.h5`;
-`load_reproj_file` parses the indices back out of the basename — keep the
-pattern stable. Compressed with Zstd + byte-shuffle via `hdf5plugin`.
+detector)), or directly by `selfcal.io.frames.write_frame` for data that do not
+come from a WCS imager — the file is the solver's input contract. Filename
+pattern: `exp_{exp_idx:04d}_det_{det_idx:02d}.h5`; `load_reproj_file` parses
+the indices back out of the basename — keep the pattern stable. Compressed
+with Zstd + byte-shuffle via `hdf5plugin`. Raw exposures are read through the
+instrument's exposure reader (`ExposureLayout.reader`, default: FITS science +
+DQ extensions), which may also return extra per-pixel planes and the
+detector coordinates of every pixel (a focal plane, a windowed read-out).
 
 Datasets:
 - `sub_data` `(sub_w, sub_w)` float32 — reprojected science image.
@@ -406,19 +449,28 @@ Datasets:
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
   the chunk map and (b) sample per-pixel `det_BC` / `det_BW` for the
-  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`).
+  wavelength maps (in the mosaic's cache pass, or in `wav_coadd`). With a
+  reader that returns coordinates, these are the reader's (e.g. focal-plane)
+  coordinates.
+- `layers/<name>` `(sub_w, sub_w)` float32 — optional per-observation planes
+  (a variance, a per-frame wavelength map, ...) from the reader, reprojected
+  bilinearly; the source of *layer* data variables (`[model.variables]
+  name = { layer = "name" }`).
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
-  `load_reproj_file` reconstructs `sub_wcs` / `det_wcs` on demand.
+  `load_reproj_file` reconstructs `sub_wcs` / `det_wcs` on demand. The
+  keywords of `det_header` are the source of *header* frame variables
+  (`[model.variables] time = { header = "MJD-AVG" }`,
+  `selfcal.io.frames.frame_header_values`).
 - `file_path` (str) — path to the source FITS the subframe came from.
 - `ref_coords` `(4,)` int32 — `[y_min, y_max, x_min, x_max]` in the
   reference frame, where `sub_data` should be splatted back. Can extend
-  outside the mosaic; `MapHelper.compute_crop` handles the clip.
+  outside the mosaic; `selfcal.geometry.map_helper.compute_crop` handles the clip.
 
 Sub-frame side length sized to fit the detector diagonal at mosaic
 resolution:
-`sub_width = ceil(sqrt(2) * det_width / (ref_reso/det_reso) * (1 + 2*padding_percentage))`.
+`sub_width = ceil(sqrt(2) * max(det_height, det_width) / (ref_reso/det_reso) * (1 + 2*padding_percentage))`.
 
 Cached intermediates from the mosaic's cache pass live in `cache_dir` as
 `cached_<original>.h5` in the **sparse** format (`attrs['format'] =
@@ -446,8 +498,9 @@ header. `EXTNAME` is one of:
   sigma clipping is off, by the standalone `wav_coadd` over the cache.
 
 Header keys to know:
-- `BUNIT` — taken from `Mosaicker.maps[name]['unit']` (`'MJy/sr'` for sky
-  maps, `'um'` for wavelength, `'Weight'` for the `_WEIGHT` companions).
+- `BUNIT` — taken from `Mosaicker.maps[name]['unit']` (the instrument's data
+  unit for the sky maps — `'MJy/sr'` for SPHEREx, `'electron'` for Euclid —
+  `'um'` for wavelength, `'Weight'` for the `_WEIGHT` companions).
 - `MEANOFF` — global mean of valid map-0 offsets at mosaic time
   (`np.mean(offsets[0][offset_coverage_frac >= valid_chunk_thresh])`),
   stamped on every map HDU. If `normalize_offset=True` was used, this is
@@ -507,29 +560,11 @@ only the slope is.
 
 ## Regression testing
 
-`selfcal_scripts/benchmarks/run_cal_baseline_test.py` is the canonical regression harness. It defines `TEST_VARIANTS` (`poly_off`, `poly_k1`, `poly_k2`, `oldx0_off`, `scalar_off`, …) so the same script can produce side-by-side cal files for different solver configurations. Pair with `selfcal_scripts/drivers/diff_cal_h5.py` for element-wise diffs (schema-aware: legacy vs new, or new vs new).
-
-Phase-level wall/RSS/IO benchmarking: `selfcal_scripts/benchmarks/benchmark_d3_ch17_{poly,numcol3,tuned,mid}.py`. Each writes `figures/benchmark/d3_ch17_{variant}_{summary.txt,samples.json,timeline.png}` and is parameterized by `max_workers` / `batch_size` / `n_threads` so you can run a tuning sweep quickly.
-
-### Refactor bit-identity gate (`refactor/selfcal-package`)
-
-The package refactor (`SelfCal/` → `selfcal/`, N-component SkyModel, OffsetModel, tiled wrapper) is verified phase-by-phase against **byte-identical** golden cal files. Two fast fixed-subset gates cover the two code paths the refactor touches; both write to the production `calibration/` dir with a `_gate_*` suffix (no clobber of real cals) and both must be re-run with **identical** `--n-frames` / `--max-workers` / `--batch-size` (and `--iter-lim` for the spectral gate) across baseline and candidate — these set the float accumulation order, so changing them re-baselines.
-
-- **Continuum** — `selfcal_scripts/benchmarks/regress_cal.py` (D3 Ch17, NumCol3, K=1 + per-frame scalar, 300 frames). Needs the D3 reproj subset staged at `cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec/`.
-- **Spectral** — `selfcal_scripts/benchmarks/regress_cal_spectral.py` (D4 Aromatic_PAHfit, NumCol5, `spectral_fit=True`, per-frame scalar + linear column poly, 150 frames). Uses the already-staged `cache/reproj_nvme_pahfit_sanity_1k/`. Exercises the 2-block sky layout, per-pixel Gaussian `G(λ)` row coefficients, line-block Fisher, and the `skymap_line*` datasets.
-
-`diff_cal_h5.py` is schema-aware and now compares `skymap_line`, `skymap_line_coverage`, `skymap_line_fisher`, and `skymap_fisher` when present (and flags a line block dropped by one side). Procedure per phase:
-
-```bash
-PY=/home/thomasli/anaconda3/envs/selfcal/bin/python   # dev env (has hdf5plugin etc.)
-# Establish goldens once on the pre-refactor tip:
-$PY selfcal_scripts/benchmarks/regress_cal.py          --suffix _gate_golden
-$PY selfcal_scripts/benchmarks/regress_cal_spectral.py --suffix _gate_golden
-# After each phase, re-run with a new suffix and diff (must be ALL DATASETS BYTE-EQUAL):
-$PY selfcal_scripts/benchmarks/regress_cal.py          --suffix _gate_phaseN
-$PY selfcal_scripts/drivers/diff_cal_h5.py  <cal_dir>/cal_..._Ch17_gate_golden.h5  <cal_dir>/cal_..._Ch17_gate_phaseN.h5
-$PY selfcal_scripts/benchmarks/regress_cal_spectral.py --suffix _gate_phaseN
-$PY selfcal_scripts/drivers/diff_cal_h5.py  <cal_dir>/cal_..._AromaticPAHfit_gate_golden.h5  <cal_dir>/cal_..._AromaticPAHfit_gate_phaseN.h5
-```
-
-The full comprehensive sweep (`run_cal_baseline_test.py`, all variants × all frames) is the heavier comprehensive check; the two fast gates above are the per-phase tripwire.
+The byte-equality gates live in `selfcal_scripts/gates/` (see its README): `run_gates.sh <tag>` runs
+the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit, vs `*_gate_golden_stat.h5`), the
+end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
+refit) and the Euclid EDFN recipe, each compared dataset by dataset with `gates/h5_diff.py` /
+`gates/fits_diff.py` (or `selfcal_scripts/drivers/diff_cal_h5.py`); `run_m13_gate.sh` runs the npass
+n=1 gate on the NEP M13 tile; `mode_lowering_snapshot.py` checks what every mode lowers to without a
+solve. The pre-runner harnesses (`run_cal_baseline_test.py`, `regress_cal*.py`, the
+`benchmark_d3_ch17_*` timing scripts) are archived under the gitignored `archive/scripts/benchmarks/`.

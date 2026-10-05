@@ -33,7 +33,7 @@ pip install -e .          # installs the `selfcal` package + dependencies
 ### Reprojected-frame format
 
 Each frame is one **Zstd-compressed HDF5** file named `exp_<e>_det_<d>.h5`
-(e.g. `exp_000000_det_0.h5`). The simulated sky lives in `sub_data`; every
+(e.g. `exp_0000_det_00.h5`, as the pipeline names them). The simulated sky lives in `sub_data`; every
 other key must be the real frame's, untouched. Contents:
 
 | key | type / shape | meaning |
@@ -74,8 +74,8 @@ instead of after a full run.
 
 ```bash
 python selfcal_scripts/transfer_function/verify_frame.py \
-    <simsky_frames_dir>/exp_000000_det_0.h5 \
-    --orig <real_reproj_dir>/exp_000000_det_0.h5    # --orig is optional
+    <simsky_frames_dir>/exp_0000_det_00.h5 \
+    --orig <real_reproj_dir>/exp_0000_det_00.h5    # --orig is optional
 ```
 
 **c) Run the fiducial calibration + mosaic** (a single channel).

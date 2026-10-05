@@ -18,7 +18,7 @@ import pytest
 
 from selfcal.core.system import setup_lsqr
 from selfcal.core.solution import solve_sky_closed_form
-from selfcal.models.sky_model import SkyModel, ContinuumComponent, SpectralComponent
+from selfcal.models.sky_model import Coefficient, ContinuumComponent, SkyComponent, SkyModel
 from selfcal.models.profiles import GaussianProfile
 from selfcal.pipeline import npass
 
@@ -30,10 +30,9 @@ LC = 3.29
 def _sky_model(J):
     comps = [ContinuumComponent()]
     for j in range(1, J):
-        comps.append(SpectralComponent(name=f"line{j}",
-                                       profile=GaussianProfile(center_um=LC + 0.03 * (j - 1),
-                                                               sigma_um=0.03),
-                                       wavelength_key="BC"))
+        comps.append(SkyComponent(name=f"line{j}",
+                                  coefficient=Coefficient("BC", GaussianProfile(center_um=LC + 0.03 * (j - 1),
+                                                                                sigma_um=0.03))))
     return SkyModel(tuple(comps))
 
 

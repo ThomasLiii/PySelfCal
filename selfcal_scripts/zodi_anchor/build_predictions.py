@@ -200,19 +200,20 @@ def extract_metadata_for_reproj_list(reproj_paths, num_workers=30,
 # Channel-valid mask + grid + wavelength + ZodiPy
 # ---------------------------------------------------------------------
 
-def channel_valid_mask_from_cal(cal_h5):
+def channel_valid_mask_from_cal(cal):
     """Reconstruct the (det_h, det_w) channel-valid mask from the cal
-    file's chunk_maps + offset_coverage_frac (no filename parsing)."""
-    if ('chunk_maps' not in cal_h5
-            or 'map_0' not in cal_h5['chunk_maps']):
+    file's chunk_maps + offset_coverage_frac (no filename parsing);
+    ``cal`` is an open :class:`selfcal.io.calfile.CalFile`."""
+    chunk_maps = cal.chunk_maps
+    if not chunk_maps:
         raise ValueError(
             "cal file lacks /chunk_maps/map_0. The anchor requires the "
             "multi-chunk-map cal schema (chunk maps under "
             "/chunk_maps/map_m, coverage under /offset_coverage_frac/"
             "map_m); legacy single-map cal files (top-level "
             "offset/chunk_map) are not supported.")
-    det_chunk_map = cal_h5['chunk_maps/map_0'][:]
-    cov_frac = cal_h5['offset_coverage_frac/map_0'][:]
+    det_chunk_map = chunk_maps[0]
+    cov_frac = cal.offset_coverage_frac[0]
     valid_chunks = np.where((cov_frac > VALID_CHUNK_THRESH).any(axis=0))[0]
     det_valid_mask = np.isin(det_chunk_map, valid_chunks)
     return det_valid_mask, valid_chunks, det_chunk_map
@@ -344,10 +345,11 @@ def build_for_channel(cal_path, wcs_list, mjds, det_BC, detector,
                       model_name='dirbe', grid_size=1, nprocesses=20):
     """Compute zodi_pred for one channel given pre-cached per-frame
     (WCS, MJD). Reads valid mask from the cal file's offset_coverage_frac."""
-    with h5py.File(cal_path, 'r') as f:
+    from selfcal.io.calfile import CalFile
+    with CalFile(cal_path) as cal:
         det_valid_mask, valid_chunks, det_chunk_map = (
-            channel_valid_mask_from_cal(f))
-        reproj_list_bytes = f['reproj_list'][:]
+            channel_valid_mask_from_cal(cal))
+        reproj_list_bytes = np.array(cal.reproj_list, dtype='S')
     result = _build_zodi_pred_inner(
         det_valid_mask=det_valid_mask, det_chunk_map=det_chunk_map,
         det_BC=det_BC, wcs_list=wcs_list, mjds=mjds,
@@ -486,13 +488,13 @@ def main():
     print(f"out:        {out_path}")
     print(f"cache:      {metadata_cache_path}")
 
-    with h5py.File(args.cal, 'r') as f:
-        if 'frame_scalar' not in f:
+    from selfcal.io.calfile import CalFile
+    with CalFile(args.cal) as cal:
+        if cal.frame_scalar is None:
             raise SystemExit(
                 "Anchor requires use_per_frame_scalar=True cal runs; "
                 f"{args.cal} lacks /frame_scalar.")
-        reproj_paths = [s.decode() if isinstance(s, (bytes, np.bytes_)) else s
-                        for s in f['reproj_list'][:]]
+        reproj_paths = cal.reproj_list
 
     wcs_list, mjds, _ = extract_metadata_for_reproj_list(
         reproj_paths, num_workers=args.num_workers,

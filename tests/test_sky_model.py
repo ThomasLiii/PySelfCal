@@ -1,4 +1,4 @@
-"""Phase 3a unit tests: SkyModel / LineProfile foundation.
+"""Unit tests: SkyModel and the ready-made coefficient shapes.
 
 Pure (no SPHEREx data); runnable as ``python tests/test_sky_model.py`` or under
 pytest. The load-bearing tests assert the new GaussianProfile / QuadratureSigma
@@ -8,8 +8,7 @@ so the Phase 3b row-assembly rewire stays byte-identical.
 import numpy as np
 
 from selfcal.models.profiles import GaussianProfile, TemplateProfile, QuadratureSigma
-from selfcal.models.sky_model import (SkyModel, SkyComponent, ContinuumComponent,
-                               LineComponent)
+from selfcal.models.sky_model import SkyModel, ContinuumComponent
 from selfcal.instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
 
 
@@ -84,7 +83,8 @@ def test_skymodel_continuum_only():
 
 
 def test_skymodel_continuum_plus_pah():
-    sm = SkyModel.continuum_plus_pah_gaussian()
+    from selfcal.instruments.spherex.line_catalog import pah_3p29
+    sm = pah_3p29()
     assert sm.n_blocks == 2
     assert sm.names == ['continuum', 'pah_3p29']
     assert sm.aux_requirements == ('BC', 'BW')
@@ -97,8 +97,8 @@ def test_skymodel_continuum_plus_pah():
     ref = _legacy_G_per_pixel(lam, bw, PAH_LINE_CENTER_UM)
     assert np.array_equal(got, ref)
     # Default center/σ are the SPHEREx PAH constants.
-    assert line.profile.center_um == PAH_LINE_CENTER_UM
-    assert line.profile.sigma_um == LINE_SIGMA_UM
+    assert line.coefficient.function.center_um == PAH_LINE_CENTER_UM
+    assert line.coefficient.function.sigma_um == LINE_SIGMA_UM
 
 
 def test_skymodel_rejects_duplicate_names():

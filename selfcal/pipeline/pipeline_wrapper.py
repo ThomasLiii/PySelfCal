@@ -1,3 +1,16 @@
+"""Three classes implement the pipeline's stages: reprojection, calibration and mosaicking.
+
+- :class:`PipelineConfig` — the run's output paths and reference pixel scale.
+- :class:`Reprojector` — defines the reference grid and reprojects the exposures onto
+  it, one frame file per exposure and detector (:mod:`selfcal.io.reprojection`).
+- :class:`Calibrator` — builds and solves the least-squares system for the sky and the
+  offsets (:mod:`selfcal.core.system`, :mod:`selfcal.core.solve`) and writes the
+  calibration file.
+- :class:`Mosaicker` — subtracts a calibration's offsets from the frames and coadds
+  them (:mod:`selfcal.core.coadd`) into a multi-extension FITS mosaic.
+
+The run engine (:mod:`selfcal.run`) drives these classes from a TOML config.
+"""
 from __future__ import annotations
 
 import datetime
@@ -6,12 +19,10 @@ import json
 import logging
 import os
 import shutil
-import sys
-import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import h5py
 import numpy as np
@@ -23,17 +34,15 @@ import warnings
 from .. import _state
 from ..core import coadd
 from ..io.reprojection import batch_reproject
-from ..io.reproj import load_reproj_file
+from ..io.reproj import load_reproj_file, parse_reproj_basename, reproj_basename
 from ..io.cal_writer import write_sky_groups
-from ..core.lsqr import (setup_lsqr, apply_lsqr, parse_pixel_counts_sky,
-                         parse_pixel_fisher_sky, apply_line_fisher_mask,
-                         parse_line_separability)
+from ..io.calfile import CalFile
+from ..core.lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky
 from ..core.solution import parse_x_sky
 from ..geometry import wcs_helper
 from ..core.layout import SystemLayout
 from ..core.spill import spill_pixel_state, restore_pixel_state
 from ..core.shmbuf import worker_pool_context
-from ..io.parallel_h5 import create_gzip_dataset_parallel
 from ..models.sky_model import SkyModel
 
 from typing import TYPE_CHECKING
@@ -60,6 +69,12 @@ _REPROJ_QUARANTINE_NAME = 'quarantine'
 
 @contextmanager
 def timer(description):
+    """Log the wall-clock duration of a ``with`` block.
+
+    On normal exit it logs ``"<description> finished in 12.34 seconds."`` at
+    INFO level on the ``selfcal.pipeline.pipeline_wrapper`` logger, timed with
+    ``time.perf_counter``. Nothing is logged when the block raises.
+    """
     start = time.perf_counter() # distinct from time.time(), better for execution duration
     yield
     elapsed = time.perf_counter() - start
@@ -67,6 +82,38 @@ def timer(description):
 
 @dataclass
 class PipelineConfig:
+    """Output paths and reference pixel scale shared by the stages of one run.
+
+    The paths left as ``None`` are filled in on creation, under the run
+    directory ``<output_dir>/<run_name>``. Creating the object does not touch
+    the disk.
+
+    Parameters
+    ----------
+    output_dir : str
+        Parent directory of the run directory.
+    run_name : str
+        Name of the run directory.
+    resolution_arcsec : float
+        Pixel scale, in arcsec, of a reference grid that
+        :meth:`Reprojector.define_reference` computes from scratch. Not used
+        when the grid is loaded from ``ref_path`` or derived from a source
+        reference.
+    ref_path : str, optional
+        Reference-grid FITS file (WCS and shape), loaded or written by
+        :meth:`Reprojector.define_reference` and loaded by :class:`Calibrator`
+        and :class:`Mosaicker`. Default ``<output_dir>/<run_name>/ref.fits``.
+    reproj_dir : str, optional
+        Directory of the frame files and of the reprojection bookkeeping.
+        Default ``<output_dir>/<run_name>/reprojected``.
+    cal_dir : str, optional
+        Where :meth:`Calibrator.save_calibration` writes, and
+        :meth:`Calibrator.load_calibration` reads ``cal.h5``, when no path is
+        given. Default ``<output_dir>/<run_name>/calibration``.
+    mos_dir : str, optional
+        Where :meth:`Mosaicker.save_mosaic` writes when no directory is given.
+        Default ``<output_dir>/<run_name>/mosaic``.
+    """
     output_dir: str
     run_name: str
     resolution_arcsec: float
@@ -88,6 +135,24 @@ class PipelineConfig:
             self.mos_dir = os.path.join(base_path, 'mosaic')
 
 class Reprojector:
+    """Reprojection stage: defines the reference grid and reprojects exposures onto it.
+
+    An instance holds the run configuration, the input exposure paths
+    (``exposure_list``) and the reference grid (``ref_wcs``, ``ref_shape``).
+    :meth:`define_reference` loads the grid from ``config.ref_path``, or
+    derives or computes one and saves it there. :meth:`run_reproject` then
+    reprojects every (exposure, extension) pair onto the grid with
+    :func:`selfcal.io.reprojection.batch_reproject`, one frame file
+    ``exp_<exposure>_det_<detector>.h5`` per pair, by default skipping pairs
+    whose file already exists. :meth:`run_reproject` and
+    :meth:`get_reproj_files` set ``reproj_list``, the sorted frame paths.
+    ``config.reproj_dir`` also holds the bookkeeping that :meth:`status`
+    reports: ``manifest.json``, ``failed.jsonl`` and ``quarantine/``.
+
+    Creating an instance creates ``config.reproj_dir`` if it is missing.
+    :class:`Calibrator` and :class:`Mosaicker` subclass it to share the frame
+    list and the reference grid.
+    """
     def __init__(self, config: PipelineConfig, exposure_list: list[str] | None = None) -> None:
         '''Initialize path to reference WCS and reprojected files.
 
@@ -114,7 +179,7 @@ class Reprojector:
 
     def define_reference(self, padding_pixels: int = 100, use_ext: tuple[int, ...] = (1,),
                          source_ref_path: str | None = None,
-                         verify_projection: bool = True) -> None:
+                         verify_projection: bool = True, reader=None) -> None:
         '''Define the smallest WCS oriented north-up, east-left frame that
         contains all exposures.
 
@@ -145,6 +210,9 @@ class Reprojector:
         verify_projection : bool, optional
             When an existing ref and ``source_ref_path`` are both present,
             assert their projections match before reusing the existing ref.
+        reader : callable or None, optional
+            The instrument's exposure reader (``selfcal.io.frames``) whose
+            headers carry the WCS; ``None`` reads FITS headers.
 
         Returns
         -------
@@ -167,7 +235,7 @@ class Reprojector:
                 source_ref_path=source_ref_path,
                 exposure_list=self.exposure_list,
                 padding_pixels=padding_pixels,
-                use_ext=use_ext,
+                use_ext=use_ext, reader=reader,
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             logger.info(f"Reference WCS saved to {self.config.ref_path}")
@@ -177,7 +245,7 @@ class Reprojector:
                 exposure_list=self.exposure_list,
                 resolution_arcsec=self.config.resolution_arcsec,
                 padding_pixels=padding_pixels,
-                use_ext=use_ext
+                use_ext=use_ext, reader=reader
             )
             wcs_helper.save_to_fits(self.ref_wcs, self.ref_shape, self.config.ref_path)
             logger.info(f"Reference WCS saved to {self.config.ref_path}")
@@ -213,7 +281,7 @@ class Reprojector:
 
     def _expected_output(self, exp_idx, det_idx, output_dir=None):
         out = output_dir or self.config.reproj_dir
-        return os.path.join(out, f'exp_{exp_idx:04d}_det_{det_idx:02d}.h5')
+        return os.path.join(out, reproj_basename(exp_idx, det_idx))
 
     @staticmethod
     def _safe_mtime(path):
@@ -228,6 +296,8 @@ class Reprojector:
         filename) the manifest and resume logic both need. Pure function of
         the inputs — no FITS reads, no disk scans."""
         records = []
+        if dq_ext_list is None:                       # no mask extension
+            dq_ext_list = [None] * len(sci_ext_list)
         for i, file_path in enumerate(self.exposure_list):
             for j, (sci_ext, dq_ext) in enumerate(zip(sci_ext_list, dq_ext_list)):
                 exp_idx = int(exp_idx_list[i]) if exp_idx_list is not None else i
@@ -238,7 +308,7 @@ class Reprojector:
                     'input_fits': file_path,
                     'input_mtime': self._safe_mtime(file_path),
                     'sci_ext': int(sci_ext),
-                    'dq_ext': int(dq_ext),
+                    'dq_ext': None if dq_ext is None else int(dq_ext),
                     'output_h5': os.path.basename(
                         self._expected_output(exp_idx, det_idx, output_dir)),
                 })
@@ -357,7 +427,7 @@ class Reprojector:
                       exp_idx_list: list[int] | None = None,
                       det_idx_list: list[int] | None = None,
                       output_dir: str | None = None, replace_existing: bool = False,
-                      reproject_kwargs: dict | None = None) -> None:
+                      reproject_kwargs: dict | None = None, reader=None) -> None:
         """Build per-(exposure, extension) reprojection tasks, dispatch the
         pending subset, write the run manifest, and log any worker failures.
 
@@ -455,7 +525,7 @@ class Reprojector:
                     exp_idx_list=pending_exp,
                     det_idx_list=pending_det,
                     replace_existing=replace_existing,
-                    reproject_kwargs=reproject_kwargs,
+                    reproject_kwargs=reproject_kwargs, reader=reader,
                     per_task_extensions=True,
                 )
         else:
@@ -471,9 +541,9 @@ class Reprojector:
         self.exp_idx_list = []
         self.det_idx_list = []
         for path in self.reproj_list:
-            name = os.path.basename(path)
-            self.exp_idx_list.append(int(name.split('_')[1]))
-            self.det_idx_list.append(int(name.split('_')[3].removesuffix('.h5')))
+            exp_idx, det_idx = parse_reproj_basename(path)
+            self.exp_idx_list.append(exp_idx)
+            self.det_idx_list.append(det_idx)
 
     def _check_one(self, path):
         """Read sub_data from a single h5 to check if it loads. Returns
@@ -543,9 +613,8 @@ class Reprojector:
             # parse idx from filename (best-effort; quarantined names match
             # the exp_NNNN_det_DD.h5 pattern)
             try:
-                exp_idx = int(base.split('_')[1])
-                det_idx = int(base.split('_')[3].removesuffix('.h5'))
-            except (IndexError, ValueError):
+                exp_idx, det_idx = parse_reproj_basename(base)
+            except ValueError:
                 exp_idx = det_idx = None
             records.append({
                 'exp_idx': exp_idx,
@@ -582,12 +651,28 @@ class Reprojector:
         self.det_idx_list = []
         self.exp_idx_list = []
         for file in tqdm(self.reproj_list, disable=not _state.progress_enabled):
-            file_name = os.path.basename(file)
-            exp_idx, det_idx = int(file_name.split('_')[1]), int(file_name.split('_')[3].removesuffix('.h5'))
+            exp_idx, det_idx = parse_reproj_basename(file)
             self.det_idx_list.append(det_idx)
             self.exp_idx_list.append(exp_idx)
         
 class Calibrator(Reprojector):
+    """Calibration stage: solves jointly for the sky and the instrument's additive offsets.
+
+    An instance works on the frame files of ``reproj_dir`` (default
+    ``config.reproj_dir``) and on the reference grid saved at
+    ``config.ref_path``, which must exist. :meth:`setup_lsqr` assembles the
+    sparse system ``A x = b`` from the frames in ``reproj_list``; the unknowns
+    ``x`` are, in order, the sky maps (one block of reference-grid pixels per
+    sky component), the offsets of each chunk map and an optional per-frame
+    scalar. :meth:`apply_lsqr` solves the system iteratively (LSMR by
+    default), or :meth:`solve_sky_closed_form` solves a sky-only system pixel
+    by pixel, and :meth:`save_calibration` writes the calibration file.
+    :meth:`load_calibration` reads a saved one back into ``x``; the ``get_*``
+    methods split ``x`` into sky maps and offsets.
+
+    ``reproj_list`` may be reassigned before :meth:`setup_lsqr` to solve a
+    subset of the frames; the calibration file records the list.
+    """
     def __init__(self, config: PipelineConfig, reproj_dir: str | None = None) -> None:
         """Load the reference WCS and reprojected file list for calibration.
 
@@ -650,7 +735,8 @@ class Calibrator(Reprojector):
                    oversample_factor: int = 1,
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
-                   outlier_thresh: float = 3.0, outlier_subchannel_edges=None,
+                   outlier_thresh: float = 3.0, outlier_group_edges=None,
+                   outlier_subchannel_edges=None,
                    ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
@@ -667,6 +753,8 @@ class Calibrator(Reprojector):
                    mean_offset_group_rows: bool = False,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
+                   aux_keys: list[str] | None = None,
+                   outlier_aux_key: str | None = None,
                    spectral_fit: bool = False, line_center: float | None = None,
                    line_sigma: float | None = None,
                    damp_weight_line: float | None = None,
@@ -674,8 +762,19 @@ class Calibrator(Reprojector):
                    sky_model: SkyModel | None = None,
                    compact_zero_columns: bool = True,
                    sky_rhs_moments: bool = False,
-                   batch_spill_dir: str | None = None) -> None:
+                   batch_spill_dir: str | None = None,
+                   variables=None, weight_function=None, priors: list | None = None,
+                   outlier_group_variable: str | None = None, outlier_chunk_groups=None) -> None:
         """Build the LSQR system for K chunk maps.
+
+        ``variables`` (a :class:`~selfcal.models.variables.VariableSet`) adds
+        data-variable sources beyond ``det_aux`` (per-frame values, sky maps,
+        stored layers, derived variables, frame functions);
+        ``weight_function`` multiplies every observation's weight by a function
+        of data variables; ``priors`` are user prior rows (see
+        :func:`selfcal.core.system.setup_lsqr`). An ``offset_model`` block with a
+        ``basis`` makes that map's offsets coefficients of known functions of
+        data variables.
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
         configuration arguments (``reg_weights``, ``adj_infos``,
@@ -788,7 +887,15 @@ class Calibrator(Reprojector):
             Maps whose adjacency regularization is emitted once per group
             (weight ``reg_weight·√k``) instead of once per frame. Same normal
             equations, far fewer nonzeros; only useful for det-grouped maps.
-        det_aux : np.ndarray or None, optional
+        det_aux : list of np.ndarray or None, optional
+            Per-pixel aux maps on the detector grid, in ``aux_keys`` order.
+        aux_keys : list of str or None, optional
+            Names of the ``det_aux`` entries (the keys the sky model's components
+            read, e.g. an instrument's wavelength map). ``None`` keeps the
+            historical ``['BC', 'BW']`` positional convention.
+        outlier_aux_key : str or None, optional
+            Which aux map the grouped outlier clip (``outlier_subchannel_edges``)
+            bins on (default ``'BC'``).
             Auxiliary per-detector array carried alongside the data (e.g. a
             per-sample wavelength map for spectral fits).
         spectral_fit : bool, optional
@@ -832,8 +939,11 @@ class Calibrator(Reprojector):
             poly_constraints_list = om['poly_constraints_list']
             mean_offsets_list = om['mean_offsets_list']
             poly_basis_list = om['poly_basis_list']
+            basis_list = om['basis_list']
             use_per_frame_scalar = om['use_per_frame_scalar']
-        elif chunk_maps is not None:
+        else:
+            basis_list = None
+        if offset_model is None and chunk_maps is not None:
             warnings.warn(
                 "Passing the offset configuration as flat kwargs (chunk_maps, "
                 "det_groups_list, adj_infos, poly_constraints_list, "
@@ -868,23 +978,21 @@ class Calibrator(Reprojector):
         _check_len('det_templates', det_templates)
 
         # Resolve the sky model. sky_model= is the forward-looking API; the
-        # legacy spectral_fit flag is a deprecated shim that builds the
-        # equivalent SkyModel. Passed through to setup_lsqr, which derives
-        # num_sky_blocks / line damping / det_aux requirements from it.
-        if sky_model is not None:
-            if spectral_fit:
-                warnings.warn(
-                    "spectral_fit is ignored when sky_model is given; drop spectral_fit.",
-                    DeprecationWarning, stacklevel=2)
-            self.sky_model = sky_model
-        elif spectral_fit:
-            warnings.warn(
-                "spectral_fit=True is deprecated; pass "
-                "sky_model=SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma).",
-                DeprecationWarning, stacklevel=2)
-            self.sky_model = SkyModel.continuum_plus_pah_gaussian(line_center, line_sigma)
-        else:
-            self.sky_model = SkyModel.continuum_only()
+        # outlier_group_edges is the generic name of the grouped clip's bin edges
+        # (groups = values of the chunk map's spectral axis); the historical
+        # spelling outlier_subchannel_edges is accepted.
+        if outlier_group_edges is not None:
+            if outlier_subchannel_edges is not None:
+                raise ValueError("give outlier_group_edges or outlier_subchannel_edges, not both")
+            outlier_subchannel_edges = outlier_group_edges
+        # The sky is always an explicit SkyModel (continuum-only by default).
+        # The historical spectral_fit flag built a SPHEREx PAH model here; it is
+        # gone — build the model (e.g. from the instrument's line catalogue,
+        # ``selfcal.instruments.spherex.line_catalog.pah_3p29``) and pass it.
+        if spectral_fit:
+            raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
+                             "(e.g. selfcal.instruments.spherex.line_catalog.pah_3p29(line_center, line_sigma)).")
+        self.sky_model = sky_model if sky_model is not None else SkyModel.continuum_only()
 
         with timer("Setup LSQR"):
             _setup_result = setup_lsqr(
@@ -908,12 +1016,17 @@ class Calibrator(Reprojector):
                 damp_offset=damp_offset, damp_offset_maps=damp_offset_maps,
                 mean_offset_group_rows=mean_offset_group_rows,
                 group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
-                spectral_fit=spectral_fit, line_center=line_center,
+                aux_keys=aux_keys, outlier_aux_key=outlier_aux_key,
+                line_center=line_center,
                 line_sigma=line_sigma, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
                 compact_zero_columns=compact_zero_columns,
                 sky_rhs_moments=sky_rhs_moments,
-                batch_spill_dir=batch_spill_dir)
+                batch_spill_dir=batch_spill_dir,
+                basis_list=basis_list, variables=variables,
+                weight_function=weight_function, priors=priors,
+                outlier_group_variable=outlier_group_variable,
+                outlier_chunk_groups=outlier_chunk_groups)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
             # back as None and `pixel_spill` carries the handle; we leave them
@@ -950,8 +1063,9 @@ class Calibrator(Reprojector):
             self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
             num_frames=num_frames, det_groups_list=det_groups_list,
             det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar,
-            poly_basis_list=poly_basis_list)
+            poly_basis_list=poly_basis_list, basis_list=basis_list)
         self.chunk_maps = chunk_maps
+        self.basis_list = list(basis_list) if basis_list is not None else [None] * len(chunk_maps)
         self.frame_to_groups = self.layout.frame_to_group_list
         self.num_offset_groups_list = self.layout.num_offset_groups_list
         self.num_chunks_list = self.layout.num_chunks_list
@@ -981,11 +1095,7 @@ class Calibrator(Reprojector):
         self._materialize_pixel_state()
         J = self.num_sky_blocks
         num_sky = self.ref_shape[0] * self.ref_shape[1]
-        dws = [float(damp_weight)]
-        for comp in self.sky_model.components[1:]:
-            w = getattr(comp, 'damp_weight', None)
-            dws.append(float(damp_weight_line if w is None else w) if
-                       (damp_weight_line is not None or w is not None) else 0.0)
+        dws = self.sky_model.damp_weights(damp_weight, damp_weight_line)
         with timer("Closed-form sky solve"):
             self.x = _closed(self.pixel_fisher, self.pixel_cross, self.pixel_rhs,
                              self.pixel_counts, num_sky, J, damp_weights=dws)
@@ -1000,6 +1110,7 @@ class Calibrator(Reprojector):
         self._pixel_spill = None
 
     def __del__(self):
+        """Delete the per-pixel coverage and Fisher arrays if still parked on scratch disk."""
         # A Calibrator dropped without ever saving (an aborted tile, a failed
         # solve) would otherwise leave its parked pixel-state arrays behind
         # on scratch disk — full-reference-grid float64 arrays that reach
@@ -1349,8 +1460,14 @@ class Calibrator(Reprojector):
             cov_grp = f.create_group('offset_coverage')
             frac_grp = f.create_group('offset_coverage_frac')
             cm_grp = f.create_group('chunk_maps')
+            basis_list = getattr(self, 'basis_list', None) or [None] * K
             for m in range(K):
-                offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                ds_m = offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                if basis_list[m] is not None:
+                    # The map's offsets are coefficients of known functions of data
+                    # variables: per frame, n_chunks * n_basis values (chunk-major).
+                    ds_m.attrs['n_basis'] = int(basis_list[m].n)
+                    ds_m.attrs['basis'] = basis_list[m].coefficient.describe()
                 cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
                 frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
@@ -1456,7 +1573,21 @@ class Calibrator(Reprojector):
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
-    def __init__(self, config: PipelineConfig, reproj_dir: str | None = None) -> None:
+    """Mosaic stage: coadds the frames, minus a calibration's offsets, on the reference grid.
+
+    An instance reads the reference grid saved at ``config.ref_path``, which
+    must exist, and starts with the frame files of ``reproj_dir`` (default
+    ``config.reproj_dir``). :meth:`load_calibration` reads a calibration file
+    and replaces ``reproj_list`` with the frame paths recorded in it.
+    :meth:`make_mosaic` subtracts each frame's offsets and coadds the frames
+    into ``maps``: a mean map and, optionally, standard-deviation and
+    sigma-clipped mean maps. :meth:`append_maps` adds further named maps and
+    :meth:`save_mosaic` writes them all to one multi-extension FITS file, by
+    default in ``config.mos_dir``. ``unit`` (default ``'MJy/sr'``) is the
+    ``BUNIT`` of the mean, standard-deviation and sigma-clipped maps.
+    """
+    def __init__(self, config: PipelineConfig, reproj_dir: str | None = None,
+                 unit: str = 'MJy/sr') -> None:
         """Load the reference WCS and reprojected file list for mosaicking.
 
         Parameters
@@ -1485,9 +1616,11 @@ class Mosaicker(Reprojector):
         self.skymap_coverage = None
         self.skymap_fisher = None
         self.skymap_line_fisher = None
-        self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
-                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'},
-                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': 'MJy/sr'}}
+        # `unit` = the calibrated data's unit (the instrument's data_unit) -> FITS BUNIT.
+        self.unit = unit
+        self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
+                     'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
+                     'sc_mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit}}
         self.mean_offset = 0.0  # mean of map-0 offsets over the valid mask, used in FITS header
 
     def load_calibration(self, cal_path: str) -> None:
@@ -1509,26 +1642,22 @@ class Mosaicker(Reprojector):
         -------
         None
         """
-        with h5py.File(cal_path, 'r') as f:
-            self.skymap = f['skymap'][:]
-            self.reproj_list = [s.decode('utf-8') for s in f['reproj_list'][:]]
-            self.skymap_coverage = f['skymap_coverage'][:]
-            self.skymap_fisher = f['skymap_fisher'][:] if 'skymap_fisher' in f else None
-            self.skymap_line_fisher = f['skymap_line_fisher'][:] if 'skymap_line_fisher' in f else None
-            if 'offsets' in f:
-                K = int(f.attrs.get('num_maps', len(f['offsets'])))
-                self.offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
-                self.offset_coverages = [f['offset_coverage'][f'map_{m}'][:] for m in range(K)]
-                self.offset_coverage_fracs = [f['offset_coverage_frac'][f'map_{m}'][:] for m in range(K)]
-                self.cal_chunk_maps = ([f['chunk_maps'][f'map_{m}'][:] for m in range(K)]
-                                       if 'chunk_maps' in f else [])
-                if 'frame_scalar' in f:
-                    self.offsets[0] = self.offsets[0] + f['frame_scalar'][:][:, np.newaxis]
-            else:
-                self.offsets = [f['offset'][:]]
-                self.offset_coverages = [f['offset_coverage'][:]]
-                self.offset_coverage_fracs = [f['offset_coverage_frac'][:]]
-                self.cal_chunk_maps = []
+        with CalFile(cal_path) as cal:
+            if cal.num_maps == 0:
+                raise ValueError(f"{cal_path} carries no per-frame offsets (a stitched or sky-only "
+                                 f"product); the mosaic needs the cal that solved the frames")
+            self.skymap = cal.sky(0)
+            self.reproj_list = cal.reproj_list
+            self.skymap_coverage = cal.sky_coverage(0)
+            self.skymap_fisher = cal.sky_fisher(0)
+            names = cal.sky_names
+            self.skymap_line_fisher = cal.sky_fisher(names[-1]) if len(names) > 1 else None
+            # The per-frame scalar is folded into map 0: a single-map subtractor
+            # then sees the same total bias the legacy schema baked in.
+            self.offsets = cal.total_offsets()
+            self.offset_coverages = cal.offset_coverage
+            self.offset_coverage_fracs = cal.offset_coverage_frac
+            self.cal_chunk_maps = cal.chunk_maps
         logger.info(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
 

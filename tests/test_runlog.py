@@ -1,4 +1,4 @@
-"""The run log (selfcal_scripts/runner/runlog.py).
+"""The run log (selfcal/run/runlog.py).
 
 A child Python process starts the log, then writes through every path a run
 uses — print, logging, stderr, a forked worker, a forkserver worker, a raw fd
@@ -20,7 +20,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHILD = textwrap.dedent('''
     import logging, multiprocessing as mp, os, sys
     sys.path.insert(0, {repo!r})
-    from selfcal_scripts.runner.runlog import start_run_log
+    from selfcal.run.runlog import start_run_log
 
     def work(tag):
         print(f"worker-print {{tag}} pid {{os.getpid()}}")
@@ -85,7 +85,7 @@ def test_header_shows_module_launch():
     log_path = os.path.join(tmp, 'm.log')
     with open(os.path.join(pkg, 'entry.py'), 'w') as f:
         f.write(f"import sys\nsys.path.insert(0, {REPO!r})\n"
-                "from selfcal_scripts.runner.runlog import start_run_log\n"
+                "from selfcal.run.runlog import start_run_log\n"
                 f"start_run_log({log_path!r})\nprint('module-body')\n")
     env = dict(os.environ, PYTHONPATH=tmp)
     proc = subprocess.run([sys.executable, '-m', 'tfpkg.entry', '--flag', 'x y'], capture_output=True, text=True,
@@ -97,9 +97,9 @@ def test_header_shows_module_launch():
 
 
 def test_default_log_path_layout():
-    from selfcal_scripts.runner.config import RunConfig
+    from selfcal.run.config import RunConfig
     import datetime
-    from selfcal_scripts.runner.runlog import default_log_path
+    from selfcal.run.runlog import default_log_path
     cfg = RunConfig(task='cal', output_dir='/out', run_name='SPHEREx_det{detector}', instrument_cfg={'detector': 3})
     p = default_log_path(cfg, now=datetime.datetime(2026, 9, 16, 10, 15, 0))
     assert p == f"/out/SPHEREx_det3/logs/cal_20260916-101500_{os.getpid()}.log"

@@ -1,15 +1,28 @@
+"""Standalone coadd of the LVF band maps into the mosaic's wavelength maps.
+
+:func:`wav_coadd` samples the band-centre (``BC``) and band-width (``BW``) detector maps
+through each frame's ``sub_mapping`` and averages them over the mosaic's cached
+observations that have positive weight and ``|data - mean_map| <= sigma * std_map``,
+giving per-pixel ``wav_mean`` / ``wav_std`` maps in um (0 where nothing contributes).
+Each observation counts as a uniform band of width ``BW`` centred on ``BC``, weighted by
+its coadd weight times ``BW``. Pool workers (:func:`init_worker`) share inputs and totals
+through :func:`create_shared_array` blocks. The mosaic now forms the same sums in its
+sigma-clip pass (:meth:`~selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic` with
+``wav_maps``); :meth:`~selfcal.instruments.spherex.adapter.SPHERExInstrument.finalize_mosaic`
+runs :func:`wav_coadd` only when that pass is off, over the intermediate cache that
+``cache_intermediate`` keeps.
+"""
 import logging
 import numpy as np
 import glob
 import os
-import h5py
 from astropy.io import fits
 from multiprocessing import Pool, Manager
 from multiprocessing.shared_memory import SharedMemory
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
 from ... import _state
-from ...geometry.map_helper import compute_crop, check_invalid
+from ...geometry.map_helper import compute_crop
 from ...io.reproj import load_reproj_file
 from ...core.coadd import load_cached_frame_dense
 from .spherex_utility import load_calibration
@@ -219,7 +232,7 @@ if __name__ == "__main__":
     # Ad-hoc single-run smoke test for wav_coadd with hard-coded paths (a
     # specific run on /mnt/md124 and a cache dir in a different worktree) —
     # not a supported entry point: the runner invokes wav_coadd via
-    # SPHERExInstrument.wavelength_append. Edit the paths before use.
+    # SPHERExInstrument.finalize_mosaic. Edit the paths before use.
     detector = 4
     batch_size = 40 
     max_workers = 40

@@ -1,0 +1,50 @@
+# Runner byte-equality gate — spectral (mirrors benchmarks/regress_cal_spectral.py).
+# D4 AromaticPAHfit NumCol5, first 150 frames, iter_lim=20, no mosaic.
+# Diff against goldens/cal_Detector4_..._AromaticPAHfit_gate_golden.h5.
+task = "cal"
+mode = "spectral"
+
+output_dir = "/mnt/md124/thomasli/selfcal/outputs/"
+run_name = "SPHEREx_NEP_2026W17_D{detector}_6p2arcsec"
+resolution_arcsec = 6.2
+suffix = "_unify_gate"
+oversample = 2
+apply_n_threads = 48
+reproj_override = "/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_pahfit_sanity_1k"
+n_frames = 150
+skip_mosaic = true
+
+[instrument]
+name = "spherex"
+detector = 4
+num_sub = 10
+num_ch = 34
+num_col = 5
+subch_window = [210, 250]
+window_name = "AromaticPAHfit"
+
+[params]
+reg_weight = 0.1
+poly_degree = 1
+poly_weight = 0.5
+line_fisher_threshold = 10.0
+
+[calibration]
+apply_mask = true
+apply_weight = true
+outlier_thresh = 5.0
+ignore_list = [21]
+batch_size = 50
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.1
+damp_weight_line = 0.0
+max_workers = 48
+
+[lsqr]
+atol = 1e-06
+btol = 1e-06
+damp = 0
+iter_lim = 20
+precondition = true
+solver = "lsqr"

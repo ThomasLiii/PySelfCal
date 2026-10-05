@@ -23,7 +23,6 @@ Design (see selfcal/README.md, "Mosaic / coadd engine"):
 import logging
 import os
 import time
-from multiprocessing import Pool, Condition, Array
 from multiprocessing.shared_memory import SharedMemory
 
 import h5py
@@ -32,7 +31,19 @@ from scipy.ndimage import map_coordinates
 from tqdm import tqdm
 
 from .. import _state
+from .shmbuf import worker_pool_context
 from .subframe import _prep_subframe
+
+# The striped turnstile handed to the coadd workers at pool creation — a
+# Condition plus one per-row-stripe batch counter — that orders the per-batch
+# flushes into the shared totals (see the comment in ``_coadd_batch_worker``).
+_coadd_turn = None
+
+
+def _init_coadd_worker(cond, counters):
+    """Pool initializer for the coadd workers."""
+    global _coadd_turn
+    _coadd_turn = (cond, counters)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +158,19 @@ _CACHE_KEYS = ('ref_coords', 'sub_bbox', 'mask', 'data', 'weight', 'aux', 'bc', 
 
 
 def write_cached_frame(path, frame):
+    """Write a sparse frame to an intermediate-cache HDF5 file in the ``sparse-v1`` format.
+
+    ``frame`` is a dict from :func:`sparsify_frame`, optionally with the
+    ``bc`` / ``bw`` vectors added by :func:`sample_band_maps`. The file at
+    ``path`` is created or overwritten. It holds the attributes ``format``
+    (:data:`CACHE_FORMAT`) and ``shape`` (the bbox shape, int32), and one
+    dataset for each of ``ref_coords``, ``sub_bbox``, ``mask``, ``data``,
+    ``weight``, ``aux``, ``bc`` and ``bw`` that ``frame`` holds, written
+    without HDF5 timestamps (``track_times=False``). ``flat`` is not stored:
+    :func:`read_cached_frame` rebuilds it from ``mask``. The cache pass of the
+    coadd writes one such file per frame with any nonzero weight, named
+    ``cached_<frame file name>`` in the cache directory.
+    """
     with h5py.File(path, 'w') as hf:
         hf.attrs['format'] = CACHE_FORMAT
         hf.attrs['shape'] = np.asarray(frame['shape'], dtype=np.int32)
@@ -332,7 +356,7 @@ def _coadd_batch_worker(task):
             # batch order (deterministic) while different batches flush
             # different stripes concurrently (a wavefront) instead of
             # serialising on one lock.
-            cond, counters = _state._coadd_turn
+            cond, counters = _coadd_turn
             n_stripes = len(counters)
             stripe_h = -(-ref_shape[0] // n_stripes)
             cols = slice(win[2], win[3])
@@ -386,8 +410,11 @@ def _run_pass(*, ref_shape, files, offsets, source, accumulate, write_dir, wav, 
     t0 = time.perf_counter()
     cached, stats = [], []
     n_stripes = max(1, min(_FLUSH_STRIPES, ref_shape[0]))
-    cond, counters = Condition(), Array('i', n_stripes, lock=False)
-    with Pool(processes=max_workers, initializer=_state._init_coadd_worker, initargs=(cond, counters)) as pool:
+    # forkserver workers (selfcal.core.shmbuf): a pool forked from a threaded process can inherit a
+    # held lock and hang; the turnstile is made in the pool's own context so it can be handed over.
+    ctx = worker_pool_context()
+    cond, counters = ctx.Condition(), ctx.Array('i', n_stripes, lock=False)
+    with ctx.Pool(processes=max_workers, initializer=_init_coadd_worker, initargs=(cond, counters)) as pool:
         for c, s in tqdm(pool.imap_unordered(_coadd_batch_worker, tasks), total=len(tasks),
                          disable=not _state.progress_enabled):
             cached.extend(c)

@@ -16,3 +16,4 @@ selfcal_logs/
 selfcal_scripts/drivers/chunked_NEP/logs/
 build/
 dist/
+quickstart_output/

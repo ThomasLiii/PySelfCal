@@ -32,7 +32,7 @@ jobs:
           pip install -e ".[dev]"
 
       # The pytest suite is self-contained: no /mnt or /data dependency, so it
-      # runs anywhere. The data-dependent byte-equality gates (cache/refactor_gate/)
+      # runs anywhere. The data-dependent byte-equality gates (selfcal_scripts/gates/)
       # are NOT run here — they need the off-tree RAID reprojections and are run
       # manually on the processing host.
       - name: pytest (blocking)
@@ -50,3 +50,27 @@ jobs:
       - name: mypy (advisory)
         continue-on-error: true
         run: mypy
+
+  docs:
+    name: docs (mkdocs build --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (editable + docs extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[docs]"
+
+      # Strict: a broken link, a missing anchor or an unresolved cross-reference
+      # in a page or a docstring fails the build. mkdocstrings reads the code
+      # statically, so nothing is imported or run.
+      - name: build the site (blocking)
+        env:
+          DISABLE_MKDOCS_2_WARNING: "true"
+        run: mkdocs build --strict

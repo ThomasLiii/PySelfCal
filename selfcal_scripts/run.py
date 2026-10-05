@@ -7,7 +7,7 @@ in-process LSQR threadpool is the only source of parallelism), loads the TOML
 config, and dispatches on its ``task``. ``--dry-run`` loads + validates the
 config and resolves the instrument's jobs without executing the pipeline — a
 cheap way to confirm a config resolves to the intended jobs/mode, the same
-resolution the byte-equality regression checks in cache/refactor_gate/ verify.
+resolution the byte-equality gates (``selfcal_scripts/gates/``) verify.
 
 Every real run also writes its console output (including worker processes and
 any traceback) to ``<output_dir>/<run_name>/logs/<task>_<timestamp>_<pid>.log``,
@@ -44,14 +44,14 @@ def main():
     ap.add_argument('--no-log', action='store_true', help='do not write a log file')
     args = ap.parse_args()
 
-    from selfcal_scripts.runner.config import load_config, get_instrument
-    from selfcal_scripts.runner import pipelines
+    from selfcal.run.config import load_config, get_instrument
+    from selfcal.run import pipelines
 
     cfg = load_config(args.config)
 
     run_log = None
     if not args.dry_run and not args.no_log:
-        from selfcal_scripts.runner.runlog import default_log_path, start_run_log
+        from selfcal.run.runlog import default_log_path, start_run_log
         log_path = args.log or default_log_path(cfg)
         if log_path is None:
             print("[run] no output_dir/run_name or cache_dir in the config: running without a log file")
@@ -65,15 +65,17 @@ def main():
 
     if args.dry_run:
         inst = get_instrument(cfg.instrument)
-        if cfg.task in ('cal', 'tiled', 'npass'):
+        if cfg.task in ('cal', 'mosaic', 'npass'):
             jobs = inst.jobs(cfg.instrument_cfg)
             print(f"[dry-run] {len(jobs)} job(s): {[j.name for j in jobs]}")
-            from selfcal_scripts.runner.modes import get_mode
+            from selfcal.run.modes import get_mode
             mode = get_mode(cfg.mode)
-            print(f"[dry-run] mode={mode.name} pipeline={mode.pipeline} "
-                  f"mosaic_mode={mode.mosaic_mode} requires={mode.requires}")
+            tiling = ("explicit tiles" if cfg.tiling.get('tiles') else "grid") if cfg.tiling else "none"
+            alias = f" (preset of {mode.name})" if mode.requested_name != mode.name else ""
+            print(f"[dry-run] mode={mode.requested_name}{alias} mosaic_mode={mode.mosaic_mode} "
+                  f"requires={mode.requires} tiling={tiling}")
         if cfg.task == 'npass':
-            from selfcal_scripts.runner.npass import describe_schedule
+            from selfcal.run.npass import describe_schedule
             for line in describe_schedule(cfg):
                 print(f"[dry-run] {line}")
         print("[dry-run] config OK")

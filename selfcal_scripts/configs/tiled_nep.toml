@@ -1,7 +1,7 @@
 # Tiled NEP D4 PAHfit calibration (replaces drivers/chunked_NEP/run_cal_tiled_NEP.py).
 # 2x2 quadrant tiles -> per-tile PAHfit cal (dual column+subchannel poly) ->
 # Fisher-weighted stitch. No mosaic. RSS guardrail on (large per-tile peak).
-task = "tiled"
+task = "cal"
 mode = "tiled"
 
 output_dir = "/data3/thomasli/selfcal/outputs/"
@@ -27,11 +27,10 @@ window_name = "Aromatic_PAHfit"
 poly_degree = 1
 poly_weight = 0.5
 reg_weight = 0.1
-subch_poly_degree = 3
-subch_poly_weight = 100.0
-subch_poly_lo = 200
-subch_poly_hi = 259
-subch_tot = 342
+spectral_poly_degree = 3
+spectral_poly_weight = 100.0
+spectral_poly_lo = 200
+spectral_poly_hi = 259
 line_fisher_threshold = 10.0
 
 [calibration]
@@ -54,7 +53,7 @@ iter_lim = 400
 precondition = true
 solver = "lsqr"
 
-[tiled]
+[tiling]
 ref_shape = [12676, 12672]
 grid = [2, 2]
 overlap_px = 50
