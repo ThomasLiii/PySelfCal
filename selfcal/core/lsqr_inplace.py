@@ -36,6 +36,21 @@ production uses, nothing promotes and no extra vector is ever allocated.
 reference (e.g. ``lsqr_inplace(op, holder.pop(), ...)``) to actually free it.
 ``var`` is only allocated when ``calc_var`` (scipy allocates an n-length
 float64 array regardless); otherwise an empty array is returned in its slot.
+
+One deliberate departure from scipy (2026-10-05): the norms of LARGE float32
+vectors are accumulated in float64 (``_norm``). ``np.linalg.norm`` on a
+float32 vector is a BLAS ``sdot``: over ~1e9 entries of ~1e-5 the running sum
+outgrows its increments (they fall below half an ulp) and the result is biased
+low by several per cent (measured -3.5 % on a 1.8e9-element residual).
+LSQR normalises its Lanczos vectors by exactly these norms, so the recurrence
+lost orthogonality, the reported residual decoupled from the true one (it kept
+"decreasing" 62 -> 29 while |b - A x| sat at 335) and the iterate drifted along
+near-null directions (multi-MJy/sr offsets in data-poor chunks, large-scale
+patterns in the sky). With exact norms the undamped D2/D3/D6 NEP solves reach
+their residual floor in ~100 iterations and the printed residual is honest.
+Vectors below ``_NORM64_MIN`` elements (every unit-test fixture) and float64
+vectors keep scipy's call, so the bit-equality tests against scipy still hold;
+set ``SELFCAL_LSQR_FLOAT32_NORMS=1`` to restore the old norms everywhere.
 """
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +61,26 @@ from scipy.sparse.linalg import aslinearoperator
 from scipy.sparse.linalg._isolve.lsqr import _sym_ortho
 
 eps = np.finfo(np.float64).eps
+
+# Norms of float32 vectors at least this long are accumulated in float64 (see the module docstring).
+_NORM64_MIN = 1 << 20
+_NORM64_BLOCK = 50_000_000
+_FLOAT32_NORMS = os.environ.get("SELFCAL_LSQR_FLOAT32_NORMS", "") == "1"
+
+
+def _norm(x):
+    """``np.linalg.norm(x)`` for a 1-D vector, with float64 accumulation when ``x`` is a long float32 vector.
+
+    The chunked sum of squares reads ``x`` once in ``_NORM64_BLOCK`` pieces (one 400 MB float64
+    temporary); short or float64 vectors take scipy's exact call so small systems stay bit-identical.
+    """
+    if _FLOAT32_NORMS or x.dtype != np.float32 or x.ndim != 1 or x.shape[0] < _NORM64_MIN:
+        return np.linalg.norm(x)
+    acc = 0.0
+    for start in range(0, x.shape[0], _NORM64_BLOCK):
+        chunk = x[start:start + _NORM64_BLOCK].astype(np.float64)
+        acc += float(np.dot(chunk, chunk))
+    return np.float32(sqrt(acc))
 
 _MSG = ('The exact solution is  x = 0                              ',
         'Ax - b is small enough, given atol, btol                  ',
@@ -197,7 +232,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
 
     # Set up the first vectors u and v for the bidiagonalization.
     # These satisfy  beta*u = b - A@x,  alfa*v = A'@u.
-    bnorm = np.linalg.norm(b)
+    bnorm = _norm(b)
     if x0 is None:
         x = np.zeros(n)
         beta = bnorm.copy()
@@ -208,14 +243,14 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         u = _promote(b, out)                # u = b - A x  (b's buffer if no promotion)
         vec.sub(u, out, u)
         del out
-        beta = np.linalg.norm(u)
+        beta = _norm(u)
     del b
 
     if beta > 0:
         u = _promote(u, 1/beta)
         vec.imul(u, (1/beta))
         v = A.rmatvec(u)
-        alfa = np.linalg.norm(v)
+        alfa = _norm(v)
     else:
         v = x.copy()
         alfa = 0
@@ -261,7 +296,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         u = _promote(u, out)
         vec.sub(out, u, u)
         del out
-        beta = np.linalg.norm(u)
+        beta = _norm(u)
 
         if beta > 0:
             u = _promote(u, 1/beta)
@@ -274,7 +309,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             v = _promote(v, out)
             vec.sub(out, v, v)
             del out
-            alfa = np.linalg.norm(v)
+            alfa = _norm(v)
             if alfa > 0:
                 v = _promote(v, 1 / alfa)
                 vec.imul(v, (1 / alfa))
@@ -302,7 +337,7 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         t2 = -theta / rho
         tmp = _scratch(tmp, w, (1 / rho))
         vec.mul(w, (1 / rho), tmp)                  # dk = (1/rho) * w
-        ddnorm = ddnorm + np.linalg.norm(tmp)**2
+        ddnorm = ddnorm + _norm(tmp)**2
         if calc_var:
             var = var + tmp**2
         tmp = _scratch(tmp, w, t1)
