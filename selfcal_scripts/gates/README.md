@@ -35,7 +35,9 @@ record what the engine reads from every shipped config and what its mode lowers 
 geometry (before and after an engine change); `typed` converts each config to the Python API's
 objects, lowers them again and compares what the engine does with each (the library calls with
 defaults filled, per-term damping, offset rows, sky coefficients, jobs, product paths, frames,
-staging, tiles, passes).
+staging, tiles, passes); `runs` does the same for the hand-written run scripts,
+`selfcal_scripts/runs/<name>.py` against `configs/<name>.toml` (a script without a config, such as a
+campaign's, is listed and skipped).
 
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so: `make_goldens.sh <tag> [gate ...]` runs the gate configs on a clean tree

@@ -9,31 +9,36 @@ pipeline, tuning hyperparameters, or working with its outputs.
 
 ## Running
 
-Runs are driven by a **TOML config + the generic runner** — no editing Python:
+A run is a Python run script ([The Python API](docs/guide/python-api.md)); the production ones
+are in [`selfcal_scripts/runs/`](selfcal_scripts/runs/), built from the shared fields, recipes and
+tilings of [`selfcal_scripts/recipes/`](selfcal_scripts/recipes/):
 
 ```bash
-./selfcal_scripts/run.sh selfcal_scripts/configs/<run>.toml          # or launch/<run>.sh
-./selfcal_scripts/run.sh selfcal_scripts/configs/<run>.toml --dry-run  # resolve jobs+mode only
+./selfcal_scripts/run.sh selfcal_scripts/runs/<run>.py             # or launch/<run>.sh
+./selfcal_scripts/run.sh selfcal_scripts/runs/<run>.py --dry-run   # the plan only (selfcal plan)
 ```
 
-The knobs documented below still exist — they moved from dict literals at the top
-of a driver into TOML tables:
+The same runs as TOML configs (`selfcal_scripts/configs/<run>.toml`, run by the same `run.sh`)
+keep working, and each run script is checked to make the engine do exactly what its config does
+(`selfcal_scripts/gates/config_equivalence.py runs`). The knobs below are named by their TOML keys,
+the names in the engine and in the cal files' attributes; the Python settings that carry them:
 
-| Was (driver dict / literal) | Now (TOML) |
+| TOML | Python |
 | --- | --- |
-| `frame_setting` (Detector / NumSub / NumCh / NumCol) | `[instrument]` |
-| `chs` (channel / window selection) | `[instrument]` `windows` / `channels` / `channel_range` / `subch_window` |
-| `calibration_kwargs` | `[calibration]` + per-block knobs in `[params]` (`reg_weight`, `poly_degree`/`poly_weight`) |
-| `lsqr_kwargs` | `[lsqr]` |
-| `mosaic_kwargs` | `[mosaic]` |
-| `FILE_SUFFIX`, oversample, NVMe staging | top-level `suffix` / `oversample` / `staging` / `keep_nvme` |
-| offset-model **structure** (adjacency choice, single vs dual poly, K=2 block) | the **mode** (`mode = "..."`; `selfcal/run/modes/`) |
+| `[instrument]` `detector`, `num_col`, `channels` / `windows` | `sc.SPHEREx(detector, num_col=)`, `jobs=spherex.channel(n)` / `spherex.window(...)` |
+| `[params] reg_weight`, `poly_degree` / `poly_weight` | `sc.continuum(smooth=, poly_prior=sc.Poly(degree, weight=))`, `sc.Offsets(smooth=, poly_prior=)` |
+| `damp_weight`, `damp_weight_line` | `sc.Sky(damping=)` per term |
+| `[calibration] outlier_thresh`, `outlier_group_*` | `sc.Fit(clip=sigma)`, `sc.Clip(sigma, per=..., variable=, edges=)` |
+| `[lsqr] iter_lim`, `atol` / `btol`, `damp`, `solver` | `sc.Fit(iterations, tolerance=, damp=, method=)` |
+| `[mosaic]`, `oversample`, `wavelength_coadd` | `sc.Coadd(clip=, std=, oversample=, instrument_maps=, ...)` |
+| `apply_n_threads`, `batch_size`, `cache_batch_size`, `coadd_batch_size` | `sc.Numerics(threads, batch=, mosaic_batch=, coadd_batch=)` |
+| `suffix` | `sc.Recipe(name=)` |
+| `cache_dir`, `staging`, `keep_nvme`, `hdd_io_limit`, `max_workers` | `sc.Compute(scratch, stage=, keep_staged=, io_limit=, workers=, coadd_workers=)` |
+| the mode (offset-model structure: adjacency, poly groups, the K=2 readout block) | the model: a preset (`sc.continuum`, `sc.spectral`, `sc.two_block`) or `sc.Model(...)` |
 
-The offset-model *structure* (which adjacency, poly groups, K=2 readout block) is
-chosen by the **mode**, not a flat kwarg — that is the one conceptual change. The
-schema + how to add a mode/instrument is in
-[`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md). The rest
-of this file explains what each knob *does*; the names match the TOML keys.
+The full table is in [From a TOML config](docs/guide/python-api.md#from-a-toml-config); the TOML
+schema, and how to add a mode or an instrument to it, in
+[`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md).
 
 ## Calibration model
 

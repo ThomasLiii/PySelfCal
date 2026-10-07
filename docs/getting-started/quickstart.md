@@ -1,24 +1,25 @@
 # Quickstart
 
-This page takes simulated exposures from raw FITS files to a calibrated mosaic, in four steps that
-together take well under a minute. The simulated camera is described by the built-in `grid`
-instrument, so the run needs no code: two TOML configs and the runner. Because the data are
-simulated, you can then compare what the solve recovered with what was injected.
+This page takes simulated exposures from raw FITS files to a calibrated mosaic in four steps that
+together take under a minute. A run is a short Python script: it describes the camera, the field
+its products belong to and the recipe to solve, then calls the field's actions. Because the data
+are simulated, you can then compare what the solve recovered with what was injected.
 
 Before you start, [install selfcal](installation.md). Run every command below from the root of the
-repository checkout, in the environment where selfcal is installed: `run.sh` starts the `python` it
-finds on your `PATH`. The outputs go to `quickstart_output/` in that directory; delete it when you
-are done. The [Glossary](../guide/glossary.md) defines the terms used here.
+repository checkout, in the environment where selfcal is installed. The outputs go to
+`quickstart_output/` in that directory; delete it when you are done. The
+[Glossary](../guide/glossary.md) defines the terms used here.
 
-The four files are in
+The files are in
 [`examples/quickstart/`](https://github.com/ThomasLiii/PySelfCal/tree/main/examples/quickstart):
 
 | File | What it does |
 | --- | --- |
 | `simulate.py` | writes the simulated exposures and the injected truth |
-| `reproject.toml` | the config of step 2, the `reproject` task |
-| `cal.toml` | the config of step 3, the `cal` task (calibration, then mosaic) |
+| `quickstart.py` | steps 2 and 3: the run (reprojection, then calibration and mosaic) |
 | `inspect_results.py` | reads the products, compares them with the truth and saves a figure |
+| `damping.py` | step 5: the same run with another damping |
+| `reproject.toml`, `cal.toml` | steps 2 and 3 as TOML configs for the runner, [the older form](#the-same-run-as-toml-configs) |
 
 ## 1. Simulate the exposures
 
@@ -50,7 +51,8 @@ image = sky + offset[chunk] + scalar + noise
 
 Extension 1 of each file holds the image and its celestial WCS (a tangent projection, north up, east
 left), extension 2 an integer data-quality (DQ) mask with bit 3 set on about 1 % of the pixels. That
-is the layout the `grid` instrument reads (`sci_ext = 1`, `dq_ext = 2`). `truth.npz` keeps the
+is the layout the camera of step 2 reads (`sc.Camera(..., dq_ext=2)`; the image in extension 1 is
+the default). `truth.npz` keeps the
 injected offsets and scalars for step 4.
 
 ??? example "simulate.py"
@@ -59,19 +61,54 @@ injected offsets and scalars for step 4.
     --8<-- "examples/quickstart/simulate.py"
     ```
 
-## 2. Reproject onto a common grid
+## 2. Describe the run
 
-```toml
---8<-- "examples/quickstart/reproject.toml"
+```python
+--8<-- "examples/quickstart/quickstart.py"
 ```
 
+The script defines three objects, then acts on them:
+
+- **`sc.Camera`** says how to read an exposure: the detector's shape, the grid of chunks that
+  carry the offsets (4 x 4 chunks of 16 x 16 pixels), the FITS extensions of the image (1, the
+  default) and of the DQ mask (2), and the tag that starts the product names. A camera whose
+  exposures need more (a reader function, per-pixel detector maps, header values) takes them as
+  further settings ([Bring your own telescope](../bring_your_own_telescope.md)); SPHEREx and Euclid
+  have instruments of their own, `sc.SPHEREx(detector)` and `sc.Euclid(...)`.
+- **`sc.Field`** is a directory of products for one instrument on one reference grid:
+  `quickstart_output/quickstart/` here, holding the grid (`ref.fits`, at `pixel_scale` arcsec per
+  pixel), the reprojected frames, the calibrations, the mosaics, and a log and a record of every
+  action. `compute=` describes the machine: `sc.Compute` names the scratch space for staged frames
+  and caches and the number of worker processes. Machine settings never change a product.
+- **`sc.Recipe`** is what to solve and how. `sc.continuum(...)` is the model: a sky map, an offset
+  for every frame and chunk with a smoothness prior between neighbouring chunks and a zero mean in
+  each frame, a scalar for every frame, and a damping that pulls the sky toward zero. `sc.Fit` is
+  the solve (at most 200 LSQR iterations, to a tolerance of 1e-8), `sc.Coadd` the mosaic (a
+  sigma-clipped mean at 3 sigma; `coadd=None` makes none) and `sc.Numerics` the summation layout
+  (threads and batch sizes, which change only the last bits of the products). The `name` ends the
+  product names.
+
+Every setting is checked when it is built, so a mistake stops the script at the line that made it:
+
+```pycon
+>>> sc.Fit(200, tolerence=1e-8)
+TypeError: Fit() got an unexpected keyword argument 'tolerence'. Did you mean 'tolerance'?
+>>> sc.Clip(2.0, per="chunks")
+ConfigError: Clip(per=...): expected one of 'frame', 'chunk' or ChunkGroups, got 'chunks'
+```
+
+`print` shows any of these objects in the form that rebuilds it. The actions start worker
+processes, which import the script; the `if __name__ == "__main__":` block keeps them from running
+the actions again, and selfcal refuses to start an action from a script without one.
+
+## 3. Reproject, calibrate and mosaic
+
 ```bash
-./selfcal_scripts/run.sh examples/quickstart/reproject.toml
+python examples/quickstart/quickstart.py
 ```
 
 ```text
-[run] log: quickstart_output/quickstart/logs/reproject_20261001-135447_2096939.log
-[run] task=reproject instrument=grid mode=None run_name=quickstart
+[selfcal] reproject quickstart: record quickstart_output/quickstart/records/reproject_20261002-152431_3042735.json
 Globbed 24 candidate exposures
 Reference WCS not found at quickstart_output/quickstart/ref.fits. Creating a new reference frame.
 ...
@@ -80,45 +117,15 @@ Mosaic shape: (125, 126)
 ...
 Batch reprojection completed. 24 frames successfully processed out of 24 (0 failed).
 ...
-[run] finished in 1.0 s
-```
-
-The `reproject` task finds the exposures (the files that match the glob `file_pattern` appended to
-each entry of `input_dirs`), then defines the reference grid: the smallest north-up, east-left grid
-with pixels of `resolution_arcsec` that contains every exposure, widened by `padding_pixels` on each
-side. It saves the grid as `ref.fits` (125 x 126 pixels here) and resamples the image and the DQ
-mask of every exposure onto it, writing one frame file per exposure and detector:
-`reprojected/exp_0000_det_00.h5` to `exp_0023_det_00.h5`. A frame file holds the resampled data on a
-square cut-out of the reference grid, the cut-out's position in the grid and the detector
-coordinates of every pixel, from which the solve finds each pixel's chunk ([frame file
-format](../guide/pipeline.md#reprojected-h5-schema)).
-
-A run writes its products under `<output_dir>/<run_name>/`, here `quickstart_output/quickstart/`,
-and a log of its console output to `logs/` there. The runner uses the paths in a config as written
-and does not change directory, so relative paths such as `output_dir`, `cache_dir` and `input_dirs`
-are relative to the directory you run from: from the repository root, everything lands in its
-`quickstart_output/`.
-
-## 3. Calibrate and mosaic
-
-```toml
---8<-- "examples/quickstart/cal.toml"
-```
-
-```bash
-./selfcal_scripts/run.sh examples/quickstart/cal.toml
-```
-
-An observation is the value of one frame on one pixel of the reference grid. The `continuum` mode
-models it as the sky at that pixel, plus the offset of the chunk it fell on, plus the frame's
-scalar; the `cal` task writes one equation per valid observation, adds the priors (smoothness
-between neighbouring chunks, a zero mean for each frame's offsets, the damping of the sky) and
-solves for all the unknowns at once with LSQR, an iterative sparse least-squares solver. It then
-subtracts the solved offsets and scalars from every frame and coadds the frames into the mosaic.
-
-```text
-[run] log: quickstart_output/quickstart/logs/cal_20261001-135449_2096969.log
-[run] task=cal instrument=grid mode=continuum run_name=quickstart
+Plan: calibrate quickstart  (quickstart_output/quickstart)
+  instrument  Camera((64, 64), dq_ext=2, tag='Sim')
+  recipe      Recipe(Model(sky=(Sky(damping=0.001),), offsets=(Offsets(smooth=0.1, mean_zero=True),)), ...)
+  sky term    continuum: damping 0.001
+  offsets     Offsets(smooth=0.1, mean_zero=True)
+  frames      24 in quickstart_output/quickstart/reprojected (staged (copy) to quickstart_output/cache/reproj_nvme_quickstart)
+  cal All                cal_Sim_Chunks4x4_All_quickstart.h5  (made)
+  mosaic All             mosaic_Sim_Chunks4x4_All_quickstart.fits  (made)
+[selfcal] calibrate quickstart: record quickstart_output/quickstart/records/calibrate_20261002-152434_3042735.json
 Copying 24 reproj files to NVMe (quickstart_output/cache/reproj_nvme_quickstart)...
 Processing All (Sim_Chunks4x4)...
 ...
@@ -134,49 +141,73 @@ itn   =     137   r2norm = 1.1e+01   acond = 9.3e+02   xnorm  = 1.6e+02
 Calibration saved to quickstart_output/quickstart/calibration/cal_Sim_Chunks4x4_All_quickstart.h5
 ...
 Mosaic saved to quickstart_output/quickstart/mosaic/mosaic_Sim_Chunks4x4_All_quickstart.fits
-Finished All (Sim_Chunks4x4) in 3.11 seconds.
 ...
 NVMe reproj cache cleaned up.
-[run] finished in 3.1 s
+Result of quickstart: 1 job(s)
+  All: cal quickstart_output/quickstart/calibration/cal_Sim_Chunks4x4_All_quickstart.h5
+       mosaic quickstart_output/quickstart/mosaic/mosaic_Sim_Chunks4x4_All_quickstart.fits
+  record: quickstart_output/quickstart/records/calibrate_20261002-152434_3042735.json
 ```
 
-- The task first copies the frames into `cache_dir`, the staging area (on a large run, a fast local
-  disk: hence "NVMe"), and deletes the copy at the end.
+**The reprojection.** `FIELD.reproject` finds the exposures that match the glob, then defines the
+reference grid: the smallest north-up, east-left grid with pixels of `pixel_scale` that contains
+every exposure, widened by `padding` pixels on each side. It saves the grid as `ref.fits`
+(125 x 126 pixels here) and resamples the image and the DQ mask of every exposure onto it
+(`method="interp"` is bilinear; the default, `"exact"`, conserves flux), writing one frame file per
+exposure and detector: `reprojected/exp_0000_det_00.h5` to `exp_0023_det_00.h5`. A frame file holds
+the resampled data on a square cut-out of the reference grid, the cut-out's position in the grid and
+the detector coordinates of every pixel, from which the solve finds each pixel's chunk ([frame file
+format](../guide/pipeline.md#reprojected-h5-schema)). Frames that exist are kept, so a second run
+reprojects nothing.
+
+**The plan.** `FIELD.plan(RECIPE)` checks what `calibrate` would do without computing anything:
+the frames, the model against the instrument's geometry, the functions the worker processes will
+import, and each product, to be made, reused or refused. `calibrate` makes the same checks first,
+so a run that cannot finish stops before it starts. From the shell,
+`selfcal plan examples/quickstart/quickstart.py` prints the plan of a script's `FIELD` and `RECIPE`.
+
+**The solve.** An observation is the value of one frame on one pixel of the reference grid. The
+model of `sc.continuum` is the sky at that pixel, plus the offset of the chunk the pixel fell on,
+plus the frame's scalar; `calibrate` writes one equation per valid observation, adds the priors
+(smoothness between neighbouring chunks, a zero mean for each frame's offsets, the damping of the
+sky) and solves for all the unknowns at once with LSQR, an iterative sparse least-squares solver.
+It then subtracts the solved offsets and scalars from every frame and coadds the frames into the
+mosaic.
+
+- The action first copies the frames into the scratch space, the staging area (on a large run, a
+  fast local disk: hence "NVMe"), and deletes the copy at the end.
 - The 11,769 unknowns are the 11,361 pixels of the sky map that at least one frame observes, 384
   offsets (24 frames x 16 chunks) and 24 scalars. The other 4,389 pixels of the 125 x 126 grid have
   no data and are left out of the solve.
-- `istop = 2` means that LSQR stopped because the solution met the `atol` tolerance, here after 137
-  iterations; `istop = 7` would mean it ran out of iterations (`iter_lim`).
+- `istop = 2` means that LSQR stopped because the solution met the tolerance, here after 137
+  iterations; `istop = 7` would mean it ran out of iterations.
 
-Both products are named after the stem `<tag>_Chunks<rows>x<cols>_<job><suffix>`. A job is one solve
-of the instrument's loop (SPHEREx runs one per channel or subchannel window); the `grid` instrument
-has a single job, `All`:
+**The products** are named after the stem `<tag>_Chunks<rows>x<cols>_<job>_<recipe name>`. A job is
+one solve of the instrument's loop (SPHEREx runs one per channel or subchannel window); a camera has
+a single job, `All`:
 
 - `calibration/cal_Sim_Chunks4x4_All_quickstart.h5`, the solution: the sky map on the reference grid
   with its coverage, the offset of every frame and chunk, the scalar of every frame and the list of
-  frames. Read it with [`CalFile`][selfcal.io.calfile.CalFile]
-  ([format](../guide/pipeline.md#cal_h5-schema-multi-chunk-map)).
+  frames. Read it with [`CalFile`][selfcal.io.calfile.CalFile], or with `result.cal()` from the
+  result `calibrate` returns ([format](../guide/pipeline.md#cal_h5-schema-multi-chunk-map)).
 - `mosaic/mosaic_Sim_Chunks4x4_All_quickstart.fits`, the coadd of the calibrated frames: the mean
   (`MEAN_MAP`), the standard deviation (`STD_MAP`) and the sigma-clipped mean (`SC_MEAN_MAP`), each
   followed by its summed weight (with unit pixel weights, the number of frames that contribute to
-  the pixel)
-  ([format](../guide/pipeline.md#mosaic-fits-schema)).
+  the pixel) ([format](../guide/pipeline.md#mosaic-fits-schema)).
 
-If you run `cal.toml` again, the task finds the calibration file, prints `Calibration file ...
-already exists. Skipping calibration.` and only remakes the mosaic. To solve again with other
-settings, change `suffix` or delete the file.
+Next to each product, `<product>.json` records the inputs it was made from. `records/` holds a
+record of every action (its settings with every default filled in, the code version, its products),
+which `selfcal rerun RECORD` runs again, and `logs/` the console output of every run.
 
-!!! tip "Check a config without running it"
+**Running again.** Run the script again and the plan shows both products as `(reused)`: they exist
+and were made by the same inputs, so nothing is computed. Change the recipe but keep its name, and
+the run stops before computing anything, naming the difference:
 
-    `./selfcal_scripts/run.sh examples/quickstart/cal.toml --dry-run` reads the config, resolves the
-    instrument's jobs and the mode, and stops:
-
-    ```text
-    [run] task=cal instrument=grid mode=continuum run_name=quickstart
-    [dry-run] 1 job(s): ['All']
-    [dry-run] mode=continuum mosaic_mode=full requires=() tiling=none
-    [dry-run] config OK
-    ```
+```text
+ConfigError: mosaic_Sim_Chunks4x4_All_quickstart.fits exists but was made with different inputs
+(coadd.clip: 3.0 -> 2.5). Give the recipe its own name (recipe.replace(name=...)), or pass
+overwrite=True to make it again
+```
 
 ## 4. Inspect the results
 
@@ -239,26 +270,23 @@ colour bar:
 
 ## 5. Change a setting
 
-The damping weight in `cal.toml` is small, 0.001. To see what it does, copy the config into the
-output directory and give the copy the value of the production SPHEREx configs, 0.1, and a new
-suffix, so that the solve runs again into new files:
+The damping in `quickstart.py` is small, 0.001. `damping.py` runs the same recipe with the damping
+of the production SPHEREx recipes, 0.1, under a name of its own, so that its products are new files
+next to the first ones:
 
-```bash
-cp examples/quickstart/cal.toml quickstart_output/cal_damp0p1.toml
+```python
+--8<-- "examples/quickstart/damping.py"
 ```
 
-```toml
-suffix = "_damp0p1"        # in quickstart_output/cal_damp0p1.toml
-damp_weight = 0.1
-```
+`.replace(...)` returns a copy of the recipe with the given settings changed; every setting has
+the same method. `damping.py` imports `FIELD` and the quickstart's `RECIPE` from `quickstart.py`: a
+run script is a module, so a variant builds on it rather than copying it. Its own recipe is called
+`RECIPE` too, so `selfcal plan examples/quickstart/damping.py` plans what it runs.
 
 ```bash
-./selfcal_scripts/run.sh quickstart_output/cal_damp0p1.toml
+python examples/quickstart/damping.py
 python examples/quickstart/inspect_results.py --suffix _damp0p1
 ```
-
-The paths in the copy still work: they are relative to the directory you run from, not to the
-config file.
 
 ```text
 Offsets, gauge removed: correlation 0.9794, rms difference 0.0606 (rms of the injected offsets 0.2954)
@@ -266,20 +294,37 @@ Scalars: recovered - injected = +5.0607 on average, rms about it 0.0979
 Mosaic - injected sky: median -5.0382; rms about it 0.2195 on 11361 pixels
 ```
 
-The damping adds, for every pixel of the sky map, `damp_weight` times its number of observations
+The damping adds, for every pixel of the sky map, the damping times its number of observations
 times the square of its value to the quantity the solve minimises. At 0.1 the solve lowers that
 penalty by moving part of the sky into the offsets: most of the sky's gradient becomes a pattern
 fixed on the detector, and the residual panel of `results_damp0p1.png` shows it as a large-scale
 slope across the field.
 
+## The same run as TOML configs
+
+Before the Python API, a run was a TOML config started by the runner, and the shipped configs keep
+working that way. `reproject.toml` and `cal.toml` are steps 2 and 3 in that form, and they make the
+same products, byte for byte. Delete `quickstart_output/quickstart/` before you try them, or the
+runner finds the products of `quickstart.py`:
+
+```bash
+./selfcal_scripts/run.sh examples/quickstart/reproject.toml
+./selfcal_scripts/run.sh examples/quickstart/cal.toml
+```
+
+`run.sh` starts the `python` it finds on your `PATH` and also runs Python run scripts
+(`--dry-run` prints the plan). `selfcal convert examples/quickstart/cal.toml` writes the Python
+form of a config and checks that it runs identically; [Run configuration](../guide/configuration.md)
+documents the TOML schema.
+
 ## Next steps
 
-- [Run configuration](../guide/configuration.md): the config schema, the other tasks and modes,
-  and the `[model]` table that spells out a model term by term.
+- [The Python API](../guide/python-api.md): every setting, the instruments and their jobs, big
+  fields (tiles and passes), products, records and reruns, and the command line.
 - [How selfcal works](../guide/concepts.md): the model, the priors and the mosaic.
-- [Bring your own telescope](../bring_your_own_telescope.md): your own exposures with the `grid`
-  instrument, a model of your own, or an instrument class.
+- [Bring your own telescope](../bring_your_own_telescope.md): your own exposures with `sc.Camera`,
+  a model of your own, or an instrument class.
 - [Tutorials and examples](tutorials.md): notebooks on SPHEREx and Euclid data, and end-to-end
   examples for other kinds of instrument.
-- `tests/test_quickstart_example.py` runs these four steps in a temporary directory;
-  `pytest -q tests/test_quickstart_example.py` takes 10 to 15 seconds.
+- `tests/test_quickstart_example.py` runs these steps, in Python and as TOML configs, in temporary
+  directories and checks that both forms make the same products.

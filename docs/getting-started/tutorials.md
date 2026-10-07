@@ -2,21 +2,23 @@
 
 Beyond the [quickstart](quickstart.md), the repository holds three kinds of worked material:
 notebooks that run the production recipes on real data, small end-to-end examples that each adapt
-selfcal to a different kind of instrument, and the run configs of the production campaigns.
+selfcal to a different kind of instrument, and the run scripts of the production campaigns.
 
 ## Notebooks
 
-Both notebooks drive the run engine with TOML configs written in the notebook, read the
-calibration with [`CalFile`][selfcal.io.calfile.CalFile] and look at the mosaic. Their paths point
-at frames already reprojected on the processing host. Elsewhere, edit the paths in the first cell
-or set the `SELFCAL_DEMO_FRAMES`, `SELFCAL_DEMO_OUTPUT`, `SELFCAL_DEMO_CACHE` and
-`SELFCAL_DEMO_WORKERS` environment variables. Each has a `REPROJECT` switch, off by default, that
-reprojects raw exposures first.
+Both notebooks configure their runs with the Python API (an instrument, an `sc.Field`, an
+`sc.Recipe`, then `field.calibrate`), read the calibration and the mosaic through the result
+(`result.cal()`, a [`CalFile`][selfcal.io.calfile.CalFile]; `result.mosaic()`) and look at them.
+Their paths point at frames already reprojected on the processing host. Elsewhere, edit the paths
+in the first cell or set the `SELFCAL_DEMO_FRAMES`, `SELFCAL_DEMO_OUTPUT`, `SELFCAL_DEMO_CACHE`
+and `SELFCAL_DEMO_WORKERS` environment variables (the SPHEREx notebook also reads
+`SELFCAL_DEMO_N_FRAMES` and `SELFCAL_DEMO_D4_FIELD`). Each has a `REPROJECT` switch, off by
+default, that reprojects raw exposures first.
 
 | Notebook | What it shows |
 | --- | --- |
-| [`spherex_selfcal_demo.ipynb`](https://github.com/ThomasLiii/PySelfCal/blob/main/notebooks/spherex_selfcal_demo.ipynb) | One SPHEREx channel end to end: the `cal` task with the `continuum` mode on 300 Detector 3 frames (`SELFCAL_DEMO_N_FRAMES` changes the number); the contents of the calibration and of the mosaic; the [`ModelSpec`][selfcal.models.spec.ModelSpec] the mode built; and a spectral model on Detector 4 (a 3.29 µm aromatic template and a polynomial-basis offset), built and checked against the instrument without solving. |
-| [`euclid_mosaic.ipynb`](https://github.com/ThomasLiii/PySelfCal/blob/main/notebooks/euclid_mosaic.ipynb) | Euclid NISP with the EDFN recipe written as a `[model]` table on the `euclid` instrument: a detector-fixed pattern per detector on a grid of blocks, per-frame column and row stripes, a per-frame scalar; the fitted patterns and the mosaic, on 3 exposures x 16 detectors. |
+| [`spherex_selfcal_demo.ipynb`](https://github.com/ThomasLiii/PySelfCal/blob/main/notebooks/spherex_selfcal_demo.ipynb) | One SPHEREx channel end to end: `sc.continuum` on 300 Detector 3 frames; the contents of the calibration and of the mosaic; the model the preset builds, its [`ModelSpec`][selfcal.models.spec.ModelSpec] and the plan of the run; and a spectral model on Detector 4 (a 3.29 µm aromatic template and a polynomial-basis offset), checked with `field.plan` without solving. |
+| [`euclid_mosaic.ipynb`](https://github.com/ThomasLiii/PySelfCal/blob/main/notebooks/euclid_mosaic.ipynb) | Euclid NISP with the EDFN recipe written as an `sc.Model` on `sc.Euclid`: a detector-fixed pattern per detector on a grid of blocks, per-frame column and row stripes, a per-frame scalar; the fitted patterns and the mosaic, on 3 exposures x 16 detectors. |
 
 Run them with Jupyter from the repository root, in an environment where selfcal is installed
 (`pip install -e .` plus `jupyter`).
@@ -24,10 +26,11 @@ Run them with Jupyter from the repository root, in an environment where selfcal 
 ## One instrument, one example
 
 [`tests/test_any_telescope.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_any_telescope.py)
-calibrates seven different set-ups end to end on synthetic data. Each is a config and a few
-functions, with no change to the package, and each test checks that the injected signal is
-recovered. They are the best templates for a new instrument or model;
-[Bring your own telescope](../bring_your_own_telescope.md#3-examples-each-is-a-config-plus-functions)
+calibrates seven different set-ups end to end on synthetic data. Each is an instrument (a camera,
+or a small `sc.Instrument` subclass), a model and a few functions, with no change to the package,
+and each test checks that the injected signal is recovered. They are the best templates for a new
+instrument or model;
+[Bring your own telescope](../bring_your_own_telescope.md#3-examples-each-is-a-few-lines-of-python)
 explains every one.
 
 | Test | Set-up |
@@ -42,18 +45,28 @@ explains every one.
 
 Run one with `pytest -q tests/test_any_telescope.py -k polarimeter`.
 
-## The runner on synthetic exposures
+## Runs on synthetic exposures
 
+[`tests/test_run_products.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_run_products.py)
+runs the Python API's actions on a toy field: a product reused, refused and adopted, a record run
+again byte for byte, a comparison, a detached run, and the command line (`selfcal plan`,
+`selfcal adopt`).
 [`tests/test_runner_e2e_toy.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_runner_e2e_toy.py)
-writes synthetic FITS exposures and runs every task of the run engine on them, on the built-in
-`grid` instrument: `reproject`, `cal` (with the mosaic), `mosaic` on an existing calibration, and
-`cal` with a `[tiling]` table (two tiles and the Fisher stitch). It is the reference for a run
-that goes beyond the quickstart. `python tests/test_runner_e2e_toy.py` runs it as a script.
+runs every task of the TOML runner on synthetic FITS exposures with the built-in `grid` instrument:
+`reproject`, `cal` (with the mosaic), `mosaic` on an existing calibration, and `cal` with a
+`[tiling]` table (two tiles and the Fisher stitch). `python tests/test_runner_e2e_toy.py` runs it
+as a script.
 
-## Production configs
+## Production runs
 
+[`selfcal_scripts/runs/`](https://github.com/ThomasLiii/PySelfCal/tree/main/selfcal_scripts/runs)
+holds the run scripts of the SPHEREx campaigns: continuum channel maps (`numcol3_maps.py`, all 204
+maps of the current recipe), spectral line fits, tiled fields and N-pass chains. They share the
+fields, recipes and tilings of
+[`selfcal_scripts/recipes/spherex.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/selfcal_scripts/recipes/spherex.py)
+and the machine of `selfcal_scripts/recipes/site.py`, point at data on the processing host, and
+show complete, tested settings for each kind of run: `selfcal plan selfcal_scripts/runs/<name>.py`
+prints what one would do.
 [`selfcal_scripts/configs/`](https://github.com/ThomasLiii/PySelfCal/tree/main/selfcal_scripts/configs)
-holds the TOML configs of the SPHEREx campaigns: continuum channel maps, spectral line
-fits, tiled fields and N-pass chains. They point at data on the processing host but show complete,
-tested settings for each kind of run. [Run configuration](../guide/configuration.md) lists them and
+holds the same runs as TOML configs; [Run configuration](../guide/configuration.md) lists them and
 documents every key.

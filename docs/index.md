@@ -5,9 +5,8 @@ it solves jointly for the sky and for the instrument's additive offsets, as one 
 least-squares problem solved iteratively with LSQR, then coadds the calibrated frames into a mosaic.
 It was built for SPHEREx, an all-sky spectral survey through a linear variable filter (LVF), and it
 also calibrates Euclid NISP exposures (16 detectors each). Other imagers need no change to the
-package: a single-detector FITS camera is described entirely in the run config (the built-in `grid`
-instrument), and an instrument with its own geometry or raw format is a small `Instrument` subclass
-with five required methods.
+package: a single-detector FITS camera is one `sc.Camera(...)`, and an instrument with its own
+geometry or raw format is a small `sc.Instrument` subclass.
 
 ## The model
 
@@ -37,92 +36,58 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
 The data alone do not fix every unknown: adding a constant to the sky and subtracting it from every
 per-frame scalar leaves every observation unchanged. Priors settle what the data leave free:
 damping, smoothness between neighbouring chunks, a polynomial shape along a chunk axis, a mean-zero
-anchor, or any linear rows you write. A run config picks a preset recipe (a *mode*) or spells the
-terms out in a `[model]` table; both become a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
+anchor, or any linear rows you write. A model is a preset (`sc.continuum()`, `sc.spectral(lines)`)
+or spelled out term by term (`sc.Model(sky=[...], offsets=[...], priors=[...])`); the run engine
+receives it as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 [How selfcal works](guide/concepts.md) for the terms and priors, and
 [Bring your own telescope](bring_your_own_telescope.md) to write your own.
 
 ## What a run looks like
 
-The library is used from Python (`import selfcal`); runs go through the run engine, which reads one
-TOML file per run. This config calibrates a 2048 x 2048 camera with the `continuum` mode: one sky
-value per pixel, free offsets on an 8 x 8 grid of chunks with a mean-zero anchor per frame, and a
-per-frame scalar.
-
-```toml
-task = "cal"                       # solve, then coadd the mosaic
-mode = "continuum"                 # the calibration recipe
-output_dir = "/data/runs/"
-run_name = "mycam_field1"          # products go to <output_dir>/<run_name>/
-resolution_arcsec = 1.0            # pixel scale of the reference grid
-cache_dir = "/scratch/selfcal/"    # staging area for the frames
-
-[instrument]                       # the telescope: here the config-only grid imager
-name = "grid"
-tag = "MyCam"                      # product-name tag
-detector_shape = [2048, 2048]      # rows, columns
-chunks = [8, 8]                    # offsets on an 8 x 8 grid of detector chunks
-dq_ext = 2                         # FITS extension of the bit mask
-
-[params]                           # knobs of the mode
-reg_weight = 0.1                   # smoothness between neighbouring chunks
-
-[calibration]                      # keywords of the system build (setup_lsqr)
-apply_weight = false
-offset_regularization = true       # enables the reg_weight smoothness rows
-weighted_damping = true            # enables the damp_weight rows
-damp_weight = 0.1                  # coverage-weighted damping of the sky
-
-[lsqr]                             # keywords of the solve (apply_lsqr)
-solver = "lsqr"
-damp = 0
-iter_lim = 100
-
-[mosaic]                           # keywords of the coadd (make_mosaic)
-apply_weight = false
-make_std_map = true
-apply_sigma_clipping = true
-sigma = 3.0
-```
-
-```bash
-./selfcal_scripts/run.sh cal.toml --dry-run   # check the config: resolve the jobs and the mode
-./selfcal_scripts/run.sh cal.toml             # run (from the repository root)
-```
-
-The same calibration configured in Python, with settings that are checked when they are built (see
-[The Python API](guide/python-api.md); its defaults are production's, such as 50-frame batches,
-where the TOML above leaves the library's):
+A run is a short Python script. This one calibrates a 2048 x 2048 camera with the continuum model:
+one sky value per pixel, free offsets on an 8 x 8 grid of chunks with a mean-zero anchor per frame,
+and a per-frame scalar.
 
 ```python
 import selfcal as sc
 
-camera = sc.Camera((2048, 2048), chunks=(8, 8), dq_ext=2, tag="MyCam")
-field = sc.Field("/data/runs/mycam_field1", camera, pixel_scale=1.0, compute=sc.Compute("/scratch/selfcal"))
-recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(100, clip=3.0), coadd=sc.Coadd(clip=3.0))
+camera = sc.Camera((2048, 2048), chunks=(8, 8), dq_ext=2, tag="MyCam")   # how to read an exposure
+field = sc.Field("/data/runs/mycam_field1", camera, pixel_scale=1.0,         # the data set and its directory
+                 compute=sc.Compute("/scratch/selfcal", workers=16))       # the machine
+recipe = sc.Recipe(sc.continuum(smooth=0.1),     # sky + offsets smooth between chunks + per-frame scalar
+                   fit=sc.Fit(100),              # at most 100 LSQR iterations
+                   coadd=sc.Coadd(clip=3.0))     # mean, std and 3-sigma clipped mean maps
 
 if __name__ == "__main__":
-    print(field.plan(recipe))            # the jobs, products and frames, the model resolved; nothing run
-    result = field.calibrate(recipe)
+    field.reproject("/data/mycam/field1/*.fits")   # the reference grid; every exposure resampled onto it
+    print(field.plan(recipe))                       # what will run, checked; nothing is computed
+    result = field.calibrate(recipe)                # solve, then coadd the mosaic
 ```
 
-The `task` key selects the step; a job is one unit of the instrument's loop (a SPHEREx channel or
-window; the `grid` instrument has one, `All`). Paths are relative to `<output_dir>/<run_name>/`.
+Every setting is checked when it is built, so a misspelt keyword or an impossible value stops the
+script at the line that made it. The field's actions:
 
-| `task` | What it does | Writes |
+| Action | What it does | Writes |
 | --- | --- | --- |
-| `reproject` | Reads the raw exposures, defines the reference grid and resamples every frame onto it | `ref.fits`, `reprojected/exp_*_det_*.h5` |
-| `cal` | Builds and solves the system for each job, then coadds the mosaic. With a `[tiling]` table it solves the field tile by tile and stitches the tile calibrations (no mosaic) | `calibration/cal_*.h5`, `mosaic/mosaic_*.fits` |
-| `mosaic` | Coadds the frames with an existing calibration | `mosaic/mosaic_*.fits` |
-| `npass` | The N-pass alternating solve: a `cal` run, then exact sky and offset passes in turn | a `calibration/cal_*.h5` file per pass |
-| `precompute` | Runs the instrument's rarely needed geometry generator | SPHEREx: the LVF arc parameters, `lvf_params_D<n>.npy` in the package's data directory |
+| `field.reproject(exposures)` | Reads the raw exposures, defines the reference grid and resamples every frame onto it | `ref.fits`, `reprojected/exp_*_det_*.h5` |
+| `field.calibrate(recipe)` | Builds and solves the system for each job, then coadds its mosaic. `tiles=` solves the field tile by tile and stitches the tiles; `passes=` runs the N-pass alternating solve | `calibration/cal_*.h5`, `mosaic/mosaic_*.fits` |
+| `field.mosaic(recipe, cal=)` | Coadds the frames with an existing calibration | `mosaic/mosaic_*.fits` |
+| `field.plan(recipe)` | Checks what `calibrate` would do without computing anything: the frames, the model against the instrument, each product (made, reused or refused) | nothing |
+| `spherex.precompute_lvf(detectors)` | SPHEREx's rarely needed geometry generator | the LVF arc parameters, `lvf_params_D<n>.npy` |
 
-The config above reads the frames that an earlier `reproject` run with the same `output_dir`,
-`run_name` and `[instrument]` table wrote, and writes `calibration/cal_MyCam_Chunks8x8_All.h5` (the
-sky map, the offsets of every frame and chunk, the per-frame scalars and the coverage; read it with
+A job is one unit of the instrument's loop (a SPHEREx channel or window; a camera has one, `All`).
+Paths are relative to the field's directory. The run above writes
+`calibration/cal_MyCam_Chunks8x8_All.h5` (the sky map, the offsets of every frame and chunk, the
+per-frame scalars and the coverage; read it with `result.cal()` or
 [`CalFile`][selfcal.io.calfile.CalFile]) and `mosaic/mosaic_MyCam_Chunks8x8_All.fits` (mean,
 standard-deviation and sigma-clipped mean maps, each with a weight map; SPHEREx mosaics add
-wavelength maps). Each run also writes a log to `logs/`.
+wavelength maps). A recipe's `name` ends the product names. Each action also writes a log to
+`logs/`, a record to `records/` and, next to each product, `<product>.json` with what it was made
+from: a product that exists is reused only when it was made by the same inputs.
+
+Runs can also be written as TOML configs, the form of the shipped production configs, which keep
+working ([Run configuration](guide/configuration.md)); `selfcal convert run.toml` writes the Python
+form of a config and checks that it runs identically.
 
 ## Where to go next
 
@@ -130,12 +95,12 @@ wavelength maps). Each run also writes a log to `logs/`.
 - [Quickstart](getting-started/quickstart.md): a first run on simulated exposures, from the raw
   FITS files to the mosaic, checked against the injected truth.
 - [How selfcal works](guide/concepts.md): the method, the model, the priors and the mosaic.
-- [The Python API](guide/python-api.md): runs configured in Python: the field, the model, the recipe,
-  the machine, plans, records and results.
-- [Run configuration](guide/configuration.md): the config schema, the tasks, the modes and the
-  `[model]` table.
+- [The Python API](guide/python-api.md): the field, the instruments, the model, the recipe, the
+  machine, big fields, products, records and reruns, the command line.
+- [Run configuration](guide/configuration.md): the TOML form of a run: the config schema, the
+  tasks, the modes and the `[model]` table.
 - [Bring your own telescope](bring_your_own_telescope.md): a new instrument or model, from
-  configuration alone to an `Instrument` subclass.
+  `sc.Camera` to an `sc.Instrument` subclass.
 - [Pipeline runbook](guide/pipeline.md): tuning knobs, the N-pass solve, staging, and the on-disk
   formats of the frame, calibration and mosaic files.
 - [API reference](reference/index.md): every module of `selfcal`, the run engine

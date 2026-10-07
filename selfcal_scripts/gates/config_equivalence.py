@@ -23,6 +23,7 @@ Usage:
   config_equivalence.py baseline <out_dir> [config.toml ...]   # default: every shipped config
   config_equivalence.py compare <dir_a> <dir_b>
   config_equivalence.py typed [config.toml ...]
+  config_equivalence.py runs [name ...]        # selfcal_scripts/runs/<name>.py vs configs/<name>.toml
 """
 import contextlib
 import glob
@@ -294,6 +295,47 @@ def typed(paths):
     return bad
 
 
+def runs(names=None):
+    """Each run script ``selfcal_scripts/runs/<name>.py`` against the TOML config it replaces,
+    ``selfcal_scripts/configs/<name>.toml``: the run engine must do the same with both."""
+    import importlib
+
+    from selfcal.run.config import load_config
+    from selfcal.run.equivalence import differences
+    from selfcal.run.lower import lower
+    folder = os.path.join(REPO, 'selfcal_scripts', 'runs')
+    names = names or sorted(f[:-3] for f in os.listdir(folder) if f.endswith('.py') and not f.startswith('_'))
+    bad = 0
+    _memoize_geometry()
+    for name in names:
+        toml = os.path.join(REPO, 'selfcal_scripts', 'configs', f'{name}.toml')
+        if not os.path.exists(toml):
+            print(f'NO TOML {name} (a run script of its own)')
+            continue
+        try:
+            cfg = load_config(toml)
+            module = importlib.import_module(f'selfcal_scripts.runs.{name}')
+            if cfg.task == 'precompute':
+                d = diff(_norm(dict(cfg.instrument_cfg, name=None)),
+                         _norm({**module.PRECOMPUTE, 'lvf_output_dir': None, 'name': None}))
+                d = [x for x in d if 'lvf_output_dir' not in x]
+            elif cfg.task == 'reproject':
+                d = differences(cfg, module.FIELD.reprojection_config(**module.REPROJECT))
+            else:
+                lowered = lower(module.FIELD, module.RECIPE, task='mosaic' if cfg.task == 'mosaic' else 'cal',
+                                **module.RUN)
+                d = (differences(cfg, lowered[0].cfg) if len(lowered) == 1
+                     else [f'{len(lowered)} engine runs for one TOML run'])
+        except Exception as e:
+            d = [f'ERROR {type(e).__name__}: {str(e)[:200]}']
+        print(('EQUAL   ' if not d else 'DIFFERS ') + name)
+        for line in d[:12]:
+            print('    ', line)
+        bad += bool(d)
+    print(f'ALL {len(names)} RUN SCRIPTS EQUAL THEIR CONFIGS' if not bad else f'{bad} of {len(names)} DIFFER')
+    return bad
+
+
 if __name__ == '__main__':
     sys.path.insert(0, REPO)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
@@ -303,5 +345,7 @@ if __name__ == '__main__':
         sys.exit(1 if compare_dirs(sys.argv[2], sys.argv[3]) else 0)
     elif cmd == 'typed':
         sys.exit(1 if typed(sys.argv[2:] or SHIPPED) else 0)
+    elif cmd == 'runs':
+        sys.exit(1 if runs(sys.argv[2:] or None) else 0)
     else:
         print(__doc__)

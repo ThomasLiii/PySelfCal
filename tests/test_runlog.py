@@ -23,7 +23,9 @@ CHILD = textwrap.dedent('''
     from selfcal.run.runlog import start_run_log
 
     def work(tag):
-        print(f"worker-print {{tag}} pid {{os.getpid()}}")
+        # flushed: a pool's exit terminates its workers, and a line still in a worker's stdout
+        # buffer was never written (the log can only hold what the worker wrote)
+        print(f"worker-print {{tag}} pid {{os.getpid()}}", flush=True)
         sys.stderr.write(f"worker-stderr {{tag}}\\n")
         return tag
 

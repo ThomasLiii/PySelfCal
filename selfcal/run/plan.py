@@ -201,7 +201,7 @@ def _frames_in(path):
 
 
 def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, cal=None,
-              compute=None, overwrite=False, check_workers=True, check_products=True) -> Plan:
+              compute=None, overwrite=False, check_workers=True, check_products=True, allow_no_frames=False) -> Plan:
     """The :class:`Plan` of ``action`` (``"calibrate"`` or ``"mosaic"``) on ``field``; raises
     :class:`~selfcal.config.base.ConfigError` for anything that would fail later, including an
     existing product that was not made by the same inputs (see :mod:`selfcal.run.products`;
@@ -234,7 +234,10 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         raise ConfigError(f"frames=: {len(first.frame_files) - len(found)} of the {len(first.frame_files)} frames "
                           f"are not in {where}")
     if not found and action != 'mosaic':
-        raise ConfigError(f"no frames in {where} (reproject the exposures first: field.reproject(...))")
+        missing = f"no frames in {where} (reproject the exposures first: field.reproject(...))"
+        if not allow_no_frames:                   # only field.plan() shows a plan without frames
+            raise ConfigError(missing)
+        plan.notes.append(f"{missing}; the model was checked against the instrument without them")
     n = len(found) if first.n_frames is None else min(first.n_frames, len(found))
     how = None
     if first.reproj_override is None:
@@ -264,6 +267,7 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         if passes is not None:
             _check_passes(ctx, recipe, passes, low)
         _check_instrument_maps(ctx, recipe, compute)
+        _check_smoothing(ctx, cfg)
     used = found if first.n_frames is None else found[:n]
     plan.frame_list = list(used)
     plan.book = Book(field, recipe, passes=passes, tiles=tiles)
@@ -327,6 +331,23 @@ def _summary(products, would=False, action='calibrate'):
                      + remedy(state, input_cal=input_cal, tile=tile))
     head = 'the run would refuse existing products' if would else 'existing products refused'
     return f"{head}:\n  " + '\n  '.join(lines)
+
+
+def _check_smoothing(ctx, cfg):
+    """An offset term smoothed (``smooth`` > 0) on a chunk map with no axis to smooth along would add
+    no smoothness rows at all: say so instead."""
+    from ..models.spec import DETECTOR_MAP
+    for term in (cfg.model or {}).get('offset', ()):
+        if not term.get('reg_weight') or term.get('adjacency') is not None:
+            continue
+        name = term.get('map')
+        if name == DETECTOR_MAP:
+            continue                               # one chunk: nothing to smooth
+        cm = ctx.geom.chunk_map if name is None else ctx.geom.chunk_maps.get(name)
+        if cm is not None and not tuple(cm.adjacency_axes or ()):
+            raise ConfigError(f"Offsets({term.get('name') or ''!r}, smooth={term['reg_weight']}): the chunk map "
+                              f"{cm.name!r} declares no axes to smooth along; give smooth_along=(...) (its axes: "
+                              f"{list(cm.axes.names) if cm.axes is not None else []}), or the map adjacency_axes")
 
 
 def _check_instrument_maps(ctx, recipe, compute):

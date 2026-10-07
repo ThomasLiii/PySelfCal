@@ -66,7 +66,7 @@ _EXPORTS = {
     'compare': 'selfcal.run.compare',
     **dict.fromkeys(('Result', 'MosaicFile'), 'selfcal.run.result'),
     'Plan': 'selfcal.run.plan',
-    **dict.fromkeys(('Instrument', 'Job', 'Geometry', 'ChunkMap', 'JobGeometry', 'ExposureLayout'),
+    **dict.fromkeys(('Instrument', 'Job', 'Geometry', 'ChunkMap', 'ChunkAxes', 'JobGeometry', 'ExposureLayout'),
                     'selfcal.instruments.contract'),
     'Camera': 'selfcal.instruments.camera',
     'SPHEREx': 'selfcal.instruments.spherex.settings',
@@ -109,6 +109,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .core.layout import SystemLayout
     from .instruments.camera import Camera
     from .instruments.contract import (
+        ChunkAxes,
         ChunkMap,
         ExposureLayout,
         Geometry,
@@ -165,8 +166,8 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .run.compare import compare
     from .run.compute import Compute, Tuning
     from .run.field import Field, Submitted, frames_in
-    from .run.records import rerun
     from .run.plan import Plan
     from .run.recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
+    from .run.records import rerun
     from .run.result import MosaicFile, Result
     from .run.schedule import Passes, Refit, Tiles

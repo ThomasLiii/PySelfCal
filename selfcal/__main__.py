@@ -1,7 +1,8 @@
 """The selfcal command line: ``selfcal <command> ...`` (or ``python -m selfcal ...``).
 
   selfcal run SCRIPT [ARGS...]         run a script with the BLAS / OpenMP threads pinned before numpy loads
-  selfcal plan SCRIPT                  print the plan of a run script (FIELD, RECIPE and RUN; nothing is run)
+  selfcal plan SCRIPT                  print the plan of a run script: its FIELD (or FIELDS), RECIPE and RUN (the
+                                       keyword arguments of calibrate), defined at its top level; nothing is run
   selfcal adopt SCRIPT                 record the existing products of a run script as its own (made by TOML)
   selfcal convert RUN.toml [-o RUN.py] write the Python form of a TOML run config, checked to run identically
   selfcal rerun RECORD.json            run an action again from its record (--overwrite: make its products again)
@@ -40,26 +41,45 @@ def _load_script(path):
 
 
 def _run_settings(module, accepted):
-    return {k: v for k, v in module.RUN.items() if k in accepted}
+    """The keyword arguments of the script's action (its RUN; none without one)."""
+    return {k: v for k, v in getattr(module, 'RUN', {}).items() if k in accepted}
+
+
+def _fields(module):
+    """The fields of a run script: its FIELDS (a campaign), or its FIELD."""
+    return list(module.FIELDS) if hasattr(module, 'FIELDS') else [module.FIELD]
+
+
+def _has_run(module):
+    """A run script: FIELD (or FIELDS) with RECIPE and/or RUN at its top level."""
+    return (hasattr(module, 'FIELD') or hasattr(module, 'FIELDS')) and (hasattr(module, 'RECIPE')
+                                                                        or hasattr(module, 'RUN'))
 
 
 def _plan(args):
     module = _load_script(args.script)
-    if hasattr(module, 'RUN') and hasattr(module, 'FIELD'):
-        plan = module.FIELD.plan(getattr(module, 'RECIPE', None), **_run_settings(
-            module, ('jobs', 'tiles', 'passes', 'frames', 'overwrite', 'compute')))
-        print(plan)
-        if any(p.state == 'unrecorded' for p in plan.refused):
+    if _has_run(module):
+        unrecorded = False
+        for i, field in enumerate(_fields(module)):
+            plan = field.plan(getattr(module, 'RECIPE', None), **_run_settings(
+                module, ('jobs', 'tiles', 'passes', 'frames', 'overwrite', 'compute')))
+            print(('\n' if i else '') + str(plan))
+            unrecorded |= any(p.state == 'unrecorded' for p in plan.refused)
+        if unrecorded:
             print(f"\nTo record the unrecorded products as made by this script (each is checked): "
                   f"selfcal adopt {args.script}")
+    elif hasattr(module, 'PRECOMPUTE'):
+        settings = dict(module.PRECOMPUTE)
+        print(f"Plan: precompute the SPHEREx LVF parameters of detectors {list(settings.pop('detectors'))}"
+              + ''.join(f"\n  {k:<11} {v}" for k, v in settings.items()))
     elif hasattr(module, 'REPROJECT') and hasattr(module, 'FIELD'):
         cfg = module.FIELD.reprojection_config(**module.REPROJECT)
         print(f"Plan: reproject {module.FIELD.name} ({module.FIELD.path})\n  exposures   {cfg.reproject['input_dirs']}"
               f"\n  method      {cfg.reproject['reproj_func']}, padding {cfg.reproject['padding_pixels']}"
               f"\n  reference   {cfg.reproject['source_ref_path'] or 'ref.fits, or fitted to the exposures'}")
     else:
-        print(f"{args.script}: no FIELD with RUN (or REPROJECT) to plan; a run script defines them at its top level "
-              f"and runs FIELD.calibrate(RECIPE, **RUN) under its __main__ guard")
+        print(f"{args.script}: no FIELD (or FIELDS) with RUN, or REPROJECT, to plan; a run script defines them at its "
+              f"top level and runs FIELD.calibrate(RECIPE, **RUN) under its __main__ guard")
         return 2
     return 0
 
@@ -67,17 +87,21 @@ def _plan(args):
 def _adopt(args):
     from selfcal.config import ConfigError
     module = _load_script(args.script)
-    if not (hasattr(module, 'RUN') and hasattr(module, 'FIELD')):
-        print(f"{args.script}: no FIELD with RUN to adopt products for")
+    if not _has_run(module):
+        print(f"{args.script}: no FIELD (or FIELDS) with RUN to adopt products for")
         return 2
-    try:
-        adopted = module.FIELD.adopt(getattr(module, 'RECIPE', None),
-                                     **_run_settings(module, ('jobs', 'tiles', 'passes', 'frames', 'compute')))
-    except ConfigError as e:
-        print(e)
-        return 1
-    print(f"adopted {len(adopted)} products" + ''.join(f"\n  {os.path.basename(p)}" for p in adopted))
-    return 0
+    status = 0
+    for field in _fields(module):
+        try:
+            adopted = field.adopt(getattr(module, 'RECIPE', None),
+                                  **_run_settings(module, ('jobs', 'tiles', 'passes', 'frames', 'compute')))
+        except ConfigError as e:
+            print(f"{field.name}: {e}")
+            status = 1
+            continue
+        print(f"{field.name}: adopted {len(adopted)} products" +
+              ''.join(f"\n  {os.path.basename(p)}" for p in adopted))
+    return status
 
 
 def _convert(args):

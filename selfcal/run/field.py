@@ -228,7 +228,7 @@ class Field(Config):
         or refused (:attr:`~selfcal.run.plan.Plan.refused`). Computes nothing; raises
         :class:`~selfcal.config.base.ConfigError` for anything else that would fail."""
         return make_plan(self, action, recipe, jobs=jobs, tiles=tiles, passes=passes, frames=frames, compute=compute,
-                         overwrite=overwrite, check_products=False)
+                         overwrite=overwrite, check_products=False, allow_no_frames=True)
 
     def reproject(self, exposures, *, reference=None, method='exact', padding=100, padding_fraction=0.05,
                   replace=False, verify=False, compute=None):

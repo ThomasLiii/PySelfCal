@@ -63,7 +63,9 @@ nep.calibrate(RECIPE, jobs=spherex.window("Multiline3", subchannels=range(200, 3
 
 A `Camera` or `Euclid` field has one job and needs no `jobs=`. `sc.Camera` takes a custom
 exposure `reader`, per-pixel `detector_maps` and per-frame `headers` as data variables; any
-other chunk geometry is a subclass of `sc.Instrument` (see below).
+other chunk geometry is a subclass of `sc.Instrument` (see below). `instrument.geometry(oversample)`
+is an instrument's detector geometry (its chunk maps, their axes, its per-pixel maps), without
+any data: `sc.SPHEREx(4).geometry(1).chunk_maps["subchannel"]`.
 
 ### The model
 
@@ -261,10 +263,19 @@ The transpose product's thread count changes the last bits, so it lives in the r
 
 ```bash
 selfcal run my_run.py            # run a script with the BLAS/OpenMP threads pinned before numpy loads
+selfcal plan my_run.py           # print its plan: each product made, reused or refused (nothing is run)
+selfcal adopt my_run.py          # record the products a TOML run made as made by the script (each is checked)
 selfcal convert run.toml         # write run.py, the Python form of a TOML config, checked to run identically
 selfcal rerun RECORD.json        # run an action again from its record
 selfcal compare A.h5 B.h5        # byte-identical, equal values, or different and why
 ```
+
+`plan` and `adopt` read a run script's top level: `FIELD` (or `FIELDS`, a list, for a campaign),
+`RECIPE`, and `RUN`, the keyword arguments of `calibrate` (`jobs=`, `tiles=`, `passes=`, ...);
+the script runs `FIELD.calibrate(RECIPE, **RUN)` under its `__main__` guard.
+`selfcal_scripts/runs/` holds one such script per shipped TOML config, built from the shared
+recipes and fields of `selfcal_scripts/recipes/`, and `selfcal_scripts/run.sh` runs either form
+(`--dry-run`: the plan).
 
 ## A new telescope
 
@@ -288,8 +299,11 @@ class Owl(sc.Instrument):                         # two amplifier strips on a 20
 ```
 
 It may also override `layout()` (how raw exposure files are read), `default_jobs()`,
-`job_geometry()` and `frame_variables()`. The engine receives the object itself; no registry
-is needed. See [Bring your own telescope](../bring_your_own_telescope.md) for the instrument
+`job_geometry()` and `frame_variables()`, and define the engine's optional hooks
+(`offset_renderer`, `aux_coadds`, `finalize_mosaic`, `coefficient_catalog`). A chunk map other than
+rectangles is `sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...), adjacency_axes=(...))`
+(the axes a term's `smooth` follows unless it gives `smooth_along`). The engine receives
+the object itself; no registry is needed. See [Bring your own telescope](../bring_your_own_telescope.md) for the instrument
 contract in full.
 
 ## From a TOML config
@@ -300,7 +314,8 @@ makes it do, nothing is written; an existing `x.py` is replaced only with `--for
 (`selfcal.run.convert.from_runconfig` gives the objects themselves).
 `selfcal_scripts/gates/config_equivalence.py typed` checks every shipped config this way. TOML
 configs keep running unchanged (`selfcal_scripts/run.sh x.toml`); products a TOML run made have no
-sidecars, so a Python run of the same recipe adopts them first (`field.adopt(recipe, ...)`). Where
+sidecars, so a Python run of the same recipe refuses them until they are adopted (`selfcal adopt
+x.py`, or `field.adopt(recipe, ...)`). Where
 each TOML key goes:
 
 | TOML | Python |
