@@ -49,9 +49,11 @@ logger = logging.getLogger(__name__)
 
 CACHE_FORMAT = 'sparse-v1'
 _COADD_MODES = ('mean', 'std', 'sigma_clip')
-# Row stripes of the ordered flush (see _coadd_batch_worker): enough for the
-# workers to flush concurrently, few enough that a stripe is many pages.
-_FLUSH_STRIPES = int(os.environ.get('SELFCAL_COADD_FLUSH_STRIPES', '128'))
+def _flush_stripes():
+    """Row stripes of the ordered flush (see _coadd_batch_worker): enough for the workers to flush
+    concurrently, few enough that a stripe is many pages (``SELFCAL_COADD_FLUSH_STRIPES``, read when
+    the coadd runs; the maps do not depend on it)."""
+    return int(os.environ.get('SELFCAL_COADD_FLUSH_STRIPES', '128'))
 
 
 # --------------------------------------------------------------------------- shared arrays
@@ -409,7 +411,7 @@ def _run_pass(*, ref_shape, files, offsets, source, accumulate, write_dir, wav, 
     logger.info(f"{label}: {len(files)} files in {len(tasks)} batches on {max_workers} workers...")
     t0 = time.perf_counter()
     cached, stats = [], []
-    n_stripes = max(1, min(_FLUSH_STRIPES, ref_shape[0]))
+    n_stripes = max(1, min(_flush_stripes(), ref_shape[0]))
     # forkserver workers (selfcal.core.shmbuf): a pool forked from a threaded process can inherit a
     # held lock and hang; the turnstile is made in the pool's own context so it can be handed over.
     ctx = worker_pool_context()

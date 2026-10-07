@@ -507,6 +507,26 @@ Header keys to know:
   the value subtracted from the offsets before they were applied — add
   it back to recover absolute brightness.
 
+## Product sidecars (`<product>.json`)
+
+A product written by an action of the Python API (a cal file, a tile cal, a stitched cal, an
+N-pass product, a mosaic) has a sidecar next to it, `<product>.json`, written after the product
+(which is itself written under a temporary name and renamed when complete):
+
+| key | content |
+| --- | --- |
+| `inputs` | the settings and files that decided the product's bytes: instrument, reference grid (`ref.fits`, by content), job, model (template and map files by content), fit, solve numerics and frames (by name) for a cal; plus tile box and assignment for a tile cal; tile fingerprints for a stitched cal; first-pass fingerprint, pass number/type and pass settings for an N-pass product; cal fingerprint, reference grid, model, coadd, coadd numerics and frames for a mosaic. A function sent by value counts by its source, defaults and closure values; a hook object by its class and state |
+| `fingerprint` | SHA-256 of the canonical JSON of `inputs` |
+| `size`, `mtime_ns` | the product when the sidecar was written: a product written again afterwards (another size or modification time) is refused as `changed` |
+| `record` | the action's record that made it |
+| `adopted` | true when `field.adopt(...)` recorded a product made without one |
+
+An action reuses a product only when its fingerprint matches what it would make; one made by other
+inputs, or one without a sidecar (a TOML run's), is refused until it is adopted or the action
+passes `overwrite=True`. TOML runs neither write nor read sidecars. The N-pass work directory keeps
+`intermediates.json`, the fingerprints its moment dumps and sky exports were made from; the Python
+API deletes those that differ before a run.
+
 ## Zodi anchor stage (absolute brightness)
 
 The LSQR solve leaves a global additive degeneracy (`sky += C`,

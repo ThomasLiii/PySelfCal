@@ -55,7 +55,7 @@ import os
 import time
 
 from . import staging
-from .engine import RunContext, tile_assignment
+from .engine import RunContext, announce, tile_assignment
 
 __all__ = ["schedule", "describe_schedule", "run_npass"]
 
@@ -389,6 +389,7 @@ def run_npass(cfg, *, run_calibration):
                 print(f"[npass] pass {i} SKY: product exists, skipping ({out})", flush=True)
             else:
                 run.sky_pass(i, prev_offsets, out)
+                announce(cfg, 'pass', out, job=run.job, index=i, pass_type='sky')
             mon = sky_monitors(out, prev_sky_product or init_sky, fisher_min=run.lft)
             prev_sky = prev_sky_product = out
             final = out
@@ -399,6 +400,7 @@ def run_npass(cfg, *, run_calibration):
                 mon = {}
             else:
                 _, mon = run.offset_pass(i, prev_sky, out)
+                announce(cfg, 'pass', out, job=run.job, index=i, pass_type='off')
             mon = dict(mon, **offset_monitors(out, prev_off_product))
             prev_offsets = [out]
             prev_off_product = out

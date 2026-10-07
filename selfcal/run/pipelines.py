@@ -28,7 +28,7 @@ import os
 import time
 
 from . import staging
-from .engine import (RunContext, CalResult, solve_job, mosaic_job, stage_run, unstage_run,
+from .engine import (RunContext, CalResult, announce, solve_job, mosaic_job, stage_run, unstage_run,
                      frame_list, tile_assignment)
 
 
@@ -63,10 +63,17 @@ def _run_plain(ctx):
             cal_path = solve_job(ctx, job, jobgeom, frame_dir=frame_dir, frames=frames,
                                  cal_file=ctx.cal_file(job),
                                  hdd_reproj_dir=ctx.pipeline_config.reproj_dir)
+            announce(cfg, 'cal', cal_path, job=job,
+                     frames=frames if frames is not None else frame_list(frame_dir))
         if not cfg.skip_mosaic and ctx.mode.mosaic_mode != 'none':
-            mos_path = mosaic_job(
-                ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
-                mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+            mos_path = ctx.mosaic_path(job)
+            if cfg.reuse_mosaics and os.path.exists(mos_path):
+                print(f"Mosaic {mos_path} exists and is current. Skipping the coadd.")
+            else:
+                mos_path = mosaic_job(
+                    ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
+                    mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+                announce(cfg, 'mosaic', mos_path, job=job, cal=cal_path, frame_dir=frame_dir)
             mosaic_paths.append(mos_path)
             for hook in inst.postcal_hooks(cfg):
                 hook(ctx, job, cal_path, mos_path)
@@ -140,6 +147,7 @@ def _run_tiled(ctx):
                 ctx, job, jobgeom, frame_dir=nvme, frames=frames, cal_file=cal_file,
                 hdd_reproj_dir=ctx.pipeline_config.reproj_dir,
                 checkpoint=lambda label: staging.rss_checkpoint(f'{tile.name} {label}'))
+            announce(cfg, 'cal', cal_path, job=job, frames=frames, tile=tile)
             print(f"[tiled] === {tile.name} cal saved to {cal_path} ({time.time()-t0:.1f}s) ===",
                   flush=True)
             return cal_path
@@ -158,6 +166,7 @@ def _run_tiled(ctx):
         else:
             print(f"\n[tiled] stitching {len(tile_cals)} tile cals -> {stitched}", flush=True)
             tiled.stitch(tile_cals, stitched, ref_shape=ref_shape, line=t.get('line', True))
+            announce(cfg, 'stitched', stitched, job=job, tiles=tile_cals)
         print(f"[tiled] DONE. stitched cal: {stitched}", flush=True)
         results[job.name] = CalResult(cal_paths=list(tile_cals.values()), tiles=tile_cals,
                                       stitched=stitched, assignment=assignment)
@@ -192,10 +201,15 @@ def run_mosaic(cfg):
         if not os.path.exists(cal_path):
             raise FileNotFoundError(f"task 'mosaic' needs the cal file {cal_path}")
         jobgeom = ctx.job_geometry(job)
-        print(f"Mosaicking {job.name} ({ctx.frame_tag}) from {cal_path}...")
-        mos_path = mosaic_job(
-            ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
-            mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+        mos_path = ctx.mosaic_path(job)
+        if cfg.reuse_mosaics and os.path.exists(mos_path):
+            print(f"Mosaic {mos_path} exists and is current. Skipping the coadd.")
+        else:
+            print(f"Mosaicking {job.name} ({ctx.frame_tag}) from {cal_path}...")
+            mos_path = mosaic_job(
+                ctx, job, jobgeom, cal_path=cal_path, frame_dir=frame_dir,
+                mos_file=ctx.mosaic_file(job), cache_dir=ctx.mosaic_cache_dir(job))
+            announce(cfg, 'mosaic', mos_path, job=job, cal=cal_path, frame_dir=frame_dir)
         mosaic_paths.append(mos_path)
         for hook in inst.postcal_hooks(cfg):
             hook(ctx, job, cal_path, mos_path)

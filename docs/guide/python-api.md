@@ -29,9 +29,12 @@ if __name__ == "__main__":                 # worker processes import this file a
   starts) builds the instrument's geometry, checks the model against it, finds the frames and the
   existing products, and imports every function the run sends to the worker processes in a fresh
   worker. It takes seconds and computes nothing; `print(field.plan(...))` shows what would run.
-- **Every action leaves a record and a log**: `<field>/records/<action>_<time>_<pid>.json` (the
-  resolved settings, what they lowered to, the code version, the products, the outcome) and
-  `<field>/logs/` (the console output, when run from a script).
+- **Every action leaves a record**: `<field>/records/<action>_<time>_<pid>.json` (the resolved
+  settings, what they lowered to, the code version, the products, the outcome); a script's console
+  output goes to `<field>/logs/<script>_<time>_<pid>.log`.
+- **A product is reused only when it was made by the same inputs**: every product carries a sidecar
+  with what made it, and an existing product made by other inputs is refused (see
+  [Products, records and reruns](#products-records-and-reruns)).
 
 ## The pieces
 
@@ -103,12 +106,13 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 ### The recipe
 
 ```python
-SUBCHANNEL = sc.ChunkGroups.along("subchannel")         # clip within each subchannel's chunks
-
-NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
-                    fit=sc.Fit(50, clip=sc.Clip(5.0, per=SUBCHANNEL)),
+NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),               # the NumCol3 channel maps' recipe
+                    fit=sc.Fit(50, clip=5.0),              # 50 iterations; a 5-sigma clip in each frame
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name="damp0p1_reg0p1_outThresh5_sigma2")    # the products' suffix
+
+SUBCHANNEL = sc.ChunkGroups.along("subchannel")              # chunks grouped by subchannel
+BY_SUBCHANNEL = NUMCOL3.replace(fit=sc.Fit(50, clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
 ```
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver,
@@ -172,6 +176,96 @@ is refused unless `ends_on_offset=True`).
 `result.show()` (a mosaic with a colour bar), `result[job]`. `field.result(recipe, jobs=...)`
 finds the products of an earlier run without running anything.
 
+## Products, records and reruns
+
+### A product is reused only when it was made by the same inputs
+
+Every product an action writes (a cal file, a tile cal, a stitched cal, an N-pass product, a
+mosaic) is written under a temporary name and renamed when complete, then gets a sidecar,
+`<product>.json`, holding its *inputs*: the settings and files that decided its bytes.
+
+| product | inputs |
+| --- | --- |
+| cal | the instrument, the reference grid (`ref.fits`, by content), the job, the model (template and map files by content), the fit (the N-pass first pass: with its clip), the solve's `Numerics`, the frames (by name) |
+| tile cal | the same, plus the tile's box and how frames were assigned to it |
+| stitched cal | its tile cals (by fingerprint) |
+| N-pass product | the first pass (by fingerprint), the pass number and type, the pass settings |
+| mosaic | its cal (by fingerprint), the reference grid, the model, the `Coadd`, the coadd's `Numerics`, the frames |
+
+`Compute` never enters: it leaves the products byte-identical. Two things do not enter either: the
+frames' contents (a frame reprojected again under the same name counts as the same frame) and the
+code (a record names its version; a product made by older code is current if its inputs are). Before an action starts, its plan
+compares each product that already exists with what it would make: a product with the same inputs
+is reused (two recipes that share a first pass share its products); one made by other inputs is
+refused, with the differences:
+
+```text
+ConfigError: cal_Detector3_..._Ch17_damp0p1.h5 exists but was made with different inputs
+(fit.iterations: 50 -> 100). Give the recipe its own name (recipe.replace(name=...)), or pass
+overwrite=True to make it again
+```
+
+A product written again after its sidecar (its size or modification time no longer the ones
+recorded: a TOML run made it again, say) is refused, and so is a product without a sidecar (made
+before records existed, by a TOML run, or interrupted before its sidecar).
+`field.adopt(recipe, jobs=...)` checks such products against the recipe (their frames, sky terms
+and offset maps, and that what each is made from is current or adopted too) and writes their
+sidecars. What a product does not show, the fit's and the coadd's settings, is taken on trust:
+adopt a product only with the recipe that made it, such as `NUMCOL3` (above) for the NumCol3 maps
+its TOML production made:
+
+```python
+nep.adopt(NUMCOL3, jobs=spherex.channels(1, 34))   # the TOML production's maps: NUMCOL3 made them
+```
+
+`print(field.plan(...))` lists every product and whether it would be made or reused.
+
+### Records
+
+Each action writes `<field>/records/<action>_<time>_<pid>.json`: the settings with every default
+resolved, the run configs they lowered to, the code version (commit, branch, modified files),
+package versions, the environment knobs in effect, the products, the wall time and the outcome.
+A script's console output (its own and its workers') goes to one log per process,
+`<field>/logs/<script>_<time>_<pid>.log`, which starts with the script's text; each action adds a
+line naming its record.
+
+`sc.rerun("records/calibrate_....json")` (or `selfcal rerun RECORD`) runs the action again with the
+recorded settings, warning when the code differs or when the frames it finds are not the ones the
+record ran on; `overwrite=True` makes its products again (a reprojection: its frames). Its own
+record names the original script.
+`sc.compare(a, b)` (or `selfcal compare A B`) says whether two products are byte-identical, hold
+equal values, or differ, by how much, and, from their sidecars, why.
+
+### Running detached
+
+`field.submit(recipe, jobs=...)` plans the run (all checks, seconds), then starts it in its own
+session, so it survives the terminal; it returns the request file and the console log's path.
+The run is the request's rerun: every function it uses must be importable.
+
+### Functions from a notebook
+
+A function defined in a notebook cell cannot be imported by the worker processes. Write it to a
+module (`%%writefile myfuncs.py`, then `from myfuncs import ratio`), or wrap it:
+`sc.Sky("line", times=sc.by_value(ratio))` sends the function by value (needs `cloudpickle`) and
+keeps its source in the record; such a run cannot be submitted or rerun.
+
+### Expert knobs
+
+`sc.Compute(tuning=sc.Tuning(...))` sets the library's byte-neutral `SELFCAL_*` knobs for an
+action (the worker start method, the parallel scatter, matrix block sizes, the vector threads, the
+coadd's flush stripes, spill thresholds); each left at None defers to its environment variable.
+The transpose product's thread count changes the last bits, so it lives in the recipe:
+`sc.Numerics(rmatvec_threads=...)` (None: the solver's threads, capped by a 16 GB buffer).
+
+### The command line
+
+```bash
+selfcal run my_run.py            # run a script with the BLAS/OpenMP threads pinned before numpy loads
+selfcal convert run.toml         # write run.py, the Python form of a TOML config, checked to run identically
+selfcal rerun RECORD.json        # run an action again from its record
+selfcal compare A.h5 B.h5        # byte-identical, equal values, or different and why
+```
+
 ## A new telescope
 
 Most cameras need no code (`sc.Camera(..., reader=read_mycam, detector_maps={"pix_angle": a},
@@ -200,10 +294,14 @@ contract in full.
 
 ## From a TOML config
 
-`selfcal.run.convert.from_runconfig(load_config("x.toml"))` reads a TOML run config into these
-objects (`.to_python()` writes the equivalent script); `selfcal_scripts/gates/config_equivalence.py
-typed` checks, for every shipped config, that the converted objects make the run engine do
-exactly what the TOML does. Where each TOML key goes:
+`selfcal convert x.toml` writes `x.py`, the same run in Python, and checks it: the script is
+imported and its objects lowered again, and unless the run engine would do exactly what the TOML
+makes it do, nothing is written; an existing `x.py` is replaced only with `--force`
+(`selfcal.run.convert.from_runconfig` gives the objects themselves).
+`selfcal_scripts/gates/config_equivalence.py typed` checks every shipped config this way. TOML
+configs keep running unchanged (`selfcal_scripts/run.sh x.toml`); products a TOML run made have no
+sidecars, so a Python run of the same recipe adopts them first (`field.adopt(recipe, ...)`). Where
+each TOML key goes:
 
 | TOML | Python |
 | --- | --- |

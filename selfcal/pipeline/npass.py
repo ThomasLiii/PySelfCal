@@ -50,6 +50,7 @@ from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
 from ..models.offset_basis import eval_offset_basis
 from ..models.offset_structure import group_aux_edges
 from ..io.calfile import CalFile
+from ..io.atomic import atomic_path
 
 __all__ = [
     "group_wavelength_edges", "sky_damp_weights",
@@ -172,7 +173,8 @@ class SkySubtractor:
                 src = f["sky"][n] if "sky" in f else (f["skymap"] if n == self.names[0]
                                                         else f["skymap_line"])
                 if not os.path.exists(self.paths[n]):
-                    np.save(self.paths[n], np.nan_to_num(src[:].astype(np.float32)))
+                    with atomic_path(self.paths[n]) as tmp:
+                        np.save(tmp, np.nan_to_num(src[:].astype(np.float32)))
             self.shape = tuple(f["skymap"].shape)
 
     def __getstate__(self):
@@ -405,7 +407,7 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
                 print(f"[npass]   {i+1}/{len(frames)}  ({time.time()-t0:.0f}s)", flush=True)
     print(f"[npass] OFFSET refit done in {time.time()-t0:.0f}s; fitted {ok.sum()}/{len(frames)}; "
           f"{fell_back} bright-cut fallbacks", flush=True)
-    with h5py.File(out_h5, "w") as f:
+    with atomic_path(out_h5) as tmp, h5py.File(tmp, "w") as f:
         f.create_dataset("offsets/map_0", data=offsets, **hdf5plugin.Blosc())
         f.create_dataset("frame_scalar", data=scalars)
         f.create_dataset("chunk_maps/map_0", data=np.asarray(det_chunk_map), **hdf5plugin.Blosc())
@@ -447,7 +449,8 @@ def dump_moments(cc, out_npz):
                    reproj_list=np.array([str(p).encode() for p in cc.reproj_list]))
     for (i, j), c in cross.items():
         payload[f"cross_{i}_{j}"] = np.asarray(c, dtype=np.float64)
-    np.savez(out_npz, **payload)
+    with atomic_path(out_npz) as tmp:
+        np.savez(tmp, **payload)
     print(f"[npass] moments dumped ({len(cc.reproj_list)} frames, J={J}) -> {out_npz}", flush=True)
     return out_npz
 
@@ -522,7 +525,7 @@ def write_sky_cal(path, *, ref_shape, sky_names, sky_maps, sky_counts, sky_fishe
     """
     from ..io.cal_writer import write_sky_groups
     J = len(sky_names)
-    with h5py.File(path, "w") as f:
+    with atomic_path(path) as tmp, h5py.File(tmp, "w") as f:
         f.attrs["num_maps"] = 0
         write_sky_groups(f, sky_names=list(sky_names),
                          sky_maps=[np.asarray(m, np.float32) for m in sky_maps],

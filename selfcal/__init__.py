@@ -54,14 +54,16 @@ _logging.getLogger(__name__).addHandler(_logging.NullHandler())
 # name -> the module that defines it (loaded on first access: PEP 562)
 _EXPORTS = {
     # the Python API
-    **dict.fromkeys(('Config', 'ConfigError'), 'selfcal.config'),
+    **dict.fromkeys(('Config', 'ConfigError', 'by_value'), 'selfcal.config'),
     **dict.fromkeys(('Function', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets', 'Header',
                      'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
                      'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe'), 'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes'), 'selfcal.run.schedule'),
-    'Compute': 'selfcal.run.compute',
-    **dict.fromkeys(('Field', 'frames_in'), 'selfcal.run.field'),
+    **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
+    **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
+    'rerun': 'selfcal.run.records',
+    'compare': 'selfcal.run.compare',
     **dict.fromkeys(('Result', 'MosaicFile'), 'selfcal.run.result'),
     'Plan': 'selfcal.run.plan',
     **dict.fromkeys(('Instrument', 'Job', 'Geometry', 'ChunkMap', 'JobGeometry', 'ExposureLayout'),
@@ -103,7 +105,7 @@ def __dir__():
 
 if TYPE_CHECKING:                     # what the names are, for type checkers and the documentation
     from ._state import set_hdd_io_limit, set_progress
-    from .config import Config, ConfigError, SelfCalConfigError, resolve_path
+    from .config import Config, ConfigError, SelfCalConfigError, by_value, resolve_path
     from .core.layout import SystemLayout
     from .instruments.camera import Camera
     from .instruments.contract import (
@@ -160,8 +162,10 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .models.variables import VariableSet
     from .pipeline.pipeline_wrapper import Calibrator, Mosaicker, PipelineConfig, Reprojector
     from .pipeline.tiled import TiledCalibration, TileSpec, make_tile_grid
-    from .run.compute import Compute
-    from .run.field import Field, frames_in
+    from .run.compare import compare
+    from .run.compute import Compute, Tuning
+    from .run.field import Field, Submitted, frames_in
+    from .run.records import rerun
     from .run.plan import Plan
     from .run.recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
     from .run.result import MosaicFile, Result

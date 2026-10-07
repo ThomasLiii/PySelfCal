@@ -48,6 +48,14 @@ def resolve_instrument(instrument):
     return instrument if isinstance(instrument, Instrument) else get_instrument(instrument)
 
 
+def announce(cfg, kind, path, **info):
+    """Tell the run's product book (``cfg.on_product``, set by the Python API) that the product
+    ``path`` was written; a TOML run has none."""
+    book = getattr(cfg, 'on_product', None)
+    if book is not None:
+        book(kind, path, **info)
+
+
 def check_requires(mode, inst):
     """A mode declares the instrument capabilities it needs; fail early."""
     missing = [c for c in mode.requires if c not in inst.capabilities]

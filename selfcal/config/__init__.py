@@ -8,10 +8,15 @@
   ``SELFCAL_*`` environment variable, or a default).
 """
 from .base import Config, ConfigError, FrozenDict
-from .functions import function_ref, import_module, load_callable
-from .paths import (ENV_LVF_PARAMS_DIR, ENV_SPHEREX_CALIB_DIR, ENV_SPHEREX_CHANNEL_FILE, SelfCalConfigError,
-                    resolve_path)
+from .functions import by_value, function_ref, import_module, load_callable
+from .paths import (
+                    ENV_LVF_PARAMS_DIR,
+                    ENV_SPHEREX_CALIB_DIR,
+                    ENV_SPHEREX_CHANNEL_FILE,
+                    SelfCalConfigError,
+                    resolve_path,
+)
 
-__all__ = ['Config', 'ConfigError', 'FrozenDict', 'function_ref', 'import_module', 'load_callable',
+__all__ = ['Config', 'ConfigError', 'FrozenDict', 'by_value', 'function_ref', 'import_module', 'load_callable',
            'resolve_path', 'SelfCalConfigError', 'ENV_LVF_PARAMS_DIR', 'ENV_SPHEREX_CALIB_DIR',
            'ENV_SPHEREX_CHANNEL_FILE']
