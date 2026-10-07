@@ -369,9 +369,46 @@ def encode(v):
     if isinstance(v, os.PathLike):
         return os.fspath(v)
     if callable(v):
-        from .functions import describe_callable
-        return {'function': describe_callable(v)}
+        from .functions import by_value, describe_callable
+        if isinstance(v, by_value):
+            return {'by_value': v.__qualname__, 'digest': v.digest, 'sha256': v.sha256, 'source': v.source}
+        if isinstance(v, (types.FunctionType, types.BuiltinFunctionType, type, np.ufunc)):
+            return {'function': describe_callable(v)}
+        # an object (a hook): its class and its state, so a record can rebuild it (the pickle) and a
+        # fingerprint can name it the same in every process (the class and the state; not the repr,
+        # which can hold a memory address, nor the pickle, which names the module the script was
+        # loaded as)
+        import base64
+        import pickle
+        try:
+            blob = base64.b64encode(pickle.dumps(v)).decode()
+        except Exception:
+            return {'function': describe_callable(v)}
+        return {'object': describe_callable(v), 'state': _object_state(v), 'pickle': blob, 'repr': repr(v)[:200]}
     return v
+
+
+def _object_state(obj):
+    """An object's state in JSON form, the same in every process: its ``__getstate__()`` (or its
+    attributes) with the values encoded as settings and other objects by class and state."""
+    try:
+        state = obj.__getstate__() if hasattr(obj, '__getstate__') else vars(obj)
+    except Exception:
+        return None
+    if state is None:
+        return None
+    if not isinstance(state, dict):
+        state = {'state': state}
+
+    def plain(v):
+        if isinstance(v, (dict, list, tuple)):
+            return ({str(k): plain(x) for k, x in v.items()} if isinstance(v, dict) else [plain(x) for x in v])
+        v = encode(v)
+        if v is None or isinstance(v, (str, int, float, bool, dict, list)):
+            return v
+        from .functions import describe_callable
+        return {'class': describe_callable(v), 'state': _object_state(v)}
+    return plain(state)
 
 
 def decode(v):
@@ -389,6 +426,13 @@ def decode(v):
         if set(v) == {'function'}:
             from .functions import load_callable
             return load_callable(v['function'])
+        if 'object' in v and 'pickle' in v:
+            import base64
+            import pickle
+            return pickle.loads(base64.b64decode(v['pickle']))
+        if 'by_value' in v:
+            raise ConfigError(f"the function {v['by_value']} was sent by value (sc.by_value); a record cannot "
+                              f"rebuild it: write it to a module")
         if set(v) == {'array'}:
             raise ConfigError(f"an array setting is recorded by its hash only ({v['array']}); "
                               f"it cannot be rebuilt from the record")

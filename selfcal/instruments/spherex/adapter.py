@@ -163,7 +163,7 @@ class SPHERExInstrument(Instrument):
         ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
         lvf_params = load_lvf_params(f'lvf_params_D{det}.npy', input_dir=inst_cfg.get('lvf_dir'))
         det_BC, det_BW = load_calibration(
-            band=det, calibration_dir=inst_cfg.get('calib_dir', SPHEREX_CALIB_DIR))
+            band=det, calibration_dir=inst_cfg.get('calib_dir'))     # None: $SELFCAL_SPHEREX_CALIB_DIR, else the default
         grid_chunk_map, _, _, _ = make_stripped_chunk_map(
             det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
             oversample_factor=oversample, lvf_params=lvf_params)
@@ -316,7 +316,7 @@ class SPHERExInstrument(Instrument):
         ns = inst_cfg.get('num_sub', 10)
         nch = inst_cfg.get('num_ch', 34)
         out_dir = inst_cfg.get('lvf_output_dir')  # None -> canonical resolution
-        calib_dir = inst_cfg.get('calib_dir', SPHEREX_CALIB_DIR)
+        calib_dir = inst_cfg.get('calib_dir')               # None: $SELFCAL_SPHEREX_CALIB_DIR, else the default
         for det in inst_cfg['detectors']:
             det_BC, _ = load_calibration(band=det, calibration_dir=calib_dir)
             _, lvf_params, _ = make_fiducial_chunk_map(

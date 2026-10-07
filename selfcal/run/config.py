@@ -72,6 +72,8 @@ class RunConfig:
     # Set by the Python API only (no TOML key):
     frame_files: list = None           # the frames to solve (by file name, under the frame directory)
     stage_dir: str = None              # the staging directory (default <cache_dir>/reproj_nvme_<run_name>)
+    on_product: object = None          # called as each product is written (the API's product book)
+    reuse_mosaics: bool = False        # keep an existing mosaic (the API checked that it is current)
 
     @property
     def tiled(self):

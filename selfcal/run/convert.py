@@ -21,7 +21,7 @@ from .compute import Compute
 from .recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
 from .schedule import Passes, Refit, Tiles
 
-__all__ = ['Converted', 'from_runconfig']
+__all__ = ['Converted', 'from_runconfig', 'convert_file']
 
 # library defaults of the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic)
 _CAL = dict(apply_mask=True, apply_weight=True, outlier_thresh=3.0, ignore_list=None, batch_size=10, max_workers=20,
@@ -77,8 +77,12 @@ class Converted:
             head.append(f'from {module} import {name}')
         lines = head + ['']
         if self.action == 'precompute':
-            lines += ['if __name__ == "__main__":',
-                      f'    spherex.precompute_lvf({python_repr(self.precompute)})']
+            kw = {k: v for k, v in self.precompute.items() if k != 'detectors'}
+            if 'from selfcal.instruments import spherex' not in lines:
+                lines.insert(3, 'from selfcal.instruments import spherex')
+            lines += [f'PRECOMPUTE = dict(detectors={python_repr(self.precompute["detectors"])}'
+                      + ''.join(f', {k}={python_repr(v)}' for k, v in kw.items()) + ')', '',
+                      'if __name__ == "__main__":', '    spherex.precompute_lvf(**PRECOMPUTE)']
             return '\n'.join(lines) + '\n'
         from .compute import Compute
         lines += [f'COMPUTE = {self.compute!r}',
@@ -630,3 +634,66 @@ def _passes(p, cal, inst_name):
 def _ends_on_offset(n, order):
     from .schedule import schedule
     return n > 1 and schedule(n, order)[-1] == 'offset'
+
+
+def _import_script(path):
+    """The module of the script ``path``, imported without running its ``__main__`` block."""
+    import importlib.util
+    name = '_selfcal_converted_' + os.path.splitext(os.path.basename(path))[0].replace('-', '_')
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def convert_file(config_path, out_path, *, check=True, force=False) -> list[str]:
+    """Write the Python form of the TOML run config ``config_path`` to ``out_path`` and return the
+    conversion's notes. With ``check``, the script is first written beside ``out_path``, imported
+    and its objects lowered again: unless the run engine would do exactly what the TOML makes it do
+    (:func:`selfcal.run.equivalence.differences`), nothing is written and
+    :class:`~selfcal.config.base.ConfigError` names the differences. An existing ``out_path`` is
+    replaced only with ``force``."""
+    from .config import load_config
+    if os.path.exists(out_path) and not force:
+        raise ConfigError(f"{out_path} exists; give another output (-o) or pass force=True (--force) to replace it")
+    cfg = load_config(config_path)
+    conv = from_runconfig(cfg)
+    text = conv.to_python(os.path.relpath(config_path))
+    directory, name = os.path.split(os.path.abspath(out_path))
+    draft = os.path.join(directory, f'_selfcal_convert_{os.getpid()}_{name}')
+    with open(draft, 'w') as f:
+        f.write(text)
+    try:
+        notes = _check_converted(conv, cfg, config_path, draft) if check else conv.notes
+        os.replace(draft, out_path)
+        return notes
+    finally:
+        if os.path.exists(draft):
+            os.remove(draft)
+
+
+def _check_converted(conv, cfg, config_path, out_path) -> list[str]:
+    """Raise unless the script at ``out_path`` makes the run engine do what ``cfg`` does."""
+    if conv.action == 'precompute':
+        import inspect
+
+        from ..instruments.spherex.settings import precompute_lvf
+        module = _import_script(out_path)
+        try:
+            inspect.signature(precompute_lvf).bind(**module.PRECOMPUTE)
+        except TypeError as e:
+            raise ConfigError(f"{config_path}: the converted script would not run ({e}); nothing written") from None
+        return conv.notes
+    from .equivalence import differences
+    from .lower import lower
+    module = _import_script(out_path)
+    if conv.action == 'reproject':
+        mine = [module.FIELD.reprojection_config(**module.REPROJECT)]
+    else:
+        mine = [low.cfg for low in lower(module.FIELD, module.RECIPE,
+                                         task='mosaic' if conv.action == 'mosaic' else 'cal', **module.RUN)]
+    problems = [f'{len(mine)} engine runs for one TOML run'] if len(mine) != 1 else differences(cfg, mine[0])
+    if problems:
+        raise ConfigError(f"{config_path}: the converted script would not run identically ("
+                          + '; '.join(problems[:6]) + "); nothing written")
+    return conv.notes

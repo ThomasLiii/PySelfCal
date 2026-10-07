@@ -7,13 +7,14 @@ an action may override it. A site profile is a module-level constant::
 """
 from __future__ import annotations
 
+import contextlib
 import os
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from typing import Literal
 
 from ..config.base import Config, ConfigError
 
-__all__ = ['Compute', 'pin_threads']
+__all__ = ['Compute', 'Tuning', 'pin_threads', 'environment', 'TUNING_VARIABLES']
 
 #: The thread-count variables every action pins to 1 before any worker starts.
 THREAD_VARIABLES = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS',
@@ -39,6 +40,61 @@ def pin_threads():
     return old
 
 
+#: The byte-neutral SELFCAL_* environment knobs, by Tuning setting.
+TUNING_VARIABLES = {
+    'start_method': 'SELFCAL_MP_START_METHOD',
+    'scatter_workers': 'SELFCAL_SCATTER_WORKERS',
+    'scatter_timeout_s': 'SELFCAL_SCATTER_TIMEOUT_S',
+    'block_nnz': 'SELFCAL_BLOCK_NNZ',
+    'split_ranges': 'SELFCAL_RMATVEC_SPLIT',
+    'split_max_gb': 'SELFCAL_RMATVEC_SPLIT_MAX_GB',
+    'split_extra_gb': 'SELFCAL_SPLIT_EXTRA_GB',
+    'vector_threads': 'SELFCAL_VEC_THREADS',
+    'flush_stripes': 'SELFCAL_COADD_FLUSH_STRIPES',
+    'spill_min_gb': 'SELFCAL_SPILL_MIN_GB',
+    'spill_dir': 'SELFCAL_SPILL_DIR',
+}
+
+
+@dataclass(frozen=True)
+class Tuning(Config):
+    """Expert knobs of the solver's machinery; every one leaves the products byte-identical.
+
+    Each is a ``SELFCAL_*`` environment variable of the library (:data:`TUNING_VARIABLES`); a
+    setting left at None defers to the variable (or the library's default). An action sets the
+    given ones for its duration, before any worker pool starts, and records every resolved value.
+    ``start_method``: the worker pools' start method (``"forkserver"``; ``"fork"`` only to debug);
+    ``scatter_workers`` / ``scatter_timeout_s``: the parallel scatter of the assembly (0 or 1:
+    serial); ``block_nnz``: the matrix size above which it is stored in blocks;
+    ``split_ranges`` / ``split_max_gb`` / ``split_extra_gb``: the column-partitioned storage of the
+    sequential transpose product; ``vector_threads``: the solver's elementwise vector updates;
+    ``flush_stripes``: the coadd's row stripes; ``spill_min_gb`` / ``spill_dir``: when and where the
+    solver parks arrays on disk.
+    """
+    _: KW_ONLY
+    start_method: Literal['forkserver', 'fork', 'spawn'] | None = None
+    scatter_workers: int | None = None
+    scatter_timeout_s: float | None = None
+    block_nnz: int | None = None
+    split_ranges: int | None = None
+    split_max_gb: float | None = None
+    split_extra_gb: float | None = None
+    vector_threads: int | None = None
+    flush_stripes: int | None = None
+    spill_min_gb: float | None = None
+    spill_dir: str | None = None
+
+    def environment(self) -> dict:
+        """``{variable: value}`` of the settings that are given."""
+        return {var: str(getattr(self, k)) for k, var in TUNING_VARIABLES.items() if getattr(self, k) is not None}
+
+    @staticmethod
+    def resolved() -> dict:
+        """Every knob's value in effect (the variable, or ``"default"``)."""
+        return {k: os.environ.get(var, 'default') for k, var in TUNING_VARIABLES.items()}
+
+
+
 @dataclass(frozen=True)
 class Compute(Config):
     """Resources for a run; every setting leaves the products byte-identical.
@@ -51,7 +107,8 @@ class Compute(Config):
     ``<scratch>/reproj_nvme_<field name>``); ``keep_staged``: keep the copy afterwards.
     ``io_limit``: concurrent reads from the slow disk while staging. ``cache_frames``: the coadd
     caches each corrected frame for its later passes. ``memory_guard``: end the process cleanly
-    before the machine runs out of memory (None: on for tiled runs).
+    before the machine runs out of memory (None: on for tiled runs). ``tuning``: the expert knobs of
+    the solver's machinery (:class:`Tuning`).
     """
     scratch: str | None = None
     _: KW_ONLY
@@ -63,6 +120,7 @@ class Compute(Config):
     io_limit: int = 20
     cache_frames: bool = True
     memory_guard: bool | None = None
+    tuning: Tuning = field(default_factory=Tuning)
 
     def _validate(self):
         for k in ('workers', 'coadd_workers', 'io_limit'):
@@ -82,3 +140,26 @@ class Compute(Config):
     @property
     def resolved_coadd_workers(self) -> int:
         return self.coadd_workers if self.coadd_workers is not None else self.resolved_workers
+
+
+@contextlib.contextmanager
+def environment(compute, numerics=None):
+    """Set the action's environment for its duration: the tuning knobs and the bit-relevant
+    transpose-product threads of ``numerics``, restored afterwards (also when the action raises).
+    The BLAS / OpenMP thread pins (:func:`pin_threads`) are not restored: they hold for the rest
+    of the process."""
+    env = dict(compute.tuning.environment())
+    if numerics is not None:
+        env['SELFCAL_PARALLEL_RMATVEC'] = ('auto' if numerics.rmatvec_threads is None
+                                           else str(numerics.rmatvec_threads))
+        env['SELFCAL_RMATVEC_BUFFER_GB'] = '16'
+    old = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        yield env
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

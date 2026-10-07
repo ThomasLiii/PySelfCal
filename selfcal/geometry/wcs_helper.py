@@ -225,7 +225,9 @@ def save_to_fits(wcs, shape, filename):
     # NAXIS/NAXIS1/NAXIS2 are set automatically by PrimaryHDU from the data shape.
     hdu_0 = fits.PrimaryHDU(header=header, data=np.zeros(shape))
     hdul = fits.HDUList([hdu_0])
-    hdul.writeto(filename, overwrite=True)
+    from ..io.atomic import atomic_path
+    with atomic_path(filename) as tmp:              # a reused ref.fits is always complete
+        hdul.writeto(tmp)
     logger.info(f'Reference frame FITS saved to: {filename}')
 
 

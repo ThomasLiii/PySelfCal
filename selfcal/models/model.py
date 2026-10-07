@@ -33,7 +33,18 @@ from typing import Any, Callable, Literal
 import numpy as np
 
 from ..config.base import Config, ConfigError, FrozenDict
-from ..config.functions import function_ref
+from ..config.functions import by_value, function_ref
+
+
+def _check(fn, what):
+    """Raise unless the worker processes can get ``fn``: by import, or by value (:class:`by_value`)."""
+    if not isinstance(fn, by_value):
+        function_ref(fn, what)
+
+
+def _ref(fn):
+    """How a function is handed to the model's data form: its import path, or the by-value object itself."""
+    return fn if isinstance(fn, by_value) else function_ref(fn)
 
 __all__ = ['Function', 'Shape', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
@@ -49,7 +60,9 @@ def _call(name, positional=(), keywords=()):
 
 
 def _fn_name(fn):
-    return fn if isinstance(fn, str) else getattr(fn, '__qualname__', getattr(fn, '__name__', repr(fn)))
+    if isinstance(fn, str) or isinstance(fn, by_value):
+        return fn if isinstance(fn, str) else repr(fn)
+    return getattr(fn, '__qualname__', getattr(fn, '__name__', repr(fn)))
 
 
 class _Named(str):
@@ -152,7 +165,7 @@ class Function(Config):
             of = (of,)
         of = tuple(of)
         _check_params(fn, params, len(of), what)
-        function_ref(fn, what)
+        _check(fn, what)
         object.__setattr__(self, 'fn', fn)
         object.__setattr__(self, 'of', of)
         object.__setattr__(self, 'params', FrozenDict(params))
@@ -169,7 +182,7 @@ class Function(Config):
     def lower(self, n=None) -> dict:
         """The coefficient's data form (``{variable, function, params[, n]}``)."""
         out = {'variable': self.of[0] if len(self.of) == 1 else list(self.of),
-               'function': function_ref(self.fn)}
+               'function': _ref(self.fn)}
         if self.params:
             out['params'] = dict(self.params)
         if n is not None:
@@ -246,8 +259,10 @@ def linear(center, halfwidth, *, of='wavelength') -> Shape:
 
 def catalog(name, **overrides) -> Shape:
     """The instrument's named coefficient ``name`` (SPHEREx: ``"pah_3p29"``), with its factory's
-    parameters overridden by ``overrides``."""
-    return Shape('catalog', of=None, params={'catalog': str(name), **overrides})
+    parameters overridden by ``overrides`` (one given as None keeps the factory's default, so it
+    is left out)."""
+    return Shape('catalog', of=None, params={'catalog': str(name),
+                                             **{k: v for k, v in overrides.items() if v is not None}})
 
 
 def _as_function(value, what):
@@ -453,7 +468,7 @@ class Offsets(Config):
 # =============================================================================== data variables
 def _source_function(fn, params, what):
     fn, params = _unwrap(fn, params, what)
-    function_ref(fn, what)
+    _check(fn, what)
     return fn, FrozenDict(params)
 
 
@@ -506,7 +521,7 @@ class PerFrame(_Source):
         return cls(fn, of=tuple(of), **dict(params))
 
     def lower(self, name):
-        out = {'per_frame': function_ref(self.fn)}
+        out = {'per_frame': _ref(self.fn)}
         if self.of:
             out['inputs'] = list(self.of)
         if self.params:
@@ -518,7 +533,7 @@ def _map_value(source, what):
     if isinstance(source, np.ndarray):
         return source
     if callable(source):
-        function_ref(source, what)
+        _check(source, what)
         return source
     return str(source)
 
@@ -548,7 +563,7 @@ class DetectorMap(_Source):
 
     def lower(self, name):
         v = self.source
-        out = {'detector': function_ref(v) if callable(v) else v}
+        out = {'detector': _ref(v) if callable(v) else v}
         if self.params:
             out['params'] = dict(self.params)
         return out
@@ -579,7 +594,7 @@ class SkyMap(_Source):
 
     def lower(self, name):
         v = self.source
-        out = {'sky': function_ref(v) if callable(v) else v}
+        out = {'sky': _ref(v) if callable(v) else v}
         if self.params:
             out['params'] = dict(self.params)
         return out
@@ -625,7 +640,7 @@ class Derived(_Source):
         fn, params = _unwrap(fn, params, what)
         of = _infer_variables(fn, params, what) if of is None else ((of,) if isinstance(of, str) else tuple(of))
         _check_params(fn, params, len(of), what)
-        function_ref(fn, what)
+        _check(fn, what)
         object.__setattr__(self, 'fn', fn)
         object.__setattr__(self, 'of', of)
         object.__setattr__(self, 'params', FrozenDict(params))
@@ -639,7 +654,7 @@ class Derived(_Source):
         return cls(fn, of=tuple(of), **dict(params))
 
     def lower(self, name):
-        out = {'function': function_ref(self.fn), 'inputs': list(self.of)}
+        out = {'function': _ref(self.fn), 'inputs': list(self.of)}
         if self.params:
             out['params'] = dict(self.params)
         return out
@@ -669,7 +684,7 @@ class FrameFunction(_Source):
         return cls(fn, **dict(params))
 
     def lower(self, name):
-        out = {'frame_function': function_ref(self.fn)}
+        out = {'frame_function': _ref(self.fn)}
         if self.params:
             out['params'] = dict(self.params)
         return out
@@ -700,7 +715,7 @@ class Prior(Config):
         else:
             fn, params = _unwrap(fn, params, what)
             _check_params(fn, params, len((terms,) if isinstance(terms, str) else terms), what)
-            function_ref(fn, what)
+            _check(fn, what)
         object.__setattr__(self, 'fn', fn)
         object.__setattr__(self, 'terms', (terms,) if isinstance(terms, str) else tuple(terms))
         object.__setattr__(self, 'weight', weight)
@@ -720,7 +735,7 @@ class Prior(Config):
         return cls(fn, tuple(terms), weight=weight, name=name, **dict(params))
 
     def lower(self) -> dict:
-        out = {'terms': list(self.terms), 'function': self.fn if isinstance(self.fn, str) else function_ref(self.fn),
+        out = {'terms': list(self.terms), 'function': self.fn if isinstance(self.fn, str) else _ref(self.fn),
                'weight': float(self.weight)}
         if self.params:
             out['params'] = dict(self.params)

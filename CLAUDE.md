@@ -51,9 +51,13 @@ offsets=[sc.Offsets(...)])`; instruments `sc.SPHEREx(d)` (jobs `spherex.channel(
 dataclasses checked when built (`selfcal.config.base.Config`); they lower to the same `RunConfig` a TOML run makes
 (`selfcal/run/lower.py`; `config_equivalence.py typed` proves it for every shipped config). Work goes under
 `if __name__ == "__main__":` (forkserver workers re-import the script) and functions must be importable
-(module-level `def`); every action plans first, pins the BLAS threads, and writes `<field>/records/*.json` + a log.
-`selfcal.run.convert.from_runconfig(load_config(toml))` converts a TOML config; `selfcal_scripts/gates/python_gates.py`
-is the gate set in Python.
+(module-level `def`; notebook cells: `sc.by_value(fn)`); every action plans first, pins the BLAS threads, and writes
+`<field>/records/*.json` + one log per script process. Every product is written atomically and gets a sidecar
+`<product>.json` (its inputs + fingerprint, `selfcal/run/products.py`): an existing product is reused only when
+current, refused when made by other inputs or unrecorded (TOML-made: `field.adopt(recipe, jobs=)`), remade with
+`overwrite=True`. `sc.rerun(record)`, `sc.compare(a, b)`, `field.submit(...)` (detached), `sc.Tuning` (byte-neutral
+SELFCAL_* knobs in `Compute`), `Numerics.rmatvec_threads`. CLI: `selfcal run|convert|rerun|compare`.
+`selfcal_scripts/gates/python_gates.py` is the gate set in Python.
 
 Pipeline runs are launched via the **generic runner** — pick/edit a TOML config, run a `.sh` (no editing Python):
 

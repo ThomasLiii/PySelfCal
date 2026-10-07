@@ -20,8 +20,12 @@ import sys
 from ..config.base import Config, ConfigError
 from ..config.functions import _is_main_guard, function_ref
 from .lower import Lowered, as_recipe, lower
+from .products import Book, check, expected_products, refusal, remedy
 
 __all__ = ['Plan', 'make_plan']
+
+#: The states of an existing product an action refuses (see :func:`selfcal.run.products.check`).
+REFUSED = ('different', 'unrecorded', 'changed')
 
 
 class Plan:
@@ -35,12 +39,21 @@ class Plan:
         self.tiles, self.passes = tiles, passes
         self.notes = list(notes)
         self.contexts = []
-        self.products = []           # (job, cal path, mosaic path or None, exists)
+        self.products = []           # selfcal.run.products.Product, in the order the engine makes them
+        self.book = None             # the products' inputs (selfcal.run.products.Book)
         self.frames = None
+        self.frame_list = []         # the frame files the action uses
 
     @property
     def jobs(self):
         return tuple(j for low in self.lowered for j in low.jobs)
+
+    @property
+    def refused(self):
+        """The existing products the action would refuse: made by other inputs (``"different"``),
+        without a record (``"unrecorded"``: adopt them, :meth:`~selfcal.run.field.Field.adopt`), or
+        changed since they were recorded (``"changed"``)."""
+        return [p for p in self.products if p.state in REFUSED]
 
     def __str__(self):
         f, r = self.field, self.recipe
@@ -56,18 +69,20 @@ class Plan:
         if self.frames is not None:
             n, where, how = self.frames
             lines.append(f"  frames      {n} in {where}{' (' + how + ')' if how else ''}")
-        for job, cal, mos, exists in self.products:
-            state = ' (exists: reused)' if exists else ''
-            lines.append(f"  job {job:<8} {os.path.basename(cal)}{state}")
-            if mos:
-                lines.append(f"  {'':<12} {os.path.basename(mos)}")
+        shown = {'missing': 'made', 'current': 'reused', 'replace': 'made again (overwrite)',
+                 'unrecorded': 'refused: exists, unrecorded', 'different': 'refused: exists, other inputs',
+                 'changed': 'refused: changed since recorded'}
+        for prod in self.products:
+            label = f"{prod.kind} {prod.job.name}" + (f" [{prod.tile}]" if prod.tile else '') + \
+                (f" pass {prod.index}" if prod.index else '')
+            lines.append(f"  {label:<22} {os.path.basename(prod.path)}  ({shown.get(prod.state, prod.state)})")
         if self.tiles is not None:
             lines.append(f"  tiles       {self.tiles!r}")
         if self.passes is not None:
             from .schedule import schedule
             lines.append(f"  passes      {', '.join(t.upper() for t in schedule(self.passes.n, self.passes.order))}")
         for n in self.notes:
-            lines.append(f"  note        {n}")
+            lines.append('  note        ' + n.replace('\n', '\n' + ' ' * 14))
         return '\n'.join(lines)
 
     __repr__ = __str__
@@ -88,6 +103,25 @@ def _function_refs(obj, out):
             _function_refs(x, out)
     elif callable(obj) and not isinstance(obj, type) and hasattr(obj, '__code__'):
         out.add(function_ref(obj))
+    return out
+
+
+def _by_values(obj, out):
+    """The functions sent by value in a settings object (recursively)."""
+    import dataclasses
+
+    from ..config.functions import by_value
+    if isinstance(obj, by_value):
+        out.append(obj)
+    elif isinstance(obj, Config):
+        for f in dataclasses.fields(obj):
+            _by_values(getattr(obj, f.name), out)
+    elif isinstance(obj, (tuple, list)):
+        for x in obj:
+            _by_values(x, out)
+    elif isinstance(obj, dict):
+        for x in obj.values():
+            _by_values(x, out)
     return out
 
 
@@ -114,11 +148,12 @@ def check_in_worker(refs, objects):
     if not refs and not objects:
         return
     from concurrent.futures import ProcessPoolExecutor
-
-    from ..core.shmbuf import worker_pool_context
     blobs = [(name, pickle.dumps(o)) for name, o in objects.items()]
     try:
-        with ProcessPoolExecutor(max_workers=1, mp_context=worker_pool_context()) as ex:
+        # A fresh interpreter importing the script and the functions by name, as the pipeline's
+        # forkserver workers do; 'spawn', so the shared forkserver starts later, inside the action
+        # (its workers then write to the action's log).
+        with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context('spawn')) as ex:
             errors = ex.submit(_probe, sorted(refs), blobs).result(timeout=300)
     except Exception as e:
         raise ConfigError(f"a worker process could not start ({type(e).__name__}: {e}). The run script is "
@@ -166,16 +201,17 @@ def _frames_in(path):
 
 
 def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, cal=None,
-              compute=None, check_workers=True) -> Plan:
+              compute=None, overwrite=False, check_workers=True, check_products=True) -> Plan:
     """The :class:`Plan` of ``action`` (``"calibrate"`` or ``"mosaic"``) on ``field``; raises
-    :class:`~selfcal.config.base.ConfigError` for anything that would fail later."""
+    :class:`~selfcal.config.base.ConfigError` for anything that would fail later, including an
+    existing product that was not made by the same inputs (see :mod:`selfcal.run.products`;
+    ``overwrite`` marks those to be made again, ``check_products=False`` only lists them)."""
     from .compute import pin_threads
     from .engine import RunContext
     check_main_guard()
     pin_threads()                  # before the first worker (the worker check below) starts the forkserver
     recipe = as_recipe(recipe)
     compute = compute or field.compute
-    notes = []
     if action == 'mosaic':
         if recipe.coadd is None:
             raise ConfigError("mosaic: the recipe makes no mosaic (coadd=None); give it a Coadd")
@@ -186,7 +222,7 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
                           "give a recipe without one: recipe.replace(coadd=None)")
     lowered = lower(field, recipe, task='mosaic' if action == 'mosaic' else 'cal', jobs=jobs, tiles=tiles,
                     passes=passes, frames=frames, cal=cal, compute=compute)
-    plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes, notes=notes)
+    plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
 
     # frames
     first = lowered[0].cfg
@@ -227,12 +263,37 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
                 raise ConfigError(f"Fit(clip=...): {e}") from None
         if passes is not None:
             _check_passes(ctx, recipe, passes, low)
-        for job in ctx.jobs():
-            cal_path = ctx.cal_path(job) if tiles is None else ctx.stitched_cal_path(job)
-            mos = ctx.mosaic_path(job) if (recipe.coadd is not None and tiles is None and passes is None) else None
-            plan.products.append((job.name, cal_path, mos, os.path.exists(cal_path)))
-    if any(e for *_, e in plan.products) and action != 'mosaic':
-        notes.append("existing cal files are reused (their solve is skipped), as for a TOML run")
+        _check_instrument_maps(ctx, recipe, compute)
+    used = found if first.n_frames is None else found[:n]
+    plan.frame_list = list(used)
+    plan.book = Book(field, recipe, passes=passes, tiles=tiles)
+    plan.products = expected_products(plan, plan.book, used)
+    refusals = []
+    by_path = {prod.path: prod for prod in plan.products}
+    for prod in plan.products:                  # engine order: what a product is made from comes first
+        input_cal = action == 'mosaic' and prod.kind == 'cal'
+        if not os.path.exists(prod.path):
+            if input_cal:
+                raise ConfigError(f"mosaic: {os.path.basename(prod.path)} does not exist (calibrate first)")
+            continue
+        made_again = [d for d in prod.depends if d in by_path and by_path[d].state in ('missing', 'replace')]
+        if made_again and not input_cal:          # made again from what is made again
+            prod.state = 'replace'
+            prod.details = [f"made from {os.path.basename(made_again[0])}, which is made again"]
+            continue
+        prod.state, prod.details = check(prod.path, prod.inputs())
+        if overwrite and not input_cal:
+            prod.state = 'replace'                # made again, whatever made it
+            continue
+        if prod.state == 'current' or not check_products:
+            continue
+        refusals.append(refusal(prod.path, prod.state, prod.details, input_cal=input_cal, tile=prod.tile is not None))
+    if refusals:
+        raise refusals[0] if len(refusals) == 1 else ConfigError(_summary(plan.products, action=action))
+    if plan.refused:
+        plan.notes.append(_summary(plan.refused, would=True, action=action))
+    for low in lowered:
+        low.cfg.reuse_mosaics = True          # every existing mosaic is current, or is made again
 
     if check_workers:
         refs = _function_refs(recipe, set())
@@ -240,8 +301,46 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
                                       ('Fit(raw_frame_hook)', recipe.fit.raw_frame_hook),
                                       ('Coadd(frame_hook)', recipe.coadd.frame_hook if recipe.coadd else None))
                    if v is not None}
+        for fn in _by_values(recipe, []):
+            objects[f'sc.by_value({fn.__qualname__})'] = fn
         check_in_worker(refs, objects)
     return plan
+
+
+def _summary(products, would=False, action='calibrate'):
+    """One message for many products an action refuses, by why, with what to do about each kind."""
+    groups = {}
+    for prod in products:
+        if prod.state in REFUSED:
+            input_cal = action == 'mosaic' and prod.kind == 'cal'
+            groups.setdefault((prod.state, input_cal, prod.tile is not None), []).append(prod)
+    why = {'unrecorded': 'have no record of how they were made (made before records existed, by a TOML run, or '
+                         'interrupted)',
+           'different': 'were made with different inputs',
+           'changed': 'were written again after they were recorded'}
+    lines = []
+    for (state, input_cal, tile), prods in groups.items():
+        names = ', '.join(os.path.basename(p.path) for p in prods[:3]) + (f' and {len(prods) - 3} more'
+                                                                              if len(prods) > 3 else '')
+        first = f" (the first: {'; '.join(prods[0].details[:3])})" if prods[0].details else ''
+        lines.append(f"{len(prods)} {why[state]}{first}: {names}. To go on: "
+                     + remedy(state, input_cal=input_cal, tile=tile))
+    head = 'the run would refuse existing products' if would else 'existing products refused'
+    return f"{head}:\n  " + '\n  '.join(lines)
+
+
+def _check_instrument_maps(ctx, recipe, compute):
+    """An instrument's per-pixel maps (SPHEREx: the wavelength maps) are coadded against the std map,
+    in the sigma-clip pass or over the frame cache; say so now rather than after the solve."""
+    c = recipe.coadd
+    if c is None or not c.instrument_maps or ctx.inst.aux_coadds(ctx.geom) is None:
+        return
+    if not c.std:
+        raise ConfigError(f"Coadd(instrument_maps=True): {ctx.inst.name}'s instrument maps are coadded against the std "
+                          f"map; give Coadd(std=True), or instrument_maps=False")
+    if c.clip is None and not compute.cache_frames:
+        raise ConfigError("Coadd(instrument_maps=True): the instrument maps are coadded in the sigma-clip pass or over "
+                          "the frame cache; give Coadd(clip=...) or Compute(cache_frames=True), or instrument_maps=False")
 
 
 def _check_passes(ctx, recipe, passes, low):

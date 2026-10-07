@@ -182,21 +182,25 @@ class Coadd(Config):
 class Numerics(Config):
     """The summation layout: changes the last bits of the products, never the science.
 
-    ``threads``: the solver's threads (its transpose product is summed in thread-sized blocks).
-    ``batch``: frames per assembly batch. ``mosaic_batch``: frames per batch of the coadd's frame
-    cache; ``coadd_batch``: of its passes. The defaults are production's, so any machine
-    reproduces production bit for bit.
+    ``threads``: the solver's threads. ``rmatvec_threads``: the threads of its transpose product,
+    each summing its rows into a buffer of its own (None: as many as ``threads``, capped so the
+    buffers stay under 16 GB; 1: the sequential product). ``batch``: frames per assembly batch.
+    ``mosaic_batch``: frames per batch of the coadd's frame cache; ``coadd_batch``: of its passes.
+    The defaults are production's, so any machine reproduces production bit for bit.
     """
     threads: int = 48
     _: KW_ONLY
     batch: int = 50
     mosaic_batch: int = 50
     coadd_batch: int = 50
+    rmatvec_threads: int | None = None
 
     def _validate(self):
         for k in ('threads', 'batch', 'mosaic_batch', 'coadd_batch'):
             if getattr(self, k) < 1:
                 raise ConfigError(f"Numerics({k}={getattr(self, k)}): at least 1")
+        if self.rmatvec_threads is not None and self.rmatvec_threads < 1:
+            raise ConfigError(f"Numerics(rmatvec_threads={self.rmatvec_threads}): at least 1 (None: automatic)")
 
 
 @dataclass(frozen=True)

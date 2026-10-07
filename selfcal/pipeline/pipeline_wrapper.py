@@ -33,6 +33,7 @@ import warnings
 
 from .. import _state
 from ..core import coadd
+from ..io.atomic import atomic_path
 from ..io.reprojection import batch_reproject
 from ..io.reproj import load_reproj_file, parse_reproj_basename, reproj_basename
 from ..io.cal_writer import write_sky_groups
@@ -1443,7 +1444,7 @@ class Calibrator(Reprojector):
         # hours of compute at production scale).
 
         cal_path = os.path.join(cal_dir, cal_file)
-        with h5py.File(cal_path, 'w') as f:
+        with atomic_path(cal_path) as tmp, h5py.File(tmp, 'w') as f:      # complete or absent
             f.attrs['num_maps'] = K
             # v3 sky blocks (+ per-block separability + v2 aliases): ONE writer
             # shared with the sky-only producers (selfcal.io.cal_writer).
@@ -1906,6 +1907,9 @@ class Mosaicker(Reprojector):
         primary_hdu = fits.PrimaryHDU()
 
         hdul = fits.HDUList([primary_hdu] + hdu_list)
-        hdul.writeto(mos_path, overwrite=overwrite)
+        if os.path.exists(mos_path) and not overwrite:
+            raise OSError(f"{mos_path} exists (pass overwrite=True)")
+        with atomic_path(mos_path) as tmp:                               # complete or absent
+            hdul.writeto(tmp)
         logger.info(f"Mosaic saved to {mos_path}")
         return mos_path
