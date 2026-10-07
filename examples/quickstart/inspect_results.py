@@ -1,14 +1,15 @@
 """Inspect the products of the selfcal quickstart and compare them with the injected truth.
 
-Run it after the cal step, from the directory that holds quickstart_output/ (the
-repository root in the quickstart):
+Run it after the calibration (quickstart.py, or cal.toml), from the directory that
+holds quickstart_output/ (the repository root in the quickstart):
 
     python examples/quickstart/inspect_results.py
 
 It prints what the calibration file and the mosaic contain, compares the
 recovered offsets, scalars and sky with the ones simulate.py injected, and saves
-a figure, quickstart_output/results_quickstart.png. If you changed `suffix` in
-cal.toml, pass the new one: --suffix _mytest (the figure is then results_mytest.png).
+a figure, quickstart_output/results_quickstart.png. For the products of another
+recipe name, pass it with a leading underscore: --suffix _damp0p1 (the figure is
+then results_damp0p1.png).
 """
 import argparse
 import os
@@ -23,8 +24,8 @@ from simulate import CHUNKS, DET_SHAPE, NOISE_RMS, OUT_DIR, true_sky  # next to 
 from selfcal.io.calfile import CalFile
 from selfcal.io.reproj import parse_reproj_basename
 
-RUN_DIR = os.path.join(OUT_DIR, "quickstart")   # <output_dir>/<run_name> of the configs
-STEM = "Sim_Chunks4x4_All"                      # <tag>_Chunks<rows>x<cols>_<job>, then the suffix
+RUN_DIR = os.path.join(OUT_DIR, "quickstart")   # the field's directory
+STEM = "Sim_Chunks4x4_All"                      # <tag>_Chunks<rows>x<cols>_<job>, then _<recipe name>
 
 
 def remove_gauge(offsets):
@@ -39,7 +40,7 @@ def remove_gauge(offsets):
 def main():
     parser = argparse.ArgumentParser(description="Inspect the quickstart products.")
     parser.add_argument("--suffix", default="_quickstart",
-                        help="suffix in cal.toml (default: _quickstart)")
+                        help="_<recipe name> (the suffix of cal.toml; default: _quickstart)")
     suffix = parser.parse_args().suffix
     cal_path = os.path.join(RUN_DIR, "calibration", f"cal_{STEM}{suffix}.h5")
     mosaic_path = os.path.join(RUN_DIR, "mosaic", f"mosaic_{STEM}{suffix}.fits")

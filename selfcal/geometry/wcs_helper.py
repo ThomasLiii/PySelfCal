@@ -101,7 +101,9 @@ def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use
         raise ValueError('No exposure files provided to define WCS.')
     logger.info('Defining optimal celestial WCS...')
     wcs_list = _load_det_wcs(exposure_list, use_ext, reader=reader)
-    ref_wcs, ref_shape = find_optimal_celestial_wcs(wcs_list, resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
+    # (shape, WCS) pairs: a list of exactly two bare WCS would be read as one (shape, WCS) input
+    ref_wcs, ref_shape = find_optimal_celestial_wcs([(w.array_shape, w) for w in wcs_list],
+                                                    resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
     ref_wcs, ref_shape = _pad_wcs(ref_wcs, ref_shape, padding_pixels)
     return ref_wcs, ref_shape
 

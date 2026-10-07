@@ -1,13 +1,22 @@
 # Run configs
 
+This page documents the TOML form of a run, the form of the configs shipped here, which keeps
+working. New runs are written in Python ([The Python API](../../docs/guide/python-api.md)): each
+config here has a Python twin, `selfcal_scripts/runs/<name>.py`, built from the shared recipes and
+fields of `selfcal_scripts/recipes/` and checked to make the run engine do exactly what the config
+does (`python selfcal_scripts/gates/config_equivalence.py runs`). `selfcal convert <name>.toml`
+writes the Python form of any config, checked the same way.
+
 Each `.toml` here fully describes one pipeline run. Run it with:
 
 ```bash
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml
-# or the per-run launcher, where the config has one:
-./selfcal_scripts/launch/<name>.sh
 # validate without running (resolves jobs + mode, no compute):
 ./selfcal_scripts/run.sh selfcal_scripts/configs/<name>.toml --dry-run
+# the Python twin, through the same script (--dry-run prints its plan):
+./selfcal_scripts/run.sh selfcal_scripts/runs/<name>.py
+# or the per-run launcher, where there is one (it runs the Python twin):
+./selfcal_scripts/launch/<name>.sh
 ```
 
 **Logs.** Every run (not `--dry-run`) writes its full console output — the

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch the 'damp_offset' run. Edit configs/damp_offset.toml to change knobs.
+# Launch the 'damp_offset' run. Edit runs/damp_offset.py to change it (the TOML form, configs/damp_offset.toml, still runs:
+# ../run.sh ../configs/damp_offset.toml). --dry-run prints the plan.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${HERE}/../run.sh" "${HERE}/../configs/damp_offset.toml" "$@"
+exec "${HERE}/../run.sh" "${HERE}/../runs/damp_offset.py" "$@"

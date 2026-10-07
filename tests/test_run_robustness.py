@@ -84,15 +84,15 @@ def test_rerun_overwrite_makes_a_mosaic_again_and_keeps_the_cwd(toy):
     recipe = _recipe(15, name='remosaic')
     made = toy.calibrate(recipe)
     mosaic = made.mosaic_paths[0]
-    before_bytes, before_ino = open(mosaic, 'rb').read(), os.stat(mosaic).st_ino
+    before_bytes = open(mosaic, 'rb').read()
     record = toy.mosaic(recipe).record
+    assert json.load(open(record))['products']['sidecars_written'] == []      # reused, not written
     cwd = os.getcwd()
     redone = sc.rerun(record, overwrite=True)
     assert os.getcwd() == cwd
-    assert os.stat(redone.mosaic_paths[0]).st_ino != before_ino            # written again ...
-    assert sc.compare(mosaic, mosaic).verdict == 'identical'
-    assert open(redone.mosaic_paths[0], 'rb').read() == before_bytes     # ... to the same bytes
     data = json.load(open(redone.record))
+    assert data['products']['sidecars_written'] == [redone.mosaic_paths[0]]  # written again ...
+    assert open(redone.mosaic_paths[0], 'rb').read() == before_bytes     # ... to the same bytes
     assert data['script'] == json.load(open(record))['script']          # the original script, not selfcal's
 
 

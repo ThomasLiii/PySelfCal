@@ -770,9 +770,11 @@ class _bind:
 
 
 def _map_source(v, call, shape, where):
-    """A detector / sky map from a function (``call(fn)``) or a .npy / .fits file."""
+    """A detector / sky map: an array, a function (``call(fn)``) or a .npy / .fits file."""
     val = v.value
-    if callable(val) or (isinstance(val, str) and ':' in val and not os.path.exists(val)):
+    if isinstance(val, np.ndarray):
+        m = np.asarray(val, dtype=np.float32)
+    elif callable(val) or (isinstance(val, str) and ':' in val and not os.path.exists(val)):
         m = np.asarray(call(load_function(val)), dtype=np.float32)
     elif str(val).endswith('.npy'):
         m = np.load(val).astype(np.float32)

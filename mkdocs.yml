@@ -45,7 +45,7 @@ nav:
   - User guide:
       - How selfcal works: guide/concepts.md
       - The Python API: guide/python-api.md
-      - Run configuration: guide/configuration.md
+      - Run configuration (TOML): guide/configuration.md
       - Bring your own telescope: bring_your_own_telescope.md
       - Pipeline runbook: guide/pipeline.md
       - Glossary: guide/glossary.md

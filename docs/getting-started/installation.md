@@ -50,27 +50,29 @@ pip install -e .
 
 ```bash
 python -c "import selfcal, selfcal.run; print(selfcal.__file__)"
-pytest -q tests/test_runner_e2e_toy.py      # about 10 s
+pytest -q tests/test_quickstart_example.py  # about a minute
 ```
 
-The second command runs a complete reprojection, calibration and mosaic of synthetic exposures
-through the run engine, on the built-in `grid` instrument. The whole suite (`pytest`, 110 tests)
-takes about two minutes and needs no data. [Testing](../developer/testing.md) describes it.
+The second command runs the [quickstart](quickstart.md) in temporary directories: a complete
+reprojection, calibration and mosaic of simulated exposures, written in Python and as TOML configs,
+and checks that both make the same products. The whole suite (`pytest`) takes a few minutes and
+needs no data. [Testing](../developer/testing.md) describes it.
 
 ## Threads and processes
 
-selfcal parallelises with its own worker processes (`max_workers` in the `[calibration]` and
-`[mosaic]` tables) and with the thread pool of the LSQR matrix-vector products
-(`apply_n_threads`). BLAS libraries that also start one thread per core would oversubscribe the
-machine. `selfcal_scripts/run.py` therefore sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
-`MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` and `NUMEXPR_NUM_THREADS` to 1 before numpy is
-imported, unless they are already set.
+selfcal parallelises with its own worker processes (`sc.Compute(workers=...)`; `max_workers` in a
+TOML config) and with the thread pool of the LSQR matrix-vector products (`sc.Numerics(threads)`;
+`apply_n_threads`). BLAS libraries that also start one thread per core would oversubscribe the
+machine, so every action of the Python API limits them to one thread per process before it starts
+a worker, and `selfcal run script.py` (like the TOML runner) sets `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` and `NUMEXPR_NUM_THREADS` to 1
+before numpy is imported.
 
-When you call the library from your own Python script instead of through the runner:
-
-- set the same variables before the first `import numpy`, for example in the shell;
-- put the script's work under `if __name__ == "__main__":`. The worker pools use the `forkserver`
-  start method, which imports the main module again in each worker.
+Put a script's work under `if __name__ == "__main__":`. The worker pools use the `forkserver`
+start method, which imports the main module again in each worker; an action started outside the
+guard is refused. When you call the library's functions directly rather than through a field's
+actions, set the thread variables yourself before the first `import numpy`, for example in the
+shell.
 
 ## Optional: zodiacal-light predictions
 

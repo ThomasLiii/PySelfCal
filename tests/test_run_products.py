@@ -192,3 +192,33 @@ def test_a_template_is_fingerprinted_by_content_not_path(tmp_path):
     open(copy, 'ab').write(b'\0')                       # another template: another fingerprint
     products._DIGESTS.clear()
     assert products.content_addressed(encode(products.resolved_model(b))) != ca
+
+
+def test_a_plan_without_frames_says_so_and_the_action_refuses(toy_field, tmp_path):
+    field = sc.Field(tmp_path / 'no_frames', toy_field.instrument, REF_ARCSEC, compute=toy_field.compute)
+    os.makedirs(field.path)
+    shutil.copy(os.path.join(toy_field.path, 'ref.fits'), os.path.join(field.path, 'ref.fits'))
+    plan = field.plan(_recipe())
+    assert any(n.startswith('no frames in') for n in plan.notes), plan.notes
+    with pytest.raises(ConfigError, match='no frames in'):
+        field.calibrate(_recipe())
+    with pytest.raises(ConfigError, match='no frames in'):           # adopt records frames: it needs them
+        field.adopt(_recipe())
+
+
+def test_two_exposures_make_a_reference_grid(tmp_path):
+    write_exposures(str(tmp_path / 'exposures'), 2, np.random.default_rng(3))
+    field = sc.Field(tmp_path / 'two', sc.Camera((DET, DET), chunks=N_CHUNK_SIDE, dq_ext=2, tag='Toy'), REF_ARCSEC,
+                     compute=sc.Compute(str(tmp_path / 'cache'), workers=1))
+    field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
+    assert len(field.frames) == 2 and os.path.exists(os.path.join(field.path, 'ref.fits'))
+
+
+def test_smoothing_on_a_chunk_map_without_axes_is_refused(toy_field):
+    """A term smoothed on a map that declares no axes to smooth along would add no rows at all."""
+    from tests.test_python_api import AmpsCamera
+    field = toy_field.replace(instrument=AmpsCamera())
+    unsmoothed = sc.Recipe(sc.Model(offsets=[sc.Offsets(on='amps', smooth=0.1)]), coadd=None, name='amps')
+    with pytest.raises(ConfigError, match='declares no axes to smooth along'):
+        field.plan(unsmoothed)
+    field.plan(unsmoothed.replace(model=sc.Model(offsets=[sc.Offsets(on='amps', smooth=0.1, smooth_along=('amp',))])))

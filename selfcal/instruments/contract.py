@@ -28,10 +28,11 @@ from typing import Any
 import numpy as np
 
 from ..config.base import Config, ConfigError
+from ..models.offset_structure import ChunkAxes
 from . import base as engine
 from .grid import upsample_chunk_map
 
-__all__ = ['Instrument', 'Job', 'Geometry', 'ChunkMap', 'JobGeometry', 'ExposureLayout']
+__all__ = ['Instrument', 'Job', 'Geometry', 'ChunkMap', 'ChunkAxes', 'JobGeometry', 'ExposureLayout']
 
 ChunkMap = engine.ChunkMap
 JobGeometry = engine.JobGeometry
@@ -83,12 +84,28 @@ class Instrument(Config):
     files are read), :meth:`default_jobs`, :meth:`job_geometry` (valid pixels and weights of a
     job), :meth:`frame_variables` (per-frame data variables). A ``tag`` setting names its
     products (default: the class name); ``unit`` is the mosaic's ``BUNIT``.
+
+    It may also define the engine's optional hooks, which then reach the run: ``offset_renderer(geom,
+    jobgeom, map_name=None, render=None)`` (a ``(chunk_map, offsets) -> grid`` renderer for the
+    mosaic; None: constant over each chunk), ``aux_coadds(geom)`` and ``finalize_mosaic(geom,
+    mosaicker, maps, sigma)`` (per-pixel maps to coadd alongside the data, and their labelling),
+    and ``coefficient_catalog()`` (named coefficients, ``sc.catalog(name)``); see
+    :class:`selfcal.instruments.base.Instrument`.
     """
 
     # ---- the contract -------------------------------------------------------------------
-    def geometry(self, oversample) -> engine.DetectorGeometry:
-        """The detector geometry: chunk maps with their axes, per-pixel maps (:func:`Geometry`)."""
-        raise NotImplementedError(f"{type(self).__name__} implements geometry(oversample)")
+    def geometry(self, oversample=1) -> engine.DetectorGeometry:
+        """The detector geometry: chunk maps with their axes, per-pixel maps (:func:`Geometry`),
+        the detector-plane maps sampled ``oversample`` times per pixel. A new instrument
+        implements it; a built-in one (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``) returns the
+        run engine's."""
+        inst, table = self.engine(())
+        if isinstance(inst, _ContractAdapter):
+            raise NotImplementedError(f"{type(self).__name__}: a subclass of sc.Instrument implements "
+                                      f"geometry(oversample)")
+        if isinstance(inst, str):
+            inst = engine.get_instrument(inst)
+        return inst.detector_geometry(table, oversample)
 
     def layout(self) -> engine.ExposureLayout:
         """How a raw exposure file is read (default: a FITS file, science in extension 1, no mask)."""
@@ -175,3 +192,21 @@ class _ContractAdapter(engine.Instrument):
 
     def data_unit(self, inst_cfg):
         return str(getattr(self.inst, 'unit', '') or '')
+
+    # the engine's optional hooks, when the settings object defines them
+    def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None):
+        hook = getattr(self.inst, 'offset_renderer', None)
+        return hook(geom, jobgeom, map_name=map_name, render=render) if hook else None
+
+    def aux_coadds(self, geom):
+        hook = getattr(self.inst, 'aux_coadds', None)
+        return hook(geom) if hook else None
+
+    def finalize_mosaic(self, geom, mosaicker, maps, sigma):
+        hook = getattr(self.inst, 'finalize_mosaic', None)
+        if hook:
+            hook(geom, mosaicker, maps, sigma)
+
+    def coefficient_catalog(self):
+        hook = getattr(self.inst, 'coefficient_catalog', None)
+        return dict(hook()) if hook else {}

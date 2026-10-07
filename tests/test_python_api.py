@@ -183,6 +183,18 @@ class Owl(sc.Instrument):
         return sc.Geometry((DET, DET), oversample, maps=[grid, amps])
 
 
+@dataclass(frozen=True, kw_only=True)
+class AmpsCamera(sc.Instrument):
+    """A camera with a second chunk map that declares no adjacency axes (four amplifiers)."""
+    tag: str = 'Amps'
+
+    def geometry(self, oversample):
+        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (N_CHUNK_SIDE, N_CHUNK_SIDE))
+        ids = np.repeat(np.arange(4, dtype=np.int32)[None, :], DET, axis=0).repeat(DET // 4, axis=1)
+        amps = sc.ChunkMap('amps', ids, ids, axes=sc.ChunkAxes.row_major(('amp',), (4,), ('x',)))
+        return sc.Geometry((DET, DET), oversample, maps=[grid, amps])
+
+
 def test_a_new_instrument_is_a_subclass():
     from selfcal.run.engine import RunContext
     owl = Owl(chunks=2)
@@ -192,6 +204,57 @@ def test_a_new_instrument_is_a_subclass():
     assert ctx.frame_tag == 'Owl' and [j.name for j in ctx.jobs()] == ['All']
     assert sorted(ctx.geom.chunk_maps) == ['amps', 'grid'] and ctx.geom.chunk_map.n_chunks == 4
     assert ctx.geom.chunk_maps['amps'].grid.shape == (DET, DET)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenderedOwl(Owl):
+    """Owl with two of the engine's optional hooks."""
+
+    def coefficient_catalog(self):
+        return {'ramp': functools.partial(sc.linear, 0.0, 1.0)}
+
+    def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
+        return _render_constant if map_name in (None, 'grid') else None
+
+
+def _render_constant(chunk_map, offsets):
+    return np.asarray(offsets)[chunk_map]
+
+
+def test_an_instruments_optional_hooks_reach_the_engine():
+    engine, _ = RenderedOwl(chunks=2).engine(())
+    assert sorted(engine.coefficient_catalog()) == ['ramp']
+    assert engine.offset_renderer({}, None, None) is _render_constant
+    assert engine.offset_renderer({}, None, None, map_name='amps') is None
+    assert engine.aux_coadds(None) is None
+    plain, _ = Owl().engine(())
+    assert plain.coefficient_catalog() == {} and plain.offset_renderer({}, None, None) is None
+
+
+def test_built_in_instruments_give_their_geometry():
+    geom = sc.Camera((DET, DET), chunks=N_CHUNK_SIDE, dq_ext=2, tag='Toy').geometry(2)
+    assert geom.chunk_map.n_chunks == N_CHUNK_SIDE ** 2 and geom.chunk_map.grid.shape == (2 * DET, 2 * DET)
+    from selfcal.instruments.spherex.spherex_utility import DEFAULT_CALIBRATION_DIR
+    if os.path.isdir(os.environ.get('SELFCAL_SPHEREX_CALIB_DIR', DEFAULT_CALIBRATION_DIR)):   # its maps (not on CI)
+        lvf = sc.SPHEREx(4, num_col=3).geometry(1)
+        assert lvf.chunk_map.axes is not None and 'subchannel' in lvf.chunk_map.axes.names
+    with pytest.raises(NotImplementedError, match='a subclass of sc.Instrument implements'):
+        sc.Instrument.geometry(_NoGeometry())
+
+
+@dataclass(frozen=True, kw_only=True)
+class _NoGeometry(sc.Instrument):
+    tag: str = 'None'
+
+
+def test_map_variables_take_arrays():
+    """sc.SkyMap / sc.DetectorMap of an array reach the solve (they took only files and functions)."""
+    from selfcal.instruments.base import get_instrument
+    geom = get_instrument('grid').detector_geometry({'detector_shape': [8, 8], 'chunks': [2]}, 1)
+    model = sc.Model(variables={'known': sc.SkyMap(np.full((4, 4), 2.0)), 'qe': sc.DetectorMap(np.ones((8, 8)))})
+    variables = model.spec().build_variables(geom, [], ref_shape=(4, 4), log=lambda *a, **k: None)
+    assert float(np.asarray(variables.sky['known']).mean()) == 2.0
+    assert np.asarray(variables.detector['qe']).shape == (8, 8)
 
 
 # =================================================================== the same bytes as a TOML run
