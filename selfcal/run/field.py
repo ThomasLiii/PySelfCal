@@ -422,6 +422,7 @@ class Field(Config):
         with _action(self, action, settings, plan.lowered, plan.compute, recipe.numerics, frames=frames) as record:
             _prepare(plan)
             plan.book.record = record.path
+            plan.book.action_record = record
             for spec, ctx in zip(plan.lowered, plan.contexts):
                 spec.on_product = plan.book
                 out = run(spec, ctx)

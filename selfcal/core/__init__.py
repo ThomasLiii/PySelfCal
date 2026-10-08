@@ -18,6 +18,10 @@ Building and solving the system:
   runs LSQR or LSMR with a thread-parallel sparse product.
 - :mod:`~selfcal.core.lsqr_inplace`: scipy's LSQR with in-place vector updates (bit-identical,
   less memory).
+- :mod:`~selfcal.core.lsmr`: scipy's LSMR, with its state recorded at every iteration
+  (bit-identical).
+- :mod:`~selfcal.core.solve_record`: the record of a solve: how it stopped, its final estimates,
+  the true residual and its history per iteration.
 - :mod:`~selfcal.core.solution`: the solution vector split into maps, initial guesses, and the
   closed-form per-pixel sky solve.
 - :mod:`~selfcal.core.lsqr`: the former single module, now a re-export of ``assembly``,

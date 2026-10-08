@@ -36,6 +36,9 @@ production uses, nothing promotes and no extra vector is ever allocated.
 reference (e.g. ``lsqr_inplace(op, holder.pop(), ...)``) to actually free it.
 ``var`` is only allocated when ``calc_var`` (scipy allocates an n-length
 float64 array regardless); otherwise an empty array is returned in its slot.
+``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`) receives the
+scalars of each iteration (the norms, the estimates of ``|A|`` and
+``cond(A)``, the stopping ratios); reading them changes nothing.
 
 One deliberate departure from scipy (2026-10-05): the norms of LARGE float32
 vectors are accumulated in float64 (``_norm``). ``np.linalg.norm`` on a
@@ -181,13 +184,19 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False):
+                 x0_owned=False, history=None):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
     ``x0`` is copied unless ``x0_owned=True``, in which case its buffer is
     used as the solution vector directly (the caller must hold no other
-    reference it cares about) — one n-length vector less."""
+    reference it cares about) — one n-length vector less.
+
+    ``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`, or
+    None) receives the solver's scalars before the first iteration and after
+    each one (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``,
+    ``xnorm`` and the ratios ``test1``, ``test2``); recording them changes
+    no value the solve computes."""
     A = aslinearoperator(A)
     b = np.atleast_1d(b)
     if b.ndim > 1:
@@ -268,6 +277,9 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     r2norm = rnorm
 
     arnorm = alfa * beta
+    if history is not None:
+        history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm,
+                    float(rnorm) / float(bnorm) if bnorm > 0 else 0.0, float('nan'))
     if arnorm == 0:
         if show:
             print(_MSG[0])
@@ -396,6 +408,9 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             istop = 2
         if test1 <= rtol:
             istop = 1
+
+        if history is not None:
+            history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm, test1, test2)
 
         if show:
             prnt = False

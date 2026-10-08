@@ -66,11 +66,15 @@ def setup_options(recipe, compute, instrument) -> dict:
 
 
 def solver_options(recipe) -> dict:
-    """The solver's ``apply_lsqr`` keywords."""
+    """The solver's ``apply_lsqr`` keywords: with ``Fit(tolerance=0)`` also ``conlim=0``, so the
+    solve runs exactly ``Fit.iterations`` iterations (otherwise the solver's own ``conlim``)."""
     fit = recipe.fit
     atol, btol = fit.atol_btol
-    return {'solver': fit.method, 'iter_lim': fit.iterations, 'atol': atol, 'btol': btol, 'damp': float(fit.damp),
-            'precondition': fit.precondition, 'use_float32': fit.float32, 'n_threads': recipe.numerics.threads}
+    out = {'solver': fit.method, 'iter_lim': fit.iterations, 'atol': atol, 'btol': btol, 'damp': float(fit.damp),
+           'precondition': fit.precondition, 'use_float32': fit.float32, 'n_threads': recipe.numerics.threads}
+    if fit.exact_iterations:
+        out['conlim'] = 0.0
+    return out
 
 
 def coadd_options(recipe, compute, instrument) -> dict:

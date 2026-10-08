@@ -121,6 +121,37 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - Use **`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)], num_sky_blocks=cc.num_sky_blocks, active_mask=cc.active_mask)`** for the warm start when `use_per_frame_scalar=True`. It seeds *only* the scalar block from the diagonal-LS estimate (≈ weighted mean of valid `b` per frame), leaving chunks and sky at 0. Critical to avoid scan-stripe regressions on narrow channels. `active_mask` is required because `setup_lsqr` compacts the zero columns by default; `x0` comes back in the full column layout `apply_lsqr` expects.
 - For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape, active_mask=cc.active_mask)` — diagonal-LS over the full offset region.
 - `iter_lim=50` (`sc.Fit(50)`) is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
+- **Stopping, and a fixed iteration count.** `sc.Fit(iterations=N, tolerance=t)` reaches the
+  solver as `iter_lim = N`, `atol = btol = t` (`tolerance=(atol, btol)` sets them apart), and
+  LSQR / LSMR stop at the first of their Paige-Saunders tests: `istop = 1` (|r| / |b| <= btol +
+  atol |A| |x| / |b|, a compatible system), `2` (|A^T r| / (|A| |r|) <= atol, a least-squares
+  solution), `3` (the estimate of cond(A) exceeds `conlim`, 1e8), `4`-`6` (the same three at
+  machine precision) or `7` (the iteration limit). |A| and cond(A) are running estimates that
+  grow with the iterations, so the `istop = 2` ratio falls even when the weakest directions are
+  still moving (the transfer-function runs of 2026-10: the largest scales of D3 Ch9 kept
+  converging for 700 iterations). **`sc.Fit(iterations=N, tolerance=0)` runs exactly N
+  iterations**: `atol = btol = 0` and the condition stop off (`conlim = 0`, passed to
+  `apply_lsqr`; any other tolerance keeps the solvers' own `conlim = 1e8`, byte for byte). Only
+  machine precision (`istop` 4-6) or an exact solution can end such a solve earlier, and the
+  record says so.
+- **The record of every solve.** `apply_lsqr` records how each solve ran
+  (`selfcal.core.solve_record.SolveRecord`; `Calibrator.solve_record`): the method, the
+  iterations run (and `iterations_total`, the same until a solve continues another's), `istop`
+  and its meaning, the solver's final estimates (`r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`,
+  `xnorm`), the tolerances and `conlim`, the wall time (in the action's record only, so the cal
+  file stays byte-reproducible), and the **true residual** `|b - A x|`,
+  computed once at the end with one product and accumulated in float64 (the estimate `r1norm`
+  drifting from it is how the float32-norm failure of 2026-10 showed up). LSQR overwrites `b`,
+  so a copy is kept for that product: in memory below `sc.Tuning(spill_min_gb=)` (4 GB), else
+  on scratch disk (`spill_dir`) for the solve. The record goes to the cal file's `solve` group
+  ([its attributes](#the-solve-group)), to the action's record (`solves`) and, with the solver's
+  state at every iteration, to `<field>/records/<cal stem>_history.npz` (`itn`, `r1norm`,
+  `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm`, `test1` = |r| / |b|, `test2` = |A^T r| / (|A|
+  |r|), `elapsed_s`; row 0 is the starting vector, `itn = 0`), collected from the scalars the
+  solver computes anyway: no extra products per iteration. LSMR (`selfcal.core.lsmr`, scipy's
+  with this hook, bit-identical) reports one residual norm, as both `r1norm` and `r2norm`.
+  Plot convergence with
+  `h = np.load(CalFile(cal).solve["history_file"]); plt.semilogy(h["itn"], h["r1norm"])`.
 - `precondition=True` (column-norm; `sc.Fit(precondition=True)`, the default) is essential — much faster convergence.
 - **The transpose product, and what "statistical equality" means here.**
   `A^T @ y` is a scatter into output columns, so it cannot be threaded
@@ -398,6 +429,8 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 - `reproj_list` — list of HDD paths to the reprojected files (dataset of bytes)
 - `num_maps` (attr) — number of chunk maps `K`
 - `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when the solve has one: `sc.Model(scalar=True)`, or a map with `det_groups`)
+- `solve` — a group with attributes only (no dataset): the record of the solve that made the file
+  (cals solved since 2026-10-08; see [The `solve` group](#the-solve-group) below)
 
 **Groups (one dataset per map):**
 - `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
@@ -415,6 +448,32 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
 
 `selfcal_scripts/drivers/diff_cal_h5.py` understands both schemas — pass a legacy file and a new file and it compares the underlying arrays correctly.
+
+### The `solve` group
+
+The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read with
+`CalFile.solve`) record how the solve that made the file ran and stopped.
+
+| attribute | content |
+| --- | --- |
+| `version` | the record's layout (1) |
+| `method` | `lsqr` or `lsmr` |
+| `iterations`, `iterations_total` | iterations this solve ran; the cumulative count of the solution (equal until a solve continues another's) |
+| `iteration_limit` | `sc.Fit(iterations=)` |
+| `istop`, `stop` | the solver's stop code (0-7, see [the tuning notes](#calibration-pipeline-tuning)) and its meaning |
+| `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates: ‖b − A x‖, the same with the damping term, ‖Aᵀ r‖, ‖A‖, cond(A), ‖x‖ (in the column-scaled unknowns) |
+| `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, from one product at the end, accumulated in float64 |
+| `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `sc.Fit(tolerance=0)`) |
+| `rows`, `columns` | the system's shape (the active columns) |
+| `history_file` | the NPZ of the solver's state at every iteration, `<field>/records/<cal stem>_history.npz` |
+
+Every value there is a function of the solve, so a cal file stays byte-identical from run to run;
+the solver's wall time (`wall_s`), which is not, is in the action's record (`solves`) only, with
+the same values, and in the history (`elapsed_s`).
+
+The group holds attributes only: every dataset and every root attribute of a cal is what it was
+before records existed (the byte-equality gates compare those). A stitched cal and an N-pass pass
+product have no `solve` group (each tile's cal has its own).
 
 ## Reprojected `*.h5` schema
 

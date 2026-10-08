@@ -129,6 +129,21 @@ map) or `sc.ChunkGroups.mapping(chunk_to_group)`. An observation belongs to the 
 that contributes most to it; along SPHEREx's spectral axis the groups are the subchannels, binned by
 wavelength (the clip of the N-pass solve, whose passes group along that axis only).
 
+**When the solve stops.** `sc.Fit(iterations=N, tolerance=t)` stops LSQR or LSMR at the first of
+their tests: the residual or the least-squares gradient small enough for `t` (`atol = btol = t`;
+`tolerance=(atol, btol)` sets them apart), the estimate of cond(A) above 1e8, or N iterations.
+These tests read running estimates, and the weakest, largest-scale directions of a selfcal system
+can keep converging long after they pass. **`sc.Fit(iterations=N, tolerance=0)` runs exactly N
+iterations**: the tolerance tests and the condition-estimate stop are off (only machine precision
+or an exact solution can end the solve earlier, and its record says so):
+
+```python
+FIXED = NUMCOL3.replace(fit=sc.Fit(700, tolerance=0), name="it700")   # 700 iterations, no stopping test
+```
+
+Every solve is recorded, whatever its tolerance: how it stopped and the solver's state at each
+iteration (see [Records](#records)).
+
 ### The machine
 
 ```python
@@ -234,6 +249,32 @@ the outcome.
 A script's console output (its own and its workers') goes to one log per process,
 `<field>/logs/<script>_<time>_<pid>.log`, which starts with the script's text; each action adds a
 line naming its record.
+
+A calibration's record also lists its `solves`, one entry per solve (a job, or a tile of a tiled
+run): the cal it made (`cal`, `job`, `tile`) and how the solve ran, the same values as the cal
+file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` opens a plain run's cal):
+
+| key | content |
+| --- | --- |
+| `method`, `iterations`, `iterations_total`, `iteration_limit` | the solver; the iterations it ran, the cumulative count of the solution (the same until a solve continues another's), `Fit(iterations=)` |
+| `istop`, `stop` | the solver's stop code and its meaning: 1-2 the tolerance tests, 3 the condition estimate, 4-6 machine precision, 7 the iteration limit |
+| `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates of ‖b − A x‖ (without and with the damping term), ‖Aᵀ r‖, ‖A‖, cond(A) and ‖x‖ |
+| `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, computed once at the end with one product, in float64: an estimate drifting from the true residual shows here |
+| `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `Fit(tolerance=0)`) |
+| `rows`, `columns` | the system's shape (the active columns) |
+| `wall_s` | the solver's wall time (in the record only: the cal file stays byte-identical from run to run) |
+| `history_file` | `<field>/records/<cal stem>_history.npz`: the solver's state at every iteration |
+
+The history file holds one array per column, row 0 the starting vector: `itn`, `r1norm`, `r2norm`,
+`arnorm`, `anorm`, `acond`, `xnorm`, `test1` (‖r‖ / ‖b‖), `test2` (‖Aᵀ r‖ / (‖A‖ ‖r‖)) and
+`elapsed_s`. The solver computes them anyway, so recording them costs nothing:
+
+```python
+import numpy as np, matplotlib.pyplot as plt
+with result.cal() as cal:
+    h = np.load(cal.solve["history_file"])
+plt.semilogy(h["itn"], h["r1norm"]); plt.semilogy(h["itn"], h["arnorm"])
+```
 
 `sc.rerun("records/calibrate_....json")` (or `selfcal rerun RECORD`) runs the action again with the
 recorded settings, warning when the code differs or when the frames it finds are not the ones the

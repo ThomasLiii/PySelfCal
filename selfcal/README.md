@@ -180,6 +180,12 @@ clarity:
   `apply_line_fisher_mask`.
 - **[`core/solve.py`](core/solve.py)** — `apply_lsqr` and the thread-parallel
   SpMV `LinearOperator` (`_partition_csr`, `_make_parallel_operator`).
+- **[`core/solve_record.py`](core/solve_record.py)** — `SolveRecord` (how a solve
+  ran and stopped, its final estimates, the true residual `|b - A x|`) and
+  `SolveHistory` (the solver's state at every iteration), filled by the
+  solvers: [`core/lsqr_inplace.py`](core/lsqr_inplace.py) and
+  [`core/lsmr.py`](core/lsmr.py) (scipy's LSMR with the same hook), both
+  bit-identical to scipy's.
 
 - **[`core/subframe.py`](core/subframe.py)** — `_prep_subframe` is the single
   shared routine that loads an HDF5 reprojected file and produces
@@ -783,6 +789,8 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/assembly.py`](core/assembly.py) | `_prep_lsqr` + shared-memory batch worker. |
 | [`core/system.py`](core/system.py) | `setup_lsqr` + coverage/Fisher parsers + line-mask. |
 | [`core/solve.py`](core/solve.py) | `apply_lsqr` + thread-parallel SpMV operator. |
+| [`core/solve_record.py`](core/solve_record.py) | `SolveRecord`, `SolveHistory`: the record of a solve (the cal's `solve` group, the action's `solves`, `records/<cal stem>_history.npz`). |
+| [`core/lsqr_inplace.py`](core/lsqr_inplace.py), [`core/lsmr.py`](core/lsmr.py) | scipy's LSQR (in-place vector updates, float64 norms of long vectors) and LSMR, each with the per-iteration history hook. |
 | [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31; `ColSplitCSR` row-blocks x column-ranges for the bit-equal parallel transpose product. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |

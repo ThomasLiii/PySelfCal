@@ -186,6 +186,20 @@ class CalFile:
         v = self.attrs.get('line_fisher_threshold')
         return None if v is None else float(v)
 
+    @property
+    def solve(self) -> dict | None:
+        """The record of the solve that made the file, or None (a cal made before records existed, a
+        stitched cal, an N-pass pass product).
+
+        The attributes of the ``solve`` group (:class:`~selfcal.core.solve_record.SolveRecord`):
+        the method, the iterations run and in total, ``istop`` and its meaning (``stop``), the
+        solver's final estimates, the true residual ``|b - A x|``, the tolerances and ``conlim``,
+        and ``history_file``, the NPZ of its history per iteration (the wall time is in the
+        action's record only: the file stays byte-identical from run to run).
+        """
+        from ..core.solve_record import read
+        return read(self._f)
+
     # ---- frames ---------------------------------------------------------------------------
     @property
     def reproj_list(self) -> list[str]:
@@ -304,6 +318,10 @@ class CalFile:
                  if k not in ('sky_components',) and not isinstance(v, np.ndarray)}
         if extra:
             lines.append('  attrs: ' + ', '.join(f'{k}={v}' for k, v in sorted(extra.items())))
+        solve = self.solve
+        if solve is not None:
+            lines.append(f"  solve: {solve.get('method')}, {solve.get('iterations')} iterations "
+                         f"(istop {solve.get('istop')}: {solve.get('stop')}), |b - A x| = {solve.get('true_residual')}")
         return '\n'.join(lines)
 
 

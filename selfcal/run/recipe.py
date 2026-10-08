@@ -102,8 +102,12 @@ class Fit(Config):
     """How the model is fitted to the frames.
 
     ``iterations``: of the iterative solver (``method``: ``"lsqr"`` or ``"lsmr"``; ``tolerance``:
-    its stopping tolerance, one number or ``(atol, btol)``; ``damp``: its global damping;
-    ``precondition``: column scaling; ``float32``: single-precision products). ``clip``: the
+    its stopping tolerance, one number or ``(atol, btol)``, where ``tolerance=0`` turns every
+    stopping test off, the condition-estimate stop too, so the solve runs exactly ``iterations``
+    iterations; ``damp``: its global damping; ``precondition``: column scaling; ``float32``:
+    single-precision products). Every solve is recorded: in the cal file's ``solve`` group, in the
+    action's record, and its history per iteration in ``<field>/records/<cal stem>_history.npz``
+    (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)``.
@@ -130,6 +134,8 @@ class Fit(Config):
     def _validate(self):
         if self.iterations < 1:
             raise ConfigError(f"Fit(iterations={self.iterations}): at least 1")
+        if min(self.atol_btol) < 0:
+            raise ConfigError(f"Fit(tolerance={self.tolerance}): at least 0 (0: run exactly `iterations` iterations)")
         object.__setattr__(self, 'clip', as_clip(self.clip, 'Fit(clip=...)'))
         if self.clip is not None and self.clip.ignore_flags is not None:
             raise ConfigError("Fit: the data-quality bits to ignore are Fit(ignore_flags=...), not the clip's")
@@ -138,8 +144,15 @@ class Fit(Config):
 
     @property
     def atol_btol(self) -> tuple[float, float]:
+        """The solver's ``(atol, btol)``."""
         t = self.tolerance
         return (t, t) if isinstance(t, float) else (float(t[0]), float(t[1]))
+
+    @property
+    def exact_iterations(self) -> bool:
+        """Whether the solve runs exactly ``iterations`` iterations: ``tolerance=0`` (or ``(0, 0)``)
+        turns off the solver's tolerance tests and its condition-estimate stop."""
+        return self.atol_btol == (0.0, 0.0)
 
 
 @dataclass(frozen=True)

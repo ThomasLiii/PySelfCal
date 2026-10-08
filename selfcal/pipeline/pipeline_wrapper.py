@@ -727,6 +727,9 @@ class Calibrator(Reprojector):
         self.layout = None  # selfcal.core.layout.SystemLayout, set in setup_lsqr
         self.sky_model = None  # selfcal.models.sky_model.SkyModel, set in setup_lsqr
         self.sky_component_names = None  # set in load_calibration (v3)
+        # How the last apply_lsqr ran and stopped (selfcal.core.solve_record.SolveRecord);
+        # save_calibration writes it as the cal file's `solve` group.
+        self.solve_record = None
 
     def setup_lsqr(self, chunk_maps: list[np.ndarray] | None = None,
                    grid_valid_weight: np.ndarray | None = None,
@@ -1102,8 +1105,9 @@ class Calibrator(Reprojector):
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
-                   n_threads: int = 32) -> None:
-        """Solve the assembled LSQR system, storing the result in ``self.x``.
+                   n_threads: int = 32, conlim: float = 1e8) -> None:
+        """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
+        solve in ``self.solve_record``.
 
         Parameters
         ----------
@@ -1126,10 +1130,18 @@ class Calibrator(Reprojector):
             Solve in single precision to halve the working-set memory.
         n_threads : int, optional
             Threads for the parallel sparse matrix-vector products.
+        conlim : float, optional
+            The solver's condition-estimate stop (default 1e8, the solvers' own); ``0`` turns it
+            off. With ``atol = btol = 0`` as well the solve runs exactly ``iter_lim`` iterations
+            (``sc.Fit(iterations=N, tolerance=0)``).
 
         Returns
         -------
         None
+            ``self.x`` holds the solution and ``self.solve_record`` its
+            :class:`~selfcal.core.solve_record.SolveRecord` (how it stopped, its final estimates,
+            its history per iteration and the true residual ``|b - A x|``), which
+            :meth:`save_calibration` writes as the cal file's ``solve`` group.
         """
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
@@ -1155,11 +1167,11 @@ class Calibrator(Reprojector):
             # post-solve consumer see unchanged state even on error.
             _spill_dir = self._spill_pixel_state()
             try:
-                self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
-                                    x0=_owned.pop(0), a_owned=True, atol=atol, btol=btol, damp=damp,
-                                    iter_lim=iter_lim, precondition=precondition, solver=solver,
-                                    use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
-                                    num_cols_full=num_cols_full_local)
+                self.x, self.solve_record = apply_lsqr(
+                    _owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape, x0=_owned.pop(0), a_owned=True,
+                    atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition, solver=solver,
+                    use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
+                    num_cols_full=num_cols_full_local, conlim=conlim, return_record=True)
             finally:
                 if _spill_dir is not None:
                     self._restore_pixel_state(_spill_dir)
@@ -1218,6 +1230,7 @@ class Calibrator(Reprojector):
         if frame_scalar is not None:
             parts.append(frame_scalar.flatten())
         self.x = np.concatenate(parts)
+        self.solve_record = None          # this x was read, not solved here
 
         K = len(offsets)
         self.chunk_maps = chunk_maps
@@ -1285,7 +1298,9 @@ class Calibrator(Reprojector):
         scalar baked in). When any map uses ``det_groups``, the shared
         per-frame scalar bias is stored at the top level as ``frame_scalar``.
         Per-map ``chunk_maps/map_m`` arrays are also stored so analysis can
-        recover the chunk indexing without round-tripping config.
+        recover the chunk indexing without round-tripping config. The record
+        of the solve (``self.solve_record``, set by :meth:`apply_lsqr`) is
+        written as the attributes of the ``solve`` group.
 
         Parameters
         ----------
@@ -1402,6 +1417,10 @@ class Calibrator(Reprojector):
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
             if self._has_scalars() and frame_scalar is not None and len(frame_scalar) > 0:
                 f.create_dataset('frame_scalar', data=frame_scalar, compression='gzip')
+            if getattr(self, 'solve_record', None) is not None:
+                # The record of the solve: attributes of a group (no dataset), so every
+                # dataset of the file is what it was before records existed.
+                self.solve_record.write(f.create_group('solve'))
         logger.info(f"Calibration saved to {cal_path}")
         return cal_path
 

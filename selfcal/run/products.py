@@ -329,11 +329,14 @@ def _cal_frames(cal_path):
 class Book:
     """The products of one action: what each would be made from (checked before the run) and,
     called by the engine as each product is written (``RunSpec.on_product``), its sidecar. The
-    same builders serve both, so a product the run writes is current for the same settings later."""
+    same builders serve both, so a product the run writes is current for the same settings later.
+    Each solve the engine ends (``kind="solve"``) is entered in the action's record
+    (``action_record``: :meth:`selfcal.run.records.Record.add_solve`)."""
 
     def __init__(self, field, recipe, *, passes=None, tiles=None, record=None):
         self.field, self.recipe, self.passes, self.tiles = field, recipe, passes, tiles
-        self.record = record
+        self.record = record           # the action record's path (the sidecars name it)
+        self.action_record = None      # the action's Record (its solves are entered in it)
         self.expected = {}             # path -> inputs thunk (the products the action knows of)
         self.init_path = {}            # job name -> the cal that holds the first pass's sky
         self.written = []
@@ -367,7 +370,11 @@ class Book:
 
     # ---- the engine's callback ----------------------------------------------------------------------
     def __call__(self, kind, path, *, job, frames=None, tile=None, tiles=None, cal=None, frame_dir=None,
-                 index=None, pass_type=None):
+                 index=None, pass_type=None, solve=None):
+        if kind == 'solve':
+            if self.action_record is not None:
+                self.action_record.add_solve({'cal': os.fspath(path), 'job': job.name, 'tile': tile, **solve})
+            return
         if kind == 'cal':
             inputs = self.cal(job, frames, None if tile is None else self.tile_key(tile))
         elif kind == 'stitched':
