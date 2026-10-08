@@ -262,8 +262,8 @@ adjacency_axes=(...))`: any integer map, `-1` for no chunk, with named axes for 
 axes a term's `smooth` follows by default (without them, `smooth` needs `smooth_along`; the plan
 refuses smoothing with no axis). The instruments of
 `tests/test_any_telescope.py` are small reference implementations, `selfcal/instruments/camera.py`
-the minimal one, and `selfcal/instruments/spherex/adapter.py` (spectral, non-rectangular chunks,
-wavelength maps) and `selfcal/instruments/euclid/adapter.py` (16 detectors per exposure, stripe
+the minimal one, and `selfcal/instruments/spherex/settings.py` (spectral, non-rectangular chunks,
+wavelength maps) and `selfcal/instruments/euclid/settings.py` (16 detectors per exposure, stripe
 and tilt maps) the full ones.
 
 TOML configs reach an instrument by name: there it is a subclass of the engine's

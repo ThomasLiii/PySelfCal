@@ -37,8 +37,11 @@ What an instrument provides
   data unit, and a rarely-run geometry precompute.
 
 The required surface is the five abstract methods; everything else has a
-default. ``spherex/adapter.py`` is the full reference implementation,
-``grid.py`` the minimal one.
+default. ``spherex/adapter.py`` is the full reference implementation and
+``grid.py`` the minimal one: both read the table as settings whose methods
+hold the instrument's code (``spherex/settings.py``'s
+:class:`~selfcal.instruments.spherex.settings.SPHEREx`, ``camera.py``'s
+:class:`~selfcal.instruments.camera.Camera`).
 """
 from __future__ import annotations
 

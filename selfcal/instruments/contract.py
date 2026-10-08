@@ -97,15 +97,9 @@ class Instrument(Config):
     def geometry(self, oversample=1) -> engine.DetectorGeometry:
         """The detector geometry: chunk maps with their axes, per-pixel maps (:func:`Geometry`),
         the detector-plane maps sampled ``oversample`` times per pixel. A new instrument
-        implements it; a built-in one (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``) returns the
-        run engine's."""
-        inst, table = self.engine(())
-        if isinstance(inst, _ContractAdapter):
-            raise NotImplementedError(f"{type(self).__name__}: a subclass of sc.Instrument implements "
-                                      f"geometry(oversample)")
-        if isinstance(inst, str):
-            inst = engine.get_instrument(inst)
-        return inst.detector_geometry(table, oversample)
+        implements it, as the built-in ones (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``) do."""
+        raise NotImplementedError(f"{type(self).__name__}: a subclass of sc.Instrument implements "
+                                  f"geometry(oversample)")
 
     def layout(self) -> engine.ExposureLayout:
         """How a raw exposure file is read (default: a FITS file, science in extension 1, no mask)."""
@@ -159,7 +153,8 @@ class Instrument(Config):
 
 
 class _ContractAdapter(engine.Instrument):
-    """The engine's interface over an :class:`Instrument` settings object (a user subclass)."""
+    """The engine's interface over an :class:`Instrument` settings object (a user subclass, or a
+    camera with a reader, detector maps or header variables), calling its own methods."""
 
     def __init__(self, inst):
         self.inst = inst

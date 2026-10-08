@@ -332,7 +332,9 @@ methods: `jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
 `@register_instrument("name")` — or publish it from your own package through
 the `selfcal.instruments` entry-point group — and select it with
 `[instrument].name`. `selfcal/instruments/spherex/adapter.py` is the full
-reference (chunk axes, wavelength maps, renderer, post-cal hooks),
-`selfcal/instruments/grid.py` the minimal one. Modes declare the capability
+reference (it reads its table as `sc.SPHEREx`, whose `selfcal/instruments/spherex/settings.py`
+holds the chunk axes, wavelength maps and renderer; the post-cal hooks stay in the adapter),
+`selfcal/instruments/grid.py` the minimal one (its geometry is an `sc.Camera`'s,
+`selfcal/instruments/camera.py`). Modes declare the capability
 tags they need; an instrument without them cannot run those modes, and the
 engine skips the wavelength coadd when the instrument has none.

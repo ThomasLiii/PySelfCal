@@ -1,37 +1,30 @@
-"""SPHEREx instrument — all LVF / subchannel specifics behind the Instrument contract.
+"""The ``spherex`` instrument of the TOML run configs.
 
-The generic run engine treats an instrument as a black box that turns a run
-config into the geometry the solver/mosaicker need. Everything SPHEREx-LVF-
-specific — subchannel windows, the stripped (arc) chunk map and its
-``(subchannel, column)`` chunk axes, the H2RG readout-channel map, the BC/BW
-wavelength maps, the smooth arc offset renderer, the LVF wavelength coadd, the
-zodi anchor, the FINAST astrometry filter — lives here, so the engine never
-imports it and another instrument plugs in with none of this baggage. See
-:mod:`selfcal.instruments.base` for the contract.
+Everything SPHEREx-LVF-specific of a run (the stripped (arc) chunk map and its ``(subchannel,
+column)`` chunk axes, the H2RG readout-channel map, the BC/BW wavelength maps, a job's subchannel
+masks, the smooth arc offset renderer, the LVF wavelength coadd, the FINAST astrometry filter) is
+the contract of :class:`~selfcal.instruments.spherex.settings.SPHEREx`. The registered
+:class:`SPHERExInstrument` reads a config's ``[instrument]`` table as those settings
+(:meth:`~selfcal.instruments.spherex.settings.SPHEREx.from_table`, the job selectors with
+:meth:`~selfcal.instruments.spherex.settings.SPHEREx.jobs_from_table`) and calls their methods.
+Here are the named subchannel windows and the readout-channel map the settings use, and what
+only a TOML config has: the post-calibration zodi anchor (``[zodi]``) and the ``precompute``
+task. See :mod:`selfcal.instruments.base` for the engine's interface.
 
 Methods take plain dicts/args (an ``inst_cfg`` mapping = the TOML ``[instrument]``
 table), not the runner's RunConfig, so the package stays independent of the runner.
 """
 from __future__ import annotations
 
-import logging
 import os
 import re
 from dataclasses import dataclass
-from functools import partial
 
 import numpy as np
 
-from ...models.offset_structure import ChunkAxes
-from ..base import (Instrument, register_instrument, Job as _Job, ChunkMap, DetectorGeometry,
-                    JobGeometry, ExposureLayout)
-from .spherex_utility import (
-    load_calibration, load_lvf_params, make_stripped_chunk_map,
-    make_stripped_chunk_valid_mask, fast_vertical_dist,
-    make_spherex_stripped_offset_map)
-from .wavemap import wav_coadd
-
-logger = logging.getLogger(__name__)
+from ..base import Instrument, register_instrument
+from ..base import Job as _Job
+from .spherex_utility import load_calibration
 
 # SPHEREx per-band spectral calibration (BC/BW maps) default location.
 SPHEREX_CALIB_DIR = '/data3/SPHEREx/SpecCal_202509/ParameterFiles'
@@ -84,48 +77,33 @@ def upsample_chunk_map(det_chunk_map, factor):
     return np.kron(det_chunk_map, np.ones((factor, factor), dtype=det_chunk_map.dtype))
 
 
+def _settings(inst_cfg):
+    """The ``[instrument]`` table as :class:`~selfcal.instruments.spherex.settings.SPHEREx` settings."""
+    from .settings import SPHEREx  # loaded on first use (see the package docstring)
+    return SPHEREx.from_table(inst_cfg)
+
+
 @register_instrument('spherex')
 class SPHERExInstrument(Instrument):
-    """SPHEREx (LVF) instrument. ``capabilities`` lets modes that need LVF
-    features (per-pixel wavelength, a spectral chunk axis) declare a
-    requirement that is checked against the instrument."""
+    """SPHEREx (LVF) instrument: the ``[instrument]`` table read as
+    :class:`~selfcal.instruments.spherex.settings.SPHEREx` settings, whose methods do the work.
+    ``capabilities`` (those of the settings) lets modes that need LVF features (per-pixel
+    wavelength, a spectral chunk axis) declare a requirement that is checked against the
+    instrument."""
 
-    capabilities = frozenset({'wavelength', 'spectral_axis', 'subchannel'})
+    @property
+    def capabilities(self):
+        from .settings import SPHEREx
+        return SPHEREx.capabilities
 
     # ---- jobs (the channel loop) -------------------------------------------
     def jobs(self, inst_cfg):
         """Expand the [instrument] selection keys into a list of Job.
         Exactly one of: windows (named presets) / subch_window (+window_name) /
-        channels / channel_range."""
-        windows = inst_cfg.get('windows')
-        subch_window = inst_cfg.get('subch_window')
-        channels = inst_cfg.get('channels')
-        crange = inst_cfg.get('channel_range')
-        window_defs = inst_cfg.get('window_defs', {})
-        if windows is not None:
-            out = []
-            for w in windows:
-                if w in window_defs:
-                    lo, hi = window_defs[w]
-                elif w in SUBCH_WINDOWS:
-                    lo, hi = SUBCH_WINDOWS[w]
-                else:
-                    raise ValueError(
-                        f"unknown window {w!r}; add it to [instrument.window_defs] "
-                        f"or use subch_window")
-                out.append(Job(name=w, kind='window', value=(int(lo), int(hi))))
-            return out
-        if subch_window is not None:
-            lo, hi = subch_window
-            name = inst_cfg.get('window_name', f'subch{lo}_{hi}')
-            return [Job(name=name, kind='window', value=(int(lo), int(hi)))]
-        if crange is not None:
-            channels = [[i] for i in range(int(crange[0]), int(crange[1]))]
-        if channels is not None:
-            return [Job(name='Ch' + '-'.join(map(str, c)), kind='channels',
-                        value=[int(x) for x in c]) for c in channels]
-        raise ValueError("[instrument] needs one of: windows / subch_window / "
-                         "channels / channel_range")
+        channels / channel_range
+        (:meth:`~selfcal.instruments.spherex.settings.SPHEREx.jobs_from_table`)."""
+        from .settings import SPHEREx
+        return SPHEREx.jobs_from_table(inst_cfg)
 
     # ---- frame tag (cal/mosaic filename component) -------------------------
     def frame_tag(self, inst_cfg):
@@ -137,165 +115,61 @@ class SPHERExInstrument(Instrument):
         ``cal_<tag>_<job><suffix>.h5`` and ``mosaic_<tag>_<job><suffix>.fits``
         (:class:`~selfcal.run.engine.RunContext`), where ``<job>`` is
         the job name (``Ch17``, ``Aromatic``, ...)."""
-        return (f"Detector{inst_cfg['detector']}_NumSub{inst_cfg['num_sub']}"
-                f"_NumCh{inst_cfg['num_ch']}_NumCol{inst_cfg['num_col']}")
+        return _settings(inst_cfg).product_tag
 
     # ---- raw exposures (reproject task) ------------------------------------
     def exposure_layout(self, inst_cfg):
         """L2b exposures: science in extension 1, DQ bitmask in extension 2, one
         detector per file; keep only exposures with a converged astrometric
-        solution (``FINAST == 0``)."""
-        return ExposureLayout(
-            sci_ext=[1], dq_ext=[2], detector_ids=[0], ref_use_ext=(1,),
-            header_predicate=lambda h: h.get('FINAST', 2) == 0,
-            header_keys=('FINAST',), header_ext=1,
-            cache_tag=f"finast_D{inst_cfg['detector']}")
+        solution (``FINAST == 0``). Only ``detector`` is read: a reprojection
+        table needs nothing else."""
+        from .settings import SPHEREx
+        return SPHEREx(inst_cfg['detector']).layout()
 
     # ---- detector-level geometry (built once per run) ----------------------
     def detector_geometry(self, inst_cfg, oversample):
         """LVF params, BC/BW, the stripped chunk map at detector + grid
-        resolution with its (subchannel, column) axes, the readout-channel map.
-        NO adjacency (offset-structure-specific -> the mode builds it).
-        ``[instrument]`` ``calib_dir`` / ``lvf_dir`` choose the directories of the
-        calibration maps and the LVF parameters (default: see
-        :func:`~selfcal.instruments.spherex.spherex_utility.load_lvf_params`)."""
-        det = inst_cfg['detector']
-        ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        lvf_params = load_lvf_params(f'lvf_params_D{det}.npy', input_dir=inst_cfg.get('lvf_dir'))
-        det_BC, det_BW = load_calibration(
-            band=det, calibration_dir=inst_cfg.get('calib_dir'))     # None: $SELFCAL_SPHEREX_CALIB_DIR, else the default
-        grid_chunk_map, _, _, _ = make_stripped_chunk_map(
-            det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
-            oversample_factor=oversample, lvf_params=lvf_params)
-        det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(
-            det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
-            oversample_factor=1, lvf_params=lvf_params)
-        n_sub = (int(det_chunk_map.max()) + 1) // int(ncol)      # == ns * nch + 2 (padding subchannels)
-        # The chunk encoding chunk = subchannel * num_col + column, expressed
-        # ONCE as chunk axes: subchannels change along y (arcs), columns along x.
-        sub_axes = ChunkAxes.row_major(('subchannel', 'column'), (n_sub, int(ncol)), ('y', 'x'))
-        stripped = ChunkMap(name='subchannel', det=det_chunk_map, grid=grid_chunk_map, axes=sub_axes,
-                            adjacency_axes=('column',), spectral_axis='subchannel', group_axis='column')
-        det_ro, n_ro = make_readout_chunk_map(det_chunk_map.shape)
-        readout = ChunkMap(name='readout', det=det_ro, grid=upsample_chunk_map(det_ro, oversample),
-                           axes=ChunkAxes.row_major(('readout',), (n_ro,), ('x',)))
-        return DetectorGeometry(
-            shape=det_chunk_map.shape, chunk_maps={'subchannel': stripped, 'readout': readout},
-            primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
-            extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
-                   'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
+        resolution with its (subchannel, column) axes, the readout-channel map
+        (:meth:`~selfcal.instruments.spherex.settings.SPHEREx.geometry`)."""
+        return _settings(inst_cfg).geometry(oversample)
 
     # ---- per-job geometry (valid masks + edge-distance weights) ------------
     def job_geometry(self, inst_cfg, geom, job):
-        """Return the valid masks and the solve and mosaic weights of one job's subchannels.
-
-        A ``'window'`` job (``value = (lo, hi)``) selects subchannels ``lo`` to
-        ``hi - 1``, indexed over all ``num_sub * num_ch + 2`` subchannels of the
-        stripped map (``0`` and the last are the padding subchannels). A
-        ``'channels'`` job selects the ``num_sub`` subchannels of each listed
-        channel (numbered from 1), and its padded set adds one subchannel on each
-        side, which overlaps the neighbouring channels for stitching; a window
-        job's padded and strict sets are the same. A selected subchannel is
-        selected in every column. Any other ``kind`` raises ``ValueError``.
-
-        ``det_valid_weight``, the solve's weight, is the padded set's 0/1 mask on
-        the detector grid. The mosaic's ``grid_valid_weight`` (on the primary
-        map's ``grid``) tapers the strict set linearly with each pixel's distance
-        in rows to the set's edge
-        (:func:`~selfcal.instruments.spherex.spherex_utility.fast_vertical_dist`),
-        divided by its maximum. ``chunk_valid`` / ``chunk_valid_strict`` hold the
-        padded / strict sets per chunk of the primary map, and ``det_valid_mask``
-        / ``grid_valid_mask`` the strict set on the two grids."""
-        ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        det_chunk_map = geom.chunk_map.det
-        grid_chunk_map = geom.chunk_map.grid
-        kw = dict(num_subchannels=ns, num_channels=nch, num_columns=ncol)
-        if job.kind == 'window':
-            lo, hi = job.value
-            sel = dict(subch=np.arange(lo, hi))
-        elif job.kind == 'channels':
-            sel = dict(ch=job.value)
-        else:
-            raise ValueError(f"unknown job kind {job.kind!r}")
-        cvm_pad = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=1)
-        cvm = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=0)
-        det_valid_mask = cvm[det_chunk_map]
-        det_valid_mask_padded = cvm_pad[det_chunk_map]
-        grid_valid_mask = cvm[grid_chunk_map]
-        grid_valid_weight = fast_vertical_dist(grid_valid_mask)
-        if np.max(grid_valid_weight) > 0:
-            grid_valid_weight /= np.max(grid_valid_weight)
-        # The solve weights every pixel of the padded window equally (the
-        # padding subchannels overlap the neighbouring jobs for stitching); the
-        # mosaic tapers with the distance to the window's arc edges.
-        return JobGeometry(det_valid_weight=det_valid_mask_padded, grid_valid_weight=grid_valid_weight,
-                           chunk_valid=cvm_pad, chunk_valid_strict=cvm,
-                           det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)
+        """The valid masks and the solve and mosaic weights of one job's subchannels
+        (:meth:`~selfcal.instruments.spherex.settings.SPHEREx.job_geometry`)."""
+        return _settings(inst_cfg).job_geometry(geom, job)
 
     # ---- mosaic hooks ----------------------------------------------------------
     def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None):
         """Smooth subchannel-arc offset renderer for the mosaic (per job) — for
         the stripped map; the readout map renders block-constant."""
-        if map_name not in (None, geom.primary):
-            return None
-        ns, nch, ncol = inst_cfg['num_sub'], inst_cfg['num_ch'], inst_cfg['num_col']
-        x = geom.extra
-        return partial(
-            make_spherex_stripped_offset_map,
-            chunk_valid_mask=jobgeom.chunk_valid_strict,
-            lvf_params=x['lvf_params'], r_edges=x['r_edges'], x_edges=x['x_edges'],
-            tot_subchannels=ns * nch + 2, num_columns=ncol, fill_invalid=True)
+        return _settings(inst_cfg).offset_renderer(geom, jobgeom, map_name=map_name, render=render)
 
     def aux_coadds(self, geom):
         """(band centre, band width) LVF maps, coadded by the mosaic's sigma-clip pass."""
-        return geom.aux['BC'], geom.aux['BW']
+        from .settings import SPHEREx
+        return SPHEREx.aux_coadds(geom)
 
     def finalize_mosaic(self, geom, mm, maps, sigma):
-        """LVF wavelength maps for the full mosaic. When ``make_mosaic`` was given
-        the band maps (``wav_maps=self.aux_coadds(...)``) it has already coadded
-        them inside the sigma-clip pass and this only labels the units;
-        otherwise the standalone ``wav_coadd`` runs over the intermediate cache
-        (the pre-2026-09 path, which needs ``cache_intermediate``)."""
-        if 'wav_mean_map' in maps and maps['wav_mean_map'].get('data') is not None:
-            for k in ('wav_mean_map', 'wav_std_map'):
-                mm.maps[k]['unit'] = 'um'
-            return
-        import time
-        logger.info("Coadding wavelength maps...")
-        t00 = time.time()
-        wav_mean, wav_std = wav_coadd(
-            geom.aux['BC'], geom.aux['BW'],
-            mean_map=maps['mean_map']['data'], std_map=maps['std_map']['data'],
-            reproj_list=mm.reproj_list, cache_list=mm.cached_list,
-            ref_shape=maps['mean_map']['data'].shape, sigma=sigma,
-            batch_size=40, max_workers=30)
-        logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
-        mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
-                        'wav_std_map': {'data': wav_std, 'unit': 'um'}})
+        """LVF wavelength maps for the full mosaic
+        (:meth:`~selfcal.instruments.spherex.settings.SPHEREx.finalize_mosaic`)."""
+        from .settings import SPHEREx
+        SPHEREx.finalize_mosaic(geom, mm, maps, sigma)
 
     def data_unit(self, inst_cfg):
         """Return ``'MJy/sr'``, the surface-brightness unit of SPHEREx data, for any ``inst_cfg``.
 
         The mosaic writes it as the ``BUNIT`` of its mean, std and sigma-clipped
         mean maps."""
-        return 'MJy/sr'
+        from .settings import SPHEREx
+        return SPHEREx.unit
 
     # ---- named coefficients -------------------------------------------------
     def coefficient_catalog(self):
-        """Return the catalogue of named SPHEREx coefficients; its one entry is ``pah_3p29``.
-
-        ``pah_3p29``
-        (:func:`~selfcal.instruments.spherex.line_catalog.pah_3p29_coefficient`)
-        is a Gaussian of the band-centre map ``BC`` at the PAH 3.29 um feature,
-        whose per-observation width combines the band-width map ``BW`` with the
-        intrinsic PAH width. A ``[model]`` term selects it with
-        ``coefficient = { catalog = "pah_3p29" }``, optionally overriding the
-        factory's ``center`` and ``sigma`` (um); the spectral modes select an
-        entry with ``[params].line`` (default ``pah_3p29``) when they are given
-        no ``lines`` or ``line_template_npz``. Each call returns a new copy of
-        :data:`~selfcal.instruments.spherex.line_catalog.CATALOG`."""
-        from .line_catalog import CATALOG
-        return dict(CATALOG)
+        """Return the catalogue of named SPHEREx coefficients; its one entry is ``pah_3p29``
+        (:meth:`~selfcal.instruments.spherex.settings.SPHEREx.coefficient_catalog`)."""
+        from .settings import SPHEREx
+        return SPHEREx.coefficient_catalog()
 
     # ---- post-calibration hooks ------------------------------------------------
     def postcal_hooks(self, cfg):
@@ -329,7 +203,7 @@ def zodi_anchor_hook(ctx, job, cal_path, mosaic_path):
     """Post-cal zodi anchor for a single-channel job: fit the cal's frame
     scalars against the zodipy prediction ``zodi_pred_<stem>.npz`` in
     ``[zodi].pred_dir`` and record the channel in ``<run>/zodi_anchor/anchor_D<n>.h5``."""
-    from ...zodi_anchor import fit_anchor_for_channel, append_anchor_channel
+    from ...zodi_anchor import append_anchor_channel, fit_anchor_for_channel
     cfg = ctx.cfg
     detector = cfg.instrument_cfg['detector']
     job_tag, cal_file = ctx.stem(job), ctx.cal_file(job)

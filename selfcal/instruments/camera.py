@@ -3,7 +3,9 @@
 A detector of ``shape`` pixels cut into a grid of rectangular chunks, read from FITS files
 (or by your own ``reader``); optionally with per-pixel detector maps and per-frame header
 values as data variables. Most cameras need nothing else; a camera with another chunk geometry
-subclasses :class:`~selfcal.instruments.contract.Instrument`.
+subclasses :class:`~selfcal.instruments.contract.Instrument`. The TOML configs' ``grid``
+instrument (:class:`~selfcal.instruments.grid.GridInstrument`) reads the detector, chunk grid
+and tag of its ``[instrument]`` table as a camera (:meth:`Camera.from_table`).
 """
 from __future__ import annotations
 
@@ -15,8 +17,9 @@ import numpy as np
 from ..config.base import ConfigError, FrozenDict
 from ..config.functions import function_ref
 from ..models.model import Header
-from .contract import Instrument, Job
-from .grid import GridInstrument
+from .base import ExposureLayout
+from .contract import ChunkMap, Geometry, Instrument, Job, _ContractAdapter
+from .grid import _chunk_grid
 
 __all__ = ['Camera']
 
@@ -69,10 +72,26 @@ class Camera(Instrument):
             headers[name] = h
         object.__setattr__(self, 'headers', FrozenDict(headers))
 
+    @classmethod
+    def from_table(cls, table) -> Camera:
+        """The camera of a ``grid`` ``[instrument]`` table: ``detector_shape`` (required:
+        ``KeyError`` without it), ``chunks`` (``[ny, nx]``, or one number or ``[n]`` for a square
+        grid; default 4 x 4), ``sci_ext`` (default 1), ``dq_ext`` (omitted or negative: no mask),
+        ``ref_use_ext`` (the ``reference_ext`` setting), ``tag``, ``job_name`` (the ``job``
+        setting) and ``unit``; any other key is ignored."""
+        H, W = (int(v) for v in table['detector_shape'])
+        dq = table.get('dq_ext', -1)
+        return cls((H, W), chunks=_chunk_grid(table),
+                   sci_ext=int(table.get('sci_ext', 1)), dq_ext=None if dq is None or int(dq) < 0 else int(dq),
+                   reference_ext=(None if 'ref_use_ext' not in table
+                                  else tuple(int(e) for e in table['ref_use_ext'])),
+                   tag=None if 'tag' not in table else str(table['tag']),
+                   unit=str(table.get('unit', '')), job=str(table.get('job_name', 'All')))
+
     @property
     def product_tag(self) -> str:
         ny, nx = self.chunks
-        return f"{self.tag or f'Grid{self.shape[0]}x{self.shape[1]}'}_Chunks{ny}x{nx}"
+        return f"{self.tag if self.tag is not None else f'Grid{self.shape[0]}x{self.shape[1]}'}_Chunks{ny}x{nx}"
 
     def default_jobs(self):
         return (Job(self.job),)
@@ -81,6 +100,51 @@ class Camera(Instrument):
         if len(jobs) != 1 or jobs[0].name != self.job:
             raise ConfigError(f"Camera: one job, {self.job!r}; got {[getattr(j, 'name', j) for j in jobs]}")
 
+    # ---- the contract -------------------------------------------------------------------
+    def geometry(self, oversample=1):
+        """One ``ny x nx`` rectangular chunk map named ``grid`` (``int32``, chunk id ``row * nx +
+        col``; :meth:`~selfcal.instruments.base.ChunkMap.rectangles`), replicated onto the
+        reference grid in ``oversample x oversample`` blocks. Its axes are ``row`` (scanned
+        vertically) and ``col`` (horizontally); the standard offset block regularises along both,
+        and ``row`` is the default group axis of a polynomial-basis offset term. The detector maps
+        are the aux maps (``float32``); there is no wavelength map."""
+        grid = ChunkMap.rectangles('grid', self.shape, self.chunks)
+        return Geometry(self.shape, oversample, maps=[grid],
+                        aux={k: np.asarray(v, dtype=np.float32) for k, v in self.detector_maps.items()})
+
+    def layout(self) -> ExposureLayout:
+        """A file holding one detector: the science image in ``sci_ext``, the data-quality mask in
+        ``dq_ext`` (None or negative: no mask, every pixel valid), the reference frame from the WCS
+        of ``reference_ext`` (default ``(sci_ext,)``); read by ``reader`` (None: FITS extensions).
+        The header cache is ``headers_<tag>`` (``headers_grid`` without a tag)."""
+        return ExposureLayout(
+            sci_ext=[self.sci_ext],
+            dq_ext=None if self.dq_ext is None or self.dq_ext < 0 else [self.dq_ext],
+            detector_ids=[0],
+            ref_use_ext=tuple(self.reference_ext) if self.reference_ext is not None else (self.sci_ext,),
+            cache_tag=f"headers_{self.tag if self.tag is not None else 'grid'}",
+            reader=self.reader)
+
+    def frame_variable_names(self):
+        return ('exposure', 'detector') + tuple(self.headers)
+
+    def frame_variables(self, frames):
+        """``exposure`` and ``detector`` (from the frame file names), and each of ``headers`` read
+        from the frames' stored headers (its default where a frame lacks it)."""
+        out = super().frame_variables(frames)
+        if self.headers:
+            from ..io.frames import frame_header_values
+            values = frame_header_values(frames, [h.key for h in self.headers.values()])
+            for name, h in self.headers.items():
+                arr = values[h.key]
+                if h.default is not None:
+                    missing = (np.array([x is None for x in arr]) if arr.dtype == object else ~np.isfinite(arr))
+                    arr = arr.copy()
+                    arr[missing] = h.default
+                out[name] = arr
+        return out
+
+    # ---- lowering -------------------------------------------------------------------------
     def table(self) -> dict:
         """The ``[instrument]`` table of the ``grid`` instrument for this camera."""
         table = {'name': 'grid', 'detector_shape': list(self.shape), 'chunks': list(self.chunks),
@@ -98,50 +162,9 @@ class Camera(Instrument):
         return table
 
     def engine(self, jobs):
-        """``("grid", table)``, or an engine object when the camera has a reader, detector maps or
-        header variables (which the ``grid`` table cannot hold)."""
+        """``("grid", table)``, or an engine instrument that calls this camera's own contract
+        methods when it has a reader, detector maps or header variables (which the ``grid`` table
+        cannot hold)."""
         if self.reader is None and not self.detector_maps and not self.headers:
             return 'grid', self.table()
-        return _CameraEngine(self), self.table()
-
-
-class _CameraEngine(GridInstrument):
-    """The ``grid`` instrument with a camera's reader, detector maps and header variables."""
-
-    def __init__(self, camera):
-        self.camera = camera
-        self.name = 'grid'
-
-    def __reduce__(self):
-        return (_CameraEngine, (self.camera,))
-
-    def exposure_layout(self, inst_cfg):
-        layout = super().exposure_layout(inst_cfg)
-        if self.camera.reader is None:
-            return layout
-        from dataclasses import replace
-        return replace(layout, reader=self.camera.reader)
-
-    def detector_geometry(self, inst_cfg, oversample):
-        geom = super().detector_geometry(inst_cfg, oversample)
-        if not self.camera.detector_maps:
-            return geom
-        from dataclasses import replace
-        return replace(geom, aux={k: np.asarray(v, dtype=np.float32) for k, v in self.camera.detector_maps.items()})
-
-    def frame_variable_names(self, inst_cfg):
-        return ('exposure', 'detector') + tuple(self.camera.headers)
-
-    def frame_variables(self, frames, inst_cfg=None):
-        out = super().frame_variables(frames, inst_cfg)
-        if self.camera.headers:
-            from ..io.frames import frame_header_values
-            values = frame_header_values(frames, [h.key for h in self.camera.headers.values()])
-            for name, h in self.camera.headers.items():
-                arr = values[h.key]
-                if h.default is not None:
-                    missing = (np.array([x is None for x in arr]) if arr.dtype == object else ~np.isfinite(arr))
-                    arr = arr.copy()
-                    arr[missing] = h.default
-                out[name] = arr
-        return out
+        return _ContractAdapter(self), self.table()

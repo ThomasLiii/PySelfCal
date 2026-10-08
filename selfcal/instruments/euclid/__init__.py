@@ -3,8 +3,9 @@
 Importing :mod:`selfcal.instruments` registers the instrument; a run config selects it with
 ``[instrument].name = "euclid"``.
 
-- :mod:`~selfcal.instruments.euclid.adapter`: the instrument class (16 detectors per exposure,
-  grid, stripe and tilt chunk maps, edge taper, mosaic renderers).
+- :mod:`~selfcal.instruments.euclid.adapter`: the helpers of the chunk maps, the edge taper and
+  the mosaic renderers, and the instrument of the TOML configs, which reads its table as the
+  settings.
 - :mod:`~selfcal.instruments.euclid.conventions`: NISP constants (FITS extension numbers,
   detector shape, DQ bits to ignore) and the square grid chunk map.
 - :mod:`~selfcal.instruments.euclid.hooks`: the recipe's per-frame hooks, ``star_position_mask``
@@ -12,8 +13,10 @@ Importing :mod:`selfcal.instruments` registers the instrument; a run config sele
 - :mod:`~selfcal.instruments.euclid.exposures`: lists of exposure files from a VOTable catalogue,
   a CSV file or a directory.
 - :mod:`~selfcal.instruments.euclid.settings`: Euclid as settings of the Python API,
-  :class:`~selfcal.instruments.euclid.settings.Euclid` (available from this package, with the hook
-  classes: ``euclid.Euclid``, ``euclid.StarMask``, ``euclid.ResidualMask``).
+  :class:`~selfcal.instruments.euclid.settings.Euclid`, which implements the instrument contract
+  (16 detectors per exposure, grid, stripe and tilt chunk maps, edge taper, mosaic renderers;
+  available from this package, with the hook classes: ``euclid.Euclid``, ``euclid.StarMask``,
+  ``euclid.ResidualMask``).
 """
 _EXPORTS = {'Euclid': 'settings', 'StarMask': 'hooks', 'ResidualMask': 'hooks'}
 

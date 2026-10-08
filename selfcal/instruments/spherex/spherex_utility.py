@@ -6,7 +6,7 @@ fits the arcs, which :func:`load_lvf_params` and :func:`save_lvf_params` read an
 :func:`make_stripped_chunk_map` cuts the detector into subchannels between neighbouring
 arcs and those into columns, :func:`make_stripped_chunk_valid_mask` selects a job's chunks
 and :func:`make_spherex_stripped_offset_map` renders chunk offsets as a smooth map;
-:class:`~selfcal.instruments.spherex.adapter.SPHERExInstrument` builds a run's geometry
+:class:`~selfcal.instruments.spherex.settings.SPHEREx` builds a run's geometry
 with them. :func:`gaussian_line_profile` is a Gaussian line, by default the PAH 3.29 μm
 feature. The adjacency and chain builders here were replaced by
 :mod:`selfcal.models.offset_structure`.

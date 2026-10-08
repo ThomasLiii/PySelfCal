@@ -22,8 +22,11 @@ no editing Python:
 The config picks an **instrument** (`[instrument].name`, resolved through the
 registry in [`instruments/base.py`](instruments/base.py): a subclass of the
 `Instrument` ABC — the built-ins are `spherex`, whose specifics live in
-[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py), `euclid`
-(16-detector NISP, [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py)) and the
+`sc.SPHEREx` ([`instruments/spherex/settings.py`](instruments/spherex/settings.py); the
+registered instrument in [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)
+reads its table as those settings), `euclid` (16-detector NISP, `sc.Euclid` in
+[`instruments/euclid/settings.py`](instruments/euclid/settings.py), registered in
+[`instruments/euclid/adapter.py`](instruments/euclid/adapter.py)) and the
 config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
 other packages register theirs through the `selfcal.instruments` entry-point group),
 a **mode** (the calibration recipe; modes registry under
@@ -468,17 +471,24 @@ clarity:
 
 - **[`instruments/grid.py`](instruments/grid.py)** — The built-in `grid`
   instrument: any single-detector imager described entirely by the
-  `[instrument]` table (detector shape, chunk grid, extension numbers). The
-  test suite's end-to-end run uses it on synthetic exposures.
+  `[instrument]` table (detector shape, chunk grid, extension numbers); its
+  chunk geometry and product tag are an `sc.Camera`'s
+  ([`instruments/camera.py`](instruments/camera.py)). The test suite's
+  end-to-end run uses it on synthetic exposures.
 
-- **[`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)** — The
-  `SPHERExInstrument` reference implementation: expands a channel/window
-  selection into jobs, builds detector-level geometry once per run (the LVF
-  stripped chunk map with its `(subchannel, column)` axes, the readout-channel
-  map, the BC/BW aux maps), supplies per-job valid masks + weights, the arc
-  offset renderer for the mosaic, the wavelength coadd + finaliser, the L2b
-  exposure layout (FINAST filter), the zodi-anchor post-cal hook and the
-  data unit. [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
+- **[`instruments/spherex/settings.py`](instruments/spherex/settings.py)** — `sc.SPHEREx`,
+  the reference implementation of the instrument contract: builds the
+  detector-level geometry (the LVF stripped chunk map with its
+  `(subchannel, column)` axes, the readout-channel map, the BC/BW aux maps),
+  supplies per-job valid masks + weights, the arc offset renderer for the
+  mosaic, the wavelength coadd + finaliser, the L2b exposure layout (FINAST
+  filter) and the data unit.
+  [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) is the
+  `spherex` instrument of the TOML configs (`SPHERExInstrument`): it reads the
+  `[instrument]` table as those settings, expands a channel/window selection
+  into jobs (`SPHEREx.jobs_from_table`) and holds the zodi-anchor post-cal hook
+  and the precompute task.
+  [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
   holds the named coefficients (`pah_3p29`).
 
 - **[`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py)** —
@@ -760,9 +770,9 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
 | [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
-| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: 16-detector exposure layout, grid/stripe/tilt chunk maps, edge taper, spline/strip/ramp renderers, electron units. |
+| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: the chunk-map, edge-taper and spline/strip/ramp renderer helpers; the `euclid` instrument of the TOML configs (reads its table as `sc.Euclid`, `euclid/settings.py`: 16-detector exposure layout, grid/stripe/tilt chunk maps, electron units). |
 | [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`star_position_mask`, `residual_mask`). |
-| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx `Instrument` implementation + readout chunk map + zodi hook. |
+| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | The `spherex` instrument of the TOML configs (reads its table as `sc.SPHEREx`, `spherex/settings.py`) + readout chunk map + zodi hook. |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |
