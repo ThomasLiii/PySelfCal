@@ -104,16 +104,18 @@ class Iterate:
         #: The solution's dtype: that of ``x * scale`` (the solve's end makes the same product).
         self.dtype = x.dtype if scale is None else np.result_type(x.dtype, scale.dtype)
 
-    def read(self, start, stop) -> np.ndarray:
+    def read(self, start, stop, *, compact_start=None) -> np.ndarray:
         """The solution's columns ``start:stop`` of the full layout, a new array of :attr:`dtype`:
         each active column ``x[c] * scale[c]`` (the solver's ``c``-th column), every other column
-        0, exactly as :func:`~selfcal.core.solve.apply_lsqr` converts its final vector."""
+        0, exactly as :func:`~selfcal.core.solve.apply_lsqr` converts its final vector.
+        ``compact_start``: :meth:`ActiveColumns.compact_start` of ``start``, when the caller knows
+        it (a reader of many rows, :class:`~selfcal.core.monitor.SmoothFit`, counts them once)."""
         start, stop = int(start), int(stop)
         if self._active is None:
             seg = self._x[start:stop]
             return seg * self._scale[start:stop] if self._scale is not None else seg.copy()
         mask = self._active.mask[start:stop]
-        c0 = self._active.compact_start(start)
+        c0 = self._active.compact_start(start) if compact_start is None else int(compact_start)
         c1 = c0 + int(np.count_nonzero(mask))
         out = np.zeros(stop - start, dtype=self.dtype)
         seg = self._x[c0:c1]

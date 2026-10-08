@@ -126,7 +126,8 @@ class RunSpec:
     the cal each job's solve starts from (:mod:`selfcal.core.warm_start`; plain calibrations only).
     ``snapshots``: the solution every ``k`` iterations as a cal file
     (:class:`~selfcal.run.schedule.Snapshots`, :mod:`selfcal.core.snapshots`; plain calibrations
-    only). ``on_product`` is told of every product written (the action's book,
+    only). ``monitor``: checks of every solve every ``m`` iterations
+    (:class:`~selfcal.run.schedule.Monitor`, :mod:`selfcal.core.monitor`). ``on_product`` is told of every product written (the action's book,
     :class:`~selfcal.run.products.Book`).
     """
     task: str
@@ -156,6 +157,7 @@ class RunSpec:
     cal_override: str | None = None
     start: dict | None = None
     snapshots: object = None
+    monitor: object = None
     tiling: TilingSpec | None = None
     passes: PassesSpec | None = None
     reproject: ReprojectSpec | None = None

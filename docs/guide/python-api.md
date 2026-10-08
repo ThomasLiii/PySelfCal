@@ -143,7 +143,8 @@ FIXED = NUMCOL3.replace(fit=sc.Fit(700, tolerance=0), name="it700")   # 700 iter
 ```
 
 Every solve is recorded, whatever its tolerance: how it stopped and the solver's state at each
-iteration (see [Records](#records)).
+iteration (see [Records](#records)). Opt-in rules that may end a solve early, and checks of how it
+converges, are in [Monitors and stop rules](#monitors-and-stop-rules).
 
 ### The machine
 
@@ -275,6 +276,87 @@ that do not depend on the solution are written once, before the solve, and copie
 snapshot. A snapshot that cannot be written (a full disk) is logged as an error and skipped; the
 solve goes on.
 
+### Monitors and stop rules
+
+```python
+IT700 = NUMCOL3.replace(fit=sc.Fit(700, tolerance=0), name="it700")
+result = field.calibrate(IT700, monitor=sc.Monitor(every=10))
+```
+
+The weakest directions of a self-calibration system are usually its largest scales: a smooth sky
+pattern that the offsets can nearly absorb (a near-null mode, such as a field-wide gradient)
+barely changes the residual or the gradient while it moves. **Residual and gradient tests do not
+see these directions**: they can pass while the large scales are still far from their
+least-squares values. A monitor shows them; stop rules are opt-in, and every stop says which rule
+fired and what it measured.
+
+`monitor=` checks each solve at iterations 0, m, 2m, ... (`monitor=10` is
+`sc.Monitor(every=10)`):
+
+| `sc.Monitor(...)` | checks | cost per check |
+| --- | --- | --- |
+| `residual=True` | the true residual ‖b − A x‖, and the ratio of the solver's estimate (`r1norm`) to it | one product `A x` and one read of `b` |
+| `gradient=False` | the true gradient ‖Aᵀ r‖, and the ratio of the estimate (`arnorm`) to it | one product `Aᵀ r` more |
+| `large_scale=True` | each sky term's large-scale fit: the monomials of degree ≤ 2 (or the degree given) in the grid's coordinates scaled to [-1, 1] (1, x, y, x², xy, y²), fitted to the term's covered pixels on every `step`-th row and column (`step=None`: 4); its coefficients, the rms of the fitted surface without its mean, and the relative change of the surface since the previous check | a read of the sampled pixels |
+
+The checks go to the solve's history file (`check_itn`, `check_iteration` counted across warm
+starts, `true_residual`, `residual_ratio`, `true_gradient`, `gradient_ratio`,
+`large_scale_coefficients`, `large_scale_change`, ...), one line each to the log, and the last to the
+action's record. A ratio of estimate to truth away from 1 means the solver's recurrences drifted; a
+large-scale change that is still large means the largest scales are still moving, whatever the
+residual says. **Monitors do not change the solve**: the cal is the same, byte for byte, with or
+without them; they are an action's setting like `snapshots=`, recorded in the action's record and
+replayed by a rerun, never part of a product's inputs. Every calibration takes them (a tiled run
+monitors each tile's solve). Monitor at the snapshots' period to have a check at each snapshot.
+
+```python
+with result.cal() as cal:
+    h = np.load(cal.solve["history_file"])
+plt.semilogy(h["check_itn"], h["large_scale_change"][:, 0])        # the first sky term
+plt.plot(h["check_itn"], h["large_scale_coefficients"][:, 0, 1])    # its gradient along x
+```
+
+**Stop rules** are part of the fit, since they decide where the solve ends (and so its products'
+inputs), and are off unless given:
+
+```python
+fit = sc.Fit(1000, tolerance=0, stop=sc.Stop(gradient=1e-3, large_scale=1e-3, min_iterations=40))
+```
+
+| rule | holds when | parameters |
+| --- | --- | --- |
+| `residual=sc.ResidualRule(below)` | ‖r‖ fell by less than `below` (relative) over the last `window` iterations | `window=10`; `every=None` (the estimate, every iteration) or `m` (the true residual every m iterations) |
+| `gradient=sc.GradientRule(below)` | the largest ‖Aᵀ r‖ over the last `window` iterations is at most `below` times its value at the start of the solve | `window=10`; `every` as above |
+| `large_scale=sc.LargeScaleRule(below)` | every sky term's large-scale fit changed by less than `below` (relative) at the last two checks | `every=10`, `degree=2`, `step=4` |
+| `lsqr_tests=True` | one of the solver's own tests holds: `"compatible"`, `"least_squares"`, `"condition"` (or the ones named) | the tolerances of `sc.Fit(tolerance=)` |
+
+A number is the rule's `below` with its defaults (`gradient=1e-3` is `sc.GradientRule(1e-3)`).
+`combine="all"` (the default) stops when every rule given holds at the same iteration, `"any"` when
+one does; `min_iterations` keeps every rule from ending the solve before that iteration. With a
+Stop, the solver's own tests stop the solve only as one of its rules (`lsqr_tests`; off by
+default, and refused with `tolerance=0`, which turns them off). The iteration limit stays the hard
+cap, and machine precision still ends a solve. A rule on true values checks at its own `every`,
+with or without a monitor; a monitor never feeds a rule, so the stop depends on the recipe alone.
+
+A solve a rule ended stops with `istop = 8`. The cal's `solve` group and the action's record say
+which rules ended it (`stop_rule`: `"gradient"`, `"residual, large_scale"`, or `"none"` when it ended
+at its limit), where (`stop_iteration`), what each rule measured there (`stop_values`: its value,
+threshold, window and where it was measured), and the rules (`stop_policy`); the log says it in
+words:
+
+```text
+Stopped by the gradient rule at iteration 120 (stop rules (and of: gradient rule); istop 8).
+  the gradient rule holds: the largest |A^T r| (the estimate arnorm) over the last 10 iterations to
+  iteration 120, 3.1e-02, is 0.00096 of its value at the start, 3.2e+01 (the rule: at most 0.001).
+```
+
+The history file holds each rule's value at every iteration (`stop_residual`, `stop_gradient`,
+`stop_large_scale`, `stop_lsqr_tests`; NaN where not evaluated) and `stop_holds`. Because residual
+and gradient tests do not see the slowest large-scale directions, combine them with
+`large_scale` (`combine="all"`) to stop only once the large scales have settled too; even then, an
+iterative solver can rest on a plateau for a while before a slow mode moves, so prefer a strict
+`below`, and read the history. A continuation (`start=`) starts its rules afresh.
+
 ## Products, records and reruns
 
 ### A product is reused only when it was made by the same inputs
@@ -338,7 +420,7 @@ file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` op
 | key | content |
 | --- | --- |
 | `method`, `iterations`, `iterations_total`, `iteration_limit` | the solver; the iterations it ran, the cumulative count of the solution (the same unless the solve continued another's, [`start=`](#continuing-a-solve): then the source's total plus these; -1 when the source's is unknown), `Fit(iterations=)` |
-| `istop`, `stop` | the solver's stop code and its meaning: 1-2 the tolerance tests, 3 the condition estimate, 4-6 machine precision, 7 the iteration limit |
+| `istop`, `stop` | the solver's stop code and its meaning: 1-2 the tolerance tests, 3 the condition estimate, 4-6 machine precision, 7 the iteration limit, 8 a [stop rule](#monitors-and-stop-rules) |
 | `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates of ‖b − A x‖ (without and with the damping term), ‖Aᵀ r‖, ‖A‖, cond(A) and ‖x‖ |
 | `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, computed once at the end with one product, in float64: an estimate drifting from the true residual shows here |
 | `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `Fit(tolerance=0)`) |
@@ -347,11 +429,15 @@ file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` op
 | `history_file` | `<field>/records/<cal stem>_history.npz`: the solver's state at every iteration |
 | `system`, `system_identity` | the identity of the system solved: its frames in order, reference grid, sky and offset terms, columns and job (JSON), and its sha256; a later [start](#continuing-a-solve) from this cal is checked against it |
 | `start_from`, `start_identity` | a continued solve only: the cal it started from, and that cal's identity (`fingerprint:...`, its sidecar's, or `sha256:...`, its bytes) |
+| `stop_rule`, `stop_iteration`, `stop_values`, `stop_policy` | a solve with [stop rules](#monitors-and-stop-rules) only: the rules that ended it (or `"none"`), the iteration they were judged at last, each rule's state there and the rules (in the cal as JSON text, here as objects) |
+| `monitor` | a [monitored](#monitors-and-stop-rules) solve only, in the record only: `every`, `residual`, `gradient`, `large_scale` (the degree), `step`, the number of checks, and the last check (`itn`, `true_residual`, `true_gradient`, `large_scale_change` per sky term) |
 | `snapshots` | a solve with [snapshots](#snapshots) only, in the record only: `every`, `keep`, `directory`, the snapshots kept (`written`), how many were deleted (`removed`), and any that could not be written (`failed`) |
 
 The history file holds one array per column, row 0 the starting vector: `itn`, `r1norm`, `r2norm`,
 `arnorm`, `anorm`, `acond`, `xnorm`, `test1` (‖r‖ / ‖b‖), `test2` (‖Aᵀ r‖ / (‖A‖ ‖r‖)) and
-`elapsed_s`. The solver computes them anyway, so recording them costs nothing:
+`elapsed_s` (a monitored solve, or one with stop rules, adds its checks and the rules' values:
+[Monitors and stop rules](#monitors-and-stop-rules)). The solver computes them anyway, so recording
+them costs nothing:
 
 ```python
 import numpy as np, matplotlib.pyplot as plt

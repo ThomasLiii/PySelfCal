@@ -29,7 +29,9 @@ The pieces: an instrument (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``, or an
 (``sc.continuum()``, ``sc.spectral(...)``, or ``sc.Model`` with ``sc.Sky`` and
 ``sc.Offsets`` terms), a ``sc.Recipe`` (the model with ``sc.Fit``, ``sc.Coadd`` and
 ``sc.Numerics``), and ``sc.Compute`` (the machine). Big fields add ``sc.Tiles``
-and ``sc.Passes``; ``sc.Snapshots`` writes a long solve's solution every k iterations. The library underneath (``Calibrator``, ``Mosaicker``,
+and ``sc.Passes``; ``sc.Snapshots`` writes a long solve's solution every k iterations,
+``sc.Monitor`` checks it every m iterations, and ``sc.Fit(stop=sc.Stop(...))`` gives it opt-in
+stop rules. The library underneath (``Calibrator``, ``Mosaicker``,
 ``SkyModel``, ``OffsetModel``, ...) stays available for direct use; the run
 engine behind the actions is :mod:`selfcal.run`.
 
@@ -58,8 +60,9 @@ _EXPORTS = {
     **dict.fromkeys(('Function', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets', 'Header',
                      'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
                      'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
-    **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe'), 'selfcal.run.recipe'),
-    **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots'), 'selfcal.run.schedule'),
+    **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
+                     'GradientRule', 'LargeScaleRule'), 'selfcal.run.recipe'),
+    **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
     'rerun': 'selfcal.run.records',
@@ -167,7 +170,18 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .run.compute import Compute, Tuning
     from .run.field import Field, Submitted, frames_in
     from .run.plan import Plan
-    from .run.recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
+    from .run.recipe import (
+        ChunkGroups,
+        Clip,
+        Coadd,
+        Fit,
+        GradientRule,
+        LargeScaleRule,
+        Numerics,
+        Recipe,
+        ResidualRule,
+        Stop,
+    )
     from .run.records import rerun
     from .run.result import MosaicFile, Result
-    from .run.schedule import Passes, Refit, Snapshots, Tiles
+    from .run.schedule import Monitor, Passes, Refit, Snapshots, Tiles

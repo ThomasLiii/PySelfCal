@@ -1105,7 +1105,7 @@ class Calibrator(Reprojector):
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
-                   n_threads: int = 32, conlim: float = 1e8, snapshots=None) -> None:
+                   n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1140,6 +1140,14 @@ class Calibrator(Reprojector):
             the cal's parts that do not depend on the solution are written once, before the
             solve (:meth:`write_cal_static`), each snapshot's from the iterate
             (:meth:`write_cal_solution`). The solve and ``self.x`` are unchanged.
+        stop : Stop or None, optional
+            Opt-in rules that may end the solve before ``iter_lim`` (a
+            :class:`~selfcal.run.recipe.Stop`, ``sc.Fit(stop=...)``; :mod:`selfcal.core.monitor`); the
+            record says which rule ended the solve and what it measured.
+        monitor : Monitor or None, optional
+            Checks every ``monitor.every`` iterations (a :class:`~selfcal.run.schedule.Monitor`): the
+            true residual and gradient and the large-scale fit of the sky terms, saved with the
+            history. The solve and ``self.x`` are unchanged.
 
         Returns
         -------
@@ -1175,6 +1183,8 @@ class Calibrator(Reprojector):
                 if snapshots is not None:
                     snapshots.bind(self)
                     snap = {'snapshot': snapshots, 'snapshot_every': snapshots.every}
+                if stop is not None or monitor is not None:
+                    snap.update(stop=stop, monitor=monitor, sky_names=self._cal_sky_names())
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.

@@ -62,7 +62,8 @@ def _plan(args):
         unrecorded = False
         for i, field in enumerate(_fields(module)):
             plan = field.plan(getattr(module, 'RECIPE', None), **_run_settings(
-                module, ('jobs', 'tiles', 'passes', 'frames', 'overwrite', 'compute', 'start', 'snapshots')))
+                module, ('jobs', 'tiles', 'passes', 'frames', 'overwrite', 'compute', 'start', 'snapshots',
+                         'monitor')))
             print(('\n' if i else '') + str(plan))
             unrecorded |= any(p.state == 'unrecorded' for p in plan.refused)
         if unrecorded:

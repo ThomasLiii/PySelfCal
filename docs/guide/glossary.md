@@ -280,6 +280,14 @@ weight and priors: an `sc.Model`, written out or made by a [preset](#preset), wh
 engine receives as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 [The model](concepts.md#the-model).
 
+## Monitor { #monitor }
+
+Checks of a solve every m iterations (`field.calibrate(recipe, monitor=sc.Monitor(every=m))`): the
+true residual `|b - A x|` (and optionally the true gradient `|A^T r|`) against the solver's
+estimates, and the large-scale fit of each [sky term](#sky-term), saved in the solve's history file.
+It never changes the solve, so it is an action's setting, not part of a product's inputs. See
+[The Python API](python-api.md#monitors-and-stop-rules).
+
 ## Mosaic { #mosaic }
 
 `mosaic/mosaic_<stem>.fits`: the coadd of the corrected frames on the reference grid, with the
@@ -294,6 +302,13 @@ the sky terms exactly given the offsets, and OFFSET passes refit every frame's p
 and scalar given the sky, in turn. See
 [Scaling up](concepts.md#scaling-up) and
 [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
+
+## Near-null mode { #near-null-mode }
+
+A direction of the solution that barely changes the residual: in self-calibration, typically a
+smooth sky pattern that the offsets can nearly absorb, such as a field-wide gradient. An iterative
+solver converges along it slowly, and the residual and gradient tests do not see it; the
+large-scale [stop rule](#stop-rule) and [monitor](#monitor) watch it.
 
 ## NumCol, NumSub, NumCh { #numcol }
 
@@ -507,6 +522,14 @@ The merge of tile cal files into one cal file ([`stitch`][selfcal.pipeline.tiled
 sky pixel becomes the mean of the tiles that cover it, weighted by their
 [Fisher information](#fisher). Per-frame quantities are dropped. See
 [Scaling up](concepts.md#scaling-up).
+
+## Stop rule { #stop-rule }
+
+An opt-in rule that may end a solve before its iteration limit (`sc.Fit(stop=sc.Stop(...))`): a
+residual plateau, a gradient drop, the stability of the sky terms' large scales, or the solver's
+own tests, combined by `all` or `any`. A solve a rule ended has `istop = 8`, and its cal, its
+record and the log say which rule fired and what it measured. See
+[The Python API](python-api.md#monitors-and-stop-rules).
 
 ## Subchannel { #subchannel }
 

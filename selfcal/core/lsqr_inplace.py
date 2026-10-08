@@ -42,6 +42,11 @@ scalars of each iteration (the norms, the estimates of ``|A|`` and
 ``callback(itn, x)`` is called with the iterate every ``callback_every``
 iterations while the solve goes on (not after the iteration it stops at); it
 must not change ``x`` (the snapshots of :mod:`selfcal.core.snapshots`).
+``watch(itn, x, istop, tests)`` (a :class:`~selfcal.core.monitor.Watch`) is
+called after the history row of every iteration, the start included, and
+returns the ``istop`` the solve goes on with: the monitors and the opt-in stop
+rules of :mod:`selfcal.core.monitor`. With ``history``, ``callback`` and
+``watch`` all None this is the function described above.
 
 One deliberate departure from scipy (2026-10-05): the norms of LARGE float32
 vectors are accumulated in float64 (``_norm``). ``np.linalg.norm`` on a
@@ -95,7 +100,8 @@ _MSG = ('The exact solution is  x = 0                              ',
         'Ax - b is small enough for this machine                   ',
         'The least-squares solution is good enough for this machine',
         'Cond(Abar) seems to be too large for this machine         ',
-        'The iteration limit has been reached                      ')
+        'The iteration limit has been reached                      ',
+        'A stop rule of the caller ended the solve                 ')
 
 
 
@@ -187,7 +193,7 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False, history=None, callback=None, callback_every=1):
+                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
@@ -205,7 +211,17 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     ``itn`` whenever ``itn`` is a multiple of ``callback_every`` and the solve
     goes on (never after the iteration it stops at), after ``history`` got
     that iteration's row. ``x`` is the solver's own buffer: read it, never
-    change it or keep it past the call."""
+    change it or keep it past the call.
+
+    ``watch`` (or None) is called as ``watch(0, x, 0, None)`` after the
+    starting row of ``history`` (its result unused) and as
+    ``istop = watch(itn, x, istop, tests)`` after the row of each iteration,
+    before ``callback``: ``tests`` are the solver's seven stopping conditions in
+    ``istop`` order (``test1 <= rtol``, ``test2 <= atol``, ``test3 <= ctol``,
+    the three at machine precision, ``itn >= iter_lim``) and ``istop`` the code
+    the solver would stop with (0: none). The solve stops when the returned code
+    is not 0 (:class:`selfcal.core.monitor.Watch`: the monitors and stop rules).
+    The arithmetic of the solve does not change."""
     A = aslinearoperator(A)
     b = np.atleast_1d(b)
     if b.ndim > 1:
@@ -289,6 +305,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     if history is not None:
         history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm,
                     float(rnorm) / float(bnorm) if bnorm > 0 else 0.0, float('nan'))
+    if watch is not None:
+        watch(itn, x, istop, None)
     if arnorm == 0:
         if show:
             print(_MSG[0])
@@ -420,6 +438,9 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
 
         if history is not None:
             history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm, test1, test2)
+        if watch is not None:
+            istop = watch(itn, x, istop, (test1 <= rtol, test2 <= atol, test3 <= ctol, 1 + t1 <= 1,
+                                          1 + test2 <= 1, 1 + test3 <= 1, itn >= iter_lim))
 
         if show:
             prnt = False

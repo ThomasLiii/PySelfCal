@@ -67,13 +67,16 @@ def setup_options(recipe, compute, instrument) -> dict:
 
 def solver_options(recipe) -> dict:
     """The solver's ``apply_lsqr`` keywords: with ``Fit(tolerance=0)`` also ``conlim=0``, so the
-    solve runs exactly ``Fit.iterations`` iterations (otherwise the solver's own ``conlim``)."""
+    solve runs exactly ``Fit.iterations`` iterations (otherwise the solver's own ``conlim``); with
+    ``Fit(stop=...)`` the stop rules (``stop``)."""
     fit = recipe.fit
     atol, btol = fit.atol_btol
     out = {'solver': fit.method, 'iter_lim': fit.iterations, 'atol': atol, 'btol': btol, 'damp': float(fit.damp),
            'precondition': fit.precondition, 'use_float32': fit.float32, 'n_threads': recipe.numerics.threads}
     if fit.exact_iterations:
         out['conlim'] = 0.0
+    if fit.stop is not None:
+        out['stop'] = fit.stop
     return out
 
 
@@ -226,7 +229,7 @@ def _frame_source(field, frames, compute, scratch, tiles):
 
 
 def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None, frames=None, cal=None,
-          compute=None, start=None, snapshots=None) -> list[RunSpec]:
+          compute=None, start=None, snapshots=None, monitor=None) -> list[RunSpec]:
     """The engine runs of one action: a :class:`~selfcal.run.runspec.RunSpec` per group of jobs the
     instrument runs together (SPHEREx: its channel jobs, then its window jobs).
 
@@ -235,7 +238,8 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     (the first ``n``), a directory (its frames, read in place) or a list of frame files.
     ``start``: the cal each job's solve starts from (:func:`start_paths`; a plain calibration only).
     ``snapshots``: the solution every ``k`` iterations as a cal file
-    (:class:`~selfcal.run.schedule.Snapshots`; a plain calibration only).
+    (:class:`~selfcal.run.schedule.Snapshots`; a plain calibration only). ``monitor``: checks of
+    every solve every ``m`` iterations (:class:`~selfcal.run.schedule.Monitor`; a calibration).
     """
     recipe = as_recipe(recipe)
     compute = compute or field.compute
@@ -247,6 +251,8 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
         raise ConfigError("calibrate(start=...): a warm start continues a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes no start")
     starts = start_paths(start, jobs)
+    if monitor is not None and task == 'mosaic':
+        raise ConfigError("mosaic(monitor=...): only a calibration's solve is monitored")
     if snapshots is not None and (task != 'cal' or tiles is not None or passes is not None):
         raise ConfigError("calibrate(snapshots=...): snapshots are written by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
@@ -270,7 +276,8 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             post_cal=recipe.fit.frame_hook, post_mosaic=coadd.frame_hook if coadd is not None else None,
             make_mosaic=coadd is not None, instrument_maps=coadd is not None and coadd.instrument_maps,
             cal_override=cal, passes=None if passes is None else passes_spec(passes),
-            start=None if starts is None else {j.name: starts[j.name] for j in group}, snapshots=snapshots)
+            start=None if starts is None else {j.name: starts[j.name] for j in group}, snapshots=snapshots,
+            monitor=monitor)
         if tiles is not None:
             spec.suffix = _suffix(tiles.tile_name, recipe.name)
             spec.tiling = tiling_spec(tiles, field, recipe, compute, scratch, frames_dir)

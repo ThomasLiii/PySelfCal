@@ -500,7 +500,10 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     steps. A warm start (``spec.start``, a plain calibration's) starts the solve from the solution
     of an earlier cal of the same system (:meth:`RunContext.start`); snapshots (``spec.snapshots``,
     a plain calibration's) write the solution every ``k`` iterations as a cal file beside the cal
-    (:meth:`RunContext.snapshot_writer`; the action's record lists them under the solve).
+    (:meth:`RunContext.snapshot_writer`; the action's record lists them under the solve). A monitor
+    (``spec.monitor``) checks the solve every ``m`` iterations and the fit's stop rules
+    (``Fit(stop=...)``, in the solver's options) may end it early (:mod:`selfcal.core.monitor`):
+    the checks go to the history file, the stop record to the three places below.
 
     The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`), with the identity
     of the system solved and the solve's start, goes to three places: the cal's ``solve`` group,
@@ -564,8 +567,10 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
     _x0_owned = [ctx.x0(cc, start=start)]
     checkpoint('pre-apply_lsqr')
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **({} if snapshots is None else
-                                                                 {'snapshots': snapshots}))
+    watch = {} if spec.monitor is None else {'monitor': spec.monitor}
+    if snapshots is not None:
+        watch['snapshots'] = snapshots
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record
@@ -581,7 +586,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.reproj_list = staged_list
     del cc
     gc.collect()
-    entry = record.attrs()
+    entry = record.entry()
     if snapshots is not None:
         entry['snapshots'] = snapshots.summary()
         print(f"{len(snapshots.written)} snapshots kept in {snapshots.directory}"

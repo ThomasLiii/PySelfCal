@@ -197,7 +197,10 @@ class CalFile:
         and ``history_file``, the NPZ of its history per iteration (the wall time is in the
         action's record only: the file stays byte-identical from run to run). A snapshot of a solve
         (:mod:`selfcal.core.snapshots`) has ``snapshot = True``, ``iteration`` (cumulative) and the
-        solver's estimates at that iteration instead of the final ones (no ``istop``).
+        solver's estimates at that iteration instead of the final ones (no ``istop``). A solve with
+        stop rules (``sc.Fit(stop=...)``, :mod:`selfcal.core.monitor`) has ``stop_rule`` (the rules
+        that ended it, or ``"none"``), ``stop_iteration`` and the JSON texts ``stop_values`` (each
+        rule's state there) and ``stop_policy`` (the rules).
         """
         from ..core.solve_record import read
         return read(self._f)
@@ -327,6 +330,8 @@ class CalFile:
         elif solve is not None:
             lines.append(f"  solve: {solve.get('method')}, {solve.get('iterations')} iterations "
                          f"(istop {solve.get('istop')}: {solve.get('stop')}), |b - A x| = {solve.get('true_residual')}")
+            if 'stop_rule' in solve:
+                lines.append(f"  stop rules: {solve['stop_rule']} (judged at iteration {solve.get('stop_iteration')})")
         return '\n'.join(lines)
 
 
