@@ -1,0 +1,6873 @@
+{
+ "about": "tests/test_fingerprints.py: the canonical inputs and fingerprint of each product. Regenerating this file makes the sidecar of every product whose inputs changed 'different': do it only on purpose.",
+ "products": {
+  "camera_maps/cal": {
+   "fingerprint": "4404c66456a8224d63ecbdcc586c1d072ef9396069befc8fcf7d6724ba0187ec",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {
+      "qe": {
+       "array": {
+        "dtype": "float32",
+        "sha1": "4dbffbef66a8b896147e93754027ca04e0aad482",
+        "shape": [
+         64,
+         64
+        ]
+       }
+      }
+     },
+     "dq_ext": 2,
+     "headers": {
+      "temp": {
+       "default": null,
+       "key": "TEMP",
+       "type": "selfcal.models.model:Header"
+      }
+     },
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "camera_maps/mosaic": {
+   "fingerprint": "1fb2c5a3c026e5d89d9225630bf90d171d3a2f857bc1dccd779a0dae36e076b2",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {
+      "qe": {
+       "array": {
+        "dtype": "float32",
+        "sha1": "4dbffbef66a8b896147e93754027ca04e0aad482",
+        "shape": [
+         64,
+         64
+        ]
+       }
+      }
+     },
+     "dq_ext": 2,
+     "headers": {
+      "temp": {
+       "default": null,
+       "key": "TEMP",
+       "type": "selfcal.models.model:Header"
+      }
+     },
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "coadd_settings/cal": {
+   "fingerprint": "de88dc291f9c4d96c2e9516ed38b25fe4db64e062bf4fd1a0589ff163e751029",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "coadd_settings/mosaic": {
+   "fingerprint": "cbdca0f7f174d4c9aa07fddf2602b5f170767b7cdb96327567c2434976127ca7",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": null,
+     "frame_hook": {
+      "object": "test_fingerprints:Scale",
+      "state": {
+       "factor": 0.5
+      }
+     },
+     "ignore_flags": [
+      1
+     ],
+     "instrument_maps": false,
+     "min_chunk_coverage": 0.05,
+     "normalize_offsets": true,
+     "oversample": 2,
+     "shot_noise_weights": true,
+     "std": false,
+     "subtract_offsets": false,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": false
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "continuum_smooth_poly/cal": {
+   "fingerprint": "1cdafd0596ba23154f9feb48ead249819a98b648696ad41abc6175fed3a3d501",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": null,
+         "degree": 1,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": 0.5,
+         "window": null
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.3,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "continuum_smooth_poly/mosaic": {
+   "fingerprint": "183b30d79a8aedbe6b1e06c5d8893507c87885f31ba629216d63252dc088ba90",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": null,
+         "degree": 1,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": 0.5,
+         "window": null
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.3,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid/cal": {
+   "fingerprint": "4f02b5e8de7443710138c321cc22206f85935624c9201cb522d8d9a63bd303b8",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "kind": "all",
+     "name": "Y",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid/mosaic": {
+   "fingerprint": "80785baed30ba8e9d77e454ffe3624c113f37fc41273e97eda712aaace99aca7",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "kind": "all",
+     "name": "Y",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_clip_edges/cal": {
+   "fingerprint": "7948c87aa90c950d88fde1344c5c1f44217be6ef11594ddcb6873d2b1208c712",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": [
+       3.2,
+       3.3,
+       3.4
+      ],
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 3.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": "wavelength"
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17",
+     "value": [
+      17
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_clip_mapping/cal": {
+   "fingerprint": "60c261cd0284027781ae8f4cf4188c71f9704a7791c70a047adc01f550558186",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": {
+       "axis": null,
+       "groups": [
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1
+       ],
+       "map": "grid",
+       "type": "selfcal.run.recipe:ChunkGroups"
+      },
+      "sigma": 3.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_clip_per_chunk/cal": {
+   "fingerprint": "bf9f964bdc14c0df37f45a85a53a1727fea2965c7897e6aeacba0da0c5fd7d32",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "chunk",
+      "sigma": 3.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_no_clip/cal": {
+   "fingerprint": "5d74e3f7aea300ba8ed285fff342a88d0eb62528ed3d1036f0b0806c06ca1771",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "H",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": null,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "kind": "all",
+     "name": "H",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_no_clip/mosaic": {
+   "fingerprint": "c69cedb6c05a72a005943985b2256d0a43be9e9d01199465d7bd3040ece81626",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "H",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": null,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "kind": "all",
+     "name": "H",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "fit_settings/cal": {
+   "fingerprint": "319db6d704434de3ffb9cb055e728978ac7222104e4bb44af430813a811b0149",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": {
+       "axis": "subchannel",
+       "groups": null,
+       "map": null,
+       "type": "selfcal.run.recipe:ChunkGroups"
+      },
+      "sigma": 4.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 1e-06,
+     "float32": false,
+     "frame_hook": {
+      "function": "test_fingerprints:subtract_dark"
+     },
+     "ignore_flags": [
+      3,
+      21
+     ],
+     "iterations": 120,
+     "line_fisher_threshold": 5.0,
+     "method": "lsmr",
+     "precondition": false,
+     "raw_frame_hook": {
+      "object": "test_fingerprints:Scale",
+      "state": {
+       "factor": 2.0
+      }
+     },
+     "shot_noise_weights": true,
+     "tolerance": [
+      1e-07,
+      1e-09
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": false
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17",
+     "value": [
+      17
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "model_with_everything/cal": {
+   "fingerprint": "22f82eca26322be2236c03eaf471c02a8a8014ecefc923aaee7eabc8afbcb42d",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": "chunks",
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": "band",
+         "degree": 1,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": 0.2,
+         "window": {
+          "range": [
+           0,
+           8,
+           1
+          ]
+         }
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.05,
+       "smooth_along": [
+        "band"
+       ],
+       "smooth_step": 1,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": true,
+       "mean_zero": true,
+       "n": null,
+       "name": "thermal",
+       "on": null,
+       "per": "all",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:centred"
+        },
+        "of": [
+         "temp"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": {
+        "fn": {
+         "function": "test_fingerprints:plane"
+        },
+        "of": [
+         "det_x",
+         "det_y"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "damping": 0.001,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": 2,
+       "name": "gradient",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": "nightly",
+       "on": null,
+       "per": "night",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": "block",
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [
+      {
+       "fn": {
+        "function": "test_fingerprints:gains_sum_to_zero"
+       },
+       "name": "scale",
+       "params": {
+        "target": 0.0
+       },
+       "terms": [
+        "gradient"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 10.0
+      },
+      {
+       "fn": "frame_smoothness",
+       "name": null,
+       "params": {
+        "covered_only": true,
+        "power": 0.5,
+        "variable": "temp"
+       },
+       "terms": [
+        "chunks"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.2
+      },
+      {
+       "fn": "sky_smoothness",
+       "name": null,
+       "params": {
+        "covered_only": true
+       },
+       "terms": [
+        "ramp"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.1
+      },
+      {
+       "fn": "toward_variable",
+       "name": null,
+       "params": {
+        "covered_only": true,
+        "variable": "known"
+       },
+       "terms": [
+        "scaled"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.5
+      }
+     ],
+     "scalar": false,
+     "sky": [
+      {
+       "damping": 0.001,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "ramp",
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:ramp"
+        },
+        "of": [
+         "det_x"
+        ],
+        "params": {
+         "scale": 2.0
+        },
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "season",
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:season"
+        },
+        "of": [
+         "time"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "bump",
+       "times": {
+        "fn": {
+         "by_value": "bump",
+         "digest": "be3704630406a2fb52406c691eea2c5093f0c7e88e9a9644530640e8cd781762"
+        },
+        "of": [
+         "det_y"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.5,
+       "name": "scaled",
+       "times": "qe",
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {
+      "flat": {
+       "params": {},
+       "source": {
+        "sha256": "4e1ee547d901456a9147f6995d72e6161eb0e307980414c2b6561c8278838cc6"
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "gain": {
+       "params": {
+        "power": 2.0
+       },
+       "source": {
+        "function": "test_fingerprints:qe_map"
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "known": {
+       "params": {},
+       "source": {
+        "sha256": "8e7e5178736bf78fc821ea7d5b06efc6205150b3a84b1e6fe107c37e0bee596b"
+       },
+       "type": "selfcal.models.model:SkyMap"
+      },
+      "model_sky": {
+       "params": {
+        "scale": 2.0
+       },
+       "source": {
+        "function": "test_fingerprints:known_sky"
+       },
+       "type": "selfcal.models.model:SkyMap"
+      },
+      "night": {
+       "fn": {
+        "function": "test_fingerprints:night"
+       },
+       "of": [
+        "exposure"
+       ],
+       "params": {
+        "length": 4
+       },
+       "type": "selfcal.models.model:PerFrame"
+      },
+      "phase": {
+       "fn": {
+        "function": "test_fingerprints:frame_phase"
+       },
+       "of": [],
+       "params": {
+        "period": 10.0
+       },
+       "type": "selfcal.models.model:PerFrame"
+      },
+      "prior": {
+       "cal": "0ddba11000000000000000000000000000000000000000000000000000000000",
+       "term": "continuum",
+       "type": "selfcal.models.model:SolvedSky"
+      },
+      "qe": {
+       "params": {},
+       "source": {
+        "array": {
+         "dtype": "float32",
+         "sha1": "6c6a9514ee256b55b47b33c831f5d402da619ca3",
+         "shape": [
+          32,
+          48
+         ]
+        }
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "quiet": {
+       "fn": {
+        "function": "test_fingerprints:quiet"
+       },
+       "params": {
+        "level": 0.5
+       },
+       "type": "selfcal.models.model:FrameFunction"
+      },
+      "sigma": {
+       "fn": {
+        "function": "test_fingerprints:inverse_sigma"
+       },
+       "of": [
+        "variance"
+       ],
+       "params": {},
+       "type": "selfcal.models.model:Derived"
+      },
+      "temp": {
+       "default": 80.0,
+       "key": "TEMP",
+       "type": "selfcal.models.model:Header"
+      },
+      "variance": {
+       "name": null,
+       "type": "selfcal.models.model:Layer"
+      }
+     },
+     "weight": {
+      "fn": {
+       "function": "test_fingerprints:inverse_sigma"
+      },
+      "of": [
+       "variance"
+      ],
+      "params": {},
+      "type": "selfcal.models.model:Function"
+     }
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "model_with_everything/mosaic": {
+   "fingerprint": "d7901c6f421d5efa30178ecdc7f7a77bf3fd698c8d2aae27e149309768bdb2f2",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": "chunks",
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": "band",
+         "degree": 1,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": 0.2,
+         "window": {
+          "range": [
+           0,
+           8,
+           1
+          ]
+         }
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.05,
+       "smooth_along": [
+        "band"
+       ],
+       "smooth_step": 1,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": true,
+       "mean_zero": true,
+       "n": null,
+       "name": "thermal",
+       "on": null,
+       "per": "all",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:centred"
+        },
+        "of": [
+         "temp"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": {
+        "fn": {
+         "function": "test_fingerprints:plane"
+        },
+        "of": [
+         "det_x",
+         "det_y"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "damping": 0.001,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": 2,
+       "name": "gradient",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": "nightly",
+       "on": null,
+       "per": "night",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": "block",
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [
+      {
+       "fn": {
+        "function": "test_fingerprints:gains_sum_to_zero"
+       },
+       "name": "scale",
+       "params": {
+        "target": 0.0
+       },
+       "terms": [
+        "gradient"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 10.0
+      },
+      {
+       "fn": "frame_smoothness",
+       "name": null,
+       "params": {
+        "covered_only": true,
+        "power": 0.5,
+        "variable": "temp"
+       },
+       "terms": [
+        "chunks"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.2
+      },
+      {
+       "fn": "sky_smoothness",
+       "name": null,
+       "params": {
+        "covered_only": true
+       },
+       "terms": [
+        "ramp"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.1
+      },
+      {
+       "fn": "toward_variable",
+       "name": null,
+       "params": {
+        "covered_only": true,
+        "variable": "known"
+       },
+       "terms": [
+        "scaled"
+       ],
+       "type": "selfcal.models.model:Prior",
+       "weight": 0.5
+      }
+     ],
+     "scalar": false,
+     "sky": [
+      {
+       "damping": 0.001,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "ramp",
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:ramp"
+        },
+        "of": [
+         "det_x"
+        ],
+        "params": {
+         "scale": 2.0
+        },
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "season",
+       "times": {
+        "fn": {
+         "function": "test_fingerprints:season"
+        },
+        "of": [
+         "time"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "bump",
+       "times": {
+        "fn": {
+         "by_value": "bump",
+         "digest": "be3704630406a2fb52406c691eea2c5093f0c7e88e9a9644530640e8cd781762"
+        },
+        "of": [
+         "det_y"
+        ],
+        "params": {},
+        "type": "selfcal.models.model:Function"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.5,
+       "name": "scaled",
+       "times": "qe",
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {
+      "flat": {
+       "params": {},
+       "source": {
+        "sha256": "4e1ee547d901456a9147f6995d72e6161eb0e307980414c2b6561c8278838cc6"
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "gain": {
+       "params": {
+        "power": 2.0
+       },
+       "source": {
+        "function": "test_fingerprints:qe_map"
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "known": {
+       "params": {},
+       "source": {
+        "sha256": "8e7e5178736bf78fc821ea7d5b06efc6205150b3a84b1e6fe107c37e0bee596b"
+       },
+       "type": "selfcal.models.model:SkyMap"
+      },
+      "model_sky": {
+       "params": {
+        "scale": 2.0
+       },
+       "source": {
+        "function": "test_fingerprints:known_sky"
+       },
+       "type": "selfcal.models.model:SkyMap"
+      },
+      "night": {
+       "fn": {
+        "function": "test_fingerprints:night"
+       },
+       "of": [
+        "exposure"
+       ],
+       "params": {
+        "length": 4
+       },
+       "type": "selfcal.models.model:PerFrame"
+      },
+      "phase": {
+       "fn": {
+        "function": "test_fingerprints:frame_phase"
+       },
+       "of": [],
+       "params": {
+        "period": 10.0
+       },
+       "type": "selfcal.models.model:PerFrame"
+      },
+      "prior": {
+       "cal": "0ddba11000000000000000000000000000000000000000000000000000000000",
+       "term": "continuum",
+       "type": "selfcal.models.model:SolvedSky"
+      },
+      "qe": {
+       "params": {},
+       "source": {
+        "array": {
+         "dtype": "float32",
+         "sha1": "6c6a9514ee256b55b47b33c831f5d402da619ca3",
+         "shape": [
+          32,
+          48
+         ]
+        }
+       },
+       "type": "selfcal.models.model:DetectorMap"
+      },
+      "quiet": {
+       "fn": {
+        "function": "test_fingerprints:quiet"
+       },
+       "params": {
+        "level": 0.5
+       },
+       "type": "selfcal.models.model:FrameFunction"
+      },
+      "sigma": {
+       "fn": {
+        "function": "test_fingerprints:inverse_sigma"
+       },
+       "of": [
+        "variance"
+       ],
+       "params": {},
+       "type": "selfcal.models.model:Derived"
+      },
+      "temp": {
+       "default": 80.0,
+       "key": "TEMP",
+       "type": "selfcal.models.model:Header"
+      },
+      "variance": {
+       "name": null,
+       "type": "selfcal.models.model:Layer"
+      }
+     },
+     "weight": {
+      "fn": {
+       "function": "test_fingerprints:inverse_sigma"
+      },
+      "of": [
+       "variance"
+      ],
+      "params": {},
+      "type": "selfcal.models.model:Function"
+     }
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "numerics/cal": {
+   "fingerprint": "972e4ba2504e3f1c5dadb3f2cbb69f8aaaca3a24de18104a40ad204769aa13a3",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 10,
+     "rmatvec_threads": 2,
+     "threads": 4
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "numerics/mosaic": {
+   "fingerprint": "20471bf0b247184860a4a3e2077cb9ed1a84dfe3532aeee6de7e8cdcf34ac890",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 30,
+     "mosaic_batch": 20
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_default/cal": {
+   "fingerprint": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_default/pass 2 off": {
+   "fingerprint": "969bbb1be28bd8c27f3784f47acc9a1c6f13ccaac1e0a7ac4b0bb3555689e91a",
+   "inputs": {
+    "index": 2,
+    "init": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_default/pass 3 sky": {
+   "fingerprint": "ebd96b4d5ffcc2edc59561f97d74a892a2e97e2ecd7e88b582c995faa9c9064d",
+   "inputs": {
+    "index": 3,
+    "init": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_init_sigma/cal": {
+   "fingerprint": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 4.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_init_sigma/pass 2 off": {
+   "fingerprint": "56c6d63aea763232f9e682648528e73982be326740f128b2826a9b65855b987c",
+   "inputs": {
+    "index": 2,
+    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_init_sigma/pass 3 sky": {
+   "fingerprint": "61a94b846cecfa67d802801febf789b988a6921a0700812dba14bbb5c563f3bd",
+   "inputs": {
+    "index": 3,
+    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_init_sigma/pass 4 off": {
+   "fingerprint": "b67fe2ab2cdb06e8d6cfd2fdc776e8e5cb567ceee342c131ed8a4bbc15b6755f",
+   "inputs": {
+    "index": 4,
+    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_init_sigma/pass 5 sky": {
+   "fingerprint": "91cbfa198d6ff40a72a2e2dae5acde1bf84a177d4cc6508c5f3a71f4369b9a2f",
+   "inputs": {
+    "index": 5,
+    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_settings/cal": {
+   "fingerprint": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": {
+       "axis": "subchannel",
+       "groups": null,
+       "map": null,
+       "type": "selfcal.run.recipe:ChunkGroups"
+      },
+      "sigma": 2.5,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      21
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_settings/pass 2 sky": {
+   "fingerprint": "3128bd2290d7871f195b3c22932e00ebd631ecfb323a7ed474628ec008d2c03f",
+   "inputs": {
+    "index": 2,
+    "init": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": {
+        "axis": "subchannel",
+        "groups": null,
+        "map": null,
+        "type": "selfcal.run.recipe:ChunkGroups"
+       },
+       "sigma": 2.0,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 2,
+      "min_pixels": 100,
+      "ridge": 0.1,
+      "segments": [
+       [
+        200,
+        260
+       ],
+       [
+        261,
+        320
+       ]
+      ],
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": {
+       "axis": "subchannel",
+       "groups": null,
+       "map": null,
+       "type": "selfcal.run.recipe:ChunkGroups"
+      },
+      "sigma": 4.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "stitch",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_settings/pass 3 off": {
+   "fingerprint": "9a18f4045b4f6f60f6391453faa6c7d82ce79bd3708f74b1f4ae1f97d076ffb7",
+   "inputs": {
+    "index": 3,
+    "init": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": {
+        "axis": "subchannel",
+        "groups": null,
+        "map": null,
+        "type": "selfcal.run.recipe:ChunkGroups"
+       },
+       "sigma": 2.0,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 2,
+      "min_pixels": 100,
+      "ridge": 0.1,
+      "segments": [
+       [
+        200,
+        260
+       ],
+       [
+        261,
+        320
+       ]
+      ],
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": {
+       "axis": "subchannel",
+       "groups": null,
+       "map": null,
+       "type": "selfcal.run.recipe:ChunkGroups"
+      },
+      "sigma": 4.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "stitch",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "plan camera maps/calibration/cal_Toy_Chunks4x4_All_m.h5": {
+   "fingerprint": "53ad2aec3f4b22f3439e4b66ab87fa25220878384be210c6cc85ebbcde5f7676",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 8,
+     "sha256": "717d7c24941bbd0cb601bac9f6605c02effeef05253d9a17c70a27dd6d3214a0"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {
+      "qe": {
+       "array": {
+        "dtype": "float32",
+        "sha1": "4dbffbef66a8b896147e93754027ca04e0aad482",
+        "shape": [
+         64,
+         64
+        ]
+       }
+      }
+     },
+     "dq_ext": 2,
+     "headers": {
+      "temp": {
+       "default": null,
+       "key": "TEMP",
+       "type": "selfcal.models.model:Header"
+      }
+     },
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Toy_Chunks4x4_All_m.h5"
+  },
+  "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_E.h5": {
+   "fingerprint": "3e08709d52c18691b48aae8958f10e8bdf376e9d09a5412a0a67a43cae6dddb1",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "bc80df9ba4fc528e06b8575d79568f41b413a20166a6a61b4e77e6000fb4e142"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "overlap",
+     "box": [
+      0,
+      120,
+      75,
+      160
+     ],
+     "halo": 4,
+     "name": "E"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Toy_Chunks4x4_All_t_E.h5"
+  },
+  "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_W.h5": {
+   "fingerprint": "e18dc1bc5e2ebb2cf39d7a67ee1387d623c64e4015dd4dae6b666c894f9df6b7",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "deca8002f06203259089750414b94ea989d6210210753f22522bcbe55bd34610"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "overlap",
+     "box": [
+      0,
+      120,
+      0,
+      85
+     ],
+     "halo": 4,
+     "name": "W"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Toy_Chunks4x4_All_t_W.h5"
+  },
+  "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_stitched.h5": {
+   "fingerprint": "14e54756665f4d410e1f680eed8d771db06edb37c24ee5eea1cb2dacc0dbe6e4",
+   "inputs": {
+    "kind": "stitched",
+    "line": false,
+    "tiles": {
+     "E": "3e08709d52c18691b48aae8958f10e8bdf376e9d09a5412a0a67a43cae6dddb1",
+     "W": "e18dc1bc5e2ebb2cf39d7a67ee1387d623c64e4015dd4dae6b666c894f9df6b7"
+    }
+   },
+   "kind": "stitched",
+   "path": "calibration/cal_Toy_Chunks4x4_All_t_stitched.h5"
+  },
+  "plan camera/calibration/cal_Toy_Chunks4x4_All_c.h5": {
+   "fingerprint": "a2fef151e79560df771864eacfba4c67f28c13b6829d1df0e6cc89136a19e3b9",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 8,
+     "sha256": "717d7c24941bbd0cb601bac9f6605c02effeef05253d9a17c70a27dd6d3214a0"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Toy_Chunks4x4_All_c.h5"
+  },
+  "plan camera/mosaic/mosaic_Toy_Chunks4x4_All_c.fits": {
+   "kind": "mosaic",
+   "path": "mosaic/mosaic_Toy_Chunks4x4_All_c.fits"
+  },
+  "plan euclid/calibration/cal_EDFN_J_e.h5": {
+   "fingerprint": "93320e0ade1b6beafc1a538cffb4fb1d8df6480e9a12095182b8701f9f2dffca",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 3,
+     "sha256": "1754fccf1d6f985db2c3eebb49707cf295a41390870a26e970cf20dbb6db5dc1"
+    },
+    "instrument": {
+     "band": "J",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": null,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "kind": "all",
+     "name": "J",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_EDFN_J_e.h5"
+  },
+  "plan euclid/mosaic/mosaic_EDFN_J_e.fits": {
+   "kind": "mosaic",
+   "path": "mosaic/mosaic_EDFN_J_e.fits"
+  },
+  "plan prism passes/calibration/cal_Prism_All_np.h5": {
+   "fingerprint": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 8,
+     "sha256": "717d7c24941bbd0cb601bac9f6605c02effeef05253d9a17c70a27dd6d3214a0"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          0,
+          8,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "line",
+       "times": {
+        "kind": "gaussian",
+        "of": "wavelength",
+        "params": {
+         "center": 1.25,
+         "sigma": 0.08
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Prism_All_np.h5"
+  },
+  "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
+   "fingerprint": "0d12e19c9bdffb3f1e23da22c97f9892b156f120d991b318c66b4557667ab815",
+   "inputs": {
+    "index": 2,
+    "init": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   },
+   "kind": "pass",
+   "path": "calibration/cal_Prism_All_np_pass2off.h5"
+  },
+  "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
+   "fingerprint": "c8dbf85f01c7d8b4165f4148eab19e57057bf48ea41009e479a8b804c2ffe8e1",
+   "inputs": {
+    "index": 3,
+    "init": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   },
+   "kind": "pass",
+   "path": "calibration/cal_Prism_All_np_pass3sky.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
+   "fingerprint": "3c1cc6ee55cc693bed69f1efa87dde1b3c33d7c371b577487d7e31a70a377a18",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 5,
+     "sha256": "becbdbd4427d71ed14c57b91bccb5d7c92d09aab99d050fca9dfad923d6c636a"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          0,
+          8,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "line",
+       "times": {
+        "kind": "gaussian",
+        "of": "wavelength",
+        "params": {
+         "center": 1.25,
+         "sigma": 0.08
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      0,
+      70,
+      0,
+      160
+     ],
+     "halo": 0,
+     "name": "north"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Prism_All_tp_north.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
+   "fingerprint": "23cc1393e2ed5502bd5d846de90e39b48a0e6e348769ab39a929e4adda43b32b",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 5,
+     "sha256": "26c99d32e143e393f89defb5355e3cd51f5a0820661d9abc36ae13609d1d84ac"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          0,
+          8,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "line",
+       "times": {
+        "kind": "gaussian",
+        "of": "wavelength",
+        "params": {
+         "center": 1.25,
+         "sigma": 0.08
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      50,
+      120,
+      0,
+      160
+     ],
+     "halo": 0,
+     "name": "south"
+    }
+   },
+   "kind": "cal",
+   "path": "calibration/cal_Prism_All_tp_south.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
+   "fingerprint": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+   "inputs": {
+    "kind": "stitched",
+    "line": true,
+    "tiles": {
+     "north": "3c1cc6ee55cc693bed69f1efa87dde1b3c33d7c371b577487d7e31a70a377a18",
+     "south": "23cc1393e2ed5502bd5d846de90e39b48a0e6e348769ab39a929e4adda43b32b"
+    }
+   },
+   "kind": "stitched",
+   "path": "calibration/cal_Prism_All_tp_stitched.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
+   "fingerprint": "8b6962e065552056b4b1cd212b0d3e2f679fc737fa12519bb20e1a6ff3fd8d83",
+   "inputs": {
+    "index": 2,
+    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "stitch",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   },
+   "kind": "pass",
+   "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
+   "fingerprint": "d11ceb70c253057f0286a045cda006e3c55964f8b50188d7f4331173d49fe87d",
+   "inputs": {
+    "index": 3,
+    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "stitch",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   },
+   "kind": "pass",
+   "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
+  },
+  "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
+   "fingerprint": "22820bf2082bc03d9e9b469013ac5bab69db6187d69ef37ddef4072d31630c2b",
+   "inputs": {
+    "index": 4,
+    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "stitch",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   },
+   "kind": "pass",
+   "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
+  },
+  "spectral_lines/cal": {
+   "fingerprint": "1262051f31437b4778c5619f3e187a18184ff33da05523a68993101a71a8ebbe",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Multiline3",
+     "value": [
+      200,
+      321
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aliphatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "1d897523e32bb3c700399d86c09e22ae0559bb0194178a14915d79bb60116fed"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "broad",
+       "times": {
+        "kind": "gaussian",
+        "of": "wavelength",
+        "params": {
+         "center": 3.4,
+         "intrinsic_var": 0.000289,
+         "width": "bandwidth"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.0,
+       "name": "narrow",
+       "times": {
+        "kind": "gaussian",
+        "of": "wavelength",
+        "params": {
+         "center": 3.3,
+         "sigma": 0.02
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "pah",
+       "times": {
+        "kind": "catalog",
+        "of": null,
+        "params": {
+         "catalog": "pah_3p29",
+         "center": 3.29
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "tabulated",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "x": {
+          "array": {
+           "dtype": "float64",
+           "sha1": "74794a045f04bf91df2534a952555b280f0509d0",
+           "shape": [
+            3
+           ]
+          }
+         },
+         "y": {
+          "array": {
+           "dtype": "float64",
+           "sha1": "e28bd592bd9cf8ba9da7b78312065aef5f894110",
+           "shape": [
+            3
+           ]
+          }
+         }
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.3,
+       "name": "tilt",
+       "times": {
+        "kind": "linear",
+        "of": "wavelength",
+        "params": {
+         "center": 3.3,
+         "halfwidth": 0.1
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spectral_soft_poly/cal": {
+   "fingerprint": "f927e658e8929ab9993e666180d739a5a8fd3cd1beea445420e098ee85459143",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "W",
+     "value": [
+      200,
+      321
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": "subchannel",
+         "degree": 3,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": null,
+         "window": {
+          "range": [
+           200,
+           321,
+           1
+          ]
+         }
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.2,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.05,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spectral_soft_poly/mosaic": {
+   "fingerprint": "79635c2cd99a44a9a8be44996fd70346bdfbbd7782d1fc4c7c45cb6f2846403d",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "W",
+     "value": [
+      200,
+      321
+     ]
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [
+        {
+         "along": "subchannel",
+         "degree": 3,
+         "each": null,
+         "segments": null,
+         "type": "selfcal.models.model:Poly",
+         "weight": null,
+         "window": {
+          "range": [
+           200,
+           321,
+           1
+          ]
+         }
+        }
+       ],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.2,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.05,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_channel/cal": {
+   "fingerprint": "ad93e4375b015e6d592231396d289fb39d50f5fd0845b5cddf26b48e1546d367",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17",
+     "value": [
+      17
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_channel/mosaic": {
+   "fingerprint": "2fae2acc6e82ce144a22347f4d667f9ff34685079237f951ed37d816e1264881",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17",
+     "value": [
+      17
+     ]
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_group_two_block/cal": {
+   "fingerprint": "7f45e1c42a440916090323cd094fd9c8fbd59efdf52882a00508dd6654737661",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17-18",
+     "value": [
+      17,
+      18
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": [
+        "subchannel"
+       ],
+       "smooth_step": 1,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": "readout",
+       "per": "all",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": [],
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": false,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_group_two_block/mosaic": {
+   "fingerprint": "4abdb645061d2a4abe5c0212ae633ef1f9f919c693cc2cef795f7f81ee19ece7",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch17-18",
+     "value": [
+      17,
+      18
+     ]
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": [
+        "subchannel"
+       ],
+       "smooth_step": 1,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": "readout",
+       "per": "all",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": [],
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": false,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_settings_window/cal": {
+   "fingerprint": "c5ca643a14b2e46e8c4d96e807674558312122d83fb60ece06d1a54164d73448",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": "/data/spherex/calibration",
+     "detector": 3,
+     "lvf_dir": "/data/spherex/lvf",
+     "num_ch": 34,
+     "num_col": 10,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "spherex_settings_window/mosaic": {
+   "fingerprint": "f667ab2e851febd4db6786bb07d7f47ad99c4ea9d4016540509cee6ef2c35936",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 2,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": "/data/spherex/calibration",
+     "detector": 3,
+     "lvf_dir": "/data/spherex/lvf",
+     "num_ch": 34,
+     "num_col": 10,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "tiles_boxes_passes/pass 2 off": {
+   "fingerprint": "37f2ddd2750468e9e14d9c6ff3722e6b2229f206832665d44e183c2af033a6f4",
+   "inputs": {
+    "index": 2,
+    "init": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "tiles_boxes_passes/pass 3 sky": {
+   "fingerprint": "bf918d4ce1294b363a353c44aa2701606e22e81c9c58b3e33c8fadfcde0f2f60",
+   "inputs": {
+    "index": 3,
+    "init": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": 0.05,
+      "clip": {
+       "edges": null,
+       "ignore_flags": null,
+       "per": "frame",
+       "sigma": 2.5,
+       "type": "selfcal.run.recipe:Clip",
+       "variable": null
+      },
+      "degree": 4,
+      "min_pixels": 5000,
+      "ridge": 0.0,
+      "segments": null,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "tiles_boxes_passes/stitched": {
+   "fingerprint": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+   "inputs": {
+    "kind": "stitched",
+    "line": true,
+    "tiles": {
+     "north": "b197a230376237507b417a3051b8013315098acb5cc0503085813658fbc4db8e",
+     "south": "e06e1d81761ce09cf412b17d6dbc77230d0aa56c344854d8d4d625bf6d50d68e"
+    }
+   }
+  },
+  "tiles_boxes_passes/tile north": {
+   "fingerprint": "b197a230376237507b417a3051b8013315098acb5cc0503085813658fbc4db8e",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 14,
+     "sha256": "f742c8e0b6531409793e62ad5140c18f887c082b4b6aa62a5434873af3101dd1"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      0,
+      70,
+      0,
+      160
+     ],
+     "halo": 0,
+     "name": "north"
+    }
+   }
+  },
+  "tiles_boxes_passes/tile south": {
+   "fingerprint": "e06e1d81761ce09cf412b17d6dbc77230d0aa56c344854d8d4d625bf6d50d68e",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 14,
+     "sha256": "f77c0a8c2396b66cb92de48649cf26f81154dd04ad0da8b508dd903c8ac92fac"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "window",
+     "name": "Aromatic",
+     "value": [
+      225,
+      236
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": {
+        "along": null,
+        "degree": 2,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": {
+         "range": [
+          200,
+          321,
+          1
+         ]
+        }
+       },
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      50,
+      120,
+      0,
+      160
+     ],
+     "halo": 0,
+     "name": "south"
+    }
+   }
+  },
+  "tiles_grid/stitched": {
+   "fingerprint": "63f1ab46eff67231715c6314d9e5f6dcf4527c55aaafd89c1f2f28feab086f33",
+   "inputs": {
+    "kind": "stitched",
+    "line": false,
+    "tiles": {
+     "E": "78b6496e2de3bbac1d1d6fbed6e5322fd6ec3384b3f0b0db175fbd14db4cd850",
+     "W": "0c61d2a8eef4104ca8a82893b6acb80a69cb4e1e921390b30080ad931966fdad"
+    }
+   }
+  },
+  "tiles_grid/tile E": {
+   "fingerprint": "78b6496e2de3bbac1d1d6fbed6e5322fd6ec3384b3f0b0db175fbd14db4cd850",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 16,
+     "sha256": "1a219b20863dc5d0c2358fa4a9c7668663227a733338361734ad48955e36ed15"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "overlap",
+     "box": [
+      0,
+      120,
+      75,
+      160
+     ],
+     "halo": 5,
+     "name": "E"
+    }
+   }
+  },
+  "tiles_grid/tile W": {
+   "fingerprint": "0c61d2a8eef4104ca8a82893b6acb80a69cb4e1e921390b30080ad931966fdad",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 16,
+     "sha256": "adf4ad95928b97d8965aa403ab2335524d1a866d1156f5050de4fa736d45d21b"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "overlap",
+     "box": [
+      0,
+      120,
+      0,
+      85
+     ],
+     "halo": 5,
+     "name": "W"
+    }
+   }
+  },
+  "tiles_grid_named_by_the_engine/stitched": {
+   "fingerprint": "a3a92f9f3115a0cda123d141923399d01a777cf0d61dbdfc467f8edb270c58e8",
+   "inputs": {
+    "kind": "stitched",
+    "line": false,
+    "tiles": {
+     "r0c0": "800f80c89c167563006590b28fb18868c2446c5ac775c9b63afea53d06d64c70",
+     "r0c1": "d8318ed1fe0f14d058480cca09cb4a125867f5bffd9e856f10b66579e9aaa3ed",
+     "r1c0": "5af320d6d0df132fa3d32da146763ff5f6f69cf4b6a38314aebb846420d79dcd",
+     "r1c1": "6f3e1f129dbf37dee993db88eff022bb5a6d548df62f826b148ef6cca01df56d"
+    }
+   }
+  },
+  "tiles_grid_named_by_the_engine/tile r0c0": {
+   "fingerprint": "800f80c89c167563006590b28fb18868c2446c5ac775c9b63afea53d06d64c70",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "b7bd2c4f03405e35270159ba5a8fff71398c2209dfa04fdbdd69ad70a3e6cf2e"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      0,
+      70,
+      0,
+      90
+     ],
+     "halo": 0,
+     "name": "r0c0"
+    }
+   }
+  },
+  "tiles_grid_named_by_the_engine/tile r0c1": {
+   "fingerprint": "d8318ed1fe0f14d058480cca09cb4a125867f5bffd9e856f10b66579e9aaa3ed",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "50da2d3e561095f44a4922cd6345d6af3593dbaf1021fceedab636e131d1adf4"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      0,
+      70,
+      70,
+      160
+     ],
+     "halo": 0,
+     "name": "r0c1"
+    }
+   }
+  },
+  "tiles_grid_named_by_the_engine/tile r1c0": {
+   "fingerprint": "5af320d6d0df132fa3d32da146763ff5f6f69cf4b6a38314aebb846420d79dcd",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "1575e14ddc3e59aa725801b5e05f4533b305d39127a478305eb0f725319667e7"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      50,
+      120,
+      0,
+      90
+     ],
+     "halo": 0,
+     "name": "r1c0"
+    }
+   }
+  },
+  "tiles_grid_named_by_the_engine/tile r1c1": {
+   "fingerprint": "6f3e1f129dbf37dee993db88eff022bb5a6d548df62f826b148ef6cca01df56d",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 6,
+     "sha256": "8dc83d6461ff4eae58fc14126d89dbc2c96f0427359456925d806b1b2a074d4f"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    },
+    "tile": {
+     "assign": "center",
+     "box": [
+      50,
+      120,
+      70,
+      160
+     ],
+     "halo": 0,
+     "name": "r1c1"
+    }
+   }
+  },
+  "two_block_settings/cal": {
+   "fingerprint": "e1c09f09b77181effd2d3643410971463bdfa9b22604caa9210880fe5c801f3d",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "num_ch": 34,
+     "num_col": 3,
+     "num_sub": 10,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "kind": "channels",
+     "name": "Ch3",
+     "value": [
+      3
+     ]
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": false,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.2,
+       "smooth_along": [
+        "subchannel"
+       ],
+       "smooth_step": 1,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": "readout",
+       "per": "all",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.05,
+       "smooth_along": [],
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": false,
+     "sky": [
+      {
+       "damping": 0.2,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "user_instrument/cal": {
+   "fingerprint": "07b50d17906694bb1dd27add2e38dd6e1b7e9b8f9ae1608983a85565aa0be5a5",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "lsqr",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "user_instrument/mosaic": {
+   "fingerprint": "3a1d6ded5a86790c132981a17767cb795c9322e6793ad676dd1d5e06e09617ed",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      7
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "bands": 8,
+     "cols": 2,
+     "tag": "Prism",
+     "type": "test_fingerprints:Prism",
+     "unit": "MJy/sr"
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "mean_zero": true,
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  }
+ }
+}

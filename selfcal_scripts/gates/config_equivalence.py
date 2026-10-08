@@ -19,11 +19,23 @@ A third check, ``typed``, runs each config through the TOML path and through the
 resolved per-term damping, offset rows, sky coefficients, jobs, product paths, frames, staging,
 tiles, passes).
 
+``views`` records those engine views, so that a rewrite of what the engine reads can be shown to
+leave what it does unchanged (``compare-views`` of the directories made before and after): one
+JSON file per shipped TOML config, ``toml__<its path in the repository, '/' as '__', no
+.toml>.json``, holding its view, and one per run script, ``script__<name>.json``, holding a list,
+one view per engine run of the script's action, in order (a campaign's, FIELDS:
+``{'<i> <field name>': that list}``, per field in order). A view that cannot be made is stored as
+``{"ERROR": "<type>: <message>"}``. The views read this machine's files (frame lists, reference
+grids, calibration data) and its CPU count (the default number of workers): compare views made
+on one machine.
+
 Usage:
   config_equivalence.py baseline <out_dir> [config.toml ...]   # default: every shipped config
   config_equivalence.py compare <dir_a> <dir_b>
   config_equivalence.py typed [config.toml ...]
   config_equivalence.py runs [name ...]        # selfcal_scripts/runs/<name>.py vs configs/<name>.toml
+  config_equivalence.py views <out_dir> [name ...]   # default: every shipped config and run script
+  config_equivalence.py compare-views <dir_a> <dir_b>
 """
 import contextlib
 import glob
@@ -336,6 +348,112 @@ def runs(names=None):
     return bad
 
 
+# The two producers of the stored views: what they return is the file format (see the module
+# docstring), however the engine's input is built.
+def _views_of_toml(path):
+    """The engine view of a TOML run config (one engine run)."""
+    from selfcal.run.config import load_config
+    from selfcal.run.equivalence import engine_view
+    return engine_view(load_config(path))
+
+
+def _views_of_script(path):
+    """The engine views of a run script of the repository: a list, one per engine run of its action,
+    in order. The action is ``FIELD.calibrate(RECIPE, **RUN)``, as ``selfcal plan`` reads a script; a
+    reproject script's is its reprojection, a precompute script's its settings; a campaign (FIELDS)
+    gives ``{'<i> <field name>': that list}`` per field."""
+    import importlib
+
+    from selfcal.run.equivalence import engine_view
+    from selfcal.run.lower import lower
+    module = importlib.import_module(os.path.relpath(path, REPO)[:-len('.py')].replace(os.sep, '.'))
+    if hasattr(module, 'PRECOMPUTE'):
+        return [{'precompute': module.PRECOMPUTE}]
+    if hasattr(module, 'REPROJECT'):
+        return [engine_view(module.FIELD.reprojection_config(**module.REPROJECT))]
+    # overwrite decides only whether existing products are made again
+    run = {k: v for k, v in getattr(module, 'RUN', {}).items() if k != 'overwrite'}
+
+    def action(field):
+        return [engine_view(low.cfg) for low in lower(field, getattr(module, 'RECIPE', None), task='cal', **run)]
+    if hasattr(module, 'FIELDS'):
+        return {f'{i:02d} {field.name}': action(field) for i, field in enumerate(module.FIELDS)}
+    return action(module.FIELD)
+
+
+def views(out_dir, names=None):
+    """Write the normalised engine views of every shipped TOML config and every run script (or of
+    those whose file stem or view-file stem is in ``names``) to ``out_dir``, one JSON file each.
+    Returns the number of views that could not be made (stored as ERROR)."""
+    from selfcal.run.compute import pin_threads
+    pin_threads()               # one BLAS thread, as the engine runs: the views must not depend on the shell
+    _memoize_geometry()
+
+    def name(p):
+        return os.path.splitext(os.path.basename(p))[0]
+    folder = os.path.join(REPO, 'selfcal_scripts', 'runs')
+    scripts = sorted(os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.py') and not f.startswith('_'))
+    items = ([('toml__' + _stem(p), _views_of_toml, p) for p in SHIPPED]
+             + [('script__' + name(p), _views_of_script, p) for p in scripts])
+    if names:
+        for n in names:
+            if not any(n in (stem, name(p)) for stem, _, p in items):
+                print(f'NO MATCH {n}')
+        items = [(stem, produce, p) for stem, produce, p in items if stem in names or name(p) in names]
+    os.makedirs(out_dir, exist_ok=True)
+    errors = 0
+    for stem, produce, path in items:
+        try:
+            out = _norm(json.loads(json.dumps(produce(path), default=str)))
+        except Exception as e:
+            out = {'ERROR': f'{type(e).__name__}: {e}'}
+            errors += 1
+        with open(os.path.join(out_dir, stem + '.json'), 'w') as f:
+            json.dump(out, f, indent=1, sort_keys=True)
+            f.write('\n')
+        failed = isinstance(out, dict) and 'ERROR' in out
+        print(f"{'ERROR' if failed else 'ok':<6}  {stem}" + (f"  {out['ERROR'][:160]}" if failed else ''))
+    print(f'{len(items)} view files written to {out_dir}' + (f', {errors} of them ERROR' if errors else ''))
+    return errors
+
+
+def _typed(v):
+    """Numbers tagged with their type, so that ``diff`` tells 0 from 0.0 and true from 1."""
+    if isinstance(v, dict):
+        return {k: _typed(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_typed(x) for x in v]
+    return f'{type(v).__name__}:{v!r}' if isinstance(v, (bool, int, float)) else v
+
+
+def compare_views(a, b):
+    """The view files of two ``views`` directories, file by file: EQUAL (identical files), DIFFERS
+    (with the first differing paths; values compared, then their types) or MISSING (in one
+    directory only). Returns the number not equal."""
+    names = sorted(n for n in set(os.listdir(a)) | set(os.listdir(b)) if n.endswith('.json'))
+    if not names:
+        print(f'no view files in {a} or {b}')
+        return 1
+    bad = 0
+    for n in names:
+        pa, pb = os.path.join(a, n), os.path.join(b, n)
+        if not (os.path.exists(pa) and os.path.exists(pb)):
+            print(f'MISSING {n}  (only in {a if os.path.exists(pa) else b})')
+            bad += 1
+            continue
+        with open(pa) as fa, open(pb) as fb:
+            ta, tb = fa.read(), fb.read()
+        va, vb = json.loads(ta), json.loads(tb)
+        d = [] if ta == tb else (diff(va, vb) or diff(_typed(va), _typed(vb)) or ['(formatting only)'])
+        both_error = not d and isinstance(va, dict) and 'ERROR' in va
+        print(('EQUAL   ' if not d else 'DIFFERS ') + n + ('  (ERROR in both)' if both_error else ''))
+        for line in d[:12]:
+            print('    ', line)
+        bad += bool(d)
+    print(f'ALL {len(names)} EQUAL' if not bad else f'{bad} of {len(names)} NOT EQUAL')
+    return bad
+
+
 if __name__ == '__main__':
     sys.path.insert(0, REPO)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
@@ -347,5 +465,9 @@ if __name__ == '__main__':
         sys.exit(1 if typed(sys.argv[2:] or SHIPPED) else 0)
     elif cmd == 'runs':
         sys.exit(1 if runs(sys.argv[2:] or None) else 0)
+    elif cmd == 'views':
+        views(sys.argv[2], sys.argv[3:] or None)
+    elif cmd == 'compare-views':
+        sys.exit(1 if compare_views(sys.argv[2], sys.argv[3]) else 0)
     else:
         print(__doc__)
