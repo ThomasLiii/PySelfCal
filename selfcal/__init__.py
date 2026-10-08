@@ -29,7 +29,7 @@ The pieces: an instrument (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``, or an
 (``sc.continuum()``, ``sc.spectral(...)``, or ``sc.Model`` with ``sc.Sky`` and
 ``sc.Offsets`` terms), a ``sc.Recipe`` (the model with ``sc.Fit``, ``sc.Coadd`` and
 ``sc.Numerics``), and ``sc.Compute`` (the machine). Big fields add ``sc.Tiles``
-and ``sc.Passes``. The library underneath (``Calibrator``, ``Mosaicker``,
+and ``sc.Passes``; ``sc.Snapshots`` writes a long solve's solution every k iterations. The library underneath (``Calibrator``, ``Mosaicker``,
 ``SkyModel``, ``OffsetModel``, ...) stays available for direct use; the run
 engine behind the actions is :mod:`selfcal.run`.
 
@@ -59,7 +59,7 @@ _EXPORTS = {
                      'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
                      'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe'), 'selfcal.run.recipe'),
-    **dict.fromkeys(('Tiles', 'Refit', 'Passes'), 'selfcal.run.schedule'),
+    **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
     'rerun': 'selfcal.run.records',
@@ -170,4 +170,4 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .run.recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
     from .run.records import rerun
     from .run.result import MosaicFile, Result
-    from .run.schedule import Passes, Refit, Tiles
+    from .run.schedule import Passes, Refit, Snapshots, Tiles

@@ -272,6 +272,19 @@ class RunContext:
         start.check(system)
         return start
 
+    def snapshot_writer(self, cal_path, *, frames, system, start):
+        """The :class:`~selfcal.core.snapshots.SnapshotWriter` of the solve that writes ``cal_path``
+        (``calibrate(snapshots=...)``), or None without snapshots: every ``spec.snapshots.every``
+        iterations, ``snapshots/<cal stem>_it<NNNN>.h5`` beside the cal, recording ``frames`` (the
+        frames' permanent paths), the ``system`` solved and the ``start`` it continues."""
+        snaps = self.spec.snapshots
+        if snaps is None:
+            return None
+        if self.spec.tiling is not None or self.spec.passes is not None:
+            raise ValueError("snapshots are written by a plain calibration; a tiled or an N-pass run takes none")
+        from selfcal.core.snapshots import SnapshotWriter
+        return SnapshotWriter(cal_path, snaps.every, snaps.keep, frames=frames, system=system, start=start)
+
     def x0(self, cc, start=None):
         """The LSQR starting vector of the system ``cc`` (a set-up
         :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator`), float64 in the full column layout.
@@ -485,7 +498,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     ``hdd_reproj_dir``, their permanent location, so it stays valid after the staged copy is
     cleaned up. ``checkpoint(label)`` is an optional progress/RSS hook called around the two heavy
     steps. A warm start (``spec.start``, a plain calibration's) starts the solve from the solution
-    of an earlier cal of the same system (:meth:`RunContext.start`).
+    of an earlier cal of the same system (:meth:`RunContext.start`); snapshots (``spec.snapshots``,
+    a plain calibration's) write the solution every ``k`` iterations as a cal file beside the cal
+    (:meth:`RunContext.snapshot_writer`; the action's record lists them under the solve).
 
     The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`), with the identity
     of the system solved and the solve's start, goes to three places: the cal's ``solve`` group,
@@ -540,11 +555,17 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     # of an earlier cal of this system (checked against it), or the default guess.
     system = ctx.system(cc, job)
     start = ctx.start(job, system, os.path.join(ctx.pipeline_config.cal_dir, cal_file))
+    # Snapshots record the frames' permanent paths, as the cal does, and the cal's settings (configure).
+    snapshots = ctx.snapshot_writer(os.path.join(ctx.pipeline_config.cal_dir, cal_file), system=system, start=start,
+                                    frames=staging.remap_to_nvme(cc.reproj_list, hdd_reproj_dir))
+    if snapshots is not None:
+        ctx.configure(cc)
     # List-pop hand-off: keeping a plain `x0` local would pin the full-layout
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
     _x0_owned = [ctx.x0(cc, start=start)]
     checkpoint('pre-apply_lsqr')
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options())
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **({} if snapshots is None else
+                                                                 {'snapshots': snapshots}))
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record
@@ -560,7 +581,13 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.reproj_list = staged_list
     del cc
     gc.collect()
-    announce(spec, 'solve', cal_path, job=job, tile=tile, solve=record.attrs())
+    entry = record.attrs()
+    if snapshots is not None:
+        entry['snapshots'] = snapshots.summary()
+        print(f"{len(snapshots.written)} snapshots kept in {snapshots.directory}"
+              + (f" ({len(snapshots.removed)} deleted, keep={snapshots.keep})" if snapshots.removed else '')
+              + (f"; {len(snapshots.failed)} could not be written" if snapshots.failed else ''))
+    announce(spec, 'solve', cal_path, job=job, tile=tile, solve=entry)
     return cal_path
 
 

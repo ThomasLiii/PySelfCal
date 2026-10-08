@@ -50,3 +50,47 @@ def create_gzip_dataset_parallel(group, name, data, workers=8, level=4):
         for origin, payload in ex.map(_compress, origins, chunksize=4):
             d.id.write_direct_chunk(origin, payload)
     return d
+
+
+def create_gzip_dataset_rows(group, name, shape, dtype, rows, workers=8, level=4):
+    """:func:`create_gzip_dataset_parallel` for data read a band of rows at a time.
+
+    ``rows(r0, r1)`` returns rows ``r0:r1`` of the data (shape ``(r1 - r0,) + shape[1:]``, dtype
+    ``dtype``). The dataset gets the same chunk shape (h5py's guess for ``shape`` and ``dtype``)
+    and the same stored chunks, written in the same order, as
+    ``create_gzip_dataset_parallel(group, name, data)``; only one band of chunk rows is in memory
+    at a time (the snapshots of a solve write their sky maps so)."""
+    shape = tuple(int(s) for s in shape)
+    dtype = np.dtype(dtype)
+    d = group.create_dataset(name, shape=shape, dtype=dtype, chunks=True, compression='gzip',
+                             compression_opts=level)
+    ch = d.chunks
+    size = int(np.prod(shape))
+    if ch is None or size == 0:
+        if size:
+            d[...] = rows(0, shape[0])
+        return d
+
+    def _compress(item):
+        origin, blk = item
+        if blk.shape != ch:
+            full = np.zeros(ch, dtype=dtype)          # edge chunk: zero fill, as HDF5 pads it
+            full[tuple(slice(0, e) for e in blk.shape)] = blk
+            blk = full
+        return origin, zlib.compress(np.ascontiguousarray(blk).tobytes(), level)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for r0 in range(0, shape[0], ch[0]):
+            r1 = min(r0 + ch[0], shape[0])
+            band = np.ascontiguousarray(rows(r0, r1))
+            if band.dtype != dtype or band.shape != (r1 - r0,) + shape[1:]:
+                raise ValueError(f"{name}: rows({r0}, {r1}) gave {band.dtype} {band.shape}, not {dtype} "
+                                 f"{(r1 - r0,) + shape[1:]}")
+            items = []
+            for rest in itertools.product(*[range(0, s, c) for s, c in zip(shape[1:], ch[1:])]):
+                sl = (slice(0, r1 - r0),) + tuple(slice(o, min(o + c, s)) for o, c, s in zip(rest, ch[1:], shape[1:]))
+                items.append(((r0,) + rest, band[sl]))
+            for origin, payload in ex.map(_compress, items):
+                d.id.write_direct_chunk(origin, payload)
+            del band, items
+    return d

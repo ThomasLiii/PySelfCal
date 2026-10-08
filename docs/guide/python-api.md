@@ -47,6 +47,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Recipe(model, fit=sc.Fit(), coadd=sc.Coadd(), numerics=sc.Numerics(), name=)` | everything that decides the numbers |
 | `sc.Compute(scratch, workers=, ...)` | the machine (never changes a byte) |
 | `sc.Tiles`, `sc.Passes` | big fields: tiling, the N-pass solve |
+| `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Result` | the products, with readers |
 
 ### Instruments and jobs
@@ -226,6 +227,54 @@ A continuation restarts the solver's Krylov space: LSQR and LSMR solve `A dx = b
 two differ (the search directions start again from the residual of the start), and the solver's
 running estimates (‖A‖, cond(A), and LSQR's ‖x‖, which becomes ‖dx‖) start again too.
 
+### Snapshots
+
+```python
+IT700 = NUMCOL3.replace(fit=sc.Fit(700, tolerance=0), name="it700")
+result = field.calibrate(IT700, jobs=spherex.channel(9), snapshots=sc.Snapshots(every=100, keep=3))
+# calibration/snapshots/cal_<stem>_it0400.h5, _it0500.h5, _it0600.h5 (and the cal, at 700)
+```
+
+`snapshots=` writes each job's solution after every `every`-th iteration as a cal file,
+`calibration/snapshots/<cal stem>_it<NNNN>.h5`, to watch a long solve converge and to keep a
+usable state if it dies. `NNNN` is the cumulative iteration: a solve continued from a cal of 422
+iterations ([`start=`](#continuing-a-solve)) names its snapshots `_it0522`, `_it0622`, ... The
+iteration the solve stops at gets none (the cal holds it). `keep=m` keeps the last `m` (the solve
+deletes its older ones as it goes; snapshots of earlier runs are never deleted); `keep=None` (the
+default) keeps them all; `snapshots=100` is `sc.Snapshots(every=100)`.
+
+A snapshot is a complete cal file, in the cal's schema, so whatever reads a cal reads it: the sky
+terms with their coverage and Fisher information, the offsets, `frame_scalar`, the chunk maps and
+the frame list. Its sky, offset and scalar datasets are bit for bit those of a solve of exactly
+that many iterations (`sc.Fit(iterations=400, tolerance=0)`). Its `solve` group says
+`snapshot = True` and `iteration` (cumulative), with the solver's estimates at that iteration and
+the system's identity:
+
+```python
+snap = "calibration/snapshots/cal_<stem>_it0400.h5"
+field.mosaic(IT700.replace(name="it0400"), jobs=spherex.channel(9), cal=snap)   # its own mosaic
+more = field.calibrate(IT700.replace(fit=sc.Fit(300, tolerance=0), name="it0700b"),
+                       jobs=spherex.channel(9), start=snap)                    # continue from it
+from selfcal.io.calfile import CalFile
+with CalFile(snap) as cal:                                                     # read it
+    sky, it = cal.sky("continuum"), cal.solve["iteration"]
+```
+
+Snapshots do not change the solve: the cal is the same, byte for byte, with or without them.
+They are an action's setting, not a recipe's: never part of a product's inputs (a cal made with
+snapshots is current for the same recipe without them, and the other way round), recorded in the
+action's record (`settings.snapshots`; per solve, `solves[].snapshots` lists the snapshots kept)
+and replayed by a rerun. They are not products either: no sidecar, never reused or refused. A cal
+that is current is reused without a solve and writes no snapshots (`overwrite=True` solves
+again). Plain calibrations only: `tiles=` and `passes=` take none.
+
+Budget the disk: a snapshot is about as large as the cal. One D3 Ch9 sky map, on its
+12544 x 12538 grid, is ~630 MB as float32 before compression. Writing one holds no second copy
+of the solution in memory (the sky maps go out a band of 196 rows at a time); the parts of the cal
+that do not depend on the solution are written once, before the solve, and copied into each
+snapshot. A snapshot that cannot be written (a full disk) is logged as an error and skipped; the
+solve goes on.
+
 ## Products, records and reruns
 
 ### A product is reused only when it was made by the same inputs
@@ -298,6 +347,7 @@ file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` op
 | `history_file` | `<field>/records/<cal stem>_history.npz`: the solver's state at every iteration |
 | `system`, `system_identity` | the identity of the system solved: its frames in order, reference grid, sky and offset terms, columns and job (JSON), and its sha256; a later [start](#continuing-a-solve) from this cal is checked against it |
 | `start_from`, `start_identity` | a continued solve only: the cal it started from, and that cal's identity (`fingerprint:...`, its sidecar's, or `sha256:...`, its bytes) |
+| `snapshots` | a solve with [snapshots](#snapshots) only, in the record only: `every`, `keep`, `directory`, the snapshots kept (`written`), how many were deleted (`removed`), and any that could not be written (`failed`) |
 
 The history file holds one array per column, row 0 the starting vector: `itn`, `r1norm`, `r2norm`,
 `arnorm`, `anorm`, `acond`, `xnorm`, `test1` (‖r‖ / ‖b‖), `test2` (‖Aᵀ r‖ / (‖A‖ ‖r‖)) and

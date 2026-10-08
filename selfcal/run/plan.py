@@ -46,6 +46,7 @@ class Plan:
         self.frames = None
         self.frame_list = []         # the frame files the action uses
         self.start = None            # {job name: the cal its solve starts from} (calibrate(start=...))
+        self.snapshots = None        # selfcal.run.schedule.Snapshots (calibrate(snapshots=...))
 
     @property
     def jobs(self):
@@ -81,6 +82,16 @@ class Plan:
             lines.append(f"  {label:<22} {os.path.basename(prod.path)}  ({shown.get(prod.state, prod.state)})")
         for job, path in (self.start or {}).items():
             lines.append(f"  start       {job}: {path}")
+        if self.snapshots is not None:
+            sn = self.snapshots
+            its = r.fit.iterations if r is not None else None
+            dirs = sorted({os.path.dirname(p.path) for p in self.products if p.kind == 'cal'}) or \
+                [os.path.join(f.path, 'calibration')]
+            lines.append(f"  snapshots   every {sn.every} iterations, "
+                         + ('all kept' if sn.keep is None else f'the last {sn.keep} kept')
+                         + f", in {', '.join(os.path.join(d, 'snapshots') for d in dirs)}"
+                         + (f" (none: the solve runs {its} iterations at most)" if its is not None and sn.every >= its
+                            else ''))
         if self.tiles is not None:
             lines.append(f"  tiles       {self.tiles!r}")
         if self.passes is not None:
@@ -207,14 +218,16 @@ def _frames_in(path):
 
 def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, cal=None,
               compute=None, overwrite=False, check_workers=True, check_products=True, allow_no_frames=False,
-              start=None) -> Plan:
+              start=None, snapshots=None) -> Plan:
     """The :class:`Plan` of ``action`` (``"calibrate"`` or ``"mosaic"``) on ``field``; raises
     :class:`~selfcal.config.base.ConfigError` for anything that would fail later, including an
     existing product that was not made by the same inputs (see :mod:`selfcal.run.products`;
     ``overwrite`` marks those to be made again, ``check_products=False`` only lists them). ``start``:
     the cal each job's solve starts from (:func:`~selfcal.run.lower.start_paths`), checked against
     the frames and the model now (the whole system when the solve is set up:
-    :mod:`selfcal.core.warm_start`)."""
+    :mod:`selfcal.core.warm_start`). ``snapshots``: the solution every ``k`` iterations as a cal
+    file (:class:`~selfcal.run.schedule.Snapshots`, or a number of iterations; plain calibrations
+    only)."""
     from .compute import pin_threads
     from .engine import RunContext
     check_main_guard()
@@ -231,11 +244,16 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
                           "give a recipe without one: recipe.replace(coadd=None)")
     if start is not None and action != 'calibrate':
         raise ConfigError(f"{action}(start=...): only a calibration starts from a cal")
+    from .schedule import as_snapshots
+    snapshots = as_snapshots(snapshots)
+    if snapshots is not None and action != 'calibrate':
+        raise ConfigError(f"{action}(snapshots=...): only a calibration's solve writes snapshots")
     lowered = lower(field, recipe, task='mosaic' if action == 'mosaic' else 'cal', jobs=jobs, tiles=tiles,
-                    passes=passes, frames=frames, cal=cal, compute=compute, start=start)
+                    passes=passes, frames=frames, cal=cal, compute=compute, start=start, snapshots=snapshots)
     plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
     if start is not None:
         plan.start = {k: v for spec in lowered for k, v in spec.start.items()}
+    plan.snapshots = snapshots
 
     # frames
     first = lowered[0]

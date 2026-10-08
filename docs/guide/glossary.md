@@ -486,6 +486,15 @@ data variables (`sc.Sky`, [`SkyTerm`][selfcal.models.spec.SkyTerm]); without one
 term is a plain sky map, named `continuum` by default. Each term is one map in the cal file
 (`sky/<name>`). See [The model](concepts.md#the-model).
 
+## Snapshot { #snapshot }
+
+A solve's solution after every k-th iteration, written as a complete [cal file](#cal-file)
+(`field.calibrate(recipe, snapshots=sc.Snapshots(every=k, keep=None))`):
+`calibration/snapshots/<cal stem>_it<NNNN>.h5`, `NNNN` the cumulative iteration. It holds bit for
+bit the solution of a solve of exactly that many iterations, so it can be mosaicked, continued
+from (`start=`) and read like any cal; it is not a product (no [sidecar](#sidecar)). See
+[The Python API](python-api.md#snapshots).
+
 ## Stem { #stem }
 
 The common part of a job's product names, `<frame_tag>_<job>_<name>`, as in `cal_<stem>.h5` and

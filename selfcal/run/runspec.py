@@ -124,7 +124,9 @@ class RunSpec:
     instrument's maps; ``reuse_mosaics``: an existing mosaic is kept (the plan checked it);
     ``cal_override``: the cal a mosaic task coadds. ``start``: a warm start, ``{job name: cal}``,
     the cal each job's solve starts from (:mod:`selfcal.core.warm_start`; plain calibrations only).
-    ``on_product`` is told of every product written (the action's book,
+    ``snapshots``: the solution every ``k`` iterations as a cal file
+    (:class:`~selfcal.run.schedule.Snapshots`, :mod:`selfcal.core.snapshots`; plain calibrations
+    only). ``on_product`` is told of every product written (the action's book,
     :class:`~selfcal.run.products.Book`).
     """
     task: str
@@ -153,6 +155,7 @@ class RunSpec:
     reuse_mosaics: bool = False
     cal_override: str | None = None
     start: dict | None = None
+    snapshots: object = None
     tiling: TilingSpec | None = None
     passes: PassesSpec | None = None
     reproject: ReprojectSpec | None = None

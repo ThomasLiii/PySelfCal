@@ -1,12 +1,14 @@
 """LSMR, scipy's, with its state recorded at every iteration.
 
-A copy of ``scipy.sparse.linalg.lsmr`` (scipy 1.16.2; Fong & Saunders 2011) whose only addition is
+A copy of ``scipy.sparse.linalg.lsmr`` (scipy 1.16.2; Fong & Saunders 2011) whose only additions are
 the ``history`` argument: a :class:`~selfcal.core.solve_record.SolveHistory` that receives the
 scalars the solver computes anyway (``normr``, ``normar``, ``normA``, ``condA``, ``normx`` and the
-two stopping ratios) before the first iteration and after each one. scipy's ``lsmr`` has no hook
-for them. The statements of the solve are scipy's, in scipy's order, so ``x`` and every returned
-scalar are bit-identical to scipy's (``tests/test_solve_record.py`` checks float32 and float64
-systems, with and without ``x0`` and damping); with ``history=None`` it is scipy's function.
+two stopping ratios) before the first iteration and after each one, and ``callback(itn, x)``,
+called with the iterate every ``callback_every`` iterations while the solve goes on (the snapshots
+of :mod:`selfcal.core.snapshots`). scipy's ``lsmr`` has no hook for either. The statements of the
+solve are scipy's, in scipy's order, so ``x`` and every returned scalar are bit-identical to
+scipy's (``tests/test_solve_record.py`` checks float32 and float64 systems, with and without ``x0``
+and damping); with ``history=None`` and ``callback=None`` it is scipy's function.
 
 Copyright (C) 2010 David Fong and Michael Saunders (the algorithm and scipy's implementation).
 """
@@ -21,10 +23,15 @@ __all__ = ['lsmr']
 
 
 def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
-         maxiter=None, show=False, x0=None, history=None):
+         maxiter=None, show=False, x0=None, history=None, callback=None, callback_every=1):
     """``scipy.sparse.linalg.lsmr`` (same arguments, same return tuple), with the solver's state
     recorded in ``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`, or None) at
-    iteration 0 and after each iteration. See the module docstring."""
+    iteration 0 and after each iteration. See the module docstring.
+
+    ``callback`` (or None) is called as ``callback(itn, x)`` after iteration ``itn`` whenever ``itn``
+    is a multiple of ``callback_every`` and the solve goes on (never after the iteration it stops
+    at), after ``history`` got that iteration's row. ``x`` is the solver's own buffer: read it, never
+    change it or keep it past the call."""
     A = aslinearoperator(A)
     b = atleast_1d(b)
     if b.ndim > 1:
@@ -303,6 +310,9 @@ def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                 str3 = f'  {test1:8.1e} {test2:8.1e}'
                 str4 = f' {normA:8.1e} {condA:8.1e}'
                 print(''.join([str1, str2, str3, str4]))
+
+        if callback is not None and istop == 0 and itn % callback_every == 0:
+            callback(itn, x)
 
         if istop > 0:
             break

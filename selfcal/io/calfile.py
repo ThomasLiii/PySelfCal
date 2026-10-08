@@ -195,7 +195,9 @@ class CalFile:
         the method, the iterations run and in total, ``istop`` and its meaning (``stop``), the
         solver's final estimates, the true residual ``|b - A x|``, the tolerances and ``conlim``,
         and ``history_file``, the NPZ of its history per iteration (the wall time is in the
-        action's record only: the file stays byte-identical from run to run).
+        action's record only: the file stays byte-identical from run to run). A snapshot of a solve
+        (:mod:`selfcal.core.snapshots`) has ``snapshot = True``, ``iteration`` (cumulative) and the
+        solver's estimates at that iteration instead of the final ones (no ``istop``).
         """
         from ..core.solve_record import read
         return read(self._f)
@@ -319,7 +321,10 @@ class CalFile:
         if extra:
             lines.append('  attrs: ' + ', '.join(f'{k}={v}' for k, v in sorted(extra.items())))
         solve = self.solve
-        if solve is not None:
+        if solve is not None and solve.get('snapshot'):
+            lines.append(f"  snapshot of a {solve.get('method')} solve at iteration {solve.get('iteration')} "
+                         f"({solve.get('iterations')} of this solve), r1norm = {solve.get('r1norm')}")
+        elif solve is not None:
             lines.append(f"  solve: {solve.get('method')}, {solve.get('iterations')} iterations "
                          f"(istop {solve.get('istop')}: {solve.get('stop')}), |b - A x| = {solve.get('true_residual')}")
         return '\n'.join(lines)

@@ -9,6 +9,9 @@ dropped all-zero columns and passes an ``active_mask`` — expansion of the
 compact solution back to the full column layout. Every solve is recorded
 (:class:`~selfcal.core.solve_record.SolveRecord`): how it stopped, its final
 estimates, its history per iteration and the true residual ``|b - A x|``.
+A ``snapshot`` callback sees the iterate every ``snapshot_every`` iterations, in
+the solution's physical units and full layout
+(:class:`~selfcal.core.snapshots.Iterate`; :mod:`selfcal.core.snapshots`).
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ from threadpoolctl import threadpool_limits
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
+from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
 from .spill import ParkedVector
 
@@ -723,19 +727,28 @@ _SOLVERS = ('lsqr', 'lsmr')
 _RESIDUAL_BLOCK = 50_000_000
 
 
-def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history):
+def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
+                callback_every=1):
     """Run LSQR or LSMR on the (scaled) operator ``A``.
 
     ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
     overwrites ``b`` and uses ``x0``'s buffer as the solution), LSMR (scipy's, recorded) reads them
-    in place. Returns the solver's tuple."""
+    in place. ``callback(itn, x)``: called every ``callback_every`` iterations while the solve goes
+    on. Returns the solver's tuple."""
+    hook = {} if callback is None else {'callback': callback, 'callback_every': int(callback_every)}
     if solver == 'lsmr':
         return lsmr(A, b_owned[0], x0=x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
-                    maxiter=iter_lim, history=history)
+                    maxiter=iter_lim, history=history, **hook)
     if solver == 'lsqr':
         return lsqr_inplace(A, b_owned.pop(), x0=x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol,
-                            damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+                            damp=damp, conlim=conlim, iter_lim=iter_lim, history=history, **hook)
     raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+
+
+def _iteration_limit(solver, iter_lim, shape):
+    """The solver's iteration limit: ``iter_lim``, or its own default (LSQR ``2 n``, LSMR ``min(m, n)``)."""
+    m, n = shape
+    return iter_lim if iter_lim is not None else (2 * n if solver == 'lsqr' else min(m, n))
 
 
 def _true_residual(matvec, x, b):
@@ -756,8 +769,7 @@ def _true_residual(matvec, x, b):
 
 def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter_lim, shape, wall_s):
     """The :class:`~selfcal.core.solve_record.SolveRecord` of a finished solve, logged in one line."""
-    m, n = shape
-    limit = iter_lim if iter_lim is not None else (2 * n if solver == 'lsqr' else min(m, n))
+    limit = _iteration_limit(solver, iter_lim, shape)
     rec = SolveRecord.from_result(solver, result, history=history, true_residual=residual[0], bnorm=residual[1],
                                   atol=atol, btol=btol, conlim=conlim, damp=damp, iteration_limit=limit,
                                   shape=shape, wall_s=wall_s)
@@ -775,7 +787,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 active_mask: np.ndarray | None = None,
                 num_cols_full: int | None = None,
                 a_owned: bool = False, conlim: float = 1e8,
-                return_record: bool = False) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                return_record: bool = False, snapshot=None,
+                snapshot_every: int | None = None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -831,6 +844,17 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     return_record : bool, optional
         Also return the solve's
         :class:`~selfcal.core.solve_record.SolveRecord`.
+    snapshot : callable or None, optional
+        Called as ``snapshot(iterate)`` after every ``snapshot_every``-th
+        iteration while the solve goes on (not after the iteration it stops
+        at), from the solver's thread: ``iterate`` is an
+        :class:`~selfcal.core.snapshots.Iterate`, which reads the iterate in
+        the physical units and full column layout of the returned solution,
+        block by block (each column exactly as the end of the solve converts
+        it; no second copy of ``x``). The solve itself is unchanged. Only for a
+        CSR / block system (``setup_lsqr``'s), not the COO path.
+    snapshot_every : int or None, optional
+        The iterations between two calls of ``snapshot`` (required with it).
 
     Returns
     -------
@@ -854,6 +878,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         raise ValueError("ref_shape must be a list or tuple of length 2")
     if solver not in _SOLVERS:
         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+    if snapshot is not None:
+        if snapshot_every is None or int(snapshot_every) < 1:
+            raise ValueError(f"snapshot_every={snapshot_every}: snapshots need a period of at least 1 iteration")
+        if isinstance(A, coo_matrix):
+            raise ValueError("snapshots need the CSR or block system setup_lsqr builds; the COO path's LSQR "
+                             "(scipy's) has no iteration hook")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -1037,6 +1067,18 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         del b
         history = SolveHistory()
         solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+        if snapshot is not None:
+            # The iterate as the solution it would be if the solve ended here: the end below converts
+            # it as Iterate.read does (x * M, then the active columns into the full layout).
+            _active = ActiveColumns(active_mask) if active_mask is not None else None
+            _settings = dict(method=solver, atol=atol, btol=btol, conlim=conlim, damp=damp,
+                             iteration_limit=_iteration_limit(solver, iter_lim, A_shape), rows=int(A_shape[0]),
+                             columns=int(A_shape[1]))
+
+            def _on_iteration(itn, x_iter):
+                snapshot(Iterate(itn, x_iter, scale=M, active=_active, num_cols=num_cols, estimates=history.last(),
+                                 settings=_settings))
+            solve_kw.update(callback=_on_iteration, callback_every=int(snapshot_every))
 
         def _finish(matvec):
             # The solve's wall time, then |b - A x| with one product of the

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["write_sky_groups"]
+__all__ = ["write_sky_groups", "write_sky_maps"]
 
 
 def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
@@ -30,7 +30,9 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
     ----------
     f : h5py.File (writable)
     sky_names : list[str]                 block names, block 0 = continuum
-    sky_maps : list[np.ndarray]           per-block maps on the reference grid
+    sky_maps : list[np.ndarray] | None    per-block maps on the reference grid (None: everything
+                                          but the maps and their aliases, which
+                                          :func:`write_sky_maps` writes)
     sky_coverages : list[np.ndarray]      per-block observation counts
     sky_fishers : list[np.ndarray | None] per-block Fisher information (None = skip)
     pixel_cross, pixel_fisher : moments for the per-block separability ``I_P``
@@ -47,11 +49,12 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
     f.attrs['num_sky_blocks'] = int(num_sky_blocks)
     f.attrs['schema_version'] = 3
     f.attrs['sky_components'] = np.array(list(sky_names), dtype='S')
-    sky_grp = f.create_group('sky')
+    sky_grp = f.create_group('sky') if sky_maps is not None else None
     skycov_grp = f.create_group('sky_coverage')
     skyfish_grp = f.create_group('sky_fisher')
     for j, name in enumerate(sky_names):
-        create_gzip_dataset_parallel(sky_grp, name, sky_maps[j])
+        if sky_grp is not None:
+            create_gzip_dataset_parallel(sky_grp, name, sky_maps[j])
         create_gzip_dataset_parallel(skycov_grp, name, sky_coverages[j])
         if sky_fishers[j] is not None:
             create_gzip_dataset_parallel(skyfish_grp, name,
@@ -67,16 +70,34 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
             create_gzip_dataset_parallel(sep_grp, sky_names[j], sep.astype('float32'))
     # Back-compat hard-link aliases (v2 readers resolve transparently).
     cont = sky_names[0]
-    f['skymap'] = sky_grp[cont]
+    if sky_grp is not None:
+        f['skymap'] = sky_grp[cont]
     f['skymap_coverage'] = skycov_grp[cont]
     if cont in skyfish_grp:
         f['skymap_fisher'] = skyfish_grp[cont]
     extra_names = list(sky_names[1:])
     if extra_names:
         ln = extra_names[-1]
-        f['skymap_line'] = sky_grp[ln]
+        if sky_grp is not None:
+            f['skymap_line'] = sky_grp[ln]
         f['skymap_line_coverage'] = skycov_grp[ln]
         if ln in skyfish_grp:
             f['skymap_line_fisher'] = skyfish_grp[ln]
     if line_fisher_threshold is not None:
         f.attrs['line_fisher_threshold'] = float(line_fisher_threshold)
+
+
+def write_sky_maps(f, *, sky_names, ref_shape, dtype, rows):
+    """Write the sky maps ``sky/<name>`` and their aliases ``skymap`` (block 0) and ``skymap_line``
+    (the last spectral block) into an open h5py file, a band of rows at a time: ``rows(j, r0, r1)``
+    returns rows ``r0:r1`` of block ``j``'s map (dtype ``dtype``). The stored chunks are those
+    :func:`write_sky_groups` writes for the same maps; with ``write_sky_groups(sky_maps=None)`` it
+    completes the same layout (the snapshots of a solve: :mod:`selfcal.core.snapshots`)."""
+    from .parallel_h5 import create_gzip_dataset_rows
+
+    sky_grp = f.create_group('sky')
+    for j, name in enumerate(sky_names):
+        create_gzip_dataset_rows(sky_grp, name, tuple(ref_shape), dtype, lambda r0, r1, j=j: rows(j, r0, r1))
+    f['skymap'] = sky_grp[sky_names[0]]
+    if len(sky_names) > 1:
+        f['skymap_line'] = sky_grp[sky_names[-1]]
