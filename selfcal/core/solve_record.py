@@ -14,7 +14,9 @@ group (:meth:`SolveRecord.write`, read back by :func:`read` and
 :attr:`selfcal.io.calfile.CalFile.solve`), all but the wall time (:data:`VOLATILE`): every value
 there is a function of the solve, so a cal file stays byte-identical from run to run. The run
 engine also enters the whole record in the action's record (``solves``) and saves the history as
-``<field>/records/<cal stem>_history.npz`` (:meth:`SolveRecord.save_history`).
+``<field>/records/<cal stem>_history.npz`` (:meth:`SolveRecord.save_history`), and records in it
+the identity of the system solved and, for a solve continued from another's cal, its source
+(:meth:`SolveRecord.set_system`, :meth:`SolveRecord.continues`; :mod:`selfcal.core.warm_start`).
 """
 from __future__ import annotations
 
@@ -24,7 +26,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-__all__ = ['STOP_REASONS', 'HISTORY_COLUMNS', 'VOLATILE', 'SolveHistory', 'SolveRecord', 'read', 'history_path']
+__all__ = ['STOP_REASONS', 'HISTORY_COLUMNS', 'VOLATILE', 'OPTIONAL', 'SolveHistory', 'SolveRecord', 'read',
+           'history_path']
 
 #: The version of the record's layout (the ``version`` attribute of a cal's ``solve`` group).
 VERSION = 1
@@ -32,6 +35,9 @@ VERSION = 1
 #: The values of a record that change from one run of the same solve to the next (kept out of the cal
 #: file, which is byte-reproducible; the action's record holds them).
 VOLATILE = ('wall_s',)
+
+#: The values of a record present only when set (a saved history, the system solved, a start).
+OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_identity')
 
 #: What each ``istop`` of LSQR and LSMR means (the two solvers share the codes).
 STOP_REASONS = {
@@ -96,7 +102,15 @@ class SolveRecord:
     norm, its ``normr``, as both ``r1norm`` and ``r2norm``. ``rows`` and ``columns`` are the system's
     shape as the solver saw it (the active columns), ``wall_s`` the solver's wall time (the
     final product excluded), ``history`` the :class:`SolveHistory` (not an attribute; saved by
-    :meth:`save_history`) and ``history_file`` where it was saved."""
+    :meth:`save_history`) and ``history_file`` where it was saved.
+
+    ``system`` and ``system_identity``: the fingerprint of the system solved and the JSON it is the
+    fingerprint of (:class:`~selfcal.core.warm_start.System`: the frames in order, the model's
+    unknowns, the grid, the job), so a later solve can check a start from this one
+    (:meth:`set_system`). A continuation (:meth:`continues`) records its source, ``start_from`` (its
+    path) and ``start_identity`` (its product fingerprint, ``fingerprint:<sha256>``, or the hash of
+    its bytes, ``sha256:<sha256>``), and ``iterations_total`` becomes the source's total plus this
+    solve's iterations (-1 when the source has no record of its iterations)."""
     method: str
     iterations: int
     iterations_total: int
@@ -120,6 +134,10 @@ class SolveRecord:
     wall_s: float
     history: SolveHistory | None = field(default=None, repr=False)
     history_file: str | None = None
+    system: str | None = None
+    system_identity: str | None = None
+    start_from: str | None = None
+    start_identity: str | None = None
 
     @classmethod
     def from_result(cls, method, result, *, history, true_residual, bnorm, atol, btol, conlim, damp,
@@ -140,16 +158,30 @@ class SolveRecord:
 
     def attrs(self) -> dict:
         """The record as plain values (what the cal's ``solve`` group and the action's record hold),
-        with ``version``; ``history_file`` only when the history was saved."""
+        with ``version``; ``history_file`` only when the history was saved, the system and the start
+        only when set."""
         out = {'version': VERSION}
         for name in self.__dataclass_fields__:
             if name == 'history':
                 continue
             value = getattr(self, name)
-            if name == 'history_file' and value is None:
+            if name in OPTIONAL and value is None:
                 continue
             out[name] = value
         return out
+
+    def set_system(self, system):
+        """Record the identity of the system solved (a :class:`~selfcal.core.warm_start.System`)."""
+        self.system_identity = system.identity_json()
+        self.system = system.fingerprint()
+
+    def continues(self, start):
+        """Record that the solve started from ``start`` (a :class:`~selfcal.core.warm_start.WarmStart`):
+        its path and identity, and the cumulative iteration count (-1 when the source's is unknown)."""
+        self.start_from = start.path
+        self.start_identity = start.identity
+        self.iterations_total = (-1 if start.iterations_total is None
+                                 else int(start.iterations_total) + int(self.iterations))
 
     def write(self, group):
         """Write the record as the attributes of the HDF5 group ``group`` (a cal file's ``solve``), all

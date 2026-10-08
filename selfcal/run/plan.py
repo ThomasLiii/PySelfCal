@@ -45,6 +45,7 @@ class Plan:
         self.book = None             # the products' inputs (selfcal.run.products.Book)
         self.frames = None
         self.frame_list = []         # the frame files the action uses
+        self.start = None            # {job name: the cal its solve starts from} (calibrate(start=...))
 
     @property
     def jobs(self):
@@ -78,6 +79,8 @@ class Plan:
             label = f"{prod.kind} {prod.job.name}" + (f" [{prod.tile}]" if prod.tile else '') + \
                 (f" pass {prod.index}" if prod.index else '')
             lines.append(f"  {label:<22} {os.path.basename(prod.path)}  ({shown.get(prod.state, prod.state)})")
+        for job, path in (self.start or {}).items():
+            lines.append(f"  start       {job}: {path}")
         if self.tiles is not None:
             lines.append(f"  tiles       {self.tiles!r}")
         if self.passes is not None:
@@ -203,11 +206,15 @@ def _frames_in(path):
 
 
 def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, cal=None,
-              compute=None, overwrite=False, check_workers=True, check_products=True, allow_no_frames=False) -> Plan:
+              compute=None, overwrite=False, check_workers=True, check_products=True, allow_no_frames=False,
+              start=None) -> Plan:
     """The :class:`Plan` of ``action`` (``"calibrate"`` or ``"mosaic"``) on ``field``; raises
     :class:`~selfcal.config.base.ConfigError` for anything that would fail later, including an
     existing product that was not made by the same inputs (see :mod:`selfcal.run.products`;
-    ``overwrite`` marks those to be made again, ``check_products=False`` only lists them)."""
+    ``overwrite`` marks those to be made again, ``check_products=False`` only lists them). ``start``:
+    the cal each job's solve starts from (:func:`~selfcal.run.lower.start_paths`), checked against
+    the frames and the model now (the whole system when the solve is set up:
+    :mod:`selfcal.core.warm_start`)."""
     from .compute import pin_threads
     from .engine import RunContext
     check_main_guard()
@@ -222,9 +229,13 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
     elif (tiles is not None or passes is not None) and recipe.coadd is not None:
         raise ConfigError("calibrate(tiles=..., passes=...): a tiled or N-pass calibration makes no mosaic; "
                           "give a recipe without one: recipe.replace(coadd=None)")
+    if start is not None and action != 'calibrate':
+        raise ConfigError(f"{action}(start=...): only a calibration starts from a cal")
     lowered = lower(field, recipe, task='mosaic' if action == 'mosaic' else 'cal', jobs=jobs, tiles=tiles,
-                    passes=passes, frames=frames, cal=cal, compute=compute)
+                    passes=passes, frames=frames, cal=cal, compute=compute, start=start)
     plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
+    if start is not None:
+        plan.start = {k: v for spec in lowered for k, v in spec.start.items()}
 
     # frames
     first = lowered[0]
@@ -270,8 +281,10 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         _check_smoothing(ctx)
     used = found if first.frames.first_n is None else found[:n]
     plan.frame_list = list(used)
-    plan.book = Book(field, recipe, passes=passes, tiles=tiles)
+    plan.book = Book(field, recipe, passes=passes, tiles=tiles, start=plan.start)
     plan.products = expected_products(plan, plan.book, used)
+    if plan.start is not None:
+        _check_starts(plan)
     refusals = []
     by_path = {prod.path: prod for prod in plan.products}
     for prod in plan.products:                  # engine order: what a product is made from comes first
@@ -331,6 +344,44 @@ def _summary(products, would=False, action='calibrate'):
                      + remedy(state, input_cal=input_cal, tile=tile))
     head = 'the run would refuse existing products' if would else 'existing products refused'
     return f"{head}:\n  " + '\n  '.join(lines)
+
+
+def _check_starts(plan):
+    """What can be checked of a warm start before the solve is set up: each start is a cal of the
+    action's frames (in its order), sky terms on its reference grid, offset terms on their chunk
+    maps and job, and none is a cal the action writes; the model's offsets can be read back (no
+    polynomial basis)."""
+    from ..core.warm_start import contents_problems
+    from ..models.spec import chunk_map_of
+    from .lower import reference_shape
+    from .products import job_key
+    model = plan.recipe.model
+    if any(getattr(t, 'polynomial', None) is not None for t in model.offsets):
+        raise ConfigError("calibrate(start=...): an offset term with a polynomial basis (Offsets(polynomial=...)) "
+                          "cannot be continued: its cal holds the offsets the polynomial expands to, not the "
+                          "polynomial's coefficients")
+    made = {os.path.abspath(p.path) for p in plan.products if p.kind == 'cal'}
+    frames = [os.path.basename(f) for f in plan.frame_list] or None
+    try:
+        ref_shape = reference_shape(plan.field)
+    except ConfigError:
+        ref_shape = None                     # no grid yet: the plan says so
+    for spec, ctx in zip(plan.lowered, plan.contexts):
+        maps = [chunk_map_of(term, ctx.geom).det for term in ctx.model.offset]
+        for job in ctx.jobs():
+            path = spec.start[job.name]
+            if not os.path.isfile(path):
+                raise ConfigError(f"calibrate(start=...): the cal {path} (job {job.name}) does not exist")
+            if path in made:
+                raise ConfigError(f"calibrate(start=...): {os.path.basename(path)} is a cal this calibration "
+                                  f"writes; give the recipe its own name (recipe.replace(name=...)), so the "
+                                  f"continued solve is a product of its own")
+            problems = contents_problems(path, frames=frames, sky_names=[t.name for t in model.sky],
+                                         n_maps=len(model.offsets), ref_shape=ref_shape, chunk_maps=maps,
+                                         job=job_key(job))
+            if problems:
+                raise ConfigError(f"start={path} (job {job.name}) is not a solution of this calibration's system: "
+                                  f"{'; '.join(problems)}")
 
 
 def _check_smoothing(ctx):

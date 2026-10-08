@@ -8,7 +8,8 @@ N-pass product, a mosaic) gets a sidecar ``<product>.json``, written after the p
 
 =============  ==============================================================================
 cal            the instrument, the job, the model, the fit (the N-pass first pass: with its
-               clip), the numerics of the solve, and the frames (by name)
+               clip), the numerics of the solve, and the frames (by name); a solve continued
+               from another's cal (``calibrate(start=...)``), that cal's identity
 tile cal       the same, plus the tile's box and how frames were assigned to it
 stitched cal   the fingerprints of its tile cals
 pass product   the fingerprint of the first pass, the pass number and type, the pass settings
@@ -41,7 +42,8 @@ from ..io.atomic import atomic_path
 
 __all__ = ['sidecar_path', 'read_sidecar', 'write_sidecar', 'fingerprint', 'check', 'cal_inputs',
            'mosaic_inputs', 'stitched_inputs', 'pass_inputs', 'frames_digest', 'diff_inputs', 'Product', 'Book',
-           'expected_products', 'verify', 'remove_product', 'clear_stale_intermediates']
+           'expected_products', 'verify', 'remove_product', 'clear_stale_intermediates', 'start_identity',
+           'start_label']
 
 SCHEMA = 1
 
@@ -253,8 +255,10 @@ def resolved_model(model):
     return model.replace(sky=tuple(t.replace(damping=d) for t, d in zip(model.sky, model.sky_dampings())))
 
 
-def cal_inputs(field, recipe, job, frames, *, passes=None, tile=None) -> dict:
-    """The inputs of a cal (a tile's, with ``tile = {"name", "box", "assign", "halo"}``)."""
+def cal_inputs(field, recipe, job, frames, *, passes=None, tile=None, start=None) -> dict:
+    """The inputs of a cal (a tile's, with ``tile = {"name", "box", "assign", "halo"}``; a solve
+    continued from another cal's solution, with ``start``, that cal's :func:`start_identity`). A key
+    is present only when its input is: a cal made without them keeps its fingerprint."""
     n = recipe.numerics
     out = {'kind': 'cal', **_instrument(field), 'job': job_key(job),
            'model': content_addressed(encode(resolved_model(recipe.model))),
@@ -263,7 +267,31 @@ def cal_inputs(field, recipe, job, frames, *, passes=None, tile=None) -> dict:
            'frames': frames_digest(frames)}
     if tile is not None:
         out['tile'] = tile
+    if start is not None:
+        out['start'] = start
     return out
+
+
+def start_identity(path) -> dict:
+    """The identity of the cal a solve starts from: ``{"fingerprint": ...}``, its sidecar's, when it has
+    a current one (written after the cal, the cal unchanged since), else ``{"sha256": ...}``, the hash
+    of its bytes. Its path does not enter: the same cal under another path is the same start."""
+    side = read_sidecar(path)
+    if side is not None and side.get('fingerprint'):
+        st = os.stat(path)
+        if side.get('size') == st.st_size and side.get('mtime_ns') in (None, st.st_mtime_ns):
+            return {'fingerprint': side['fingerprint']}
+    digest = _file_digest(os.fspath(path))
+    if not isinstance(digest, dict):
+        raise ConfigError(f"start={path}: the cal cannot be read")
+    return dict(digest)
+
+
+def start_label(identity) -> str:
+    """:func:`start_identity` as one string, ``fingerprint:<sha256>`` or ``sha256:<sha256>`` (the
+    cal's ``solve`` group records it as ``start_identity``)."""
+    ((kind, value),) = identity.items()
+    return f'{kind}:{value}'
 
 
 def stitched_inputs(tile_fingerprints, line) -> dict:
@@ -333,8 +361,9 @@ class Book:
     Each solve the engine ends (``kind="solve"``) is entered in the action's record
     (``action_record``: :meth:`selfcal.run.records.Record.add_solve`)."""
 
-    def __init__(self, field, recipe, *, passes=None, tiles=None, record=None):
+    def __init__(self, field, recipe, *, passes=None, tiles=None, record=None, start=None):
         self.field, self.recipe, self.passes, self.tiles = field, recipe, passes, tiles
+        self.start = start             # {job name: the cal its solve starts from} (calibrate(start=...))
         self.record = record           # the action record's path (the sidecars name it)
         self.action_record = None      # the action's Record (its solves are entered in it)
         self.expected = {}             # path -> inputs thunk (the products the action knows of)
@@ -352,7 +381,9 @@ class Book:
 
     # ---- inputs -------------------------------------------------------------------------------
     def cal(self, job, frames, tile=None):
-        return cal_inputs(self.field, self.recipe, job, frames, passes=self.passes, tile=tile)
+        start = self.start.get(job.name) if self.start else None
+        return cal_inputs(self.field, self.recipe, job, frames, passes=self.passes, tile=tile,
+                          start=None if start is None else start_identity(start))
 
     def tile_key(self, tile):
         return {'name': tile.name, 'box': [int(v) for v in tile.bbox], 'assign': self.tiles.assign,

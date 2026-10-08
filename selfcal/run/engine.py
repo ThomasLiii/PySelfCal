@@ -241,15 +241,50 @@ class RunContext:
         """The model's priors as ``setup_lsqr(priors=...)`` callables."""
         return self.model.build_priors(self.geom, variables=variables, n_frames=n_frames)
 
-    def x0(self, cc):
+    def system(self, cc, job):
+        """The identity of the system ``cc`` (a set-up
+        :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator`) solves for ``job``: a
+        :class:`~selfcal.core.warm_start.System` (its frames in order, the model's unknowns, the
+        reference grid, the job), recorded on the cal so that a later solve can start from it."""
+        from selfcal.core.warm_start import System
+
+        from .products import job_key
+        return System.of(cc.layout, frames=cc.reproj_list, sky_model=cc.sky_model, chunk_maps=cc.chunk_maps,
+                         basis_list=getattr(cc, 'basis_list', None), wcs=cc.ref_wcs, extra={'job': job_key(job)})
+
+    def start(self, job, system, cal_path):
+        """The warm start of ``job``'s solve (``calibrate(start=...)``): the
+        :class:`~selfcal.core.warm_start.WarmStart` of the cal it starts from, checked against
+        ``system`` (refused with :class:`~selfcal.config.base.ConfigError` when it is not a solution
+        of it), or None. ``cal_path``: the cal the solve writes, which is never its start."""
+        starts = self.spec.start
+        if not starts or job.name not in starts:
+            return None
+        if self.spec.tiling is not None or self.spec.passes is not None:
+            raise ValueError("a warm start continues a plain calibration; a tiled or an N-pass run takes no start")
+        from selfcal.core.warm_start import WarmStart
+
+        from .products import start_identity, start_label
+        path = starts[job.name]
+        if os.path.abspath(path) == os.path.abspath(cal_path):
+            raise ValueError(f"start={path}: the cal this solve writes cannot be its start")
+        start = WarmStart(path, identity=start_label(start_identity(path)))
+        start.check(system)
+        return start
+
+    def x0(self, cc, start=None):
         """The LSQR starting vector of the system ``cc`` (a set-up
         :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator`), float64 in the full column layout.
 
-        With the per-frame scalar, each frame's scalar starts at the weighted mean of its data and
-        everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`); without it,
-        the first sky term starts at zero and every later column at its own diagonal least-squares
-        estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky block whatever
-        the model's number)."""
+        With a warm start (``start``, a checked :class:`~selfcal.core.warm_start.WarmStart`): the
+        solution of the cal it reads (:meth:`~selfcal.core.warm_start.WarmStart.vector`).
+        Otherwise, with the per-frame scalar, each frame's scalar starts at the weighted mean of its
+        data and everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`);
+        without it, the first sky term starts at zero and every later column at its own diagonal
+        least-squares estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky
+        block whatever the model's number)."""
+        if start is not None:
+            return start.vector(active_mask=getattr(cc, 'active_mask', None))
         from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
         if self.model.x0_kind == 'from_Ab':
             return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, active_mask=getattr(cc, 'active_mask', None))
@@ -449,12 +484,14 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     context, the one place a change to the solve goes. The cal records the frames under
     ``hdd_reproj_dir``, their permanent location, so it stays valid after the staged copy is
     cleaned up. ``checkpoint(label)`` is an optional progress/RSS hook called around the two heavy
-    steps.
+    steps. A warm start (``spec.start``, a plain calibration's) starts the solve from the solution
+    of an earlier cal of the same system (:meth:`RunContext.start`).
 
-    The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`) goes to three places:
-    the cal's ``solve`` group, the history per iteration to :meth:`RunContext.history_path`, and the
-    action's record (``solves``, through the product book: ``spec.on_product('solve', ...)``, with
-    ``tile``, the tile's name in a tiled run).
+    The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`), with the identity
+    of the system solved and the solve's start, goes to three places: the cal's ``solve`` group,
+    the history per iteration to :meth:`RunContext.history_path`, and the action's record
+    (``solves``, through the product book: ``spec.on_product('solve', ...)``, with ``tile``, the
+    tile's name in a tiled run).
     """
     spec = ctx.spec
     checkpoint = checkpoint or (lambda label: None)
@@ -499,15 +536,22 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
         batch_spill_dir=spec.scratch,
         **cal_kwargs)
     checkpoint('post-setup_lsqr')
+    # The identity of the system set up (recorded on the cal) and the solve's start: the solution
+    # of an earlier cal of this system (checked against it), or the default guess.
+    system = ctx.system(cc, job)
+    start = ctx.start(job, system, os.path.join(ctx.pipeline_config.cal_dir, cal_file))
     # List-pop hand-off: keeping a plain `x0` local would pin the full-layout
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
-    _x0_owned = [ctx.x0(cc)]
+    _x0_owned = [ctx.x0(cc, start=start)]
     checkpoint('pre-apply_lsqr')
     cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options())
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
-    # The history first, so the cal names a file that exists.
     record = cc.solve_record
+    record.set_system(system)
+    if start is not None:
+        record.continues(start)
+    # The history first, so the cal names a file that exists.
     record.save_history(ctx.history_path(cal_file))
     # Save with the permanent (HDD) paths so the cal stays valid after cleanup.
     staged_list = cc.reproj_list
