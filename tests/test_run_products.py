@@ -1,6 +1,8 @@
 """Products and records of the Python API (selfcal.run.products, records, compare, convert, the CLI):
 a product is reused only when it was made by the same inputs; records rerun byte-identically;
-products are written atomically; conversion of TOML configs checks itself."""
+products are written atomically; conversion of TOML configs checks itself, and its rules for settings the
+Python API has no switch for make the same products."""
+import glob
 import os
 import shutil
 import subprocess
@@ -149,6 +151,153 @@ def test_convert_writes_scripts_that_run_identically(tmp_path):
         text = out.read_text()
         assert 'FIELD = Field(' in text and 'if __name__ == "__main__":' in text
         compile(text, str(out), 'exec')
+    # the check imports a draft of the script: nothing of it is left beside the scripts (no __pycache__)
+    assert sorted(os.listdir(tmp_path)) == ['cal.py', 'reproject.py']
+
+
+# The converter's rules for TOML settings the Python API has no switch for, each written as what the
+# engine builds or reads alike. Each is checked by the converter (the engine views of the TOML and of
+# the converted script are equal), then both are run on the toy field and their products compared
+# byte for byte.
+_RULE_TOML = """task = "cal"
+mode = "{mode}"
+output_dir = "{out}"
+run_name = "toy"
+resolution_arcsec = {res}
+cache_dir = "{cache}/"
+suffix = "_{name}"
+apply_n_threads = 2
+skip_mosaic = {skip}
+
+[instrument]
+name = "grid"
+tag = "Toy"
+detector_shape = [{det}, {det}]
+chunks = [{side}, {side}]
+dq_ext = 2
+
+[calibration]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+outlier_thresh = 5.0
+batch_size = 4
+max_workers = 2
+{cal}
+
+[lsqr]
+solver = "lsqr"
+iter_lim = 30
+atol = 1e-8
+btol = 1e-8
+damp = 0
+precondition = true
+
+[mosaic]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+{mosaic}
+cache_intermediate = true
+cache_batch_size = 4
+coadd_batch_size = 4
+max_workers = 2
+{rest}"""
+
+_CLIPPED = 'make_std_map = true\napply_sigma_clipping = true\nsigma = 3.0'
+_RULES = {
+    # no smoothness or polynomial rows (the switch) -> every offset term smooth=0 and no poly_prior
+    'noreg': dict(mode='continuum', cal='offset_regularization = false\nweighted_damping = true\ndamp_weight = 0.001',
+                  rest='[params]\nreg_weight = 0.1\npoly_weight = 0.5\npoly_degree = 1\n',
+                  python='offsets=(Offsets(mean_zero=True),)'),
+    # no sky damping rows (the switch, despite damp_weight, damp_weight_line and a term's own) -> damping=0.0
+    'nodamp': dict(mode='model', cal='offset_regularization = true\nweighted_damping = false\ndamp_weight = 0.01\n'
+                                     'damp_weight_line = 0.02',
+                   rest='[model]\nscalar = true\nmosaic = "none"\n\n[[model.sky]]\nname = "continuum"\n\n'
+                        '[[model.sky]]\nname = "ramp"\ndamp_weight = 0.05\n'
+                        'coefficient = { variable = "det_x", function = "tests.synthetic_exposures:x_ramp" }\n\n'
+                        '[[model.offset]]\nkind = "free"\nreg_weight = 0.1\nmean_zero = true\n',
+                   python="sky=(Sky(damping=0.0), Sky('ramp', times=Function(x_ramp, of='det_x'), damping=0.0))"),
+    # a basis of one function -> times= (the cal labels the map 'basis' alike); with the mosaic, which
+    # subtracts the term through the same basis
+    'basis1': dict(mode='model', cal='offset_regularization = true\nweighted_damping = true\ndamp_weight = 0.001',
+                   rest='[model]\nscalar = true\nmosaic = "full"\n\n[[model.sky]]\nname = "continuum"\n\n'
+                        '[[model.offset]]\nkind = "free"\nreg_weight = 0.1\nmean_zero = true\n\n'
+                        '[[model.offset]]\nkind = "free"\nname = "xslope"\n'
+                        'basis = { variable = "det_x", function = "tests.synthetic_exposures:xtilde", n = 1 }\n',
+                   mosaic=_CLIPPED, python="Offsets('xslope', times=Function(xtilde, of='det_x'))"),
+    # the mosaic's sigma without a sigma-clip pass (nor instrument maps) is read by nothing -> the Coadd's
+    # default
+    'nosigma': dict(mode='continuum', cal='weighted_damping = true\ndamp_weight = 0.001', rest='',
+                    mosaic='make_std_map = false\napply_sigma_clipping = false\nsigma = 1.0',
+                    python='coadd=Coadd(None, std=False, ignore_flags=())'),
+}
+
+
+@pytest.mark.parametrize('name', sorted(_RULES))
+def test_converter_rules_run_identically(toy_field, tmp_path, name):
+    from selfcal.run import pipelines
+    from selfcal.run.config import load_config
+    from selfcal.run.convert import _import_script, convert_file
+    from tests.test_npass_toy import assert_same_product
+    case = _RULES[name]
+    mosaic = case.get('mosaic')
+    config = tmp_path / f'{name}.toml'
+    config.write_text(_RULE_TOML.format(mode=case['mode'], out=os.path.dirname(toy_field.path), res=REF_ARCSEC,
+                                        cache=tmp_path / 'cache', name=name, skip=str(mosaic is None).lower(),
+                                        det=DET, side=N_CHUNK_SIDE, cal=case['cal'], mosaic=mosaic or _CLIPPED,
+                                        rest=case['rest']))
+    script = tmp_path / f'{name}.py'
+    convert_file(str(config), str(script))                 # refuses unless the engine views are equal
+    text = script.read_text()
+    assert case['python'] in text and 'basis=' not in text, text
+
+    made = {}
+    for form in ('toml', 'python'):
+        if form == 'toml':
+            pipelines.run(load_config(str(config)))
+        else:
+            module = _import_script(str(script))
+            module.FIELD.calibrate(module.RECIPE, **module.RUN)
+        made[form] = {}
+        os.makedirs(tmp_path / form)
+        for sub in ('calibration', 'mosaic'):                # moved aside (with the sidecars): the next form
+            for p in sorted(glob.glob(os.path.join(toy_field.path, sub, f'*_{name}.*'))):   # makes them anew
+                moved = shutil.move(p, tmp_path / form / os.path.basename(p))
+                if p.endswith(('.h5', '.fits')):
+                    made[form][f'{sub}/{os.path.basename(p)}'] = moved
+    want = {f'calibration/cal_Toy_Chunks{N_CHUNK_SIDE}x{N_CHUNK_SIDE}_All_{name}.h5'}
+    if mosaic is not None:
+        want.add(f'mosaic/mosaic_Toy_Chunks{N_CHUNK_SIDE}x{N_CHUNK_SIDE}_All_{name}.fits')
+    assert set(made['toml']) == set(made['python']) == want, made
+    for product in sorted(want):
+        a, b = made['toml'][product], made['python'][product]
+        if product.endswith('.h5'):
+            assert_same_product(a, b, str(tmp_path))
+        assert open(a, 'rb').read() == open(b, 'rb').read(), product
+
+
+def test_converter_refuses_sky_passes_damped_unlike_the_joint_solve(tmp_path):
+    """The N-pass SKY pass ignores weighted_damping and defaults damp_weight to 0.0: a config whose SKY
+    passes would damp otherwise than its joint solve has no Python form (its terms carry one damping)."""
+    from selfcal.run.config import load_config
+    from selfcal.run.convert import from_runconfig
+
+    def converted(calibration, n=3):
+        passes = f'[passes]\nn = {n}\n[passes.sky]\nsubch_clip = false\n[passes.offset]\nsubch_clip = false\n'
+        path = tmp_path / 'npass.toml'
+        path.write_text(f'task = "npass"\nmode = "continuum"\noutput_dir = "{tmp_path}"\nrun_name = "toy"\n'
+                        f'resolution_arcsec = 20.0\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "grid"\n'
+                        f'detector_shape = [64, 64]\n\n[calibration]\n{calibration}\n\n{passes}')
+        return from_runconfig(load_config(str(path)))
+
+    for refused in ('weighted_damping = false\ndamp_weight = 0.1',      # SKY pass 0.1, joint none
+                    'weighted_damping = true'):                       # joint 0.1 (setup_lsqr), SKY pass 0.0
+        with pytest.raises(ConfigError, match='N-pass SKY passes damp'):
+            converted(refused)
+    assert converted('weighted_damping = false').recipe.model.sky_dampings() == [0.0]
+    assert converted('weighted_damping = true\ndamp_weight = 0.1').recipe.model.sky_dampings() == [0.1]
+    assert converted('weighted_damping = false\ndamp_weight = 0.1', n=1).recipe.model.sky_dampings() == [0.0]  # no SKY pass
 
 
 def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):

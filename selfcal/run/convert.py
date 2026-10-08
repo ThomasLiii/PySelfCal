@@ -191,10 +191,10 @@ def _coefficient(c):
     if c is None:
         return None, None
     c = dict(c)
+    n = c.pop('n', None)
     if 'catalog' in c:
         name = c.pop('catalog')
-        return M.catalog(name, **c), None
-    n = c.pop('n', None)
+        return M.catalog(name, **c), n
     variable = c.pop('variable')
     function = c.pop('function', None)
     params = dict(c.pop('params', None) or {})
@@ -216,10 +216,16 @@ def _coefficient(c):
     return M.Function(load_callable(function), of=of, **params), n
 
 
-def _offsets_from_term(term):
-    """An :class:`~selfcal.models.spec.OffsetTerm` as :class:`~selfcal.models.model.Offsets`."""
+def _offsets_from_term(term, notes):
+    """An :class:`~selfcal.models.spec.OffsetTerm` as :class:`~selfcal.models.model.Offsets`. A
+    ``basis`` of one function (``n = 1``, the default) is the term's coefficient, ``times=``: the
+    solver builds the same one-function basis from either (``ModelSpec._offset_function``)."""
     times, _ = _coefficient(term.coefficient)
     basis, n = _coefficient(term.basis)
+    if basis is not None and (n is None or int(n) == 1):
+        times, basis, n = basis, None, None
+        notes.append(f"offset term {term.name or term.map or 'primary'!r}: a basis of one function, written as "
+                     f"times=")
     common = dict(on=term.map, times=times, damping=float(term.damp), render=term.render, name=term.name)
     if term.kind == 'polybasis':
         return M.Offsets(polynomial=M.Poly(int(term.degree), along=term.axis, each=term.group_axis,
@@ -256,7 +262,7 @@ def _source(v):
     return M.FrameFunction(load_callable(v.value), **p)
 
 
-def _model_from_table(table, dampings):
+def _model_from_table(table, dampings, notes):
     from ..models.spec import ModelSpec
     spec = ModelSpec.from_config(table)
     sky = tuple(M.Sky(t.name, times=_coefficient(t.coefficient)[0], damping=d) for t, d in zip(spec.sky, dampings))
@@ -264,7 +270,7 @@ def _model_from_table(table, dampings):
     priors = tuple(M.Prior(p.function if isinstance(p.function, str) and ':' not in p.function
                            else load_callable(p.function), p.terms, weight=p.weight, name=p.name, **dict(p.params))
                    for p in spec.priors)
-    return M.Model(sky=sky, offsets=tuple(_offsets_from_term(t) for t in spec.offset), scalar=spec.scalar,
+    return M.Model(sky=sky, offsets=tuple(_offsets_from_term(t, notes) for t in spec.offset), scalar=spec.scalar,
                    variables={v.name: _source(v) for v in spec.variables}, weight=weight, priors=priors), spec.mosaic
 
 
@@ -375,13 +381,14 @@ def _preset_model(cfg, inst_name, notes):
     return sky, offsets, scalar, mode.mosaic_mode
 
 
-def _sky_dampings(cal, n_terms, own, passes):
-    """Each sky term's damping as the joint solve resolves it; refuses a config whose N-pass SKY
-    passes resolve one differently (``damp_weight_line`` unset with line terms)."""
-    if not cal['weighted_damping']:
-        return [0.0] * n_terms
-    dw = float(cal['damp_weight'])
-    dwl = cal['damp_weight_line']
+def _sky_dampings(cal, n_terms, own, passes, table):
+    """Each sky term's damping as the joint solve resolves it (``weighted_damping = false``: no
+    damping rows, so 0.0 each); with N-pass SKY passes (``passes``), refuses a config whose SKY
+    passes resolve one differently. The SKY pass reads the TOML's own ``[calibration]`` ``table``
+    (``damp_weight`` default 0.0, not ``setup_lsqr``'s 0.1; ``damp_weight_line`` default 0.0, not
+    3 x) and ignores ``weighted_damping``; a term's own damping wins in both."""
+    dw, dwl = float(cal['damp_weight']), cal['damp_weight_line']
+    sky_dw, sky_dwl = float(table.get('damp_weight', 0.0)), table.get('damp_weight_line')
     joint, sky_pass = [], []
     for j in range(n_terms):
         o = own[j] if j < len(own) else None
@@ -390,13 +397,16 @@ def _sky_dampings(cal, n_terms, own, passes):
             sky_pass.append(float(o))
         elif j == 0:
             joint.append(dw)
-            sky_pass.append(dw)
+            sky_pass.append(sky_dw)
         else:
             joint.append(float(dwl) if dwl is not None else 3.0 * dw)
-            sky_pass.append(float(dwl) if dwl is not None else 0.0)
+            sky_pass.append(float(sky_dwl) if sky_dwl is not None else 0.0)
+    if not cal['weighted_damping']:
+        joint = [0.0] * n_terms
     if passes and joint != sky_pass:
-        raise ConfigError("the config's N-pass SKY passes damp the line terms differently from its joint solve "
-                          "(damp_weight_line unset): no Python form keeps both; set damp_weight_line")
+        raise ConfigError(f"the config's N-pass SKY passes damp the sky terms {sky_pass}, its joint solve {joint} "
+                          "(the SKY pass ignores weighted_damping and defaults damp_weight / damp_weight_line to "
+                          "0.0): a Python sky term has one damping for every pass, so no Python form keeps both")
     return joint
 
 
@@ -476,20 +486,27 @@ def from_runconfig(cfg) -> Converted:
 
     # ---- the model -------------------------------------------------------------------------
     own = []
+    sky_passes = cfg.task == 'npass' and 'sky' in _schedule(cfg.passes)
     if cfg.mode == 'model':
         from ..models.spec import ModelSpec
         spec = ModelSpec.from_config(cfg.model)
         own = [t.damp_weight for t in spec.sky]
-        dampings = _sky_dampings(cal, len(spec.sky), own, bool(cfg.passes))
-        model, mosaic_mode = _model_from_table(cfg.model, dampings)
+        dampings = _sky_dampings(cal, len(spec.sky), own, sky_passes, cfg.calibration)
+        model, mosaic_mode = _model_from_table(cfg.model, dampings, notes)
+        unread = sorted(set(cfg.params) - {'line_fisher_threshold', 'spectral_poly_lo', 'spectral_poly_hi',
+                                            'subch_poly_lo', 'subch_poly_hi'})
+        if unread:
+            notes.append(f"[params] {unread}: not read with a [model] table (dropped)")
     else:
         sky, offsets, scalar, mosaic_mode = _preset_model(cfg, inst_name, notes)
         names = ['continuum'] + [s[0] for s in sky]
         own = [None] + [s[2] for s in sky]
-        dampings = _sky_dampings(cal, len(names), own, bool(cfg.passes))
+        dampings = _sky_dampings(cal, len(names), own, sky_passes, cfg.calibration)
         terms = (M.Sky(damping=dampings[0]),) + tuple(M.Sky(n, times=t, damping=d)
                                                       for (n, t, _), d in zip(sky, dampings[1:]))
         model = M.Model(sky=terms, offsets=offsets, scalar=scalar)
+    if not cal['weighted_damping']:
+        notes.append("weighted_damping = false: no sky damping rows (every sky term damping=0.0)")
     if not cal['offset_regularization']:
         model = model.replace(offsets=tuple(o if o.polynomial is not None else
                                             o.replace(smooth=0.0, poly_prior=()) for o in model.offsets))
@@ -521,10 +538,15 @@ def from_runconfig(cfg) -> Converted:
     makes_mosaic = cfg.task == 'mosaic' or (not cfg.skip_mosaic and mosaic_mode != 'none')
     coadd = None
     if makes_mosaic:
+        instrument_maps = bool(cfg.wavelength_coadd) and mosaic_mode == 'full'
+        aux_coadds = instrument_maps and getattr(inst, 'aux_coadds', None) is not None
+        if (not (mos['make_std_map'] and mos['apply_sigma_clipping']) and not aux_coadds
+                and float(mos['sigma']) != 2.0):
+            notes.append(f"[mosaic] sigma = {mos['sigma']} without the sigma clip: read by no pass (dropped)")
         coadd = Coadd(float(mos['sigma']) if mos['apply_sigma_clipping'] else None, std=bool(mos['make_std_map']),
                       use_mask=bool(mos['apply_mask']), ignore_flags=tuple(mos['ignore_list'] or ()),
                       shot_noise_weights=bool(mos['apply_weight']), oversample=int(cfg.oversample),
-                      instrument_maps=bool(cfg.wavelength_coadd) and mosaic_mode == 'full',
+                      instrument_maps=instrument_maps,
                       min_chunk_coverage=float(mos['valid_chunk_thresh']), subtract_offsets=bool(mos['apply_offset']),
                       normalize_offsets=bool(mos['normalize_offset']), frame_hook=hooks.get('post_mosaic'))
     numerics = Numerics(int(cfg.apply_n_threads), batch=int(cal['batch_size']),
@@ -636,13 +658,26 @@ def _ends_on_offset(n, order):
     return n > 1 and schedule(n, order)[-1] == 'offset'
 
 
+def _schedule(p):
+    """The pass types of the ``[passes]`` table ``p`` (the engine's defaults: n = 4, sky first)."""
+    from .npass import schedule
+    return schedule(int(p.get('n', 4)), p.get('order', 'sky_first'))
+
+
 def _import_script(path):
-    """The module of the script ``path``, imported without running its ``__main__`` block."""
+    """The module of the script ``path``, imported without running its ``__main__`` block (and
+    without leaving its bytecode in a ``__pycache__`` beside it)."""
     import importlib.util
+    import sys
     name = '_selfcal_converted_' + os.path.splitext(os.path.basename(path))[0].replace('-', '_')
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    dont_write = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = dont_write
     return module
 
 

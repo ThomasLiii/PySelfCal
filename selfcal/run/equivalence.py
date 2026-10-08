@@ -47,9 +47,15 @@ def _ser(x):
 def _sky(model, geom):
     """Each sky term by what it COMPUTES, independent of how the component class is laid
     out: name, damping, the variables it reads, and the hash of its coefficients evaluated
-    on a fixed probe of the instrument's real per-pixel maps (every 97th detector pixel)."""
+    on a fixed probe of the instrument's real per-pixel maps and the built-in detector
+    coordinates ``det_x`` / ``det_y`` (every 97th detector pixel)."""
     aux = getattr(geom, 'aux', None) or {}
     probe = {k: np.ascontiguousarray(np.asarray(v).ravel()[::97]) for k, v in aux.items()}
+    if getattr(geom, 'shape', None) is not None:
+        rows, cols = (int(n) for n in geom.shape)
+        pixel = np.arange(0, rows * cols, 97)
+        probe.setdefault('det_x', (pixel % cols).astype(np.float32))
+        probe.setdefault('det_y', (pixel // cols).astype(np.float32))
     out = []
     for c in model.components:
         coeff = c.coefficients(probe)
@@ -97,18 +103,28 @@ def diff(a, b, path=''):
 _GEOMETRY = {}
 
 
+def _subclasses(root):
+    seen, stack = [], list(root.__subclasses__())
+    while stack:
+        cls = stack.pop()
+        if cls not in seen:
+            seen.append(cls)
+            stack.extend(cls.__subclasses__())
+    return seen
+
+
 @contextlib.contextmanager
 def cached_geometry():
     """Within the block, build each instrument's detector geometry once per (settings, oversample):
-    many configs share a detector, and a SPHEREx geometry takes seconds."""
+    many configs share a detector, and a SPHEREx geometry takes seconds. Two levels: the engine
+    instrument's ``detector_geometry`` by its whole ``[instrument]`` table, and the settings
+    object's ``geometry`` (``sc.SPHEREx``, ``sc.Euclid``, ``sc.Camera``, ...; the registry
+    adapters delegate to it) by the settings, which leave out the job selection, so configs of
+    one detector that select other channels or windows share one geometry."""
     from ..instruments.base import Instrument
-    patched, seen, stack = [], set(), list(Instrument.__subclasses__())
-    while stack:
-        cls = stack.pop()
-        if cls in seen:
-            continue
-        seen.add(cls)
-        stack.extend(cls.__subclasses__())
+    from ..instruments.contract import Instrument as Settings
+    patched = []
+    for cls in _subclasses(Instrument):
         if 'detector_geometry' not in cls.__dict__:
             continue
         orig = cls.__dict__['detector_geometry']
@@ -118,13 +134,29 @@ def cached_geometry():
             if key not in _GEOMETRY:
                 _GEOMETRY[key] = _orig(self, inst_cfg, oversample)
             return _GEOMETRY[key]
-        cls.detector_geometry = cached
-        patched.append((cls, orig))
+        patched.append((cls, 'detector_geometry', orig, cached))
+    for cls in _subclasses(Settings):
+        if 'geometry' not in cls.__dict__:
+            continue
+        orig = cls.__dict__['geometry']
+
+        def cached_settings(self, oversample=1, _orig=orig):
+            try:
+                key = ('settings', type(self), self, oversample)
+                hash(key)
+            except TypeError:                   # settings holding arrays: not shared
+                return _orig(self, oversample)
+            if key not in _GEOMETRY:
+                _GEOMETRY[key] = _orig(self, oversample)
+            return _GEOMETRY[key]
+        patched.append((cls, 'geometry', orig, cached_settings))
+    for cls, name, _, wrapper in patched:
+        setattr(cls, name, wrapper)
     try:
         yield
     finally:
-        for cls, orig in patched:
-            cls.detector_geometry = orig
+        for cls, name, orig, _ in patched:
+            setattr(cls, name, orig)
 
 
 def _canon(x):
@@ -156,6 +188,32 @@ _SETUP_DEFAULTS = None
 def _frames_sha(files):
     names = [os.path.basename(f) for f in files]
     return [len(names), hashlib.sha1('\n'.join(names).encode()).hexdigest()]
+
+
+def _built_offset_rows(offsets, regularize):
+    """The offset model's setup keywords (``OffsetModel.to_setup_kwargs()``) with each map's
+    smoothness and soft-polynomial rows described as the solver builds them
+    (``core/assembly.py`` ``_prep_lsqr``; ``core/system.py``, the grouped adjacency): smoothness
+    rows only with ``offset_regularization``, a positive weight and at least one adjacent pair,
+    a polynomial group only with ``offset_regularization``, a nonzero weight and at least one
+    chain, and neither on a template or polynomial-basis map. Rows that are not built read
+    alike however they were left out (the switch off, a zero weight, no pairs, no polynomial):
+    weight 0.0, no adjacency, no polynomial groups."""
+    out = dict(offsets)
+    reg_weights, adj_infos, polys = [], [], []
+    for m in range(len(offsets['chunk_maps'])):
+        free = (regularize and offsets['det_templates'][m] is None
+                and offsets['poly_basis_list'][m] is None)
+        weight, adj = offsets['reg_weights'][m], offsets['adj_infos'][m]
+        smooth = (free and weight > 0 and adj is not None
+                  and not all(np.asarray(a).size == 0 for a in adj))
+        reg_weights.append(weight if smooth else 0.0)
+        adj_infos.append(adj if smooth else None)
+        groups = offsets['poly_constraints_list'][m]
+        built = [g for g in groups or () if free and float(g['weight']) != 0 and np.shape(g['chains'])[0] > 0]
+        polys.append(groups if groups and len(built) == len(groups) else (built or None))
+    out.update(reg_weights=reg_weights, adj_infos=adj_infos, poly_constraints_list=polys)
+    return out
 
 
 def engine_view(cfg):
@@ -238,11 +296,7 @@ def engine_view(cfg):
     for t in sky:
         t.pop('damp_weight', None)
     view['sky'] = _canon(sky)
-    offsets = om.to_setup_kwargs()
-    if not regularize:                       # no smoothness or polynomial rows are built
-        for k in ('reg_weights', 'poly_constraints_list'):
-            offsets.pop(k, None)
-    view['offsets'] = _canon(offsets)
+    view['offsets'] = _canon(_built_offset_rows(om.to_setup_kwargs(), regularize))
     view['x0'] = mode.x0_kind(cfg, inst, geom)
     aux = mode.aux_maps(cfg, inst, geom)
     view['aux'] = None if not aux else _canon(list(aux.values()))
@@ -261,6 +315,11 @@ def engine_view(cfg):
         mos['oversample'] = cfg.oversample
         mos['instrument_maps'] = (mode.mosaic_mode == 'full' and cfg.wavelength_coadd
                                   and inst.aux_coadds(geom) is not None)
+        # sigma is read by the sigma-clip pass (it runs with the std map only) and by the instrument's
+        # aux coadds (engine.mosaic_job, core/coadd.run_coadd_schedule); elsewhere it is unused, and
+        # is described as make_mosaic's default whatever the config says
+        if not ((mos['make_std_map'] and mos['apply_sigma_clipping']) or mos['instrument_maps']):
+            mos['sigma'] = _sig_defaults(Mosaicker.make_mosaic)['sigma']
         mos['coadd_workers'] = mos.pop('max_workers')
         with contextlib.redirect_stdout(io.StringIO()):
             cms, funcs = mode.mosaic_geometry(cfg, inst, geom, jg)

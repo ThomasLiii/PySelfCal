@@ -10,7 +10,6 @@ import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 
-
 DET = 64                     # detector side (px)
 N_CHUNK_SIDE = 4             # chunks per side -> 16 chunks
 PIX_ARCSEC = 20.0            # detector pixel scale
@@ -72,3 +71,15 @@ def write_exposures(out_dir, n_exp, rng, ra0=180.0, dec0=30.0, ref_side=160, noi
         fits.HDUList(hdus).writeto(p, overwrite=True)
         paths.append(p)
     return paths, offsets, scalars
+
+
+# ---------------------------------------------------------------------------- known functions of data variables
+def xtilde(det_x):
+    """(column - centre) / half-width of the toy detector: -1 at its left edge, +1 at its right (a
+    known function an offset term's coefficient can read, as the user's across-detector slope term)."""
+    return (np.asarray(det_x, dtype=np.float64) - (DET - 1) / 2.0) / (DET / 2.0)
+
+
+def x_ramp(det_x):
+    """column / (DET - 1): a coefficient rising across the toy detector (a second sky term)."""
+    return np.asarray(det_x, dtype=np.float64) / (DET - 1)
