@@ -128,8 +128,8 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   solution), `3` (the estimate of cond(A) exceeds `conlim`, 1e8), `4`-`6` (the same three at
   machine precision) or `7` (the iteration limit). |A| and cond(A) are running estimates that
   grow with the iterations, so the `istop = 2` ratio falls even when the weakest directions are
-  still moving (the transfer-function runs of 2026-10: the largest scales of D3 Ch9 kept
-  converging for 700 iterations). **`sc.Fit(iterations=N, tolerance=0)` runs exactly N
+  still moving (the largest scales of a field can keep converging for hundreds of iterations
+  after this test is met). **`sc.Fit(iterations=N, tolerance=0)` runs exactly N
   iterations**: `atol = btol = 0` and the condition stop off (`conlim = 0`, passed to
   `apply_lsqr`; any other tolerance keeps the solvers' own `conlim = 1e8`, byte for byte). Only
   machine precision (`istop` 4-6) or an exact solution can end such a solve earlier, and the
@@ -155,8 +155,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - **Continuing a solve (a warm start from a cal).** `field.calibrate(recipe, start=<cal>)`
   (a cal file, the `Result` of an earlier calibration, or `{job: cal}`) starts each job's
   solve from the solution in that cal instead of the default guess above, to continue a solve
-  that has not converged (the D3 Ch9 transfer-function run went 122 → 422 → 722 iterations in
-  three runs) or to start a variant from an earlier solution. `x0` is read back as the exact
+  that has not converged (e.g. 122, then 422, then 722 iterations in three runs) or to start a variant from an earlier solution. `x0` is read back as the exact
   inverse of how the cal is written (`selfcal.core.warm_start`): each sky term's `sky/<name>`
   in the model's order (pixels the source did not solve start at 0), each offset term's
   `offsets/map_<m>` frame-major (a `times=` / `basis=` term: one coefficient per chunk and
@@ -189,8 +188,8 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   solve.
 - **Snapshots every k iterations.** `field.calibrate(recipe, snapshots=sc.Snapshots(every=k,
   keep=None))` (or `snapshots=k`) writes each job's solution after iterations k, 2k, ... as
-  `<cal dir>/snapshots/<cal stem>_it<NNNN>.h5`, to watch the solution evolve (the TF campaign
-  judged the convergence of the largest scales from such snapshots) and to keep a usable state if
+  `<cal dir>/snapshots/<cal stem>_it<NNNN>.h5`, to watch the solution evolve (e.g. to judge
+  the convergence of the largest scales from the sky maps) and to keep a usable state if
   a long run dies. `NNNN` is the **cumulative** iteration (at least four digits): after a warm
   start, the start's `iterations_total` plus this solve's iteration (a start that records no
   count: this solve's iteration, and `iteration = -1`). The iteration the solve stops at gets no
@@ -225,7 +224,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   snapshot is a copy of the template plus the sky maps (written a band of chunk rows at a time,
   the same stored chunks as the cal's), the offsets and `frame_scalar`, written atomically from the
   solver's thread (no process is started). **Size**: a snapshot is about the size of the cal: one
-  D3 Ch9 sky map on its 12544 x 12538 grid is ~630 MB as float32 before compression, so budget
+  SPHEREx sky map on a 12544 x 12538 grid is ~630 MB as float32 before compression, so budget
   the disk for `keep` (or every) snapshots; the write holds ~10 MB of a sky map at a time
   (196-row bands) plus one offset term.
 - **Monitors and stop rules.** The weakest directions of a self-calibration system are usually

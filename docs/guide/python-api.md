@@ -269,7 +269,7 @@ and replayed by a rerun. They are not products either: no sidecar, never reused 
 that is current is reused without a solve and writes no snapshots (`overwrite=True` solves
 again). Plain calibrations only: `tiles=` and `passes=` take none.
 
-Budget the disk: a snapshot is about as large as the cal. One D3 Ch9 sky map, on its
+Budget the disk: a snapshot is about as large as the cal. One SPHEREx sky map, on a
 12544 x 12538 grid, is ~630 MB as float32 before compression. Writing one holds no second copy
 of the solution in memory (the sky maps go out a band of 196 rows at a time); the parts of the cal
 that do not depend on the solution are written once, before the solve, and copied into each
