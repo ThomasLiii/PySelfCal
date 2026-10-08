@@ -5,9 +5,11 @@ The gates are Python: each is a function of `python_gates.py`, a calibration wri
 [Python API](../../docs/guide/python-api.md) on a fixed set of frames
 (`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
-to `/mnt/md124` and the staged fixtures are in `python_gates.py`), the gates named (default: all),
-compares each product with its golden and writes `workspace/unify/logs/gates_<tag>.log`;
-`SELFCAL_REPO` picks the tree. <!-- check: run_gates.sh after S2 (gate list, pytest step, whether run_python_gates.sh remains) -->
+to `/mnt/md124` and the staged fixtures are in `python_gates.py`), the steps named, compares each
+product with its golden and writes `workspace/unify/logs/gates_<tag>.log`; `SELFCAL_REPO` picks
+the tree. The steps are `pytest` (the test suite, first), then the gates below; the default is
+every step but `m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and
+logs to `m13_gate_<tag>.log`).
 
 | gate | what | golden |
 | --- | --- | --- |
@@ -19,9 +21,8 @@ compares each product with its golden and writes `workspace/unify/logs/gates_<ta
 | m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
 
-`run_m13_gate.sh <tag>` runs the m13 gate on its own. The script imports numpy before selfcal on
-purpose: the actions pin the threads themselves. `h5_diff.py` / `fits_diff.py` compare every
-dataset / extension exactly.
+`python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
+themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly.
 
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so: `make_goldens.sh <tag> [gate ...]` runs the Python gates on a clean tree
@@ -47,14 +48,21 @@ python selfcal_scripts/gates/config_equivalence.py views <dir> [name ...]   # on
 python selfcal_scripts/gates/config_equivalence.py compare-views <dir_before> <dir_after>
 ```
 
-`views` writes the engine view (`selfcal.run.equivalence.engine_view`) of every run, one JSON
-file per producer: the library calls' keywords with their defaults filled, the per-term damping,
-the offset rows and the sky coefficients on the instrument's real geometry, the jobs, the product
-paths, the frames, the staging, the tiles and the passes. The producers are the run scripts of
-`selfcal_scripts/runs/` (`script__<name>.json`), the quickstart, the transfer-function kit and
-the gates of `python_gates.py` (their `Field.calibrate` call captured). The views read this
-machine's files (frame lists, reference grids, calibration data) and its CPU count (the default
-number of workers): compare views made on one machine. <!-- check: the producers and file names of views after S2 -->
+`views` writes the engine view (`selfcal.run.equivalence.engine_view`) of every engine run of
+each producer, one JSON file per producer: the library calls' keywords with their defaults filled,
+the per-term damping, the offset rows and the sky coefficients on the instrument's real geometry,
+the jobs, the product paths, the frames, the staging, the tiles and the passes. The producers and
+their files:
+
+| file | producer |
+| --- | --- |
+| `script__<name>.json` | the run script `selfcal_scripts/runs/<name>.py` (a campaign's views by field) |
+| `example__quickstart.json` | `examples/quickstart/quickstart.py` |
+| `tool__transfer_function.json` | `selfcal_scripts/transfer_function/transfer_function.py` with its default inputs |
+| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `m13`), its `Field.calibrate` call captured |
+
+The views read this machine's files (frame lists, reference grids, calibration data) and its CPU
+count (the default number of workers): compare views made on one machine.
 
 The gates were TOML configs (`configs/*.toml`) before October 2026; they and the configs that
 recorded how each golden was made are in the git history

@@ -226,9 +226,12 @@ class MyCam(sc.Instrument):
 FIELD = sc.Field("/data/runs/mycam_field1", MyCam(chunks=16), pixel_scale=1.0)
 ```
 
-It may also override `default_jobs()` (the jobs a run makes) and `job_geometry(geom, job)` (the
-valid pixels and weights of a job). The engine receives the object itself and calls it only
-through these methods; there is no registry.
+It may also override `default_jobs()` (the jobs a run makes), `job_geometry(geom, job)` (the
+valid pixels and weights of a job), `frame_groups(frames)` (the groupings an offset term can share
+an offset over; default: the integer-valued frame variables) and `geometry_files()` (the data files
+`geometry` reads: the engine keeps a built geometry for the process and builds it again when one of
+them changes). The engine receives the object itself and calls it only through these methods;
+there is no registry.
 
 **Raw data in any format** — a reader returns, for one detector frame of one file, the values, a
 header carrying the celestial WCS (and any keywords you want as frame variables), an optional bit

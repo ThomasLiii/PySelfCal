@@ -34,7 +34,7 @@ methods lower the model to the solver's objects (offset and sky models, data var
 weight, priors, warm start, clip groups, the N-pass refit basis). The tasks of
 [`run/pipelines.py`](run/pipelines.py) (`cal`, tiled or not; `mosaic`; `npass`, scheduled by
 [`run/npass.py`](run/npass.py); `reproject`) run on its two primitives, `solve_job` and
-`mosaic_job`. <!-- check: the RunSpec / RunContext description once S2 lands -->
+`mosaic_job`.
 
 The engine calls the instrument only through the `sc.Instrument` contract
 ([`instruments/contract.py`](instruments/contract.py)), which the built-in instruments
@@ -196,7 +196,7 @@ clarity:
   the offsets `sub_aux`) and returns the new `sub_data` — e.g. Euclid's star
   mask, or the N-pass offset/sky subtractors. (The solve takes both,
   `sc.Fit(raw_frame_hook=, frame_hook=)`; the mosaic only the second,
-  `sc.Coadd(frame_hook=)`.) <!-- check: _prep_subframe keeps preprocess_func for the solve after make_mosaic(preprocess_func=) is removed -->
+  `sc.Coadd(frame_hook=)`.)
 
 - **`setup_lsqr` (in [`core/system.py`](core/system.py))** — Sparse matrix
   construction. Builds `A`, `b`, and a per-map `pixel_counts` coverage list
@@ -469,14 +469,16 @@ clarity:
   (the chunk maps with their axes and the detector maps; `Geometry(...)` builds
   one), `layout()` (how a raw exposure is read), `default_jobs()`,
   `job_geometry(geom, job)` (a job's valid pixels and weights),
-  `frame_variables(frames)` / `frame_variable_names()`, `product_tag` and
-  `unit`, and the optional hooks `offset_renderer`, `aux_coadds`,
-  `finalize_mosaic` and `coefficient_catalog`. A new telescope is a
+  `frame_variables(frames)` / `frame_variable_names()`, `frame_groups(frames)`
+  (default: the integer-valued frame variables), `product_tag`, `unit`
+  (default `''`), `geometry_files()` (the files its geometry reads, for the
+  geometry cache), and the optional hooks `offset_renderer`, `aux_coadds`,
+  `finalize_mosaic` and `coefficient_catalog`; everything but `geometry` has a
+  default. `sc.Job` is one unit of an instrument's loop. A new telescope is a
   frozen-dataclass subclass; the built-in instruments are subclasses too.
-  <!-- check: optional frame_groups on the contract -->
 
 - **[`instruments/base.py`](instruments/base.py)** — The typed geometry the
-  instruments return: `Job`, `ChunkMap` (a chunk partition at detector and
+  instruments return: `ChunkMap` (a chunk partition at detector and
   grid resolution with the AXES of its chunk grid —
   `selfcal.models.offset_structure.ChunkAxes` — plus which axes the standard
   block regularises along, which is the spectral axis and which the group
@@ -661,8 +663,8 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   scheduler's). The detector geometry is built once per process: the engine
   keeps the last four, keyed by the instrument's settings, the oversampling,
   the files the geometry reads and the environment variables that locate
-  them, so `field.plan` followed by `field.calibrate` builds it once.
-  <!-- check: the geometry cache key and size --> Each sky term's damping is
+  them, so `field.plan` followed by `field.calibrate` builds it once. Each
+  sky term's damping is
   decided once (`SkyModel.damp_weights`), and the joint solve, the
   closed-form sky solve and the N-pass SKY pass read the same numbers.
 - **Models over parallel lists.** `SkyModel` and `OffsetModel` bundle what
@@ -796,10 +798,13 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
 | [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `write_frame` (the frame-file contract), `frame_header_values`. |
 | [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
-| [`instruments/base.py`](instruments/base.py) | The typed geometry (`Job`, `ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
+| [`instruments/base.py`](instruments/base.py) | The typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
+| [`instruments/grid.py`](instruments/grid.py) | Rectangular chunk-grid helpers (`rect_grid_chunk_map`, `upsample_chunk_map`). |
 | [`instruments/euclid/settings.py`](instruments/euclid/settings.py) | `sc.Euclid`: the 16-detector NISP exposure layout, grid/stripe/tilt chunk maps, spline/strip/ramp renderers, edge taper, electron units. |
 | [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`StarMask`, `ResidualMask`). |
-| [`instruments/spherex/settings.py`](instruments/spherex/settings.py) | `sc.SPHEREx` (chunk maps and axes, wavelength maps, renderer, layout), its jobs, `line`, `precompute_lvf`, `zodi_anchor`. <!-- check: where the readout map, the window presets and the Euclid helpers of the deleted adapters live --> |
+| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid helpers: the strip and grid chunk maps, their offset renderers, the edge taper. |
+| [`instruments/spherex/settings.py`](instruments/spherex/settings.py) | `sc.SPHEREx` (chunk maps and axes, wavelength maps, renderer, layout), its jobs, `line`, `precompute_lvf`, `zodi_anchor`. |
+| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx helpers: the readout-channel chunk map (`make_readout_chunk_map`) and the named subchannel windows (`SUBCH_WINDOWS`). |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |

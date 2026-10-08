@@ -29,15 +29,13 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 
 ### What the tests cover
 
-<!-- check: the table against tests/ once the TOML-only tests are removed and the new ones added -->
-
 | Area | File | Checks |
 | --- | --- | --- |
-| End to end | `test_run_products.py` | products and records: atomic writes; fingerprints; a product reused only when current, refused when made by other inputs or unrecorded, adopted; a record rerun byte-identically; `compare`; `Tuning` applied and byte-neutral; `by_value` functions in a run; `selfcal convert` and its three rules (the converted script's objects, and a toy run of it); `selfcal plan` and `selfcal adopt` on a run script; `submit` runs detached; a plan of a field without frames; two exposures make a reference grid |
+| End to end | `test_run_products.py` | products and records: atomic writes; fingerprints; a product reused only when current, refused when made by other inputs or unrecorded, adopted; a record rerun byte-identically; `compare`; `Tuning` applied and byte-neutral; `by_value` functions in a run; `selfcal convert`, its three rules (the converted script's objects, and a toy run of it) and what it refuses; `selfcal plan` and `selfcal adopt` on a run script; `submit` runs detached; a plan of a field without frames; two exposures make a reference grid |
 | | `test_run_robustness.py` | products and records off the happy path: a product written again after its sidecar is refused, a mosaic whose cal is gone is made again, two actions in one second keep two records, `rerun --overwrite` remakes a mosaic and keeps the caller's directory, `submit` refuses settings a detached run cannot rebuild, a run-script function reaches the worker processes, hooks and `by_value` functions fingerprint the same in every process, interrupted writes are swept, `compare` sees infinities and file types, `convert` never loses an existing script |
-| | `test_python_api.py` | the [Python API](../guide/python-api.md): settings checked when built; models, presets and instruments lowered for the run engine; a run through the API (calibrate and its mosaic, the mosaic action, a tiled solve); the run-script rules (the `__main__` guard, importable functions); an instrument's geometry and optional hooks; map variables given as arrays |
+| | `test_python_api.py` | the [Python API](../guide/python-api.md): settings checked when built; models, presets and instruments lowered for the run engine; a run through the API (calibrate and its mosaic, the mosaic action, a tiled solve); a non-square camera without a mask; the run-script rules (the `__main__` guard, importable functions); an instrument's geometry and optional hooks; map variables given as arrays; the engine's rules listed below |
 | | `test_run_scripts.py` | every run script of `selfcal_scripts/runs/` builds and lowers without the data |
-| | `test_quickstart_example.py` | the [quickstart](../getting-started/quickstart.md) example runs and recovers its injected offsets |
+| | `test_quickstart_example.py` | the [quickstart](../getting-started/quickstart.md) example runs (simulate, quickstart, inspect, damping), its products and the mosaic's extensions are made, and it recovers its injected offsets and scalars |
 | | `test_npass_toy.py` | the N-pass solve on a toy field: its products equal the recorded digests |
 | | `test_any_telescope.py` | seven instruments and models written with the Python API, adapted with high-level functions only (see [Tutorials](../getting-started/tutorials.md#one-instrument-one-example)) |
 | | `test_e2e_offset_recovery.py` | the LSQR solver recovers injected offsets on synthetic data |
@@ -65,10 +63,11 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | | `test_staging.py` | frames are staged atomically, only into or out of a directory the pipeline made; a tiled run takes every frame of its directory, in exposure order |
 | Code layout | `test_import_direction.py` | layering: `selfcal.config` imports no other layer, the numerical layers never import the instrument layer, the instrument layer never imports the pipeline or run layers, and the run engine never imports the scripts |
 
-Three more tests check that the instrument's geometry is built once for `field.plan` followed by
-`field.calibrate`, that a setting declared as added later stays out of the encoding while at its
-default, and that a model whose offsets are grouped by a frame variable of the model's own can be
-mosaicked. <!-- check: their files -->
+`test_python_api.py` also checks the engine's rules: the instrument's geometry is built once for
+`field.plan` followed by `field.calibrate`, and the kept geometry is handed out as a copy; every
+pass of a run damps the sky as the model says; a setting declared as added later keeps the
+fingerprints of existing products; and a model whose offsets are grouped by a frame variable of
+the model's own can be mosaicked.
 
 `tests/synthetic_exposures.py` is the shared helper that writes synthetic FITS exposures for the
 end-to-end tests.

@@ -54,7 +54,6 @@ again byte for byte, a comparison, a detached run, and the command line (`selfca
 [`tests/test_python_api.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_python_api.py)
 runs a camera on synthetic FITS exposures through `field.calibrate` (with its mosaic),
 `field.mosaic` on an existing calibration and a tiled solve (two tiles and the Fisher stitch).
-<!-- check: test_python_api.py once its TOML comparison is gone; test_runner_e2e_toy.py removed or rewritten -->
 
 ## Production runs
 

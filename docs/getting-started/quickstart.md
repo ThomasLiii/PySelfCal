@@ -308,5 +308,5 @@ slope across the field.
   a model of your own, or an instrument class.
 - [Tutorials and examples](tutorials.md): notebooks on SPHEREx and Euclid data, and end-to-end
   examples for other kinds of instrument.
-- `tests/test_quickstart_example.py` runs these steps in temporary directories and checks that the
-  solve recovers the injected offsets. <!-- check: the test after its TOML half is removed -->
+- `tests/test_quickstart_example.py` runs these steps in temporary directories and checks the
+  products, the mosaic's extensions, and that the solve recovers the injected offsets and scalars.

@@ -569,13 +569,13 @@ only the slope is.
 ## Regression testing
 
 The byte-equality gates live in `selfcal_scripts/gates/` (see its README): `run_gates.sh <tag>` runs
-the gates of `python_gates.py`, written with the Python API, against the float64-norm goldens
-(`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit), the
+pytest, then the gates of `python_gates.py`, written with the Python API, against the float64-norm
+goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit), the
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
-refit; no float64 golden yet) and the Euclid EDFN recipe, each compared dataset by dataset with
-`gates/h5_diff.py` / `gates/fits_diff.py` (or `selfcal_scripts/drivers/diff_cal_h5.py`);
-`run_m13_gate.sh` runs the npass n=1 gate on the NEP M13 tile. `config_equivalence.py views` /
-`compare-views` checks what the engine does with every run script without a solve.
-<!-- check: run_gates.sh / run_m13_gate.sh after S2 --> The older harnesses
+refit; no float64 golden yet), the Euclid EDFN recipe and the rerun of the continuum gate's record,
+each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
+`selfcal_scripts/drivers/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
+NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
+the engine does with every run script without a solve. The older harnesses
 (`run_cal_baseline_test.py`, `regress_cal*.py`, the `benchmark_d3_ch17_*` timing scripts) are
 archived under the gitignored `archive/scripts/benchmarks/`.

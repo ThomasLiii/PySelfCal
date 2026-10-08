@@ -7,7 +7,7 @@ form was removed. `selfcal convert` turns an old config into a run script, and `
 records the products a TOML run made, so that a run script reuses them.
 
 `selfcal_scripts/run.sh` still runs a run script; given a `.toml` file, it stops and names the
-`selfcal convert` command instead. <!-- check -->
+`selfcal convert` command instead.
 
 ## Convert a config
 
@@ -15,7 +15,6 @@ records the products a TOML run made, so that a run script reuses them.
 selfcal convert run.toml                         # writes run.py next to the config
 selfcal convert run.toml -o my_run.py --force    # another path; --force replaces an existing script
 ```
-<!-- check: the convert options after S2 (--no-check gone?) -->
 
 The script holds the field, the recipe and the action's keyword arguments at its top level
 (`FIELD`, `RECIPE`, `RUN`; a reprojection has `REPROJECT`, an LVF precompute `PRECOMPUTE`) and
@@ -25,9 +24,9 @@ library calls' own defaults (an `[lsqr]` table without `solver` meant LSMR with 
 300 iterations), which are not the Python API's (`sc.Fit()`: LSQR, no damping, 50 iterations), so
 a converted script depends on no default.
 
-The converter prints a note for every key it dropped or rewrote. Read the notes and the script
-before running it; `selfcal plan run.py` then prints what the run would make, reuse or refuse,
-without computing anything.
+The converter prints a note for every key it dropped or rewrote, and says that the script was
+not run. Read the notes and the script before running it; `selfcal plan run.py` then prints what
+the run would make, reuse or refuse, without computing anything.
 
 ### The script is not checked
 
@@ -71,6 +70,12 @@ Other notes:
   same frames for a one-detector instrument.
 - `[zodi] pred_dir`: the script calls `spherex.zodi_anchor(result, predictions)` after the
   calibration.
+- `[calibration] damp_offset = d`: written as each offset term's `damping=d`.
+- `[reproject] inner_parallel`, `header_filter_workers` at other values than 1 and 16: dropped
+  (they changed no product and are fixed now).
+
+`[calibration] outlier_aux_key` and `outlier_subchannel_edges`, the older spellings of the
+grouped clip, become the clip's `variable=` and `edges=` (`sc.Clip(sigma, variable=, edges=)`).
 
 ## Where the old configs are
 
@@ -171,21 +176,20 @@ A `[model]` table maps term by term:
 ## Options removed with TOML
 
 Some options went with the TOML form, because no run used them or because the Python API derives
-their value itself. A config that sets one cannot be converted as it is: <!-- check: which ones convert.py refuses and which it notes after S2 -->
+their value itself. A config that sets one has no Python form: the converter stops and names the
+key, as it does for any other key it cannot translate. The ones that changed no product are
+dropped with a note instead (above).
 
 | TOML | instead |
 | --- | --- |
 | `postprocess = "mask_bright_pixels"` | a frame hook of your own, `sc.Fit(frame_hook=...)` |
-| a hook named in `[hooks]` | the hook object itself (above) |
-| `[lsqr] resume`, `keep_state` | none: a solve starts from its warm start |
-| `[calibration] compact_zero_columns` | none: the zero columns are always compacted |
-| `[calibration] damp_offset` | each offset term's own `sc.Offsets(damping=)` |
-| `[calibration] outlier_aux_key`, `outlier_subchannel_edges` | `sc.Clip(sigma, variable=, edges=)` |
-| `[calibration] spectral_fit`, `line_center`, `line_sigma` | a sky term with a coefficient, `sc.Sky(name, times=sc.gaussian(center, sigma=...))` |
+| a `[hooks]` entry naming no hook of the instrument | the hook object itself (above) |
+| `[lsqr] resume`, `keep_state` at other than their defaults | none: a solve starts from its warm start |
+| `[calibration] compact_zero_columns = false` | none: the zero columns are always compacted |
+| `[calibration] spectral_fit` (the old single-line shim) | a sky term with a coefficient, `sc.Sky(name, times=sc.gaussian(center, sigma=...))` |
 | a polynomial prior with only one of `lo`, `hi` | both bounds: `sc.Poly(degree, window=range(lo, hi + 1))` |
 | a `suffix` that does not start with `_` | `sc.Recipe(name=)`, joined to the product names with `_` |
-| `[tiling] frame_glob`, `line` | none: a tiled run takes every frame of its directory, and the model decides which sky terms are stitched |
-| `[reproject] use_ext`, `sci_ext_list`, `dq_ext_list` | the instrument's exposure layout: `sc.Camera(sci_ext=, dq_ext=, reference_ext=)`, or a subclass's `layout()` |
-| `[reproject] inner_parallel`, `header_filter_workers` | none: fixed at 1 and 16 |
+| `[tiling] frame_glob` other than every frame; a `[tiling] line` that disagrees with the model | none: a tiled run takes every frame of its directory, and the model decides which sky terms are stitched |
+| `[reproject] use_ext`, `sci_ext_list`, `dq_ext_list` that differ from the instrument's layout | the instrument's exposure layout: `sc.Camera(sci_ext=, dq_ext=, reference_ext=)`, or a subclass's `layout()` |
 | `[instrument] name` of a registered or plugin instrument | the instrument object, an `sc.Instrument` subclass ([Bring your own telescope](../bring_your_own_telescope.md#4-with-code-an-instrument)) |
 | a `mode` registered outside selfcal | a function that returns an `sc.Model` ([Bring your own telescope](../bring_your_own_telescope.md#2-the-model-is-yours)) |

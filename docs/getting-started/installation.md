@@ -55,9 +55,9 @@ pytest -q tests/test_quickstart_example.py  # about a minute
 ```
 
 The second command runs the [quickstart](quickstart.md) in temporary directories: a complete
-reprojection, calibration and mosaic of simulated exposures, checked against the injected offsets.
-<!-- check: what test_quickstart_example.py checks once its TOML half is gone --> The whole suite
-(`pytest`) takes a few minutes and needs no data. [Testing](../developer/testing.md) describes it.
+reprojection, calibration and mosaic of simulated exposures, and checks the products and that the
+injected offsets and scalars are recovered. The whole suite (`pytest`) takes a few minutes and
+needs no data. [Testing](../developer/testing.md) describes it.
 
 ## Threads and processes
 

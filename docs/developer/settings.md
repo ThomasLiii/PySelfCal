@@ -46,13 +46,14 @@ inputs changed is then refused until it is made again.
 ## Adding a setting
 
 A new setting of a fingerprinted class (an option of `sc.Fit`, say) must leave the products made
-before it current. Declare it as added later, with a default that keeps the behaviour of the code
-before it: <!-- check: the helper's name, module and signature -->
+before it current. Declare it as added later with
+[`added`][selfcal.config.base.added] (also importable as `selfcal.config.added`), with a default
+that keeps the behaviour of the code before it:
 
 ```python
 from dataclasses import KW_ONLY, dataclass
 
-from selfcal.config.base import Config, added
+from selfcal.config import Config, added
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class Fit(Config):
     snapshot_every: int | None = added(None, since="2026-10-08")
 ```
 
-`added(default, since=...)` makes a dataclass field whose metadata holds the date it was added. Such
+`added(default, *, since)` makes a dataclass field whose metadata holds the date it was added. Such
 a field is left out of `to_dict()` and of the encoding while it equals its default, so every
 product made before the field existed, and every product made since with the default, keeps its
 fingerprint. Set to another value, the field is encoded and the fingerprint changes, as it should:

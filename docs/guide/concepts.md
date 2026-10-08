@@ -214,7 +214,7 @@ solution along each such direction, a choice called a *gauge*:
   ([`selfcal.line_floor`](../reference/selfcal/line_floor.md)). Sky terms with overlapping
   coefficients are nearly degenerate at every pixel: when the coefficients of two terms, sampled
   over the window's wavelengths, have a normalised inner product above about 0.7 in absolute
-  value, expect cross-talk between their maps. <!-- check: the Gram print of the TOML spectral modes is gone with the modes -->
+  value, expect cross-talk between their maps.
 
 The priors, and the rows each adds to the system:
 

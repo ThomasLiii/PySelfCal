@@ -199,10 +199,9 @@ mosaic) is written under a temporary name and renamed when complete, then gets a
 frames' contents (a frame reprojected again under the same name counts as the same frame) and the
 code (a record names its version; a product made by older code is current if its inputs are). A
 setting added in a later version enters only when it differs from its default, so the products
-made before it stay current ([Settings and fingerprints](../developer/settings.md)).
-<!-- check: the added() rule of selfcal.config.base --> Before an action starts, its plan
-compares each product that already exists with what it would make: a product with the same inputs
-is reused (two recipes that share a first pass share its products); one made by other inputs is
+made before it stay current ([Settings and fingerprints](../developer/settings.md)). Before an
+action starts, its plan compares each product that already exists with what it would make: a
+product with the same inputs is reused (two recipes that share a first pass share its products); one made by other inputs is
 refused, with the differences:
 
 ```text
