@@ -308,6 +308,13 @@ class RunContext:
         """The solver's ``apply_lsqr`` keywords."""
         return dict(self.spec.lsqr)
 
+    def solve_scratch(self):
+        """The directory a solve parks its right-hand side in (LSQR overwrites ``b``; the true
+        residual and the monitors read the parked copy, :class:`~selfcal.core.spill.ParkedVector`):
+        the run's scratch area (``Compute(scratch=...)``), else ``<field>/scratch/``, the engine's
+        fallback for a scratch area."""
+        return (self.spec.scratch or os.path.join(self.spec.field.path, 'scratch')).rstrip('/')
+
     def history_path(self, cal_file):
         """Where the history per iteration of the solve that makes ``cal_file`` goes:
         ``<field>/records/<cal stem>_history.npz``, next to the action records (a tile's cal, a tile's
@@ -500,7 +507,13 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     steps. A warm start (``spec.start``, a plain calibration's) starts the solve from the solution
     of an earlier cal of the same system (:meth:`RunContext.start`); snapshots (``spec.snapshots``,
     a plain calibration's) write the solution every ``k`` iterations as a cal file beside the cal
-    (:meth:`RunContext.snapshot_writer`; the action's record lists them under the solve).
+    (:meth:`RunContext.snapshot_writer`; the action's record lists them under the solve). A monitor
+    (``spec.monitor``) checks the solve every ``m`` iterations and the fit's stop rules
+    (``Fit(stop=...)``, in the solver's options) may end it early (:mod:`selfcal.core.monitor`):
+    the checks go to the history file, the stop record to the three places below.
+
+    LSQR overwrites its right-hand side; the copy the true residual (and the monitors) need is
+    parked on disk in the run's scratch area (:meth:`RunContext.solve_scratch`) for the solve.
 
     The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`), with the identity
     of the system solved and the solve's start, goes to three places: the cal's ``solve`` group,
@@ -564,8 +577,10 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
     _x0_owned = [ctx.x0(cc, start=start)]
     checkpoint('pre-apply_lsqr')
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **({} if snapshots is None else
-                                                                 {'snapshots': snapshots}))
+    watch = {} if spec.monitor is None else {'monitor': spec.monitor}
+    if snapshots is not None:
+        watch['snapshots'] = snapshots
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch())
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record
@@ -581,7 +596,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.reproj_list = staged_list
     del cc
     gc.collect()
-    entry = record.attrs()
+    entry = record.entry()
     if snapshots is not None:
         entry['snapshots'] = snapshots.summary()
         print(f"{len(snapshots.written)} snapshots kept in {snapshots.directory}"

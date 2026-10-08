@@ -1,11 +1,12 @@
 """The record of one iterative solve: how it stopped, its final state, and its state at every iteration.
 
 :func:`~selfcal.core.solve.apply_lsqr` fills a :class:`SolveRecord` for every solve, LSQR or
-LSMR: the method, the iterations run, ``istop`` and its meaning, the solver's final estimates
-(``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``, ``xnorm``), the tolerances and
-``conlim`` it ran with, its wall time, and the true residual ``|b - A x|``, computed once at the end
-with one product (the solver's ``r1norm`` is a recurrence estimate; a drift between the two is how
-the float32-norm failure of 2026-10 showed up). Its :class:`SolveHistory` holds the solver's
+LSMR: the method, the iterations run, ``istop`` and its meaning (``stop_reason``), the solver's
+final estimates (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``, ``xnorm``), the
+tolerances and ``conlim`` it ran with, its wall time, and the true residual ``|b - A x|``, computed
+once at the end with one product (the solver's ``r1norm`` is a recurrence estimate, so a drift of
+the solver's recurrence estimates, from accumulated rounding for instance, shows as a difference
+between the two). Its :class:`SolveHistory` holds the solver's
 estimates at each iteration, collected from the scalars the solver computes anyway (no extra
 products, a few floats per iteration).
 
@@ -17,6 +18,12 @@ engine also enters the whole record in the action's record (``solves``) and save
 ``<field>/records/<cal stem>_history.npz`` (:meth:`SolveRecord.save_history`), and records in it
 the identity of the system solved and, for a solve continued from another's cal, its source
 (:meth:`SolveRecord.set_system`, :meth:`SolveRecord.continues`; :mod:`selfcal.core.warm_start`).
+
+A solve with monitors or stop rules (:mod:`selfcal.core.monitor`) keeps its
+:class:`~selfcal.core.monitor.Watch` on the record: the history file gets the checks' arrays and
+the rules' values per iteration, and a solve with stop rules records how they ended it
+(``stop_rule``, ``stop_iteration``, ``stop_values``, ``stop_policy``) and whether the solver's own
+tests could (``solver_tests``), in the cal and the action's record. Monitors alone add nothing to the cal: a monitored solve writes the same cal file.
 """
 from __future__ import annotations
 
@@ -26,8 +33,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-__all__ = ['STOP_REASONS', 'HISTORY_COLUMNS', 'VOLATILE', 'OPTIONAL', 'SolveHistory', 'SolveRecord', 'read',
-           'history_path']
+__all__ = ['STOP_REASONS', 'HISTORY_COLUMNS', 'VOLATILE', 'OPTIONAL', 'JSON_VALUES', 'SolveHistory', 'SolveRecord',
+           'read', 'history_path']
 
 #: The version of the record's layout (the ``version`` attribute of a cal's ``solve`` group).
 VERSION = 1
@@ -36,8 +43,13 @@ VERSION = 1
 #: file, which is byte-reproducible; the action's record holds them).
 VOLATILE = ('wall_s',)
 
-#: The values of a record present only when set (a saved history, the system solved, a start).
-OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_identity')
+#: The values of a record present only when set (a saved history, the system solved, a start, the
+#: stop rules).
+OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_identity', 'stop_rule',
+            'stop_iteration', 'stop_values', 'stop_policy', 'solver_tests')
+
+#: The values held as JSON text in the cal's attributes, decoded in the action's record.
+JSON_VALUES = ('stop_values', 'stop_policy')
 
 #: What each ``istop`` of LSQR and LSMR means (the two solvers share the codes).
 STOP_REASONS = {
@@ -49,6 +61,7 @@ STOP_REASONS = {
     5: 'the least-squares solution is good enough for this machine',
     6: 'cond(A) seems to be too large for this machine',
     7: 'the iteration limit was reached',
+    8: 'a stop rule ended the solve (Fit(stop=...); stop_rule says which)',
 }
 
 #: The columns of a :class:`SolveHistory`, in order.
@@ -89,6 +102,14 @@ class SolveHistory:
         """The last row as a dict, or None for an empty history."""
         return dict(zip(HISTORY_COLUMNS, self._rows[-1])) if self._rows else None
 
+    def value(self, itn, name) -> float:
+        """The column ``name`` of the row of iteration ``itn`` (row ``itn``: the solver adds one row per
+        iteration from 0)."""
+        row = self._rows[int(itn)]
+        if row[0] != int(itn):
+            raise ValueError(f"the history's row {itn} is iteration {row[0]}")
+        return row[HISTORY_COLUMNS.index(name)]
+
 
 @dataclass
 class SolveRecord:
@@ -96,9 +117,10 @@ class SolveRecord:
 
     ``iterations`` is the number this solve ran; ``iterations_total`` the cumulative count of the
     solution it leaves (the same until a solve continues another's). ``istop`` is the solver's stop
-    code and ``stop`` its meaning (:data:`STOP_REASONS`). The norms are the solver's final
+    code and ``stop_reason`` its meaning (:data:`STOP_REASONS`). The norms are the solver's final
     estimates, in its own (column-scaled) unknowns; ``true_residual`` is ``|b - A x|`` and ``bnorm``
-    is ``|b|``, both accumulated in float64 from one product at the end. LSMR reports one residual
+    is ``|b|``, both accumulated in float64 from one product at the end (both NaN when LSQR's copy
+    of ``b``, which it overwrites, could not be parked on disk). LSMR reports one residual
     norm, its ``normr``, as both ``r1norm`` and ``r2norm``. ``rows`` and ``columns`` are the system's
     shape as the solver saw it (the active columns), ``wall_s`` the solver's wall time (the
     final product excluded), ``history`` the :class:`SolveHistory` (not an attribute; saved by
@@ -110,13 +132,24 @@ class SolveRecord:
     (:meth:`set_system`). A continuation (:meth:`continues`) records its source, ``start_from`` (its
     path) and ``start_identity`` (its product fingerprint, ``fingerprint:<sha256>``, or the hash of
     its bytes, ``sha256:<sha256>``), and ``iterations_total`` becomes the source's total plus this
-    solve's iterations (-1 when the source has no record of its iterations)."""
+    solve's iterations (-1 when the source has no record of its iterations).
+
+    A solve with stop rules (``Fit(stop=...)``, :mod:`selfcal.core.monitor`): ``stop_rule``, the
+    rules that ended it (``"gradient"``, ``"residual, large_scale"``; ``"none"`` when it ended
+    otherwise), ``stop_iteration``, the iteration (of this solve) the rules were judged at last
+    (where they ended it, or its last), ``stop_values``, the JSON of every rule's state there (its
+    measured value, its threshold, where it was measured), and ``stop_policy``, the JSON of the
+    rules; ``solver_tests``, which of the solver's own tolerance tests could stop the solve (only
+    those the Stop keeps as its rule ``solver_tests``; ``"off: atol, btol and conlim unused ..."``
+    without them, so the tolerances above were not used). ``watch``: the solve's
+    :class:`~selfcal.core.monitor.Watch` (not an attribute; its arrays go to the history file), None
+    for a solve without monitors or rules."""
     method: str
     iterations: int
     iterations_total: int
     iteration_limit: int
     istop: int
-    stop: str
+    stop_reason: str
     r1norm: float
     r2norm: float
     arnorm: float
@@ -138,6 +171,12 @@ class SolveRecord:
     system_identity: str | None = None
     start_from: str | None = None
     start_identity: str | None = None
+    stop_rule: str | None = None
+    stop_iteration: int | None = None
+    stop_values: str | None = None
+    stop_policy: str | None = None
+    solver_tests: str | None = None
+    watch: object = field(default=None, repr=False)
 
     @classmethod
     def from_result(cls, method, result, *, history, true_residual, bnorm, atol, btol, conlim, damp,
@@ -150,7 +189,8 @@ class SolveRecord:
         else:
             _, istop, itn, r1, r2, an, ac, ar, xn = result[:9]
         return cls(method=str(method), iterations=int(itn), iterations_total=int(itn),
-                   iteration_limit=int(iteration_limit), istop=int(istop), stop=STOP_REASONS.get(int(istop), '?'),
+                   iteration_limit=int(iteration_limit), istop=int(istop),
+                   stop_reason=STOP_REASONS.get(int(istop), '?'),
                    r1norm=float(r1), r2norm=float(r2), arnorm=float(ar), anorm=float(an), acond=float(ac),
                    xnorm=float(xn), true_residual=float(true_residual), bnorm=float(bnorm), atol=float(atol),
                    btol=float(btol), conlim=float(conlim), damp=float(damp), rows=int(shape[0]),
@@ -162,12 +202,26 @@ class SolveRecord:
         only when set."""
         out = {'version': VERSION}
         for name in self.__dataclass_fields__:
-            if name == 'history':
+            if name in ('history', 'watch'):
                 continue
             value = getattr(self, name)
             if name in OPTIONAL and value is None:
                 continue
             out[name] = value
+        return out
+
+    def entry(self) -> dict:
+        """The record as the action's record holds it: :meth:`attrs` with the JSON values decoded
+        (:data:`JSON_VALUES`) and, for a monitored solve, ``monitor`` (its settings and last check,
+        :meth:`~selfcal.core.monitor.Watch.summary`)."""
+        import json
+        out = self.attrs()
+        for k in JSON_VALUES:
+            if k in out:
+                out[k] = json.loads(out[k])
+        summary = self.watch.summary() if self.watch is not None else None
+        if summary is not None:
+            out['monitor'] = summary
         return out
 
     def set_system(self, system):
@@ -192,12 +246,16 @@ class SolveRecord:
 
     def save_history(self, path) -> str:
         """Save the history as an NPZ file at ``path`` (written whole or not at all): one array per
-        column of :data:`HISTORY_COLUMNS`, plus ``method``. Sets :attr:`history_file`; returns the
-        path."""
+        column of :data:`HISTORY_COLUMNS`, plus ``method``, plus, for a solve with monitors or stop
+        rules, the arrays of its :class:`~selfcal.core.monitor.Watch` (the checks numbered from the
+        start's total too, ``check_iteration``). Sets :attr:`history_file`; returns the path."""
         from ..io.atomic import atomic_path
         path = os.path.abspath(os.fspath(path))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         arrays = (self.history or SolveHistory()).arrays()
+        if self.watch is not None:
+            before = (int(self.iterations_total) - int(self.iterations)) if int(self.iterations_total) >= 0 else None
+            arrays.update(self.watch.arrays(before=before))
         with atomic_path(path) as tmp:
             with open(tmp, 'wb') as f:
                 np.savez(f, method=np.array(self.method), **arrays)

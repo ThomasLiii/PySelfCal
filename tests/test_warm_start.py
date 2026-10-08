@@ -321,3 +321,67 @@ def test_one_cal_starts_one_job(toy):
         start_paths(source.cal_paths[0], (job, job.__class__('Other')))
     with pytest.raises(ConfigError, match=r"no start for the job\(s\) \['Other'\]"):
         start_paths(source, (job.__class__('Other'),))
+
+
+# =================================================================== a continued cal, mosaicked
+def test_a_continued_cal_can_be_mosaicked(toy):
+    """``field.mosaic(recipe)`` reuses a cal made with ``start=`` (current: its start is the one the cal
+    records), and its mosaic equals the one ``calibrate`` makes with a coadd from the same start."""
+    field, _ = toy
+    model = MODELS['times']
+    source = field.calibrate(_recipe(model, 6, name='mos_src'))
+    recipe = _recipe(model, 4, name='mos_more')
+    more = field.calibrate(recipe, start=source)
+    coadd = sc.Coadd(clip=None, std=False)
+    plan = field.plan(recipe.replace(coadd=coadd), action='mosaic')
+    assert {p.kind: p.state for p in plan.products} == {'cal': 'current', 'mosaic': 'missing'}
+    (job,) = more.jobs
+    assert plan.book.cal(job, field.frames, path=more.cal_paths[0]) == \
+        products.read_sidecar(more.cal_paths[0])['inputs']
+    saved = open(more.cal_paths[0], 'rb').read()
+    mosaic = field.mosaic(recipe.replace(coadd=coadd)).mosaic_paths[0]
+    assert open(more.cal_paths[0], 'rb').read() == saved                         # the cal is not solved again
+    both = field.calibrate(recipe.replace(coadd=coadd, name='mos_both'), start=source).mosaic_paths[0]
+    from astropy.io import fits
+    with fits.open(mosaic) as a, fits.open(both) as b:
+        for x, y in zip(a, b):
+            assert x.name == y.name and (x.data is None or x.data.tobytes() == y.data.tobytes()), x.name
+    # a calibration without the start is another product (refused, not silently reused)
+    with pytest.raises(ConfigError, match=r'start: .* -> <absent>'):
+        field.calibrate(recipe)
+    # the start a cal records, from its sidecar or (without one) its solve group
+    ident = products.start_identity(source.cal_paths[0])
+    assert products.recorded_start(more.cal_paths[0]) == ident
+    bare = os.path.join(os.path.dirname(more.cal_paths[0]), 'bare', os.path.basename(more.cal_paths[0]))
+    os.makedirs(os.path.dirname(bare))
+    shutil.copy(more.cal_paths[0], bare)
+    assert products.recorded_start(bare) == ident and products.recorded_start(source.cal_paths[0]) is None
+
+
+# =================================================================== identities compared as JSON
+def test_identities_compare_in_their_json_form(toy, monkeypatch):
+    """A job whose value holds a nested tuple and numpy scalars is recorded as JSON (lists; what
+    ``default=str`` makes of the scalars); the plan's check and the solve's check compare the recorded
+    identity with the computed one in that form, so the start is accepted (and another job refused)."""
+    from selfcal.core.warm_start import _normalised, contents_problems
+    field, _ = toy
+    real = products.job_key
+
+    def odd_key(job):
+        out = real(job)
+        out['value'] = ((1, np.int64(2)), (np.float32(0.5), 'x'))
+        return out
+    monkeypatch.setattr(products, 'job_key', odd_key)
+    model = MODELS['times']
+    source = field.calibrate(_recipe(model, 5, name='odd_src')).cal_paths[0]
+    (job,) = field.instrument.default_jobs()
+    key = odd_key(job)
+    recorded = json.loads(_solve(source)['system_identity'])['job']
+    assert recorded['value'] == [[1, '2'], ['0.5', 'x']] and recorded == _normalised(key)
+    assert contents_problems(source, job=key) == []
+    more = field.calibrate(_recipe(model, 3, name='odd_more'), start=source)      # the plan's and the solve's checks
+    assert _solve(more.cal_paths[0])['iterations_total'] == 8
+    other = dict(key, value=((1, np.int64(3)), (np.float32(0.5), 'x')))
+    (problem,) = contents_problems(source, job=other)
+    assert problem.startswith('the job: ') and "[[1, '2'], ['0.5', 'x']]} (the source)" in problem
+    assert "[[1, '3'], ['0.5', 'x']]} (this solve)" in problem

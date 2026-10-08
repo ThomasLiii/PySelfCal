@@ -75,6 +75,13 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), default=str)
 
 
+def _normalised(value):
+    """``value`` as it reads back from its canonical JSON (tuples become lists, numpy scalars what
+    ``default=str`` makes of them): the form an identity recorded in a cal has, so a recorded and a
+    computed identity compare equal when their JSON is."""
+    return json.loads(_canonical(value))
+
+
 def _plain(value):
     """A polynomial-basis descriptor (or any dict with arrays) in JSON form, arrays by digest."""
     if isinstance(value, dict):
@@ -266,7 +273,7 @@ class WarmStart:
             elif scalar and frames and f['frame_scalar'].shape != (system.n_frames,):
                 out.append(f"the per-frame scalar: {f['frame_scalar'].shape} values, {system.n_frames} frames")
         if self.recorded is not None:
-            out += _diff(self.recorded, system.identity())
+            out += _diff(_normalised(self.recorded), _normalised(system.identity()))
         return out
 
     def check(self, system: System):
@@ -388,9 +395,9 @@ def contents_problems(path, *, frames=None, sky_names=None, n_maps=None, ref_sha
                     out.append(f"offset map {m}: another chunk map")
         text = (cal.solve or {}).get('system_identity')
         if job is not None and text:
-            recorded = json.loads(text).get('job')
-            if recorded != job:
-                out.append(f"the job: {recorded} (the source) vs {job} (this solve)")
+            recorded = _normalised(json.loads(text).get('job'))
+            if recorded != _normalised(job):
+                out.append(f"the job: {recorded} (the source) vs {_normalised(job)} (this solve)")
     return out
 
 

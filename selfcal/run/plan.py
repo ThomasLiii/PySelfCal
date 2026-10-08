@@ -13,6 +13,7 @@ import ast
 import contextlib
 import glob
 import io
+import logging
 import multiprocessing
 import os
 import pickle
@@ -24,6 +25,8 @@ from .lower import as_recipe, lower
 from .products import Book, check, expected_products, refusal, remedy
 
 __all__ = ['Plan', 'make_plan']
+
+logger = logging.getLogger(__name__)
 
 #: The states of an existing product an action refuses (see :func:`selfcal.run.products.check`).
 REFUSED = ('different', 'unrecorded', 'changed')
@@ -47,6 +50,7 @@ class Plan:
         self.frame_list = []         # the frame files the action uses
         self.start = None            # {job name: the cal its solve starts from} (calibrate(start=...))
         self.snapshots = None        # selfcal.run.schedule.Snapshots (calibrate(snapshots=...))
+        self.monitor = None          # selfcal.run.schedule.Monitor (calibrate(monitor=...))
 
     @property
     def jobs(self):
@@ -92,6 +96,10 @@ class Plan:
                          + f", in {', '.join(os.path.join(d, 'snapshots') for d in dirs)}"
                          + (f" (none: the solve runs {its} iterations at most)" if its is not None and sn.every >= its
                             else ''))
+        if r is not None and r.fit.stop is not None:
+            lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
+        if self.monitor is not None:
+            lines.append(f"  monitor     {describe_monitor(self.monitor, r.fit.stop if r is not None else None)}")
         if self.tiles is not None:
             lines.append(f"  tiles       {self.tiles!r}")
         if self.passes is not None:
@@ -102,6 +110,44 @@ class Plan:
         return '\n'.join(lines)
 
     __repr__ = __str__
+
+
+def describe_stop(stop, fit=None) -> str:
+    """A :class:`~selfcal.run.recipe.Stop` in words (the plan's ``stop`` line), saying whether the
+    solver's own tolerance tests can stop the solve (with a Stop, only those it keeps as its rule
+    ``solver_tests``; the tolerances of ``fit`` are otherwise unused)."""
+    parts = []
+    if stop.residual is not None:
+        r = stop.residual
+        parts.append(f"|r| falls less than {r.below:g} (relative) over {r.window} iterations"
+                     + (f" (the true residual, every {r.every})" if r.every else ''))
+    if stop.gradient is not None:
+        g = stop.gradient
+        parts.append(f"the largest |A^T r| over {g.window} iterations at most {g.below:g} of its start"
+                     + (f" (the true gradient, every {g.every})" if g.every else ''))
+    if stop.large_scale is not None:
+        ls = stop.large_scale
+        parts.append(f"the sky terms' smooth fit (degree {ls.degree}) changes less than {ls.below:g} at two checks, "
+                     f"every {ls.every}")
+    if stop.solver_tests:
+        parts.append(f"the solver's tests {', '.join(stop.tests)}")
+    joined = (' and ' if stop.combine == 'all' else ' or ').join(parts)
+    out = joined + (f"; not before iteration {stop.min_iterations}" if stop.min_iterations else '')
+    if not stop.solver_tests:
+        unused = ('tolerance=0' if fit is not None and fit.exact_iterations else
+                  'atol, btol' + (f' (tolerance={fit.tolerance})' if fit is not None else '') + ' and conlim')
+        out += f"; the solver's tolerance tests off ({unused} unused: a Stop without solver_tests)"
+    return out
+
+
+def describe_monitor(monitor, stop=None) -> str:
+    """A :class:`~selfcal.run.schedule.Monitor` in words (the plan's ``monitor`` line)."""
+    from selfcal.core.monitor import resolve_large_scale
+    what = [w for w, on in (('|b - A x|', monitor.residual), ('|A^T r|', monitor.gradient)) if on]
+    degree, step = resolve_large_scale(stop, monitor)
+    if degree is not None and monitor.large_scale is not False:
+        what.append(f"the sky terms' smooth fit (degree {degree}, every {step}th pixel)")
+    return f"every {monitor.every} iterations: {', '.join(what)}"
 
 
 # --------------------------------------------------------------------------- worker checks
@@ -218,7 +264,7 @@ def _frames_in(path):
 
 def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, cal=None,
               compute=None, overwrite=False, check_workers=True, check_products=True, allow_no_frames=False,
-              start=None, snapshots=None) -> Plan:
+              start=None, snapshots=None, monitor=None) -> Plan:
     """The :class:`Plan` of ``action`` (``"calibrate"`` or ``"mosaic"``) on ``field``; raises
     :class:`~selfcal.config.base.ConfigError` for anything that would fail later, including an
     existing product that was not made by the same inputs (see :mod:`selfcal.run.products`;
@@ -227,7 +273,8 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
     the frames and the model now (the whole system when the solve is set up:
     :mod:`selfcal.core.warm_start`). ``snapshots``: the solution every ``k`` iterations as a cal
     file (:class:`~selfcal.run.schedule.Snapshots`, or a number of iterations; plain calibrations
-    only)."""
+    only). ``monitor``: checks of every solve every ``m`` iterations
+    (:class:`~selfcal.run.schedule.Monitor`, or a number of iterations; a calibration)."""
     from .compute import pin_threads
     from .engine import RunContext
     check_main_guard()
@@ -248,12 +295,29 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
     snapshots = as_snapshots(snapshots)
     if snapshots is not None and action != 'calibrate':
         raise ConfigError(f"{action}(snapshots=...): only a calibration's solve writes snapshots")
+    from .schedule import as_monitor
+    monitor = as_monitor(monitor)
+    if monitor is not None:
+        if action != 'calibrate':
+            raise ConfigError(f"{action}(monitor=...): only a calibration's solve is monitored")
+        from selfcal.core.monitor import resolve_large_scale
+        try:
+            resolve_large_scale(as_recipe(recipe).fit.stop, monitor)
+        except ValueError as e:
+            raise ConfigError(str(e)) from None
     lowered = lower(field, recipe, task='mosaic' if action == 'mosaic' else 'cal', jobs=jobs, tiles=tiles,
-                    passes=passes, frames=frames, cal=cal, compute=compute, start=start, snapshots=snapshots)
+                    passes=passes, frames=frames, cal=cal, compute=compute, start=start, snapshots=snapshots,
+                    monitor=monitor)
     plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
+    stop = as_recipe(recipe).fit.stop if action == 'calibrate' else None
+    if stop is not None:
+        for why in stop.unreachable(as_recipe(recipe).fit.iterations):
+            plan.notes.append(f"stop rules: {why}")
+            logger.warning(f"stop rules: {why}")
     if start is not None:
         plan.start = {k: v for spec in lowered for k, v in spec.start.items()}
     plan.snapshots = snapshots
+    plan.monitor = monitor
 
     # frames
     first = lowered[0]
@@ -299,7 +363,7 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         _check_smoothing(ctx)
     used = found if first.frames.first_n is None else found[:n]
     plan.frame_list = list(used)
-    plan.book = Book(field, recipe, passes=passes, tiles=tiles, start=plan.start)
+    plan.book = Book(field, recipe, passes=passes, tiles=tiles, start=plan.start, recorded_starts=action == 'mosaic')
     plan.products = expected_products(plan, plan.book, used)
     if plan.start is not None:
         _check_starts(plan)

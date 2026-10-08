@@ -12,10 +12,15 @@ estimates, its history per iteration and the true residual ``|b - A x|``.
 A ``snapshot`` callback sees the iterate every ``snapshot_every`` iterations, in
 the solution's physical units and full layout
 (:class:`~selfcal.core.snapshots.Iterate`; :mod:`selfcal.core.snapshots`).
+Monitors (``monitor``: the true residual and gradient, the large-scale content of
+the sky terms, at a cadence) and opt-in stop rules (``stop``) watch the solve
+from the solver's thread (:class:`~selfcal.core.monitor.Watch`;
+:mod:`selfcal.core.monitor`).
 """
 from __future__ import annotations
 
 import logging
+import math
 import mmap as _mmap
 import os
 import time
@@ -43,6 +48,7 @@ from threadpoolctl import threadpool_limits
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
+from .monitor import Watch
 from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
 from .spill import ParkedVector
@@ -723,19 +729,22 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
     return op
 
 _SOLVERS = ('lsqr', 'lsmr')
-# The pieces of b the final residual is accumulated over (float64 temporaries of ~400 MB).
-_RESIDUAL_BLOCK = 50_000_000
+# The pieces of b the final residual is accumulated over (float64 temporaries of 64 MB).
+_RESIDUAL_BLOCK = 1 << 23
 
 
 def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
-                callback_every=1):
+                callback_every=1, watch=None):
     """Run LSQR or LSMR on the (scaled) operator ``A``.
 
     ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
     overwrites ``b`` and uses ``x0``'s buffer as the solution), LSMR (scipy's, recorded) reads them
     in place. ``callback(itn, x)``: called every ``callback_every`` iterations while the solve goes
-    on. Returns the solver's tuple."""
+    on; ``watch``: the monitors and stop rules (:class:`~selfcal.core.monitor.Watch`). Returns the
+    solver's tuple."""
     hook = {} if callback is None else {'callback': callback, 'callback_every': int(callback_every)}
+    if watch is not None:
+        hook['watch'] = watch
     if solver == 'lsmr':
         return lsmr(A, b_owned[0], x0=x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
                     maxiter=iter_lim, history=history, **hook)
@@ -753,12 +762,15 @@ def _iteration_limit(solver, iter_lim, shape):
 
 def _true_residual(matvec, x, b):
     """``(|b - A x|, |b|)`` from one product ``A x``, accumulated in float64 over pieces of ``b``
-    (which may be memory-mapped)."""
+    (an array, or a :class:`~selfcal.core.spill.ParkedVector` read a piece at a time); ``(NaN,
+    NaN)`` when ``b`` is None (it could not be kept)."""
+    if b is None:
+        return math.nan, math.nan
     ax = matvec(x)
     rr = bb = 0.0
     for start in range(0, b.shape[0], _RESIDUAL_BLOCK):
         stop = min(b.shape[0], start + _RESIDUAL_BLOCK)
-        piece = np.asarray(b[start:stop], dtype=np.float64)
+        piece = np.array(b[start:stop], dtype=np.float64)     # a copy: b is read, never written
         bb += float(np.dot(piece, piece))
         piece -= ax[start:stop]
         rr += float(np.dot(piece, piece))
@@ -773,9 +785,10 @@ def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter
     rec = SolveRecord.from_result(solver, result, history=history, true_residual=residual[0], bnorm=residual[1],
                                   atol=atol, btol=btol, conlim=conlim, damp=damp, iteration_limit=limit,
                                   shape=shape, wall_s=wall_s)
-    logger.info(f"{solver.upper()} stopped after {rec.iterations} iterations (istop {rec.istop}: {rec.stop}) "
+    logger.info(f"{solver.upper()} stopped after {rec.iterations} iterations (istop {rec.istop}: {rec.stop_reason}) "
                 f"in {wall_s:.1f} s; |b - A x| = {rec.true_residual:.6e} (estimate r1norm {rec.r1norm:.6e}), "
-                f"|b| = {rec.bnorm:.6e}")
+                f"|b| = {rec.bnorm:.6e}" + (" (not computed: the right-hand side could not be kept)"
+                                            if math.isnan(rec.true_residual) else ''))
     return rec
 
 
@@ -788,7 +801,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 num_cols_full: int | None = None,
                 a_owned: bool = False, conlim: float = 1e8,
                 return_record: bool = False, snapshot=None,
-                snapshot_every: int | None = None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                snapshot_every: int | None = None, stop=None, monitor=None,
+                sky_names=None, scratch_dir=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -855,6 +869,30 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         CSR / block system (``setup_lsqr``'s), not the COO path.
     snapshot_every : int or None, optional
         The iterations between two calls of ``snapshot`` (required with it).
+    stop : Stop or None, optional
+        Opt-in rules that may end the solve before ``iter_lim`` (a
+        :class:`~selfcal.run.recipe.Stop`: residual plateau, gradient, large-scale
+        stability, the solver's own tests, combined by ``all`` or ``any``, not
+        before ``min_iterations``); the solve then ends with ``istop = 8`` and the
+        record says which rule fired and what it measured
+        (:mod:`selfcal.core.monitor`). None: the solver's own tests, as always.
+    monitor : Monitor or None, optional
+        Checks every ``monitor.every`` iterations (a
+        :class:`~selfcal.run.schedule.Monitor`): the true residual ``|b - A x|``,
+        optionally the true gradient, and the large-scale fit of each sky term,
+        recorded in the history (``record.watch``). They do not change the solve.
+    sky_names : sequence of str or None, optional
+        The sky terms, in block order (the first ``len(sky_names) * ref_h * ref_w``
+        columns, one ``ref_shape`` grid each), for the large-scale fit (None: one
+        term, ``sky``).
+    scratch_dir : str or None, optional
+        Where an LSQR solve on the CSR / block system parks the copy of ``b``
+        it needs after LSQR has overwritten ``b`` (the true residual at the
+        end, the monitors' checks): always on disk, never in memory
+        (:class:`~selfcal.core.spill.ParkedVector`; the run engine gives the
+        run's scratch directory). None, or a directory it cannot be written
+        to: no copy, and those residuals are recorded as NaN (a warning says
+        why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
 
     Returns
     -------
@@ -866,8 +904,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         estimates, its history per iteration (none on the COO path's LSQR,
         scipy's, which has no hook) and the true residual ``|b - A x|``
         (one product with the solution, accumulated in float64; the
-        right-hand side LSQR overwrites is kept for it as a
-        :class:`~selfcal.core.spill.ParkedVector`).
+        right-hand side LSQR overwrites is parked on disk for it,
+        ``scratch_dir``; NaN when it could not be).
     """
     if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
         raise TypeError(
@@ -878,6 +916,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         raise ValueError("ref_shape must be a list or tuple of length 2")
     if solver not in _SOLVERS:
         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+    if (stop is not None or monitor is not None) and isinstance(A, coo_matrix):
+        raise ValueError("monitors and stop rules need the CSR or block system setup_lsqr builds; the COO path's "
+                         "LSQR (scipy's) has no iteration hook")
     if snapshot is not None:
         if snapshot_every is None or int(snapshot_every) < 1:
             raise ValueError(f"snapshot_every={snapshot_every}: snapshots need a period of at least 1 iteration")
@@ -1061,16 +1102,22 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         # reference so the solver can release the m-length vector for the
         # rest of the solve. LSMR (scipy's, recorded) reads b in place and
         # keeps it. The final residual needs b after the solve: LSQR's copy
-        # is parked (on scratch disk above the spill threshold).
+        # is parked on disk (never in memory) in scratch_dir; without it
+        # (none given, or the write failed) the residuals are NaN.
         _b_owned = [b]
-        _b_kept = ParkedVector(b, label='the right-hand side (for the final residual)') if solver == 'lsqr' else None
         del b
         history = SolveHistory()
         solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+        watch = None
+        if stop is not None or monitor is not None:
+            watch = Watch(stop=stop, monitor=monitor, ref_shape=ref_shape, sky_names=sky_names, history=history,
+                          damp=damp)
+            solve_kw['watch'] = watch
+        _active = (ActiveColumns(active_mask) if active_mask is not None and (snapshot is not None or watch is not None)
+                   else None)
         if snapshot is not None:
             # The iterate as the solution it would be if the solve ended here: the end below converts
             # it as Iterate.read does (x * M, then the active columns into the full layout).
-            _active = ActiveColumns(active_mask) if active_mask is not None else None
             _settings = dict(method=solver, atol=atol, btol=btol, conlim=conlim, damp=damp,
                              iteration_limit=_iteration_limit(solver, iter_lim, A_shape), rows=int(A_shape[0]),
                              columns=int(A_shape[1]))
@@ -1080,16 +1127,32 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                                  settings=_settings))
             solve_kw.update(callback=_on_iteration, callback_every=int(snapshot_every))
 
+        def _rhs():
+            # The right-hand side the solver started from (LSQR's parked copy, None when it could
+            # not be parked; LSMR keeps its own).
+            if _b_kept is not None:
+                return _b_kept if _b_kept.available else None
+            return _b_owned[0]
+
+        def _watch(operator):
+            if watch is not None:
+                watch.bind(operator, _rhs, scale=M, active=_active, num_cols=num_cols)
+
         def _finish(matvec):
             # The solve's wall time, then |b - A x| with one product of the
             # operator the solver ran on (the scaled A, the scaled x).
             wall = time.perf_counter() - t_solve
-            b_ref = _b_kept.array() if _b_kept is not None else _b_owned[0]
+            b_ref = _rhs()
             residual = _true_residual(matvec, result[0], b_ref)
             del b_ref
-            return _record(solver, result, history, residual, atol=atol, btol=btol, damp=damp, conlim=conlim,
-                           iter_lim=iter_lim, shape=A_shape, wall_s=wall)
+            rec = _record(solver, result, history, residual, atol=atol, btol=btol, damp=damp, conlim=conlim,
+                          iter_lim=iter_lim, shape=A_shape, wall_s=wall)
+            if watch is not None:
+                watch.finish(rec)
+            return rec
 
+        _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
+                   if solver == 'lsqr' else None)
         try:
             if is_block or is_split:
                 op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)
@@ -1097,6 +1160,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                       _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned))
                 try:
                     with threadpool_limits(limits=1, user_api='blas'):
+                        _watch(op)
                         t_solve = time.perf_counter()
                         result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
                         record = _finish(op.matvec)
@@ -1108,6 +1172,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 op = _make_parallel_operator(A_csr, n_threads)
                 try:
                     with threadpool_limits(limits=1, user_api='blas'):
+                        _watch(op)
                         t_solve = time.perf_counter()
                         result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
                         record = _finish(op.matvec)
@@ -1116,6 +1181,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                     if getattr(op, '_rmatvec_executor', None) is not None:
                         op._rmatvec_executor.shutdown(wait=False)
             else:
+                _watch(A_csr)
                 t_solve = time.perf_counter()
                 result = _run_solver(A_csr, _b_owned, _x0_owned, solver, **solve_kw)
                 record = _finish(A_csr.dot)

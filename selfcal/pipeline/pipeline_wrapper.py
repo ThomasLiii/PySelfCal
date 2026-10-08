@@ -1105,7 +1105,8 @@ class Calibrator(Reprojector):
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
-                   n_threads: int = 32, conlim: float = 1e8, snapshots=None) -> None:
+                   n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
+                   scratch_dir: str | None = None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1139,7 +1140,22 @@ class Calibrator(Reprojector):
             (:class:`~selfcal.core.snapshots.SnapshotWriter`; :mod:`selfcal.core.snapshots`):
             the cal's parts that do not depend on the solution are written once, before the
             solve (:meth:`write_cal_static`), each snapshot's from the iterate
-            (:meth:`write_cal_solution`). The solve and ``self.x`` are unchanged.
+            (:meth:`write_cal_solution`). The solve and ``self.x`` are unchanged. Snapshots are best
+            effort: one that fails is logged and recorded (``snapshots.failed``) and the solve goes
+            on; a template that cannot be written turns this solve's snapshots off.
+        stop : Stop or None, optional
+            Opt-in rules that may end the solve before ``iter_lim`` (a
+            :class:`~selfcal.run.recipe.Stop`, ``sc.Fit(stop=...)``; :mod:`selfcal.core.monitor`); the
+            record says which rule ended the solve and what it measured.
+        monitor : Monitor or None, optional
+            Checks every ``monitor.every`` iterations (a :class:`~selfcal.run.schedule.Monitor`): the
+            true residual and gradient and the large-scale fit of the sky terms, saved with the
+            history. The solve and ``self.x`` are unchanged.
+        scratch_dir : str or None, optional
+            Where an LSQR solve parks, on disk, the copy of ``b`` it needs for the true residual
+            after LSQR has overwritten ``b`` (:func:`~selfcal.core.solve.apply_lsqr`; the run
+            engine gives the run's scratch directory). None: no copy, and the true residual is
+            recorded as NaN.
 
         Returns
         -------
@@ -1169,12 +1185,19 @@ class Calibrator(Reprojector):
             self.active_mask = None
             del x0
             # Snapshots: the cal's parts that do not depend on the solution are written once, now,
-            # while the pixel state is in memory or parked by the setup (read memory-mapped).
-            snap = {}
+            # while the pixel state is in memory or parked by the setup (read memory-mapped). They
+            # are best effort: a template that cannot be written turns this solve's snapshots off.
+            snap = {'scratch_dir': scratch_dir}
             try:
                 if snapshots is not None:
-                    snapshots.bind(self)
-                    snap = {'snapshot': snapshots, 'snapshot_every': snapshots.every}
+                    try:
+                        snapshots.bind(self)
+                    except Exception as e:
+                        snapshots.template_failed(e)
+                    else:
+                        snap.update(snapshot=snapshots, snapshot_every=snapshots.every)
+                if stop is not None or monitor is not None:
+                    snap.update(stop=stop, monitor=monitor, sky_names=self._cal_sky_names())
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.

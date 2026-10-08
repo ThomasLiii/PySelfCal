@@ -201,6 +201,16 @@ clarity:
   (the parts that do not depend on `x` written once to a template, before the
   solve, by `Calibrator.write_cal_static`; the sky maps a band of chunk rows at
   a time, `Calibrator.write_cal_solution`), with retention.
+- **[`core/monitor.py`](core/monitor.py)** — convergence monitors and opt-in
+  stop rules: `Watch`, which the solvers call after every iteration
+  (`watch(itn, x, istop, tests)`, returning the `istop` to go on with), runs the
+  checks of `field.calibrate(monitor=sc.Monitor(every=m))` (the true `|b - A x|`
+  and `|A^T r|` from one product each against the parked `b`, and `SmoothFit`, a
+  low-order polynomial fit of each sky term on a subsampled grid of its covered
+  pixels, read through `Iterate`) and the rules of `sc.Fit(stop=sc.Stop(...))`
+  (`StopRules`: residual plateau, gradient, large-scale stability, the solver's
+  own tests; `all` / `any`, `min_iterations`); the checks extend the history
+  file, the stop record goes to the cal's `solve` group (`istop = 8`).
 
 - **[`core/subframe.py`](core/subframe.py)** — `_prep_subframe` is the single
   shared routine that loads an HDF5 reprojected file and produces
@@ -807,6 +817,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/solve_record.py`](core/solve_record.py) | `SolveRecord`, `SolveHistory`: the record of a solve (the cal's `solve` group, the action's `solves`, `records/<cal stem>_history.npz`). |
 | [`core/warm_start.py`](core/warm_start.py) | `System`, `WarmStart`: the identity of a solve's system, and a solve continued from an earlier cal (`calibrate(start=...)`). |
 | [`core/snapshots.py`](core/snapshots.py) | `Iterate`, `SnapshotWriter`: the solution every `k` iterations as a cal file (`calibrate(snapshots=...)`). |
+| [`core/monitor.py`](core/monitor.py) | `Watch`, `StopRules`, `SmoothFit`: convergence monitors (`calibrate(monitor=...)`) and opt-in stop rules (`Fit(stop=...)`). |
 | [`core/lsqr_inplace.py`](core/lsqr_inplace.py), [`core/lsmr.py`](core/lsmr.py) | scipy's LSQR (in-place vector updates, float64 norms of long vectors) and LSMR, each with the per-iteration history hook and the iteration callback. |
 | [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31; `ColSplitCSR` row-blocks x column-ranges for the bit-equal parallel transpose product. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |

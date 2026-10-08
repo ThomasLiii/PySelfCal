@@ -101,7 +101,7 @@ def setting_names(cls) -> tuple:
 
 def added(default, *, since):
     """A setting added to a class after products were made with it (``since``: the date, e.g.
-    ``"2026-10-08"``): ``snapshot_every: int | None = added(None, since="2026-10-08")``.
+    ``"2026-10-08"``): ``stop: Stop | None = added(None, since="2026-10")`` (``sc.Fit``).
 
     While the setting equals its ``default`` it is left out of :meth:`Config.to_dict`, and so of the
     encoding every product is fingerprinted by: the products made before it existed, and those made

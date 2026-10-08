@@ -61,7 +61,7 @@ class Fit(Config):
     iterations: int = 50
     _: KW_ONLY
     ...
-    snapshot_every: int | None = added(None, since="2026-10-08")
+    stop: Stop | None = added(None, since="2026-10")      # the opt-in stop rules
 ```
 
 `added(default, *, since)` makes a dataclass field whose metadata holds the date it was added. Such
@@ -72,7 +72,8 @@ that product is made by other inputs. A record written before the field existed 
 field at its default.
 
 Rules for every change to a fingerprinted class (`sc.SPHEREx`, `sc.Euclid`, `sc.Camera`, the model's
-classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Coadd`, `sc.Numerics`, `sc.Tiles`, `sc.Passes`,
+classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Stop` and its rules (`sc.ResidualRule`,
+`sc.GradientRule`, `sc.LargeScaleRule`), `sc.Coadd`, `sc.Numerics`, `sc.Tiles`, `sc.Passes`,
 `sc.Refit`):
 
 - a new field is declared with `added(default, since=...)`;
@@ -82,8 +83,10 @@ classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Coadd`, `sc.Numerics`, `sc.T
   attribute without an annotation, or a property, so that the dataclass does not make it a field;
 - a setting that never changes a byte belongs to `sc.Compute`, or to `sc.Tuning` when it is one of
   the library's `SELFCAL_*` environment variables; one that writes files beside the products
-  without changing them (`sc.Snapshots`) is an argument of the action (`calibrate(snapshots=...)`),
-  recorded in the action's record and never in a fingerprint;
+  without changing them (`sc.Snapshots`), or observes a solve without changing it (`sc.Monitor`),
+  is an argument of the action (`calibrate(snapshots=..., monitor=...)`), recorded in the action's
+  record and never in a fingerprint; one that can change where a solve ends (`sc.Fit(stop=...)`)
+  is a fingerprinted setting, declared with `added`;
 - `pytest tests/test_fingerprints.py` passes with the golden unchanged.
 
 The byte-equality [regression gates](gates.md) check the other half: that the products themselves
