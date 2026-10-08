@@ -1,46 +1,36 @@
-"""The N-pass scheduler end to end (task ``npass``, ``Field.calibrate(passes=...)``) on a toy
-spectral instrument, run from Python and from a TOML config: both forms must write the same
-products, byte for byte.
+"""The N-pass scheduler end to end (``Field.calibrate(passes=...)``) on a toy spectral instrument.
 
 The instrument: a 64 x 64 detector cut into 16 bands (the spectral axis of the chunk map, 4 rows
 each) x 2 columns (the group axis), with a wavelength map rising smoothly up the detector (and
-curving a little across it). It is defined twice from one construction function
-(:func:`toy_geometry`): as an ``sc.Instrument`` subclass for the Python form (everything but its
-geometry left to the contract's defaults) and as a registered ABC plugin, ``toy_spectrograph``,
-for the TOML form (which implements the same defaults explicitly).
+curving a little across it): an ``sc.Instrument`` subclass whose geometry is :func:`toy_geometry`
+(everything else is the contract's defaults).
 
 The data: 20 frames written directly on a 96 x 96 reference grid (no reprojection), each the sky
 ``S_0 + S_1 * gauss(wavelength)`` (a continuum and one line) seen at a random pointing, plus a
 per-frame offset that is a quadratic in the band per column and a per-frame scalar (what the
 model's polynomial-basis offset term and scalar can represent).
 
-Each schedule is solved by the Python API, its products moved aside, then solved again by the
-TOML config of the same run (same field folder, same product names, so the paths the products
-record agree), and every product is compared: every dataset and every attribute, then the file
-bytes. The schedules, n = 3 each:
+Each schedule is solved and its products checked: the products and the monitor of every pass, the
+damping every SKY pass records (each sky term's, as in the INIT pass). The schedules, n = 3 each:
 
-=========  ===========  =======  ===========================================  ==================
-name       order        merge    damping                                      TOML form
-=========  ===========  =======  ===========================================  ==================
-skyfirst   sky_first    combine  default (Python 0.1 / 0.3; TOML from          spectral_polybasis
-                                 [calibration] damp_weight / damp_weight_line)
-offfirst   offset_first combine  each term its own (0.02 / 0.05); grouped      model ([model])
-                                 clips along the band (init, sky and offset)
-stitch     sky_first    stitch   default                                      spectral_polybasis
-=========  ===========  =======  ===========================================  ==================
+=========  ===========  =======  ===================================================================
+name       order        merge    damping
+=========  ===========  =======  ===================================================================
+skyfirst   sky_first    combine  the model's default (0.1 / 0.3)
+offfirst   offset_first combine  each term its own (0.02 / 0.05); grouped clips along the band
+                                 (init, sky and offset)
+stitch     sky_first    stitch   the model's default
+=========  ===========  =======  ===================================================================
 
-The TOML configs give ``weighted_damping = true``, ``damp_weight`` and, for a line without a
-damping of its own, ``damp_weight_line``: in the three cases where they are not so (``damp_weight_line``
-unset with two sky terms, ``weighted_damping = false``, ``damp_weight`` missing) today's SKY pass damps
-otherwise than the INIT pass, and these products would not be the Python ones.
-
-Before and after a refactor of the run engine: ``SELFCAL_NPASS_TOY_DIGESTS=<file> pytest
-tests/test_npass_toy.py`` writes the digest of every product (the INIT cals and the pass products
-of every schedule) to ``<file>`` (JSON). A product records the paths of the run (its frames, the
-sky cal it was refitted against, the pieces of a stitch), which lie in a temporary directory, so
-the file bytes differ from run to run: the digest is over every dataset (name, dtype, shape and
-bytes, storage layout) and every attribute, with the temporary directory replaced by ``<run>``.
-Two runs give identical files.
+Until October 2026 every schedule was also run from a TOML config and its products had to be
+identical; their digests were recorded then (``workspace/api-redesign/evidence/stage4``). Before and
+after a change to the run engine: ``SELFCAL_NPASS_TOY_DIGESTS=<file> pytest tests/test_npass_toy.py``
+writes the digest of every product (the INIT cals and the pass products of every schedule) to
+``<file>`` (JSON), to compare with the recorded ones. A product records the paths of the run (its
+frames, the sky cal it was refitted against, the pieces of a stitch), which lie in a temporary
+directory, so the file bytes differ from run to run: the digest is over every dataset (name, dtype,
+shape and bytes, storage layout) and every attribute, with the temporary directory replaced by
+``<run>``. Two runs give identical files.
 """
 import hashlib
 import json
@@ -64,9 +54,6 @@ from astropy.wcs import WCS  # noqa: E402
 
 import selfcal as sc  # noqa: E402
 from selfcal.geometry import wcs_helper  # noqa: E402
-from selfcal.instruments.base import Instrument as EngineInstrument  # noqa: E402
-from selfcal.instruments.base import Job as EngineJob  # noqa: E402
-from selfcal.instruments.base import register_instrument  # noqa: E402
 from selfcal.io.frames import standard_frame_path, write_frame  # noqa: E402
 
 DET = 64                            # detector side (px)
@@ -81,7 +68,7 @@ DIGESTS_VARIABLE = 'SELFCAL_NPASS_TOY_DIGESTS'
 
 
 # ============================================================================
-# the instrument, twice: one geometry
+# the instrument
 # ============================================================================
 def toy_wavelength():
     """The wavelength (um) of every detector pixel: 1.0 at the bottom row to 1.5 at the top,
@@ -98,8 +85,8 @@ def toy_chunk_ids():
 
 
 def toy_geometry(oversample):
-    """The detector geometry both definitions return: one chunk map whose axes are the band
-    (spectral) and the column (group), the wavelength map and a constant width map."""
+    """The detector geometry: one chunk map whose axes are the band (spectral) and the column
+    (group), the wavelength map and a constant width map."""
     det = toy_chunk_ids()
     axes = sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x'))
     lvf = sc.ChunkMap('lvf', det, det, axes=axes, adjacency_axes=('col',), spectral_axis='band',
@@ -111,41 +98,12 @@ def toy_geometry(oversample):
 
 @dataclass(frozen=True, kw_only=True)
 class ToySpectrograph(sc.Instrument):
-    """The Python form: the geometry; jobs, layout, job geometry and frame variables are the
-    contract's defaults."""
+    """The geometry; jobs, layout, job geometry and frame variables are the contract's defaults."""
     tag: str = TAG
     capabilities = ('wavelength', 'spectral_axis')
 
     def geometry(self, oversample=1):
         return toy_geometry(oversample)
-
-
-@register_instrument('toy_spectrograph')
-class ToySpectrographPlugin(EngineInstrument):
-    """The TOML form (``[instrument] name = "toy_spectrograph"``): the same geometry, and the
-    contract's defaults spelt out (one job ``All``; every chunk pixel valid, weight 1)."""
-    capabilities = frozenset({'wavelength', 'spectral_axis'})
-
-    def jobs(self, inst_cfg):
-        return [EngineJob(name='All')]
-
-    def frame_tag(self, inst_cfg):
-        return TAG
-
-    def exposure_layout(self, inst_cfg):
-        return sc.ExposureLayout(sci_ext=[1], dq_ext=None, detector_ids=[0], ref_use_ext=(1,),
-                                 cache_tag=f'headers_{TAG}')
-
-    def detector_geometry(self, inst_cfg, oversample):
-        return toy_geometry(oversample)
-
-    def job_geometry(self, inst_cfg, geom, job):
-        cm = geom.chunk_map
-        det = (np.asarray(cm.det) >= 0).astype(np.float32)
-        grid = (np.asarray(cm.grid) >= 0).astype(np.float32)
-        n = cm.n_chunks
-        return sc.JobGeometry(det_valid_weight=det, grid_valid_weight=grid, chunk_valid=np.ones(n, dtype=bool),
-                              chunk_valid_strict=np.ones(n, dtype=bool), det_valid_mask=det, grid_valid_mask=grid)
 
 
 # ============================================================================
@@ -189,7 +147,7 @@ def write_field(field_dir, rng):
 
 
 # ============================================================================
-# the schedules, in both forms
+# the schedules
 # ============================================================================
 BAND = sc.ChunkGroups.along('band')
 FIT = sc.Fit(100, tolerance=1e-8, line_fisher_threshold=1.0)
@@ -206,13 +164,10 @@ def _polynomial():
 
 @dataclass(frozen=True)
 class Schedule:
-    """One N-pass run: its name (the recipe's name, the products' suffix), the model and passes of
-    the Python form, and the TOML mode and tables of the same run (completed by :func:`toml_config`)."""
+    """One N-pass run: its name (the recipe's name, the products' suffix), its model and passes."""
     name: str
     model: object
     passes: object
-    mode: str
-    toml: str
 
     @property
     def recipe(self):
@@ -225,156 +180,20 @@ class Schedule:
         return [first if i % 2 == 0 else second for i in range(2, n + 1)]
 
 
-_PRESET = """[params]
-spectral_poly_degree = 2
-spectral_poly_lo = {lo}
-spectral_poly_hi = {hi}
-line_fisher_threshold = 1.0
-
-[[params.lines]]
-name = "line"
-center_um = {center}
-sigma_um = {sigma}
-
-[calibration]
-damp_weight = 0.1
-damp_weight_line = 0.3
-"""
-
-_MODEL = """[params]
-spectral_poly_lo = {lo}
-spectral_poly_hi = {hi}
-line_fisher_threshold = 1.0
-
-[model]
-scalar = true
-mosaic = "none"
-
-[[model.sky]]
-name = "continuum"
-damp_weight = 0.02
-
-[[model.sky]]
-name = "line"
-damp_weight = 0.05
-coefficient = {{ variable = "wavelength", function = "gaussian", center = {center}, sigma = {sigma} }}
-
-[[model.offset]]
-kind = "polybasis"
-degree = 2
-lo = {lo}
-hi = {hi}
-damp = 0.0
-
-[calibration]
-damp_weight = 0.02
-"""
-
 SCHEDULES = (
     Schedule('skyfirst', sc.spectral([_line()], polynomial=_polynomial()),
-             sc.Passes(3, order='sky_first', ends_on_offset=True, offset=sc.Refit(2)),
-             'spectral_polybasis', _PRESET + """
-[passes]
-n = 3
-order = "sky_first"
-sky_merge = "combine"
-[passes.sky]
-outlier_thresh = 5.0
-subch_clip = false
-[passes.offset]
-poly_degree = 2
-outlier_thresh = 2.5
-subch_clip = false
-bright_cut = 0.05
-min_pix = 5000
-ridge = 0.0
-"""),
+             sc.Passes(3, order='sky_first', ends_on_offset=True, offset=sc.Refit(2))),
     Schedule('offfirst', sc.spectral([_line(0.05)], polynomial=_polynomial(), damping=0.02),
              sc.Passes(3, order='offset_first', init_clip=sc.Clip(4.0, per=BAND), sky_clip=sc.Clip(5.0, per=BAND),
-                       offset=sc.Refit(2, clip=sc.Clip(2.5, per=BAND), min_pixels=500)),
-             'model', _MODEL + """
-[passes]
-n = 3
-order = "offset_first"
-sky_merge = "combine"
-[passes.init]
-outlier_thresh = 4.0
-subch_clip = true
-[passes.sky]
-outlier_thresh = 5.0
-subch_clip = true
-[passes.offset]
-poly_degree = 2
-outlier_thresh = 2.5
-subch_clip = true
-bright_cut = 0.05
-min_pix = 500
-ridge = 0.0
-"""),
+                       offset=sc.Refit(2, clip=sc.Clip(2.5, per=BAND), min_pixels=500))),
     Schedule('stitch', sc.spectral([_line()], polynomial=_polynomial()),
              sc.Passes(3, order='sky_first', ends_on_offset=True, sky_merge='stitch',
-                       offset=sc.Refit(2, min_pixels=500)),
-             'spectral_polybasis', _PRESET + """
-[passes]
-n = 3
-order = "sky_first"
-sky_merge = "stitch"
-[passes.sky]
-outlier_thresh = 5.0
-subch_clip = false
-[passes.offset]
-poly_degree = 2
-outlier_thresh = 2.5
-subch_clip = false
-bright_cut = 0.05
-min_pix = 500
-ridge = 0.0
-"""),
+                       offset=sc.Refit(2, min_pixels=500))),
 )
 
 
-def toml_config(schedule, out_dir, scratch):
-    """The TOML config of ``schedule``: the run the Python form lowers to (the same field folder,
-    product names, frames read in place, solver settings and numerics)."""
-    common = f"""task = "npass"
-mode = "{schedule.mode}"
-output_dir = "{out_dir}"
-run_name = "toy"
-resolution_arcsec = {PIX}
-cache_dir = "{scratch}/"
-suffix = "_{schedule.name}"
-oversample = 1
-apply_n_threads = {NUMERICS.threads}
-skip_mosaic = true
-reproj_override = "{out_dir}/toy/reprojected"
-
-[instrument]
-name = "toy_spectrograph"
-
-[lsqr]
-solver = "lsqr"
-iter_lim = {FIT.iterations}
-atol = {FIT.atol_btol[0]}
-btol = {FIT.atol_btol[1]}
-damp = 0.0
-precondition = true
-use_float32 = true
-"""
-    body = schedule.toml.format(lo=WINDOW.start, hi=WINDOW.stop - 1, center=LINE_CENTER, sigma=LINE_SIGMA)
-    calibration = f"""apply_mask = true
-apply_weight = false
-ignore_list = []
-offset_regularization = true
-weighted_damping = true
-batch_size = {NUMERICS.batch}
-max_workers = 2
-outlier_thresh = 5.0
-"""
-    return common + '\n' + body.replace('[calibration]\n', '[calibration]\n' + calibration)
-
-
 # ============================================================================
-# comparing and digesting products
+# digesting products
 # ============================================================================
 def _plain(value, run_root):
     """An HDF5 value as JSON: text with the run's temporary directory replaced by ``<run>`` (its
@@ -429,27 +248,6 @@ def digest(path, run_root):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _differences(a, b, where=''):
-    """``where: a != b`` lines for the leaves of two :func:`describe` results that differ."""
-    if isinstance(a, dict) and isinstance(b, dict):
-        out = []
-        for k in sorted(set(a) | set(b)):
-            out += _differences(a.get(k, '<absent>'), b.get(k, '<absent>'), f'{where}.{k}' if where else k)
-        return out
-    if a == b:
-        return []
-    short = [str(v) if len(str(v)) <= 80 else str(v)[:77] + '...' for v in (a, b)]
-    return [f'{where}: {short[0]} != {short[1]}']
-
-
-def assert_same_product(a, b, run_root):
-    """The products ``a`` and ``b`` hold the same datasets and attributes, and the same bytes."""
-    differ = _differences(describe(a, run_root), describe(b, run_root))
-    assert not differ, f"{os.path.basename(a)} differs:\n  " + '\n  '.join(differ[:12])
-    with open(a, 'rb') as fa, open(b, 'rb') as fb:
-        assert fa.read() == fb.read(), f"{os.path.basename(a)}: the same datasets and attributes, other file bytes"
-
-
 # ============================================================================
 # the test
 # ============================================================================
@@ -466,62 +264,38 @@ def toy(tmp_path_factory):
     if target and len(digests) == len(SCHEDULES):
         os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
         with open(target, 'w') as f:
-            json.dump({'about': "tests/test_npass_toy.py: the products of each N-pass schedule (identical in the "
-                                "Python and TOML forms), by the sha256 of every dataset and attribute (paths of "
-                                "the run's temporary directory written <run>)",
+            json.dump({'about': "tests/test_npass_toy.py: the products of each N-pass schedule, by the sha256 of "
+                                "every dataset and attribute (paths of the run's temporary directory written <run>)",
                        'schedules': {k: digests[k] for k in sorted(digests)}}, f, indent=1, sort_keys=True)
             f.write('\n')
     shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.mark.parametrize('schedule', SCHEDULES, ids=[s.name for s in SCHEDULES])
-def test_npass_python_and_toml_make_the_same_products(toy, schedule, monkeypatch):
-    from selfcal.run import pipelines
-    from selfcal.run.config import load_config
+def test_npass_schedule(toy, schedule):
     root, digests = toy
-    out_dir = os.path.join(root, 'out')
-    field_dir = os.path.join(out_dir, 'toy')
-    cal_dir = os.path.join(field_dir, 'calibration')
+    field_dir = os.path.join(root, 'out', 'toy')
     stem = f'cal_{TAG}_All_{schedule.name}'
     expected = [f'{stem}.h5'] + [f'{stem}_pass{i}{t}.h5' for i, t in enumerate(schedule.pass_types, start=2)]
     if schedule.passes.sky_merge == 'stitch':        # the per-tile solves (one tile untiled) the stitch merges
         expected += [f'{stem}_pass{i}sky_all.h5' for i, t in enumerate(schedule.pass_types, start=2) if t == 'sky']
 
-    # the Python form; its products then moved aside
     field = sc.Field(field_dir, ToySpectrograph(), PIX)
     result = field.calibrate(schedule.recipe, passes=schedule.passes,
-                             compute=sc.Compute(os.path.join(root, f'scratch_py_{schedule.name}'), workers=2,
-                                                stage=None))
+                             compute=sc.Compute(os.path.join(root, f'scratch_py_{schedule.name}'), workers=2, stage=None))
     assert sorted(result.passes) == list(range(1, schedule.passes.n + 1))
-    python_dir = os.path.join(root, 'python', schedule.name)
-    shutil.move(cal_dir, python_dir)
-
-    # the TOML form, in the same field folder (the TOML default of the transpose product's
-    # threads, set here as the Python action sets it)
-    config = os.path.join(root, f'{schedule.name}.toml')
-    with open(config, 'w') as f:
-        f.write(toml_config(schedule, out_dir, os.path.join(root, f'scratch_toml_{schedule.name}')))
-    monkeypatch.setenv('SELFCAL_PARALLEL_RMATVEC', 'auto')
-    monkeypatch.setenv('SELFCAL_RMATVEC_BUFFER_GB', '16')
-    pipelines.run(load_config(config))
-    toml_dir = os.path.join(root, 'toml', schedule.name)
-    shutil.move(cal_dir, toml_dir)
-
-    for d in (python_dir, toml_dir):
-        made = sorted(n for n in os.listdir(d) if n.endswith('.h5'))
-        assert made == sorted(expected), (d, made)
-        with open(os.path.join(d, f'{stem}_npass_monitor.json')) as f:
-            monitor = json.load(f)
-        assert [(r['pass'], r['type']) for r in monitor] == \
-            [(1, 'init')] + [(i, 'sky' if t == 'sky' else 'offset') for i, t in enumerate(schedule.pass_types, start=2)]
-    for name in expected:
-        assert_same_product(os.path.join(python_dir, name), os.path.join(toml_dir, name), root)
+    cal_dir = os.path.join(field_dir, 'calibration')
+    made = sorted(n for n in os.listdir(cal_dir) if n.startswith(f'{stem}.') or n.startswith(f'{stem}_pass'))
+    assert [n for n in made if n.endswith('.h5')] == sorted(expected), made
+    with open(os.path.join(cal_dir, f'{stem}_npass_monitor.json')) as f:
+        monitor = json.load(f)
+    assert [(r['pass'], r['type']) for r in monitor] == \
+        [(1, 'init')] + [(i, 'sky' if t == 'sky' else 'offset') for i, t in enumerate(schedule.pass_types, start=2)]
     # the SKY passes damp each term as the INIT pass did
     want = [0.02, 0.05] if schedule.name == 'offfirst' else [0.1, 0.3]
     for i, t in enumerate(schedule.pass_types, start=2):
         if t == 'sky' and schedule.passes.sky_merge == 'combine':
-            with h5py.File(os.path.join(python_dir, f'{stem}_pass{i}sky.h5'), 'r') as f:
+            with h5py.File(os.path.join(cal_dir, f'{stem}_pass{i}sky.h5'), 'r') as f:
                 assert f.attrs['damp_weights'].tolist() == want
     digests[schedule.name] = {'schedule': ['init'] + ['sky' if t == 'sky' else 'offset' for t in schedule.pass_types],
-                              'products': {name: digest(os.path.join(python_dir, name), root)
-                                           for name in sorted(expected)}}
+                              'products': {name: digest(os.path.join(cal_dir, name), root) for name in sorted(expected)}}

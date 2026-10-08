@@ -1,9 +1,8 @@
-"""The model spec: a ``[model]`` table lowers to the same solver objects as the
-named presets, and ``mode = "model"`` runs end to end on the grid instrument."""
+"""The model spec: a ``[model]`` table (the form :meth:`~selfcal.models.model.Model.lower` gives the
+engine) lowers to the solver objects of the presets it spells out, and a model with a soft
+polynomial along a chunk axis runs end to end on the built-in camera."""
 import os
-import shutil
 import sys
-import tempfile
 
 import numpy as np
 
@@ -13,22 +12,12 @@ if _REPO not in sys.path:
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
-from selfcal import _state                                      # noqa: E402
-from selfcal.instruments import get_instrument                  # noqa: E402
-from selfcal.models.spec import ModelSpec, SkyTerm, OffsetTerm  # noqa: E402
-from selfcal.run.modes import get_mode               # noqa: E402
-from selfcal.run import pipelines                    # noqa: E402
-from tests.synthetic_exposures import write_exposures           # noqa: E402
-from tests.test_runner_e2e_toy import _write_config             # noqa: E402
+import selfcal as sc  # noqa: E402
+from selfcal import _state  # noqa: E402
+from selfcal.models.spec import ModelSpec, OffsetTerm, SkyTerm  # noqa: E402
+from tests.synthetic_exposures import write_exposures  # noqa: E402
 
-GRID = {'name': 'grid', 'tag': 'Spec', 'detector_shape': [40, 60], 'chunks': [4, 6], 'sci_ext': 1, 'dq_ext': 2}
-
-
-class _Cfg:
-    def __init__(self, params, model=None):
-        self.params = params
-        self.model = model or {}
-        self.instrument_cfg = GRID
+CAMERA = sc.Camera((40, 60), chunks=(4, 6), dq_ext=2, tag='Spec')
 
 
 def _same_kwargs(a, b):
@@ -60,19 +49,18 @@ def _same_value(u, v, where):
 
 
 def test_model_table_equals_presets():
-    inst = get_instrument('grid')
-    geom = inst.detector_geometry(GRID, 1)
+    geom = CAMERA.geometry(1)
     n = 9
-    # continuum preset == [model] with a continuum term and one free offset term
-    preset = get_mode('continuum')
-    cfg = _Cfg({'reg_weight': 0.2, 'poly_weight': 0.5, 'poly_degree': 1})
+    # the continuum preset == a [model] table with a continuum term and one free offset term
+    preset = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, along='row', weight=0.5)).spec()
     spec = ModelSpec.from_config({
         'sky': [{'name': 'continuum'}],
         'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'mean_zero': True,
                     'poly': [{'axis': 'row', 'degree': 1, 'weight': 0.5}]}],
         'scalar': True})
-    _same_kwargs(preset.build_offset_model(cfg, inst, geom, None, None, n), spec.build_offset_model(geom, n))
-    assert preset.build_sky_model(cfg, inst, geom) == spec.build_sky_model(geom, inst.coefficient_catalog())
+    _same_kwargs(preset.build_offset_model(geom, n), spec.build_offset_model(geom, n))
+    assert [c.name for c in preset.build_sky_model(geom).components] == \
+        [c.name for c in spec.build_sky_model(geom).components]
     assert spec.x0_kind == 'scalar_only' and not spec.has_coefficients
     spec.check(geom)
     # a detector-fixed second term lowers to a shared (det_groups = 0) mean-zero block
@@ -84,7 +72,7 @@ def test_model_table_equals_presets():
     assert om.num_maps == 2 and not om.use_per_frame_scalar and spec2.x0_kind == 'from_Ab'
     b = om.blocks[1]
     assert b.adj_info is None and np.array_equal(b.det_groups, np.zeros(n, dtype=int)) and b.mean_offset.shape == (n,)
-    # a coefficient reads a data variable the instrument must provide: the grid instrument has none
+    # a coefficient reads a data variable the instrument must provide: the camera has none
     spec3 = ModelSpec(sky=(SkyTerm(), SkyTerm('l', coefficient={'variable': 'wavelength', 'function': 'gaussian',
                                                                   'center': 1.0, 'sigma': 0.1})))
     assert spec3.has_coefficients
@@ -96,34 +84,21 @@ def test_model_table_equals_presets():
             assert 'wavelength' in str(e)
 
 
-def test_model_mode_end_to_end():
+def test_a_model_with_a_soft_polynomial_runs(tmp_path):
     _state.set_progress(False)
-    tmp = tempfile.mkdtemp(prefix='selfcal_model_')
-    try:
-        rng = np.random.default_rng(5)
-        exp_dir = os.path.join(tmp, 'exposures')
-        write_exposures(exp_dir, 10, rng, det_shape=(40, 60), chunks=(4, 6))
-        out, cache = os.path.join(tmp, 'out'), os.path.join(tmp, 'cache')
-        os.makedirs(cache, exist_ok=True)
-        rcfg = _write_config(os.path.join(tmp, 'reproject.toml'), 'reproject', out, cache, instrument=GRID,
-                             reproject=dict(input_dirs=[exp_dir], file_pattern='/toy_exp_*_D0.fits',
-                                            padding_pixels=8, max_workers=2, inner_parallel=1,
-                                            reproj_func='interp', padding_percentage=0.05, replace_existing=True))
-        pipelines.run(rcfg)
-        model = {'scalar': True, 'mosaic': 'no_wav',
-                 'sky': [{'name': 'continuum'}],
-                 'offset': [{'kind': 'free', 'reg_weight': 0.1, 'mean_zero': True,
-                             'poly': [{'axis': 'col', 'degree': 1, 'weight': 0.5}]}]}
-        ccfg = _write_config(os.path.join(tmp, 'cal.toml'), 'cal', out, cache, scalars={'mode': 'model'},
-                             instrument=GRID, model=model)
-        assert ccfg.mode == 'model' and ccfg.model['offset'][0]['poly'][0]['axis'] == 'col'
-        res = pipelines.run(ccfg)
-        assert len(res.cal_paths) == 1 and os.path.exists(res.cal_paths[0]) and len(res.mosaic_paths) == 1
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    write_exposures(str(tmp_path / 'exposures'), 10, np.random.default_rng(5), det_shape=(40, 60), chunks=(4, 6))
+    field = sc.Field(tmp_path / 'out' / 'model', CAMERA, 20.0, compute=sc.Compute(str(tmp_path / 'cache'), workers=2))
+    field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
+    model = sc.Model(offsets=[sc.Offsets(smooth=0.1, mean_zero=True, poly_prior=sc.Poly(1, along='col', weight=0.5))])
+    result = field.calibrate(sc.Recipe(model, fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0,
+                                                                                          instrument_maps=False),
+                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))
+    assert len(result.cal_paths) == 1 and os.path.exists(result.cal_paths[0]) and len(result.mosaic_paths) == 1
 
 
 if __name__ == '__main__':
+    import tempfile
+    from pathlib import Path
     test_model_table_equals_presets()
-    test_model_mode_end_to_end()
+    test_a_model_with_a_soft_polynomial_runs(Path(tempfile.mkdtemp()))
     print('OK model spec')

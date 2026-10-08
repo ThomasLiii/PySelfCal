@@ -1,17 +1,10 @@
-"""Per-frame hooks of the Euclid recipe, selectable from a run config::
+"""Per-frame hooks of the Euclid recipe: :class:`StarMask` (before the solve's corrections) and
+:class:`ResidualMask` (after them, in the solve or the coadd). Each is a callable
+``hook(ctx: FrameContext) -> sub_data``, a plain object the worker processes can receive::
 
-    [hooks]
-    pre_cal     = { name = "star_position_mask", positions = ".../star_positions.npz",
-                    radius_px = 160, radius2_px = 80, n_tier1 = 60 }
-    post_cal    = { name = "residual_mask", mask_dir = ".../resid_masks", mask_pixels = true,
-                    frame_weight = true }
-    post_mosaic = { name = "residual_mask", mask_dir = ".../resid_masks" }
-
-Each entry names a factory below; the remaining keys are its parameters. The
-factory returns a callable ``hook(ctx: FrameContext) -> sub_data``: a :class:`StarMask` or a
-:class:`ResidualMask`, objects the worker processes can receive. In Python, build them directly::
-
-    sc.Fit(raw_frame_hook=euclid.StarMask(".../star_positions.npz", radius_px=160))
+    sc.Fit(raw_frame_hook=euclid.StarMask(".../star_positions.npz", radius_px=160, radius2_px=80, n_tier1=60),
+           frame_hook=euclid.ResidualMask(".../resid_masks", frame_weight=True))
+    sc.Coadd(frame_hook=euclid.ResidualMask(".../resid_masks"))
 """
 from __future__ import annotations
 
@@ -19,7 +12,7 @@ import os
 
 import numpy as np
 
-__all__ = ['StarMask', 'ResidualMask', 'star_position_mask', 'residual_mask', 'HOOKS']
+__all__ = ['StarMask', 'ResidualMask']
 
 
 class StarMask:
@@ -106,16 +99,3 @@ class ResidualMask:
                     sub_data = sub_data.copy()
                     sub_data[bad] = np.nan
         return sub_data
-
-
-def star_position_mask(positions, radius_px, radius2_px=None, n_tier1=None):
-    """The :class:`StarMask` hook (the name a run config's ``[hooks]`` table uses)."""
-    return StarMask(positions, radius_px, radius2_px=radius2_px, n_tier1=n_tier1)
-
-
-def residual_mask(mask_dir, mask_pixels=True, frame_weight=False):
-    """The :class:`ResidualMask` hook (the name a run config's ``[hooks]`` table uses)."""
-    return ResidualMask(mask_dir, mask_pixels=mask_pixels, frame_weight=frame_weight)
-
-
-HOOKS = {'star_position_mask': star_position_mask, 'residual_mask': residual_mask}

@@ -157,13 +157,11 @@ def _prepare(plan):
     if plan.passes is None:
         return
     passes, book = plan.passes, plan.book
-    for low, ctx in zip(plan.lowered, plan.contexts):
-        cfg = low.cfg
-        base = cfg.tiling['stitched_suffix'] if cfg.tiling else cfg.suffix
+    for spec, ctx in zip(plan.lowered, plan.contexts):
         cal_dir = ctx.pipeline_config.cal_dir
         for job in ctx.jobs():
-            stem = 'cal_' + ctx.stem(job, base)
-            work = os.path.join(cfg.cache_dir, f'npass_{stem}')
+            stem = ctx.pass_stem(job)
+            work = os.path.join(spec.scratch, f'npass_{stem}')
             if replaced and os.path.isdir(work):
                 shutil.rmtree(work)
             expected, previous = {}, book.init_path[job.name]
@@ -190,8 +188,7 @@ class Field(Config):
     compute: Compute = dc_field(default_factory=Compute)
 
     def _validate(self):
-        # Kept as written (only ~ expanded): the cal file records its frames under this path, as
-        # a TOML run records them under <output_dir>/<run_name>.
+        # Kept as written (only ~ expanded): the cal file records its frames under this path.
         path = os.path.expanduser(self.path)
         object.__setattr__(self, 'path', path.rstrip('/') or path)
         if self.pixel_scale is not None and self.pixel_scale <= 0:
@@ -244,37 +241,32 @@ class Field(Config):
         compute = compute or self.compute
         if self.pixel_scale is None and not os.path.exists(os.path.join(self.path, 'ref.fits')):
             raise ConfigError(f"{self!r}: reprojection makes the reference grid at pixel_scale=, which is not given")
-        cfg = self.reprojection_config(exposures, reference=reference, method=method, padding=padding,
-                                       padding_fraction=padding_fraction, replace=replace, verify=verify,
-                                       compute=compute)
-        settings = {'exposures': cfg.reproject['input_dirs'], 'reference': reference, 'method': method,
+        spec = self.reprojection_spec(exposures, reference=reference, method=method, padding=padding,
+                                      padding_fraction=padding_fraction, replace=replace, verify=verify,
+                                      compute=compute)
+        settings = {'exposures': list(spec.reproject.exposures), 'reference': reference, 'method': method,
                     'padding': padding, 'padding_fraction': padding_fraction, 'replace': replace, 'verify': verify,
                     'compute': compute}
-        from .lower import Lowered
-        with _action(self, 'reproject', settings, [Lowered(cfg, ())], compute) as record:
-            out = run(cfg)
+        with _action(self, 'reproject', settings, [spec], compute) as record:
+            out = run(spec)
             record.finish(products={'reprojected': out})
         return out
 
-    def reprojection_config(self, exposures, *, reference=None, method='exact', padding=100, padding_fraction=0.05,
-                            replace=False, verify=False, compute=None):
-        """The run config :meth:`reproject` runs (the engine's form; nothing is read or run)."""
-        from .config import RunConfig
+    def reprojection_spec(self, exposures, *, reference=None, method='exact', padding=100, padding_fraction=0.05,
+                          replace=False, verify=False, compute=None):
+        """The engine run :meth:`reproject` runs (a :class:`~selfcal.run.runspec.RunSpec`; nothing is
+        read or run)."""
+        from .runspec import ReprojectSpec, RunSpec
         compute = compute or self.compute
         if method not in ('exact', 'interp', 'adaptive'):
             raise ConfigError(f"reproject(method={method!r}): 'exact', 'interp' or 'adaptive'")
         patterns = [exposures] if isinstance(exposures, (str, os.PathLike)) else list(exposures)
-        patterns = [os.fspath(p) for p in patterns]
-        inst, table = self.instrument.engine(())
-        cfg = RunConfig(task='reproject', output_dir=os.path.dirname(self.path), run_name=self.name,
-                        resolution_arcsec=self.pixel_scale, cache_dir=compute.scratch, instrument_cfg=table,
-                        reproject={'input_dirs': patterns, 'file_pattern': '', 'reproj_func': method,
-                                   'padding_pixels': int(padding), 'padding_percentage': float(padding_fraction),
-                                   'replace_existing': bool(replace), 'check': bool(verify),
-                                   'source_ref_path': None if reference is None else os.fspath(reference),
-                                   'max_workers': compute.resolved_workers})
-        cfg.instrument = inst
-        return cfg
+        reproject = ReprojectSpec(exposures=tuple(os.fspath(p) for p in patterns),
+                                  reference=None if reference is None else os.fspath(reference), method=method,
+                                  padding=int(padding), padding_fraction=float(padding_fraction),
+                                  replace=bool(replace), verify=bool(verify), workers=compute.resolved_workers)
+        return RunSpec(task='reproject', field=self, instrument=self.instrument, output_dir=os.path.dirname(self.path),
+                       run_name=self.name, resolution_arcsec=self.pixel_scale, reproject=reproject)
 
     def calibrate(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False,
                   compute=None) -> Result:
@@ -285,8 +277,8 @@ class Field(Config):
         tile by tile and stitch (:class:`~selfcal.run.schedule.Tiles`); ``passes``: the N-pass
         alternating solve (:class:`~selfcal.run.schedule.Passes`). ``frames``: None (every
         frame), a number (the first ``n``), a directory (its frames, read in place) or a list of
-        frame files. An existing cal is reused, as by a TOML run, unless ``overwrite`` (which
-        deletes the jobs' cal and mosaic first). ``compute`` overrides the field's.
+        frame files. An existing cal is reused when it was made by the same inputs; ``overwrite``
+        makes the jobs' cal and mosaic again. ``compute`` overrides the field's.
         """
         check_main_guard()
         recipe = as_recipe(recipe)
@@ -397,9 +389,8 @@ class Field(Config):
         from .engine import RunContext
         cals, mosaics, jobs_out = [], [], []
         final = None
-        for low in lowered:
-            ctx = RunContext.build(low.cfg, need_geometry=False, need_mode=False)
-            ctx.frame_tag = ctx.inst.frame_tag(low.cfg.instrument_cfg)
+        for spec in lowered:
+            ctx = RunContext.build(spec, need_geometry=False)
             for job in ctx.jobs():
                 path = ctx.cal_path(job) if tiles is None else ctx.stitched_cal_path(job)
                 cals.append(path)
@@ -427,10 +418,9 @@ class Field(Config):
         with _action(self, action, settings, plan.lowered, plan.compute, recipe.numerics, frames=frames) as record:
             _prepare(plan)
             plan.book.record = record.path
-            for low in plan.lowered:
-                low.cfg.on_product = plan.book
-            for low, ctx in zip(plan.lowered, plan.contexts):
-                out = run(low.cfg)
+            for spec, ctx in zip(plan.lowered, plan.contexts):
+                spec.on_product = plan.book
+                out = run(spec, ctx)
                 if isinstance(out, dict):                      # the N-pass scheduler
                     passes_out = {int(k): v for k, v in out['products'].items()}
                     final = out['final']

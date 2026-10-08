@@ -1,5 +1,5 @@
-"""Reproject the NEP Detector 4 exposures (QR1 new gain + QR2) onto the Detector 5 reference grid
-(was configs/reproject_d4.toml). Drops exposures with a poor astrometric solution (FINAST != 0)."""
+"""Reproject the NEP Detector 4 exposures (QR1 new gain + QR2) onto the Detector 5 reference grid.
+Drops exposures with a poor astrometric solution (FINAST != 0)."""
 from selfcal_scripts.recipes.spherex import nep
 
 FIELD = nep(4)

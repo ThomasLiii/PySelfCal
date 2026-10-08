@@ -4,18 +4,17 @@ Each returns a ``list`` of path strings: :func:`load_from_radius` keeps the rows
 VOTable exposure catalogue that lie within a radius of a target, :func:`load_from_csv`
 reads the first column of a CSV file, and :func:`load_from_directory` globs one
 directory. Such a list is the ``exposure_list`` of
-:class:`~selfcal.pipeline.pipeline_wrapper.Reprojector`. The helpers are independent of
-:class:`~selfcal.instruments.euclid.adapter.EuclidInstrument` and of the runner, whose
-``reproject`` task globs ``[reproject].input_dirs`` with ``file_pattern`` instead.
+:class:`~selfcal.pipeline.pipeline_wrapper.Reprojector`, or the exposures of
+:meth:`~selfcal.run.field.Field.reproject`.
 """
+import csv
 import glob
 import logging
 import os
-from tqdm import tqdm
-import csv
 
-from astropy.io.votable import parse_single_table
 from astropy.coordinates import SkyCoord
+from astropy.io.votable import parse_single_table
+from tqdm import tqdm
 
 from ... import _state
 

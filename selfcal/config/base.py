@@ -13,7 +13,9 @@ instrument) is a frozen dataclass deriving from :class:`Config`. Building one ch
 The objects are immutable: :meth:`Config.replace` returns a changed copy, checked again.
 ``repr`` is the Python that rebuilds the object (only settings that differ from their
 defaults are shown), and :meth:`Config.to_dict` / :meth:`Config.from_dict` give the JSON
-form that run records store.
+form that run records store and products are fingerprinted by. A setting added to a class
+after products were made with it is declared with :func:`added`, so that those products keep
+their fingerprints.
 
 A subclass is a plain frozen dataclass; settings after ``_: KW_ONLY`` are keyword-only::
 
@@ -40,7 +42,7 @@ import typing
 
 import numpy as np
 
-__all__ = ['Config', 'ConfigError', 'FrozenDict']
+__all__ = ['Config', 'ConfigError', 'FrozenDict', 'added']
 
 
 class ConfigError(ValueError):
@@ -95,6 +97,18 @@ def setting_names(cls) -> tuple:
     if cls not in _NAMES:
         _NAMES[cls] = tuple(f.name for f in dataclasses.fields(cls) if f.init)
     return _NAMES[cls]
+
+
+def added(default, *, since):
+    """A setting added to a class after products were made with it (``since``: the date, e.g.
+    ``"2026-10-08"``): ``snapshot_every: int | None = added(None, since="2026-10-08")``.
+
+    While the setting equals its ``default`` it is left out of :meth:`Config.to_dict`, and so of the
+    encoding every product is fingerprinted by: the products made before it existed, and those made
+    since with the default, keep their fingerprints. Set to another value, it is encoded (those
+    products are made by other inputs). A record encoded before the setting existed decodes with
+    the setting at its default."""
+    return dataclasses.field(default=default, metadata={'since': str(since)})
 
 
 def _default(f):
@@ -168,11 +182,16 @@ class Config:
 
     # ---- the JSON form ---------------------------------------------------------------------------
     def to_dict(self) -> dict:
-        """Every setting (defaults included) in a JSON-ready form, with the class under ``"type"``."""
+        """Every setting (defaults included, but those :func:`added` later while at their default) in
+        a JSON-ready form, with the class under ``"type"``."""
         out = {'type': type_name(type(self))}
         for f in dataclasses.fields(self):
-            if f.init:
-                out[f.name] = encode(getattr(self, f.name))
+            if not f.init:
+                continue
+            value = getattr(self, f.name)
+            if 'since' in f.metadata and _same(value, _default(f)):
+                continue
+            out[f.name] = encode(value)
         return out
 
     @staticmethod

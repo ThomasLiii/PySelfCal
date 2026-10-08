@@ -813,7 +813,7 @@ class Model(Config):
 
     def spectral_window(self):
         """``(lo, hi)`` (inclusive) of the first polynomial window of the offset terms (the hard
-        polynomial's first), or None. The N-pass refit and the Gram check read it."""
+        polynomial's first), or None. The N-pass refit reads it."""
         for t in self.offsets:
             if t.polynomial is not None:
                 w = t.polynomial.window

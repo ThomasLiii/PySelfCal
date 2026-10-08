@@ -1,5 +1,4 @@
-"""SEP Detector 4 at NumCol 1: the three-line PAH fit on six tiles, then 5 N-pass passes, offset first
-(was configs/sep_d4_npass_multiline_c1_of.toml)."""
+"""SEP Detector 4 at NumCol 1: the three-line PAH fit on six tiles, then 5 N-pass passes, offset first."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

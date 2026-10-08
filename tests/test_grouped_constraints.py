@@ -5,8 +5,8 @@ per-frame copies of a det-grouped map's anchor / adjacency rows with one row
 of weight ``w·√k``. That is exact in the normal equations (AᵀA, Aᵀb), which
 is what these tests check: at the builder level against the per-frame form,
 and end to end through ``setup_lsqr`` on a tiny synthetic problem.
-``damp_offset_maps`` must reproduce the global ``damp_offset`` bit for bit when
-every map gets the same weight, and leave weight-0 maps undamped.
+``damp_offset_maps`` damps each map with its own weight and leaves weight-0 maps
+undamped.
 
 Runnable as ``python tests/test_grouped_constraints.py`` or under pytest.
 ALWAYS run from the repo root so ``import selfcal`` resolves to this worktree.
@@ -164,15 +164,6 @@ def test_setup_lsqr_grouped_rows_same_normal_equations():
     assert A_gr.nnz < A_pf.nnz
 
 
-def test_damp_offset_maps_matches_global_damp_offset():
-    A_g, b_g, _ = _setup(damp_offset=0.3)
-    A_m, b_m, _ = _setup(damp_offset_maps=[0.3, 0.3])
-    assert A_g.shape == A_m.shape
-    for attr in ('data', 'indices', 'indptr'):
-        assert np.array_equal(getattr(A_g, attr), getattr(A_m, attr))
-    assert np.array_equal(b_g, b_m)
-
-
 def test_damp_offset_maps_leaves_weight_zero_maps_free():
     A0, _, act = _setup()
     A1, _, _ = _setup(damp_offset_maps=[0.0, 0.3])
@@ -196,7 +187,6 @@ def _raises(fn, exc=ValueError):
 def test_validation():
     assert _raises(lambda: _setup(damp_offset_maps=[0.3]))                  # length
     assert _raises(lambda: _setup(damp_offset_maps=[0.3, -1.0]))            # sign
-    assert _raises(lambda: _setup(damp_offset=0.3, damp_offset_maps=[0, 0.3]))
     assert _raises(lambda: _setup(group_adjacency_maps=[2]))                # index
 
 

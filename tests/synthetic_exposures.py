@@ -1,8 +1,8 @@
-"""Synthetic exposures for the runner tests: a smooth sky sampled by a 64-px
+"""Synthetic exposures for the end-to-end tests: a smooth sky sampled by a 64-px
 square detector at random pointings, with injected per-frame chunk offsets and
 scalars, written as FITS files (science image + celestial WCS in extension 1,
-an integer DQ mask in extension 2) — the layout the built-in ``grid``
-instrument reads by default.
+an integer DQ mask in extension 2) — the layout ``sc.Camera(..., dq_ext=2)``
+reads.
 """
 import os
 
@@ -13,7 +13,7 @@ from astropy.wcs import WCS
 DET = 64                     # detector side (px)
 N_CHUNK_SIDE = 4             # chunks per side -> 16 chunks
 PIX_ARCSEC = 20.0            # detector pixel scale
-REF_ARCSEC = 20.0            # reference-grid pixel scale used by the runner (resolution_arcsec)
+REF_ARCSEC = 20.0            # reference-grid pixel scale (a field's pixel_scale)
 
 
 # ---------------------------------------------------------------------------- synthetic exposures

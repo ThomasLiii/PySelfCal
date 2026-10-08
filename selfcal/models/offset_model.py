@@ -9,7 +9,7 @@ the same map index ``m``::
 Keeping those in lockstep by hand is error-prone in any multi-map
 configuration — e.g. a two-map setup must pair ``det_groups_list=[None, zeros]``
 in one list with ``mean_offsets_list=[None, target]`` in another (see the
-``k2_readout`` runner mode for a real two-map instance). ``OffsetModel`` bundles
+``sc.two_block`` model for a real two-map instance). ``OffsetModel`` bundles
 each map's configuration into one :class:`OffsetBlock` so a multi-map setup
 reads as cohesive blocks.
 
@@ -120,7 +120,7 @@ class OffsetBlock:
         Per-frame group labels (length num_frames). ``None`` (default) solves a
         free offset per frame. ``np.zeros(num_frames)`` locks all frames to one
         shared offset vector (a detector-fixed pattern — e.g. a readout
-        stripe — as in the ``k2_readout`` runner mode).
+        stripe — as in the ``sc.two_block`` model).
     template : np.ndarray or None
         Fixed spatial pattern; when set, the block solves only a per-frame
         amplitude. Requires ``det_groups`` to be set (matches setup_lsqr).

@@ -13,7 +13,7 @@ The suite needs no data and no network. Every test builds its own synthetic fram
 linear systems, so it runs on any checkout:
 
 ```bash
-pytest                                        # everything: 110 tests, about two minutes
+pytest                                        # everything, a few minutes
 pytest tests/test_sky_model.py                # one file
 pytest tests/test_any_telescope.py -k ghost   # tests whose name matches
 pytest -x -q                                  # stop at the first failure, quietly
@@ -22,48 +22,56 @@ pytest -x -q                                  # stop at the first failure, quiet
 `pyproject.toml` sets `testpaths = ["tests"]` and puts the repository root on `sys.path`
 (`pythonpath = ["."]`), so `import selfcal` resolves to the checkout under test and shared
 helpers are imported as `tests.<module>`. Most test files also run as scripts, for example
-`python tests/test_runner_e2e_toy.py`.
+`python tests/test_any_telescope.py`.
 
 One test is skipped by default. It reproduces the process-pool fork hang of 2026-09-09 and runs
 only with `SELFCAL_TEST_FORK_HAZARD=1`.
 
 ### What the tests cover
 
+<!-- check: the table against tests/ once the TOML-only tests are removed and the new ones added -->
+
 | Area | File | Checks |
 | --- | --- | --- |
-| End to end | `test_runner_e2e_toy.py` | every runner task on synthetic exposures with the `grid` instrument: `reproject`, `cal` and its mosaic, `mosaic`, `cal` with `[tiling]` and the Fisher stitch; the recovered offsets track the injected ones |
-| | `test_run_products.py` | products and records: atomic writes; fingerprints; a product reused only when current, refused when made by other inputs or unrecorded, adopted; a record rerun byte-identically; `compare`; `Tuning` applied and byte-neutral; `by_value` functions in a run; `selfcal convert` checks its scripts; `selfcal plan` and `selfcal adopt` on a run script; `submit` runs detached; a plan of a field without frames; two exposures make a reference grid |
+| End to end | `test_run_products.py` | products and records: atomic writes; fingerprints; a product reused only when current, refused when made by other inputs or unrecorded, adopted; a record rerun byte-identically; `compare`; `Tuning` applied and byte-neutral; `by_value` functions in a run; `selfcal convert` and its three rules (the converted script's objects, and a toy run of it); `selfcal plan` and `selfcal adopt` on a run script; `submit` runs detached; a plan of a field without frames; two exposures make a reference grid |
 | | `test_run_robustness.py` | products and records off the happy path: a product written again after its sidecar is refused, a mosaic whose cal is gone is made again, two actions in one second keep two records, `rerun --overwrite` remakes a mosaic and keeps the caller's directory, `submit` refuses settings a detached run cannot rebuild, a run-script function reaches the worker processes, hooks and `by_value` functions fingerprint the same in every process, interrupted writes are swept, `compare` sees infinities and file types, `convert` never loses an existing script |
-| | `test_python_api.py` | the [Python API](../guide/python-api.md): settings checked when built; models, presets and instruments lowered to the run engine's config; a run through the API (calibrate and its mosaic, the mosaic action, a tiled solve) makes the same bytes as the same run from TOML; the run-script rules (the `__main__` guard, importable functions); an instrument's geometry and optional hooks; map variables given as arrays |
-| | `test_run_scripts.py` | every run script of `selfcal_scripts/runs/` builds and lowers without the data; the transfer-function kit's recipe records the same product inputs as its TOML |
-| | `test_quickstart_example.py` | the [quickstart](../getting-started/quickstart.md) example runs, in Python and as TOML configs, the two forms make byte-identical products, and it recovers its injected offsets |
-| | `test_grid_nomask_nonsquare.py` | a non-square detector without a data-quality extension through reproject, cal and mosaic; the `CalFile` reader and typed hooks on the product |
+| | `test_python_api.py` | the [Python API](../guide/python-api.md): settings checked when built; models, presets and instruments lowered for the run engine; a run through the API (calibrate and its mosaic, the mosaic action, a tiled solve); the run-script rules (the `__main__` guard, importable functions); an instrument's geometry and optional hooks; map variables given as arrays |
+| | `test_run_scripts.py` | every run script of `selfcal_scripts/runs/` builds and lowers without the data |
+| | `test_quickstart_example.py` | the [quickstart](../getting-started/quickstart.md) example runs and recovers its injected offsets |
+| | `test_npass_toy.py` | the N-pass solve on a toy field: its products equal the recorded digests |
 | | `test_any_telescope.py` | seven instruments and models written with the Python API, adapted with high-level functions only (see [Tutorials](../getting-started/tutorials.md#one-instrument-one-example)) |
 | | `test_e2e_offset_recovery.py` | the LSQR solver recovers injected offsets on synthetic data |
+| Products | `test_fingerprints.py` | the inputs and the fingerprint of every kind of product, for settings that cover every fingerprinted class, equal the committed golden `tests/data/fingerprints.json` ([Settings and fingerprints](settings.md)) |
 | Model | `test_general_model.py` | data variables, offset bases, priors, observation weights and frame hooks, without a solve |
-| | `test_model_spec.py` | a `[model]` table lowers to the same solver objects as the named presets; `mode = "model"` runs end to end |
+| | `test_model_spec.py` | the model as the engine takes it ([`ModelSpec`][selfcal.models.spec.ModelSpec]) |
 | | `test_sky_model.py`, `test_sky_coefficients.py` | sky terms: a map times any coefficient function of data variables; the ready-made coefficient shapes |
 | | `test_nsky_roundtrip.py` | a three-component sky model survives the save and the load exactly, with the v3 layout and its v2 aliases |
 | | `test_offset_structure.py` | the generic chunk-axes builders reproduce the SPHEREx builders exactly |
 | | `test_piecewise_offset_basis.py` | the segmented Chebyshev offset basis |
-| Instruments | `test_instrument_registry.py` | built-in and locally registered instruments resolve; mode presets are aliases of the structural recipes |
-| | `test_euclid_instrument.py` | the Euclid exposure layout, chunk maps and axes, edge taper, renderers, hooks and grouped terms |
+| Instruments | `test_euclid_instrument.py` | the Euclid exposure layout, chunk maps and axes, edge taper, renderers, hooks and grouped terms |
+| | `test_spherex_precompute.py` | `spherex.precompute_lvf` writes the LVF arc parameters |
+| | `test_grid_chunk_map.py` | rectangular chunk maps of any size |
 | Solver | `test_constraint_builders.py`, `test_grouped_constraints.py` | the constraint rows (mean-offset anchors, sky and offset damping), grouped rows and per-map offset damping |
 | | `test_closed_form_sky.py` | the closed-form sky-only solve equals the converged LSQR solution |
 | | `test_prep_lsqr_arity.py` | the per-frame preparation returns the same number of values on every path, including a frame with no valid pixel |
 | | `test_blockcsr_bitequal.py`, `test_colsplit_bitequal.py`, `test_x0_bitequal.py` | the memory- and speed-optimised matrix paths give the same bytes as the reference paths |
 | | `test_rowsplit_rmatvec.py` | the parallel transpose product is deterministic, independent of the matrix storage, and equal to the sequential product up to float32 rounding |
+| | `test_lsqr_norm64.py` | the solver's norms of long float32 vectors are accumulated in float64; short and float64 vectors take SciPy's call bit for bit |
 | | `test_mp_fork_safety.py` | worker pools use the forkserver start method and pass shared arrays explicitly, so a pool started from a multi-threaded process cannot hang |
 | Mosaic | `test_coadd_engine.py` | the coadd engine on synthetic reprojected frames |
 | Run engine | `test_tiled.py` | tile geometry and the assignment of frames to tiles |
 | | `test_npass_primitives.py` | the primitives of the N-pass alternating solve on a sky-only system |
 | | `test_runlog.py` | the per-run log file |
-| | `test_staging.py` | frames are staged atomically, only into or out of a directory the pipeline made; a tiled run's default frame pattern takes every detector |
-| | `test_runner_shim.py` | the engine's old import path `selfcal_scripts.runner` is an alias of `selfcal.run` (one mode registry) |
+| | `test_staging.py` | frames are staged atomically, only into or out of a directory the pipeline made; a tiled run takes every frame of its directory, in exposure order |
 | Code layout | `test_import_direction.py` | layering: `selfcal.config` imports no other layer, the numerical layers never import the instrument layer, the instrument layer never imports the pipeline or run layers, and the run engine never imports the scripts |
 
+Three more tests check that the instrument's geometry is built once for `field.plan` followed by
+`field.calibrate`, that a setting declared as added later stays out of the encoding while at its
+default, and that a model whose offsets are grouped by a frame variable of the model's own can be
+mosaicked. <!-- check: their files -->
+
 `tests/synthetic_exposures.py` is the shared helper that writes synthetic FITS exposures for the
-runner tests.
+end-to-end tests.
 
 ## Continuous integration
 
@@ -80,13 +88,14 @@ runs on every push to `main` and on every pull request:
 
 Every product of selfcal is byte-reproducible from run to run: the per-pixel sums are folded in a
 fixed order and the coadd is deterministic. The gates use this to check structural changes. They
-run real-data configurations and compare every dataset of the calibration and every extension
-of the mosaic with stored references, exactly.
+run real-data calibrations, written with the Python API, and compare every dataset of the
+calibration and every extension of the mosaic with stored references, exactly.
 
 Run them for any change that can alter numbers in the solve or the mosaic: the system build, the
-constraint rows, the solver, the model lowering, the coadd, or the runner's handling of
-frames. [Regression gates](gates.md) lists the gates, their configs and their references. The gates
-read data that only exist on the processing host, so CI does not run them.
+constraint rows, the solver, the model lowering, the coadd, or the engine's handling of frames.
+[Regression gates](gates.md) lists the gates and their references, and the engine views that check
+a change to the engine without a solve. The gates read data that only exist on the processing
+host, so CI does not run them.
 
 ## The documentation build
 

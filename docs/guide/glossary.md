@@ -6,11 +6,9 @@ together.
 
 ## Adjacency regularisation { #adjacency }
 
-A prior on an offset term (`sc.Offsets(smooth=w)`; TOML `reg_weight`): in every frame, each pair
-of neighbouring chunks gets a row `w · (O[a] − O[b]) = 0`. Neighbours are chunks that touch on the
-detector and differ only along one of the term's `smooth_along` axes (default: the chunk map's own;
-TOML `adjacency`). In a TOML config the rows are added only with
-`[calibration] offset_regularization = true`. See
+A prior on an offset term (`sc.Offsets(smooth=w)`): in every frame, each pair of neighbouring
+chunks gets a row `w · (O[a] − O[b]) = 0`. Neighbours are chunks that touch on the detector and
+differ only along one of the term's `smooth_along` axes (default: the chunk map's own). See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Band centre, band width { #bc-bw }
@@ -23,8 +21,8 @@ wavelength maps.
 ## Basis { #basis }
 
 `n` known functions of data variables attached to an offset term (`sc.Offsets(basis=fn, n=n)`,
-where `fn` returns `n` arrays; TOML `basis = { variable, function, params, n }`). The term's unknowns become `n` coefficients per group and chunk, and an
-observation's offset is their sum weighted by the functions' values there; a function of `det_x`
+where `fn` returns `n` arrays). The term's unknowns become `n` coefficients per group and chunk, and
+an observation's offset is their sum weighted by the functions' values there; a function of `det_x`
 and `det_y`, for example, gives every frame its own gradient across the detector. See
 [The model](concepts.md#the-model) and
 [Terms, weights, priors](../bring_your_own_telescope.md#terms-weights-priors).
@@ -36,12 +34,6 @@ and Fisher information, the offsets of every frame and chunk for each offset ter
 scalars and the list of frame files. Read it with [`CalFile`][selfcal.io.calfile.CalFile]; the
 [schema](pipeline.md#cal_h5-schema-multi-chunk-map) lists its datasets. See
 [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
-
-## Capability { #capability }
-
-A tag an instrument declares (SPHEREx: `wavelength`, `spectral_axis`, `subchannel`) and a mode can
-require. The spectral modes require `wavelength`, so a run that pairs them with an instrument that
-does not declare it stops with an error before any work.
 
 ## Channel { #channel }
 
@@ -87,9 +79,7 @@ A known function of data variables that multiplies a term: `c_j(v)` of a sky ter
 Python function whose parameters name the variables it reads (or `sc.Function(fn, of=...,
 **params)`), a built-in shape (`sc.template(file)`, a tabulated function; `sc.gaussian`;
 `sc.linear`), or a named coefficient of the instrument (SPHEREx: `sc.catalog("pah_3p29")`). A term
-without one has `c = 1`. (TOML: `coefficient = { variable, function, params }` or
-`{ catalog = "<name>" }`.) See
-[The model](concepts.md#the-model).
+without one has `c = 1`. See [The model](concepts.md#the-model).
 
 ## Coverage { #coverage }
 
@@ -97,15 +87,14 @@ The number of observations of an unknown: per sky pixel (`sky_coverage/<name>` i
 and per frame and chunk (`offset_coverage/map_<m>`, with `offset_coverage_frac/map_<m>` the
 fraction of the chunk's pixels the frame covered). The damping rows are weighted by it, and the
 mosaic sets to zero the offset of a frame and chunk whose covered fraction is below
-`sc.Coadd(min_chunk_coverage=)` (TOML `valid_chunk_thresh`).
+`sc.Coadd(min_chunk_coverage=)`.
 
 ## Damping { #damping }
 
 A Tikhonov prior that pulls unknowns toward zero. Sky terms, `sc.Sky(damping=d)`: one row
 `sqrt(d · coverage) · S[P] = 0` per covered pixel (default `d` 0.1 for the first term, 0.3 for the
-others; TOML `damp_weight` and `damp_weight_line`, with `[calibration] weighted_damping = true`).
-Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` (TOML `[lsqr] damp`)
-is the solver's own damping of every unknown. See
+others). Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` is the
+solver's own damping of every unknown. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Data-quality mask { #dq-mask }
@@ -122,8 +111,8 @@ A named quantity with one value per observation, which the functions of a model 
 ([`selfcal.models.variables`](../reference/selfcal/models/variables.md)). Sources: the built-ins
 `det_x`, `det_y`, `sky_x`, `sky_y` and `frame`; the instrument's detector maps and frame variables;
 and the model's own `variables={...}` (`sc.Header`, `sc.PerFrame`, `sc.DetectorMap`, `sc.SkyMap`,
-`sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction`; TOML `[model.variables]`). See [The model](concepts.md#the-model) and
-[Data variables](../bring_your_own_telescope.md#data-variables).
+`sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction`). See [The model](concepts.md#the-model)
+and [Data variables](../bring_your_own_telescope.md#data-variables).
 
 ## Detector { #detector }
 
@@ -149,8 +138,7 @@ index of each frame's file name; the reprojection numbers the exposures in sorte
 
 One data set and its directory: `sc.Field(path, instrument, pixel_scale, compute=)`, holding
 `ref.fits`, `reprojected/`, `calibration/`, `mosaic/`, `logs/` and `records/`. Its methods are the
-actions: `reproject`, `calibrate`, `mosaic`, `plan`, `adopt`, `submit`, `result`. A TOML config's
-run directory, `<output_dir>/<run_name>/`, is the same directory. See
+actions: `reproject`, `calibrate`, `mosaic`, `plan`, `adopt`, `submit`, `result`. See
 [The Python API](python-api.md).
 
 ## Fisher information { #fisher }
@@ -214,22 +202,18 @@ The [outlier rejection](#outlier-threshold) of the solve, scored within groups o
 of over the whole frame: `sc.Clip(sigma, per="chunk")` (the chunk of the primary map),
 `per=sc.ChunkGroups.along(axis)` (the chunks with equal values of an axis; along SPHEREx's
 spectral axis, binned by wavelength) or `per=sc.ChunkGroups.mapping(...)`, or bins of a data
-variable, `sc.Clip(sigma, variable=..., edges=[...])` (default: the instrument's wavelength map;
-TOML `outlier_group_variable`, `outlier_group_edges`, and in task `npass` `subch_clip = true`).
+variable, `sc.Clip(sigma, variable=..., edges=[...])` (default: the instrument's wavelength map).
 See [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
 
 ## Hook { #hook }
 
 1. A per-frame function: `sc.Fit(raw_frame_hook=)` (right after the frame is read),
    `sc.Fit(frame_hook=)` (after its weights are computed) or `sc.Coadd(frame_hook=)` (the same in
-   the mosaic); TOML `[hooks]` `pre_cal`, `post_cal`, `post_mosaic`. It receives a
-   [`FrameContext`][selfcal.core.subframe.FrameContext] and returns the frame's values (a `post`
-   hook may also return new weights). Euclid's `StarMask` and `ResidualMask`
-   (`selfcal.instruments.euclid.hooks`) are ready-made.
-2. An optional method of an [`Instrument`][selfcal.instruments.base.Instrument] that has a
-   default: offset renderer, auxiliary coadds, mosaic finaliser, coefficient catalogue, per-frame
-   hook factories, post-calibration hooks (SPHEREx: the zodiacal-light anchor), data unit,
-   precompute.
+   the mosaic). It receives a [`FrameContext`][selfcal.core.subframe.FrameContext] and returns the
+   frame's values (a `frame_hook` may also return new weights). Euclid's `StarMask` and
+   `ResidualMask` (`selfcal.instruments.euclid.hooks`) are ready-made.
+2. An optional method of an [`sc.Instrument`][selfcal.instruments.contract.Instrument]: the offset
+   renderer, the auxiliary coadds, the mosaic finaliser and the coefficient catalogue.
 
 See [Masks, outliers and weights](concepts.md#masks-outliers-and-weights) and
 [4. With code: an instrument](../bring_your_own_telescope.md#4-with-code-an-instrument).
@@ -237,8 +221,7 @@ See [Masks, outliers and weights](concepts.md#masks-outliers-and-weights) and
 ## ignore_flags { #ignore-list }
 
 The data-quality bits that never flag a sample, given as bit numbers to `sc.Fit` and `sc.Coadd`
-separately (TOML `ignore_list` in `[calibration]` and `[mosaic]`); empty means every set bit
-flags. The SPHEREx production recipes ignore bit 21, the source mask, in the mosaic, and the
+separately; empty means every set bit flags. The SPHEREx production recipes ignore bit 21, the source mask, in the mosaic, and the
 spectral ones in the solve as well
 ([tuning](pipeline.md#calibration-pipeline-tuning)). See
 [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
@@ -246,12 +229,11 @@ spectral ones in the solve as well
 ## Instrument { #instrument }
 
 The description of a telescope: how its exposures are read, how its detector is chunked, which
-detector maps and per-frame values it defines. `sc.Camera(...)` describes a single-detector FITS
-camera without code; `sc.SPHEREx(detector)` and `sc.Euclid(...)` are built in; another telescope is
-a subclass of `sc.Instrument` whose `geometry()` gives its chunk maps (hooks have defaults). The
-run engine works through [`Instrument`][selfcal.instruments.base.Instrument], which a TOML config
-picks by `[instrument] name` (`spherex`, `euclid`, `grid`). See
-[Bring your own telescope](../bring_your_own_telescope.md).
+detector maps and per-frame values it defines. Every instrument implements the contract of
+[`sc.Instrument`][selfcal.instruments.contract.Instrument], the only way the run engine calls it:
+`sc.Camera(...)` describes a single-detector FITS camera without code; `sc.SPHEREx(detector)` and
+`sc.Euclid(...)` are built in; another telescope is a subclass whose `geometry()` gives its chunk
+maps (the rest has defaults). See [Bring your own telescope](../bring_your_own_telescope.md).
 
 ## Job { #job }
 
@@ -272,9 +254,8 @@ reference region declared free of emission, and keeps it in a file beside the ca
 
 The iterative sparse least-squares solver (Paige and Saunders) of `sc.Fit(method="lsqr")`, the
 default, in a memory-saving copy that gives the same results as SciPy's; `method="lsmr"` selects
-SciPy's LSMR (so does a TOML `[lsqr]` table without `solver`). `sc.Fit(iterations, tolerance=)`
-sets the iteration limit and the stopping tolerances (TOML `iter_lim`, `atol`, `btol`). The run
-engine solves in float32 (`sc.Fit(float32=True)`) with `sc.Numerics(threads)` threads
+SciPy's LSMR. `sc.Fit(iterations, tolerance=)` sets the iteration limit and the stopping
+tolerances. The run engine solves in float32 (`sc.Fit(float32=True)`) with `sc.Numerics(threads)` threads
 ([`apply_lsqr`][selfcal.core.solve.apply_lsqr]).
 
 ## LVF { #lvf }
@@ -292,21 +273,11 @@ weight 10 pulls the mean of the frame's offsets over all chunks of the map to ze
 overall level goes to its per-frame scalar. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
-## Mode { #mode }
-
-In a TOML config, the calibration recipe of a run (`mode`): a class registered with
-`@register_mode` that builds the run's model from `[params]`. In Python the model is an
-`sc.Model`, or a [preset](#preset)'s. The modes are `continuum`, `spectral`, `spectral_softpoly`,
-`spectral_polybasis`, `two_block_fixed` and `model` (the model read from a `[model]` table);
-historical names are [presets](#preset). See [The model](concepts.md#the-model) and
-[Modes](configuration.md#modes-presets-of-the-model).
-
 ## Model { #model }
 
 What a solve fits: sky terms, offset terms, the per-frame scalar, data variables, the observation
-weight and priors, held in a [`ModelSpec`][selfcal.models.spec.ModelSpec]. In Python it is an
-`sc.Model` (or a preset's); in a TOML config a mode builds it, or `mode = "model"` reads it from
-the `[model]` table. See
+weight and priors: an `sc.Model`, written out or made by a [preset](#preset), which the run
+engine receives as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 [The model](concepts.md#the-model).
 
 ## Mosaic { #mosaic }
@@ -318,12 +289,11 @@ the solve, when the recipe has a `Coadd`, or by `field.mosaic`. See [The mosaic]
 
 ## N-pass solve { #n-pass }
 
-`field.calibrate(recipe, passes=sc.Passes(n, order=...))` (TOML task `npass`), a solve in passes
-for spectral models: pass 1 (INIT) is the joint solve of a plain calibration; SKY passes then solve
+`field.calibrate(recipe, passes=sc.Passes(n, order=...))`, a solve in passes for spectral models: pass 1 (INIT) is the joint solve of a plain calibration; SKY passes then solve
 the sky terms exactly given the offsets, and OFFSET passes refit every frame's polynomial offset
 and scalar given the sky, in turn. See
 [Scaling up](concepts.md#scaling-up) and
-[N-pass alternating solve](pipeline.md#n-pass-alternating-solve-task-npass).
+[N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 
 ## NumCol, NumSub, NumCh { #numcol }
 
@@ -338,7 +308,7 @@ offsets can absorb ([tuning](pipeline.md#calibration-pipeline-tuning)).
 Copying a run's frame files from the slow disk where they live to fast scratch storage
 (`<scratch>/reproj_nvme_<field name>`, `sc.Compute(scratch)`) before an action reads them in
 parallel, with at most `io_limit` concurrent reads; the copy is deleted at the end unless
-`keep_staged=True` (TOML `cache_dir`, `hdd_io_limit`, `keep_nvme`). See
+`keep_staged=True`. See
 [Scaling up](concepts.md#scaling-up).
 
 ## Observation { #observation }
@@ -373,7 +343,7 @@ constant over each chunk; SPHEREx: a mean-preserving spline in arc radius and de
 ## Offset term { #offset-term }
 
 One block of offsets in the model, on one chunk map, also called an offset map (`sc.Offsets`,
-[`OffsetTerm`][selfcal.models.spec.OffsetTerm]; TOML `[[model.offset]]`). `per="frame"`: an offset
+[`OffsetTerm`][selfcal.models.spec.OffsetTerm]). `per="frame"`: an offset
 per frame and chunk; `per="all"`: one offset vector shared by all frames; `per=` a frame variable:
 one per group of frames with equal values of it; `polynomial=`: see [polybasis](#polybasis). It may
 carry a [coefficient](#coefficient) (`times=`) or a [basis](#basis), and its priors. Map `m`'s offsets are `offsets/map_<m>` in the cal file. See
@@ -381,15 +351,15 @@ carry a [coefficient](#coefficient) (`times=`) or a [basis](#basis), and its pri
 
 ## Outlier threshold { #outlier-threshold }
 
-`sc.Fit(clip=sigma)` (TOML `[calibration] outlier_thresh`): the solve leaves out every sample whose distance from its frame's
-median exceeds this many times `1.4826 · MAD` (the median absolute deviation of the frame). The
+`sc.Fit(clip=sigma)`: the solve leaves out every sample whose distance from its frame's median
+exceeds this many times `1.4826 · MAD` (the median absolute deviation of the frame). The
 [grouped clip](#grouped-clip) scores within groups instead; the mosaic has its own
 [sigma clipping](#sigma-clipping). See
 [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
 
 ## Oversample factor { #oversample }
 
-`sc.Coadd(oversample=)` (default 1; TOML top-level `oversample`): the mosaic samples its detector-plane maps (chunk maps,
+`sc.Coadd(oversample=)` (default 1): the mosaic samples its detector-plane maps (chunk maps,
 valid weights, rendered offsets) on a grid `oversample` times finer than the detector pixels. It
 changes neither the mosaic's grid, which is the reference grid, nor the solve. See
 [The mosaic](concepts.md#the-mosaic).
@@ -413,8 +383,8 @@ Every action plans first, so a run that cannot finish stops before it starts. Se
 ## Polybasis { #polybasis }
 
 An offset term that is a polynomial
-(`sc.Offsets(polynomial=sc.Poly(degree, along=, window=, segments=))`; TOML
-`kind = "polybasis"`, the `spectral_polybasis` mode): the offset is a polynomial along one chunk
+(`sc.Offsets(polynomial=sc.Poly(degree, along=, window=, segments=))`): the offset is a
+polynomial along one chunk
 axis (default the spectral axis) over the `window` of chunks, one per value of the map's group
 axis, and the solve fits its coefficients (a Chebyshev series of degrees 1 to `degree`; the
 per-frame scalar carries the constant). `segments` fits an independent shape on each listed
@@ -423,12 +393,9 @@ sub-range. See [What the data cannot tell apart](concepts.md#what-the-data-canno
 ## Polynomial constraint { #polynomial-constraint }
 
 A soft prior on an offset term (`sc.Offsets(poly_prior=sc.Poly(degree, along=, window=,
-weight=))`; TOML `poly = [{ axis, degree, weight, lo, hi }]`, in the modes `poly_weight`,
-`poly_degree`, `poly_axis` and `spectral_poly_*`): on every run of `degree + 2` consecutive chunks
-along the axis, a row `weight · Σ stencil · O = 0` that vanishes on polynomials of degree `degree`
-or less, so the offset is pulled toward such a polynomial. [Polybasis](#polybasis) is its exact
-form. (In a TOML config the rows are added only with `[calibration] offset_regularization =
-true`.) See
+weight=))`): on every run of `degree + 2` consecutive chunks along the axis, a row
+`weight · Σ stencil · O = 0` that vanishes on polynomials of degree `degree` or less, so the offset
+is pulled toward such a polynomial. [Polybasis](#polybasis) is its exact form. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Preconditioning { #preconditioning }
@@ -440,12 +407,10 @@ touches) are dropped before the solve.
 
 ## Preset { #preset }
 
-A model built from a few settings: in Python `sc.continuum`, `sc.spectral` and `sc.two_block` (and
-SPHEREx's line terms, `spherex.line`); in a TOML config a named mode that fills in the model from a
-few `[params]` keys. The historical SPHEREx mode names are presets of the structural modes: `pahfit` of `spectral`; `pahfit_subch` and `pahfit_lvf` of
-`spectral_softpoly`; `pahfit_lvf_polybasis` and `multiline` of `spectral_polybasis`; `k2_readout`
-of `two_block_fixed`; `tiled` is a variant of `spectral_softpoly` without a mosaic. See
-[Modes](configuration.md#modes-presets-of-the-model).
+A model built from a few settings: `sc.continuum`, `sc.spectral` and `sc.two_block`, and SPHEREx's
+line terms (`spherex.line`). A preset is a plain function that returns an `sc.Model`; a calibration
+variant of your own is written the same way. The named modes of the old TOML configs map to these
+([Migrating from TOML](migrating-from-toml.md#modes)). See [The model](concepts.md#the-model).
 
 ## Prior { #prior }
 
@@ -453,7 +418,7 @@ Linear rows added to the system beside the data rows, to settle what the data le
 priors built into the terms (`sc.Sky(damping=)`, and an offset term's `smooth`, `poly_prior`,
 `mean_zero` and `damping`) and user priors (`sc.Model(priors=[...])`: a function that returns rows
 on the unknowns of named terms, `sc.Prior(fn, terms)`; ready-made: `sc.priors.frame_smoothness`,
-`sky_smoothness`, `toward`; TOML `[[model.prior]]`). See
+`sky_smoothness`, `toward`). See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Recipe { #recipe }
@@ -466,8 +431,8 @@ The machine (`sc.Compute`) is not part of it: it never changes a product. See
 ## Record { #record }
 
 `<field>/records/<action>_<time>_<pid>.json`: what an action was asked and what it ran (the
-settings with every default filled in, the run configs they lowered to, the code version, the
-products, the outcome). `selfcal rerun RECORD` runs the action again. See
+settings with every default filled in, the run specification they lowered to, the code version,
+the products, the outcome). `selfcal rerun RECORD` runs the action again. See
 [The Python API](python-api.md#records).
 
 ## Reference grid { #reference-grid }
@@ -480,17 +445,8 @@ exists. See [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic)
 
 ## Reprojection { #reprojection }
 
-`field.reproject` (TOML task `reproject`): resampling every detector of every raw exposure onto the
-reference grid with the `reproject` package (`method=`: `"exact"`, the default, `"interp"` or
+`field.reproject`: resampling every detector of every raw exposure onto the reference grid with the `reproject` package (`method=`: `"exact"`, the default, `"interp"` or
 `"adaptive"`) and writing the frame files. See [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
-
-## Run config { #run-config }
-
-The TOML form of a run, the form of the shipped production configs; a Python
-[run script](#run-script) is the other. The TOML file describes one run: top-level keys (`task`, `mode`, `output_dir`, `run_name`,
-...) and tables (`[instrument]`, `[params]`, `[calibration]`, `[lsqr]`, `[mosaic]`, `[model]`, ...).
-Products go to the run directory `<output_dir>/<run_name>/`. See
-[Run configuration](configuration.md).
 
 ## Run script { #run-script }
 
@@ -513,28 +469,28 @@ separability.
 `<product>.json`, next to every product a field's action writes: the inputs that decided the
 product's bytes and their fingerprint. A product that exists is reused only when its sidecar's
 inputs are what the action would use, and refused otherwise; `field.adopt` (`selfcal adopt`)
-checks products made without one (by a TOML run) and writes theirs. See
+checks products made without one (before records existed, by a TOML run of an earlier version) and
+writes theirs. See
 [The Python API](python-api.md#a-product-is-reused-only-when-it-was-made-by-the-same-inputs).
 
 ## Sigma clipping { #sigma-clipping }
 
-The mosaic's outlier rejection (`sc.Coadd(clip=sigma)`, which needs `std=True`; TOML `[mosaic]
-apply_sigma_clipping`, `sigma`, `make_std_map`):
-`SC_MEAN_MAP` averages, at each pixel, only the values within `sigma` standard deviations
+The mosaic's outlier rejection (`sc.Coadd(clip=sigma)`, which needs `std=True`): `SC_MEAN_MAP`
+averages, at each pixel, only the values within `sigma` standard deviations
 (`STD_MAP`) of the mean (`MEAN_MAP`). See [The mosaic](concepts.md#the-mosaic).
 
 ## Sky term { #sky-term }
 
 A map on the reference grid, shared by every frame, times a known [coefficient](#coefficient) of
-data variables (`sc.Sky`, [`SkyTerm`][selfcal.models.spec.SkyTerm]; TOML `[[model.sky]]`); without one, `c = 1`
-and the term is a plain sky map, named `continuum` by default. Each term is one map in the cal file
+data variables (`sc.Sky`, [`SkyTerm`][selfcal.models.spec.SkyTerm]); without one, `c = 1` and the
+term is a plain sky map, named `continuum` by default. Each term is one map in the cal file
 (`sky/<name>`). See [The model](concepts.md#the-model).
 
 ## Stem { #stem }
 
 The common part of a job's product names, `<frame_tag>_<job>_<name>`, as in `cal_<stem>.h5` and
 `mosaic_<stem>.fits`: the instrument's [frame tag](#frame-tag), the [job](#job) name and the
-recipe's `name` (a TOML config's `suffix`). See [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
+recipe's `name`. See [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
 
 ## Stitch { #stitch }
 
@@ -550,20 +506,11 @@ the [LVF](#lvf); `num_sub` per channel, with one padding subchannel at each end
 (`num_sub · num_ch + 2` in all). It is the `subchannel` axis, the spectral axis, of the SPHEREx
 chunk map; windows of subchannels are SPHEREx jobs (`spherex.window(name, subchannels=...)`).
 
-## Task { #task }
-
-In a TOML config, what a run does (`task`): `reproject`, `cal` (solve, then mosaic; tiled with
-`[tiling]`), `mosaic` (from an existing cal file), `npass`, or `precompute` (the instrument's
-geometry generator); `task = "tiled"` is read as `cal` with `[tiling]`. In Python these are the
-field's actions, `field.reproject`, `field.calibrate` (with `tiles=` or `passes=`) and
-`field.mosaic`, and `spherex.precompute_lvf`. See
-[From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic) and
-[Run configuration](configuration.md#schema).
-
 ## Tiling { #tiling }
 
 Splitting a large field into tiles of the reference grid (`sc.Tiles(grid=, overlap=)` or
-`sc.Tiles(boxes={...})`; TOML `[tiling]`), solving each tile on its own frames and [stitching](#stitch) the tile skies.
+`sc.Tiles(boxes={...})`), solving each tile on its own frames and [stitching](#stitch) the tile
+skies.
 See [Scaling up](concepts.md#scaling-up).
 
 ## Valid weight { #valid-weight }

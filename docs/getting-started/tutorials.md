@@ -51,11 +51,10 @@ Run one with `pytest -q tests/test_any_telescope.py -k polarimeter`.
 runs the Python API's actions on a toy field: a product reused, refused and adopted, a record run
 again byte for byte, a comparison, a detached run, and the command line (`selfcal plan`,
 `selfcal adopt`).
-[`tests/test_runner_e2e_toy.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_runner_e2e_toy.py)
-runs every task of the TOML runner on synthetic FITS exposures with the built-in `grid` instrument:
-`reproject`, `cal` (with the mosaic), `mosaic` on an existing calibration, and `cal` with a
-`[tiling]` table (two tiles and the Fisher stitch). `python tests/test_runner_e2e_toy.py` runs it
-as a script.
+[`tests/test_python_api.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_python_api.py)
+runs a camera on synthetic FITS exposures through `field.calibrate` (with its mosaic),
+`field.mosaic` on an existing calibration and a tiled solve (two tiles and the Fisher stitch).
+<!-- check: test_python_api.py once its TOML comparison is gone; test_runner_e2e_toy.py removed or rewritten -->
 
 ## Production runs
 
@@ -66,7 +65,5 @@ fields, recipes and tilings of
 [`selfcal_scripts/recipes/spherex.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/selfcal_scripts/recipes/spherex.py)
 and the machine of `selfcal_scripts/recipes/site.py`, point at data on the processing host, and
 show complete, tested settings for each kind of run: `selfcal plan selfcal_scripts/runs/<name>.py`
-prints what one would do.
-[`selfcal_scripts/configs/`](https://github.com/ThomasLiii/PySelfCal/tree/main/selfcal_scripts/configs)
-holds the same runs as TOML configs; [Run configuration](../guide/configuration.md) lists them and
-documents every key.
+prints what one would do. They were TOML configs before October 2026;
+[Migrating from TOML](../guide/migrating-from-toml.md) says where the configs went.

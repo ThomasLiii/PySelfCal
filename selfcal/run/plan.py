@@ -1,10 +1,11 @@
 """The plan of an action: everything checked and resolved before any work starts.
 
-``field.plan(recipe, jobs=...)`` (and every action, first) lowers the settings onto the engine,
-builds the instrument's geometry, checks the model against it (data variables, chunk maps and
-axes, catalogue entries, prior terms), finds the frames and the existing products, and checks
-that the worker processes can import every function the run sends them. It takes seconds and
-computes nothing; printing the plan shows what the action will do.
+``field.plan(recipe, jobs=...)`` (and every action, first) lowers the settings onto the engine
+(:class:`~selfcal.run.runspec.RunSpec`), resolves each engine run (the instrument's geometry, the
+model checked against it: data variables, chunk maps and axes, catalogue entries, prior terms),
+finds the frames and the existing products, and checks that the worker processes can import
+every function the run sends them. It takes seconds and computes nothing; printing the plan shows
+what the action will do. The action then runs on the plan's resolved runs (:attr:`Plan.contexts`).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import sys
 
 from ..config.base import Config, ConfigError
 from ..config.functions import _is_main_guard, function_ref
-from .lower import Lowered, as_recipe, lower
+from .lower import as_recipe, lower
 from .products import Book, check, expected_products, refusal, remedy
 
 __all__ = ['Plan', 'make_plan']
@@ -29,16 +30,17 @@ REFUSED = ('different', 'unrecorded', 'changed')
 
 
 class Plan:
-    """What an action will do (see the module docstring): the engine runs (:attr:`lowered`), the
-    jobs and their products, the frames, the pass schedule, and notes. ``str(plan)`` prints it."""
+    """What an action will do (see the module docstring): the engine runs (:attr:`lowered`, each
+    resolved in :attr:`contexts`), the jobs and their products, the frames, the pass schedule, and
+    notes. ``str(plan)`` prints it."""
 
     def __init__(self, field, action, recipe, lowered, compute, *, tiles=None, passes=None, notes=()):
         self.field, self.action, self.recipe = field, action, recipe
-        self.lowered: list[Lowered] = lowered
+        self.lowered = lowered          # selfcal.run.runspec.RunSpec, one per engine run
         self.compute = compute
         self.tiles, self.passes = tiles, passes
         self.notes = list(notes)
-        self.contexts = []
+        self.contexts = []           # selfcal.run.engine.RunContext of each engine run
         self.products = []           # selfcal.run.products.Product, in the order the engine makes them
         self.book = None             # the products' inputs (selfcal.run.products.Book)
         self.frames = None
@@ -46,7 +48,7 @@ class Plan:
 
     @property
     def jobs(self):
-        return tuple(j for low in self.lowered for j in low.jobs)
+        return tuple(j for spec in self.lowered for j in spec.jobs)
 
     @property
     def refused(self):
@@ -225,39 +227,36 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
     plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
 
     # frames
-    first = lowered[0].cfg
-    where = (first.tiling['full_reproj_dir'] if first.tiling else
-             first.reproj_override or os.path.join(field.path, 'reprojected'))
-    found = _frames_in(where) if first.frame_files is None else [
-        f for f in first.frame_files if os.path.exists(os.path.join(where, os.path.basename(f)))]
-    if first.frame_files is not None and len(found) != len(first.frame_files):
-        raise ConfigError(f"frames=: {len(first.frame_files) - len(found)} of the {len(first.frame_files)} frames "
-                          f"are not in {where}")
+    first = lowered[0]
+    where = (first.tiling.frames_dir if first.tiling is not None else
+             first.frames.in_place or os.path.join(field.path, 'reprojected'))
+    files = first.frames.files
+    found = _frames_in(where) if files is None else [f for f in files if os.path.exists(os.path.join(where, os.path.basename(f)))]
+    if files is not None and len(found) != len(files):
+        raise ConfigError(f"frames=: {len(files) - len(found)} of the {len(files)} frames are not in {where}")
     if not found and action != 'mosaic':
         missing = f"no frames in {where} (reproject the exposures first: field.reproject(...))"
         if not allow_no_frames:                   # only field.plan() shows a plan without frames
             raise ConfigError(missing)
         plan.notes.append(f"{missing}; the model was checked against the instrument without them")
-    n = len(found) if first.n_frames is None else min(first.n_frames, len(found))
+    n = len(found) if first.frames.first_n is None else min(first.frames.first_n, len(found))
     how = None
-    if first.reproj_override is None:
-        how = f"staged ({first.staging}) to " + (first.stage_dir or os.path.join(
-            first.cache_dir, f'reproj_nvme_{field.name}')) if tiles is None else 'staged per tile'
+    if first.frames.in_place is None:
+        how = f"staged ({first.frames.stage}) to {first.frames.stage_dir}" if tiles is None else 'staged per tile'
     plan.frames = (n, where, how)
 
     # the engine's own resolution: geometry, the model checked against the instrument
     from .. import _state
-    for low in lowered:
-        cfg = low.cfg
+    for spec in lowered:
         progress = _state.progress_enabled
         _state.set_progress(False)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                ctx = RunContext.build(cfg)
+                ctx = RunContext.build(spec)
         finally:
             _state.set_progress(progress)
         plan.contexts.append(ctx)
-        groups = cfg.calibration.get('outlier_groups')
+        groups = spec.setup.get('outlier_groups')
         if groups is not None:
             from .engine import clip_groups
             try:
@@ -265,10 +264,10 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
             except ValueError as e:
                 raise ConfigError(f"Fit(clip=...): {e}") from None
         if passes is not None:
-            _check_passes(ctx, recipe, passes, low)
+            _check_passes(ctx, recipe, passes)
         _check_instrument_maps(ctx, recipe, compute)
-        _check_smoothing(ctx, cfg)
-    used = found if first.n_frames is None else found[:n]
+        _check_smoothing(ctx)
+    used = found if first.frames.first_n is None else found[:n]
     plan.frame_list = list(used)
     plan.book = Book(field, recipe, passes=passes, tiles=tiles)
     plan.products = expected_products(plan, plan.book, used)
@@ -296,8 +295,8 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         raise refusals[0] if len(refusals) == 1 else ConfigError(_summary(plan.products, action=action))
     if plan.refused:
         plan.notes.append(_summary(plan.refused, would=True, action=action))
-    for low in lowered:
-        low.cfg.reuse_mosaics = True          # every existing mosaic is current, or is made again
+    for spec in lowered:
+        spec.reuse_mosaics = True                 # every existing mosaic is current, or is made again
 
     if check_workers:
         refs = _function_refs(recipe, set())
@@ -333,19 +332,18 @@ def _summary(products, would=False, action='calibrate'):
     return f"{head}:\n  " + '\n  '.join(lines)
 
 
-def _check_smoothing(ctx, cfg):
+def _check_smoothing(ctx):
     """An offset term smoothed (``smooth`` > 0) on a chunk map with no axis to smooth along would add
     no smoothness rows at all: say so instead."""
     from ..models.spec import DETECTOR_MAP
-    for term in (cfg.model or {}).get('offset', ()):
-        if not term.get('reg_weight') or term.get('adjacency') is not None:
+    for term in ctx.model.offset:
+        if not term.reg_weight or term.adjacency is not None:
             continue
-        name = term.get('map')
-        if name == DETECTOR_MAP:
+        if term.map == DETECTOR_MAP:
             continue                               # one chunk: nothing to smooth
-        cm = ctx.geom.chunk_map if name is None else ctx.geom.chunk_maps.get(name)
+        cm = ctx.geom.chunk_map if term.map is None else ctx.geom.chunk_maps.get(term.map)
         if cm is not None and not tuple(cm.adjacency_axes or ()):
-            raise ConfigError(f"Offsets({term.get('name') or ''!r}, smooth={term['reg_weight']}): the chunk map "
+            raise ConfigError(f"Offsets({term.name or ''!r}, smooth={term.reg_weight}): the chunk map "
                               f"{cm.name!r} declares no axes to smooth along; give smooth_along=(...) (its axes: "
                               f"{list(cm.axes.names) if cm.axes is not None else []}), or the map adjacency_axes")
 
@@ -357,17 +355,18 @@ def _check_instrument_maps(ctx, recipe, compute):
     if c is None or not c.instrument_maps or ctx.inst.aux_coadds(ctx.geom) is None:
         return
     if not c.std:
-        raise ConfigError(f"Coadd(instrument_maps=True): {ctx.inst.name}'s instrument maps are coadded against the std "
+        raise ConfigError(f"Coadd(instrument_maps=True): {type(ctx.inst).__name__}'s instrument maps are coadded against the std "
                           f"map; give Coadd(std=True), or instrument_maps=False")
     if c.clip is None and not compute.cache_frames:
         raise ConfigError("Coadd(instrument_maps=True): the instrument maps are coadded in the sigma-clip pass or over "
                           "the frame cache; give Coadd(clip=...) or Compute(cache_frames=True), or instrument_maps=False")
 
 
-def _check_passes(ctx, recipe, passes, low):
+def _check_passes(ctx, recipe, passes):
     cm = ctx.geom.chunk_map
-    if len(low.jobs) != 1:
-        raise ConfigError(f"calibrate(passes=...): the N-pass solve runs one job; got {[j.name for j in low.jobs]}")
+    jobs = ctx.jobs()
+    if len(jobs) != 1:
+        raise ConfigError(f"calibrate(passes=...): the N-pass solve runs one job; got {[j.name for j in jobs]}")
     if recipe.model.spectral_window() is None:
         raise ConfigError("calibrate(passes=...): the OFFSET pass refits a polynomial along the spectral axis over "
                           "the model's window: give the model a polynomial with a window (Offsets(polynomial="

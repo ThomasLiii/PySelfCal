@@ -11,15 +11,14 @@ A job is one map: a spectral channel (:func:`channel`), several channels solved 
 (:class:`~selfcal.instruments.contract.Instrument`): every LVF / subchannel specific of a run
 (the stripped (arc) chunk map with its ``(subchannel, column)`` axes, the H2RG readout-channel
 map, the ``BC`` / ``BW`` wavelength maps, the subchannel masks of a job, the smooth arc offset
-renderer, the wavelength coadd of the mosaic, the FINAST astrometry filter) lives here. The
-TOML configs' ``spherex`` instrument
-(:class:`~selfcal.instruments.spherex.adapter.SPHERExInstrument`) reads its ``[instrument]``
-table as these settings (:meth:`SPHEREx.from_table`, :meth:`SPHEREx.jobs_from_table`).
+renderer, the wavelength coadd of the mosaic, the FINAST astrometry filter) lives here.
 
-:func:`line` is a sky term with one of the shipped line templates.
+:func:`line` is a sky term with one of the shipped line templates; :func:`precompute_lvf` fits
+the LVF arcs the geometry reads; :func:`zodi_anchor` fits a calibration's zodiacal-light anchor.
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 from dataclasses import KW_ONLY, dataclass
@@ -27,14 +26,23 @@ from functools import partial
 
 import numpy as np
 
+from ...config import (
+    ENV_LVF_PARAMS_DIR,
+    ENV_SPHEREX_CALIB_DIR,
+    ENV_SPHEREX_CHANNEL_FILE,
+    resolve_path,
+)
 from ...config.base import ConfigError
 from ...models.model import Sky, template
 from ...models.offset_structure import ChunkAxes
 from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
 from ..contract import Instrument, Job
-from .adapter import SUBCH_WINDOWS, make_readout_chunk_map, upsample_chunk_map
-from .adapter import Job as _EngineJob
+from ..grid import upsample_chunk_map
+from .adapter import SUBCH_WINDOWS, make_readout_chunk_map
 from .spherex_utility import (
+    _LVF_PARAMS_DIR,
+    DEFAULT_CALIBRATION_DIR,
+    DEFAULT_CHANNEL_FILE,
     fast_vertical_dist,
     load_calibration,
     load_lvf_params,
@@ -73,10 +81,9 @@ class SPHEREx(Instrument):
     calib_dir: str | None = None
     lvf_dir: str | None = None
 
-    # Constants of the instrument, not settings: without an annotation they are no dataclass
-    # fields, so they stay out of the products' fingerprints.
+    # A constant of the instrument, not a setting: without an annotation it is no dataclass field,
+    # so it stays out of the products' fingerprints.
     unit = 'MJy/sr'
-    capabilities = frozenset({'wavelength', 'spectral_axis', 'subchannel'})
 
     def _validate(self):
         if self.detector not in range(1, 7):
@@ -84,55 +91,6 @@ class SPHEREx(Instrument):
         for k in ('num_col', 'num_sub', 'num_ch'):
             if getattr(self, k) < 1:
                 raise ConfigError(f"SPHEREx({k}={getattr(self, k)}): at least 1")
-
-    @classmethod
-    def from_table(cls, table) -> SPHEREx:
-        """The settings of a ``spherex`` ``[instrument]`` table: ``detector``, ``num_sub``,
-        ``num_ch`` and ``num_col`` (required: a missing one raises ``KeyError``) and the optional
-        ``calib_dir`` / ``lvf_dir``. The job selectors are :meth:`jobs_from_table`'s; any other key
-        is ignored."""
-        return cls(table['detector'], num_sub=table['num_sub'], num_ch=table['num_ch'], num_col=table['num_col'],
-                   calib_dir=table.get('calib_dir'), lvf_dir=table.get('lvf_dir'))
-
-    @classmethod
-    def jobs_from_table(cls, table) -> list:
-        """The engine's jobs (:class:`~selfcal.instruments.spherex.adapter.Job`) a ``spherex``
-        ``[instrument]`` table selects, with exactly one of: ``windows`` (names of preset windows,
-        or of ``window_defs`` entries ``{name: [lo, hi]}``), ``subch_window = [lo, hi]`` (named
-        ``window_name``, default ``subch<lo>_<hi>``), ``channels`` (a list of channel groups,
-        ``[[17], [18, 19]]``) or ``channel_range = [lo, hi]`` (one job per channel ``lo`` to ``hi -
-        1``). A window job's value is ``(lo, hi)``, a channel job's the list of its channels; a
-        name is taken as the table gives it. Raises ``ValueError`` for an unknown window or a
-        table with none of them."""
-        windows = table.get('windows')
-        subch_window = table.get('subch_window')
-        channels = table.get('channels')
-        crange = table.get('channel_range')
-        window_defs = table.get('window_defs', {})
-        if windows is not None:
-            out = []
-            for w in windows:
-                if w in window_defs:
-                    lo, hi = window_defs[w]
-                elif w in SUBCH_WINDOWS:
-                    lo, hi = SUBCH_WINDOWS[w]
-                else:
-                    raise ValueError(
-                        f"unknown window {w!r}; add it to [instrument.window_defs] "
-                        f"or use subch_window")
-                out.append(_EngineJob(name=w, kind='window', value=(int(lo), int(hi))))
-            return out
-        if subch_window is not None:
-            lo, hi = subch_window
-            name = table.get('window_name', f'subch{lo}_{hi}')
-            return [_EngineJob(name=name, kind='window', value=(int(lo), int(hi)))]
-        if crange is not None:
-            channels = [[i] for i in range(int(crange[0]), int(crange[1]))]
-        if channels is not None:
-            return [_EngineJob(name='Ch' + '-'.join(map(str, c)), kind='channels', value=[int(x) for x in c])
-                    for c in channels]
-        raise ValueError("[instrument] needs one of: windows / subch_window / "
-                         "channels / channel_range")
 
     @property
     def product_tag(self) -> str:
@@ -202,6 +160,21 @@ class SPHEREx(Instrument):
             primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
             extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
                    'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
+
+    def geometry_files(self):
+        """The files :meth:`geometry` reads, resolved as its loaders resolve them: the LVF arc fit,
+        the band-centre and band-width maps (of ``calib_dir``, and of the default directory the arc
+        maps read) and the channel table."""
+        lvf = resolve_path(self.lvf_dir, env_var=ENV_LVF_PARAMS_DIR, default=_LVF_PARAMS_DIR, must_exist=False)
+        files = [os.path.join(lvf, f'lvf_params_D{self.detector}.npy')]
+        for calib in dict.fromkeys((self.calib_dir, None)):
+            directory = resolve_path(calib, env_var=ENV_SPHEREX_CALIB_DIR, default=DEFAULT_CALIBRATION_DIR,
+                                     must_exist=False)
+            for kind in ('BC', 'BW'):
+                files += sorted(glob.glob(os.path.join(directory, f'*{kind}_Band{self.detector}.fits')))
+        files.append(resolve_path(None, env_var=ENV_SPHEREX_CHANNEL_FILE, default=DEFAULT_CHANNEL_FILE,
+                                  must_exist=False))
+        return tuple(files)
 
     def job_geometry(self, geom, job) -> JobGeometry:
         """Return the valid masks and the solve and mosaic weights of one job's subchannels.
@@ -299,33 +272,11 @@ class SPHEREx(Instrument):
         (:func:`~selfcal.instruments.spherex.line_catalog.pah_3p29_coefficient`)
         is a Gaussian of the band-centre map ``BC`` at the PAH 3.29 um feature,
         whose per-observation width combines the band-width map ``BW`` with the
-        intrinsic PAH width. A ``[model]`` term selects it with
-        ``coefficient = { catalog = "pah_3p29" }`` (``sc.catalog("pah_3p29")``), optionally
-        overriding the factory's ``center`` and ``sigma`` (um); the spectral modes select an
-        entry with ``[params].line`` (default ``pah_3p29``) when they are given
-        no ``lines`` or ``line_template_npz``. Each call returns a new copy of
+        intrinsic PAH width. A sky term selects it with ``sc.catalog("pah_3p29")``, optionally
+        overriding the factory's ``center`` and ``sigma`` (um). Each call returns a new copy of
         :data:`~selfcal.instruments.spherex.line_catalog.CATALOG`."""
         from .line_catalog import CATALOG
         return dict(CATALOG)
-
-    # ---- lowering -------------------------------------------------------------------------
-    def engine(self, jobs):
-        """``("spherex", table)``: the registered instrument and its ``[instrument]`` table."""
-        table = {'name': 'spherex', 'detector': self.detector, 'num_sub': self.num_sub, 'num_ch': self.num_ch,
-                 'num_col': self.num_col}
-        if self.calib_dir is not None:
-            table['calib_dir'] = self.calib_dir
-        if self.lvf_dir is not None:
-            table['lvf_dir'] = self.lvf_dir
-        kinds = {j.kind for j in jobs}
-        if len(kinds) > 1:
-            raise ConfigError("SPHEREx: channel jobs and window jobs run separately")
-        if kinds == {'channels'}:
-            table['channels'] = [list(j.value) for j in jobs]
-        elif kinds == {'window'}:
-            table['windows'] = [j.name for j in jobs]
-            table['window_defs'] = {j.name: list(j.value) for j in jobs}
-        return 'spherex', table
 
 
 def channel(c) -> Job:
@@ -378,14 +329,15 @@ def line(name, damping=None, *, file=None) -> Sky:
 def precompute_lvf(detectors, *, output_dir=None, calib_dir=None, num_sub=10, num_ch=34):
     """Fit and save the LVF arc parameters ``lvf_params_D<n>.npy`` of each detector in
     ``detectors`` (into ``output_dir``; default: ``$SELFCAL_LVF_PARAMS_DIR``, else the package's
-    data). The package ships them for detectors 1 to 6; this regenerates them."""
-    from .adapter import SPHERExInstrument
-    table = {'detectors': [int(d) for d in detectors], 'num_sub': int(num_sub), 'num_ch': int(num_ch)}
-    if output_dir is not None:
-        table['lvf_output_dir'] = str(output_dir)
-    if calib_dir is not None:
-        table['calib_dir'] = str(calib_dir)
-    SPHERExInstrument().precompute(table)
+    data), from its band-centre map (in ``calib_dir``; default: ``$SELFCAL_SPHEREX_CALIB_DIR``, else
+    the default directory). The package ships them for detectors 1 to 6; this regenerates them."""
+    from .spherex_utility import make_fiducial_chunk_map, save_lvf_params
+    for det in detectors:
+        det_BC, _ = load_calibration(band=int(det), calibration_dir=calib_dir)
+        _, lvf_params, _ = make_fiducial_chunk_map(int(det), det_BC, num_subchannels=int(num_sub),
+                                                   num_channels=int(num_ch), oversample_factor=1)
+        lvf_params['filename'] = f'lvf_params_D{int(det)}.npy'
+        save_lvf_params(lvf_params, output_dir=None if output_dir is None else str(output_dir))
 
 
 def zodi_anchor(result, predictions, *, clip_window_days=7.0, clip_sigma=3.0, clip_iters=2):

@@ -3,10 +3,9 @@ the MEASURED SPHEREx spectral response (band-general LVFResponse kernel).
 
 G(lambda_c) = int L(lambda) R(lambda; lambda_c) dlambda, tabulated vs channel
 center (BC) — what selfcal uses as the per-pixel line coefficient. Saves npz
-with center_um / G / G_peaknorm / fwhm_conv (the ``template_npz`` schema
-loaded by the runner's spectral-fit modes — see ``spectral_sky_terms`` in
-``selfcal/run/modes/base.py`` and the ``template`` coefficient of
-``selfcal.models.spec``, which read ``center_um`` and ``G``/``G_peaknorm``) plus a diagnostic PNG (intrinsic | response | template).
+with center_um / G / G_peaknorm / fwhm_conv (the file of a ``sc.template(file)`` sky
+coefficient: the ``template`` coefficient of ``selfcal.models.spec`` reads ``center_um`` and
+``G``/``G_peaknorm``) plus a diagnostic PNG (intrinsic | response | template).
 
 Intrinsic shapes:
   drude  --center-um C --fwhm-um F     (Draine Drude; PAH-like broad features)
@@ -23,8 +22,9 @@ import argparse
 import os
 import sys
 
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -106,18 +106,21 @@ def main():
         ax[0].axvline(lam0, color='b', lw=2)
     ax[0].axvline(lam0, color='r', ls=':', lw=1)
     ax[0].set_title(f"(1) intrinsic {a.intrinsic} @ {lam0} um")
-    ax[0].set_xlabel(r"$\lambda$ [$\mu$m]"); ax[0].grid(alpha=0.25)
+    ax[0].set_xlabel(r"$\lambda$ [$\mu$m]")
+    ax[0].grid(alpha=0.25)
     lsf_line = m.lsf(lam0)(lam)
     ax[1].plot(lam, lsf_line / lsf_line.max(), 'g-', lw=2)
     ax[1].axvline(lam0, color='r', ls=':', lw=1)
     ax[1].set_title(f"(2) measured Band-{a.band} response at line center\n"
                     f"FWHM={1e3 * m.lsf_width(lam0):.1f} nm")
-    ax[1].set_xlabel(r"$\lambda$ [$\mu$m]"); ax[1].grid(alpha=0.25)
+    ax[1].set_xlabel(r"$\lambda$ [$\mu$m]")
+    ax[1].grid(alpha=0.25)
     ax[2].plot(cen, Gn, 'm-', lw=2.5)
     ax[2].axvline(lam0, color='r', ls=':', lw=1)
     ax[2].set_title(f"(3) template G($\\lambda_c$), FWHM={1e3 * fwhm_conv:.1f} nm")
     ax[2].set_xlabel(r"channel center $\lambda_c$ = BC [$\mu$m]")
-    ax[2].set_ylabel("line coefficient [peak=1]"); ax[2].grid(alpha=0.25)
+    ax[2].set_ylabel("line coefficient [peak=1]")
+    ax[2].grid(alpha=0.25)
     fig.suptitle(f"{a.name}: {a.intrinsic} x measured SPHEREx Band-{a.band} "
                  f"response", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.95])

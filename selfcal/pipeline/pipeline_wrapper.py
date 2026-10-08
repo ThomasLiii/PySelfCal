@@ -9,7 +9,7 @@
 - :class:`Mosaicker` — subtracts a calibration's offsets from the frames and coadds
   them (:mod:`selfcal.core.coadd`) into a multi-extension FITS mosaic.
 
-The run engine (:mod:`selfcal.run`) drives these classes from a TOML config.
+The run engine (:mod:`selfcal.run`) drives these classes for the Python API's actions.
 """
 from __future__ import annotations
 
@@ -20,33 +20,31 @@ import logging
 import os
 import shutil
 import time
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 from astropy.io import fits
 from tqdm import tqdm
 
-import warnings
-
 from .. import _state
 from ..core import coadd
+from ..core.layout import SystemLayout
+from ..core.lsqr import apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky, setup_lsqr
+from ..core.shmbuf import worker_pool_context
+from ..core.solution import parse_x_sky
+from ..core.spill import restore_pixel_state, spill_pixel_state
+from ..geometry import wcs_helper
 from ..io.atomic import atomic_path
-from ..io.reprojection import batch_reproject
-from ..io.reproj import load_reproj_file, parse_reproj_basename, reproj_basename
 from ..io.cal_writer import write_sky_groups
 from ..io.calfile import CalFile
-from ..core.lsqr import setup_lsqr, apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky
-from ..core.solution import parse_x_sky
-from ..geometry import wcs_helper
-from ..core.layout import SystemLayout
-from ..core.spill import spill_pixel_state, restore_pixel_state
-from ..core.shmbuf import worker_pool_context
+from ..io.reproj import load_reproj_file, parse_reproj_basename, reproj_basename
+from ..io.reprojection import batch_reproject
 from ..models.sky_model import SkyModel
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -703,13 +701,12 @@ class Calibrator(Reprojector):
         # Set when setup_lsqr parked the pixel state on scratch disk; the
         # arrays are materialised on first use (save_calibration).
         self._pixel_spill = None
-        # When setup_lsqr runs its early zero-column compaction (enabled by
-        # ``compact_zero_columns``, skipped when any map uses template mode),
-        # it returns a CSR matrix that has already had its zero columns
-        # eliminated. ``active_mask`` (length num_cols_full) marks which
+        # When setup_lsqr runs its early zero-column compaction (skipped when a
+        # constraint row touches an otherwise-uncovered column), it returns a
+        # CSR matrix that has already had its zero columns eliminated. ``active_mask`` (length num_cols_full) marks which
         # original columns survived; apply_lsqr uses it to expand the
         # compact solution back to the full layout. Both are None in the
-        # uncompacted (template-mode) path.
+        # uncompacted path.
         self.active_mask = None
         self.num_cols_full = None
         # If set to a non-None float, save_calibration writes it as an
@@ -737,7 +734,6 @@ class Calibrator(Reprojector):
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
                    outlier_thresh: float = 3.0, outlier_group_edges=None,
-                   outlier_subchannel_edges=None,
                    ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
@@ -749,19 +745,14 @@ class Calibrator(Reprojector):
                    postprocess_func: Callable | None = None,
                    preprocess_func: Callable | None = None,
                    weighted_damping: bool = False, damp_weight: float = 0.1,
-                   damp_offset: float = 0.0,
                    damp_offset_maps: list[float] | None = None,
                    mean_offset_group_rows: bool = False,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
                    aux_keys: list[str] | None = None,
-                   outlier_aux_key: str | None = None,
-                   spectral_fit: bool = False, line_center: float | None = None,
-                   line_sigma: float | None = None,
                    damp_weight_line: float | None = None,
                    offset_model: OffsetModel | None = None,
                    sky_model: SkyModel | None = None,
-                   compact_zero_columns: bool = True,
                    sky_rhs_moments: bool = False,
                    batch_spill_dir: str | None = None,
                    variables=None, weight_function=None, priors: list | None = None,
@@ -809,10 +800,8 @@ class Calibrator(Reprojector):
             ``mean_offsets_list``/``poly_basis_list``/``use_per_frame_scalar``;
             when given it overrides all of those flat kwargs.
         sky_model : SkyModel or None, optional
-            Recommended way to specify the sky model (continuum-only, or
-            continuum plus spectral components). Supersedes the deprecated
-            ``spectral_fit``/``line_center``/``line_sigma`` flags. Defaults to
-            ``SkyModel.continuum_only()``.
+            The sky model (continuum-only, or continuum plus spectral
+            components). Defaults to ``SkyModel.continuum_only()``.
         chunk_maps : list of np.ndarray or None, optional
             Deprecated flat kwarg (prefer ``offset_model``). List of K chunk
             maps, each 0-indexed and contiguous, all sharing one shape.
@@ -874,12 +863,9 @@ class Calibrator(Reprojector):
             Scale the LSQR damping per column by coverage.
         damp_weight : float, optional
             Base damping weight applied to the offset columns.
-        damp_offset : float, optional
-            Additive offset added to the per-column damping.
         damp_offset_maps : list of float or None, optional
             Per-map coverage-weighted offset damping (length K); maps with
             weight 0 stay free, the per-frame scalar is never damped.
-            Mutually exclusive with ``damp_offset > 0``.
         mean_offset_group_rows : bool, optional
             Emit a det-grouped map's mean-offset anchor once per group
             (weight ``w·√k``) instead of once per frame. Same normal
@@ -894,25 +880,9 @@ class Calibrator(Reprojector):
             Names of the ``det_aux`` entries (the keys the sky model's components
             read, e.g. an instrument's wavelength map). ``None`` keeps the
             historical ``['BC', 'BW']`` positional convention.
-        outlier_aux_key : str or None, optional
-            Which aux map the grouped outlier clip (``outlier_subchannel_edges``)
-            bins on (default ``'BC'``).
-            Auxiliary per-detector array carried alongside the data (e.g. a
-            per-sample wavelength map for spectral fits).
-        spectral_fit : bool, optional
-            Deprecated (prefer ``sky_model``). When True builds a
-            continuum-plus-line SkyModel from ``line_center``/``line_sigma``.
-        line_center : float or None, optional
-            Deprecated (prefer ``sky_model``). Line center for the legacy
-            spectral-fit shim.
-        line_sigma : float or None, optional
-            Deprecated (prefer ``sky_model``). Line sigma for the legacy
-            spectral-fit shim.
         damp_weight_line : float or None, optional
-            Damping weight applied to the line (spectral) sky block.
-        compact_zero_columns : bool, optional
-            Drop zero-coverage columns from the assembled CSR early (default
-            True); automatically skipped in template mode.
+            Damping weight of the sky terms after the first that set none of
+            their own (default ``3 * damp_weight``).
         batch_spill_dir : str or None, optional
             When set, workers stream each batch's bulk COO arrays to files
             under this directory instead of SharedMemory (byte-equal output,
@@ -978,21 +948,7 @@ class Calibrator(Reprojector):
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
 
-        # Resolve the sky model. sky_model= is the forward-looking API; the
-        # outlier_group_edges is the generic name of the grouped clip's bin edges
-        # (groups = values of the chunk map's spectral axis); the historical
-        # spelling outlier_subchannel_edges is accepted.
-        if outlier_group_edges is not None:
-            if outlier_subchannel_edges is not None:
-                raise ValueError("give outlier_group_edges or outlier_subchannel_edges, not both")
-            outlier_subchannel_edges = outlier_group_edges
         # The sky is always an explicit SkyModel (continuum-only by default).
-        # The historical spectral_fit flag built a SPHEREx PAH model here; it is
-        # gone — build the model (e.g. from the instrument's line catalogue,
-        # ``selfcal.instruments.spherex.line_catalog.pah_3p29``) and pass it.
-        if spectral_fit:
-            raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
-                             "(e.g. selfcal.instruments.spherex.line_catalog.pah_3p29(line_center, line_sigma)).")
         self.sky_model = sky_model if sky_model is not None else SkyModel.continuum_only()
 
         with timer("Setup LSQR"):
@@ -1002,7 +958,7 @@ class Calibrator(Reprojector):
                 grid_valid_weight=grid_valid_weight,
                 apply_mask=apply_mask, apply_weight=apply_weight,
                 max_workers=max_workers, outlier_thresh=outlier_thresh,
-                outlier_subchannel_edges=outlier_subchannel_edges,
+                outlier_group_edges=outlier_group_edges,
                 ignore_list=ignore_list, oversample_factor=oversample_factor,
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
@@ -1014,14 +970,11 @@ class Calibrator(Reprojector):
                 use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
-                damp_offset=damp_offset, damp_offset_maps=damp_offset_maps,
+                damp_offset_maps=damp_offset_maps,
                 mean_offset_group_rows=mean_offset_group_rows,
                 group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
-                aux_keys=aux_keys, outlier_aux_key=outlier_aux_key,
-                line_center=line_center,
-                line_sigma=line_sigma, damp_weight_line=damp_weight_line,
+                aux_keys=aux_keys, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
-                compact_zero_columns=compact_zero_columns,
                 sky_rhs_moments=sky_rhs_moments,
                 batch_spill_dir=batch_spill_dir,
                 basis_list=basis_list, variables=variables,
@@ -1074,8 +1027,7 @@ class Calibrator(Reprojector):
         self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
 
-    def solve_sky_closed_form(self, damp_weight: float = 0.0,
-                              damp_weight_line: float | None = None) -> np.ndarray:
+    def solve_sky_closed_form(self, damp_weights) -> np.ndarray:
         """Solve a K=0 SKY-ONLY system in closed form per pixel (no LSQR).
 
         Requires ``setup_lsqr(chunk_maps=[], sky_model=..., sky_rhs_moments=True)``
@@ -1083,8 +1035,9 @@ class Calibrator(Reprojector):
         full column layout (sky blocks only — there are no offset/scalar columns
         in a K=0 solve) so ``save_calibration`` works unchanged.
 
-        Damping mirrors the LSQR path (coverage-weighted Tikhonov per block).
-        See :func:`selfcal.core.solution.solve_sky_closed_form` for why this
+        ``damp_weights``: each sky term's damping (coverage-weighted Tikhonov per
+        block, as in the LSQR path; :meth:`SkyModel.damp_weights`). See
+        :func:`selfcal.core.solution.solve_sky_closed_form` for why this
         replaces the iterative solve for sky-only systems.
         """
         from ..core.solution import solve_sky_closed_form as _closed
@@ -1096,10 +1049,9 @@ class Calibrator(Reprojector):
         self._materialize_pixel_state()
         J = self.num_sky_blocks
         num_sky = self.ref_shape[0] * self.ref_shape[1]
-        dws = self.sky_model.damp_weights(damp_weight, damp_weight_line)
         with timer("Closed-form sky solve"):
             self.x = _closed(self.pixel_fisher, self.pixel_cross, self.pixel_rhs,
-                             self.pixel_counts, num_sky, J, damp_weights=dws)
+                             self.pixel_counts, num_sky, J, damp_weights=list(damp_weights))
         return self.x
 
     def _materialize_pixel_state(self):
@@ -1149,9 +1101,8 @@ class Calibrator(Reprojector):
 
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
-                   precondition: bool = True, resume: bool = False,
-                   solver: str = 'lsmr', use_float32: bool = False,
-                   n_threads: int = 32, keep_state: bool = False) -> None:
+                   precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
+                   n_threads: int = 32) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x``.
 
         Parameters
@@ -1169,74 +1120,51 @@ class Calibrator(Reprojector):
             Maximum solver iterations.
         precondition : bool, optional
             Enable diagonal preconditioning of the system.
-        resume : bool, optional
-            When True, warm-start from the previous ``self.x`` (if any).
         solver : str, optional
             Iterative solver to use (``'lsmr'`` or ``'lsqr'``).
         use_float32 : bool, optional
             Solve in single precision to halve the working-set memory.
         n_threads : int, optional
             Threads for the parallel sparse matrix-vector products.
-        keep_state : bool, optional
-            When True, retain ``self.A``/``self.b`` after the solve so the
-            system can be re-solved without rebuilding; when False (default)
-            the operands are released to minimize peak memory.
 
         Returns
         -------
         None
         """
-        if resume:
-            if self.x is None:
-                logger.warning("No previous solution found. Starting from scratch.")
-            else:
-                x0 = self.x
-                logger.info("Resuming LSQR from previous solution.")
         if self.A is None or self.b is None:
             raise ValueError("LSQR matrix A and vector b must be set up before applying LSQR.")
         with timer("LSQR"):
-            # When keep_state=False, hand A / b / x0 to apply_lsqr WITHOUT keeping
-            # any reference in this method: a plain `A_local = self.A` local would
-            # pin the arrays for the entire solve (the f64 b holds 8 bytes per
-            # retained data sample — e.g. ~22 GB at ~2.7e9 rows — and a COO A
-            # costs ~12-16 bytes/nnz, i.e. ~140 GB at nnz ~1e10),
-            # defeating the release that apply_lsqr's internal
-            # `del`/rebinds are meant to enable. The list-pop idiom transfers
-            # ownership: after the pops, the callee's parameters hold the only
-            # references, so the f64 b really is freed right after its float32
+            # Hand A / b / x0 to apply_lsqr WITHOUT keeping any reference in this
+            # method: a plain `A_local = self.A` local would pin the arrays for the
+            # entire solve (the f64 b holds 8 bytes per retained data sample — e.g.
+            # ~22 GB at ~2.7e9 rows — and a COO A costs ~12-16 bytes/nnz, i.e.
+            # ~140 GB at nnz ~1e10), defeating the release that apply_lsqr's
+            # internal `del`/rebinds are meant to enable. The list-pop idiom
+            # transfers ownership: after the pops, the callee's parameters hold the
+            # only references, so the f64 b really is freed right after its float32
             # cast and the full-layout x0 right after its active_mask compress.
-            # When keep_state=True, retain self.A/self.b/self.active_mask/
-            # self.num_cols_full so a caller can re-solve (e.g., iter_lim sweep)
-            # without rebuilding the system.
             active_mask_local = getattr(self, "active_mask", None)
             num_cols_full_local = getattr(self, "num_cols_full", None)
-            if not keep_state:
-                _owned = [self.A, self.b, x0]
-                self.A = None
-                self.b = None
-                self.active_mask = None
-                del x0
-                # Spill setup products unused during the solve; restored (byte
-                # identically) in the finally so save_calibration and any
-                # post-solve consumer see unchanged state even on error.
-                _spill_dir = self._spill_pixel_state()
-                try:
-                    self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
-                                                x0=_owned.pop(0), a_owned=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                                solver=solver, use_float32=use_float32, n_threads=n_threads,
-                                                active_mask=active_mask_local,
-                                                num_cols_full=num_cols_full_local)
-                finally:
-                    if _spill_dir is not None:
-                        self._restore_pixel_state(_spill_dir)
-                self.num_cols_full = None
-                del active_mask_local
-            else:
-                self.x = apply_lsqr(self.A, self.b, ref_shape=self.ref_shape,
-                                            x0=x0, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
-                                            solver=solver, use_float32=use_float32, n_threads=n_threads,
-                                            active_mask=active_mask_local,
-                                            num_cols_full=num_cols_full_local)
+            _owned = [self.A, self.b, x0]
+            self.A = None
+            self.b = None
+            self.active_mask = None
+            del x0
+            # Spill setup products unused during the solve; restored (byte
+            # identically) in the finally so save_calibration and any
+            # post-solve consumer see unchanged state even on error.
+            _spill_dir = self._spill_pixel_state()
+            try:
+                self.x = apply_lsqr(_owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape,
+                                    x0=_owned.pop(0), a_owned=True, atol=atol, btol=btol, damp=damp,
+                                    iter_lim=iter_lim, precondition=precondition, solver=solver,
+                                    use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
+                                    num_cols_full=num_cols_full_local)
+            finally:
+                if _spill_dir is not None:
+                    self._restore_pixel_state(_spill_dir)
+            self.num_cols_full = None
+            del active_mask_local
 
     def load_calibration(self, cal_path: str | None = None) -> None:
         """Load a saved calibration (tri-generation schema).
@@ -1328,7 +1256,7 @@ class Calibrator(Reprojector):
         pb = self._poly_basis_for(m)
         if pb is not None:
             from ..models.offset_basis import eval_offset_basis, n_coef
-            ng = int(pb['num_groups']); ncf = n_coef(pb)
+            ng, ncf = int(pb['num_groups']), n_coef(pb)
             coeffs = np.asarray(det_offset_m).reshape(-1, ng, ncf)         # (nf, num_groups, ncf)
             chunk_group = np.asarray(pb['chunk_group'])                    # (num_chunks,)
             B = eval_offset_basis(np.asarray(pb['chunk_coord']), pb)       # (num_chunks, ncf)
@@ -1617,7 +1545,7 @@ class Mosaicker(Reprojector):
         self.skymap_coverage = None
         self.skymap_fisher = None
         self.skymap_line_fisher = None
-        # `unit` = the calibrated data's unit (the instrument's data_unit) -> FITS BUNIT.
+        # `unit` = the calibrated data's unit (the instrument's unit) -> FITS BUNIT.
         self.unit = unit
         self.maps = {'mean_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
                      'std_map': {'data': None, 'weight': None, 'aux': None, 'unit': unit},
@@ -1671,7 +1599,7 @@ class Mosaicker(Reprojector):
         det_offset_funcs: list[Callable] | None = None, cache_batch_size: int = 10,
         coadd_batch_size: int = 10, cache_dir: str = 'cache/',
         cache_intermediate: bool = False, det_aux: np.ndarray | None = None,
-        preprocess_func: Callable | None = None, postprocess_func: Callable | None = None,
+        postprocess_func: Callable | None = None,
         valid_chunk_thresh: float = 0.01,
         wav_maps: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
         """Build coadded maps applying per-map calibration offsets.
@@ -1725,8 +1653,6 @@ class Mosaicker(Reprojector):
         det_aux : np.ndarray or None, optional
             Auxiliary per-detector array carried alongside the data (e.g. a
             per-sample wavelength map).
-        preprocess_func : Callable or None, optional
-            Callable applied to each subframe's ``locals()`` before coadding.
         postprocess_func : Callable or None, optional
             Callable applied to each subframe's ``locals()`` after coadding.
         valid_chunk_thresh : float, optional
@@ -1805,7 +1731,6 @@ class Mosaicker(Reprojector):
                 cache_dir=cache_dir,
                 cache_intermediate=cache_intermediate,
                 det_aux=det_aux,
-                preprocess_func=preprocess_func,
                 postprocess_func=postprocess_func,
                 make_std_map=make_std_map,
                 apply_sigma_clipping=apply_sigma_clipping,

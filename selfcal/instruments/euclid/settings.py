@@ -3,9 +3,7 @@
 :class:`Euclid` implements the instrument contract
 (:class:`~selfcal.instruments.contract.Instrument`): the exposure layout of 16 detectors per
 file, the grid, stripe and tilt chunk maps, the optional detector-edge taper and the mosaic
-renderers (the helpers are in :mod:`~selfcal.instruments.euclid.adapter`). The TOML configs'
-``euclid`` instrument (:class:`~selfcal.instruments.euclid.adapter.EuclidInstrument`) reads its
-``[instrument]`` table as these settings (:meth:`Euclid.from_table`).
+renderers (the helpers are in :mod:`~selfcal.instruments.euclid.adapter`).
 """
 from __future__ import annotations
 
@@ -65,26 +63,6 @@ class Euclid(Instrument):
         if self.strips is not None and self.strips < 1:
             raise ConfigError(f"Euclid(strips={self.strips}): at least 1")
 
-    @classmethod
-    def from_table(cls, table) -> Euclid:
-        """The settings of a ``euclid`` ``[instrument]`` table: ``band``, ``chunks``, ``strips``,
-        ``tilt_strips``, ``edge_zero_px``, ``edge_ramp_px``, ``detectors``, ``det_shape``,
-        ``ref_use_ext`` (the ``reference_ext`` setting) and ``tag``, each optional (the settings'
-        defaults); any other key is ignored."""
-        kw = {}
-        if 'band' in table:
-            kw['band'] = str(table['band'])
-        for k in ('chunks', 'strips', 'tilt_strips', 'edge_zero_px', 'edge_ramp_px', 'detectors'):
-            if k in table:
-                kw[k] = int(table[k])
-        if 'det_shape' in table:
-            kw['det_shape'] = tuple(int(v) for v in table['det_shape'])
-        if 'ref_use_ext' in table:
-            kw['reference_ext'] = tuple(int(e) for e in table['ref_use_ext'])
-        if 'tag' in table:
-            kw['tag'] = str(table['tag'])
-        return cls(**kw)
-
     @property
     def product_tag(self) -> str:
         return self.tag
@@ -106,8 +84,8 @@ class Euclid(Instrument):
         Detector ``k`` (0-based) has its science image in FITS extension ``3k + 1``
         and its data-quality mask in ``3k + 3``, and its reprojected frames carry
         detector index ``k``. The WCS of the extensions in ``reference_ext`` (default
-        ``(1, 10, 37, 46)``, the science extensions of detectors 0, 3, 12 and 15;
-        ``[reproject].use_ext`` overrides it) defines the reference frame. There is no
+        ``(1, 10, 37, 46)``, the science extensions of detectors 0, 3, 12 and 15) defines the
+        reference frame. There is no
         header filter and no custom reader. ``default_ignore_bits`` records the DQ bits
         11 and 15 (:data:`~selfcal.instruments.euclid.conventions.DQ_IGNORE`), the bits
         :meth:`default_ignore_flags` ignores."""
@@ -219,27 +197,3 @@ class Euclid(Instrument):
         if render in (None, 'constant'):
             return None
         raise ValueError(f"unknown renderer {render!r} for map {name!r} (spline | strip | ramp | constant)")
-
-    @staticmethod
-    def hooks():
-        """Return the recipe's per-frame hook factories, ``star_position_mask`` and ``residual_mask``.
-
-        A run config selects one by name as ``pre_cal``, ``post_cal`` or ``post_mosaic``
-        in its ``[hooks]`` table; the entry's other keys are the factory's parameters
-        (see :mod:`~selfcal.instruments.euclid.hooks`; in Python, give the hook objects
-        :class:`~selfcal.instruments.euclid.hooks.StarMask` and
-        :class:`~selfcal.instruments.euclid.hooks.ResidualMask` themselves). The dict is a copy
-        of :data:`~selfcal.instruments.euclid.hooks.HOOKS`."""
-        from .hooks import HOOKS
-        return dict(HOOKS)
-
-    # ---- lowering -------------------------------------------------------------------------
-    def engine(self, jobs):
-        """``("euclid", table)``: the registered instrument and its ``[instrument]`` table."""
-        table = {'name': 'euclid', 'band': self.band, 'chunks': self.chunks, 'tilt_strips': self.tilt_strips,
-                 'edge_zero_px': self.edge_zero_px, 'edge_ramp_px': self.edge_ramp_px,
-                 'detectors': self.detectors, 'det_shape': list(self.det_shape),
-                 'ref_use_ext': list(self.reference_ext), 'tag': self.tag}
-        if self.strips is not None:
-            table['strips'] = self.strips
-        return 'euclid', table

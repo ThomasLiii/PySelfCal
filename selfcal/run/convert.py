@@ -1,18 +1,21 @@
-"""From a TOML run config to the Python API's objects.
+"""From an old TOML run config to a run script of the Python API (``selfcal convert``).
 
-:func:`from_runconfig` reads a :class:`~selfcal.run.config.RunConfig` (as
-:func:`~selfcal.run.config.load_config` makes it from a TOML file) into a field, a recipe, the
-jobs and the action's options; :meth:`Converted.lower` lowers them back onto the engine, and
-``selfcal_scripts/gates/config_equivalence.py`` checks that the result runs identically.
-:meth:`Converted.to_python` writes the equivalent script. Every value is written out
-explicitly (the TOML-era defaults of the library calls differ from the Python API's production
-defaults), so the conversion never depends on a default.
+TOML run configs are no longer run. :func:`convert_file` reads one (its tables as the TOML run
+engine read them: :func:`from_toml`) into a field, a recipe, the jobs and the action's options,
+and writes the equivalent run script (:meth:`Converted.to_python`) with notes on what it dropped or
+rewrote. Every value is written out explicitly (the TOML-era defaults of the library calls differ
+from the Python API's production defaults), so the script depends on no default. A key the
+conversion cannot translate (an option the library no longer has, a registered instrument, a mode
+defined outside selfcal) is refused. The script is not checked against the TOML run (there is none
+any more): read it and its notes, and plan it (``selfcal plan``) before running it.
 """
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from types import SimpleNamespace
 
 from ..config.base import ConfigError
 from ..config.functions import load_callable
@@ -21,7 +24,7 @@ from .compute import Compute
 from .recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
 from .schedule import Passes, Refit, Tiles
 
-__all__ = ['Converted', 'from_runconfig', 'convert_file']
+__all__ = ['Converted', 'from_toml', 'convert_file']
 
 # library defaults of the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic)
 _CAL = dict(apply_mask=True, apply_weight=True, outlier_thresh=3.0, ignore_list=None, batch_size=10, max_workers=20,
@@ -32,11 +35,79 @@ _MOS = dict(apply_mask=True, apply_weight=True, max_workers=20, make_std_map=Fal
             sigma=2.0, normalize_offset=False, apply_offset=True, ignore_list=None, cache_batch_size=10,
             coadd_batch_size=10, cache_intermediate=False, valid_chunk_thresh=0.01)
 _SPECTRAL_AXIS = {'spherex': 'subchannel'}       # the primary chunk map's spectral axis, by instrument
+# the N-pass defaults of a [passes] table (n = 4, order "sky_first", as the TOML engine had them)
+_SKY_PASS = dict(outlier_thresh=5.0, subch_clip=True)
+_OFFSET_PASS = dict(poly_degree=4, outlier_thresh=2.5, subch_clip=True, bright_cut=0.05, min_pix=5000, segments=None,
+                    ridge=0.0)
+# the modes of the TOML configs (their historical names included) by the recipe they built, and the
+# mosaic each made ("full": with the instrument's maps; "no_wav": without; "none": no mosaic)
+_MODES = {'continuum': 'continuum', 'spectral': 'spectral', 'pahfit': 'spectral', 'spectral_softpoly': 'spectral_softpoly',
+          'pahfit_subch': 'spectral_softpoly', 'pahfit_lvf': 'spectral_softpoly', 'tiled': 'tiled',
+          'spectral_polybasis': 'spectral_polybasis', 'pahfit_lvf_polybasis': 'spectral_polybasis',
+          'multiline': 'spectral_polybasis', 'two_block_fixed': 'two_block_fixed', 'k2_readout': 'two_block_fixed',
+          'model': 'model'}
+_MOSAIC = {'tiled': 'none', 'two_block_fixed': 'no_wav'}
+# options of the library's calls that a [calibration] / [lsqr] / [mosaic] table could set and the library no
+# longer has, at the value every run now uses (a config setting another value is refused)
+_FIXED = {'compact_zero_columns': True, 'spectral_fit': False, 'resume': False, 'keep_state': False}
+# the per-frame hooks a [hooks] table could name (Euclid's)
+_HOOKS = {'star_position_mask': 'StarMask', 'residual_mask': 'ResidualMask'}
+
+
+# =============================================================================== the TOML file
+_SCALARS = {'task': None, 'mode': None, 'output_dir': None, 'run_name': None, 'resolution_arcsec': None,
+            'cache_dir': None, 'suffix': '', 'oversample': 1, 'staging': 'copy', 'keep_nvme': False, 'hdd_io_limit': 20,
+            'apply_n_threads': 48, 'postprocess': None, 'n_frames': None, 'skip_mosaic': False, 'wavelength_coadd': True,
+            'reproj_override': None, 'cal_override': None}
+_TABLES = {'instrument': 'instrument_cfg', 'params': 'params', 'calibration': 'calibration', 'lsqr': 'lsqr',
+           'mosaic': 'mosaic', 'zodi': 'zodi', 'reproject': 'reproject', 'tiling': 'tiling', 'tiled': 'tiling',
+           'passes': 'passes', 'model': 'model', 'hooks': 'hooks'}
+
+
+def _read_toml(path):
+    """A TOML run config as the TOML run engine read it: its top-level values (defaults filled, the
+    ``{detector}`` of ``run_name`` filled from ``[instrument]``) and its tables (``[instrument]`` as
+    ``instrument_cfg``, the old spelling ``[tiled]`` as ``tiling``)."""
+    with open(path, 'rb') as f:
+        raw = tomllib.load(f)
+    values = dict(_SCALARS, **{t: {} for t in set(_TABLES.values())})
+    for k, v in raw.items():
+        if k in _TABLES:
+            if _TABLES[k] == 'tiling' and values['tiling']:
+                raise ConfigError(f"{path}: both [tiling] and [tiled] given; keep one")
+            values[_TABLES[k]] = v
+        elif k in _SCALARS:
+            values[k] = v
+        else:
+            raise ConfigError(f"{path}: unknown top-level key {k!r}")
+    cfg = SimpleNamespace(**values)
+    if not cfg.task:
+        raise ConfigError(f"{path}: no 'task'")
+    cfg.instrument = cfg.instrument_cfg.get('name')
+    if not cfg.instrument:
+        raise ConfigError(f"{path}: [instrument] needs a 'name'")
+    if cfg.task == 'tiled':                       # the 'cal' task with a [tiling] table
+        cfg.task = 'cal'
+    if cfg.run_name:
+        cfg.run_name = cfg.run_name.format(detector=cfg.instrument_cfg.get('detector'))
+    return cfg
+
+
+def _refuse_unknown(table, known, where):
+    """Refuse the keys of ``table`` the conversion does not translate (the TOML engine passed them on to
+    the library, where they changed the run or failed)."""
+    unknown = sorted(set(table) - set(known))
+    fixed = [k for k in unknown if k in _FIXED and table[k] == _FIXED[k]]
+    bad = [k for k in unknown if k not in fixed]
+    if bad:
+        raise ConfigError(f"{where} keys {bad} have no Python form (options the library no longer has, or no option "
+                          f"at all); remove them, or convert with the selfcal of d288f02")
+    return fixed
 
 
 @dataclass
 class Converted:
-    """A run config as the Python API's objects: ``action`` (``"reproject"``, ``"calibrate"``,
+    """A TOML run config as the Python API's objects: ``action`` (``"reproject"``, ``"calibrate"``,
     ``"mosaic"`` or ``"precompute"``) and its arguments, plus ``notes`` on what the conversion
     dropped or changed (keys no code reads)."""
     action: str
@@ -53,15 +124,6 @@ class Converted:
     zodi: dict | None = None
     notes: list = dc_field(default_factory=list)
     frames_expr: str | None = None     # how to_python writes ``frames`` (``frames_in(dir)[:n]``)
-
-    def lower(self):
-        """The run configs these objects lower to (:func:`~selfcal.run.lower.lower`)."""
-        from .lower import lower
-        if self.action in ('calibrate', 'mosaic'):
-            return [low.cfg for low in lower(self.field, self.recipe, task='mosaic' if self.action == 'mosaic' else 'cal',
-                                             jobs=self.jobs, tiles=self.tiles, passes=self.passes, frames=self.frames,
-                                             cal=self.cal, compute=self.compute)]
-        raise ConfigError(f"Converted.lower(): the {self.action} action is not lowered through a recipe")
 
     def to_python(self, source=None) -> str:
         """The equivalent run script."""
@@ -233,6 +295,9 @@ def _offsets_from_term(term, notes):
                                            segments=None if term.segments is None else tuple(map(tuple, term.segments))),
                          **common)
     per = {'free': 'frame', 'fixed': 'all'}.get(term.kind, term.groups)
+    if any((p.lo is None) != (p.hi is None) for p in term.poly):
+        raise ConfigError(f"offset term {term.name or term.map or 'primary'!r}: a polynomial prior with one of lo / hi "
+                          f"has no Python form; give both (a window)")
     poly = tuple(M.Poly(int(p.degree), along=p.axis, weight=float(p.weight),
                         window=None if p.lo is None else range(int(p.lo), int(p.hi) + 1)) for p in term.poly)
     return M.Offsets(per=per, basis=basis, n=n, smooth=float(term.reg_weight),
@@ -282,9 +347,11 @@ def _param(p, *keys, default=None):
 
 
 def _preset_model(cfg, inst_name, notes):
-    """The model of a named recipe (``mode`` + ``[params]``), term by term as the mode builds it."""
-    from .modes import get_mode
-    mode = get_mode(cfg.mode)
+    """The model of a named recipe (``mode`` + ``[params]``), term by term as the TOML engine's mode
+    built it."""
+    name = _MODES.get(cfg.mode)
+    if name is None:
+        raise ConfigError(f"no Python form of the mode {cfg.mode!r} (defined outside selfcal)")
     p = dict(cfg.params)
     used = {'line_fisher_threshold'}
     spectral_axis = _SPECTRAL_AXIS.get(inst_name)
@@ -334,14 +401,13 @@ def _preset_model(cfg, inst_name, notes):
         entry = take('line', default='pah_3p29')
         return [(entry, M.catalog(entry, center=take('line_center'), sigma=take('line_sigma')), None)]
 
-    name = mode.name
     if name == 'continuum':
         sky, offsets, scalar = [], (standard_offsets(),), True
     elif name in ('spectral', 'spectral_softpoly', 'tiled'):
         sky = spectral_sky()
         extra = ()
         weight = take('spectral_poly_weight', 'subch_poly_weight')
-        required = getattr(mode, 'spectral_poly_required', False)
+        required = name == 'tiled'                 # the tiled preset always has the spectral polynomial
         if weight is not None or required:
             if weight is None:
                 raise ConfigError("[params] needs spectral_poly_weight")
@@ -350,8 +416,8 @@ def _preset_model(cfg, inst_name, notes):
             extra = (M.Poly(int(take('spectral_poly_degree', 'subch_poly_degree')), along=spectral_axis,
                             weight=float(weight), window=window()),)
         elif name == 'spectral' and (_param(p, 'spectral_poly_lo', 'subch_poly_lo') is not None):
-            window()                                 # read by the Gram check only
-        offsets = (standard_offsets(extra, getattr(mode, 'column_poly_default_weight', None)),)
+            window()                                 # read (the TOML mode printed a Gram check over it), not used
+        offsets = (standard_offsets(extra, 0.5 if name == 'tiled' else None),)
         scalar = True
     elif name == 'spectral_polybasis':
         sky = spectral_sky()
@@ -373,12 +439,10 @@ def _preset_model(cfg, inst_name, notes):
                              smooth=float(take('second_reg_weight', 'readout_reg_weight', default=0.0)),
                              smooth_along=(), mean_zero=True))
         scalar = False
-    else:
-        raise ConfigError(f"no Python form of the mode {cfg.mode!r} (defined outside selfcal): keep its TOML config")
     unused = sorted(set(p) - used)
     if unused:
         notes.append(f"[params] {unused}: read by no code path (dropped)")
-    return sky, offsets, scalar, mode.mosaic_mode
+    return sky, offsets, scalar, _MOSAIC.get(name, 'full')
 
 
 def _sky_dampings(cal, n_terms, own, passes, table):
@@ -419,27 +483,28 @@ def _clip_from(thresh, edges=None, variable=None):
     return Clip(float(thresh))
 
 
-def _hooks(cfg, inst_name):
-    from .config import get_postprocess
-    from .engine import resolve_instrument
+def _hooks(cfg):
+    """The ``[hooks]`` table's hook objects (the per-frame hooks of Euclid's recipe, by name)."""
+    from ..instruments.euclid import hooks
     out = {}
     for which, spec in (cfg.hooks or {}).items():
         if not spec:
             continue
         spec = {'name': spec} if isinstance(spec, str) else dict(spec)
         name = spec.pop('name')
-        factories = dict(resolve_instrument(inst_name).hooks())
-        out[which] = factories[name](**spec) if name in factories else get_postprocess(name)
+        if name not in _HOOKS:
+            raise ConfigError(f"[hooks].{which} = {name!r}: no such hook (named hooks: {sorted(_HOOKS)}); give the "
+                              f"hook object to sc.Fit(frame_hook=...) / sc.Coadd(frame_hook=...)")
+        out[which] = getattr(hooks, _HOOKS[name])(**spec)
     return out
 
 
-def from_runconfig(cfg) -> Converted:
-    """The Python API's objects of the run config ``cfg`` (see the module docstring)."""
+def from_toml(path) -> Converted:
+    """The Python API's objects of the TOML run config at ``path`` (see the module docstring)."""
     from ..run.field import Field
+    cfg = _read_toml(path)
     notes = []
     inst_name = cfg.instrument
-    if not isinstance(inst_name, str):
-        raise ConfigError("from_runconfig(): a run config read from TOML (the instrument by name)")
     if cfg.task == 'precompute':
         t = cfg.instrument_cfg
         kw = {'detectors': list(t['detectors'])}
@@ -449,7 +514,14 @@ def from_runconfig(cfg) -> Converted:
                 kw[name] = t[k]
         return Converted('precompute', precompute=kw, notes=notes)
     inst, jobs = _instrument(cfg, notes)
-    path = os.path.join(cfg.output_dir, cfg.resolved_run_name()) if cfg.output_dir else None
+    path = os.path.join(cfg.output_dir, cfg.run_name) if cfg.output_dir else None
+    for name, table, known in (('[calibration]', cfg.calibration, set(_CAL) | {'outlier_groups', 'outlier_group_edges',
+                                                                              'outlier_group_variable', 'outlier_aux_key',
+                                                                              'outlier_subchannel_edges'}),
+                               ('[lsqr]', cfg.lsqr, set(_LSQR) | {'n_threads'}), ('[mosaic]', cfg.mosaic, _MOS)):
+        dropped = _refuse_unknown(table, known, name)
+        if dropped:
+            notes.append(f"{name} {dropped}: options the library no longer has, at the value it always uses (dropped)")
     cal = {**_CAL, **cfg.calibration}
     mos = {**_MOS, **cfg.mosaic}
     lsq = {**_LSQR, **cfg.lsqr}
@@ -463,9 +535,7 @@ def from_runconfig(cfg) -> Converted:
     field = Field(path, inst, cfg.resolution_arcsec, compute=compute)
     if cfg.task == 'reproject':
         r = dict(cfg.reproject)
-        from .engine import resolve_instrument
-        engine_inst, table = inst.engine(())
-        layout = resolve_instrument(engine_inst).exposure_layout(table)
+        layout = inst.layout()
         for k, default in (('inner_parallel', 1), ('header_filter_workers', 16)):
             if k in r and r.pop(k) != default:
                 notes.append(f"[reproject] {k}: dropped (the default is {default})")
@@ -516,15 +586,15 @@ def from_runconfig(cfg) -> Converted:
         notes.append(f"damp_offset = {cal['damp_offset']}: written as each offset term's damping")
 
     # ---- fit, coadd, numerics -------------------------------------------------------------
-    hooks = _hooks(cfg, inst_name)
+    hooks = _hooks(cfg)
     post = hooks.get('post_cal')
     if cfg.postprocess:
-        from .config import get_postprocess
-        post = get_postprocess(cfg.postprocess)
+        raise ConfigError(f"postprocess = {cfg.postprocess!r}: the named hooks were removed; give a frame hook "
+                          f"object of your own to sc.Fit(frame_hook=...)")
     group_axis = None
     if cal.get('outlier_groups'):
         group_axis = cal['outlier_groups'].get('along')
-    clip = _clip_from(cal['outlier_thresh'], cal.get('outlier_group_edges'),
+    clip = _clip_from(cal['outlier_thresh'], cal.get('outlier_group_edges', cal.get('outlier_subchannel_edges')),
                       cal.get('outlier_group_variable') or cal.get('outlier_aux_key'))
     if group_axis is not None:
         clip = Clip(clip.sigma, per=ChunkGroups.along(group_axis))
@@ -549,7 +619,7 @@ def from_runconfig(cfg) -> Converted:
                       instrument_maps=instrument_maps,
                       min_chunk_coverage=float(mos['valid_chunk_thresh']), subtract_offsets=bool(mos['apply_offset']),
                       normalize_offsets=bool(mos['normalize_offset']), frame_hook=hooks.get('post_mosaic'))
-    numerics = Numerics(int(cfg.apply_n_threads), batch=int(cal['batch_size']),
+    numerics = Numerics(int(lsq.get('n_threads', cfg.apply_n_threads)), batch=int(cal['batch_size']),
                         mosaic_batch=int(mos['cache_batch_size']), coadd_batch=int(mos['coadd_batch_size']))
     suffix = cfg.suffix
     tiles = None
@@ -559,6 +629,9 @@ def from_runconfig(cfg) -> Converted:
         if stitched and not stitched.startswith('_') or suffix and not suffix.startswith('_'):
             raise ConfigError(f"suffixes {suffix!r} / {stitched!r} must start with '_'")
         tiles = _tiles(tiling, suffix, name, notes)
+        if bool(tiling.get('line', True)) != (len(model.sky) > 1):
+            raise ConfigError(f"[tiling].line = {tiling.get('line', True)}: a Python run stitches the line terms when "
+                              f"the model has some ({len(model.sky)} sky terms); no Python form")
     else:
         if suffix and not suffix.startswith('_'):
             raise ConfigError(f"suffix {suffix!r}: a recipe's name is joined with '_'; the suffix must start with '_'")
@@ -631,9 +704,8 @@ def _per(subch, inst_name):
 
 
 def _passes(p, cal, inst_name):
-    from .npass import _OFFSET_DEFAULTS, _SKY_DEFAULTS
-    sky = {**_SKY_DEFAULTS, **p.get('sky', {})}
-    off = {**_OFFSET_DEFAULTS, **p.get('offset', {})}
+    sky = {**_SKY_PASS, **p.get('sky', {})}
+    off = {**_OFFSET_PASS, **p.get('offset', {})}
     init = p.get('init')
     init_clip = None
     if init:
@@ -660,75 +732,20 @@ def _ends_on_offset(n, order):
 
 def _schedule(p):
     """The pass types of the ``[passes]`` table ``p`` (the engine's defaults: n = 4, sky first)."""
-    from .npass import schedule
+    from .schedule import schedule
     return schedule(int(p.get('n', 4)), p.get('order', 'sky_first'))
 
 
-def _import_script(path):
-    """The module of the script ``path``, imported without running its ``__main__`` block (and
-    without leaving its bytecode in a ``__pycache__`` beside it)."""
-    import importlib.util
-    import sys
-    name = '_selfcal_converted_' + os.path.splitext(os.path.basename(path))[0].replace('-', '_')
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    dont_write = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = dont_write
-    return module
-
-
-def convert_file(config_path, out_path, *, check=True, force=False) -> list[str]:
+def convert_file(config_path, out_path, *, force=False) -> list[str]:
     """Write the Python form of the TOML run config ``config_path`` to ``out_path`` and return the
-    conversion's notes. With ``check``, the script is first written beside ``out_path``, imported
-    and its objects lowered again: unless the run engine would do exactly what the TOML makes it do
-    (:func:`selfcal.run.equivalence.differences`), nothing is written and
-    :class:`~selfcal.config.base.ConfigError` names the differences. An existing ``out_path`` is
-    replaced only with ``force``."""
-    from .config import load_config
+    conversion's notes. An existing ``out_path`` is replaced only with ``force``. The script is not
+    run or checked: read it and its notes before running it."""
     if os.path.exists(out_path) and not force:
         raise ConfigError(f"{out_path} exists; give another output (-o) or pass force=True (--force) to replace it")
-    cfg = load_config(config_path)
-    conv = from_runconfig(cfg)
+    conv = from_toml(config_path)
     text = conv.to_python(os.path.relpath(config_path))
-    directory, name = os.path.split(os.path.abspath(out_path))
-    draft = os.path.join(directory, f'_selfcal_convert_{os.getpid()}_{name}')
-    with open(draft, 'w') as f:
-        f.write(text)
-    try:
-        notes = _check_converted(conv, cfg, config_path, draft) if check else conv.notes
-        os.replace(draft, out_path)
-        return notes
-    finally:
-        if os.path.exists(draft):
-            os.remove(draft)
-
-
-def _check_converted(conv, cfg, config_path, out_path) -> list[str]:
-    """Raise unless the script at ``out_path`` makes the run engine do what ``cfg`` does."""
-    if conv.action == 'precompute':
-        import inspect
-
-        from ..instruments.spherex.settings import precompute_lvf
-        module = _import_script(out_path)
-        try:
-            inspect.signature(precompute_lvf).bind(**module.PRECOMPUTE)
-        except TypeError as e:
-            raise ConfigError(f"{config_path}: the converted script would not run ({e}); nothing written") from None
-        return conv.notes
-    from .equivalence import differences
-    from .lower import lower
-    module = _import_script(out_path)
-    if conv.action == 'reproject':
-        mine = [module.FIELD.reprojection_config(**module.REPROJECT)]
-    else:
-        mine = [low.cfg for low in lower(module.FIELD, module.RECIPE,
-                                         task='mosaic' if conv.action == 'mosaic' else 'cal', **module.RUN)]
-    problems = [f'{len(mine)} engine runs for one TOML run'] if len(mine) != 1 else differences(cfg, mine[0])
-    if problems:
-        raise ConfigError(f"{config_path}: the converted script would not run identically ("
-                          + '; '.join(problems[:6]) + "); nothing written")
+    from ..io.atomic import atomic_path
+    with atomic_path(out_path) as tmp:
+        with open(tmp, 'w') as f:
+            f.write(text)
     return conv.notes

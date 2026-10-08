@@ -1,4 +1,4 @@
-"""SEP Detector 4: as sep_d4_npass, with 5 passes, offset first (was configs/sep_d4_npass_offsetfirst.toml)."""
+"""SEP Detector 4: as sep_d4_npass, with 5 passes, offset first."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

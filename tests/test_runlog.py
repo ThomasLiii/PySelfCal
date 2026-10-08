@@ -50,9 +50,9 @@ CHILD = textwrap.dedent('''
 def test_run_log_captures_everything_and_exits_promptly():
     tmp = tempfile.mkdtemp(prefix='selfcal_runlog_')
     log_path = os.path.join(tmp, 'logs', 'cal_test.log')
-    cfg_path = os.path.join(tmp, 'demo.toml')
+    cfg_path = os.path.join(tmp, 'demo_run.py')
     with open(cfg_path, 'w') as f:
-        f.write('task = "cal"\nrun_name = "demo"\n')
+        f.write('RUN_NAME = "demo"\n')
     script = os.path.join(tmp, 'child.py')
     with open(script, 'w') as f:
         f.write(CHILD.format(repo=REPO, path=log_path, cfg=cfg_path))
@@ -70,7 +70,7 @@ def test_run_log_captures_everything_and_exits_promptly():
         assert token in log, f"log is missing {token!r}"
     # header first, with the config text
     assert log.startswith('[runlog] started ')
-    assert '[runlog] ---- config file ----' in log and 'run_name = "demo"' in log
+    assert '[runlog] ---- config file ----' in log and 'RUN_NAME = "demo"' in log
     assert log.index('[runlog] ---- end config ----') < log.index('main-print')
     # the console still sees everything (stdout and stderr both reach the original stdout now)
     console = proc.stdout + proc.stderr
@@ -98,23 +98,9 @@ def test_header_shows_module_launch():
     assert 'module-body' in log
 
 
-def test_default_log_path_layout():
-    from selfcal.run.config import RunConfig
-    import datetime
-    from selfcal.run.runlog import default_log_path
-    cfg = RunConfig(task='cal', output_dir='/out', run_name='SPHEREx_det{detector}', instrument_cfg={'detector': 3})
-    p = default_log_path(cfg, now=datetime.datetime(2026, 9, 16, 10, 15, 0))
-    assert p == f"/out/SPHEREx_det3/logs/cal_20260916-101500_{os.getpid()}.log"
-    cfg2 = RunConfig(task='precompute', cache_dir='/c/')
-    assert default_log_path(cfg2).startswith('/c/logs/precompute_')
-    assert default_log_path(RunConfig(task='precompute', cache_dir=None)) is None
-
-
 if __name__ == '__main__':
     sys.path.insert(0, REPO)
     test_run_log_captures_everything_and_exits_promptly()
     print("OK run log captures main/worker/fd output + traceback; console unchanged; prompt exit")
     test_header_shows_module_launch()
     print("OK header renders python -m launches")
-    test_default_log_path_layout()
-    print("OK default log path layout")

@@ -11,23 +11,34 @@ with them. :func:`gaussian_line_profile` is a Gaussian line, by default the PAH 
 feature. The adjacency and chain builders here were replaced by
 :mod:`selfcal.models.offset_structure`.
 """
-import os
 import glob
 import logging
+import os
+from multiprocessing import Pool
+from multiprocessing.shared_memory import SharedMemory
+
 import numpy as np
 from astropy.io import fits
 from astropy.table import Table
-from tqdm import tqdm
-from multiprocessing.shared_memory import SharedMemory
-from multiprocessing import Pool
-
-from scipy.interpolate import griddata
 from scipy.optimize import least_squares
+from tqdm import tqdm
+
 from ... import _state
-from ...geometry.map_helper import (linear_spline, mean_preserving_spline, bit_to_bool, mean_preserving_spline_2d, get_valid_bounds, fill_invalid_offsets)
+from ...config import (
+    ENV_LVF_PARAMS_DIR,
+    ENV_SPHEREX_CALIB_DIR,
+    ENV_SPHEREX_CHANNEL_FILE,
+    resolve_path,
+)
+from ...geometry.map_helper import (
+    bit_to_bool,
+    fill_invalid_offsets,
+    get_valid_bounds,
+    linear_spline,
+    mean_preserving_spline,
+    mean_preserving_spline_2d,
+)
 from ...io.reproj import load_reproj_file
-from ...config import (resolve_path, ENV_SPHEREX_CALIB_DIR,
-                       ENV_SPHEREX_CHANNEL_FILE, ENV_LVF_PARAMS_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -532,7 +543,7 @@ def save_lvf_params(lvf_params, output_dir=None):
 
     The directory resolves from ``output_dir``, then ``$SELFCAL_LVF_PARAMS_DIR``, then the
     package's ``data/lvf_params/``, and is created if missing. The ``filename`` key must be
-    set, as :meth:`~selfcal.instruments.spherex.adapter.SPHERExInstrument.precompute` sets it
+    set, as :func:`~selfcal.instruments.spherex.settings.precompute_lvf` sets it
     to ``lvf_params_D<n>.npy``.
     """
     output_dir = resolve_path(output_dir, env_var=ENV_LVF_PARAMS_DIR,

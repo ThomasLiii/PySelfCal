@@ -1,6 +1,6 @@
 """Inspect the products of the selfcal quickstart and compare them with the injected truth.
 
-Run it after the calibration (quickstart.py, or cal.toml), from the directory that
+Run it after the calibration (quickstart.py), from the directory that
 holds quickstart_output/ (the repository root in the quickstart):
 
     python examples/quickstart/inspect_results.py
@@ -40,7 +40,7 @@ def remove_gauge(offsets):
 def main():
     parser = argparse.ArgumentParser(description="Inspect the quickstart products.")
     parser.add_argument("--suffix", default="_quickstart",
-                        help="_<recipe name> (the suffix of cal.toml; default: _quickstart)")
+                        help="_<recipe name> (the products' suffix; default: _quickstart)")
     suffix = parser.parse_args().suffix
     cal_path = os.path.join(RUN_DIR, "calibration", f"cal_{STEM}{suffix}.h5")
     mosaic_path = os.path.join(RUN_DIR, "mosaic", f"mosaic_{STEM}{suffix}.fits")

@@ -189,16 +189,19 @@ def test_compare_sees_an_infinity_and_the_file_type(tmp_path):
 
 
 def test_convert_never_loses_an_existing_script(tmp_path):
-    toml = os.path.join(_REPO, 'examples', 'quickstart', 'cal.toml')
+    from tests.test_run_products import QUICKSTART_TOML
+    toml = tmp_path / 'config' / 'cal.toml'
+    toml.parent.mkdir()
+    toml.write_text(QUICKSTART_TOML['cal'])
     out = tmp_path / 'cal.py'
     out.write_text('# mine\n')
     from selfcal.run.convert import convert_file
     with pytest.raises(ConfigError, match='exists'):
-        convert_file(toml, str(out), check=False)
+        convert_file(str(toml), str(out))
     assert out.read_text() == '# mine\n'
-    convert_file(toml, str(out), check=False, force=True)
+    convert_file(str(toml), str(out), force=True)
     assert 'FIELD = Field(' in out.read_text()
-    assert [p.name for p in tmp_path.iterdir()] == ['cal.py']
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['cal.py', 'config']
 
 
 def test_record_names_are_claimed(tmp_path):

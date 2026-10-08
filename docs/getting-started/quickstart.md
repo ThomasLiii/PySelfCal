@@ -19,7 +19,6 @@ The files are in
 | `quickstart.py` | steps 2 and 3: the run (reprojection, then calibration and mosaic) |
 | `inspect_results.py` | reads the products, compares them with the truth and saves a figure |
 | `damping.py` | step 5: the same run with another damping |
-| `reproject.toml`, `cal.toml` | steps 2 and 3 as TOML configs for the runner, [the older form](#the-same-run-as-toml-configs) |
 
 ## 1. Simulate the exposures
 
@@ -300,23 +299,6 @@ penalty by moving part of the sky into the offsets: most of the sky's gradient b
 fixed on the detector, and the residual panel of `results_damp0p1.png` shows it as a large-scale
 slope across the field.
 
-## The same run as TOML configs
-
-Before the Python API, a run was a TOML config started by the runner, and the shipped configs keep
-working that way. `reproject.toml` and `cal.toml` are steps 2 and 3 in that form, and they make the
-same products, byte for byte. Delete `quickstart_output/quickstart/` before you try them, or the
-runner finds the products of `quickstart.py`:
-
-```bash
-./selfcal_scripts/run.sh examples/quickstart/reproject.toml
-./selfcal_scripts/run.sh examples/quickstart/cal.toml
-```
-
-`run.sh` starts the `python` it finds on your `PATH` and also runs Python run scripts
-(`--dry-run` prints the plan). `selfcal convert examples/quickstart/cal.toml` writes the Python
-form of a config and checks that it runs identically; [Run configuration](../guide/configuration.md)
-documents the TOML schema.
-
 ## Next steps
 
 - [The Python API](../guide/python-api.md): every setting, the instruments and their jobs, big
@@ -326,5 +308,5 @@ documents the TOML schema.
   a model of your own, or an instrument class.
 - [Tutorials and examples](tutorials.md): notebooks on SPHEREx and Euclid data, and end-to-end
   examples for other kinds of instrument.
-- `tests/test_quickstart_example.py` runs these steps, in Python and as TOML configs, in temporary
-  directories and checks that both forms make the same products.
+- `tests/test_quickstart_example.py` runs these steps in temporary directories and checks that the
+  solve recovers the injected offsets. <!-- check: the test after its TOML half is removed -->

@@ -1,9 +1,9 @@
 # The Python API
 
 A run is configured in Python: settings objects that are checked when they are built, a field
-that holds the data, and actions that run on it. Run configs written in TOML keep working
-unchanged (see [Run configuration](configuration.md)); the Python objects lower onto the same
-run engine, so a run configured either way makes the same bytes.
+that holds the data, and actions that run on it. A run is a script or a notebook; the actions
+lower the objects onto the run engine. TOML run configs are no longer run
+([Migrating from TOML](migrating-from-toml.md)).
 
 ## In one screen
 
@@ -103,7 +103,8 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 - **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
   `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
   `sc.two_block(second="readout")`; `spherex.line("aromatic", damping=5e-3)` is a sky term with
-  a shipped line template.
+  a shipped line template. A preset is a plain function that returns a `Model`; a calibration
+  variant of your own is one too, or the `Model` itself.
 
 ### The recipe
 
@@ -196,7 +197,10 @@ mosaic) is written under a temporary name and renamed when complete, then gets a
 
 `Compute` never enters: it leaves the products byte-identical. Two things do not enter either: the
 frames' contents (a frame reprojected again under the same name counts as the same frame) and the
-code (a record names its version; a product made by older code is current if its inputs are). Before an action starts, its plan
+code (a record names its version; a product made by older code is current if its inputs are). A
+setting added in a later version enters only when it differs from its default, so the products
+made before it stay current ([Settings and fingerprints](../developer/settings.md)).
+<!-- check: the added() rule of selfcal.config.base --> Before an action starts, its plan
 compares each product that already exists with what it would make: a product with the same inputs
 is reused (two recipes that share a first pass share its products); one made by other inputs is
 refused, with the differences:
@@ -208,8 +212,8 @@ overwrite=True to make it again
 ```
 
 A product written again after its sidecar (its size or modification time no longer the ones
-recorded: a TOML run made it again, say) is refused, and so is a product without a sidecar (made
-before records existed, by a TOML run, or interrupted before its sidecar).
+recorded: another program wrote it, say) is refused, and so is a product without a sidecar (made
+before records existed, by a TOML run of an earlier version, or interrupted before its sidecar).
 `field.adopt(recipe, jobs=...)` checks such products against the recipe (their frames, sky terms
 and offset maps, and that what each is made from is current or adopted too) and writes their
 sidecars. What a product does not show, the fit's and the coadd's settings, is taken on trust:
@@ -225,8 +229,9 @@ nep.adopt(NUMCOL3, jobs=spherex.channels(1, 34))   # the TOML production's maps:
 ### Records
 
 Each action writes `<field>/records/<action>_<time>_<pid>.json`: the settings with every default
-resolved, the run configs they lowered to, the code version (commit, branch, modified files),
-package versions, the environment knobs in effect, the products, the wall time and the outcome.
+resolved, the run specification they lowered to (`lowered`), the code version (commit, branch,
+modified files), package versions, the environment knobs in effect, the products, the wall time and
+the outcome.
 A script's console output (its own and its workers') goes to one log per process,
 `<field>/logs/<script>_<time>_<pid>.log`, which starts with the script's text; each action adds a
 line naming its record.
@@ -264,18 +269,18 @@ The transpose product's thread count changes the last bits, so it lives in the r
 ```bash
 selfcal run my_run.py            # run a script with the BLAS/OpenMP threads pinned before numpy loads
 selfcal plan my_run.py           # print its plan: each product made, reused or refused (nothing is run)
-selfcal adopt my_run.py          # record the products a TOML run made as made by the script (each is checked)
-selfcal convert run.toml         # write run.py, the Python form of a TOML config, checked to run identically
+selfcal adopt my_run.py          # record products made without a sidecar as the script's (each is checked)
+selfcal convert run.toml         # write run.py from an old TOML run config (unchecked: read its notes)
 selfcal rerun RECORD.json        # run an action again from its record
 selfcal compare A.h5 B.h5        # byte-identical, equal values, or different and why
 ```
 
 `plan` and `adopt` read a run script's top level: `FIELD` (or `FIELDS`, a list, for a campaign),
 `RECIPE`, and `RUN`, the keyword arguments of `calibrate` (`jobs=`, `tiles=`, `passes=`, ...);
-the script runs `FIELD.calibrate(RECIPE, **RUN)` under its `__main__` guard.
-`selfcal_scripts/runs/` holds one such script per shipped TOML config, built from the shared
-recipes and fields of `selfcal_scripts/recipes/`, and `selfcal_scripts/run.sh` runs either form
-(`--dry-run`: the plan).
+the script runs `FIELD.calibrate(RECIPE, **RUN)` under its `__main__` guard. A reprojection script
+defines `REPROJECT` (the arguments of `field.reproject`) instead of `RECIPE` and `RUN`.
+`selfcal_scripts/runs/` holds the production run scripts, built from the shared recipes and fields
+of `selfcal_scripts/recipes/`, and `selfcal_scripts/run.sh` runs one (`--dry-run`: the plan).
 
 ## A new telescope
 
@@ -299,37 +304,19 @@ class Owl(sc.Instrument):                         # two amplifier strips on a 20
 ```
 
 It may also override `layout()` (how raw exposure files are read), `default_jobs()`,
-`job_geometry()` and `frame_variables()`, and define the engine's optional hooks
-(`offset_renderer`, `aux_coadds`, `finalize_mosaic`, `coefficient_catalog`). A chunk map other than
-rectangles is `sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...), adjacency_axes=(...))`
-(the axes a term's `smooth` follows unless it gives `smooth_along`). The engine receives
-the object itself; no registry is needed. See [Bring your own telescope](../bring_your_own_telescope.md) for the instrument
+`job_geometry()` and `frame_variables()`, and define the optional hooks (`offset_renderer`,
+`aux_coadds`, `finalize_mosaic`, `coefficient_catalog`). A chunk map other than rectangles is
+`sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...), adjacency_axes=(...))` (the axes a
+term's `smooth` follows unless it gives `smooth_along`). The engine receives the object itself and
+calls it only through this contract, which the built-in instruments implement too
+(`selfcal/instruments/camera.py`, `spherex/settings.py`, `euclid/settings.py`); there is no
+registry. See [Bring your own telescope](../bring_your_own_telescope.md) for the instrument
 contract in full.
 
 ## From a TOML config
 
-`selfcal convert x.toml` writes `x.py`, the same run in Python, and checks it: the script is
-imported and its objects lowered again, and unless the run engine would do exactly what the TOML
-makes it do, nothing is written; an existing `x.py` is replaced only with `--force`
-(`selfcal.run.convert.from_runconfig` gives the objects themselves).
-`selfcal_scripts/gates/config_equivalence.py typed` checks every shipped config this way. TOML
-configs keep running unchanged (`selfcal_scripts/run.sh x.toml`); products a TOML run made have no
-sidecars, so a Python run of the same recipe refuses them until they are adopted (`selfcal adopt
-x.py`, or `field.adopt(recipe, ...)`). Where
-each TOML key goes:
-
-| TOML | Python |
-| --- | --- |
-| `task` | the action: `field.reproject`, `field.calibrate` (`tiles=`, `passes=`), `field.mosaic`; `precompute`: `spherex.precompute_lvf(detectors)` |
-| `mode` + `[params]`, `[model]` | the `Model` (a preset or spelled out) |
-| `output_dir` + `run_name`, `resolution_arcsec` | `Field(path, ..., pixel_scale)` |
-| `cache_dir`, `staging`, `keep_nvme`, `hdd_io_limit` | `Compute(scratch, stage=, keep_staged=, io_limit=)` |
-| `suffix` | `Recipe(name=)` |
-| `apply_n_threads`, `batch_size`, `cache_batch_size`, `coadd_batch_size` | `Numerics(threads, batch=, mosaic_batch=, coadd_batch=)` |
-| `[calibration]`, `[lsqr]` | `Fit` (and `Sky(damping=)` per term) |
-| `[mosaic]`, `oversample`, `wavelength_coadd`, `skip_mosaic` | `Coadd` (`None`: no mosaic) |
-| `n_frames`, `reproj_override` | `calibrate(frames=n | directory | sc.frames_in(directory)[:n])` |
-| `[instrument]` | `sc.SPHEREx` / `sc.Euclid` / `sc.Camera` and `jobs=` |
-| `[tiling]`, `[passes]` | `sc.Tiles`, `sc.Passes` |
-| `[hooks]`, `postprocess` | `Fit(frame_hook=, raw_frame_hook=)`, `Coadd(frame_hook=)` |
-| `[zodi]` | `spherex.zodi_anchor(result, predictions=...)` after the calibration |
+TOML run configs are no longer run. `selfcal convert x.toml` writes `x.py`, a run script of the
+same run, without checking it against the TOML; products a TOML run made are refused until they
+are adopted (`selfcal adopt x.py`, or `field.adopt(recipe, ...)`).
+[Migrating from TOML](migrating-from-toml.md) says what the converter writes, where each TOML key
+and mode went, and which options were removed.

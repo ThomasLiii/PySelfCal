@@ -3,9 +3,7 @@
 A detector of ``shape`` pixels cut into a grid of rectangular chunks, read from FITS files
 (or by your own ``reader``); optionally with per-pixel detector maps and per-frame header
 values as data variables. Most cameras need nothing else; a camera with another chunk geometry
-subclasses :class:`~selfcal.instruments.contract.Instrument`. The TOML configs' ``grid``
-instrument (:class:`~selfcal.instruments.grid.GridInstrument`) reads the detector, chunk grid
-and tag of its ``[instrument]`` table as a camera (:meth:`Camera.from_table`).
+subclasses :class:`~selfcal.instruments.contract.Instrument`.
 """
 from __future__ import annotations
 
@@ -18,8 +16,7 @@ from ..config.base import ConfigError, FrozenDict
 from ..config.functions import function_ref
 from ..models.model import Header
 from .base import ExposureLayout
-from .contract import ChunkMap, Geometry, Instrument, Job, _ContractAdapter
-from .grid import _chunk_grid
+from .contract import ChunkMap, Geometry, Instrument, Job
 
 __all__ = ['Camera']
 
@@ -71,22 +68,6 @@ class Camera(Instrument):
                 raise ConfigError(f"Camera(headers={{{name!r}: ...}}): a header keyword or sc.Header(...)")
             headers[name] = h
         object.__setattr__(self, 'headers', FrozenDict(headers))
-
-    @classmethod
-    def from_table(cls, table) -> Camera:
-        """The camera of a ``grid`` ``[instrument]`` table: ``detector_shape`` (required:
-        ``KeyError`` without it), ``chunks`` (``[ny, nx]``, or one number or ``[n]`` for a square
-        grid; default 4 x 4), ``sci_ext`` (default 1), ``dq_ext`` (omitted or negative: no mask),
-        ``ref_use_ext`` (the ``reference_ext`` setting), ``tag``, ``job_name`` (the ``job``
-        setting) and ``unit``; any other key is ignored."""
-        H, W = (int(v) for v in table['detector_shape'])
-        dq = table.get('dq_ext', -1)
-        return cls((H, W), chunks=_chunk_grid(table),
-                   sci_ext=int(table.get('sci_ext', 1)), dq_ext=None if dq is None or int(dq) < 0 else int(dq),
-                   reference_ext=(None if 'ref_use_ext' not in table
-                                  else tuple(int(e) for e in table['ref_use_ext'])),
-                   tag=None if 'tag' not in table else str(table['tag']),
-                   unit=str(table.get('unit', '')), job=str(table.get('job_name', 'All')))
 
     @property
     def product_tag(self) -> str:
@@ -143,28 +124,3 @@ class Camera(Instrument):
                     arr[missing] = h.default
                 out[name] = arr
         return out
-
-    # ---- lowering -------------------------------------------------------------------------
-    def table(self) -> dict:
-        """The ``[instrument]`` table of the ``grid`` instrument for this camera."""
-        table = {'name': 'grid', 'detector_shape': list(self.shape), 'chunks': list(self.chunks),
-                 'sci_ext': self.sci_ext}
-        if self.dq_ext is not None:
-            table['dq_ext'] = self.dq_ext
-        if self.reference_ext is not None:
-            table['ref_use_ext'] = list(self.reference_ext)
-        if self.tag is not None:
-            table['tag'] = self.tag
-        if self.job != 'All':
-            table['job_name'] = self.job
-        if self.unit:
-            table['unit'] = self.unit
-        return table
-
-    def engine(self, jobs):
-        """``("grid", table)``, or an engine instrument that calls this camera's own contract
-        methods when it has a reader, detector maps or header variables (which the ``grid`` table
-        cannot hold)."""
-        if self.reader is None and not self.detector_maps and not self.headers:
-            return 'grid', self.table()
-        return _ContractAdapter(self), self.table()

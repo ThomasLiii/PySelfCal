@@ -60,9 +60,6 @@ A camera takes more without code:
 * `headers={"hwp": "HWPANG"}` — per-frame data variables read from each frame's header;
 * `unit="e-/s"` — the mosaic's `BUNIT`.
 
-In a TOML config the same camera is the built-in `grid` instrument (`[instrument] name = "grid"`,
-`detector_shape`, `chunks`, `sci_ext`, `dq_ext`, `tag`; [Run configuration](guide/configuration.md)).
-
 ## 2. The model is yours
 
 The presets (`sc.continuum`, `sc.spectral`, `sc.two_block`) are models; spell one out to change it.
@@ -148,9 +145,9 @@ Anchors need care when a term's groups observe different parts of its map (detec
 focal plane): `mean_zero` sums over every chunk of the map, observed or not, so anchor such a
 term with `damping` (it acts on observed unknowns only) or a prior.
 
-In a TOML config the model is a `[model]` table (`[[model.sky]]`, `[[model.offset]]`,
-`[model.variables]`, `[[model.prior]]`, functions as `"package.module:name"` strings);
-`selfcal convert` writes the Python form of one.
+A calibration variant is such a model, or a function that returns one, as the presets
+`sc.continuum`, `sc.spectral` and `sc.two_block` are (`selfcal/models/model.py`). A recipe takes
+the model itself: nothing is registered, and the engine needs no change.
 
 ## 3. Examples: each is a few lines of Python
 
@@ -230,7 +227,8 @@ FIELD = sc.Field("/data/runs/mycam_field1", MyCam(chunks=16), pixel_scale=1.0)
 ```
 
 It may also override `default_jobs()` (the jobs a run makes) and `job_geometry(geom, job)` (the
-valid pixels and weights of a job). The engine receives the object itself; no registry is needed.
+valid pixels and weights of a job). The engine receives the object itself and calls it only
+through these methods; there is no registry.
 
 **Raw data in any format** — a reader returns, for one detector frame of one file, the values, a
 header carrying the celestial WCS (and any keywords you want as frame variables), an optional bit
@@ -261,15 +259,11 @@ rectangles is `sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...),
 adjacency_axes=(...))`: any integer map, `-1` for no chunk, with named axes for the priors and the
 axes a term's `smooth` follows by default (without them, `smooth` needs `smooth_along`; the plan
 refuses smoothing with no axis). The instruments of
-`tests/test_any_telescope.py` are small reference implementations, `selfcal/instruments/camera.py`
-the minimal one, and `selfcal/instruments/spherex/settings.py` (spectral, non-rectangular chunks,
-wavelength maps) and `selfcal/instruments/euclid/settings.py` (16 detectors per exposure, stripe
-and tilt maps) the full ones.
-
-TOML configs reach an instrument by name: there it is a subclass of the engine's
-`selfcal.instruments.base.Instrument` registered with `@register_instrument("mycam")`, in-tree or
-through the `selfcal.instruments` entry-point group
-(`[project.entry-points."selfcal.instruments"] mycam = "mypkg.instrument:MyCam"`).
+`tests/test_any_telescope.py` are small reference implementations. The built-in instruments are
+subclasses of `sc.Instrument` too: `selfcal/instruments/camera.py` (`sc.Camera`) is the minimal
+one, and `selfcal/instruments/spherex/settings.py` (`sc.SPHEREx`: spectral, non-rectangular
+chunks, wavelength maps) and `selfcal/instruments/euclid/settings.py` (`sc.Euclid`: 16 detectors
+per exposure, stripe and tilt maps) the full ones.
 
 ## 5. Without images: write frames directly
 
@@ -308,14 +302,14 @@ directory holds the reference grid (`ref.fits`, written with `selfcal.geometry.w
 | what | where |
 | --- | --- |
 | the Python settings: model, recipe, machine | `selfcal/models/model.py`, `selfcal/run/recipe.py`, `selfcal/run/compute.py` |
-| instruments as settings: the contract, the camera | `selfcal/instruments/contract.py`, `selfcal/instruments/camera.py` |
+| the instrument contract (`sc.Instrument`) and the built-in instruments | `selfcal/instruments/contract.py`, `selfcal/instruments/camera.py`, `selfcal/instruments/spherex/settings.py`, `selfcal/instruments/euclid/settings.py` |
 | the model as the engine takes it (variables, terms, priors) | `selfcal/models/spec.py` |
 | data variables and their sources | `selfcal/models/variables.py` |
 | ready-made priors | `selfcal/priors.py` (`sc.priors`), over `selfcal/models/priors.py` |
 | generic offset-structure builders on chunk axes | `selfcal/models/offset_structure.py` |
-| the engine's instrument contract + registry | `selfcal/instruments/base.py` |
+| the geometry types (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`) | `selfcal/instruments/base.py` |
 | exposure readers, the frame file, header values | `selfcal/io/frames.py` |
-| the run engine (actions and TOML configs → tasks) | `selfcal/run/` |
+| the actions and the run engine behind them | `selfcal/run/` |
 | calibration-file reader | `selfcal/io/calfile.py` |
-| the Python API, the TOML schema | [The Python API](guide/python-api.md), [Run configuration](guide/configuration.md) |
+| the Python API | [The Python API](guide/python-api.md) |
 | on-disk products, tuning knobs | [Pipeline runbook](guide/pipeline.md) |

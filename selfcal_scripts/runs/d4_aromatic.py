@@ -1,5 +1,5 @@
 """NEP Detector 4, the Aromatic and Aliphatic windows: the NumCol 10 fiducial with shot-noise
-weights in the solve and a 1x coadd (was configs/d4_aromatic.toml)."""
+weights in the solve and a 1x coadd."""
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.spherex import POLY_K1, nep
 

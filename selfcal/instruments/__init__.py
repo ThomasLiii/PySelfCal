@@ -1,17 +1,11 @@
 """Instruments: the one place a telescope enters the pipeline.
 
-Importing this package registers the built-ins (``spherex``, ``euclid``, ``grid``); other
-packages register theirs through the ``selfcal.instruments`` entry-point group.
-Select by name with ``[instrument].name`` in a run config, or in code::
-
-    from selfcal.instruments import get_instrument
-    inst = get_instrument("spherex")
+An instrument is a settings object of the Python API (:mod:`selfcal.instruments.contract`):
+``sc.SPHEREx`` (:mod:`~selfcal.instruments.spherex`), ``sc.Euclid``
+(:mod:`~selfcal.instruments.euclid`), ``sc.Camera`` (:mod:`~selfcal.instruments.camera`), or a
+subclass of ``sc.Instrument`` of your own. The run engine calls its methods; the geometry it
+returns is made of the types of :mod:`~selfcal.instruments.base`.
 """
-from .base import (Instrument, register_instrument, get_instrument, available_instruments,   # noqa: F401
-                   Job, ChunkMap, DetectorGeometry, JobGeometry, ExposureLayout)
-from . import grid                                    # noqa: F401  (registers 'grid')
-from .spherex import adapter as _spherex_adapter      # noqa: F401  (registers 'spherex')
-from .euclid import adapter as _euclid_adapter        # noqa: F401  (registers 'euclid')
+from .base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry  # noqa: F401
 
-__all__ = ['Instrument', 'register_instrument', 'get_instrument', 'available_instruments',
-           'Job', 'ChunkMap', 'DetectorGeometry', 'JobGeometry', 'ExposureLayout']
+__all__ = ['ChunkMap', 'DetectorGeometry', 'JobGeometry', 'ExposureLayout']

@@ -53,8 +53,7 @@ the frames needs `import hdf5plugin` (a dependency) — the kit scripts handle t
 ## 3. Run
 
 All commands below are run from the repo root, with the Python you `pip install`ed
-into (the shell launcher in (c) takes it as `SELFCAL_PY` if your shell's `python`
-is another).
+into.
 
 **a) (optional) Inject a simulated sky into copies of the real frames.**
 Skip this if you already have frames carrying your simulated sky — go to (c)
@@ -114,15 +113,8 @@ Settings are checked as they are built; the [Python API guide](../../docs/guide/
 lists them. (The number of columns belongs to the instrument: `num_col=10` in
 the script's `setup()`.)
 
-**The TOML way** makes the same products. `run_transfer_function.sh` takes the
-same flags and environment variables, fills them into `transfer_function.toml`
-and runs it; to change the recipe, edit that file.
-
-```bash
-SELFCAL_PY=<env python>  selfcal_scripts/transfer_function/run_transfer_function.sh \
-    --detector 3 --channel 17 --frames <simsky_frames_dir> --ref <ref.fits> \
-    --output-dir <output_dir> --run-name TF_D3
-```
+The kit's TOML form (`run_transfer_function.sh` filling `transfer_function.toml`)
+was removed with selfcal's TOML support; the script above makes the same products.
 
 ## 4. Output
 
@@ -137,21 +129,19 @@ Under `<output_dir>/<run-name>/`:
   coadd accumulates in a fixed order, so the maps depend only on the frames
   and the batch sizes. To get the other maps, give the recipe the fiducial
   coadd back, `RECIPE = FIDUCIAL.replace(coadd=POLY_K1.coadd)` with
-  `cache_frames=True` in `setup()`, or set `make_std_map`,
-  `apply_sigma_clipping`, `cache_intermediate` and `wavelength_coadd` back
-  to `true` in `transfer_function.toml`.)
+  `cache_frames=True` in `setup()`.)
 - `calibration/cal_*.h5` — the calibration solution.
-- `logs/transfer_function_<timestamp>_<pid>.log` (the TOML way:
-  `logs/cal_<timestamp>_<pid>.log`) — everything the run printed (including
-  worker processes and any error traceback), headed by the command, the code
-  version and the script (or the full config) used. One file per run, so
-  reruns never overwrite an earlier log.
-- The Python way also writes `records/calibrate_<timestamp>_<pid>.json` (the
-  settings with every default resolved, and what they ran as) and, next to
-  each product, `<product>.json`: what made it.
+- `logs/transfer_function_<timestamp>_<pid>.log` — everything the run printed
+  (including worker processes and any error traceback), headed by the command,
+  the code version and the script used. One file per run, so reruns never
+  overwrite an earlier log.
+- `records/calibrate_<timestamp>_<pid>.json` (the settings with every default
+  resolved, and what they ran as) and, next to each product, `<product>.json`:
+  what made it.
 
 Compare `mosaic_*.fits` to the simulated sky you put in (they share the
 reference WCS) to read off the transfer function. Sweep different simulated
 skies (a point source, a sinusoid per spatial frequency, …), giving each a
 distinct `--run-name` so outputs don't collide: a run into a folder that already
-holds its cal reuses that cal, and frames count by file name, not content.
+holds its cal reuses that cal (when the same recipe made it), and frames count by
+file name, not content.

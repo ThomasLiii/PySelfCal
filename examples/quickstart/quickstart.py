@@ -4,8 +4,7 @@ sky and the offsets and coadd the calibrated frames.
     python examples/quickstart/quickstart.py
 
 Run it from the directory that holds quickstart_output/ (the repository root in the quickstart):
-relative paths are used as written. reproject.toml and cal.toml are the same run as TOML configs
-for the runner; both forms make the same products.
+relative paths are used as written.
 """
 import selfcal as sc
 

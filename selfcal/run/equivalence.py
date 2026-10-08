@@ -1,26 +1,22 @@
-"""Whether two run configs make the run engine do the same thing.
+"""What the run engine does with an engine run, independent of how it was spelled.
 
-:func:`engine_view` is what the engine does with a :class:`~selfcal.run.config.RunConfig`,
-independent of how the config spells it: the library calls' keywords with their defaults filled,
-each sky term's resolved damping, the offset rows, the sky coefficients evaluated on the
-instrument's real maps, the jobs and every product path, the frames (by name), staging, tiles and
-the N-pass schedule. :func:`differences` compares two configs that way. The TOML converter
-(:func:`selfcal.run.convert.convert_file`) checks its scripts with it, and
-``selfcal_scripts/gates/config_equivalence.py typed`` checks every shipped config.
+:func:`engine_view` describes an engine run (:class:`~selfcal.run.runspec.RunSpec`) by what the
+engine does with it: the library calls' keywords with their defaults filled, each sky term's
+resolved damping, the offset rows, the sky coefficients evaluated on the instrument's real maps,
+the jobs and every product path, the frames (by name), staging, tiles and the N-pass schedule.
+``selfcal_scripts/gates/config_equivalence.py views`` records it for every run script, so that a
+change to the engine can be shown to leave what it does unchanged.
 """
-from __future__ import annotations
-
 import contextlib
 import glob
 import hashlib
 import inspect
 import io
-import json
 import os
 
 import numpy as np
 
-__all__ = ['engine_view', 'differences', 'cached_geometry', 'diff']
+__all__ = ['engine_view', 'diff']
 
 N_FRAMES = 137          # frames of the probe frame list the offset model is lowered over
 
@@ -28,20 +24,6 @@ N_FRAMES = 137          # frames of the probe frame list the offset model is low
 def _h(a):
     a = np.ascontiguousarray(a)
     return (a.shape, str(a.dtype), hashlib.sha1(a.tobytes()).hexdigest())
-
-
-def _ser(x):
-    if isinstance(x, np.ndarray):
-        return ('ndarray',) + _h(x)
-    if isinstance(x, dict):
-        return {k: _ser(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return type(x).__name__, [_ser(v) for v in x]
-    if callable(x):
-        return ('callable', getattr(x, '__name__', type(x).__name__))
-    if hasattr(x, '__dataclass_fields__'):
-        return (type(x).__name__, {k: _ser(getattr(x, k)) for k in x.__dataclass_fields__})
-    return x
 
 
 def _sky(model, geom):
@@ -71,20 +53,6 @@ def _sig_defaults(fn):
             if p.default is not inspect.Parameter.empty and k != 'self'}
 
 
-def _norm(v):
-    if isinstance(v, (list, tuple)):
-        return [_norm(x) for x in v]
-    if isinstance(v, dict):
-        return {str(k): _norm(x) for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))}
-    if isinstance(v, np.generic):
-        return v.item()
-    if isinstance(v, np.ndarray):
-        return ['ndarray', list(v.shape), str(v.dtype), hashlib.sha1(np.ascontiguousarray(v).tobytes()).hexdigest()]
-    if callable(v):
-        return ['callable', f"{getattr(v, '__module__', '?')}:{getattr(v, '__qualname__', type(v).__name__)}"]
-    return v
-
-
 def diff(a, b, path=''):
     """The differences between two normalised structures, as 'path: a != b' lines."""
     if isinstance(a, dict) and isinstance(b, dict):
@@ -98,65 +66,6 @@ def diff(a, b, path=''):
             out += diff(x, y, f'{path}[{i}]')
         return out
     return [] if a == b else [f'{path}: {str(a)[:80]} != {str(b)[:80]}']
-
-
-_GEOMETRY = {}
-
-
-def _subclasses(root):
-    seen, stack = [], list(root.__subclasses__())
-    while stack:
-        cls = stack.pop()
-        if cls not in seen:
-            seen.append(cls)
-            stack.extend(cls.__subclasses__())
-    return seen
-
-
-@contextlib.contextmanager
-def cached_geometry():
-    """Within the block, build each instrument's detector geometry once per (settings, oversample):
-    many configs share a detector, and a SPHEREx geometry takes seconds. Two levels: the engine
-    instrument's ``detector_geometry`` by its whole ``[instrument]`` table, and the settings
-    object's ``geometry`` (``sc.SPHEREx``, ``sc.Euclid``, ``sc.Camera``, ...; the registry
-    adapters delegate to it) by the settings, which leave out the job selection, so configs of
-    one detector that select other channels or windows share one geometry."""
-    from ..instruments.base import Instrument
-    from ..instruments.contract import Instrument as Settings
-    patched = []
-    for cls in _subclasses(Instrument):
-        if 'detector_geometry' not in cls.__dict__:
-            continue
-        orig = cls.__dict__['detector_geometry']
-
-        def cached(self, inst_cfg, oversample, _orig=orig, _cls=cls):
-            key = (_cls.__qualname__, json.dumps(dict(inst_cfg), sort_keys=True, default=str), oversample)
-            if key not in _GEOMETRY:
-                _GEOMETRY[key] = _orig(self, inst_cfg, oversample)
-            return _GEOMETRY[key]
-        patched.append((cls, 'detector_geometry', orig, cached))
-    for cls in _subclasses(Settings):
-        if 'geometry' not in cls.__dict__:
-            continue
-        orig = cls.__dict__['geometry']
-
-        def cached_settings(self, oversample=1, _orig=orig):
-            try:
-                key = ('settings', type(self), self, oversample)
-                hash(key)
-            except TypeError:                   # settings holding arrays: not shared
-                return _orig(self, oversample)
-            if key not in _GEOMETRY:
-                _GEOMETRY[key] = _orig(self, oversample)
-            return _GEOMETRY[key]
-        patched.append((cls, 'geometry', orig, cached_settings))
-    for cls, name, _, wrapper in patched:
-        setattr(cls, name, wrapper)
-    try:
-        yield
-    finally:
-        for cls, name, orig, _ in patched:
-            setattr(cls, name, orig)
 
 
 def _canon(x):
@@ -180,9 +89,6 @@ def _canon(x):
         state = getattr(x, '__getstate__', lambda: vars(x))() if hasattr(x, '__dict__') else None
         return [f"{type(x).__module__}:{type(x).__qualname__}", _canon(state) if isinstance(state, dict) else None]
     return x
-
-
-_SETUP_DEFAULTS = None
 
 
 def _frames_sha(files):
@@ -216,113 +122,102 @@ def _built_offset_rows(offsets, regularize):
     return out
 
 
-def engine_view(cfg):
-    """What the run engine does with ``cfg``, independent of how the config spells it: the
+# Options the library's calls no longer have, at the values every run used then and uses now (the
+# views recorded before they were removed name them).
+_FIXED_SETUP = dict(compact_zero_columns=True, damp_offset=0.0, outlier_subchannel_edges=None, outlier_aux_key=None,
+                    spectral_fit=False, line_center=None, line_sigma=None)
+_FIXED_SOLVER = dict(resume=False, keep_state=False)
+_FIXED_COADD = dict(preprocess_func=None)
+
+
+def engine_view(spec):
+    """What the run engine does with ``spec`` (a :class:`~selfcal.run.runspec.RunSpec`): the
     library calls' keywords (defaults filled), each sky term's resolved damping, the offset rows,
     the sky coefficients evaluated on the real geometry, the jobs and every product path, the
     frames (by name), staging, tiles and the N-pass schedule."""
     from .. import _state
     from ..pipeline.pipeline_wrapper import Calibrator, Mosaicker
     from . import engine as E
-    from .npass import _OFFSET_DEFAULTS, _SKY_DEFAULTS, schedule
+    from .schedule import schedule
     _state.set_progress(False)
-    view = {'task': cfg.task}
-    if cfg.task in ('reproject', 'precompute'):
-        inst = E.resolve_instrument(cfg.instrument)
-        if cfg.task == 'precompute':
-            view['precompute'] = _canon(dict(cfg.instrument_cfg))
-            return view
-        r = dict(cfg.reproject)
-        layout = inst.exposure_layout(cfg.instrument_cfg)
-        pattern = r['file_pattern'].format(**cfg.instrument_cfg)
-        files = sorted(sum((glob.glob(d + pattern) for d in r['input_dirs']), []))
-        view['exposures'] = _frames_sha(files) if files else ['none found', [d + pattern for d in r['input_dirs']]]
-        view['layout'] = _canon({'use_ext': r.get('use_ext', list(layout.ref_use_ext)),
-                                 'sci_ext': r.get('sci_ext_list', list(layout.sci_ext)),
-                                 'dq_ext': r.get('dq_ext_list', layout.dq_ext), 'detector_ids': layout.detector_ids,
+    view = {'task': spec.task}
+    if spec.task == 'reproject':
+        r, layout = spec.reproject, spec.instrument.layout()
+        files = sorted(sum((glob.glob(p) for p in r.exposures), []))
+        view['exposures'] = _frames_sha(files) if files else ['none found', list(r.exposures)]
+        view['layout'] = _canon({'use_ext': list(layout.ref_use_ext), 'sci_ext': list(layout.sci_ext),
+                                 'dq_ext': layout.dq_ext, 'detector_ids': layout.detector_ids,
                                  'reader': layout.reader, 'header_keys': layout.header_keys,
                                  'cache_tag': layout.cache_tag})
-        view['reproject'] = _canon({'padding_pixels': r.get('padding_pixels', 100), 'max_workers': r.get('max_workers', 50),
-                                    'reproj_func': r.get('reproj_func', 'exact'),
-                                    'padding_percentage': r.get('padding_percentage', 0.05),
-                                    'replace_existing': r.get('replace_existing', False), 'check': r.get('check', False),
-                                    'source_ref_path': r.get('source_ref_path'),
-                                    'output': os.path.join(cfg.output_dir, cfg.resolved_run_name()),
-                                    'resolution_arcsec': cfg.resolution_arcsec})
+        view['reproject'] = _canon({'padding_pixels': r.padding, 'max_workers': r.workers, 'reproj_func': r.method,
+                                    'padding_percentage': r.padding_fraction, 'replace_existing': r.replace,
+                                    'check': r.verify, 'source_ref_path': r.reference,
+                                    'output': os.path.join(spec.output_dir, spec.run_name),
+                                    'resolution_arcsec': spec.resolution_arcsec})
         return view
     with contextlib.redirect_stdout(io.StringIO()):
-        ctx = E.RunContext.build(cfg)
-        inst, mode, geom = ctx.inst, ctx.mode, ctx.geom
+        ctx = E.RunContext.build(spec)
+        geom, model = ctx.geom, ctx.model
         jobs = ctx.jobs()
-        spec = mode.spec(cfg, inst, geom)
-        sky_model = mode.build_sky_model(cfg, inst, geom)
+        sky_model = ctx.sky_model()
         job0 = jobs[0]
         jg = ctx.job_geometry(job0)
         frames = [f'/probe/exp_{i:04d}_det_{i % 16:02d}.h5' for i in range(N_FRAMES)]
-        om = mode.build_offset_model(cfg, inst, geom, jg, job0, N_FRAMES, frames=frames)
+        om = ctx.offset_model(frames)
     view['jobs'] = _canon([(j.name, j.kind, j.value) for j in jobs])
     view['frame_tag'] = ctx.frame_tag
-    view['unit'] = inst.data_unit(cfg.instrument_cfg)
-    view['run'] = [cfg.output_dir and os.path.join(cfg.output_dir, cfg.resolved_run_name()),
-                   cfg.resolution_arcsec]
+    view['unit'] = ctx.unit
+    view['run'] = [spec.output_dir and os.path.join(spec.output_dir, spec.run_name), spec.resolution_arcsec]
 
     # setup_lsqr: the keywords solve_job passes (models compared below), defaults filled
-    calk = dict(ctx.cal_kwargs)
-    calk.update(mode.setup_kwargs(cfg, inst, geom))
+    calk = dict(spec.setup)
+    calk.update(model.setup_kwargs())
     groups = calk.pop('outlier_groups', None)
     if groups is not None:
         calk.update(E.clip_groups(ctx, groups))
-    if not (calk.get('outlier_group_variable') or calk.get('outlier_aux_key')):
+    if not calk.get('outlier_group_variable'):
         calk['outlier_group_variable'] = geom.wavelength_key
-    pre, post = E.resolve_hook(cfg, inst, 'pre_cal'), E.resolve_hook(cfg, inst, 'post_cal')
-    if pre is not None:
-        calk['preprocess_func'] = pre
-    if post is not None:
-        calk['postprocess_func'] = post
-    setup = {**_sig_defaults(Calibrator.setup_lsqr), 'ignore_list': [], **calk}
+    if spec.pre_cal is not None:
+        calk['preprocess_func'] = spec.pre_cal
+    if spec.post_cal is not None:
+        calk['postprocess_func'] = spec.post_cal
+    setup = {**_sig_defaults(Calibrator.setup_lsqr), **_FIXED_SETUP, 'ignore_list': [], **calk}
     if setup['ignore_list'] is None:
         setup['ignore_list'] = []
     regularize, weighted = bool(setup.pop('offset_regularization')), bool(setup.pop('weighted_damping'))
-    dw, dwl = float(setup.pop('damp_weight')), setup.pop('damp_weight_line')
-    if dwl is None and len(sky_model.components) > 1:
-        dwl = 3.0 * dw
-    damping = sky_model.damp_weights(dw, dwl) if weighted else [0.0] * len(sky_model.components)
-    for k in ('max_workers', 'batch_spill_dir'):
+    for k in ('damp_weight', 'damp_weight_line', 'max_workers', 'batch_spill_dir'):
         setup.pop(k, None)
     view['setup_lsqr'] = _canon(setup)
     view['workers'] = calk.get('max_workers', 20)
-    view['sky_damping'] = damping
+    view['sky_damping'] = list(ctx.sky_damping) if weighted else [0.0] * len(sky_model.components)
     sky = _sky(sky_model, geom)
     for t in sky:
         t.pop('damp_weight', None)
     view['sky'] = _canon(sky)
     view['offsets'] = _canon(_built_offset_rows(om.to_setup_kwargs(), regularize))
-    view['x0'] = mode.x0_kind(cfg, inst, geom)
-    aux = mode.aux_maps(cfg, inst, geom)
-    view['aux'] = None if not aux else _canon(list(aux.values()))
-    view['line_fisher_threshold'] = cfg.params.get('line_fisher_threshold', 10.0) if spec.has_coefficients else None
-    view['apply_lsqr'] = _canon({**_sig_defaults(Calibrator.apply_lsqr), 'use_float32': True,
-                                 'n_threads': cfg.apply_n_threads, **cfg.lsqr})
+    view['x0'] = model.x0_kind
+    det_aux, _ = ctx.aux_maps()
+    view['aux'] = None if det_aux is None else _canon(det_aux)
+    view['line_fisher_threshold'] = spec.line_fisher_threshold if model.has_coefficients else None
+    view['apply_lsqr'] = _canon({**_sig_defaults(Calibrator.apply_lsqr), **_FIXED_SOLVER, **spec.lsqr})
 
     # the mosaic, when one is made
-    makes_mosaic = cfg.task == 'mosaic' or (cfg.task == 'cal' and not cfg.tiling and not cfg.skip_mosaic
-                                            and mode.mosaic_mode != 'none')
+    makes_mosaic = spec.task == 'mosaic' or (spec.task == 'cal' and spec.tiling is None and spec.make_mosaic)
     if makes_mosaic:
-        mos = {**_sig_defaults(Mosaicker.make_mosaic), 'ignore_list': [], **cfg.mosaic}
+        mos = {**_sig_defaults(Mosaicker.make_mosaic), **_FIXED_COADD, 'ignore_list': [], **spec.mosaic}
         if mos['ignore_list'] is None:
             mos['ignore_list'] = []
-        mos['postprocess_func'] = E.resolve_hook(cfg, inst, 'post_mosaic')
-        mos['oversample'] = cfg.oversample
-        mos['instrument_maps'] = (mode.mosaic_mode == 'full' and cfg.wavelength_coadd
-                                  and inst.aux_coadds(geom) is not None)
+        mos['postprocess_func'] = spec.post_mosaic
+        mos['oversample'] = spec.oversample
+        mos['instrument_maps'] = spec.instrument_maps and ctx.inst.aux_coadds(geom) is not None
         # sigma is read by the sigma-clip pass (it runs with the std map only) and by the instrument's
         # aux coadds (engine.mosaic_job, core/coadd.run_coadd_schedule); elsewhere it is unused, and
-        # is described as make_mosaic's default whatever the config says
+        # is described as make_mosaic's default whatever the run says
         if not ((mos['make_std_map'] and mos['apply_sigma_clipping']) or mos['instrument_maps']):
             mos['sigma'] = _sig_defaults(Mosaicker.make_mosaic)['sigma']
         mos['coadd_workers'] = mos.pop('max_workers')
         with contextlib.redirect_stdout(io.StringIO()):
-            cms, funcs = mode.mosaic_geometry(cfg, inst, geom, jg)
+            cms, funcs = ctx.mosaic_geometry(jg)
         mos['geometry'] = [_canon(c) for c in cms]
         mos['renderers'] = [_canon(f) for f in funcs]
         view['mosaic'] = _canon(mos)
@@ -330,63 +225,51 @@ def engine_view(cfg):
         view['mosaic'] = None
 
     # products, frames, staging
-    base = cfg.tiling['stitched_suffix'] if cfg.tiling else cfg.suffix
     view['products'] = {j.name: {'cal': ctx.cal_path(j), 'mosaic': ctx.mosaic_path(j) if makes_mosaic else None,
-                                 'npass_stem': 'cal_' + ctx.stem(j, base) if cfg.task == 'npass' else None}
+                                 'npass_stem': ctx.pass_stem(j) if spec.task == 'npass' else None}
                         for j in jobs}
     reproj = ctx.pipeline_config.reproj_dir
-    if cfg.tiling:
-        t = cfg.tiling
-        tiles, only = E.resolve_tiles(t, tuple(t['ref_shape']))
-        view['tiling'] = _canon({'tiles': [(x.name, x.bbox) for x in tiles], 'only': only,
-                                 'ref_shape': t['ref_shape'], 'frame_filter': t.get('frame_filter', 'center'),
-                                 'halo': t.get('halo', 0), 'line': t.get('line', True),
-                                 'stage_dir': ctx.tiling_nvme_dir(), 'memory_guard': t.get('rss_guardrail', True),
+    if spec.tiling is not None:
+        t = spec.tiling
+        tiles, only = E.resolve_tiles(t)
+        view['tiling'] = _canon({'tiles': [(x.name, x.bbox) for x in tiles], 'only': only, 'ref_shape': t.ref_shape,
+                                 'frame_filter': t.assign, 'halo': t.halo, 'line': t.stitch_line,
+                                 'stage_dir': t.stage_dir, 'memory_guard': t.memory_guard,
                                  'tile_cals': {x.name: ctx.tile_cal_file(job0, x) for x in tiles},
                                  'stitched': ctx.stitched_cal_path(job0)})
-        files = E.tiling_frames(t) if os.path.isdir(t['full_reproj_dir']) else None
-        view['frames'] = ['tiled', t['full_reproj_dir'], _frames_sha(files) if files else 'not on this machine']
+        files = E.tiling_frames(t.frames_dir) if os.path.isdir(t.frames_dir) else None
+        view['frames'] = ['tiled', t.frames_dir, _frames_sha(files) if files else 'not on this machine']
     else:
-        where = cfg.reproj_override or reproj
-        if cfg.frame_files:
-            names = [os.path.basename(f) for f in cfg.frame_files]
+        source = spec.frames
+        where = source.in_place or reproj
+        if source.files:
+            names = [os.path.basename(f) for f in source.files]
         elif os.path.isdir(where):
-            names = [os.path.basename(f) for f in E.frame_list(where, cfg.n_frames)]
+            names = [os.path.basename(f) for f in E.frame_list(where, source.first_n)]
         else:
             names = None
         view['frames'] = [where, _frames_sha(names) if names else 'not on this machine']
-        view['staging'] = None if cfg.reproj_override else _canon({
-            'how': cfg.staging, 'dir': getattr(cfg, 'stage_dir', None) or os.path.join(cfg.cache_dir, f'reproj_nvme_{ctx.pipeline_config.run_name}'),
-            'keep': cfg.keep_nvme, 'io_limit': cfg.hdd_io_limit})
-    view['cache_dir'] = cfg.cache_dir if (makes_mosaic and cfg.mosaic.get('cache_intermediate')) or cfg.tiling \
-        or cfg.task == 'npass' else 'unused'
-    view['cal_override'] = cfg.cal_override
+        view['staging'] = None if source.in_place else _canon({'how': source.stage, 'dir': source.stage_dir,
+                                                                'keep': source.keep, 'io_limit': source.io_limit})
+    view['cache_dir'] = spec.scratch if (makes_mosaic and spec.mosaic.get('cache_intermediate')) \
+        or spec.tiling is not None or spec.task == 'npass' else 'unused'
+    view['cal_override'] = spec.cal_override
 
     # the N-pass schedule
-    if cfg.task == 'npass':
-        p = cfg.passes
-        n, order = int(p.get('n', 4)), p.get('order', 'sky_first')
-        init = dict(p.get('init', {}))
-        init_clip = {'outlier_thresh': init.get('outlier_thresh', calk.get('outlier_thresh')),
-                     'grouped': bool(init.get('subch_clip')) if 'subch_clip' in init
-                     else calk.get('outlier_group_edges') is not None,
-                     'ignore_list': init.get('ignore_list', calk.get('ignore_list') or [])}
-        view['passes'] = _canon({'schedule': schedule(n, order), 'stop_tol': p.get('stop_tol', 0.0),
-                                 'sky_merge': p.get('sky_merge', 'combine'), 'keep_moments': p.get('keep_moments', False),
-                                 'init': init_clip, 'sky': {**_SKY_DEFAULTS, **p.get('sky', {})},
-                                 'offset': {**_OFFSET_DEFAULTS, **p.get('offset', {})}})
+    if spec.task == 'npass':
+        p = spec.passes
+        init = p.init_clip
+        init_clip = {'outlier_thresh': init.sigma if init is not None else calk.get('outlier_thresh'),
+                     'grouped': init.grouped if init is not None else calk.get('outlier_group_edges') is not None,
+                     'ignore_list': (list(init.ignore_flags) if init is not None and init.ignore_flags is not None
+                                     else calk.get('ignore_list') or [])}
+        view['passes'] = _canon({'schedule': schedule(p.n, p.order), 'stop_tol': p.stop_tol, 'sky_merge': p.sky_merge,
+                                 'keep_moments': p.keep_moments, 'init': init_clip,
+                                 'sky': {'outlier_thresh': p.sky_clip.sigma, 'subch_clip': p.sky_clip.grouped},
+                                 'offset': {'poly_degree': p.refit_degree, 'outlier_thresh': p.refit_clip.sigma,
+                                            'subch_clip': p.refit_clip.grouped, 'bright_cut': p.bright_cut,
+                                            'min_pix': p.min_pixels, 'segments': p.segments, 'ridge': p.ridge}})
         with contextlib.redirect_stdout(io.StringIO()):
-            view['npass_edges'] = _canon(mode.clip_group_edges(cfg, inst, geom))
-            off = {**_OFFSET_DEFAULTS, **p.get('offset', {})}
-            view['npass_refit_basis'] = _canon(mode.refit_poly_basis(cfg, inst, geom, int(off['poly_degree']),
-                                                                     segments=off.get('segments')))
+            view['npass_edges'] = _canon(ctx.clip_group_edges())
+            view['npass_refit_basis'] = _canon(ctx.refit_poly_basis(p.refit_degree, segments=p.segments))
     return view
-
-
-def differences(a, b) -> list[str]:
-    """The differences between what the engine does with the run configs ``a`` and ``b`` (empty:
-    the same run)."""
-    with cached_geometry():
-        va = _norm(json.loads(json.dumps(engine_view(a), default=str)))
-        vb = _norm(json.loads(json.dumps(engine_view(b), default=str)))
-    return diff(va, vb)

@@ -12,19 +12,21 @@ sigma-clip pass (:meth:`~selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic
 runs :func:`wav_coadd` only when that pass is off, over the intermediate cache that
 ``cache_intermediate`` keeps.
 """
-import logging
-import numpy as np
 import glob
+import logging
 import os
-from astropy.io import fits
-from multiprocessing import Pool, Manager
+from multiprocessing import Manager, Pool
 from multiprocessing.shared_memory import SharedMemory
+
+import numpy as np
+from astropy.io import fits
 from scipy.ndimage import map_coordinates
 from tqdm import tqdm
+
 from ... import _state
+from ...core.coadd import load_cached_frame_dense
 from ...geometry.map_helper import compute_crop
 from ...io.reproj import load_reproj_file
-from ...core.coadd import load_cached_frame_dense
 from .spherex_utility import load_calibration
 
 logger = logging.getLogger(__name__)
@@ -223,7 +225,7 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
             try:
                 shm.close()
                 shm.unlink()
-            except:
+            except Exception:
                 pass
                 
     return wav_mean_map, wav_std_map
@@ -231,7 +233,7 @@ def wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list, ref_sh
 if __name__ == "__main__":
     # Ad-hoc single-run smoke test for wav_coadd with hard-coded paths (a
     # specific run on /mnt/md124 and a cache dir in a different worktree) —
-    # not a supported entry point: the runner invokes wav_coadd via
+    # not a supported entry point: the run engine invokes wav_coadd via
     # SPHEREx.finalize_mosaic (spherex/settings.py). Edit the paths before use.
     detector = 4
     batch_size = 40 

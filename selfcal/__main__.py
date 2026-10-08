@@ -3,8 +3,8 @@
   selfcal run SCRIPT [ARGS...]         run a script with the BLAS / OpenMP threads pinned before numpy loads
   selfcal plan SCRIPT                  print the plan of a run script: its FIELD (or FIELDS), RECIPE and RUN (the
                                        keyword arguments of calibrate), defined at its top level; nothing is run
-  selfcal adopt SCRIPT                 record the existing products of a run script as its own (made by TOML)
-  selfcal convert RUN.toml [-o RUN.py] write the Python form of a TOML run config, checked to run identically
+  selfcal adopt SCRIPT                 record the existing products of a run script as its own (made before records)
+  selfcal convert RUN.toml [-o RUN.py] write the Python form of an old TOML run config (unchecked: read it)
   selfcal rerun RECORD.json            run an action again from its record (--overwrite: make its products again)
   selfcal compare A B                  compare two products: byte-identical, equal values, or different and why
 """
@@ -73,10 +73,10 @@ def _plan(args):
         print(f"Plan: precompute the SPHEREx LVF parameters of detectors {list(settings.pop('detectors'))}"
               + ''.join(f"\n  {k:<11} {v}" for k, v in settings.items()))
     elif hasattr(module, 'REPROJECT') and hasattr(module, 'FIELD'):
-        cfg = module.FIELD.reprojection_config(**module.REPROJECT)
-        print(f"Plan: reproject {module.FIELD.name} ({module.FIELD.path})\n  exposures   {cfg.reproject['input_dirs']}"
-              f"\n  method      {cfg.reproject['reproj_func']}, padding {cfg.reproject['padding_pixels']}"
-              f"\n  reference   {cfg.reproject['source_ref_path'] or 'ref.fits, or fitted to the exposures'}")
+        r = module.FIELD.reprojection_spec(**module.REPROJECT).reproject
+        print(f"Plan: reproject {module.FIELD.name} ({module.FIELD.path})\n  exposures   {list(r.exposures)}"
+              f"\n  method      {r.method}, padding {r.padding}"
+              f"\n  reference   {r.reference or 'ref.fits, or fitted to the exposures'}")
     else:
         print(f"{args.script}: no FIELD (or FIELDS) with RUN, or REPROJECT, to plan; a run script defines them at its "
               f"top level and runs FIELD.calibrate(RECIPE, **RUN) under its __main__ guard")
@@ -107,8 +107,8 @@ def _adopt(args):
 def _convert(args):
     from selfcal.run.convert import convert_file
     out = args.output or os.path.splitext(args.config)[0] + '.py'
-    notes = convert_file(args.config, out, check=not args.no_check, force=args.force)
-    print(f"wrote {out}")
+    notes = convert_file(args.config, out, force=args.force)
+    print(f"wrote {out} (not run: read it, and plan it with `selfcal plan {out}`)")
     for n in notes:
         print(f"note: {n}")
 
@@ -142,10 +142,9 @@ def main(argv=None):
     p = sub.add_parser('adopt', help="record a run script's existing products as made by it (each is checked)")
     p.add_argument('script')
     p.set_defaults(func=_adopt)
-    p = sub.add_parser('convert', help='write the Python form of a TOML run config')
+    p = sub.add_parser('convert', help='write the Python form of an old TOML run config')
     p.add_argument('config')
     p.add_argument('-o', '--output', default=None, help='the script to write (default: next to the config)')
-    p.add_argument('--no-check', action='store_true', help='skip the check that the script runs identically')
     p.add_argument('--force', action='store_true', help='replace an existing output script')
     p.set_defaults(func=_convert)
     p = sub.add_parser('rerun', help='run an action again from its record')

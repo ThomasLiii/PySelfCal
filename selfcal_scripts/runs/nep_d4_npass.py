@@ -1,5 +1,5 @@
 """NEP Detector 4: the three-line PAH fit on the 16 overlap tiles, then the N-pass solve (8 passes, sky
-first) (was configs/nep_d4_npass.toml)."""
+first)."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

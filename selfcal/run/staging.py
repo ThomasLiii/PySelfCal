@@ -40,14 +40,6 @@ def hdd_throttle(limit):
         set_hdd_io_limit(None)
 
 
-def nvme_dir(cache_dir, run_name):
-    """Return the run's staging directory for its frames, ``<cache_dir>/reproj_nvme_<run_name>``.
-
-    Only the path is formed here; :func:`prepare_nvme` creates and fills it.
-    """
-    return os.path.join(cache_dir, f'reproj_nvme_{run_name}')
-
-
 STAGE_MARKER = '.selfcal-staging.json'
 
 
@@ -71,7 +63,7 @@ def claim(stage_dir, source_dir):
         raise RuntimeError(
             f"{stage_dir} holds files but was not made by selfcal staging (it has no {STAGE_MARKER}): "
             f"refusing to copy frames into it, and it would never be cleaned up. Read the frames there "
-            f"in place (reproj_override = \"{stage_dir}\", or staging = \"reuse\"), move it away, or, if "
+            f"in place (frames=\"{stage_dir}\", or Compute(stage=\"reuse\")), move it away, or, if "
             f"it is a staged copy of {source_dir} made before staging directories were marked, mark it: "
             f"echo '{{}}' > {os.path.join(stage_dir, STAGE_MARKER)}")
     os.makedirs(stage_dir, exist_ok=True)
@@ -131,33 +123,34 @@ def remap_to_nvme(file_list, nvme_reproj_dir):
     return [os.path.join(nvme_reproj_dir, os.path.basename(f)) for f in file_list]
 
 
-def prepare_nvme(cfg, reproj_dir, run_name):
-    """Resolve + populate the NVMe scratch dir per the config staging strategy.
+def prepare_nvme(frames, reproj_dir):
+    """Stage the frames of ``reproj_dir`` as the run's
+    :class:`~selfcal.run.runspec.FrameSource` ``frames`` says, and return the staging directory.
 
-    Returns the nvme dir. ``copy`` stages all reproj files; ``reuse`` asserts a
-    previously-staged dir exists (the owning run staged it). Either way the HDD
-    I/O throttle is disabled afterward (NVMe handles massively parallel reads).
+    ``stage="copy"`` copies every frame there; ``"reuse"`` requires a directory another run
+    staged. Either way the HDD I/O throttle is off afterwards (NVMe handles massively parallel
+    reads).
     """
-    nvme = getattr(cfg, 'stage_dir', None) or nvme_dir(cfg.cache_dir, run_name)
-    if cfg.staging == 'copy':
-        with hdd_throttle(cfg.hdd_io_limit):
-            stage_copy(reproj_dir, nvme, cfg.hdd_io_limit)
-    elif cfg.staging == 'reuse':
+    nvme = frames.stage_dir
+    if frames.stage == 'copy':
+        with hdd_throttle(frames.io_limit):
+            stage_copy(reproj_dir, nvme, frames.io_limit)
+    elif frames.stage == 'reuse':
         if not os.path.isdir(nvme):
             raise RuntimeError(
                 f"NVMe cache dir missing: {nvme}. staging='reuse' expects the "
                 f"owning run to have created it.")
     else:
-        raise ValueError(f"unknown staging strategy {cfg.staging!r}")
+        raise ValueError(f"unknown staging strategy {frames.stage!r}")
     set_hdd_io_limit(None)
     return nvme
 
 
-def cleanup_nvme(cfg, nvme_reproj_dir):
-    """Remove the NVMe scratch dir unless the config opts to keep it (or reuses
-    a dir it does not own). A directory without :data:`STAGE_MARKER` was not made
-    by the pipeline and is never removed."""
-    if cfg.staging == 'reuse' or cfg.keep_nvme:
+def cleanup_nvme(frames, nvme_reproj_dir):
+    """Remove the staging directory unless the run keeps it (``frames.keep``) or reuses a
+    directory it does not own (``frames.stage == "reuse"``). A directory without
+    :data:`STAGE_MARKER` was not made by the pipeline and is never removed."""
+    if frames.stage == 'reuse' or frames.keep:
         if os.path.exists(nvme_reproj_dir):
             print(f"NVMe reproj cache preserved at {nvme_reproj_dir}.")
         return
@@ -254,7 +247,7 @@ def start_rss_guardrail():
     Once the hard RSS reaches :data:`RSS_ABORT_FRACTION` (85%) of ``MemTotal`` it prints a
     message and exits at once with ``os._exit(2)``: a logged exit instead of a kernel OOM kill
     with no traceback. Worker processes are not counted, and each call starts another thread.
-    The tiled ``cal`` task starts one unless ``[tiling].rss_guardrail = false``.
+    The tiled ``cal`` task starts one unless ``Compute(memory_guard=False)``.
     """
     mem_total_kb = _read_meminfo_kb('MemTotal')
     abort_threshold_kb = int(mem_total_kb * RSS_ABORT_FRACTION)

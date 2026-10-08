@@ -1,5 +1,5 @@
 """NEP Detector 4 (the /data3 copy), the Aromatic window: the NumCol 10 fiducial with shot-noise
-weights in the solve; the staged frames are kept (was configs/damp_offset.toml)."""
+weights in the solve; the staged frames are kept."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

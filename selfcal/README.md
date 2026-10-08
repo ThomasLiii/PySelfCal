@@ -11,31 +11,40 @@ named per-observation *data variables* from pluggable sources, so a new
 instrument or model is a set of high-level functions, never a core edit — see
 [`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md).
 
-The reference entry point is the **generic runner** — one TOML config per run,
-no editing Python:
+The entry point is the **Python API**: a run is a Python script (or a notebook).
+The production runs are the scripts of `selfcal_scripts/runs/`:
 
 ```bash
-./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml   # or any config
-./selfcal_scripts/run.sh selfcal_scripts/configs/d4_aromatic.toml --dry-run  # resolve jobs+mode, no compute
+./selfcal_scripts/run.sh selfcal_scripts/runs/d4_aromatic.py            # or any run script
+./selfcal_scripts/run.sh selfcal_scripts/runs/d4_aromatic.py --dry-run  # the plan: products made, reused or refused
 ```
 
-The config picks an **instrument** (`[instrument].name`, resolved through the
-registry in [`instruments/base.py`](instruments/base.py): a subclass of the
-`Instrument` ABC — the built-ins are `spherex`, whose specifics live in
-`sc.SPHEREx` ([`instruments/spherex/settings.py`](instruments/spherex/settings.py); the
-registered instrument in [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py)
-reads its table as those settings), `euclid` (16-detector NISP, `sc.Euclid` in
-[`instruments/euclid/settings.py`](instruments/euclid/settings.py), registered in
-[`instruments/euclid/adapter.py`](instruments/euclid/adapter.py)) and the
-config-only `grid` imager in [`instruments/grid.py`](instruments/grid.py);
-other packages register theirs through the `selfcal.instruments` entry-point group),
-a **mode** (the calibration recipe; modes registry under
-`selfcal/run/modes/`), and a **task** (`cal`, optionally tiled via
-`[tiling]`; `mosaic`; `npass`; `reproject`; `precompute`). The run engine in `selfcal/run/` is instrument- and
-mode-agnostic: it talks only to the `Instrument` interface plus the `CalMode`
-interface, never to a telescope or variant by name. See
-[`../selfcal_scripts/configs/README.md`](../selfcal_scripts/configs/README.md)
-for the run model and [`../PIPELINE.md`](../PIPELINE.md) for tuning knobs.
+A run script builds an **instrument** (`sc.SPHEREx`, `sc.Euclid`, `sc.Camera`, or an
+`sc.Instrument` subclass), a **field** (`sc.Field`: one data set and its directory) and a
+**recipe** (`sc.Recipe`: the model, the fit, the coadd and the summation layout), then calls
+an action (`field.reproject`, `field.calibrate`, `field.mosaic`); see
+[The Python API](../docs/guide/python-api.md). The action plans first, then lowers its
+objects ([`run/lower.py`](run/lower.py)) into one `RunSpec` per group of jobs
+([`run/runspec.py`](run/runspec.py)), in which every value is resolved: the library keywords
+of the solve, the solver and the coadd, the frames and their staging, the tiles, the passes.
+The run engine reads nothing else. `RunContext` ([`run/engine.py`](run/engine.py)) holds what
+a run resolves once: the instrument's detector geometry (built once and kept for the
+process), the `ModelSpec` of the model, each sky term's damping, every product name; its
+methods lower the model to the solver's objects (offset and sky models, data variables,
+weight, priors, warm start, clip groups, the N-pass refit basis). The tasks of
+[`run/pipelines.py`](run/pipelines.py) (`cal`, tiled or not; `mosaic`; `npass`, scheduled by
+[`run/npass.py`](run/npass.py); `reproject`) run on its two primitives, `solve_job` and
+`mosaic_job`. <!-- check: the RunSpec / RunContext description once S2 lands -->
+
+The engine calls the instrument only through the `sc.Instrument` contract
+([`instruments/contract.py`](instruments/contract.py)), which the built-in instruments
+implement themselves: `sc.SPHEREx`
+([`instruments/spherex/settings.py`](instruments/spherex/settings.py)), `sc.Euclid`
+([`instruments/euclid/settings.py`](instruments/euclid/settings.py)) and `sc.Camera`
+([`instruments/camera.py`](instruments/camera.py)). It never names a telescope or a
+calibration variant: a new telescope is an `sc.Instrument` subclass and a new variant an
+`sc.Model` (or a function that returns one, as the presets are). Neither touches the engine,
+and there is no registry. See [`../PIPELINE.md`](../PIPELINE.md) for tuning knobs.
 
 Whatever the entry point, an end-to-end run flows through the three stage
 classes in [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py):
@@ -98,7 +107,7 @@ on map 1 — and solve them jointly.
 The package is organized into focused subpackages: `pipeline/` (orchestration),
 `core/` (the sparse solve), `models/` (sky + offset abstractions),
 `geometry/` (masking / interpolation / WCS), `io/` (reproject + frame
-selection), and `instruments/` (telescope-specific adapters). The curated
+selection), and `instruments/` (the instruments: the contract and the built-ins). The curated
 public API is re-exported from [`__init__.py`](__init__.py):
 
 ```python
@@ -184,8 +193,10 @@ clarity:
   a length-K list (LSQR path). Hooks are provided for `preprocess_func`
   and `postprocess_func`: each receives a `FrameContext` (the frame's
   identity, `sub_data`, `sub_weight`, `sub_mapping`, `ref_coords`, and after
-  the offsets `sub_aux`) and returns the new `sub_data` — e.g. bright-pixel
-  masking, or the N-pass offset/sky subtractors.
+  the offsets `sub_aux`) and returns the new `sub_data` — e.g. Euclid's star
+  mask, or the N-pass offset/sky subtractors. (The solve takes both,
+  `sc.Fit(raw_frame_hook=, frame_hook=)`; the mosaic only the second,
+  `sc.Coadd(frame_hook=)`.) <!-- check: _prep_subframe keeps preprocess_func for the solve after make_mosaic(preprocess_func=) is removed -->
 
 - **`setup_lsqr` (in [`core/system.py`](core/system.py))** — Sparse matrix
   construction. Builds `A`, `b`, and a per-map `pixel_counts` coverage list
@@ -193,7 +204,7 @@ clarity:
   (per-map `chunk_maps[m]`, `grid_valid_weight`, per-map `adj_infos[m]`)
   via `multiprocessing.shared_memory` to avoid pickling. Each worker
   emits its partial rows/cols/data/b into new shared segments (or, with
-  `batch_spill_dir` — the runner passes its `cache_dir` — into files on
+  `batch_spill_dir` — the engine passes the run's scratch directory — into files on
   scratch) which the main process places into one CSR matrix (a `BlockCSR` /
   `ColSplitCSR` above `SELFCAL_BLOCK_NNZ`) **in batch-id order**
   (deterministic across runs). `col_bases` (length `K+1` array) marks
@@ -453,28 +464,31 @@ clarity:
 
 ### Instrument-specific helpers (`instruments/`)
 
-- **[`instruments/base.py`](instruments/base.py)** — The `Instrument`
-  abstract base class + registry (`register_instrument`, `get_instrument`,
-  entry-point discovery) and the typed geometry it returns: `ChunkMap` (a
-  chunk partition at detector and grid resolution with the AXES of its chunk
-  grid — `selfcal.models.offset_structure.ChunkAxes` — plus which axes the
-  standard block regularises along, which is the spectral axis and which the
-  group axis), `DetectorGeometry` (chunk maps by name, named aux maps such as
-  a wavelength map), `JobGeometry` (per-job valid weights) and
-  `ExposureLayout` (how the reprojection stage reads a raw exposure). The
-  selfcal core takes plain arrays and never imports `instruments`; the run
-  engine drives a calibration entirely through this surface plus the
-  `CalMode` interface and reads no `[instrument]` key itself. Five methods
-  are required (`jobs`, `frame_tag`, `exposure_layout`, `detector_geometry`,
-  `job_geometry`); the hooks (offset renderer, aux coadds, mosaic finaliser,
-  coefficient catalogue, post-cal hooks, data unit, precompute) have defaults.
+- **[`instruments/contract.py`](instruments/contract.py)** — `sc.Instrument`,
+  the contract the run engine calls and the only one: `geometry(oversample)`
+  (the chunk maps with their axes and the detector maps; `Geometry(...)` builds
+  one), `layout()` (how a raw exposure is read), `default_jobs()`,
+  `job_geometry(geom, job)` (a job's valid pixels and weights),
+  `frame_variables(frames)` / `frame_variable_names()`, `product_tag` and
+  `unit`, and the optional hooks `offset_renderer`, `aux_coadds`,
+  `finalize_mosaic` and `coefficient_catalog`. A new telescope is a
+  frozen-dataclass subclass; the built-in instruments are subclasses too.
+  <!-- check: optional frame_groups on the contract -->
 
-- **[`instruments/grid.py`](instruments/grid.py)** — The built-in `grid`
-  instrument: any single-detector imager described entirely by the
-  `[instrument]` table (detector shape, chunk grid, extension numbers); its
-  chunk geometry and product tag are an `sc.Camera`'s
-  ([`instruments/camera.py`](instruments/camera.py)). The test suite's
-  end-to-end run uses it on synthetic exposures.
+- **[`instruments/base.py`](instruments/base.py)** — The typed geometry the
+  instruments return: `Job`, `ChunkMap` (a chunk partition at detector and
+  grid resolution with the AXES of its chunk grid —
+  `selfcal.models.offset_structure.ChunkAxes` — plus which axes the standard
+  block regularises along, which is the spectral axis and which the group
+  axis), `DetectorGeometry` (chunk maps by name, named aux maps such as a
+  wavelength map), `JobGeometry` (per-job valid weights) and `ExposureLayout`
+  (how the reprojection stage reads a raw exposure). The selfcal core takes
+  plain arrays and never imports `instruments`.
+
+- **[`instruments/camera.py`](instruments/camera.py)** — `sc.Camera`: any
+  single-detector imager without code (detector shape, rectangular chunk grid,
+  FITS extensions or a reader, optional detector maps and header variables).
+  The test suite's end-to-end runs use it on synthetic exposures.
 
 - **[`instruments/spherex/settings.py`](instruments/spherex/settings.py)** — `sc.SPHEREx`,
   the reference implementation of the instrument contract: builds the
@@ -482,12 +496,9 @@ clarity:
   `(subchannel, column)` axes, the readout-channel map, the BC/BW aux maps),
   supplies per-job valid masks + weights, the arc offset renderer for the
   mosaic, the wavelength coadd + finaliser, the L2b exposure layout (FINAST
-  filter) and the data unit.
-  [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) is the
-  `spherex` instrument of the TOML configs (`SPHERExInstrument`): it reads the
-  `[instrument]` table as those settings, expands a channel/window selection
-  into jobs (`SPHEREx.jobs_from_table`) and holds the zodi-anchor post-cal hook
-  and the precompute task.
+  filter) and the data unit. Its module also holds the jobs (`channel`,
+  `channels`, `group`, `window`), the line terms (`line`), `precompute_lvf`
+  (the LVF arc fit) and `zodi_anchor` (the anchor of a calibration's result).
   [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py)
   holds the named coefficients (`pah_3p29`).
 
@@ -544,9 +555,15 @@ clarity:
   multi-process sigma-clipped weighted coaddition of the LVF band-center and
   band-width values mapped through each exposure's `sub_mapping`. This is
   the standalone (pre-2026-09) path over an intermediate cache of either
-  format; the runner now folds the same sums into the mosaic's sigma-clip
+  format; the engine now folds the same sums into the mosaic's sigma-clip
   pass (`make_mosaic(wav_maps=...)`, see `core/coadd.py`) and only calls
   `wav_coadd` when sigma clipping is off.
+
+- **[`instruments/euclid/settings.py`](instruments/euclid/settings.py)** —
+  `sc.Euclid`: the 16-detector NISP exposure layout, the grid / stripe / tilt
+  chunk maps, the spline / strip / ramp renderers, the edge taper and electron
+  units. [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) holds the
+  recipe's per-frame hooks, `StarMask` and `ResidualMask`.
 
 - **[`instruments/euclid/exposures.py`](instruments/euclid/exposures.py)** —
   Simple exposure-list helpers for Euclid data: `load_from_radius` (filter a
@@ -612,7 +629,7 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   render evaluates the spline only at the grid pixels that box reads
   (identical values, ~3 % of the grid).
 - **HDD throttle.** A global `BoundedSemaphore` (`set_hdd_io_limit`)
-  bounds concurrent HDD reads to avoid RAID seek thrashing. The runner
+  bounds concurrent HDD reads to avoid RAID seek thrashing. The engine
   typically copies reprojected HDF5s onto NVMe and disables the
   limit before calibration / mosaicking.
 - **Sparse intermediate cache.** `core/coadd.py` in `cache` mode stores
@@ -630,14 +647,24 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
 - **One column layout, computed once.** `SystemLayout` is the single
   source of truth for the `x` column blocks, shared between `setup_lsqr`
   and `Calibrator` so the build and the parse cannot drift.
-- **Engine ↔ instrument ↔ mode separation.** The generic run engine never
-  imports a telescope or names a calibration variant: it talks to the
-  `Instrument` ABC ([`instruments/base.py`](instruments/base.py)) and the
-  `CalMode` interface, and modes express offset structure in the chunk
+- **Engine ↔ instrument ↔ model separation.** The run engine never
+  imports a telescope or names a calibration variant: it calls the
+  instrument through the `sc.Instrument` contract
+  ([`instruments/contract.py`](instruments/contract.py)) and lowers the
+  model (`ModelSpec`), whose offset structure is expressed in the chunk
   map's axes ([`models/offset_structure.py`](models/offset_structure.py)),
-  never in a telescope's vocabulary. Adding a telescope = an `[instrument]`
-  table for the built-in `grid`, or one `Instrument` subclass; adding a
-  calibration variant = one new mode module — neither touches the engine.
+  never in a telescope's vocabulary. Adding a telescope = an `sc.Camera`, or
+  one `sc.Instrument` subclass; adding a calibration variant = an `sc.Model`
+  (or a function that returns one) — neither touches the engine.
+- **Resolved once.** An action lowers its objects once into `RunSpec`s, and
+  each engine run resolves its `RunContext` once (the N-pass INIT shares its
+  scheduler's). The detector geometry is built once per process: the engine
+  keeps the last four, keyed by the instrument's settings, the oversampling,
+  the files the geometry reads and the environment variables that locate
+  them, so `field.plan` followed by `field.calibrate` builds it once.
+  <!-- check: the geometry cache key and size --> Each sky term's damping is
+  decided once (`SkyModel.damp_weights`), and the joint solve, the
+  closed-form sky solve and the N-pass SKY pass read the same numbers.
 - **Models over parallel lists.** `SkyModel` and `OffsetModel` bundle what
   used to be loose integers / parallel length-K kwargs. They lower to the
   identical flat kwargs (gated byte-equal) so the abstraction adds no
@@ -645,9 +672,10 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
 
 ## Using the pipeline
 
-The supported entry point is the generic runner (one TOML per run); see
-[`../selfcal_scripts/configs/README.md`](../selfcal_scripts/configs/README.md).
-A minimal programmatic flow mirrors what the runner does internally:
+The supported entry point is the Python API
+([The Python API](../docs/guide/python-api.md)). Below it, the three stage
+classes can be driven directly; a minimal flow mirrors what the engine does
+for one job:
 
 ```python
 import numpy as np
@@ -715,8 +743,8 @@ maps and user priors are further `setup_lsqr` arguments (`sky_model`, a block's
 [`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md). The
 flat per-map keyword lists (`chunk_maps=`, `adj_infos=`, ...) are still accepted
 but deprecated. For a K=2 example (LVF chunks + detector-fixed readout-channel
-stripes shared across all frames), see the `two_block_fixed` mode and
-[`../selfcal_scripts/configs/k2_readout.toml`](../selfcal_scripts/configs/k2_readout.toml).
+stripes shared across all frames), see `sc.two_block` and
+[`../selfcal_scripts/runs/k2_readout.py`](../selfcal_scripts/runs/k2_readout.py).
 
 ## Dependencies
 
@@ -735,10 +763,10 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`config/`](config/__init__.py) | The settings base class of the Python API (`base.py`), function references for the worker processes (`functions.py`), path resolution + `SelfCalConfigError` (`paths.py`). |
 | [`priors.py`](priors.py) | Ready-made priors of the Python API (`sc.priors.frame_smoothness`, ...). |
 | [`models/model.py`](models/model.py) | The Python API's model: `Model`, `Sky`, `Offsets`, `Poly`, functions, data-variable sources, `Prior`, the presets; lowers to `ModelSpec`. |
-| [`run/`](run/__init__.py) | The run engine (TOML configs) and the Python API's actions: `recipe.py` (`Recipe`, `Fit`, `Coadd`, `Numerics`, `Clip`, `ChunkGroups`), `schedule.py` (`Tiles`, `Passes`), `compute.py`, `field.py` (`Field` and its actions), `lower.py` (objects -> `RunConfig`), `plan.py`, `records.py` (records, `rerun`, submit requests), `result.py`, `convert.py` (TOML -> objects, `convert_file`), `products.py` (sidecars, fingerprints, `adopt` checks, N-pass intermediates), `equivalence.py` (`engine_view`: whether two run configs run identically), `compare.py`. |
-| [`__main__.py`](__main__.py) | The `selfcal` command line: `run`, `convert`, `rerun`, `compare`. |
+| [`run/`](run/__init__.py) | The Python API's actions and the run engine: `recipe.py` (`Recipe`, `Fit`, `Coadd`, `Numerics`, `Clip`, `ChunkGroups`), `schedule.py` (`Tiles`, `Passes`, `Refit`), `compute.py` (`Compute`, `Tuning`), `field.py` (`Field` and its actions), `lower.py` (objects -> `RunSpec`), `runspec.py` (`RunSpec`, the engine's input), `engine.py` (`RunContext`, the geometry cache, `solve_job`, `mosaic_job`), `pipelines.py` (the tasks), `npass.py` (the N-pass scheduler), `staging.py`, `plan.py`, `records.py` (records, `rerun`, submit requests), `result.py`, `convert.py` (an old TOML config -> a run script, `convert_file`), `products.py` (sidecars, fingerprints, `adopt` checks, N-pass intermediates), `equivalence.py` (`engine_view`: what the engine does with a run, for the views), `compare.py`. |
+| [`__main__.py`](__main__.py) | The `selfcal` command line: `run`, `plan`, `adopt`, `convert`, `rerun`, `compare`. |
 | [`io/atomic.py`](io/atomic.py) | `atomic_path`: products written under a temporary name, renamed when complete. |
-| [`instruments/contract.py`](instruments/contract.py), [`instruments/camera.py`](instruments/camera.py) | Instruments as settings: the `Instrument` base for new telescopes, `Camera`; SPHEREx and Euclid in `spherex/settings.py`, `euclid/settings.py`. |
+| [`instruments/contract.py`](instruments/contract.py), [`instruments/camera.py`](instruments/camera.py) | The instrument contract (`sc.Instrument`, the only interface the engine calls) and `sc.Camera`; SPHEREx and Euclid implement it in `spherex/settings.py`, `euclid/settings.py`. |
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
 | [`pipeline/tiled.py`](pipeline/tiled.py) | `TiledCalibration`, `TileSpec`, `make_tile_grid`, stitching. |
@@ -763,16 +791,15 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
 | [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
-| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as data (variables, sky terms, offset terms, weight, priors), from a `[model]` table or a mode, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
+| [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as the engine takes it (variables, sky terms, offset terms, weight, priors), built from an `sc.Model`, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
 | [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
 | [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
 | [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `write_frame` (the frame-file contract), `frame_header_values`. |
 | [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
-| [`instruments/base.py`](instruments/base.py) | The `Instrument` ABC, registry (+ entry points) and typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
-| [`instruments/grid.py`](instruments/grid.py) | The built-in config-only `grid` imager. |
-| [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid NISP: the chunk-map, edge-taper and spline/strip/ramp renderer helpers; the `euclid` instrument of the TOML configs (reads its table as `sc.Euclid`, `euclid/settings.py`: 16-detector exposure layout, grid/stripe/tilt chunk maps, electron units). |
-| [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`star_position_mask`, `residual_mask`). |
-| [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | The `spherex` instrument of the TOML configs (reads its table as `sc.SPHEREx`, `spherex/settings.py`) + readout chunk map + zodi hook. |
+| [`instruments/base.py`](instruments/base.py) | The typed geometry (`Job`, `ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
+| [`instruments/euclid/settings.py`](instruments/euclid/settings.py) | `sc.Euclid`: the 16-detector NISP exposure layout, grid/stripe/tilt chunk maps, spline/strip/ramp renderers, edge taper, electron units. |
+| [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`StarMask`, `ResidualMask`). |
+| [`instruments/spherex/settings.py`](instruments/spherex/settings.py) | `sc.SPHEREx` (chunk maps and axes, wavelength maps, renderer, layout), its jobs, `line`, `precompute_lvf`, `zodi_anchor`. <!-- check: where the readout map, the window presets and the Euclid helpers of the deleted adapters live --> |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |
 | [`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py) | Wavelength mean/std maps via multi-process sigma-clipped coadd. |

@@ -1,193 +1,295 @@
-"""The run engine's primitives — mode- and instrument-agnostic.
+"""The run engine's primitives — instrument-agnostic.
 
-A run resolves its config ONCE into a :class:`RunContext` (instrument, mode,
-output layout, detector geometry, product names) and then applies two
-primitives to it:
+An engine run (a :class:`~selfcal.run.runspec.RunSpec`) is resolved ONCE into a
+:class:`RunContext` (the instrument, the output layout, the detector geometry, the model and
+every product name) and then applies two primitives to it:
 
-* :func:`solve_job` — one joint LSQR solve over a frame list → one cal file
-  (the block every task shares: plain cal, each tile of a tiled cal, the INIT
-  pass of an N-pass run);
+* :func:`solve_job` — one joint LSQR solve over a frame list → one cal file (the block every
+  task shares: plain cal, each tile of a tiled cal, the INIT pass of an N-pass run);
 * :func:`mosaic_job` — one coadd of a cal file → one mosaic FITS.
 
-Tiling (``[tiling]``) and passes (``[passes]``) are options layered on top of
-these in :mod:`.pipelines` / :mod:`.npass`; they never re-implement the solve.
-Every product name (cal, mosaic, mosaic cache, tile cals, stitched cal, N-pass
-products) comes from :class:`RunContext`, so the pieces of a run can never
+Tiling and passes are options layered on top of these in :mod:`.pipelines` / :mod:`.npass`;
+they never re-implement the solve. Every product name (cal, mosaic, mosaic cache, tile cals,
+stitched cal, N-pass products) comes from :class:`RunContext`, so the pieces of a run can never
 disagree about a file name.
 
-The engine reads no ``[instrument]`` key: the instrument turns that table into
-typed geometry (:class:`~selfcal.instruments.base.DetectorGeometry`,
-``JobGeometry``), the mode turns the geometry into the offset/sky recipe.
+The engine talks to the instrument through its contract only
+(:class:`~selfcal.instruments.contract.Instrument`: the geometry, a job's geometry, the product
+tag, the frame variables and the optional renderers, maps and catalogue) and lowers the model
+(:class:`~selfcal.models.spec.ModelSpec`) to the solver's objects; it never names a telescope.
 
 Edits here must keep calibration output byte-identical — run the gates
-(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``) before
-committing. All numeric choices live in the TOML config and the mode/instrument
-objects; this module only sequences them.
+(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``) before committing.
 """
 from __future__ import annotations
 
+import collections
+import copy
 import gc
 import glob as glob_module
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from selfcal.instruments import get_instrument
-from selfcal.instruments.base import Instrument
 from selfcal.pipeline import pipeline_wrapper
 
 from . import staging
-from .config import get_postprocess
-from .modes import get_mode
 
 
-def resolve_instrument(instrument):
-    """The engine instrument of a run config: a registered name, or an instrument object as is."""
-    return instrument if isinstance(instrument, Instrument) else get_instrument(instrument)
+def announce(spec, kind, path, **info):
+    """Tell the run's product book (``spec.on_product``, set by the action) that the product
+    ``path`` was written."""
+    if spec.on_product is not None:
+        spec.on_product(kind, path, **info)
 
 
-def announce(cfg, kind, path, **info):
-    """Tell the run's product book (``cfg.on_product``, set by the Python API) that the product
-    ``path`` was written; a TOML run has none."""
-    book = getattr(cfg, 'on_product', None)
-    if book is not None:
-        book(kind, path, **info)
-
-
-def check_requires(mode, inst):
-    """A mode declares the instrument capabilities it needs; fail early."""
-    missing = [c for c in mode.requires if c not in inst.capabilities]
-    if missing:
-        raise ValueError(
-            f"mode {mode.name!r} requires instrument capabilities {missing} "
-            f"that {inst.name!r} does not provide (has {sorted(inst.capabilities)})")
-
-
-def calibration_kwargs(cfg):
-    """The [calibration] table + the resolved (named) postprocess func."""
-    kw = dict(cfg.calibration)
-    kw['postprocess_func'] = get_postprocess(cfg.postprocess)
-    return kw
-
-
-def resolve_hook(cfg, inst, which):
-    """The per-frame hook ``[hooks].<which>`` (``pre_cal`` / ``post_cal`` /
-    ``post_mosaic``): a table ``{name = ..., <params>}`` naming one of the
-    instrument's hook factories (``inst.hooks()``) or the runner's named hooks;
-    ``None`` when the config has none."""
-    spec = (cfg.hooks or {}).get(which)
-    if not spec:
-        return None
-    if callable(spec):                     # a hook object (the Python API)
-        return spec
-    if isinstance(spec, str):
-        spec = {'name': spec}
-    params = dict(spec)
-    name = params.pop('name', None)
-    if not name:
-        raise ValueError(f"[hooks].{which} needs a 'name'")
-    factories = dict(inst.hooks())
-    if name in factories:
-        return factories[name](**params)
-    fn = get_postprocess(name)
-    if params:
-        raise ValueError(f"hook {name!r} takes no parameters")
-    return fn
+def _quiet(*args, **kwargs):
+    """A log that says nothing."""
 
 
 # ---------------------------------------------------------------------------
-# Run context: resolved once per run; owns the product names
+# The detector geometry, built once per instrument and oversampling
+# ---------------------------------------------------------------------------
+#: How many detector geometries the process keeps (:func:`instrument_geometry`).
+GEOMETRIES_KEPT = 4
+#: The environment variables an instrument's data files are found through.
+GEOMETRY_VARIABLES = ('SELFCAL_SPHEREX_CALIB_DIR', 'SELFCAL_LVF_PARAMS_DIR', 'SELFCAL_SPHEREX_CHANNEL_FILE')
+_GEOMETRIES = collections.OrderedDict()
+
+
+def _file_state(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return path, None, None
+    return path, st.st_size, st.st_mtime_ns
+
+
+def instrument_geometry(inst, oversample):
+    """The detector geometry of ``inst`` sampled ``oversample`` times per pixel
+    (:meth:`~selfcal.instruments.contract.Instrument.geometry`), built once for the process.
+
+    The last :data:`GEOMETRIES_KEPT` geometries are kept, each under the instrument's settings,
+    the oversampling, the path, size and time of each file its geometry reads (when the instrument
+    names them, ``geometry_files()``) and the :data:`GEOMETRY_VARIABLES`: a geometry is built again
+    when any of them changed. Each call returns a copy of its own, so no run sees another's
+    changes."""
+    from ..config.base import encode
+    from .products import fingerprint
+    files = getattr(inst, 'geometry_files', None)
+    key = (type(inst), fingerprint(encode(inst)), int(oversample),
+           None if files is None else tuple(_file_state(p) for p in files()),
+           tuple(os.environ.get(v) for v in GEOMETRY_VARIABLES))
+    if key in _GEOMETRIES:
+        _GEOMETRIES.move_to_end(key)
+    else:
+        _GEOMETRIES[key] = inst.geometry(oversample)
+        while len(_GEOMETRIES) > GEOMETRIES_KEPT:
+            _GEOMETRIES.popitem(last=False)
+    return copy.deepcopy(_GEOMETRIES[key])
+
+
+# ---------------------------------------------------------------------------
+# Run context: resolved once per run; lowers the model; owns the product names
 # ---------------------------------------------------------------------------
 @dataclass
 class RunContext:
-    """Everything a task resolves once from its config.
+    """Everything an engine run resolves once from its :class:`~selfcal.run.runspec.RunSpec`.
 
-    ``geom`` is the instrument's detector-level geometry (chunk maps with their
-    axes, aux maps) built once per run; per-job geometry comes from
-    :meth:`job_geometry`. The ``stem`` / ``cal_*`` / ``mosaic_*`` methods are
-    the ONE place product names are formed: ``<frame_tag>_<job.name><suffix>``.
+    ``geom`` is the instrument's detector geometry (chunk maps with their axes, detector maps),
+    ``model`` the run's :class:`~selfcal.models.spec.ModelSpec`, checked against them, and
+    ``sky_damping`` each sky term's damping (every pass of the run uses it); per-job geometry
+    comes from :meth:`job_geometry`. The methods below lower the model to the solver's objects,
+    and the ``stem`` / ``cal_*`` / ``mosaic_*`` methods are the ONE place product names are
+    formed: ``<frame_tag>_<job.name><suffix>``.
     """
-    cfg: object
+    spec: object
     inst: object
-    mode: object
     pipeline_config: pipeline_wrapper.PipelineConfig
-    geom: object
-    cal_kwargs: dict
     frame_tag: str
+    geom: object = None
+    model: object = None
+    sky_damping: list = field(default_factory=list)
 
     @classmethod
-    def build(cls, cfg, *, need_mode=True, need_geometry=True):
-        """Resolve the config. ``need_geometry=False`` (reprojection) skips the
-        detector geometry and the frame tag, which need calibration data the
-        reprojection stage does not."""
-        inst = resolve_instrument(cfg.instrument)
-        mode = None
-        if need_mode:
-            mode = get_mode(cfg.mode)
-            check_requires(mode, inst)
-        pc = pipeline_wrapper.PipelineConfig(
-            output_dir=cfg.output_dir,
-            run_name=cfg.resolved_run_name(),
-            resolution_arcsec=cfg.resolution_arcsec)
-        geom = frame_tag = None
+    def build(cls, spec, *, need_geometry=True):
+        """Resolve ``spec``. ``need_geometry=False`` (a reprojection; the product names) skips the
+        detector geometry and the model, which need calibration data the reprojection does not."""
+        from selfcal.models.spec import ModelSpec
+        inst = spec.instrument
+        pc = pipeline_wrapper.PipelineConfig(output_dir=spec.output_dir, run_name=spec.run_name,
+                                             resolution_arcsec=spec.resolution_arcsec)
+        ctx = cls(spec=spec, inst=inst, pipeline_config=pc, frame_tag=inst.product_tag)
         if need_geometry:
-            geom = inst.detector_geometry(cfg.instrument_cfg, cfg.oversample)
-            frame_tag = inst.frame_tag(cfg.instrument_cfg)
-            if mode is not None:
-                mode.spec(cfg, inst, geom)        # the recipe, resolved once (fails early on a bad [model])
-        return cls(cfg=cfg, inst=inst, mode=mode, pipeline_config=pc,
-                   geom=geom, cal_kwargs=calibration_kwargs(cfg), frame_tag=frame_tag)
+            ctx.geom = instrument_geometry(inst, spec.oversample)
+            ctx.model = ModelSpec.from_config(spec.model)
+            # every data variable, chunk map and axis, catalogue entry and prior term exists
+            ctx.model.check(ctx.geom, ctx.catalog(), frame_variables=ctx.frame_variable_names())
+            ctx.sky_damping = ctx.sky_model(log=_quiet).damp_weights(spec.setup['damp_weight'])
+        return ctx
 
-    # ---- geometry ---------------------------------------------------------
+    def derive(self, spec):
+        """The context of ``spec``, a run of the same instrument and model whose own settings differ
+        (the N-pass INIT): the geometry and the model are this context's."""
+        return replace(self, spec=spec)
+
+    # ---- the jobs and their geometry -----------------------------------------------------
     def jobs(self):
-        """The run's jobs: the instrument's expansion of the ``[instrument]`` table.
-
-        A list of :class:`~selfcal.instruments.base.Job`. SPHEREx gives one per selected channel,
-        channel group or subchannel window; ``grid`` and ``euclid`` give one. The ``cal`` and
-        ``mosaic`` tasks loop over it; ``npass`` uses :meth:`single_job`.
-        """
-        return self.inst.jobs(self.cfg.instrument_cfg)
+        """The run's jobs (:class:`~selfcal.instruments.contract.Job`): SPHEREx a channel, a group of
+        channels or a subchannel window each; a camera and Euclid one."""
+        return tuple(self.spec.jobs)
 
     def single_job(self, what):
-        """The run's single job, for a task that handles one job only (``npass``).
-
-        Raises ``ValueError`` when the ``[instrument]`` table resolves to any other number of
-        jobs; ``what`` names the task in that message (e.g. ``"task 'npass'"``).
-        """
+        """The run's single job, for a task that handles one job only (the N-pass solve); raises
+        ``ValueError`` (``what`` names the task) when the run has another number of jobs."""
         jobs = self.jobs()
         if len(jobs) != 1:
-            raise ValueError(f"{what} runs one job per config; [instrument] resolves to "
-                             f"{len(jobs)} jobs: {[j.name for j in jobs]}")
+            raise ValueError(f"{what} runs one job; the run has {len(jobs)}: {[j.name for j in jobs]}")
         return jobs[0]
 
     def job_geometry(self, job):
-        """The :class:`~selfcal.instruments.base.JobGeometry` of ``job``: valid pixels and weights.
+        """The :class:`~selfcal.instruments.base.JobGeometry` of ``job``: its valid pixels and
+        weights (:func:`solve_job` uses ``det_valid_weight``, :func:`mosaic_job`
+        ``grid_valid_weight``)."""
+        return self.inst.job_geometry(self.geom, job)
 
-        The instrument builds it from the ``[instrument]`` table and the detector geometry
-        ``geom``. :func:`solve_job` uses its ``det_valid_weight``, :func:`mosaic_job` its
-        ``grid_valid_weight``.
-        """
-        return self.inst.job_geometry(self.cfg.instrument_cfg, self.geom, job)
+    @property
+    def unit(self):
+        """The unit of the calibrated data (the mosaic's ``BUNIT``)."""
+        return str(getattr(self.inst, 'unit', '') or '')
+
+    # ---- the model, lowered to the solver's objects --------------------------------------
+    def catalog(self):
+        """The instrument's named sky coefficients (``sc.catalog(name)``)."""
+        return dict(self.inst.coefficient_catalog())
+
+    def frame_variable_names(self):
+        """The names of the instrument's frame variables (``exposure``, ``detector``, ...)."""
+        return tuple(self.inst.frame_variable_names())
+
+    def frame_groups(self, frames, variables=None):
+        """``{name: per-frame values}`` a grouped offset term can share an offset over: the
+        instrument's frame groups and frame variables, then the model's per-frame variables
+        (``variables``, a :class:`~selfcal.models.variables.VariableSet` over ``frames``)."""
+        groups = dict(self.inst.frame_groups(frames))
+        for k, v in self.inst.frame_variables(frames).items():
+            groups.setdefault(k, v)
+        if variables is not None:
+            for k, v in variables.frame.items():
+                groups.setdefault(k, v)
+        return groups
+
+    def offset_model(self, frames, variables=None, log=print):
+        """The solver's :class:`~selfcal.models.offset_model.OffsetModel` over ``frames``, for the
+        solve and the mosaic alike: a grouped term groups the frames by :meth:`frame_groups`."""
+        grouped = any(t.kind == 'grouped' for t in self.model.offset)
+        return self.model.build_offset_model(self.geom, len(frames),
+                                             frame_groups=self.frame_groups(frames, variables) if grouped else None,
+                                             log=log, catalog=self.catalog(),
+                                             frame_variables=self.frame_variable_names())
+
+    def sky_model(self, log=print):
+        """The solver's :class:`~selfcal.models.sky_model.SkyModel`: one component per sky term,
+        coefficients resolved against the data variables and the instrument's catalogue."""
+        return self.model.build_sky_model(self.geom, self.catalog(), log=log,
+                                          frame_variables=self.frame_variable_names())
 
     def aux_maps(self):
-        """``(det_aux list, aux_keys)`` the mode asks the solve to carry (``(None, None)`` if none)."""
-        aux = self.mode.aux_maps(self.cfg, self.inst, self.geom)
+        """``(det_aux list, aux_keys)``: the instrument's detector maps when the model reads data
+        variables, else ``(None, None)``."""
+        aux = dict(self.geom.aux) if self.model.needs_variables else {}
         if not aux:
             return None, None
         return [aux[k] for k in aux], list(aux)
 
-    # ---- naming (the one place) --------------------------------------------
+    def variables(self, frames, ref_shape=None, ref_wcs=None):
+        """The data variables over ``frames`` beyond the instrument's detector maps (a
+        :class:`~selfcal.models.variables.VariableSet`: the model's variables and the instrument's
+        frame variables); None when the model reads none of them."""
+        if not self.model.variables and not (self.model.referenced_variables() & set(self.frame_variable_names())):
+            return None
+        return self.model.build_variables(self.geom, frames, ref_shape=ref_shape, ref_wcs=ref_wcs,
+                                          frame_variables=dict(self.inst.frame_variables(frames)), log=print)
+
+    def weight(self):
+        """The model's observation weight (a function of data variables), or None."""
+        return self.model.build_weight(self.geom, self.catalog(), frame_variables=self.frame_variable_names(),
+                                       log=print)
+
+    def priors(self, variables, n_frames):
+        """The model's priors as ``setup_lsqr(priors=...)`` callables."""
+        return self.model.build_priors(self.geom, variables=variables, n_frames=n_frames)
+
+    def x0(self, cc):
+        """The LSQR starting vector of the system ``cc`` (a set-up
+        :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator`), float64 in the full column layout.
+
+        With the per-frame scalar, each frame's scalar starts at the weighted mean of its data and
+        everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`); without it,
+        the first sky term starts at zero and every later column at its own diagonal least-squares
+        estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky block whatever
+        the model's number)."""
+        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
+        if self.model.x0_kind == 'from_Ab':
+            return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, active_mask=getattr(cc, 'active_mask', None))
+        return compute_x0_scalar_only(cc.A, cc.b, cc.ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
+                                      num_sky_blocks=cc.num_sky_blocks, active_mask=getattr(cc, 'active_mask', None))
+
+    def solve_options(self):
+        """The solver's ``apply_lsqr`` keywords."""
+        return dict(self.spec.lsqr)
+
+    def configure(self, cc):
+        """Settings recorded on the cal after the solve: the read-time Fisher threshold of the sky
+        terms after the first, when a sky term has a coefficient."""
+        if self.model.has_coefficients:
+            cc.line_fisher_threshold = self.spec.line_fisher_threshold
+
+    def mosaic_geometry(self, jobgeom):
+        """``(chunk maps, offset renderers)`` of ``make_mosaic``: each offset term's chunk map on the
+        reference grid and the instrument's renderer of its offsets (None: constant over each
+        chunk)."""
+        from selfcal.models.spec import chunk_map_of
+        maps, funcs = [], []
+        for term in self.model.offset:
+            cm = chunk_map_of(term, self.geom)
+            maps.append(cm.grid)
+            funcs.append(self.inst.offset_renderer(self.geom, jobgeom, map_name=cm.name, render=term.render))
+        return maps, funcs
+
+    def clip_group_edges(self):
+        """Wavelength bin edges of the grouped outlier clip: one group per value of the primary
+        map's spectral axis."""
+        from selfcal.models.offset_structure import group_edges_along
+        cm, geom = self.geom.chunk_map, self.geom
+        if cm.spectral_axis is None or geom.wavelength_key is None:
+            raise ValueError("the grouped outlier clip needs a chunk map with a spectral axis and an instrument "
+                             "wavelength map")
+        return group_edges_along(geom.aux[geom.wavelength_key], cm.det, cm.axes, cm.spectral_axis)
+
+    def refit_poly_basis(self, degree, segments=None):
+        """The per-frame polynomial offset basis of the N-pass OFFSET refit: degree ``degree`` along
+        the primary map's spectral axis, one per value of its group axis, over the model's
+        polynomial window (optionally piecewise on ``segments``)."""
+        from selfcal.models.offset_structure import poly_basis_along
+        if self.spec.spectral_window is None:
+            raise ValueError("the OFFSET refit's polynomial spans the model's polynomial window, and the model "
+                             "has none")
+        cm = self.geom.chunk_map
+        lo, hi = self.spec.spectral_window
+        return poly_basis_along(cm.axes, cm.spectral_axis, cm.group_axis, int(degree), lo, hi, segments=segments)
+
+    # ---- naming (the one place) ------------------------------------------------------------
     def stem(self, job, suffix=None):
         """The stem of every product name of ``job``: ``<frame_tag>_<job.name><suffix>``.
 
-        ``suffix`` defaults to the config's top-level ``suffix``. :meth:`cal_file`,
-        :meth:`mosaic_file` and :meth:`mosaic_cache_dir` wrap the stem, the N-pass products extend
-        it, and the SPHEREx zodi hook reads ``zodi_pred_<stem>.npz``. Example (SPHEREx, detector 4,
-        channel 17): ``Detector4_NumSub10_NumCh34_NumCol3_Ch17<suffix>``.
+        ``suffix`` defaults to the run's. :meth:`cal_file`, :meth:`mosaic_file` and
+        :meth:`mosaic_cache_dir` wrap the stem and the N-pass products extend it. Example (SPHEREx,
+        detector 4, channel 17): ``Detector4_NumSub10_NumCh34_NumCol3_Ch17<suffix>``.
         """
-        suffix = self.cfg.suffix if suffix is None else suffix
+        suffix = self.spec.suffix if suffix is None else suffix
         return f'{self.frame_tag}_{job.name}{suffix}'
 
     def cal_file(self, job, suffix=None):
@@ -195,12 +297,9 @@ class RunContext:
         return f'cal_{self.stem(job, suffix)}.h5'
 
     def cal_path(self, job, suffix=None):
-        """The full path of ``job``'s cal file: :meth:`cal_file` in the run's cal directory.
-
-        That directory is ``pipeline_config.cal_dir``, ``<output_dir>/<run_name>/calibration``.
-        The untiled ``cal`` task skips the solve when this file exists; the ``mosaic`` task reads
-        it unless ``cal_override`` is set.
-        """
+        """The full path of ``job``'s cal file: :meth:`cal_file` in the run's ``calibration/``
+        directory. A plain calibration skips the solve when this file exists; a mosaic task reads
+        it unless the run names another cal."""
         return os.path.join(self.pipeline_config.cal_dir, self.cal_file(job, suffix))
 
     def mosaic_file(self, job, suffix=None):
@@ -208,49 +307,31 @@ class RunContext:
         return f'mosaic_{self.stem(job, suffix)}.fits'
 
     def mosaic_path(self, job, suffix=None):
-        """The full path of ``job``'s mosaic: :meth:`mosaic_file` in the run's mosaic directory.
-
-        That directory is ``pipeline_config.mos_dir``, ``<output_dir>/<run_name>/mosaic``, where
-        :func:`mosaic_job` saves the mosaic.
-        """
+        """The full path of ``job``'s mosaic: :meth:`mosaic_file` in the run's ``mosaic/`` directory."""
         return os.path.join(self.pipeline_config.mos_dir, self.mosaic_file(job, suffix))
 
     def mosaic_cache_dir(self, job, suffix=None):
-        """The directory of ``job``'s intermediate mosaic cache: ``<cache_dir>cache_<stem>``.
-
-        The coadd writes it only when ``[mosaic].cache_intermediate`` is true, and
-        :func:`mosaic_job` deletes it after saving the mosaic. The two parts are joined as
-        strings, so ``cache_dir`` needs its trailing ``/`` (as in the shipped configs) for the
-        directory to land inside it.
-        """
-        return f'{self.cfg.cache_dir}cache_{self.stem(job, suffix)}'
+        """The directory of ``job``'s intermediate mosaic cache, ``<scratch>cache_<stem>``: written
+        when the coadd caches its frames, deleted after the mosaic is saved."""
+        return f'{self.spec.scratch}cache_{self.stem(job, suffix)}'
 
     def tile_cal_file(self, job, tile):
-        """The cal file name of a tile: :meth:`cal_file` with ``suffix.format(tile=tile.name)``.
-
-        ``tile`` is a :class:`~selfcal.pipeline.tiled.TileSpec`. The top-level ``suffix`` of a
-        tiled config therefore carries a ``{tile}`` placeholder; without one, every tile of the
-        job gets the same file name.
-        """
-        return self.cal_file(job, self.cfg.suffix.format(tile=tile.name))
+        """The cal file name of a tile (a :class:`~selfcal.pipeline.tiled.TileSpec`): :meth:`cal_file`
+        with the run's suffix, whose ``{tile}`` is the tile's name."""
+        return self.cal_file(job, self.spec.suffix.format(tile=tile.name))
 
     def stitched_cal_path(self, job):
-        """The path of ``job``'s stitched cal: :meth:`cal_path` with ``[tiling].stitched_suffix``.
+        """The path of ``job``'s stitched cal, :meth:`cal_path` with the tiling's stitched suffix: the
+        tiled calibration writes the Fisher stitch of its tile cals there (and skips the stitch
+        when that file exists)."""
+        return self.cal_path(job, self.spec.tiling.stitched_suffix)
 
-        The tiled ``cal`` task writes the Fisher stitch of its tile cals there, and skips the
-        stitch when that file exists.
-        """
-        return self.cal_path(job, self.cfg.tiling['stitched_suffix'])
-
-    def tiling_nvme_dir(self):
-        """The staging directory of a tiled run: ``[tiling].nvme_subdir`` under ``cache_dir``.
-
-        The tiled ``cal`` task copies each tile's frames there before solving the tile, and the
-        N-pass SKY passes of a tiled run stage into it too. The engine never deletes it, and
-        staging keeps complete copies already present, so frames copied once are reused. It must
-        be a directory the pipeline made (:func:`~selfcal.run.staging.claim`).
-        """
-        return os.path.join(self.cfg.cache_dir, self.cfg.tiling['nvme_subdir'])
+    def pass_stem(self, job):
+        """The stem of ``job``'s N-pass products, ``cal_<stem>`` with the stitched suffix of a tiled
+        run (the run's suffix otherwise): ``<pass stem>_pass<i>sky.h5`` / ``_pass<i>off.h5``,
+        ``<pass stem>_npass_monitor.json``, the work directory ``<scratch>npass_<pass stem>``."""
+        suffix = self.spec.tiling.stitched_suffix if self.spec.tiling is not None else self.spec.suffix
+        return 'cal_' + self.stem(job, suffix)
 
 
 @dataclass
@@ -277,29 +358,22 @@ class CalResult:
 # Staging of the whole run's frames (plain cal / mosaic)
 # ---------------------------------------------------------------------------
 def stage_run(ctx):
-    """The frame directory a plain run reads from: the ``reproj_override`` dir as
-    is (regression configs, manual re-runs; no staging, no cleanup) or the
-    per-run NVMe copy of the reprojected dir."""
-    cfg = ctx.cfg
-    if cfg.reproj_override:
+    """The frame directory a plain run reads from: the frames' own directory when they are read in
+    place (no staging, no cleanup), else the staged copy of the field's frames."""
+    frames = ctx.spec.frames
+    if frames.in_place:
         staging.set_hdd_io_limit(None)
-        return cfg.reproj_override
-    if not cfg.cache_dir:
-        raise ValueError("cache_dir is required (the staging area for the reprojected frames), "
-                         "or give reproj_override")
-    return staging.prepare_nvme(cfg, ctx.pipeline_config.reproj_dir, ctx.pipeline_config.run_name)
+        return frames.in_place
+    if not frames.stage_dir:
+        raise ValueError("staging the frames needs a staging directory: Compute(scratch=...) or stage_dir=")
+    return staging.prepare_nvme(frames, ctx.pipeline_config.reproj_dir)
 
 
 def unstage_run(ctx, frame_dir):
-    """Undo :func:`stage_run`: delete the staged copy of the frames unless the config keeps it.
-
-    With ``reproj_override`` it does nothing (the frames were read in place). Otherwise
-    :func:`~selfcal.run.staging.cleanup_nvme` keeps ``frame_dir`` when
-    ``staging = "reuse"`` (another run staged it) or ``keep_nvme = true``, and deletes it
-    otherwise. The untiled ``cal`` task and the ``mosaic`` task call it after their last job.
-    """
-    if not ctx.cfg.reproj_override:
-        staging.cleanup_nvme(ctx.cfg, frame_dir)
+    """Undo :func:`stage_run`: delete the staged copy of the frames unless the run keeps it (see
+    :func:`~selfcal.run.staging.cleanup_nvme`); frames read in place are left alone."""
+    if not ctx.spec.frames.in_place:
+        staging.cleanup_nvme(ctx.spec.frames, frame_dir)
 
 
 def frame_list(frame_dir, n_frames=None):
@@ -309,17 +383,17 @@ def frame_list(frame_dir, n_frames=None):
 
 
 def clip_groups(ctx, groups):
-    """The ``setup_lsqr`` keywords of an outlier clip over chunk groups (the Python API's
-    ``Clip(per=...)``): ``{"along": axis}``, ``{"chunk": True}`` or ``{"mapping": [...]}``, on the
-    primary chunk map. Along the primary map's spectral axis of an instrument with a wavelength map,
-    the clip bins the wavelength between the axis values' wavelengths (the N-pass passes' clip,
-    ``subch_clip``); otherwise each pixel is judged within the group of its dominant chunk."""
+    """The ``setup_lsqr`` keywords of an outlier clip over chunk groups of the primary chunk map
+    (``Clip(per=...)``): ``{"along": axis}``, ``{"chunk": True}`` or ``{"mapping": [...]}``. Along the
+    primary map's spectral axis of an instrument with a wavelength map, the clip bins the wavelength
+    between the axis values' wavelengths (the N-pass passes' grouped clip); otherwise each pixel is
+    judged within the group of its dominant chunk."""
     cm, geom = ctx.geom.chunk_map, ctx.geom
     if groups.get('map') not in (None, cm.name):
         raise ValueError(f"clip groups {groups}: groups of the primary chunk map ({cm.name!r}) only")
     axis = groups.get('along')
     if axis is not None and axis == cm.spectral_axis and geom.wavelength_key:
-        return {'outlier_group_edges': ctx.mode.clip_group_edges(ctx.cfg, ctx.inst, geom)}
+        return {'outlier_group_edges': ctx.clip_group_edges()}
     n = cm.n_chunks
     if axis is not None:
         names = list(cm.axes.names) if cm.axes is not None else []
@@ -338,54 +412,50 @@ def clip_groups(ctx, groups):
 # ---------------------------------------------------------------------------
 # Primitive 1: one joint solve -> one cal file
 # ---------------------------------------------------------------------------
-def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
-              frames=None, checkpoint=None):
-    """setup_lsqr + apply_lsqr + save for one job over one frame list.
+def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=None, checkpoint=None):
+    """The engine's one solve: ``setup_lsqr`` + ``apply_lsqr`` + save for one job over one frame
+    list, for every task (a plain cal, each tile of a tiled cal, the INIT pass of an N-pass run).
 
-    ``frames`` (paths under ``frame_dir``) overrides the directory glob. The cal
-    records the frames under ``hdd_reproj_dir`` — their permanent location — so
-    it stays valid after the staged copy is cleaned up. ``checkpoint(label)`` is
-    an optional progress/RSS hook called around the two heavy steps.
+    ``frames`` (paths under ``frame_dir``) overrides the directory glob. The system is the model
+    lowered by ``ctx`` with the run's ``setup_lsqr`` keywords; the starting vector
+    (:meth:`RunContext.x0`) and the solver's options (:meth:`RunContext.solve_options`) come from the
+    context, the one place a change to the solve goes. The cal records the frames under
+    ``hdd_reproj_dir``, their permanent location, so it stays valid after the staged copy is
+    cleaned up. ``checkpoint(label)`` is an optional progress/RSS hook called around the two heavy
+    steps.
     """
-    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
+    spec = ctx.spec
     checkpoint = checkpoint or (lambda label: None)
     cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
     if frames is not None:
         cc.reproj_list = list(frames)
     n_frames = len(cc.reproj_list)
-    # The model's data variables beyond the instrument's detector maps (frame
-    # values, sky maps, stored layers, functions) — None for the historical recipes.
-    variables = mode.build_variables(cfg, inst, geom, cc.reproj_list, ref_shape=cc.ref_shape,
-                                     ref_wcs=cc.ref_wcs)
-    offset_model = mode.build_offset_model(cfg, inst, geom, jobgeom, job, n_frames, frames=cc.reproj_list,
-                                           variables=variables)
-    sky_model = mode.build_sky_model(cfg, inst, geom)
+    # The model's data variables beyond the instrument's detector maps (frame values, sky maps,
+    # stored layers, functions): None when the model reads none.
+    variables = ctx.variables(cc.reproj_list, ref_shape=cc.ref_shape, ref_wcs=cc.ref_wcs)
+    offset_model = ctx.offset_model(cc.reproj_list, variables)
+    sky_model = ctx.sky_model()
     det_aux, aux_keys = ctx.aux_maps()
-    cal_kwargs = dict(ctx.cal_kwargs)
-    cal_kwargs.update(mode.setup_kwargs(cfg, inst, geom))     # the model's extra solver options (if any)
+    cal_kwargs = dict(spec.setup)
+    cal_kwargs.update(ctx.model.setup_kwargs())       # the model's own solver options (if any)
     if variables is not None:
         cal_kwargs['variables'] = variables
-    weight_function = mode.build_weight(cfg, inst, geom)
+    weight_function = ctx.weight()
     if weight_function is not None:
         cal_kwargs['weight_function'] = weight_function
-    priors = mode.build_priors(cfg, inst, geom, variables, n_frames)
+    priors = ctx.priors(variables, n_frames)
     if priors:
         cal_kwargs['priors'] = priors
     groups = cal_kwargs.pop('outlier_groups', None)
     if groups is not None:
         cal_kwargs.update(clip_groups(ctx, groups))
-    # The grouped clip bins the instrument's wavelength map unless the config
-    # names another data variable ([calibration].outlier_group_variable).
-    if not (cal_kwargs.get('outlier_group_variable') or cal_kwargs.get('outlier_aux_key')):
-        cal_kwargs['outlier_group_variable'] = geom.wavelength_key
-    pre = resolve_hook(cfg, inst, 'pre_cal')
-    post = resolve_hook(cfg, inst, 'post_cal')
-    if pre is not None:
-        cal_kwargs['preprocess_func'] = pre
-    if post is not None:
-        if cal_kwargs.get('postprocess_func') is not None:
-            raise ValueError("give either `postprocess` or [hooks].post_cal, not both")
-        cal_kwargs['postprocess_func'] = post
+    # The grouped clip bins the instrument's wavelength map unless the clip names another variable.
+    if not cal_kwargs.get('outlier_group_variable'):
+        cal_kwargs['outlier_group_variable'] = ctx.geom.wavelength_key
+    if spec.pre_cal is not None:
+        cal_kwargs['preprocess_func'] = spec.pre_cal
+    if spec.post_cal is not None:
+        cal_kwargs['postprocess_func'] = spec.post_cal
     checkpoint('pre-setup_lsqr')
     cc.setup_lsqr(
         offset_model=offset_model,
@@ -394,19 +464,16 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
         sky_model=sky_model,
         det_aux=det_aux,
         aux_keys=aux_keys,
-        batch_spill_dir=cfg.cache_dir,
+        batch_spill_dir=spec.scratch,
         **cal_kwargs)
     checkpoint('post-setup_lsqr')
     # List-pop hand-off: keeping a plain `x0` local would pin the full-layout
     # f64 vector for the entire solve (see Calibrator.apply_lsqr).
-    _x0_owned = [mode.x0(cfg, cc)]
+    _x0_owned = [ctx.x0(cc)]
     checkpoint('pre-apply_lsqr')
-    # [lsqr] may override the float32 solve and the thread count.
-    lsqr_kwargs = dict(use_float32=True, n_threads=cfg.apply_n_threads)
-    lsqr_kwargs.update(cfg.lsqr)
-    cc.apply_lsqr(x0=_x0_owned.pop(), **lsqr_kwargs)
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options())
     checkpoint('post-apply_lsqr')
-    mode.configure(cfg, cc)
+    ctx.configure(cc)
     # Save with the permanent (HDD) paths so the cal stays valid after cleanup.
     staged_list = cc.reproj_list
     cc.reproj_list = staging.remap_to_nvme(staged_list, hdd_reproj_dir)
@@ -421,16 +488,15 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir,
 # Primitive 2: one cal -> one mosaic
 # ---------------------------------------------------------------------------
 def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
-    """Coadd the frames of ``cal_path`` (read from ``frame_dir``) into
-    ``mos_file``; the instrument's aux coadds (SPHEREx: the wavelength maps)
-    ride along when the mode asks for a full mosaic and the instrument has them."""
-    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
-    chunk_maps, det_offset_funcs = mode.mosaic_geometry(cfg, inst, geom, jobgeom)
-    mm = pipeline_wrapper.Mosaicker(ctx.pipeline_config, reproj_dir=frame_dir,
-                                    unit=inst.data_unit(cfg.instrument_cfg))
+    """Coadd the frames of ``cal_path`` (read from ``frame_dir``) into ``mos_file``; the instrument's
+    maps (SPHEREx: the wavelength maps) ride along when the run asks for them and the instrument
+    has them."""
+    spec, inst, geom = ctx.spec, ctx.inst, ctx.geom
+    chunk_maps, det_offset_funcs = ctx.mosaic_geometry(jobgeom)
+    mm = pipeline_wrapper.Mosaicker(ctx.pipeline_config, reproj_dir=frame_dir, unit=ctx.unit)
     mm.load_calibration(cal_path=cal_path)
     mm.reproj_list = staging.remap_to_nvme(mm.reproj_list, frame_dir)
-    # A cal solved on another grid (cal_override): frames it lists that have no
+    # A cal solved on another grid (another run's cal): frames it lists that have no
     # reprojected file HERE are dropped, with their rows of every per-frame array
     # (the solution is per frame / detector-plane, so it transfers).
     keep = np.array([os.path.exists(f) for f in mm.reproj_list])
@@ -443,17 +509,17 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
                 setattr(mm, attr, [a[keep] if (hasattr(a, 'shape') and len(a) == n_all) else a for a in arrs])
         print(f"Dropped {int((~keep).sum())} cal frames with no reprojected file in {frame_dir} "
               f"({int(keep.sum())} remain)")
-    mosaic_kwargs = dict(cfg.mosaic)
-    post = resolve_hook(cfg, inst, 'post_mosaic')
+    mosaic_kwargs = dict(spec.mosaic)
     # Offset terms whose offsets are coefficients of known functions of data
     # variables are not constant per chunk: the mosaic subtracts them at every
     # observation (BasisOffsetSubtractor), and hands the chunk path zeros for
     # them (plus the per-frame scalar on map 0, which the cal folds in there).
-    basis_hook = _basis_offset_hook(ctx, mm, cal_path, chunk_maps)
+    basis_hook = _basis_offset_hook(ctx, mm, cal_path)
     # The model's observation weight (a row weight w) weights the coadd by w², as
     # in the solve.
     weight_hook = _observation_weight_hook(ctx, mm)
-    hooks = [h for h in (basis_hook, post, weight_hook) if h is not None]
+    hooks = [h for h in (basis_hook, spec.post_mosaic, weight_hook) if h is not None]
+    post = None
     if len(hooks) > 1:
         from selfcal.pipeline.model_eval import ComposedHook
         post = ComposedHook(hooks)
@@ -461,40 +527,32 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
         post = hooks[0]
     if post is not None:
         mosaic_kwargs['postprocess_func'] = post
-    # `wavelength_coadd` (default true) selects the instrument's aux coadds (the
-    # wav_mean/wav_std maps). They are sigma-clipped against the std map, so
-    # they need make_std_map; with apply_sigma_clipping they are coadded inside
-    # the sigma-clip pass (no extra pass, no cache needed), otherwise the
-    # standalone coadd runs over the intermediate cache. Say so here rather
-    # than fail deep inside the coadd.
+    # The instrument's maps (the wav_mean / wav_std maps) are sigma-clipped against the std map:
+    # with the sigma clip they are coadded inside its pass (no extra pass, no cache needed),
+    # otherwise the standalone coadd runs over the frame cache.
     wav_maps = None
-    aux_coadds = inst.aux_coadds(geom) if mode.mosaic_mode == 'full' and cfg.wavelength_coadd else None
+    aux_coadds = inst.aux_coadds(geom) if spec.instrument_maps else None
     want_wav = aux_coadds is not None
     if want_wav:
-        if not cfg.mosaic.get('make_std_map', False):
-            raise ValueError(
-                "wavelength_coadd = true needs [mosaic] make_std_map = true "
-                "(the wavelength coaddition sigma-clips against the std map). Set it "
-                "true, or set wavelength_coadd = false to build the mosaic "
-                "without the wav_mean/wav_std maps.")
-        if cfg.mosaic.get('apply_sigma_clipping', False):
+        if not spec.mosaic.get('make_std_map', False):
+            raise ValueError("Coadd(instrument_maps=True): the instrument's maps are coadded against the std map; "
+                             "give Coadd(std=True), or instrument_maps=False")
+        if spec.mosaic.get('apply_sigma_clipping', False):
             wav_maps = aux_coadds
-        elif not cfg.mosaic.get('cache_intermediate', False):
-            raise ValueError(
-                "wavelength_coadd = true needs [mosaic] apply_sigma_clipping = "
-                "true (coadded in the sigma-clip pass) or cache_intermediate = "
-                "true (standalone coadd over the cache). Set one, or set "
-                "wavelength_coadd = false.")
+        elif not spec.mosaic.get('cache_intermediate', False):
+            raise ValueError("Coadd(instrument_maps=True): the instrument's maps are coadded in the sigma-clip pass "
+                             "or over the frame cache; give Coadd(clip=...) or Compute(cache_frames=True), or "
+                             "instrument_maps=False")
     maps = mm.make_mosaic(
         chunk_maps=chunk_maps,
         grid_valid_weight=jobgeom.grid_valid_weight,
-        oversample_factor=cfg.oversample,
+        oversample_factor=spec.oversample,
         det_offset_funcs=det_offset_funcs,
         cache_dir=cache_dir,
         wav_maps=wav_maps,
         **mosaic_kwargs)
     if want_wav:
-        inst.finalize_mosaic(geom, mm, maps, cfg.mosaic['sigma'])
+        inst.finalize_mosaic(geom, mm, maps, spec.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
     del mm, maps
     if os.path.exists(cache_dir):
@@ -502,106 +560,87 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     return mos_path
 
 
-def _basis_offset_hook(ctx, mm, cal_path, chunk_maps):
+def _basis_offset_hook(ctx, mm, cal_path):
     """The mosaic's per-observation subtraction of the offset terms that carry
     known functions of data variables (``coefficient`` / ``basis``), or None.
     Rewrites those maps' entries of ``mm.offsets`` so the chunk path subtracts
     only the per-frame scalar there."""
-    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
-    spec = mode.spec(cfg, inst, geom)
-    offset_model = spec.build_offset_model(geom, len(mm.reproj_list), log=lambda *a, **k: None,
-                                           catalog=inst.coefficient_catalog(),
-                                           frame_groups=_all_frame_groups(inst, cfg, mm.reproj_list),
-                                           frame_variables=mode.frame_variable_names(cfg, inst))
-    terms = [(m, b.basis, b.chunk_map) for m, b in enumerate(offset_model.blocks) if b.basis is not None]
-    if not terms:
+    if not any(t.coefficient is not None or t.basis is not None for t in ctx.model.offset):
         return None
     from selfcal.io.calfile import CalFile
     from selfcal.pipeline.model_eval import BasisOffsetSubtractor
-    keep = [os.path.basename(p) for p in mm.reproj_list]
+    # The data variables over the mosaic's frames (the cal's, minus any without
+    # a reprojected file here); coefficients are looked up by the cal's order.
+    frames = list(mm.reproj_list)
+    variables = _mosaic_variables(ctx, mm)
+    offset_model = ctx.offset_model(frames, variables, log=_quiet)
+    terms = [(m, b.basis, b.chunk_map) for m, b in enumerate(offset_model.blocks) if b.basis is not None]
+    keep = [os.path.basename(p) for p in frames]
     with CalFile(cal_path) as cal:
         scalar = cal.frame_scalar
         order = {os.path.basename(p): i for i, p in enumerate(cal.reproj_list)}
     rows = np.array([order[k] for k in keep], dtype=np.int64)
     for m, _, cm in terms:
-        n_chunks = int(np.asarray(chunk_maps[m]).max()) + 1
+        n_chunks = int(np.asarray(cm).max()) + 1
         zeros = np.zeros((len(rows), n_chunks), dtype=np.float64)
         if m == 0 and scalar is not None:
             zeros += np.asarray(scalar)[rows][:, None]
         mm.offsets[m] = zeros
         mm.offset_coverage_fracs[m] = np.ones_like(zeros)
-    # The data variables over the mosaic's frames (the cal's, minus any without
-    # a reprojected file here); coefficients are looked up by the cal's order.
-    return BasisOffsetSubtractor(cal_path, terms, variables=_mosaic_variables(ctx, mm), oversample_factor=1,
-                                 frame_names=list(mm.reproj_list))
+    return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1, frame_names=frames)
 
 
 def _mosaic_variables(ctx, mm):
     """The data variables over the mosaic's frames, with the instrument's detector
     maps (the solve passes those separately), for the mosaic-side evaluators."""
     from selfcal.models.variables import VariableSet
-    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
-    vs = mode.build_variables(cfg, inst, geom, list(mm.reproj_list), ref_shape=mm.ref_shape,
-                              ref_wcs=mm.ref_wcs) or VariableSet()
-    extra = {k: v for k, v in (geom.aux or {}).items() if k not in vs.detector}
+    vs = ctx.variables(list(mm.reproj_list), ref_shape=mm.ref_shape, ref_wcs=mm.ref_wcs) or VariableSet()
+    extra = {k: v for k, v in (ctx.geom.aux or {}).items() if k not in vs.detector}
     return vs.merged(detector=extra) if extra else vs
 
 
 def _observation_weight_hook(ctx, mm):
     """The mosaic's per-observation weight from the model's ``weight``, or None."""
-    cfg, inst, mode, geom = ctx.cfg, ctx.inst, ctx.mode, ctx.geom
-    weight = mode.build_weight(cfg, inst, geom)
+    weight = ctx.weight()
     if weight is None:
         return None
     from selfcal.pipeline.model_eval import ObservationWeight
     return ObservationWeight(weight, variables=_mosaic_variables(ctx, mm), frame_names=list(mm.reproj_list),
-                             det_shape=geom.shape)
-
-
-def _all_frame_groups(inst, cfg, frames):
-    groups = dict(inst.frame_groups(frames))
-    for k, v in inst.frame_variables(frames, cfg.instrument_cfg).items():
-        groups.setdefault(k, v)
-    return groups
+                             det_shape=ctx.geom.shape)
 
 
 # ---------------------------------------------------------------------------
 # Tiling helpers shared by the tiled cal and the N-pass scheduler
 # ---------------------------------------------------------------------------
-def resolve_tiles(tiling, ref_shape):
-    """The tile list of a ``[tiling]`` table: an explicit ``tiles`` list (arbitrary,
-    possibly overlapping bboxes) or a uniform ``grid`` with ``overlap_px``; then
-    the optional ``only_tiles`` restriction (the full grid is built first so every
-    bbox is right). Returns ``(tiles, only_tiles)``."""
-    from selfcal.pipeline.tiled import make_tile_grid, TileSpec
-    if tiling.get('tiles'):
-        tiles = [TileSpec(name=spec['name'], bbox=tuple(spec['bbox'])) for spec in tiling['tiles']]
+def resolve_tiles(tiling):
+    """The tiles of a :class:`~selfcal.run.runspec.TilingSpec`: its explicit tiles (arbitrary,
+    possibly overlapping bboxes) or its uniform grid; then the optional ``only`` restriction (the
+    full grid is built first so every bbox is right). Returns ``(tiles, only)``."""
+    from selfcal.pipeline.tiled import TileSpec, make_tile_grid
+    if tiling.tiles is not None:
+        tiles = [TileSpec(name=name, bbox=tuple(bbox)) for name, bbox in tiling.tiles]
     else:
-        tiles = make_tile_grid(ref_shape, tiling['grid'][0], tiling['grid'][1],
-                               overlap_px=tiling['overlap_px'], names=tiling['tile_names'])
-    only_tiles = tiling.get('only_tiles')
-    if only_tiles:
+        tiles = make_tile_grid(tiling.ref_shape, tiling.grid[0], tiling.grid[1], overlap_px=tiling.overlap,
+                               names=None if tiling.names is None else list(tiling.names))
+    only = tiling.only
+    if only:
         all_names = [tile.name for tile in tiles]
-        tiles = [tile for tile in tiles if tile.name in only_tiles]
+        tiles = [tile for tile in tiles if tile.name in only]
         if not tiles:
-            raise ValueError(f"only_tiles={only_tiles} matched no tile in {all_names}")
-    return tiles, only_tiles
+            raise ValueError(f"only={list(only)} matched no tile in {all_names}")
+    return tiles, only
 
 
-def tiling_frames(tiling):
-    """Every frame of the field (every detector), in (exposure, detector) order, from
-    ``full_reproj_dir``; ``[tiling].frame_glob`` (default ``exp_*_det_*.h5``) narrows it."""
-    files = glob_module.glob(os.path.join(tiling['full_reproj_dir'],
-                                          tiling.get('frame_glob', 'exp_*_det_*.h5')))
+def tiling_frames(frames_dir):
+    """Every frame of a directory (every detector), in (exposure, detector) order."""
     from selfcal.io.reproj import parse_reproj_basename
+    files = glob_module.glob(os.path.join(frames_dir, 'exp_*_det_*.h5'))
     return sorted(files, key=parse_reproj_basename)
 
 
-def tile_assignment(tiling, ref_shape):
-    """``(TiledCalibration, tiles, only_tiles, assignment)`` for a ``[tiling]`` table."""
+def tile_assignment(tiling):
+    """``(TiledCalibration, tiles, only, assignment)`` of a :class:`~selfcal.run.runspec.TilingSpec`."""
     from selfcal.pipeline.tiled import TiledCalibration
-    tiles, only_tiles = resolve_tiles(tiling, ref_shape)
-    files = tiling_frames(tiling)
-    tiled = TiledCalibration(files, tiles, frame_filter=tiling.get('frame_filter', 'center'),
-                             halo=tiling.get('halo', 0))
-    return tiled, tiles, only_tiles, tiled.assign_frames()
+    tiles, only = resolve_tiles(tiling)
+    tiled = TiledCalibration(tiling_frames(tiling.frames_dir), tiles, frame_filter=tiling.assign, halo=tiling.halo)
+    return tiled, tiles, only, tiled.assign_frames()

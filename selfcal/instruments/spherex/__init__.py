@@ -1,4 +1,4 @@
-"""SPHEREx: the ``spherex`` instrument and its linear variable filter (LVF) geometry.
+"""SPHEREx: the instrument ``sc.SPHEREx`` and its linear variable filter (LVF) geometry.
 
 On each SPHEREx detector an LVF sets the wavelength a pixel sees: its band centre
 ``BC`` (band width ``BW``) is nearly constant along concentric circular arcs and
@@ -17,10 +17,8 @@ changes across them. The chunk maps therefore cut the detector into subchannels
   :func:`~selfcal.instruments.spherex.settings.precompute_lvf` and
   :func:`~selfcal.instruments.spherex.settings.zodi_anchor` (available from this package:
   ``spherex.channel(17)``).
-- :mod:`~selfcal.instruments.spherex.adapter`: the instrument of the TOML configs,
-  :class:`~selfcal.instruments.spherex.adapter.SPHERExInstrument`
-  (``[instrument].name = "spherex"``), which reads its table as the settings; the zodi
-  anchor hook of ``[zodi]``, the subchannel windows and the readout-channel map.
+- :mod:`~selfcal.instruments.spherex.adapter`: the named subchannel windows and the
+  readout-channel map.
 - :mod:`~selfcal.instruments.spherex.spherex_utility`: the LVF geometry: the ``BC`` /
   ``BW`` maps, the arc fit (``lvf_params``), the stripped chunk maps and valid masks,
   the smooth arc offset renderer, adjacency and polynomial chains.
