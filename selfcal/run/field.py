@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, is_dataclass
 from dataclasses import field as dc_field
 
 from ..config.base import Config, ConfigError
@@ -188,6 +188,10 @@ class Field(Config):
     compute: Compute = dc_field(default_factory=Compute)
 
     def _validate(self):
+        inst = type(self.instrument)
+        if not (is_dataclass(inst) and inst.__dataclass_params__.frozen):
+            raise ConfigError(f"Field(instrument={inst.__name__}(...)): an sc.Instrument subclass is a frozen "
+                              f"dataclass; put @dataclass(frozen=True) above class {inst.__name__}")
         # Kept as written (only ~ expanded): the cal file records its frames under this path.
         path = os.path.expanduser(self.path)
         object.__setattr__(self, 'path', path.rstrip('/') or path)

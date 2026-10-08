@@ -28,10 +28,11 @@ objects ([`run/lower.py`](run/lower.py)) into one `RunSpec` per group of jobs
 ([`run/runspec.py`](run/runspec.py)), in which every value is resolved: the library keywords
 of the solve, the solver and the coadd, the frames and their staging, the tiles, the passes.
 The run engine reads nothing else. `RunContext` ([`run/engine.py`](run/engine.py)) holds what
-a run resolves once: the instrument's detector geometry (built once and kept for the
-process), the `ModelSpec` of the model, each sky term's damping, every product name; its
-methods lower the model to the solver's objects (offset and sky models, data variables,
-weight, priors, warm start, clip groups, the N-pass refit basis). The tasks of
+a run resolves once: the instrument's detector geometry (built once per action; kept between
+actions when the instrument declares `geometry_is_pure`), the `ModelSpec` of the model, each
+sky term's damping, every product name; its methods lower the model to the solver's objects
+(offset and sky models, data variables, weight, priors, warm start, clip groups, the N-pass
+refit basis). The tasks of
 [`run/pipelines.py`](run/pipelines.py) (`cal`, tiled or not; `mosaic`; `npass`, scheduled by
 [`run/npass.py`](run/npass.py); `reproject`) run on its two primitives, `solve_job` and
 `mosaic_job`.
@@ -471,8 +472,11 @@ clarity:
   `job_geometry(geom, job)` (a job's valid pixels and weights),
   `frame_variables(frames)` / `frame_variable_names()`, `frame_groups(frames)`
   (default: the integer-valued frame variables), `product_tag`, `unit`
-  (default `''`), `geometry_files()` (the files its geometry reads, for the
-  geometry cache), and the optional hooks `offset_renderer`, `aux_coadds`,
+  (default `''`), `geometry_files()` (the files its geometry reads) and
+  `geometry_is_pure` (a class constant, default False, True on the built-in
+  instruments: the geometry depends only on the settings and those files, so
+  the engine may keep it between actions; otherwise each action builds it),
+  and the optional hooks `offset_renderer`, `aux_coadds`,
   `finalize_mosaic` and `coefficient_catalog`; everything but `geometry` has a
   default. `sc.Job` is one unit of an instrument's loop. A new telescope is a
   frozen-dataclass subclass; the built-in instruments are subclasses too.
@@ -660,13 +664,17 @@ mosaic/mosaic_*.fits  (multi-extension FITS with WCS and all maps)
   (or a function that returns one) — neither touches the engine.
 - **Resolved once.** An action lowers its objects once into `RunSpec`s, and
   each engine run resolves its `RunContext` once (the N-pass INIT shares its
-  scheduler's). The detector geometry is built once per process: the engine
-  keeps the last four, keyed by the instrument's settings, the oversampling,
-  the files the geometry reads and the environment variables that locate
-  them, so `field.plan` followed by `field.calibrate` builds it once. Each
-  sky term's damping is
-  decided once (`SkyModel.damp_weights`), and the joint solve, the
-  closed-form sky solve and the N-pass SKY pass read the same numbers.
+  scheduler's). The detector geometry is built once per action and shared
+  by its plan and its runs. An instrument that declares `geometry_is_pure`
+  (its geometry depends only on its settings and its `geometry_files()`:
+  the built-in ones) has it kept between actions too: the engine keeps the
+  last two, keyed by the instrument's settings, the oversampling, the files
+  the geometry reads and the environment variables that locate them, so
+  `field.plan` followed by `field.calibrate` builds it once. Any other
+  instrument's geometry is built by each action, never kept nor copied.
+  Each sky term's damping is decided once (`SkyModel.damp_weights`), and the
+  joint solve, the closed-form sky solve and the N-pass SKY pass read the
+  same numbers.
 - **Models over parallel lists.** `SkyModel` and `OffsetModel` bundle what
   used to be loose integers / parallel length-K kwargs. They lower to the
   identical flat kwargs (gated byte-equal) so the abstraction adds no

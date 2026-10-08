@@ -245,14 +245,15 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         how = f"staged ({first.frames.stage}) to {first.frames.stage_dir}" if tiles is None else 'staged per tile'
     plan.frames = (n, where, how)
 
-    # the engine's own resolution: geometry, the model checked against the instrument
+    # the engine's own resolution: geometry (one for the action's runs), the model checked against the
+    # instrument
     from .. import _state
     for spec in lowered:
         progress = _state.progress_enabled
         _state.set_progress(False)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                ctx = RunContext.build(spec)
+                ctx = RunContext.build(spec, geom=plan.contexts[0].geom if plan.contexts else None)
         finally:
             _state.set_progress(progress)
         plan.contexts.append(ctx)

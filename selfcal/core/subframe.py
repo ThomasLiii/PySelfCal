@@ -1,23 +1,27 @@
 """Shared subframe preparation logic used by both coadd and LSQR pipelines."""
 
 import inspect
-
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
+from ..geometry.map_helper import (
+    bit_to_bool,
+    chunk_to_det,
+    compute_chunk_contrib,
+    det_to_sub,
+    make_linear_interp_matrix,
+    make_weight,
+)
 from ..io.reproj import load_reproj_file
-from ..geometry.map_helper import (bit_to_bool, make_weight, make_linear_interp_matrix,
-                        chunk_to_det, det_to_sub, compute_chunk_contrib)
-
 
 
 @dataclass
 class FrameContext:
     """What a per-frame hook (``preprocess_func`` / ``postprocess_func`` of
-    ``setup_lsqr`` / ``make_mosaic``) receives: the frame's identity and its
-    subframe arrays. A hook returns the (possibly modified) ``sub_data``.
+    ``setup_lsqr``, ``postprocess_func`` of ``make_mosaic``) receives: the frame's
+    identity and its subframe arrays. A hook returns the (possibly modified) ``sub_data``.
 
     ``stage`` is ``'pre'`` (right after loading: no offsets subtracted, no
     weights, no aux maps yet) or ``'post'`` (after offsets, weights and aux
@@ -166,8 +170,10 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     outside it the weight is exactly zero and the data untouched, so the
     returned full-frame arrays are identical to the full-frame computation.
     """
-    if ignore_list is None: ignore_list = []
-    if chunk_maps is None: chunk_maps = []
+    if ignore_list is None:
+        ignore_list = []
+    if chunk_maps is None:
+        chunk_maps = []
 
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
     if apply_mask:

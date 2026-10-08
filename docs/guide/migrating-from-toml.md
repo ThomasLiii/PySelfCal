@@ -69,7 +69,8 @@ Other notes:
 - `[tiling] frame_glob = "exp_*_det_00.h5"`: a tiled run takes every frame of its directory, the
   same frames for a one-detector instrument.
 - `[zodi] pred_dir`: the script calls `spherex.zodi_anchor(result, predictions)` after the
-  calibration.
+  calibration, with the table's `clip_window_days`, `clip_sigma` and `clip_iters`; any other key
+  of the table (the TOML engine ignored it) is refused.
 - `[calibration] damp_offset = d`: written as each offset term's `damping=d`.
 - `[reproject] inner_parallel`, `header_filter_workers` at other values than 1 and 16: dropped
   (they changed no product and are fixed now).
@@ -134,7 +135,7 @@ trust: adopt a product only with the script of the config that made it. See
 | `[passes]` `n`, `order`, `stop_tol`, `sky_merge`, `keep_moments` | `sc.Passes(n, order=, stop_tol=, sky_merge=, keep_moments=)` |
 | `[passes]` `init`, `sky`, `offset` | `sc.Passes(init_clip=, sky_clip=, offset=sc.Refit(degree, clip=, bright_cut=, min_pixels=, segments=, ridge=))`; `subch_clip = true`: `sc.Clip(sigma, per=sc.ChunkGroups.along("subchannel"))` |
 | `[reproject]` | `field.reproject(exposures, reference=, method=, padding=, padding_fraction=, replace=, verify=)` |
-| `[zodi] pred_dir` | `spherex.zodi_anchor(result, predictions)` after the calibration |
+| `[zodi]` `pred_dir`, `clip_window_days`, `clip_sigma`, `clip_iters` | `spherex.zodi_anchor(result, predictions, clip_window_days=, clip_sigma=, clip_iters=)` after the calibration |
 
 Two defaults differ. A `[passes]` table without `n` or `order` ran four passes, sky first;
 `sc.Passes()` runs three, offset first, and refuses a schedule that ends on an OFFSET pass unless

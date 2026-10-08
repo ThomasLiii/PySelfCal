@@ -53,8 +53,10 @@ class Euclid(Instrument):
     tag: str = 'EDFN'
 
     # The unit of the data (the mosaic's BUNIT): a constant, not a setting (without an
-    # annotation it is no dataclass field, so it stays out of the products' fingerprints).
+    # annotation it is no dataclass field, so it stays out of the products' fingerprints). The
+    # geometry reads the settings only: the engine may keep it between actions.
     unit = 'electron'
+    geometry_is_pure = True
 
     def _validate(self):
         for k in ('chunks', 'tilt_strips', 'detectors'):

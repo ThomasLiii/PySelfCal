@@ -339,8 +339,10 @@ def _coadd_batch_worker(task):
                     loc_wav[0][r, c] += np.where(clip_mask, (bc * bw) * w, 0.0)
                     loc_wav[1][r, c] += np.where(clip_mask, bw * w, 0.0)
                     loc_wav[2][r, c] += np.where(clip_mask, (bw * ((bw ** 2) / 12 + bc ** 2)) * w, 0.0)
-            win[0] = min(win[0], int(r.min())); win[1] = max(win[1], int(r.max()) + 1)
-            win[2] = min(win[2], int(c.min())); win[3] = max(win[3], int(c.max()) + 1)
+            win[0] = min(win[0], int(r.min()))
+            win[1] = max(win[1], int(r.max()) + 1)
+            win[2] = min(win[2], int(c.min()))
+            win[3] = max(win[3], int(c.max()) + 1)
             stats['acc'] += time.perf_counter() - t0
 
         if acc is not None:
@@ -483,12 +485,11 @@ def _finalize_wav(wav_sums):
 
 
 def _prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs, oversample_factor, valid_threshold,
-                 preprocess_func, postprocess_func):
+                 postprocess_func):
     return {
         'apply_weight': apply_weight, 'apply_mask': apply_mask, 'ignore_list': ignore_list,
         'det_offset_funcs': det_offset_funcs, 'oversample_factor': oversample_factor,
-        'valid_threshold': valid_threshold, 'for_lsqr': False,
-        'preprocess_func': preprocess_func, 'postprocess_func': postprocess_func,
+        'valid_threshold': valid_threshold, 'for_lsqr': False, 'postprocess_func': postprocess_func,
     }
 
 
@@ -527,8 +528,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       apply_mask=True, chunk_maps=None, grid_valid_weight=None,
                       max_workers=10, ignore_list=None, det_offset_funcs=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
-                      cache_dir='cache/', use_cached=False, det_aux=None,
-                      preprocess_func=None, postprocess_func=None):
+                      cache_dir='cache/', use_cached=False, det_aux=None, postprocess_func=None):
     """Unified mean / std / sigma-clipped-mean / cache builder, multi-chunk-map aware.
 
     Each per-frame subframe is offset-corrected by the sum of K per-map
@@ -593,7 +593,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       offsets=None if use_cached else offset_lists, source=source, wav=False,
                       shared=shared, n_maps=len(chunk_maps), n_aux=n_aux,
                       prep=_prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs,
-                                        oversample_factor, valid_threshold, preprocess_func, postprocess_func),
+                                        oversample_factor, valid_threshold, postprocess_func),
                       sigma=sigma, max_workers=max_workers, batch_size=batch_size)
         if mode == 'cache':
             cached, _ = _run_pass(accumulate=None, write_dir=cache_dir, label="Cache pass", **common)
@@ -614,7 +614,7 @@ def run_coadd_schedule(ref_shape, file_list, offset_lists=None, apply_weight=Tru
                        chunk_maps=None, grid_valid_weight=None, max_workers=10, ignore_list=None,
                        det_offset_funcs=None, oversample_factor=1, cache_batch_size=10, coadd_batch_size=10,
                        valid_threshold=0.99, cache_dir='cache/', cache_intermediate=False, det_aux=None,
-                       preprocess_func=None, postprocess_func=None, make_std_map=False,
+                       postprocess_func=None, make_std_map=False,
                        apply_sigma_clipping=False, sigma=2.0, wav_maps=None):
     """All coadd passes of a mosaic in one schedule.
 
@@ -657,7 +657,7 @@ def run_coadd_schedule(ref_shape, file_list, offset_lists=None, apply_weight=Tru
         _publish_inputs(shared, chunk_maps, grid_valid_weight, det_aux, wav_maps)
         common = dict(ref_shape=ref_shape, shared=shared, n_maps=len(chunk_maps), n_aux=n_aux,
                       prep=_prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs,
-                                        oversample_factor, valid_threshold, preprocess_func, postprocess_func),
+                                        oversample_factor, valid_threshold, postprocess_func),
                       sigma=sigma, max_workers=max_workers)
         if cache_intermediate:
             os.makedirs(cache_dir, exist_ok=True)

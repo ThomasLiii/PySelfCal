@@ -8,6 +8,7 @@ from scipy.sparse import csr_matrix
 
 if TYPE_CHECKING:
     from scipy.sparse import coo_matrix
+
     from .blockcsr import BlockCSR
 
 __all__ = [
@@ -114,8 +115,8 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     diagonal LS treats every non-sky column independently, so it is agnostic to
     the per-map column layout.
 
-    When ``num_sky_blocks=2`` (spectral_fit), the full sky block has
-    ``2*num_sky`` columns and the offset block starts at ``2*num_sky``.
+    With several sky terms (``num_sky_blocks`` > 1), the full sky block has
+    ``num_sky_blocks * num_sky`` columns and the offset block starts there.
 
     Parameters
     ----------
@@ -128,8 +129,8 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     ref_shape : tuple of int
         (height, width) of the reference frame.
     num_sky_blocks : int, optional
-        Number of sky blocks; 2 for spectral_fit, where the sky block spans
-        ``2 * num_sky`` columns and the offset block starts at ``2 * num_sky``.
+        Number of sky blocks (one per sky term): the sky block spans
+        ``num_sky_blocks * num_sky`` columns and the offset block starts there.
     active_mask : np.ndarray of bool, optional
         When supplied, ``A`` is the COMPACT matrix produced by the early
         zero-column compaction in ``setup_lsqr``; ``active_mask`` (length =
@@ -291,7 +292,7 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
         still the original-layout value; the function internally derives the
         compact equivalent.
     num_sky_blocks : int
-        1 for the standard single-sky-block layout. 2 for spectral_fit mode.
+        Number of sky blocks (one per sky term); 1 for the continuum alone.
     active_mask : np.ndarray of bool, optional
         When supplied, ``A`` is the COMPACT matrix produced by the early
         zero-column compaction in ``setup_lsqr``. The returned ``x0`` is

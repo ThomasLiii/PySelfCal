@@ -50,10 +50,10 @@ def _quiet(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# The detector geometry, built once per instrument and oversampling
+# The detector geometry, built once per action (and kept when the instrument says it may be)
 # ---------------------------------------------------------------------------
-#: How many detector geometries the process keeps (:func:`instrument_geometry`).
-GEOMETRIES_KEPT = 4
+#: How many detector geometries the process keeps between actions (:func:`instrument_geometry`).
+GEOMETRIES_KEPT = 2
 #: The environment variables an instrument's data files are found through.
 GEOMETRY_VARIABLES = ('SELFCAL_SPHEREX_CALIB_DIR', 'SELFCAL_LVF_PARAMS_DIR', 'SELFCAL_SPHEREX_CHANNEL_FILE')
 _GEOMETRIES = collections.OrderedDict()
@@ -67,20 +67,37 @@ def _file_state(path):
     return path, st.st_size, st.st_mtime_ns
 
 
+def geometry_is_pure(inst):
+    """Whether the geometry of ``inst`` may be kept between actions: its
+    :attr:`~selfcal.instruments.contract.Instrument.geometry_is_pure` is true and is declared by the
+    class whose ``geometry()`` it runs, or a subclass of it (a subclass that overrides the geometry of
+    a pure instrument is not pure unless it declares so again)."""
+    declared = defined = None
+    for i, klass in enumerate(type(inst).__mro__):
+        if declared is None and 'geometry_is_pure' in vars(klass):
+            declared = i
+        if defined is None and 'geometry' in vars(klass):
+            defined = i
+    return bool(getattr(inst, 'geometry_is_pure', False)) and None not in (declared, defined) and declared <= defined
+
+
 def instrument_geometry(inst, oversample):
     """The detector geometry of ``inst`` sampled ``oversample`` times per pixel
-    (:meth:`~selfcal.instruments.contract.Instrument.geometry`), built once for the process.
+    (:meth:`~selfcal.instruments.contract.Instrument.geometry`).
 
-    The last :data:`GEOMETRIES_KEPT` geometries are kept, each under the instrument's settings,
-    the oversampling, the path, size and time of each file its geometry reads (when the instrument
-    names them, ``geometry_files()``) and the :data:`GEOMETRY_VARIABLES`: a geometry is built again
-    when any of them changed. Each call returns a copy of its own, so no run sees another's
-    changes."""
+    An action builds it once: its plan, its runs and an N-pass INIT share it through their
+    contexts. The geometry of a pure instrument (:func:`geometry_is_pure`: the built-in ones) is
+    also kept between actions: the last :data:`GEOMETRIES_KEPT`, each under the instrument's
+    settings, the oversampling, the path, size and time of each file its geometry reads
+    (``geometry_files()``) and the :data:`GEOMETRY_VARIABLES`; it is built again when any of them
+    changed, and each call returns a copy of its own, so no run sees another's changes. Any other
+    instrument's geometry is built at each call and returned as built (never kept, never copied)."""
+    if not geometry_is_pure(inst):
+        return inst.geometry(oversample)
     from ..config.base import encode
     from .products import fingerprint
-    files = getattr(inst, 'geometry_files', None)
     key = (type(inst), fingerprint(encode(inst)), int(oversample),
-           None if files is None else tuple(_file_state(p) for p in files()),
+           tuple(_file_state(p) for p in inst.geometry_files()),
            tuple(os.environ.get(v) for v in GEOMETRY_VARIABLES))
     if key in _GEOMETRIES:
         _GEOMETRIES.move_to_end(key)
@@ -114,16 +131,18 @@ class RunContext:
     sky_damping: list = field(default_factory=list)
 
     @classmethod
-    def build(cls, spec, *, need_geometry=True):
+    def build(cls, spec, *, need_geometry=True, geom=None):
         """Resolve ``spec``. ``need_geometry=False`` (a reprojection; the product names) skips the
-        detector geometry and the model, which need calibration data the reprojection does not."""
+        detector geometry and the model, which need calibration data the reprojection does not.
+        ``geom``: the detector geometry when the action has built it already (for another of its
+        job groups, which share the instrument and the oversampling)."""
         from selfcal.models.spec import ModelSpec
         inst = spec.instrument
         pc = pipeline_wrapper.PipelineConfig(output_dir=spec.output_dir, run_name=spec.run_name,
                                              resolution_arcsec=spec.resolution_arcsec)
         ctx = cls(spec=spec, inst=inst, pipeline_config=pc, frame_tag=inst.product_tag)
         if need_geometry:
-            ctx.geom = instrument_geometry(inst, spec.oversample)
+            ctx.geom = geom if geom is not None else instrument_geometry(inst, spec.oversample)
             ctx.model = ModelSpec.from_config(spec.model)
             # every data variable, chunk map and axis, catalogue entry and prior term exists
             ctx.model.check(ctx.geom, ctx.catalog(), frame_variables=ctx.frame_variable_names())

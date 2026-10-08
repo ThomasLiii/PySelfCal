@@ -389,6 +389,26 @@ def test_converter_refuses_what_it_cannot_translate(tmp_path):
     assert any('compact_zero_columns' in n for n in kept.notes) and any('resume' in n for n in kept.notes)
 
 
+def test_converter_passes_the_zodi_anchor_only_its_keys(tmp_path):
+    """A [zodi] table becomes spherex.zodi_anchor(result, ...) after the calibration, which takes the predictions
+    (pred_dir) and the clip keys; any other key (the TOML engine ignored it) is refused."""
+    from selfcal.run.convert import from_toml
+
+    def converted(zodi):
+        path = tmp_path / 'zodi.toml'
+        path.write_text(f'task = "cal"\nmode = "continuum"\noutput_dir = "{tmp_path}"\nrun_name = "zodi"\n'
+                        f'resolution_arcsec = 6.2\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "spherex"\n'
+                        f'detector = 4\nchannels = [17]\n\n[calibration]\nweighted_damping = false\n\n[lsqr]\n\n'
+                        f'[zodi]\n{zodi}\n')
+        return from_toml(str(path))
+
+    kept = converted('pred_dir = "/predictions"\nclip_sigma = 2.5\nclip_iters = 3')
+    assert kept.zodi == {'predictions': '/predictions', 'clip_sigma': 2.5, 'clip_iters': 3}
+    assert "spherex.zodi_anchor(result, predictions='/predictions', clip_sigma=2.5, clip_iters=3)" in kept.to_python()
+    with pytest.raises(ConfigError, match=r"\[zodi\] keys \['anchor_method'\] have no Python form"):
+        converted('pred_dir = "/predictions"\nanchor_method = "raw"')
+
+
 def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):
     field, recipe = toy_field, _recipe(25, name='cli')
     cal = field.calibrate(recipe).cal_paths[0]
@@ -403,6 +423,15 @@ def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):
     assert proc.returncode == 0 and os.path.basename(cal) in proc.stdout, proc.stdout + proc.stderr[-3000:]
     assert products.read_sidecar(cal)['adopted'] is True
     assert '(refused' not in _cli('plan', str(script)).stdout
+
+
+def test_cli_refuses_a_toml_config(tmp_path):
+    config = tmp_path / 'cal.toml'
+    config.write_text(QUICKSTART_TOML['cal'])
+    for command in ('run', 'plan', 'adopt'):
+        proc = _cli(command, str(config))
+        assert proc.returncode == 2, proc.stdout + proc.stderr[-3000:]
+        assert proc.stderr.strip() == f"TOML configs are no longer run; convert it: selfcal convert {config}"
 
 
 def test_submit_runs_detached_and_records(toy_field, tmp_path):

@@ -296,7 +296,7 @@ def _refit_frame(path):
             det_aux=g["det_aux"], chunk_maps=[g["cm"]],
             apply_weight=True, apply_mask=True, ignore_list=g["ignore_list"],
             grid_valid_weight=g["grid_valid"], oversample_factor=1,
-            valid_threshold=0.5, postprocess_func=g["sky"], preprocess_func=None)
+            valid_threshold=0.5, postprocess_func=g["sky"])
         sub_h, sub_w = sub_data.shape
         valid = sub_weight > 0
         if g["edges"] is not None:

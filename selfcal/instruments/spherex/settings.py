@@ -81,9 +81,11 @@ class SPHEREx(Instrument):
     calib_dir: str | None = None
     lvf_dir: str | None = None
 
-    # A constant of the instrument, not a setting: without an annotation it is no dataclass field,
-    # so it stays out of the products' fingerprints.
+    # Constants of the instrument, not settings: without an annotation they are no dataclass fields,
+    # so they stay out of the products' fingerprints. The geometry reads the settings and the
+    # geometry_files() only: the engine may keep it between actions.
     unit = 'MJy/sr'
+    geometry_is_pure = True
 
     def _validate(self):
         if self.detector not in range(1, 7):
@@ -345,7 +347,9 @@ def zodi_anchor(result, predictions, *, clip_window_days=7.0, clip_sigma=3.0, cl
     :class:`~selfcal.run.result.Result`) against the zodipy predictions
     ``<predictions>/zodi_pred_<stem>.npz``, and record it in the run's
     ``zodi_anchor/anchor_D<n>.h5`` (non-mutating: the cal and mosaic files stay as they are).
-    A job without a prediction file is skipped. Returns ``{job name: fit}``."""
+    A job without a prediction file is skipped, as is a job of several channels or a window (its
+    cal's name holds no ``_Ch<n>`` followed by ``_`` or the end of the name). Returns
+    ``{job name: fit}``."""
     import re
 
     from ...zodi_anchor import append_anchor_channel, fit_anchor_for_channel
@@ -358,7 +362,7 @@ def zodi_anchor(result, predictions, *, clip_window_days=7.0, clip_sigma=3.0, cl
     for job, cal_path in zip(result.jobs, result.cal_paths):
         stem = os.path.basename(cal_path)[len('cal_'):-len('.h5')]
         npz = os.path.join(str(predictions), f'zodi_pred_{stem}.npz')
-        m = re.search(r'_Ch(\d+)_', os.path.basename(cal_path))
+        m = re.search(r'_Ch(\d+)(?:_|$)', stem)         # a suffix follows the job's name, or nothing does
         if not os.path.exists(npz) or m is None:
             print(f"Zodi anchor skipped for {stem}: "
                   + (f"{npz} not found." if m is not None else "not a single-channel job."))

@@ -49,6 +49,11 @@ class Camera(Instrument):
     unit: str = ''
     job: str = 'All'
 
+    # A constant, not a setting (without an annotation it is no dataclass field): the geometry reads
+    # the settings only (the detector maps are arrays, fingerprinted by their content), so the engine
+    # may keep it between actions.
+    geometry_is_pure = True
+
     def _validate(self):
         if isinstance(self.chunks, int):
             object.__setattr__(self, 'chunks', (self.chunks, self.chunks))

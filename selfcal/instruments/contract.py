@@ -84,10 +84,19 @@ class Instrument(Config):
     coefficients (:meth:`coefficient_catalog`) and the data files its geometry reads
     (:meth:`geometry_files`). A ``tag`` setting names its products (default: the class name);
     ``unit`` is the mosaic's ``BUNIT``.
+
+    The run engine builds the geometry once per action. It keeps it between the actions of a
+    process only when the class says ``geometry_is_pure = True``: its :meth:`geometry` depends on
+    nothing but its settings and the files :meth:`geometry_files` names (no module state, no other
+    file). The built-in instruments say so; a subclass that overrides the geometry of one says so
+    again, or its geometry is built by each action.
     """
 
     #: The unit of the calibrated data, the mosaic's ``BUNIT`` (a constant here, or a setting).
     unit = ''
+    #: Whether :meth:`geometry` depends only on the settings and the :meth:`geometry_files`, so that
+    #: the run engine may keep it between actions (a class constant, never a setting).
+    geometry_is_pure = False
 
     # ---- the contract -------------------------------------------------------------------
     def geometry(self, oversample=1) -> base.DetectorGeometry:
@@ -158,7 +167,7 @@ class Instrument(Config):
 
     def geometry_files(self) -> tuple:
         """The data files :meth:`geometry` reads, beyond the settings (default none): a geometry kept
-        by the run engine is built again when one of them changes."""
+        by the run engine (``geometry_is_pure``) is built again when one of them changes."""
         return ()
 
     def default_ignore_flags(self) -> tuple:

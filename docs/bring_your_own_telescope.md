@@ -227,11 +227,17 @@ FIELD = sc.Field("/data/runs/mycam_field1", MyCam(chunks=16), pixel_scale=1.0)
 ```
 
 It may also override `default_jobs()` (the jobs a run makes), `job_geometry(geom, job)` (the
-valid pixels and weights of a job), `frame_groups(frames)` (the groupings an offset term can share
-an offset over; default: the integer-valued frame variables) and `geometry_files()` (the data files
-`geometry` reads: the engine keeps a built geometry for the process and builds it again when one of
-them changes). The engine receives the object itself and calls it only through these methods;
-there is no registry.
+valid pixels and weights of a job) and `frame_groups(frames)` (the groupings an offset term can
+share an offset over; default: the integer-valued frame variables). The engine receives the object
+itself and calls it only through these methods; there is no registry.
+
+Each action (`plan`, `calibrate`, `mosaic`) builds the geometry once and shares it between its
+runs. A class whose geometry depends on nothing but its settings and the data files it names in
+`geometry_files()` may say so with the class constant `geometry_is_pure = True` (as `sc.SPHEREx`,
+`sc.Euclid` and `sc.Camera` do): the engine then keeps the last two geometries built for the
+process, between actions, and builds one again when its settings or one of those files changed.
+`MyCam` above reads `pix_angle.npy` without naming it, so it says nothing, and each action builds
+its geometry (as it would if it read module state).
 
 **Raw data in any format** — a reader returns, for one detector frame of one file, the values, a
 header carrying the celestial WCS (and any keywords you want as frame variables), an optional bit

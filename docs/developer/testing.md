@@ -63,8 +63,10 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | | `test_staging.py` | frames are staged atomically, only into or out of a directory the pipeline made; a tiled run takes every frame of its directory, in exposure order |
 | Code layout | `test_import_direction.py` | layering: `selfcal.config` imports no other layer, the numerical layers never import the instrument layer, the instrument layer never imports the pipeline or run layers, and the run engine never imports the scripts |
 
-`test_python_api.py` also checks the engine's rules: the instrument's geometry is built once for
-`field.plan` followed by `field.calibrate`, and the kept geometry is handed out as a copy; every
+`test_python_api.py` also checks the engine's rules: a pure instrument's geometry is built once for
+`field.plan` followed by `field.calibrate`, and the kept geometry is handed out as a copy; a user
+instrument's geometry is built once per action and never kept (module state it reads takes effect at
+the next action); every
 pass of a run damps the sky as the model says; a setting declared as added later keeps the
 fingerprints of existing products; and a model whose offsets are grouped by a frame variable of
 the model's own can be mosaicked.

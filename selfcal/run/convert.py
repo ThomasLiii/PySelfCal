@@ -50,6 +50,8 @@ _MOSAIC = {'tiled': 'none', 'two_block_fixed': 'no_wav'}
 # options of the library's calls that a [calibration] / [lsqr] / [mosaic] table could set and the library no
 # longer has, at the value every run now uses (a config setting another value is refused)
 _FIXED = {'compact_zero_columns': True, 'spectral_fit': False, 'resume': False, 'keep_state': False}
+# the [zodi] keys spherex.zodi_anchor takes, beside pred_dir (its predictions)
+_ZODI_KEYS = ('clip_window_days', 'clip_sigma', 'clip_iters')
 # the per-frame hooks a [hooks] table could name (Euclid's)
 _HOOKS = {'star_position_mask': 'StarMask', 'residual_mask': 'ResidualMask'}
 
@@ -665,6 +667,11 @@ def from_toml(path) -> Converted:
     zodi = None
     if cfg.zodi.get('pred_dir'):
         z = dict(cfg.zodi)
+        bad = sorted(set(z) - {'pred_dir', *_ZODI_KEYS})
+        if bad:
+            raise ConfigError(f"[zodi] keys {bad} have no Python form: spherex.zodi_anchor takes pred_dir (its "
+                              f"predictions) and {', '.join(_ZODI_KEYS)}; remove the others (the TOML engine "
+                              f"ignored them)")
         zodi = {'predictions': z.pop('pred_dir'), **z}
         notes.append("[zodi]: the anchor is fitted by spherex.zodi_anchor(result, ...) after the calibration")
     action = 'mosaic' if cfg.task == 'mosaic' else 'calibrate'

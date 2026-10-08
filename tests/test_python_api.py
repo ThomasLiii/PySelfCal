@@ -12,6 +12,7 @@ import pickle
 import shutil
 import sys
 import tempfile
+import threading
 from dataclasses import KW_ONLY, dataclass
 
 import h5py
@@ -201,6 +202,30 @@ def test_spherex_jobs_and_their_runs():
         inst.default_jobs()
 
 
+def test_the_zodi_anchor_reads_the_channel_of_each_cal(tmp_path, monkeypatch):
+    """spherex.zodi_anchor anchors each single-channel cal, its name ending in the job's (``..._Ch17.h5``, a recipe
+    without a name) or followed by the recipe's (``..._Ch17_name.h5``); a group of channels is skipped."""
+    import selfcal.zodi_anchor as za
+    from selfcal.run.result import Result
+    anchored = []
+    monkeypatch.setattr(za, 'fit_anchor_for_channel', lambda cal, npz, **clip: os.path.basename(cal))
+    monkeypatch.setattr(za, 'append_anchor_channel',
+                        lambda path, det, run, channel, fit, clip, anchor_method: anchored.append(channel))
+    field = sc.Field(str(tmp_path / 'field'), sc.SPHEREx(4), 6.2)
+    jobs = (spherex.channel(17), spherex.channel(18), spherex.group(19, 20))
+    predictions = tmp_path / 'predictions'
+    predictions.mkdir()
+    for suffix in ('', '_named'):
+        stems = [f'{field.instrument.product_tag}_{j.name}{suffix}' for j in jobs]
+        for stem in stems:
+            (predictions / f'zodi_pred_{stem}.npz').touch()
+        anchored.clear()
+        cals = [os.path.join(field.path, 'calibration', f'cal_{stem}.h5') for stem in stems]
+        fits_by_job = spherex.zodi_anchor(Result(field, None, jobs, cals), predictions)
+        assert anchored == [17, 18] and fits_by_job == {'Ch17': os.path.basename(cals[0]),
+                                                        'Ch18': os.path.basename(cals[1])}
+
+
 def test_camera_and_euclid():
     cam = sc.Camera((64, 48), chunks=3, dq_ext=2, tag='Toy')
     assert cam.chunks == (3, 3) and cam.product_tag == 'Toy_Chunks3x3'
@@ -252,6 +277,30 @@ def test_a_new_instrument_is_a_subclass():
     assert ctx.frame_tag == 'Owl' and [j.name for j in ctx.jobs()] == ['All']
     assert sorted(ctx.geom.chunk_maps) == ['amps', 'grid'] and ctx.geom.chunk_map.n_chunks == 4
     assert ctx.geom.chunk_maps['amps'].grid.shape == (DET, DET)
+
+
+class UndecoratedOwl(sc.Instrument):
+    """An instrument without the dataclass decorator."""
+
+    def geometry(self, oversample=1):
+        return Owl().geometry(oversample)
+
+
+@dataclass(kw_only=True)
+class MutableOwl(sc.Instrument):
+    """An instrument that is a dataclass, but not a frozen one."""
+    chunks: int = 4
+
+    def geometry(self, oversample=1):
+        return Owl(chunks=self.chunks).geometry(oversample)
+
+
+def test_an_instrument_is_a_frozen_dataclass():
+    for inst in (UndecoratedOwl(), MutableOwl()):
+        name = type(inst).__name__
+        with pytest.raises(ConfigError, match=rf"Field\(instrument={name}\(\.\.\.\)\): an sc.Instrument subclass is a "
+                                              rf"frozen dataclass; put @dataclass\(frozen=True\) above class {name}"):
+            sc.Field('/tmp/owl_field', inst, 20.0)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -416,9 +465,12 @@ def test_frame_context_reads_as_a_mapping():
 # =================================================================== the engine's resolution of a run
 @dataclass(frozen=True, kw_only=True)
 class CountedCamera(sc.Instrument):
-    """The toy camera, counting the geometries it builds; ``files`` are the files its geometry reads."""
+    """The toy camera, counting the geometries it builds; ``files`` are the files its geometry reads,
+    and nothing else: the engine may keep its geometry between actions."""
     files: tuple[str, ...] = ()
     tag: str = 'Counted'
+
+    geometry_is_pure = True
 
     def geometry(self, oversample=1):
         GEOMETRIES.append(oversample)
@@ -435,7 +487,7 @@ GEOMETRIES = []
 
 
 def test_the_geometry_is_kept_and_copied(tmp_path):
-    from selfcal.run.engine import instrument_geometry
+    from selfcal.run.engine import GEOMETRIES_KEPT, instrument_geometry
     marker = tmp_path / 'geometry_input'
     marker.write_text('a')
     inst = CountedCamera(files=(str(marker),))
@@ -449,6 +501,10 @@ def test_the_geometry_is_kept_and_copied(tmp_path):
     os.utime(marker, ns=(0, 0))                      # a file the geometry reads changed: built again
     instrument_geometry(inst, 1)
     assert GEOMETRIES == [1, 2, 1]
+    assert GEOMETRIES_KEPT == 2
+    instrument_geometry(inst, 3)                     # the last two are kept: 1 and 3; 2 is built again
+    instrument_geometry(inst, 2)
+    assert GEOMETRIES == [1, 2, 1, 3, 2]
 
 
 def test_the_geometry_is_built_once_for_a_plan_and_its_action(tmp_path):
@@ -463,6 +519,51 @@ def test_the_geometry_is_built_once_for_a_plan_and_its_action(tmp_path):
     field.plan(recipe)
     field.calibrate(recipe)
     assert GEOMETRIES == [1]
+
+
+#: The chunks per side of :class:`ModuleStateCamera`: module state its geometry reads.
+MODULE_CHUNKS = {'side': 2}
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleStateCamera(sc.Instrument):
+    """A user instrument whose geometry reads module state (and holds a lock, which cannot be copied):
+    it does not declare its geometry pure."""
+    tag: str = 'ModuleState'
+
+    def geometry(self, oversample=1):
+        GEOMETRIES.append(oversample)
+        side = MODULE_CHUNKS['side']
+        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (side, side))
+        geom = sc.Geometry((DET, DET), oversample, maps=[grid])
+        geom.extra['lock'] = threading.Lock()
+        return geom
+
+    def layout(self):
+        return sc.Camera((DET, DET), dq_ext=2).layout()
+
+
+def test_a_user_geometry_is_built_by_each_action_and_not_kept(tmp_path):
+    """An instrument that does not declare its geometry pure has it built once per action (the plan and
+    the run share it) and never kept: module state its geometry reads that changed between two actions
+    takes effect, and the geometry is not copied."""
+    _state.set_progress(False)
+    write_exposures(str(tmp_path / 'exposures'), 6, np.random.default_rng(19))
+    field = sc.Field(tmp_path / 'out' / 'module_state', ModuleStateCamera(), REF_ARCSEC,
+                     compute=sc.Compute(str(tmp_path / 'cache'), workers=2))
+    field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
+    recipe = sc.Recipe(fit=sc.Fit(10), coadd=None, numerics=sc.Numerics(2, batch=4))
+    GEOMETRIES.clear()
+    MODULE_CHUNKS['side'] = 2
+    try:
+        assert field.plan(recipe).contexts[0].geom.chunk_map.n_chunks == 4
+        MODULE_CHUNKS['side'] = 4
+        result = field.calibrate(recipe)
+    finally:
+        MODULE_CHUNKS['side'] = 2
+    assert GEOMETRIES == [1, 1]
+    with CalFile(result.cal_paths[0]) as cal:
+        assert cal.offsets[0].shape == (6, 16)
 
 
 def test_every_pass_damps_the_sky_as_the_model_says():

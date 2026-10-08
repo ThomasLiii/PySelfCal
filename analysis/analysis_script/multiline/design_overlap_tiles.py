@@ -1,6 +1,6 @@
 """Design the adaptive-overlap tile set for a tiled multi-line spectral cal.
 
-Tiled selfcal hard-partitions frames by footprint center (frame_filter='center'),
+Tiled selfcal hard-partitions frames by footprint center (sc.Tiles(assign='center')),
 which truncates per-pixel wavelength diversity at tile seams -> the read-time I_P
 mask blanks stripes there (SPHEREx NEP D4: a frame footprint is 3156 px, LARGER
 than most tiles, so the partition is very lossy). This script builds tiles that
@@ -8,7 +8,7 @@ OVERLAP into the sparse outskirts (where the extra frames are cheap and the
 diversity is genuinely missing) while leaving the dense hub hard-partitioned
 (diversity already high; a full-overlap disk there holds >budget frames and would
 OOM). Overlapping bboxes share any frame whose center lands in the overlap
-(frame_filter='center'); the Fisher stitch is tile-shape-agnostic.
+(assign='center'); the Fisher stitch is tile-shape-agnostic.
 
 Algorithm:
   1. frame-balanced binary median split into cores of <= MAX_CORE frames;
@@ -16,9 +16,10 @@ Algorithm:
      SPARSE space (areal frame-density of the growth strip < DENSITY_THRESH) and
      only up to MARGIN px (a footprint half-extent) and BUDGET frames/tile.
 
-Prints the TOML ``[tiled].tiles`` array (paste into the run config) and, with
---save, writes an npz of bboxes. Regenerates the layout shipped in
-selfcal_scripts/configs/multiline_nep.toml.
+Prints the tiles as ``sc.Tiles(boxes={...})`` (paste into the run script) and,
+with --save, writes an npz of bboxes. Regenerates the layout of
+selfcal_scripts/runs/multiline_nep.py (``NEP_OVERLAP_TILES`` in
+selfcal_scripts/recipes/spherex.py).
 
 Usage:
   python design_overlap_tiles.py --reproj-dir DIR [--ref-shape H W]
@@ -99,10 +100,10 @@ def main():
     print(f"{len(tiles)} tiles | frames/tile min/med/max "
           f"{min(counts)}/{int(np.median(counts))}/{max(counts)} | "
           f"total solves {sum(counts)} ({sum(counts)/len(files):.2f}x)")
-    print("\n[tiled] tiles (paste into the run config):\ntiles = [")
+    print("\nsc.Tiles (paste into the run script):\nsc.Tiles(boxes={")
     for i, b in enumerate(tiles):
-        print(f'  {{ name = "M{i+1:02d}", bbox = [{b[0]}, {b[1]}, {b[2]}, {b[3]}] }},')
-    print("]")
+        print(f"    'M{i+1:02d}': ({b[0]}, {b[1]}, {b[2]}, {b[3]}),")
+    print("})")
     if a.save:
         np.savez(a.save, bboxes=np.array(tiles, dtype=int),
                  cores=np.array(cores, dtype=int))

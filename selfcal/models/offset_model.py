@@ -25,9 +25,9 @@ remain supported but are deprecated; new code should construct an
 
 Per-block (lives on ``OffsetBlock``): chunk map, frame grouping, template,
 adjacency + its weight, polynomial-chain constraints, mean-offset anchor.
-Global solver settings (per-pixel sky/line damping ``damp_weight`` /
-``damp_weight_line``, ``damp_offset``, ``spectral_fit``/sky model, masking,
-weighting, workers, ...) are NOT per-block and stay as ``setup_lsqr`` kwargs.
+Global solver settings (the sky model and its per-pixel damping ``damp_weight`` /
+``damp_weight_line``, masking, weighting, workers, ...) are NOT per-block and stay
+as ``setup_lsqr`` kwargs; the offset damping is per map (``damp_offset_maps``).
 ``use_per_frame_scalar`` is a model-level flag (the scalar block is shared
 across maps), so it lives on ``OffsetModel``.
 """

@@ -156,6 +156,9 @@ def main(argv=None):
     p.add_argument('b')
     p.set_defaults(func=_compare)
     args = ap.parse_args(argv)
+    if args.command in ('run', 'plan', 'adopt') and args.script.endswith('.toml'):
+        print(f"TOML configs are no longer run; convert it: selfcal convert {args.script}", file=sys.stderr)
+        return 2
     return args.func(args) or 0
 
 
