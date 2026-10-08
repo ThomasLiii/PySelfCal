@@ -223,13 +223,14 @@ class Field(Config):
 
     # ---- actions ----------------------------------------------------------------------------
     def plan(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False, compute=None,
-             action='calibrate', start=None):
+             action='calibrate', start=None, snapshots=None):
         """What :meth:`calibrate` (or ``action="mosaic"``) would do, checked: a printable
         :class:`~selfcal.run.plan.Plan`, listing each product and whether it would be made, reused
         or refused (:attr:`~selfcal.run.plan.Plan.refused`). Computes nothing; raises
         :class:`~selfcal.config.base.ConfigError` for anything else that would fail."""
         return make_plan(self, action, recipe, jobs=jobs, tiles=tiles, passes=passes, frames=frames, compute=compute,
-                         overwrite=overwrite, check_products=False, allow_no_frames=True, start=start)
+                         overwrite=overwrite, check_products=False, allow_no_frames=True, start=start,
+                         snapshots=snapshots)
 
     def reproject(self, exposures, *, reference=None, method='exact', padding=100, padding_fraction=0.05,
                   replace=False, verify=False, compute=None):
@@ -273,7 +274,7 @@ class Field(Config):
                        run_name=self.name, resolution_arcsec=self.pixel_scale, reproject=reproject)
 
     def calibrate(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False,
-                  compute=None, start=None) -> Result:
+                  compute=None, start=None, snapshots=None) -> Result:
         """Solve ``recipe`` (a :class:`~selfcal.run.recipe.Recipe`, or a bare model) for each job,
         and coadd each job's mosaic when the recipe has a coadd.
 
@@ -294,15 +295,23 @@ class Field(Config):
         ``A dx = b - A x0`` from ``dx = 0``), so ``M`` more iterations after a solve of ``N`` are not
         one solve of ``N + M``. Plain calibrations only (no ``tiles`` or ``passes``); give the
         recipe a name of its own, so the continued cal is a product of its own.
+
+        ``snapshots``: write each job's solution every ``k`` iterations as a cal file,
+        ``calibration/snapshots/<cal stem>_it<NNNN>.h5`` (a :class:`~selfcal.run.schedule.Snapshots`,
+        or ``k``; :mod:`selfcal.core.snapshots`). They change nothing in the solve or its products
+        and are not products themselves; a cal that is current is reused, unsolved, so it writes
+        none (``overwrite=True`` solves again). Plain calibrations only.
         """
         check_main_guard()
         recipe = as_recipe(recipe)
         plan = make_plan(self, 'calibrate', recipe, jobs=jobs, tiles=tiles, passes=passes, frames=frames,
-                         compute=compute, overwrite=overwrite, start=start)
+                         compute=compute, overwrite=overwrite, start=start, snapshots=snapshots)
         settings = {'recipe': recipe, 'jobs': plan.jobs, 'tiles': tiles, 'passes': passes, 'frames': frames,
                     'compute': plan.compute, 'overwrite': overwrite}
         if plan.start is not None:
             settings['start'] = dict(plan.start)
+        if plan.snapshots is not None:
+            settings['snapshots'] = plan.snapshots
         return self._run('calibrate', plan, recipe, settings)
 
     def mosaic(self, recipe=None, *, jobs=None, cal=None, frames=None, overwrite=False, compute=None) -> Result:
@@ -363,7 +372,7 @@ class Field(Config):
         return adopted
 
     def submit(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False,
-               compute=None, start=None) -> Submitted:
+               compute=None, start=None, snapshots=None) -> Submitted:
         """Plan :meth:`calibrate` now (every check), then run it detached in its own session, so it
         outlives this process and its terminal. The run is the rerun of a request written to
         ``records/`` (``selfcal rerun``), so every function it uses must be importable (no
@@ -372,7 +381,7 @@ class Field(Config):
         check_main_guard()
         recipe = as_recipe(recipe)
         plan = make_plan(self, 'calibrate', recipe, jobs=jobs, tiles=tiles, passes=passes, frames=frames,
-                         compute=compute, overwrite=overwrite, start=start)
+                         compute=compute, overwrite=overwrite, start=start, snapshots=snapshots)
         if _by_value_in(recipe):
             raise ConfigError("submit(): the recipe sends a function by value (sc.by_value), which a detached run "
                               "cannot import; write the function to a module")
@@ -380,6 +389,8 @@ class Field(Config):
                     'compute': plan.compute, 'overwrite': overwrite}
         if plan.start is not None:
             settings['start'] = dict(plan.start)
+        if plan.snapshots is not None:
+            settings['snapshots'] = plan.snapshots
         request = write_request(self, 'calibrate', settings)
         # the detached run rebuilds the settings from the request: check now that it can (arrays are
         # recorded by hash only; a hook class must be importable)

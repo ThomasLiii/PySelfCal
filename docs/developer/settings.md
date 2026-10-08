@@ -81,7 +81,9 @@ classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Coadd`, `sc.Numerics`, `sc.T
 - a constant of an instrument that is not a setting (its data unit, its capabilities) is a class
   attribute without an annotation, or a property, so that the dataclass does not make it a field;
 - a setting that never changes a byte belongs to `sc.Compute`, or to `sc.Tuning` when it is one of
-  the library's `SELFCAL_*` environment variables;
+  the library's `SELFCAL_*` environment variables; one that writes files beside the products
+  without changing them (`sc.Snapshots`) is an argument of the action (`calibrate(snapshots=...)`),
+  recorded in the action's record and never in a fingerprint;
 - `pytest tests/test_fingerprints.py` passes with the golden unchanged.
 
 The byte-equality [regression gates](gates.md) check the other half: that the products themselves

@@ -187,6 +187,47 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   solve of N + M (the search directions start again from the residual of `x0`), and its
   estimates (`anorm`, `acond`; LSQR's `xnorm` = ‖dx‖, LSMR's ‖x‖) are those of the restarted
   solve.
+- **Snapshots every k iterations.** `field.calibrate(recipe, snapshots=sc.Snapshots(every=k,
+  keep=None))` (or `snapshots=k`) writes each job's solution after iterations k, 2k, ... as
+  `<cal dir>/snapshots/<cal stem>_it<NNNN>.h5`, to watch the solution evolve (the TF campaign
+  judged the convergence of the largest scales from such snapshots) and to keep a usable state if
+  a long run dies. `NNNN` is the **cumulative** iteration (at least four digits): after a warm
+  start, the start's `iterations_total` plus this solve's iteration (a start that records no
+  count: this solve's iteration, and `iteration = -1`). The iteration the solve stops at gets no
+  snapshot (the cal is written then), nor does any iteration of a solve whose cal is current and
+  reused (`overwrite=True` solves again). Each snapshot is a **complete cal file** in the final
+  cal's schema ([below](#cal_h5-schema-multi-chunk-map)): the sky terms with their coverage,
+  Fisher information and separability, the offsets with their coverage, `frame_scalar`, the
+  chunk maps, `reproj_list` (the frames' permanent paths), the root attributes, and a `solve`
+  group marked `snapshot = True` ([its attributes](#the-solve-group)). Its sky, offset and scalar
+  datasets are **bit for bit those of a solve of exactly that many iterations**
+  (`sc.Fit(iterations=it, tolerance=0)`): the solvers' iterates do not depend on the iteration
+  limit, and the iterate is converted exactly as the end of the solve converts it. So every cal
+  reader works on one: `field.mosaic(recipe.replace(name="it0300"), cal=<snapshot>)` mosaics it
+  (give the recipe its own name: the mosaic is named after the recipe),
+  `field.calibrate(recipe, start=<snapshot>)` continues from it (the snapshot records the system
+  identity the warm start checks), `CalFile(<snapshot>)` and the analysis tools read it.
+  `keep=m` keeps the last `m` snapshots of the solve (each older one this solve wrote is deleted
+  as a new one is written; snapshots of earlier runs are never deleted). **Snapshots are not
+  products**: no sidecar, never part of a product's inputs, so a run with snapshots makes the same
+  cal, byte for byte, with the same fingerprint, as one without; the setting is an action's,
+  recorded in its record (`settings.snapshots`, and per solve `solves[].snapshots`: `every`,
+  `keep`, `directory`, the snapshots kept, how many retention deleted, any that could not be
+  written) and replayed by a rerun. A snapshot that cannot be written (a full disk) is logged as an
+  error and skipped; the solve goes on. Plain calibrations only (`tiles=` and `passes=` are
+  refused) and the CSR system `setup_lsqr` builds (always the case in a run). **How**: the solvers
+  (`lsqr_inplace`, the vendored `lsmr`) call `callback(itn, x)` every k iterations (nothing when
+  unset); `apply_lsqr` wraps the compact, column-scaled `x` in a `selfcal.core.snapshots.Iterate`,
+  which reads any block of the physical full layout (`x * M` on the active columns, 0 elsewhere)
+  without a second copy of `x`. The parts of the cal that do not depend on `x` are written once,
+  before the solve, to a template beside the snapshots (`.<cal stem>_static-<pid>.h5`, removed
+  when the solve ends; the pixel state is read memory-mapped where the setup parked it); each
+  snapshot is a copy of the template plus the sky maps (written a band of chunk rows at a time,
+  the same stored chunks as the cal's), the offsets and `frame_scalar`, written atomically from the
+  solver's thread (no process is started). **Size**: a snapshot is about the size of the cal: one
+  D3 Ch9 sky map on its 12544 x 12538 grid is ~630 MB as float32 before compression, so budget
+  the disk for `keep` (or every) snapshots; the write holds ~10 MB of a sky map at a time
+  (196-row bands) plus one offset term.
 - `precondition=True` (column-norm; `sc.Fit(precondition=True)`, the default) is essential — much faster convergence.
 - **The transpose product, and what "statistical equality" means here.**
   `A^T @ y` is a scatter into output columns, so it cannot be threaded
@@ -503,6 +544,7 @@ The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read 
 | `history_file` | the NPZ of the solver's state at every iteration, `<field>/records/<cal stem>_history.npz` |
 | `system`, `system_identity` | the identity of the system solved (`selfcal.core.warm_start.System`): the JSON of its frames (in order), reference grid (shape and WCS), sky terms, offset terms (chunk maps, groups of frames, basis functions, columns), per-frame scalar columns, total columns and job, and its sha256; what a later solve's start is checked against (cals solved since 2026-10-08) |
 | `start_from`, `start_identity` | a continued solve only: the cal it started from (its path) and that cal's identity, `fingerprint:<sha256>` (its sidecar's) or `sha256:<sha256>` (its bytes) |
+| `snapshot`, `iteration` | a [snapshot](#calibration-pipeline-tuning) only: `True`, and the cumulative iteration it holds (the start's `iterations_total` plus `iterations`; -1 when unknown). A snapshot has `iterations` (this solve's, at the snapshot), `iterations_total`, `iteration_limit`, the solver's estimates at that iteration (`r1norm` ... `xnorm`, `test1`, `test2`), the tolerances, the shape, the system and the start as above, and no `istop`, `stop`, `true_residual`, `bnorm` or `history_file` |
 
 Every value there is a function of the solve, so a cal file stays byte-identical from run to run;
 the solver's wall time (`wall_s`), which is not, is in the action's record (`solves`) only, with

@@ -39,6 +39,9 @@ float64 array regardless); otherwise an empty array is returned in its slot.
 ``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`) receives the
 scalars of each iteration (the norms, the estimates of ``|A|`` and
 ``cond(A)``, the stopping ratios); reading them changes nothing.
+``callback(itn, x)`` is called with the iterate every ``callback_every``
+iterations while the solve goes on (not after the iteration it stops at); it
+must not change ``x`` (the snapshots of :mod:`selfcal.core.snapshots`).
 
 One deliberate departure from scipy (2026-10-05): the norms of LARGE float32
 vectors are accumulated in float64 (``_norm``). ``np.linalg.norm`` on a
@@ -184,7 +187,7 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False, history=None):
+                 x0_owned=False, history=None, callback=None, callback_every=1):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
@@ -196,7 +199,13 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     None) receives the solver's scalars before the first iteration and after
     each one (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``,
     ``xnorm`` and the ratios ``test1``, ``test2``); recording them changes
-    no value the solve computes."""
+    no value the solve computes.
+
+    ``callback`` (or None) is called as ``callback(itn, x)`` after iteration
+    ``itn`` whenever ``itn`` is a multiple of ``callback_every`` and the solve
+    goes on (never after the iteration it stops at), after ``history`` got
+    that iteration's row. ``x`` is the solver's own buffer: read it, never
+    change it or keep it past the call."""
     A = aslinearoperator(A)
     b = np.atleast_1d(b)
     if b.ndim > 1:
@@ -435,6 +444,9 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                 str3 = f'  {test1:8.1e} {test2:8.1e}'
                 str4 = f' {anorm:8.1e} {acond:8.1e}'
                 print(str1, str2, str3, str4)
+
+        if callback is not None and istop == 0 and itn % callback_every == 0:
+            callback(itn, x)
 
         if istop != 0:
             break

@@ -226,7 +226,7 @@ def _frame_source(field, frames, compute, scratch, tiles):
 
 
 def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None, frames=None, cal=None,
-          compute=None, start=None) -> list[RunSpec]:
+          compute=None, start=None, snapshots=None) -> list[RunSpec]:
     """The engine runs of one action: a :class:`~selfcal.run.runspec.RunSpec` per group of jobs the
     instrument runs together (SPHEREx: its channel jobs, then its window jobs).
 
@@ -234,6 +234,8 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     (of the cal ``cal``, default each job's own). ``frames``: None (the field's frames), a number
     (the first ``n``), a directory (its frames, read in place) or a list of frame files.
     ``start``: the cal each job's solve starts from (:func:`start_paths`; a plain calibration only).
+    ``snapshots``: the solution every ``k`` iterations as a cal file
+    (:class:`~selfcal.run.schedule.Snapshots`; a plain calibration only).
     """
     recipe = as_recipe(recipe)
     compute = compute or field.compute
@@ -245,6 +247,9 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
         raise ConfigError("calibrate(start=...): a warm start continues a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes no start")
     starts = start_paths(start, jobs)
+    if snapshots is not None and (task != 'cal' or tiles is not None or passes is not None):
+        raise ConfigError("calibrate(snapshots=...): snapshots are written by a plain calibration, one solve per job; "
+                          "a tiled or an N-pass calibration takes none")
     groups = {}
     for j in jobs:
         groups.setdefault(j.kind, []).append(j)
@@ -265,7 +270,7 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             post_cal=recipe.fit.frame_hook, post_mosaic=coadd.frame_hook if coadd is not None else None,
             make_mosaic=coadd is not None, instrument_maps=coadd is not None and coadd.instrument_maps,
             cal_override=cal, passes=None if passes is None else passes_spec(passes),
-            start=None if starts is None else {j.name: starts[j.name] for j in group})
+            start=None if starts is None else {j.name: starts[j.name] for j in group}, snapshots=snapshots)
         if tiles is not None:
             spec.suffix = _suffix(tiles.tile_name, recipe.name)
             spec.tiling = tiling_spec(tiles, field, recipe, compute, scratch, frames_dir)

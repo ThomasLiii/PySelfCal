@@ -1,9 +1,10 @@
-"""Big fields: tiles, and the N-pass alternating solve.
+"""Big fields and long solves: tiles, the N-pass alternating solve, and snapshots of a solve.
 
 :class:`Tiles` splits the reference grid into tiles solved one at a time and stitched (each
 pixel the Fisher-weighted mean of the tiles that cover it). :class:`Passes` alternates exact
 sky and per-frame offset solves after a first joint solve (the N-pass schedule of
-``PIPELINE.md``); :class:`Refit` is its offset pass.
+``PIPELINE.md``); :class:`Refit` is its offset pass. :class:`Snapshots` writes a solve's
+solution every ``k`` iterations as a cal file (:mod:`selfcal.core.snapshots`).
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from typing import Literal
 from ..config.base import Config, ConfigError
 from .recipe import Clip, as_clip
 
-__all__ = ['Tiles', 'Refit', 'Passes', 'schedule']
+__all__ = ['Tiles', 'Refit', 'Passes', 'Snapshots', 'schedule', 'as_snapshots']
 
 
 @dataclass(frozen=True)
@@ -129,3 +130,40 @@ class Passes(Config):
                               f"ends_on_offset=True")
         if self.stop_tol < 0:
             raise ConfigError("Passes(stop_tol=...): at least 0")
+
+
+@dataclass(frozen=True)
+class Snapshots(Config):
+    """Snapshots of a solve: its solution after every ``every``-th iteration, written as a cal file.
+
+    ``field.calibrate(recipe, snapshots=sc.Snapshots(every=50, keep=3))`` writes
+    ``calibration/snapshots/<cal stem>_it<NNNN>.h5`` after iterations 50, 100, ... (``NNNN``: the
+    cumulative iteration, counted from a warm start's total); not after the iteration the solve
+    stops at (the cal is written then). Each is a complete cal file (the cal's schema, its
+    ``solve`` group marked ``snapshot = True`` with the ``iteration``), so it can be mosaicked
+    (``field.mosaic(recipe, cal=...)``), continued (``calibrate(start=...)``) and read like any
+    cal. ``keep``: how many of the solve's snapshots to keep, the latest (None: all). Snapshots
+    do not change the solve, so they are an action's setting, recorded and replayed by a rerun,
+    and never part of a product's inputs; they are not products (no sidecar). Plain
+    calibrations only (no ``tiles`` or ``passes``). See :mod:`selfcal.core.snapshots`.
+    """
+    every: int
+    _: KW_ONLY
+    keep: int | None = None
+
+    def _validate(self):
+        if self.every < 1:
+            raise ConfigError(f"Snapshots(every={self.every}): at least 1 iteration")
+        if self.keep is not None and self.keep < 1:
+            raise ConfigError(f"Snapshots(keep={self.keep}): at least 1 (None: keep them all)")
+
+
+def as_snapshots(value) -> Snapshots | None:
+    """``calibrate(snapshots=...)`` as a :class:`Snapshots`: None, a :class:`Snapshots`, or a number of
+    iterations (``snapshots=50`` is ``Snapshots(every=50)``)."""
+    if value is None or isinstance(value, Snapshots):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Snapshots(value)
+    raise ConfigError(f"calibrate(snapshots=...): a sc.Snapshots(every=..., keep=...) or a number of iterations; "
+                      f"got {value!r}")

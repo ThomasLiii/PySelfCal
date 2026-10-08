@@ -112,6 +112,14 @@ class PixelSpill:
         self.spill_dir = None
         return counts, fisher, cross
 
+    def peek(self):
+        """→ (pixel_counts, pixel_fisher, pixel_cross) memory-mapped read-only; the scratch dir
+        stays (the snapshots of a solve read the coverage from it before the solve)."""
+        counts, fisher, cross = restore_pixel_state(self.spill_dir, cleanup=False, mmap_mode='r')
+        if isinstance(cross, dict) and self.num_sky_blocks == 2:
+            cross = cross[(0, 1)]
+        return counts, fisher, cross
+
     def discard(self):
         """Drop the scratch dir without reading it (caller never needed it)."""
         if self.spill_dir is not None:
@@ -122,15 +130,16 @@ class PixelSpill:
         return f"<PixelSpill {self.spill_dir!r} J={self.num_sky_blocks}>"
 
 
-def restore_pixel_state(spill_dir, cleanup=True):
+def restore_pixel_state(spill_dir, cleanup=True, mmap_mode=None):
     """Reload what :func:`spill_pixel_state` wrote → (counts, fisher, cross).
 
     Missing files come back as None; the ``pixel_cross`` dict is rebuilt in
-    its original insertion order.
+    its original insertion order. ``mmap_mode`` (``np.load``'s, e.g. ``'r'``)
+    maps the arrays instead of reading them (keep ``cleanup=False`` then).
     """
     def _load(name):
         p = os.path.join(spill_dir, name)
-        return np.load(p) if os.path.exists(p) else None
+        return np.load(p, mmap_mode=mmap_mode) if os.path.exists(p) else None
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         f_counts = ex.submit(_load, 'pixel_counts.npy')
