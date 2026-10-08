@@ -5,6 +5,9 @@ Every action of a :class:`~selfcal.run.field.Field` writes
 same stem under ``logs/``): the resolved settings (every default expanded), the engine runs they
 lowered to (:meth:`~selfcal.run.runspec.RunSpec.describe`), the code version, the packages, the
 environment knobs in effect, the products and the outcome. The record is written when the action starts and rewritten when it ends.
+A calibration's record also lists its ``solves``, one entry per solve as each ends
+(:meth:`Record.add_solve`): the cal (and the job and tile) it made and how the solve ran and stopped
+(:class:`~selfcal.core.solve_record.SolveRecord`), with the file of its history per iteration.
 
 :func:`rerun` runs a recorded action again from its record (``selfcal rerun RECORD``);
 :func:`write_request` writes the same form for an action that runs elsewhere
@@ -153,6 +156,12 @@ class Record:
         with atomic_path(self.path) as tmp:
             with open(tmp, 'w') as f:
                 json.dump(self.data, f, indent=1, default=str)
+
+    def add_solve(self, entry: dict):
+        """Enter a solve that ended (``entry``: the cal, its job and tile, and the solve's record) in
+        the record's ``solves`` and rewrite the record."""
+        self.data.setdefault('solves', []).append(entry)
+        self.write()
 
     def finish(self, products=None, error=None):
         self.data['wall_s'] = round(time.time() - self.started, 3)

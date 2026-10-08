@@ -149,7 +149,7 @@ def _run_tiled(ctx):
             cal_path = solve_job(
                 ctx, job, jobgeom, frame_dir=nvme, frames=frames, cal_file=cal_file,
                 hdd_reproj_dir=ctx.pipeline_config.reproj_dir,
-                checkpoint=lambda label: staging.rss_checkpoint(f'{tile.name} {label}'))
+                checkpoint=lambda label: staging.rss_checkpoint(f'{tile.name} {label}'), tile=tile.name)
             announce(spec, 'cal', cal_path, job=job, frames=frames, tile=tile)
             print(f"[tiled] === {tile.name} cal saved to {cal_path} ({time.time()-t0:.1f}s) ===",
                   flush=True)

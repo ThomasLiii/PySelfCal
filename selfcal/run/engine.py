@@ -260,6 +260,13 @@ class RunContext:
         """The solver's ``apply_lsqr`` keywords."""
         return dict(self.spec.lsqr)
 
+    def history_path(self, cal_file):
+        """Where the history per iteration of the solve that makes ``cal_file`` goes:
+        ``<field>/records/<cal stem>_history.npz``, next to the action records (a tile's cal, a tile's
+        history)."""
+        from selfcal.core.solve_record import history_path
+        return history_path(os.path.join(self.spec.field.path, 'records'), cal_file)
+
     def configure(self, cc):
         """Settings recorded on the cal after the solve: the read-time Fisher threshold of the sky
         terms after the first, when a sky term has a coefficient."""
@@ -431,7 +438,8 @@ def clip_groups(ctx, groups):
 # ---------------------------------------------------------------------------
 # Primitive 1: one joint solve -> one cal file
 # ---------------------------------------------------------------------------
-def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=None, checkpoint=None):
+def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=None, checkpoint=None,
+              tile=None):
     """The engine's one solve: ``setup_lsqr`` + ``apply_lsqr`` + save for one job over one frame
     list, for every task (a plain cal, each tile of a tiled cal, the INIT pass of an N-pass run).
 
@@ -442,6 +450,11 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     ``hdd_reproj_dir``, their permanent location, so it stays valid after the staged copy is
     cleaned up. ``checkpoint(label)`` is an optional progress/RSS hook called around the two heavy
     steps.
+
+    The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`) goes to three places:
+    the cal's ``solve`` group, the history per iteration to :meth:`RunContext.history_path`, and the
+    action's record (``solves``, through the product book: ``spec.on_product('solve', ...)``, with
+    ``tile``, the tile's name in a tiled run).
     """
     spec = ctx.spec
     checkpoint = checkpoint or (lambda label: None)
@@ -493,6 +506,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options())
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
+    # The history first, so the cal names a file that exists.
+    record = cc.solve_record
+    record.save_history(ctx.history_path(cal_file))
     # Save with the permanent (HDD) paths so the cal stays valid after cleanup.
     staged_list = cc.reproj_list
     cc.reproj_list = staging.remap_to_nvme(staged_list, hdd_reproj_dir)
@@ -500,6 +516,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.reproj_list = staged_list
     del cc
     gc.collect()
+    announce(spec, 'solve', cal_path, job=job, tile=tile, solve=record.attrs())
     return cal_path
 
 

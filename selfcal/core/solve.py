@@ -2,17 +2,21 @@
 
 The solver stage of ``selfcal.core``: matrix/RHS assembly lives in
 ``assembly.py`` and ``system.py``; this module only consumes the returned
-(A, b). ``apply_lsqr`` runs scipy lsqr/lsmr against a thread-parallel SpMV
-``LinearOperator``, with Jacobi column-norm preconditioning and — when
-``setup_lsqr`` has already dropped all-zero columns and passes an
-``active_mask`` — expansion of the compact solution back to the full column
-layout.
+(A, b). ``apply_lsqr`` runs LSQR (:mod:`~selfcal.core.lsqr_inplace`) or LSMR
+(:mod:`~selfcal.core.lsmr`) against a thread-parallel SpMV ``LinearOperator``,
+with Jacobi column-norm preconditioning and — when ``setup_lsqr`` has already
+dropped all-zero columns and passes an ``active_mask`` — expansion of the
+compact solution back to the full column layout. Every solve is recorded
+(:class:`~selfcal.core.solve_record.SolveRecord`): how it stopped, its final
+estimates, its history per iteration and the true residual ``|b - A x|``.
 """
 from __future__ import annotations
 
 import logging
 import mmap as _mmap
 import os
+import time
+from math import sqrt
 
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -30,11 +34,14 @@ except ImportError as e:  # pragma: no cover - depends on scipy internals
         "transpose product; that private module is present and verified "
         "through scipy 1.16. Pin a compatible scipy version or upgrade selfcal."
     ) from e
-from scipy.sparse.linalg import lsqr, lsmr, LinearOperator
+from scipy.sparse.linalg import lsqr, LinearOperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
+from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
+from .solve_record import SolveHistory, SolveRecord
+from .spill import ParkedVector
 
 logger = logging.getLogger(__name__)
 
@@ -711,6 +718,55 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
+_SOLVERS = ('lsqr', 'lsmr')
+# The pieces of b the final residual is accumulated over (float64 temporaries of ~400 MB).
+_RESIDUAL_BLOCK = 50_000_000
+
+
+def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history):
+    """Run LSQR or LSMR on the (scaled) operator ``A``.
+
+    ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
+    overwrites ``b`` and uses ``x0``'s buffer as the solution), LSMR (scipy's, recorded) reads them
+    in place. Returns the solver's tuple."""
+    if solver == 'lsmr':
+        return lsmr(A, b_owned[0], x0=x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
+                    maxiter=iter_lim, history=history)
+    if solver == 'lsqr':
+        return lsqr_inplace(A, b_owned.pop(), x0=x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol,
+                            damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+    raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+
+
+def _true_residual(matvec, x, b):
+    """``(|b - A x|, |b|)`` from one product ``A x``, accumulated in float64 over pieces of ``b``
+    (which may be memory-mapped)."""
+    ax = matvec(x)
+    rr = bb = 0.0
+    for start in range(0, b.shape[0], _RESIDUAL_BLOCK):
+        stop = min(b.shape[0], start + _RESIDUAL_BLOCK)
+        piece = np.asarray(b[start:stop], dtype=np.float64)
+        bb += float(np.dot(piece, piece))
+        piece -= ax[start:stop]
+        rr += float(np.dot(piece, piece))
+        del piece
+    del ax
+    return sqrt(rr), sqrt(bb)
+
+
+def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter_lim, shape, wall_s):
+    """The :class:`~selfcal.core.solve_record.SolveRecord` of a finished solve, logged in one line."""
+    m, n = shape
+    limit = iter_lim if iter_lim is not None else (2 * n if solver == 'lsqr' else min(m, n))
+    rec = SolveRecord.from_result(solver, result, history=history, true_residual=residual[0], bnorm=residual[1],
+                                  atol=atol, btol=btol, conlim=conlim, damp=damp, iteration_limit=limit,
+                                  shape=shape, wall_s=wall_s)
+    logger.info(f"{solver.upper()} stopped after {rec.iterations} iterations (istop {rec.istop}: {rec.stop}) "
+                f"in {wall_s:.1f} s; |b - A x| = {rec.true_residual:.6e} (estimate r1norm {rec.r1norm:.6e}), "
+                f"|b| = {rec.bnorm:.6e}")
+    return rec
+
+
 def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 ref_shape: tuple[int, int], x0: np.ndarray | None = None,
                 atol: float = 1e-05, btol: float = 1e-05, damp: float = 1e-2,
@@ -718,7 +774,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
                 active_mask: np.ndarray | None = None,
                 num_cols_full: int | None = None,
-                a_owned: bool = False) -> np.ndarray:
+                a_owned: bool = False, conlim: float = 1e8,
+                return_record: bool = False) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -762,12 +819,31 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     num_cols_full : int, optional
         Original (uncompacted) column count. Required when ``active_mask``
         is given. Equals ``A.shape[1]`` when no compaction happened upstream.
+    a_owned : bool, optional
+        The caller handed ``A`` over: its storage may be released during the
+        solve (the block-storage operator).
+    conlim : float, optional
+        The solver's condition-estimate stop (``istop = 3`` once the estimate
+        of ``cond(A)`` exceeds it; default 1e8, the solvers' own). ``0`` turns
+        it off; with ``atol = btol = 0`` too the solve runs ``iter_lim``
+        iterations (unless it reaches machine precision, ``istop`` 4-6, or
+        an exact solution).
+    return_record : bool, optional
+        Also return the solve's
+        :class:`~selfcal.core.solve_record.SolveRecord`.
 
     Returns
     -------
     x : np.ndarray
         Solution vector in the full (uncompacted) column layout: expanded via
         ``active_mask`` when compaction ran, otherwise the raw solver output.
+    record : SolveRecord
+        Only with ``return_record``: how the solve stopped, its final
+        estimates, its history per iteration (none on the COO path's LSQR,
+        scipy's, which has no hook) and the true residual ``|b - A x|``
+        (one product with the solution, accumulated in float64; the
+        right-hand side LSQR overwrites is kept for it as a
+        :class:`~selfcal.core.spill.ParkedVector`).
     """
     if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
         raise TypeError(
@@ -776,6 +852,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         raise TypeError("b must be a numpy array")
     if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
         raise ValueError("ref_shape must be a list or tuple of length 2")
+    if solver not in _SOLVERS:
+        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -951,49 +1029,60 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         # lsqr_inplace (bit-identical to scipy's lsqr, in-place vector
         # updates) reads b exactly once; hand it over without keeping a
         # reference so the solver can release the m-length vector for the
-        # rest of the solve. lsmr keeps scipy's implementation.
+        # rest of the solve. LSMR (scipy's, recorded) reads b in place and
+        # keeps it. The final residual needs b after the solve: LSQR's copy
+        # is parked (on scratch disk above the spill threshold).
         _b_owned = [b]
+        _b_kept = ParkedVector(b, label='the right-hand side (for the final residual)') if solver == 'lsqr' else None
         del b
+        history = SolveHistory()
+        solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
 
-        if is_block or is_split:
-            op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)
-                  if is_split else
-                  _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned))
-            try:
-                with threadpool_limits(limits=1, user_api='blas'):
-                    if solver == 'lsmr':
-                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-                    elif solver == 'lsqr':
-                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
-                    else:
-                        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
-            finally:
-                for _ex_name in ('_executor', '_rmatvec_executor', '_rowsplit_executor'):
-                    if getattr(op, _ex_name, None) is not None:
-                        getattr(op, _ex_name).shutdown(wait=False)
-        elif n_threads > 1:
-            op = _make_parallel_operator(A_csr, n_threads)
-            try:
-                with threadpool_limits(limits=1, user_api='blas'):
-                    if solver == 'lsmr':
-                        result = lsmr(op, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-                    elif solver == 'lsqr':
-                        result = lsqr_inplace(op, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
-                    else:
-                        raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
-            finally:
-                op._executor.shutdown(wait=False)
-                if getattr(op, '_rmatvec_executor', None) is not None:
-                    op._rmatvec_executor.shutdown(wait=False)
-        else:
-            if solver == 'lsmr':
-                result = lsmr(A_csr, _b_owned[0], x0=_x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-            elif solver == 'lsqr':
-                result = lsqr_inplace(A_csr, _b_owned.pop(), x0=_x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
+        def _finish(matvec):
+            # The solve's wall time, then |b - A x| with one product of the
+            # operator the solver ran on (the scaled A, the scaled x).
+            wall = time.perf_counter() - t_solve
+            b_ref = _b_kept.array() if _b_kept is not None else _b_owned[0]
+            residual = _true_residual(matvec, result[0], b_ref)
+            del b_ref
+            return _record(solver, result, history, residual, atol=atol, btol=btol, damp=damp, conlim=conlim,
+                           iter_lim=iter_lim, shape=A_shape, wall_s=wall)
+
+        try:
+            if is_block or is_split:
+                op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)
+                      if is_split else
+                      _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned))
+                try:
+                    with threadpool_limits(limits=1, user_api='blas'):
+                        t_solve = time.perf_counter()
+                        result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
+                        record = _finish(op.matvec)
+                finally:
+                    for _ex_name in ('_executor', '_rmatvec_executor', '_rowsplit_executor'):
+                        if getattr(op, _ex_name, None) is not None:
+                            getattr(op, _ex_name).shutdown(wait=False)
+            elif n_threads > 1:
+                op = _make_parallel_operator(A_csr, n_threads)
+                try:
+                    with threadpool_limits(limits=1, user_api='blas'):
+                        t_solve = time.perf_counter()
+                        result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
+                        record = _finish(op.matvec)
+                finally:
+                    op._executor.shutdown(wait=False)
+                    if getattr(op, '_rmatvec_executor', None) is not None:
+                        op._rmatvec_executor.shutdown(wait=False)
             else:
-                raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+                t_solve = time.perf_counter()
+                result = _run_solver(A_csr, _b_owned, _x0_owned, solver, **solve_kw)
+                record = _finish(A_csr.dot)
+        finally:
+            if _b_kept is not None:
+                _b_kept.discard()
+        del _b_owned
         x_solver = result[0]
-        del A_csr
+        del result, A_csr
         if precondition:
             x_solver = x_solver * M
         if active_mask is not None:
@@ -1001,7 +1090,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             x[active_mask] = x_solver
         else:
             x = x_solver
-        return x
+        return (x, record) if return_record else x
 
     # ---- Legacy path: A is a COO. apply_lsqr does the compaction itself.
     num_cols = A.shape[1]
@@ -1089,27 +1178,35 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     del data, new_col, A_row
 
     # --- Build parallel operator or use CSR directly ---
+    # scipy's lsqr (the legacy path's solver) has no hook: its history stays
+    # empty. Neither solver here overwrites b, so the final residual reads it.
+    history = SolveHistory() if solver == 'lsmr' else None
+
+    def _solve_coo(Aop):
+        t0 = time.perf_counter()
+        if solver == 'lsmr':
+            res = lsmr(Aop, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
+                       maxiter=iter_lim, history=history)
+        else:
+            res = lsqr(Aop, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
+                       iter_lim=iter_lim)
+        wall = time.perf_counter() - t0
+        matvec = Aop.matvec if isinstance(Aop, LinearOperator) else Aop.dot
+        rec = _record(solver, res, history or SolveHistory(), _true_residual(matvec, res[0], b), atol=atol,
+                      btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, shape=Aop.shape, wall_s=wall)
+        return res, rec
+
     if n_threads > 1:
         op = _make_parallel_operator(A_csr, n_threads)
         try:
             with threadpool_limits(limits=1, user_api='blas'):
-                if solver == 'lsmr':
-                    result = lsmr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-                elif solver == 'lsqr':
-                    result = lsqr(op, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
-                else:
-                    raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+                result, record = _solve_coo(op)
         finally:
             op._executor.shutdown(wait=False)
             if getattr(op, '_rmatvec_executor', None) is not None:
                 op._rmatvec_executor.shutdown(wait=False)
     else:
-        if solver == 'lsmr':
-            result = lsmr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, maxiter=iter_lim)
-        elif solver == 'lsqr':
-            result = lsqr(A_csr, b, x0=x0_solver, show=True, atol=atol, btol=btol, damp=damp, iter_lim=iter_lim)
-        else:
-            raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+        result, record = _solve_coo(A_csr)
     x_solver = result[0]
     del A_csr
 
@@ -1124,4 +1221,4 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     else:
         x = x_solver
 
-    return x
+    return (x, record) if return_record else x

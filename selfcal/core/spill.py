@@ -146,3 +146,52 @@ def restore_pixel_state(spill_dir, cleanup=True):
     if cleanup:
         shutil.rmtree(spill_dir, ignore_errors=True)
     return counts, fisher, cross
+
+
+class ParkedVector:
+    """A copy of a vector kept for one read after the solve: in memory below the spill threshold,
+    else on scratch disk.
+
+    LSQR overwrites its right-hand side ``b`` (``lsqr_inplace`` uses its buffer as the first
+    Lanczos vector), yet the solve record needs ``|b - A x|`` at the end. Below
+    ``$SELFCAL_SPILL_MIN_GB`` (default 4 GB, the pixel state's threshold) the copy stays in memory;
+    above it, it is written to a fresh directory under ``$SELFCAL_SPILL_DIR`` (default the system
+    temporary directory) and memory-mapped back for the read, so a production solve keeps its
+    resident memory (an m-length vector is ~8 GB at 2e9 rows) for a few tens of seconds of I/O.
+    ``np.save`` round-trips the values exactly. :meth:`discard` removes the copy.
+    """
+
+    __slots__ = ('_array', '_dir')
+
+    def __init__(self, vec, label='', min_gb=None):
+        vec = np.asarray(vec)
+        if min_gb is None:
+            min_gb = float(os.environ.get('SELFCAL_SPILL_MIN_GB', 4.0))
+        if vec.nbytes < min_gb * 2**30:
+            self._array, self._dir = vec.copy(), None
+            return
+        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
+        self._dir = tempfile.mkdtemp(prefix='selfcal_vector_spill_', dir=base)
+        logger.info(f"Parking {label or 'a vector'} ({vec.nbytes/2**30:.1f} GB) in {self._dir}...")
+        np.save(os.path.join(self._dir, 'vector.npy'), vec, allow_pickle=False)
+        self._array = None
+
+    @property
+    def on_disk(self) -> bool:
+        """Whether the copy is on scratch disk."""
+        return self._dir is not None
+
+    def array(self) -> np.ndarray:
+        """The copy (memory-mapped, read-only, when it is on disk)."""
+        if self._dir is not None:
+            return np.load(os.path.join(self._dir, 'vector.npy'), mmap_mode='r')
+        if self._array is None:
+            raise ValueError("the parked vector was discarded")
+        return self._array
+
+    def discard(self):
+        """Drop the copy (and its scratch directory)."""
+        self._array = None
+        if self._dir is not None:
+            shutil.rmtree(self._dir, ignore_errors=True)
+            self._dir = None
