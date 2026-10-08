@@ -162,6 +162,12 @@ class LargeScaleRule(Config):
     over those pixels, relative to the rms of the surface, both without their means
     (:class:`~selfcal.core.monitor.SmoothFit`). ``sc.Stop(large_scale=1e-3)`` is
     ``LargeScaleRule(1e-3)``.
+
+    Each sky term is normalised by its own large-scale amplitude (the rms of its fitted surface), and
+    the rule takes the largest change over the terms: a term with little large-scale content (a
+    small rms) can keep the relative change high while the terms that matter have settled. Combine
+    the rule with the others (``Stop(combine=...)``) accordingly, and read each term's change in the
+    history file (``large_scale_change``, one column per term) and in the stop record (``terms``).
     """
     below: float
     _: KW_ONLY
@@ -180,7 +186,7 @@ class LargeScaleRule(Config):
             raise ConfigError(f"LargeScaleRule(step={self.step}): at least 1")
 
 
-_LSQR_TESTS = ('compatible', 'least_squares', 'condition')
+_SOLVER_TESTS = ('compatible', 'least_squares', 'condition')
 
 
 @dataclass(frozen=True)
@@ -189,13 +195,16 @@ class Stop(Config):
 
     ``residual`` (a :class:`ResidualRule`, or its ``below``), ``gradient`` (a
     :class:`GradientRule`, or its ``below``), ``large_scale`` (a :class:`LargeScaleRule`, or its
-    ``below``): the rules; ``lsqr_tests``: the solver's own tolerance tests that count as a rule
-    (``True``: all three; or some of ``"compatible"``, ``"least_squares"``, ``"condition"``; with a
-    Stop, the solver's tests stop the solve only through it, so ``False``, the default, turns them
-    off). ``combine``: ``"all"`` (the default: every rule given holds at the same iteration) or
-    ``"any"``. ``min_iterations``: no rule ends the solve before. The iteration limit stays the hard
-    cap, and machine precision still ends a solve. The cal's ``solve`` group, the action's record
-    and the log say which rule ended the solve and what it measured (:mod:`selfcal.core.monitor`).
+    ``below``): the rules; ``solver_tests``: the solver's own tolerance tests (LSQR's or LSMR's)
+    that count as a rule (``True``: all three; or some of ``"compatible"``, ``"least_squares"``,
+    ``"condition"``). With a Stop, the solver's tests stop the solve only through it: ``False``, the
+    default, turns them off, so the fit's ``tolerance`` (``atol``, ``btol``) and the condition limit
+    are unused (the plan and the solve's record say so). ``combine``: ``"all"`` (the default: every
+    rule given holds at the same iteration) or ``"any"``. ``min_iterations``: no rule ends the solve
+    before. The iteration limit stays the hard cap, and machine precision still ends a solve; a rule
+    that cannot hold before the limit (its window or checks need more iterations) is a note of the
+    plan. The cal's ``solve`` group, the action's record and the log say which rule ended the solve
+    and what it measured (:mod:`selfcal.core.monitor`).
 
     Residual and gradient tests do not see the weakest, largest-scale directions of a selfcal
     system (a smooth sky pattern the offsets can nearly absorb): they can pass while those still
@@ -206,7 +215,7 @@ class Stop(Config):
     residual: float | ResidualRule | None = None
     gradient: float | GradientRule | None = None
     large_scale: float | LargeScaleRule | None = None
-    lsqr_tests: bool | tuple[Literal['compatible', 'least_squares', 'condition'], ...] = False
+    solver_tests: bool | tuple[Literal['compatible', 'least_squares', 'condition'], ...] = False
     min_iterations: int = 0
     combine: Literal['all', 'any'] = 'all'
 
@@ -215,24 +224,51 @@ class Stop(Config):
             v = getattr(self, name)
             if isinstance(v, float):
                 object.__setattr__(self, name, cls(v))
-        tests = self.lsqr_tests
+        tests = self.solver_tests
         if isinstance(tests, tuple):
-            kept = tuple(t for t in _LSQR_TESTS if t in tests)
-            object.__setattr__(self, 'lsqr_tests', True if kept == _LSQR_TESTS else (kept or False))
+            kept = tuple(t for t in _SOLVER_TESTS if t in tests)
+            object.__setattr__(self, 'solver_tests', True if kept == _SOLVER_TESTS else (kept or False))
         if self.min_iterations < 0:
             raise ConfigError(f"Stop(min_iterations={self.min_iterations}): at least 0")
-        if self.residual is None and self.gradient is None and self.large_scale is None and not self.lsqr_tests:
-            raise ConfigError("Stop(): give at least one rule (residual=, gradient=, large_scale= or lsqr_tests=)")
+        if self.residual is None and self.gradient is None and self.large_scale is None and not self.solver_tests:
+            raise ConfigError("Stop(): give at least one rule (residual=, gradient=, large_scale= or solver_tests=)")
 
     @property
     def rules(self) -> tuple[str, ...]:
-        """The rules given, in the order ``residual``, ``gradient``, ``large_scale``, ``lsqr_tests``."""
-        return tuple(n for n in ('residual', 'gradient', 'large_scale', 'lsqr_tests') if getattr(self, n))
+        """The rules given, in the order ``residual``, ``gradient``, ``large_scale``, ``solver_tests``."""
+        return tuple(n for n in ('residual', 'gradient', 'large_scale', 'solver_tests') if getattr(self, n))
 
     @property
     def tests(self) -> tuple[str, ...]:
         """The solver's tests the Stop keeps."""
-        return _LSQR_TESTS if self.lsqr_tests is True else (self.lsqr_tests or ())
+        return _SOLVER_TESTS if self.solver_tests is True else (self.solver_tests or ())
+
+    def first_iteration(self, rule) -> int:
+        """The first iteration at which ``rule`` (one of :attr:`rules`) can hold: the window of a
+        residual or gradient rule, two checks after the start for the large-scale rule, 1 for the
+        solver's tests."""
+        if rule in ('residual', 'gradient'):
+            return int(getattr(self, rule).window)
+        if rule == 'large_scale':
+            return 2 * int(self.large_scale.every)
+        return 1
+
+    def unreachable(self, iterations) -> list[str]:
+        """Why this Stop cannot end a solve of at most ``iterations`` iterations before its limit, as
+        notes (empty: it can): each rule that cannot hold by then, and the whole Stop when no
+        combination of its rules can (``combine="all"``: one rule that cannot; ``"any"``: none
+        can), or when ``min_iterations`` is past the limit."""
+        n = int(iterations)
+        firsts = {r: self.first_iteration(r) for r in self.rules}
+        late = [r for r, k in firsts.items() if k > n]
+        out = [f"the {r.replace('_', '-')} rule cannot hold before iteration {firsts[r]}, after the "
+               f"iteration limit ({n})" for r in late]
+        if self.min_iterations > n:
+            out.append(f"min_iterations={self.min_iterations} is after the iteration limit ({n})")
+        if out and (self.min_iterations > n or (late and (self.combine == 'all' or len(late) == len(firsts)))):
+            out.append(f"so no stop rule can end the solve: it runs its {n} iterations (or stops at machine "
+                       f"precision)")
+        return out
 
 
 def _check_hook(hook, what):
@@ -258,7 +294,8 @@ class Fit(Config):
     (an importable function or a picklable object; see :mod:`selfcal.config.functions`).
     ``line_fisher_threshold``: below this Fisher information, a pixel of a sky term after the
     first reads as unconstrained. ``stop``: opt-in rules that may end the solve before
-    ``iterations`` (a :class:`Stop`; None: the solver's own tests, by ``tolerance``).
+    ``iterations`` (a :class:`Stop`; None: the solver's own tests, by ``tolerance``; with a Stop,
+    ``tolerance`` is used only by its ``solver_tests``).
     """
     iterations: int = 50
     _: KW_ONLY
@@ -279,13 +316,9 @@ class Fit(Config):
     def _validate(self):
         if self.iterations < 1:
             raise ConfigError(f"Fit(iterations={self.iterations}): at least 1")
-        if self.stop is not None:
-            if self.stop.lsqr_tests and self.exact_iterations:
-                raise ConfigError("Fit(tolerance=0, stop=Stop(lsqr_tests=...)): tolerance=0 turns the solver's tests "
-                                  "off; give a tolerance, or no lsqr_tests")
-            if self.stop.min_iterations > self.iterations:
-                raise ConfigError(f"Fit(iterations={self.iterations}, stop=Stop(min_iterations="
-                                  f"{self.stop.min_iterations})): no rule could end the solve")
+        if self.stop is not None and self.stop.solver_tests and self.exact_iterations:
+            raise ConfigError("Fit(tolerance=0, stop=Stop(solver_tests=...)): tolerance=0 turns the solver's tests "
+                              "off; give a tolerance, or no solver_tests")
         if min(self.atol_btol) < 0:
             raise ConfigError(f"Fit(tolerance={self.tolerance}): at least 0 (0: run exactly `iterations` iterations)")
         object.__setattr__(self, 'clip', as_clip(self.clip, 'Fit(clip=...)'))

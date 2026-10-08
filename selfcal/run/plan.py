@@ -13,6 +13,7 @@ import ast
 import contextlib
 import glob
 import io
+import logging
 import multiprocessing
 import os
 import pickle
@@ -24,6 +25,8 @@ from .lower import as_recipe, lower
 from .products import Book, check, expected_products, refusal, remedy
 
 __all__ = ['Plan', 'make_plan']
+
+logger = logging.getLogger(__name__)
 
 #: The states of an existing product an action refuses (see :func:`selfcal.run.products.check`).
 REFUSED = ('different', 'unrecorded', 'changed')
@@ -94,7 +97,7 @@ class Plan:
                          + (f" (none: the solve runs {its} iterations at most)" if its is not None and sn.every >= its
                             else ''))
         if r is not None and r.fit.stop is not None:
-            lines.append(f"  stop        {describe_stop(r.fit.stop)}")
+            lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if self.monitor is not None:
             lines.append(f"  monitor     {describe_monitor(self.monitor, r.fit.stop if r is not None else None)}")
         if self.tiles is not None:
@@ -109,8 +112,10 @@ class Plan:
     __repr__ = __str__
 
 
-def describe_stop(stop) -> str:
-    """A :class:`~selfcal.run.recipe.Stop` in words (the plan's ``stop`` line)."""
+def describe_stop(stop, fit=None) -> str:
+    """A :class:`~selfcal.run.recipe.Stop` in words (the plan's ``stop`` line), saying whether the
+    solver's own tolerance tests can stop the solve (with a Stop, only those it keeps as its rule
+    ``solver_tests``; the tolerances of ``fit`` are otherwise unused)."""
     parts = []
     if stop.residual is not None:
         r = stop.residual
@@ -124,10 +129,15 @@ def describe_stop(stop) -> str:
         ls = stop.large_scale
         parts.append(f"the sky terms' smooth fit (degree {ls.degree}) changes less than {ls.below:g} at two checks, "
                      f"every {ls.every}")
-    if stop.lsqr_tests:
+    if stop.solver_tests:
         parts.append(f"the solver's tests {', '.join(stop.tests)}")
     joined = (' and ' if stop.combine == 'all' else ' or ').join(parts)
-    return joined + (f"; not before iteration {stop.min_iterations}" if stop.min_iterations else '')
+    out = joined + (f"; not before iteration {stop.min_iterations}" if stop.min_iterations else '')
+    if not stop.solver_tests:
+        unused = ('tolerance=0' if fit is not None and fit.exact_iterations else
+                  'atol, btol' + (f' (tolerance={fit.tolerance})' if fit is not None else '') + ' and conlim')
+        out += f"; the solver's tolerance tests off ({unused} unused: a Stop without solver_tests)"
+    return out
 
 
 def describe_monitor(monitor, stop=None) -> str:
@@ -299,6 +309,11 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
                     passes=passes, frames=frames, cal=cal, compute=compute, start=start, snapshots=snapshots,
                     monitor=monitor)
     plan = Plan(field, action, recipe, lowered, compute, tiles=tiles, passes=passes)
+    stop = as_recipe(recipe).fit.stop if action == 'calibrate' else None
+    if stop is not None:
+        for why in stop.unreachable(as_recipe(recipe).fit.iterations):
+            plan.notes.append(f"stop rules: {why}")
+            logger.warning(f"stop rules: {why}")
     if start is not None:
         plan.start = {k: v for spec in lowered for k, v in spec.start.items()}
     plan.snapshots = snapshots
@@ -348,7 +363,7 @@ def make_plan(field, action, recipe=None, *, jobs=None, tiles=None, passes=None,
         _check_smoothing(ctx)
     used = found if first.frames.first_n is None else found[:n]
     plan.frame_list = list(used)
-    plan.book = Book(field, recipe, passes=passes, tiles=tiles, start=plan.start)
+    plan.book = Book(field, recipe, passes=passes, tiles=tiles, start=plan.start, recorded_starts=action == 'mosaic')
     plan.products = expected_products(plan, plan.book, used)
     if plan.start is not None:
         _check_starts(plan)

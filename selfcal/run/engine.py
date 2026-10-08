@@ -308,6 +308,13 @@ class RunContext:
         """The solver's ``apply_lsqr`` keywords."""
         return dict(self.spec.lsqr)
 
+    def solve_scratch(self):
+        """The directory a solve parks its right-hand side in (LSQR overwrites ``b``; the true
+        residual and the monitors read the parked copy, :class:`~selfcal.core.spill.ParkedVector`):
+        the run's scratch area (``Compute(scratch=...)``), else ``<field>/scratch/``, the engine's
+        fallback for a scratch area."""
+        return (self.spec.scratch or os.path.join(self.spec.field.path, 'scratch')).rstrip('/')
+
     def history_path(self, cal_file):
         """Where the history per iteration of the solve that makes ``cal_file`` goes:
         ``<field>/records/<cal stem>_history.npz``, next to the action records (a tile's cal, a tile's
@@ -505,6 +512,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     (``Fit(stop=...)``, in the solver's options) may end it early (:mod:`selfcal.core.monitor`):
     the checks go to the history file, the stop record to the three places below.
 
+    LSQR overwrites its right-hand side; the copy the true residual (and the monitors) need is
+    parked on disk in the run's scratch area (:meth:`RunContext.solve_scratch`) for the solve.
+
     The record of the solve (:class:`~selfcal.core.solve_record.SolveRecord`), with the identity
     of the system solved and the solve's start, goes to three places: the cal's ``solve`` group,
     the history per iteration to :meth:`RunContext.history_path`, and the action's record
@@ -570,7 +580,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     watch = {} if spec.monitor is None else {'monitor': spec.monitor}
     if snapshots is not None:
         watch['snapshots'] = snapshots
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch)
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch())
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record

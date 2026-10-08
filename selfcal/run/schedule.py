@@ -160,14 +160,16 @@ class Snapshots(Config):
 
 
 def as_snapshots(value) -> Snapshots | None:
-    """``calibrate(snapshots=...)`` as a :class:`Snapshots`: None, a :class:`Snapshots`, or a number of
-    iterations (``snapshots=50`` is ``Snapshots(every=50)``)."""
-    if value is None or isinstance(value, Snapshots):
+    """``calibrate(snapshots=...)`` as a :class:`Snapshots`: None or False (none), a :class:`Snapshots`,
+    or a number of iterations (``snapshots=50`` is ``Snapshots(every=50)``)."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Snapshots):
         return value
     if isinstance(value, int) and not isinstance(value, bool):
         return Snapshots(value)
-    raise ConfigError(f"calibrate(snapshots=...): a sc.Snapshots(every=..., keep=...) or a number of iterations; "
-                      f"got {value!r}")
+    raise ConfigError(f"calibrate(snapshots=...): a sc.Snapshots(every=..., keep=...), a number of iterations, or "
+                      f"None / False; got {value!r}")
 
 
 @dataclass(frozen=True)
@@ -209,13 +211,15 @@ class Monitor(Config):
 
 
 def as_monitor(value) -> Monitor | None:
-    """``calibrate(monitor=...)`` as a :class:`Monitor`: None, a :class:`Monitor`, ``True`` (the
-    default monitor) or a number of iterations (``monitor=20`` is ``Monitor(every=20)``)."""
-    if value is None or isinstance(value, Monitor):
+    """``calibrate(monitor=...)`` as a :class:`Monitor`: None or False (none), a :class:`Monitor`,
+    ``True`` (the default monitor) or a number of iterations (``monitor=20`` is ``Monitor(every=20)``)."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Monitor):
         return value
     if value is True:
         return Monitor()
     if isinstance(value, int) and not isinstance(value, bool):
         return Monitor(value)
-    raise ConfigError(f"calibrate(monitor=...): a sc.Monitor(every=..., ...), True or a number of iterations; "
-                      f"got {value!r}")
+    raise ConfigError(f"calibrate(monitor=...): a sc.Monitor(every=..., ...), True, a number of iterations, or "
+                      f"None / False; got {value!r}")

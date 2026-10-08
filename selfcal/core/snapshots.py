@@ -26,13 +26,16 @@ cal has them (:mod:`selfcal.core.warm_start`). Each file is written atomically
 (:func:`~selfcal.io.atomic.atomic_path`), from the solver's thread: no process is started.
 
 Memory: a snapshot never holds a second copy of the solution. It reads one band of chunk rows of a
-sky map at a time (196 rows of a 12544 x 12538 float32 map, ~10 MB), one offset term (expanded per
-frame, as the cal stores it) and the per-frame scalar, besides the solver's own vectors.
+sky map at a time (the HDF5 chunk rows: about 200 rows, ~10 MB of a 12k x 12k float32 map, which
+is ~600 MB whole before compression), one offset term (expanded per frame, as the cal stores it)
+and the per-frame scalar, besides the solver's own vectors.
 
 Retention: ``keep=m`` deletes the oldest snapshot this solve wrote once it has written ``m + 1``;
-snapshots of earlier runs are never deleted. A snapshot that cannot be written (a full disk) is
-logged as an error and skipped: the solve goes on. Snapshots are not products: they have no sidecar
-and never make a cal current or stale.
+snapshots of earlier runs are never deleted. Snapshots are best effort: a snapshot that cannot be
+written (a full disk, or any other error) is logged as an error, recorded in :attr:`SnapshotWriter.failed`
+and skipped, and the solve goes on; a template that cannot be written
+(:meth:`SnapshotWriter.template_failed`) turns the solve's snapshots off. Snapshots are not
+products: they have no sidecar and never make a cal current or stale.
 """
 from __future__ import annotations
 
@@ -156,7 +159,11 @@ class SnapshotWriter:
         self.before = 0 if start is None else start.iterations_total
         self.written = []           # the snapshots this solve wrote and keeps, oldest first
         self.removed = []           # those it deleted (retention)
-        self.failed = []            # (iteration, error) of those it could not write
+        #: ``(iteration, error)`` of the snapshots that could not be written; ``("template", error)``
+        #: when the template could not be (then no snapshot is written).
+        self.failed = []
+        #: True once the template failed: this solve writes no snapshots.
+        self.disabled = False
         self._cc = None
         self._template = None
 
@@ -193,10 +200,26 @@ class SnapshotWriter:
                     f"the cal's parts that do not depend on the solution written once "
                     f"({os.path.getsize(self._template) / 2**20:.1f} MB, {time.perf_counter() - t0:.1f} s)")
 
+    def template_failed(self, error):
+        """The template could not be written (``error``, raised by :meth:`bind`): log it, record it
+        under :attr:`failed` (``("template", error)``) and turn this solve's snapshots off; the solve
+        goes on without them."""
+        self.failed.append(('template', f'{type(error).__name__}: {error}'))
+        self.disabled = True
+        self._cc = None
+        logger.error(f"snapshots: the template of {self.stem} could not be written in {self.directory} "
+                     f"({type(error).__name__}: {error}); this solve writes no snapshots and goes on",
+                     exc_info=not isinstance(error, OSError))
+        self.close()
+
     def close(self):
-        """Remove the template (the snapshots stay)."""
-        if self._template is not None and os.path.exists(self._template):
-            os.remove(self._template)
+        """Remove the template (the snapshots stay). Never raises."""
+        if self._template is not None:
+            try:
+                if os.path.exists(self._template):
+                    os.remove(self._template)
+            except OSError as e:
+                logger.warning(f"snapshots: the template {self._template} could not be removed ({e})")
         self._template = None
         self._cc = None
 
@@ -240,10 +263,13 @@ class SnapshotWriter:
 
     def __call__(self, iterate):
         """Write the snapshot of ``iterate`` (an :class:`Iterate`), then delete the oldest beyond
-        ``keep``. A file-system error is logged and the snapshot skipped."""
+        ``keep``. Best effort: any error (an ``Exception``) is logged and recorded in :attr:`failed`,
+        the snapshot is skipped and the solve goes on; nothing is written once the template failed."""
         import h5py
 
         from ..io.atomic import atomic_path
+        if self.disabled:
+            return
         if self._cc is None:
             raise ValueError("SnapshotWriter: bind() it to the calibrator before the solve")
         path = self.path(iterate.itn)
@@ -256,9 +282,10 @@ class SnapshotWriter:
                     group = f.create_group('solve')
                     for k, v in self.solve_attrs(iterate).items():
                         group.attrs[k] = v
-        except OSError as e:
+        except Exception as e:
             self.failed.append((iterate.itn, f'{type(e).__name__}: {e}'))
-            logger.error(f"snapshot at iteration {iterate.itn} not written ({path}): {e}; the solve goes on")
+            logger.error(f"snapshot at iteration {iterate.itn} not written ({path}): {type(e).__name__}: {e}; "
+                         f"the solve goes on", exc_info=not isinstance(e, OSError))
             return
         if path in self.written:                 # (never: the iterations increase)
             self.written.remove(path)
@@ -270,14 +297,20 @@ class SnapshotWriter:
                 self.removed.append(old)
             except FileNotFoundError:
                 pass
-        r1 = iterate.estimates.get('r1norm')
-        logger.info(f"snapshot: iteration {iterate.itn}" + (f" ({self.iteration(iterate.itn)} in all)"
-                                                            if self.before else '')
-                    + f" -> {path} ({os.path.getsize(path) / 2**20:.1f} MB, {time.perf_counter() - t0:.1f} s"
-                    + (f"; r1norm {r1:.6e}" if r1 is not None else '') + ')')
+            except OSError as e:
+                logger.warning(f"snapshots: {old} could not be deleted ({e}); it is kept")
+        try:
+            r1 = iterate.estimates.get('r1norm')
+            logger.info(f"snapshot: iteration {iterate.itn}" + (f" ({self.iteration(iterate.itn)} in all)"
+                                                                if self.before else '')
+                        + f" -> {path} ({os.path.getsize(path) / 2**20:.1f} MB, {time.perf_counter() - t0:.1f} s"
+                        + (f"; r1norm {r1:.6e}" if r1 is not None else '') + ')')
+        except OSError:
+            pass
 
     def summary(self) -> dict:
         """What the solve's snapshots are: ``every``, ``keep``, ``directory``, the snapshots kept
-        (``written``), how many retention deleted (``removed``), and the failures (``failed``)."""
+        (``written``), how many retention deleted (``removed``), and the failures (``failed``:
+        ``[iteration, error]``, or ``["template", error]`` when no snapshot could be written)."""
         return {'every': self.every, 'keep': self.keep, 'directory': self.directory, 'written': list(self.written),
                 'removed': len(self.removed), 'failed': [list(f) for f in self.failed]}

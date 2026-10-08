@@ -169,7 +169,7 @@ def test_the_settings():
     with pytest.raises(ConfigError, match='keep them all'):
         sc.Snapshots(5, keep=0)
     from selfcal.run.schedule import as_snapshots
-    assert as_snapshots(7) == sc.Snapshots(7) and as_snapshots(None) is None
+    assert as_snapshots(7) == sc.Snapshots(7) and as_snapshots(None) is None and as_snapshots(False) is None
     with pytest.raises(ConfigError, match='a sc.Snapshots'):
         as_snapshots('7')
 
@@ -391,6 +391,49 @@ def test_a_snapshot_that_cannot_be_written_is_skipped(field, monkeypatch, caplog
     assert not [p for p in os.listdir(_snapdir(cal)) if '.part-' in p or p.startswith('.')]
     (entry,) = json.load(open(res.record))['solves']
     assert entry['snapshots']['failed'][0][0] == 4
+
+
+def test_any_error_of_a_snapshot_or_its_template_leaves_the_solve_going(field, monkeypatch, caplog):
+    """Snapshots are best effort: a snapshot that fails with any error (not only a file-system one) is
+    logged, recorded and skipped; a template that cannot be written turns the solve's snapshots off. The
+    solve goes on either way, and its cal is the one a solve without snapshots writes."""
+    recipe = _recipe(MODELS['times'], 7, name='bugs')
+    plain = field.calibrate(recipe.replace(name='bugs_plain')).cal_paths[0]
+    real = pipeline_wrapper.Calibrator.write_cal_solution
+
+    def buggy(self, f, iterate):
+        if iterate.itn == 2:
+            raise ValueError('a bug')
+        return real(self, f, iterate)
+    with monkeypatch.context() as m:
+        m.setattr(pipeline_wrapper.Calibrator, 'write_cal_solution', buggy)
+        with caplog.at_level(logging.ERROR, logger='selfcal.core.snapshots'):
+            res = field.calibrate(recipe, snapshots=sc.Snapshots(2))
+    cal = res.cal_paths[0]
+    stem = os.path.basename(cal)[:-len('.h5')]
+    assert _snaps(cal) == [f'{stem}_it0004.h5', f'{stem}_it0006.h5']
+    assert any('snapshot at iteration 2 not written' in r.getMessage() and 'ValueError: a bug' in r.getMessage()
+               for r in caplog.records)
+    (entry,) = json.load(open(res.record))['solves']
+    assert entry['snapshots']['failed'] == [[2, 'ValueError: a bug']]
+    a, b = _items(cal), _items(plain)
+    assert sorted(a) == sorted(b) and all(a[k] == b[k] for k in a)
+
+    def no_template(self, f, reproj_list=None):
+        raise RuntimeError('cannot write the template')
+    caplog.clear()
+    with monkeypatch.context() as m:
+        m.setattr(pipeline_wrapper.Calibrator, 'write_cal_static', no_template)
+        with caplog.at_level(logging.ERROR, logger='selfcal.core.snapshots'):
+            res = field.calibrate(recipe.replace(name='bugs_template'), snapshots=sc.Snapshots(2))
+    cal = res.cal_paths[0]
+    assert _snaps(cal) == [] and not [p for p in os.listdir(_snapdir(cal)) if '_static-' in p]
+    assert any('this solve writes no snapshots and goes on' in r.getMessage() for r in caplog.records)
+    (entry,) = json.load(open(res.record))['solves']
+    assert entry['snapshots']['failed'] == [['template', 'RuntimeError: cannot write the template']]
+    assert entry['snapshots']['written'] == [] and entry['iterations'] == 7
+    a, b = _items(cal), _items(plain)
+    assert sorted(a) == sorted(b) and all(a[k] == b[k] for k in a)
 
 
 def test_an_iterate_without_compaction_or_scaling():

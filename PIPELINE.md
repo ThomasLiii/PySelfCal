@@ -137,13 +137,19 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - **The record of every solve.** `apply_lsqr` records how each solve ran
   (`selfcal.core.solve_record.SolveRecord`; `Calibrator.solve_record`): the method, the
   iterations run (and `iterations_total`, the same until a solve continues another's), `istop`
-  and its meaning, the solver's final estimates (`r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`,
+  and its meaning (`stop_reason`), the solver's final estimates (`r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`,
   `xnorm`), the tolerances and `conlim`, the wall time (in the action's record only, so the cal
   file stays byte-reproducible), and the **true residual** `|b - A x|`,
-  computed once at the end with one product and accumulated in float64 (the estimate `r1norm`
-  drifting from it is how the float32-norm failure of 2026-10 showed up). LSQR overwrites `b`,
-  so a copy is kept for that product: in memory below `sc.Tuning(spill_min_gb=)` (4 GB), else
-  on scratch disk (`spill_dir`) for the solve. The record goes to the cal file's `solve` group
+  computed once at the end with one product and accumulated in float64 (`r1norm` is a
+  recurrence estimate: a drift of the solver's recurrence estimates shows as a difference between
+  the two). LSQR overwrites `b`, so a copy is parked **on disk, never in memory**, for that product
+  (and the monitors' checks): one `.npy` file in the run's scratch area (`sc.Compute(scratch=)`,
+  else `<field>/scratch/`; `Calibrator.apply_lsqr(scratch_dir=)` / `apply_lsqr(scratch_dir=)`
+  outside the run engine), read back a piece at a time through a short-lived memory map and
+  removed when the solve ends; a killed run's parked file is swept by the next solve that parks
+  in the same directory. When it cannot be parked (a full or unwritable disk, or no directory
+  given), a warning says why, the solve goes on and `true_residual` and `bnorm` are NaN (LSMR
+  keeps `b` and needs no copy). The record goes to the cal file's `solve` group
   ([its attributes](#the-solve-group)), to the action's record (`solves`) and, with the solver's
   state at every iteration, to `<field>/records/<cal stem>_history.npz` (`itn`, `r1norm`,
   `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm`, `test1` = |r| / |b|, `test2` = |A^T r| / (|A|
@@ -155,7 +161,8 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - **Continuing a solve (a warm start from a cal).** `field.calibrate(recipe, start=<cal>)`
   (a cal file, the `Result` of an earlier calibration, or `{job: cal}`) starts each job's
   solve from the solution in that cal instead of the default guess above, to continue a solve
-  that has not converged (e.g. 122, then 422, then 722 iterations in three runs) or to start a variant from an earlier solution. `x0` is read back as the exact
+  that has not converged (e.g. N iterations, then M more, then M more again, in three runs) or to
+  start a variant from an earlier solution. `x0` is read back as the exact
   inverse of how the cal is written (`selfcal.core.warm_start`): each sky term's `sky/<name>`
   in the model's order (pixels the source did not solve start at 0), each offset term's
   `offsets/map_<m>` frame-major (a `times=` / `basis=` term: one coefficient per chunk and
@@ -180,8 +187,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   source's total plus this solve's iterations; -1 when the source has no record of its
   iterations), so do the action's record (`settings.start`, `solves`) and a rerun of that record
   replays the start. Give the continuation a recipe name of its own
-  (`recipe.replace(fit=sc.Fit(300, tolerance=0), name="it422")`): the cal the action writes is
-  never its own start. **A continuation restarts the Krylov space**: LSQR / LSMR solve
+  (`recipe.replace(fit=sc.Fit(M, tolerance=0), name="more")`): the cal the action writes is
+  never its own start. A mosaic of a continued cal (`field.mosaic(recipe)`, its cal reused
+  without a solve) takes the start the cal records (its sidecar's inputs, or its `solve` group's
+  `start_identity`), so the cal is current for it. **A continuation restarts the Krylov space**: LSQR / LSMR solve
   `A dx = b - A x0` from `dx = 0`, so a solve of N iterations continued for M more is not one
   solve of N + M (the search directions start again from the residual of `x0`), and its
   estimates (`anorm`, `acond`; LSQR's `xnorm` = ‖dx‖, LSMR's ‖x‖) are those of the restarted
@@ -202,7 +211,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   datasets are **bit for bit those of a solve of exactly that many iterations**
   (`sc.Fit(iterations=it, tolerance=0)`): the solvers' iterates do not depend on the iteration
   limit, and the iterate is converted exactly as the end of the solve converts it. So every cal
-  reader works on one: `field.mosaic(recipe.replace(name="it0300"), cal=<snapshot>)` mosaics it
+  reader works on one: `field.mosaic(recipe.replace(name="at300"), cal=<snapshot>)` mosaics it
   (give the recipe its own name: the mosaic is named after the recipe),
   `field.calibrate(recipe, start=<snapshot>)` continues from it (the snapshot records the system
   identity the warm start checks), `CalFile(<snapshot>)` and the analysis tools read it.
@@ -212,8 +221,11 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   cal, byte for byte, with the same fingerprint, as one without; the setting is an action's,
   recorded in its record (`settings.snapshots`, and per solve `solves[].snapshots`: `every`,
   `keep`, `directory`, the snapshots kept, how many retention deleted, any that could not be
-  written) and replayed by a rerun. A snapshot that cannot be written (a full disk) is logged as an
-  error and skipped; the solve goes on. Plain calibrations only (`tiles=` and `passes=` are
+  written) and replayed by a rerun. Snapshots are **best effort**: a snapshot that cannot be written
+  (a full disk, or any other error) is logged as an error, recorded under `solves[].snapshots.failed`
+  (`[iteration, error]`) and skipped, and the solve goes on; a template that cannot be written
+  (below) turns the solve's snapshots off (`["template", error]`), and the solve goes on.
+  `snapshots=None` or `False` writes none. Plain calibrations only (`tiles=` and `passes=` are
   refused) and the CSR system `setup_lsqr` builds (always the case in a run). **How**: the solvers
   (`lsqr_inplace`, the vendored `lsmr`) call `callback(itn, x)` every k iterations (nothing when
   unset); `apply_lsqr` wraps the compact, column-scaled `x` in a `selfcal.core.snapshots.Iterate`,
@@ -223,10 +235,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   when the solve ends; the pixel state is read memory-mapped where the setup parked it); each
   snapshot is a copy of the template plus the sky maps (written a band of chunk rows at a time,
   the same stored chunks as the cal's), the offsets and `frame_scalar`, written atomically from the
-  solver's thread (no process is started). **Size**: a snapshot is about the size of the cal: one
-  SPHEREx sky map on a 12544 x 12538 grid is ~630 MB as float32 before compression, so budget
-  the disk for `keep` (or every) snapshots; the write holds ~10 MB of a sky map at a time
-  (196-row bands) plus one offset term.
+  solver's thread (no process is started). **Size**: a snapshot is about the size of the cal: a
+  12k x 12k float32 sky map is ~600 MB before compression, so budget the disk for `keep` (or
+  every) snapshots; the write holds one band of HDF5 chunk rows of a sky map at a time (~10 MB for
+  such a map) plus one offset term.
 - **Monitors and stop rules.** The weakest directions of a self-calibration system are usually
   its largest scales: a smooth sky pattern the offsets can nearly absorb (a near-null mode, e.g.
   a field-wide gradient) barely changes `|b - A x|` or `|A^T r|` while it moves, so **residual
@@ -234,9 +246,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   values**. Monitors show it; stop rules are opt-in and say why a solve stopped
   (`selfcal.core.monitor`).
   - **Monitors** — `field.calibrate(recipe, monitor=sc.Monitor(every=m, residual=True,
-    gradient=False, large_scale=True, step=None))` (or `monitor=m`) checks each solve at
+    gradient=False, large_scale=True, step=None))` (or `monitor=m`; `None` or `False`: none) checks each solve at
     iterations 0, m, 2m, ...: `residual`, the **true residual** `|b - A x|` (one product `A x`
-    against the copy of `b` the solve keeps for its final residual, accumulated in float64) and the
+    against the copy of `b` the solve keeps for its final residual, accumulated in float64; NaN
+    when LSQR's copy could not be parked, above) and the
     ratio of the solver's estimate `r1norm` to it (a drift of the recurrences shows as a ratio
     away from 1); `gradient`, the **true gradient** `|A^T r|` (`|A^T r - damp^2 x|` with damping;
     one product `A^T r` more), with the ratio of `arnorm`, both in the solver's column-scaled
@@ -257,7 +270,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
     setting (recorded, replayed by a rerun, never fingerprinted). Any calibration takes them,
     tiled (one history per tile) and N-pass (the joint solve) included.
   - **Stop rules** — `sc.Fit(iterations=N, stop=sc.Stop(residual=..., gradient=...,
-    large_scale=..., lsqr_tests=False, min_iterations=0, combine="all"))`, off by default (the
+    large_scale=..., solver_tests=False, min_iterations=0, combine="all"))`, off by default (the
     field is declared with `added`, so every fingerprint stays while it is unset; set, it enters the
     cal's inputs). The rules, each a number (its threshold) or an object with its parameters:
     `residual=sc.ResidualRule(below, window=10, every=None)`: the relative decrease of `|r|` over
@@ -268,11 +281,19 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
     CG-type gradients are not monotone; estimate or true values as above);
     `large_scale=sc.LargeScaleRule(below, every=10, degree=2, step=4)`: the relative change of every
     sky term's large-scale fit below `below` at the last two checks (checks every `every` iterations
-    from 0, so the first possible stop is at `2 * every`); `lsqr_tests`: the solver's own tolerance
-    tests that count as a rule (`True`, or some of `"compatible"` (istop 1), `"least_squares"` (2),
-    `"condition"` (3)). **With a Stop, the solver's tests stop the solve only as one of its rules**
-    (`lsqr_tests=False`, the default, turns them off; `Fit(tolerance=0)` turns them off anyway and
-    refuses `lsqr_tests`). `combine="all"` (the default) stops when every rule given holds at the
+    from 0, so the first possible stop is at `2 * every`; each sky term's change is relative to its
+    own large-scale amplitude, the rms of its fitted surface, and the rule takes the largest change
+    over the terms, so a term with little large-scale content keeps the change high while the
+    others have settled: combine the rule accordingly and read each term's change in the history,
+    `large_scale_change[:, j]`, and the stop record's `terms`); `solver_tests`: the solver's own
+    tolerance tests (LSQR's or LSMR's) that count as a rule (`True`, or some of `"compatible"`
+    (istop 1), `"least_squares"` (2), `"condition"` (3)). **With a Stop, the solver's tests stop the
+    solve only as one of its rules**: `solver_tests=False`, the default, turns them off, so
+    `atol`, `btol` (`sc.Fit(tolerance=)`) and `conlim` are unused, which the plan's `stop` line and
+    the record (`solver_tests`) say; `Fit(tolerance=0)` turns them off anyway and refuses
+    `solver_tests`. A rule that cannot hold before the iteration limit (a `window` longer than it,
+    a large-scale rule's second check after it, `min_iterations` past it) is a note of the plan
+    and a warning in the log, not an error. `combine="all"` (the default) stops when every rule given holds at the
     same iteration, `"any"` when one does; no rule stops the solve before `min_iterations`. A rule
     checked every m iterations keeps its verdict until its next check. The iteration limit stays
     the hard cap, and machine precision (`istop` 4-6, which also catches an exact solution) still
@@ -300,10 +321,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
     `large_scale_change` (relative to the previous check with a fit) — each only when computed
     at some check, NaN at the others; and the rules' values per iteration, `stop_residual` (the
     relative decrease), `stop_gradient` (the windowed maximum over the start), `stop_large_scale`
-    (the larger of the last two changes), `stop_lsqr_tests` (1 when a kept test holds), NaN where
+    (the larger of the last two changes), `stop_solver_tests` (1 when a kept test holds), NaN where
     not evaluated, and `stop_holds` (the combination). A solve with stop rules records in the cal's
     `solve` group ([below](#the-solve-group)) and the action's record `stop_rule`, `stop_iteration`,
-    `stop_values` (every rule's state there) and `stop_policy`, and says in the log, in words,
+    `stop_values` (every rule's state there), `stop_policy` and `solver_tests`, and says in the log, in words,
     which rule ended the solve and what it measured (or that none did, with each rule's state at
     the end). A solve with neither keeps exactly the history and the `solve` group it had.
 - `precondition=True` (column-norm; `sc.Fit(precondition=True)`, the default) is essential — much faster convergence.
@@ -614,16 +635,16 @@ The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read 
 | `method` | `lsqr` or `lsmr` |
 | `iterations`, `iterations_total` | iterations this solve ran; the cumulative count of the solution (equal unless the solve continued another's: then the source's total plus this solve's, -1 when the source's is unknown) |
 | `iteration_limit` | `sc.Fit(iterations=)` |
-| `istop`, `stop` | the solver's stop code (0-7, see [the tuning notes](#calibration-pipeline-tuning); 8: a stop rule of `sc.Fit(stop=...)` ended the solve) and its meaning |
+| `istop`, `stop_reason` | the solver's stop code (0-7, see [the tuning notes](#calibration-pipeline-tuning); 8: a stop rule of `sc.Fit(stop=...)` ended the solve) and its meaning |
 | `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates: ‖b − A x‖, the same with the damping term, ‖Aᵀ r‖, ‖A‖, cond(A), ‖x‖ (in the column-scaled unknowns) |
-| `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, from one product at the end, accumulated in float64 |
+| `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, from one product at the end, accumulated in float64 (NaN when LSQR's copy of `b` could not be parked on disk) |
 | `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `sc.Fit(tolerance=0)`) |
 | `rows`, `columns` | the system's shape (the active columns) |
 | `history_file` | the NPZ of the solver's state at every iteration, `<field>/records/<cal stem>_history.npz` |
 | `system`, `system_identity` | the identity of the system solved (`selfcal.core.warm_start.System`): the JSON of its frames (in order), reference grid (shape and WCS), sky terms, offset terms (chunk maps, groups of frames, basis functions, columns), per-frame scalar columns, total columns and job, and its sha256; what a later solve's start is checked against (cals solved since 2026-10-08) |
 | `start_from`, `start_identity` | a continued solve only: the cal it started from (its path) and that cal's identity, `fingerprint:<sha256>` (its sidecar's) or `sha256:<sha256>` (its bytes) |
-| `stop_rule`, `stop_iteration`, `stop_values`, `stop_policy` | a solve with [stop rules](#calibration-pipeline-tuning) only: the rules that ended it (`"gradient"`, `"residual, large_scale"`; `"none"` when it ended otherwise), the iteration they were judged at last (where they ended it, or the last), the JSON of every rule's state there (its value, threshold, window, where it was measured) and the JSON of the rules (`sc.Stop`) |
-| `snapshot`, `iteration` | a [snapshot](#calibration-pipeline-tuning) only: `True`, and the cumulative iteration it holds (the start's `iterations_total` plus `iterations`; -1 when unknown). A snapshot has `iterations` (this solve's, at the snapshot), `iterations_total`, `iteration_limit`, the solver's estimates at that iteration (`r1norm` ... `xnorm`, `test1`, `test2`), the tolerances, the shape, the system and the start as above, and no `istop`, `stop`, `true_residual`, `bnorm` or `history_file` |
+| `stop_rule`, `stop_iteration`, `stop_values`, `stop_policy`, `solver_tests` | a solve with [stop rules](#calibration-pipeline-tuning) only: the rules that ended it (`"gradient"`, `"residual, large_scale"`; `"none"` when it ended otherwise), the iteration they were judged at last (where they ended it, or the last), the JSON of every rule's state there (its value, threshold, window, where it was measured), the JSON of the rules (`sc.Stop`), and which of the solver's own tests could stop the solve (the tests the Stop keeps, or `"off: atol, btol and conlim unused ..."`: then `atol`, `btol` and `conlim` above were not used) |
+| `snapshot`, `iteration` | a [snapshot](#calibration-pipeline-tuning) only: `True`, and the cumulative iteration it holds (the start's `iterations_total` plus `iterations`; -1 when unknown). A snapshot has `iterations` (this solve's, at the snapshot), `iterations_total`, `iteration_limit`, the solver's estimates at that iteration (`r1norm` ... `xnorm`, `test1`, `test2`), the tolerances, the shape, the system and the start as above, and no `istop`, `stop_reason`, `true_residual`, `bnorm` or `history_file` |
 
 Every value there is a function of the solve, so a cal file stays byte-identical from run to run;
 the solver's wall time (`wall_s`), which is not, is in the action's record (`solves`) only, with

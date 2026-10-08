@@ -12,10 +12,12 @@ early only on rules the caller asks for, recording which one fired and what it m
 **checks** at the iterations they are due (each costs what it computes; nothing in between):
 
 * the **true residual** ``|b - A x|``: one product ``A x`` with the solver's operator, accumulated in
-  float64 over pieces of the right-hand side the solve keeps for its final residual (a
-  :class:`~selfcal.core.spill.ParkedVector`: in memory, or memory-mapped from scratch disk for a
-  large system), with the ratio of the solver's estimate ``r1norm`` to it (a drift of the
-  recurrences, such as norms accumulated in float32 cause, shows as a ratio away from 1);
+  float64 over pieces of the right-hand side the solve keeps for its final residual (LSMR's own
+  ``b``; LSQR's copy parked on disk in the run's scratch directory, a
+  :class:`~selfcal.core.spill.ParkedVector`, read a piece at a time), with the ratio of the
+  solver's estimate ``r1norm`` to it (a drift of the solver's recurrence estimates shows as a ratio
+  away from 1). When LSQR's copy could not be parked, the true residual and gradient are NaN (a
+  warning says so) and a rule on them never holds;
 * the **true gradient** ``|A^T (b - A x) - damp^2 x|`` (``|A^T r|`` without damping), one more
   product ``A^T r`` with the residual of the first, with the ratio of
   the estimate ``arnorm``; both in the solver's column-scaled unknowns, as the estimates are;
@@ -47,11 +49,18 @@ iteration whether the solve ends there (``istop = 8``, :data:`RULE_ISTOP`):
   window);
 * ``large_scale``: the relative change of every sky term's smooth fit is below ``below`` at the
   last two checks (a check every ``every`` iterations, iteration 0 included: the first possible
-  stop is at ``2 * every``);
-* ``lsqr_tests``: the solver's own tolerance tests, each on its own: ``compatible`` (``istop`` 1,
+  stop is at ``2 * every``). Each term's change is relative to that term's own large-scale
+  amplitude (the rms of its fitted surface), and the rule takes the largest change over the terms:
+  a term with little large-scale content (a small rms) can keep the relative change high while the
+  terms that matter have settled. ``combine`` the rule with the others accordingly, and read each
+  term's change in the history (``large_scale_change``, one column per term) and in the stop
+  record (``terms``);
+* ``solver_tests``: the solver's own tolerance tests, each on its own: ``compatible`` (``istop`` 1,
   ``|r| / |b| <= btol + atol |A| |x| / |b|``), ``least_squares`` (2, ``|A^T r| / (|A| |r|) <=
   atol``), ``condition`` (3, the estimate of cond(A) above ``conlim``). With a Stop they stop the
-  solve only as one of its rules (``Fit(tolerance=0)`` turns them off, and refuses them here);
+  solve only as one of its rules: without ``solver_tests`` they are off, so ``atol``, ``btol`` and
+  ``conlim`` are unused (the record says so, ``solver_tests``); ``Fit(tolerance=0)`` turns them off
+  anyway, and refuses them here;
 
 combined over the rules given by ``combine`` (``"all"``: every rule holds at the same iteration,
 the default; ``"any"``: one of them), and never before ``min_iterations``. A rule checked every
@@ -74,9 +83,11 @@ Everything runs in the solver's thread, on the operator's own thread pools: no p
 
 Records: :meth:`Watch.arrays` (the checks, ``check_*``, ``true_residual``, ``large_scale_*``, and
 the rules' values per iteration, ``stop_*``) extends the solve's history file; :meth:`Watch.finish`
-writes the stop record (``stop_rule``, ``stop_iteration``, ``stop_values``, ``stop_policy``) on the
-:class:`~selfcal.core.solve_record.SolveRecord` (the cal's ``solve`` group, the action's record)
-and says in the log, in words, which rule ended the solve and what it measured.
+writes the stop record (``stop_rule``, ``stop_iteration``, ``stop_values``, ``stop_policy``, and
+``solver_tests``: which of the solver's own tests could stop the solve, or that its tolerances
+were unused) on the :class:`~selfcal.core.solve_record.SolveRecord` (the cal's ``solve`` group,
+the action's record) and says in the log, in words, which rule ended the solve and what it
+measured.
 """
 from __future__ import annotations
 
@@ -92,24 +103,25 @@ from .snapshots import Iterate
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['RULE_ISTOP', 'LSQR_TESTS', 'DEFAULT_DEGREE', 'DEFAULT_STEP', 'monomials', 'SmoothFit', 'StopRules',
+__all__ = ['RULE_ISTOP', 'SOLVER_TESTS', 'DEFAULT_DEGREE', 'DEFAULT_STEP', 'monomials', 'SmoothFit', 'StopRules',
            'Watch', 'resolve_large_scale']
 
 #: The ``istop`` of a solve a stop rule ended.
 RULE_ISTOP = 8
 
-#: The solver's tolerance tests a :class:`~selfcal.run.recipe.Stop` can keep (``istop`` 1, 2, 3).
-LSQR_TESTS = ('compatible', 'least_squares', 'condition')
+#: The solver's tolerance tests a :class:`~selfcal.run.recipe.Stop` can keep (``istop`` 1, 2, 3; the
+#: same for LSQR and LSMR).
+SOLVER_TESTS = ('compatible', 'least_squares', 'condition')
 
 #: The large-scale fit's default degree and sampling step.
 DEFAULT_DEGREE = 2
 DEFAULT_STEP = 4
 
-# The pieces of b a true residual is accumulated over (float64 temporaries of ~400 MB).
-_BLOCK = 50_000_000
+# The pieces of b a true residual is accumulated over (float64 temporaries of 64 MB).
+_BLOCK = 1 << 23
 
 _RULE_TITLES = {'residual': 'the residual rule', 'gradient': 'the gradient rule',
-                'large_scale': 'the large-scale rule', 'lsqr_tests': "the solver's tests"}
+                'large_scale': 'the large-scale rule', 'solver_tests': "the solver's tests"}
 
 
 def monomials(degree) -> list[tuple[int, int]]:
@@ -314,16 +326,16 @@ class SmoothFit:
 
 # --------------------------------------------------------------------------- the stop rules
 def _tests_of(value):
-    """The solver tests a Stop keeps: a tuple of :data:`LSQR_TESTS` names."""
+    """The solver tests a Stop keeps: a tuple of :data:`SOLVER_TESTS` names."""
     if value is True:
-        return LSQR_TESTS
+        return SOLVER_TESTS
     if not value:
         return ()
     names = (value,) if isinstance(value, str) else tuple(value)
-    bad = [n for n in names if n not in LSQR_TESTS]
+    bad = [n for n in names if n not in SOLVER_TESTS]
     if bad:
-        raise ValueError(f"lsqr_tests: unknown tests {bad}; the solver's are {LSQR_TESTS}")
-    return tuple(n for n in LSQR_TESTS if n in names)
+        raise ValueError(f"solver_tests: unknown tests {bad}; the solver's are {SOLVER_TESTS}")
+    return tuple(n for n in SOLVER_TESTS if n in names)
 
 
 class StopRules:
@@ -336,16 +348,17 @@ class StopRules:
         self.residual = getattr(stop, 'residual', None)
         self.gradient = getattr(stop, 'gradient', None)
         self.large_scale = getattr(stop, 'large_scale', None)
-        self.lsqr = _tests_of(getattr(stop, 'lsqr_tests', False))
+        self.solver_tests = _tests_of(getattr(stop, 'solver_tests', False))
         self.min_iterations = int(getattr(stop, 'min_iterations', 0) or 0)
         self.combine = getattr(stop, 'combine', 'all')
         if self.combine not in ('all', 'any'):
             raise ValueError(f"combine={self.combine!r}: 'all' or 'any'")
-        #: The rules given, in this order: residual, gradient, large_scale, lsqr_tests.
+        #: The rules given, in this order: residual, gradient, large_scale, solver_tests.
         self.given = tuple(n for n, v in (('residual', self.residual), ('gradient', self.gradient),
-                                          ('large_scale', self.large_scale), ('lsqr_tests', self.lsqr)) if v)
+                                          ('large_scale', self.large_scale), ('solver_tests', self.solver_tests))
+                           if v)
         if not self.given:
-            raise ValueError("a Stop needs at least one rule (residual, gradient, large_scale or lsqr_tests)")
+            raise ValueError("a Stop needs at least one rule (residual, gradient, large_scale or solver_tests)")
         self.state = dict.fromkeys(self.given)            # each rule's latest evaluation
         self.series = {n: [] for n in self.given}         # each rule's value per iteration (NaN: not evaluated)
         self.holds = []                                   # the combination per iteration
@@ -384,9 +397,9 @@ class StopRules:
             evaluated['gradient'] = self._gradient(itn, watch)
         if self.large_scale is not None:
             evaluated['large_scale'] = self._large_scale(itn, watch)
-        if self.lsqr:
-            flags = {name: bool(tests[LSQR_TESTS.index(name)]) for name in self.lsqr}
-            evaluated['lsqr_tests'] = {'holds': any(flags.values()), 'value': float(any(flags.values())),
+        if self.solver_tests:
+            flags = {name: bool(tests[SOLVER_TESTS.index(name)]) for name in self.solver_tests}
+            evaluated['solver_tests'] = {'holds': any(flags.values()), 'value': float(any(flags.values())),
                                        'tests': flags, 'at': itn}
         for n in self.given:
             st = evaluated.get(n)
@@ -413,8 +426,12 @@ class StopRules:
                 return None
             old, new = watch.check_value(itn - w, 'true_residual'), watch.check_value(itn, 'true_residual')
             measured = f'the true |b - A x|, every {int(every)} iterations'
-        decrease = (old - new) / old if old > 0 else 0.0
-        return {'holds': bool(decrease < rule.below), 'value': float(decrease), 'below': float(rule.below),
+        if not (math.isfinite(old) and math.isfinite(new)):
+            decrease = math.nan                 # not measured (the true residual could not be computed)
+        else:
+            decrease = (old - new) / old if old > 0 else 0.0
+        return {'holds': bool(math.isfinite(decrease) and decrease < rule.below), 'value': float(decrease),
+                'below': float(rule.below),
                 'window': w, 'measured': measured, 'at': itn, 'from': float(old), 'to': float(new)}
 
     def _gradient(self, itn, watch):
@@ -433,8 +450,12 @@ class StopRules:
             largest = max(watch.check_value(k, 'true_gradient') for k in range(itn - w + e, itn + 1, e))
             start = watch.check_value(0, 'true_gradient')
             measured = f'the true |A^T r|, every {e} iterations'
-        ratio = largest / start if start > 0 else 0.0
-        return {'holds': bool(ratio <= rule.below), 'value': float(ratio), 'below': float(rule.below), 'window': w,
+        if not (math.isfinite(largest) and math.isfinite(start)):
+            ratio = math.nan                    # not measured (the true gradient could not be computed)
+        else:
+            ratio = largest / start if start > 0 else 0.0
+        return {'holds': bool(math.isfinite(ratio) and ratio <= rule.below), 'value': float(ratio),
+                'below': float(rule.below), 'window': w,
                 'measured': measured, 'at': itn, 'largest': float(largest), 'start': float(start)}
 
     def _large_scale(self, itn, watch):
@@ -469,6 +490,13 @@ class StopRules:
         out['stop_holds'] = np.asarray(self.holds, dtype=bool)
         return out
 
+    def solver_tests_note(self) -> str:
+        """Whether the solver's own tolerance tests could stop the solve, for the record: with a Stop,
+        only those kept as its rule ``solver_tests``; without them, the tolerances are unused."""
+        if self.solver_tests:
+            return f"{', '.join(self.solver_tests)} (a rule of the Stop)"
+        return "off: atol, btol and conlim unused (a Stop without solver_tests)"
+
     def policy_json(self) -> str:
         p = self.policy
         d = p.to_dict() if hasattr(p, 'to_dict') else {'repr': repr(p)}
@@ -500,7 +528,7 @@ class StopRules:
                     f"at {st['at'][1]}: {terms}; the rule: less than {st['below']:g})")
         held = [k for k, v in st['tests'].items() if v]
         return (f"{_RULE_TITLES[n]} {verdict} at iteration {st['at']}"
-                + (f": {', '.join(f'{k} (istop {LSQR_TESTS.index(k) + 1})' for k in held)}" if held else
+                + (f": {', '.join(f'{k} (istop {SOLVER_TESTS.index(k) + 1})' for k in held)}" if held else
                    f" (kept: {', '.join(st['tests'])})"))
 
 
@@ -540,12 +568,14 @@ class Watch:
         self.checks = []              # one dict per check, in iteration order
         self._by_itn = {}
         self._op = self._b = None
+        self._warned_b = False
         self.stopped = None           # the iteration a rule ended the solve at
 
     # ---- setting up --------------------------------------------------------------------------------
     def bind(self, operator, b, *, scale=None, active=None, num_cols=None):
         """Give the watch the solve's operator (the column-scaled ``A`` the solver runs on),
-        ``b`` (a function returning the right-hand side the solver started from: the parked copy),
+        ``b`` (a function returning the right-hand side the solver started from: LSMR's own, or LSQR's
+        parked copy; None when it could not be parked, and then the true values are NaN),
         the column scaling ``scale`` (``x * scale`` is physical; None: unscaled), the active columns
         ``active`` (an :class:`~selfcal.core.snapshots.ActiveColumns`, None: every column) and the
         full layout's ``num_cols``; prepares the large-scale fit."""
@@ -601,8 +631,14 @@ class Watch:
         """``(|b - A x|, |A^T (b - A x) - damp^2 x| or NaN)``, accumulated in float64; one product
         ``A x`` (and ``A^T r`` with ``gradient``), the residual written over the first product's
         output for the second."""
-        ax = self._op.matvec(x)
         b = self._b()
+        if b is None:
+            if not self._warned_b:
+                self._warned_b = True
+                logger.warning("monitor: the right-hand side could not be kept (see above), so the true residual "
+                               "and gradient are not computed (NaN in the history); a stop rule on them never holds")
+            return math.nan, math.nan
+        ax = self._op.matvec(x)
         rr = 0.0
         for s in range(0, ax.shape[0], _BLOCK):
             e = min(ax.shape[0], s + _BLOCK)
@@ -642,8 +678,8 @@ class Watch:
     # ---- the end ---------------------------------------------------------------------------------------
     def finish(self, record):
         """Enter the stop record on ``record`` (a :class:`~selfcal.core.solve_record.SolveRecord`; a
-        solve with stop rules: ``stop_rule``, ``stop_iteration``, ``stop_values``, ``stop_policy``),
-        keep this watch on it (its history file gets :meth:`arrays`), and say in the log what
+        solve with stop rules: ``stop_rule``, ``stop_iteration``, ``stop_values``, ``stop_policy``,
+        and ``solver_tests``, whether the solver's own tests could stop it), keep this watch on it (its history file gets :meth:`arrays`), and say in the log what
         ended the solve. Drops the watch's references to the solve (the operator, and with it
         ``A``; the right-hand side; the column scaling; the active columns), so that keeping the
         record keeps none of them alive."""
@@ -663,6 +699,7 @@ class Watch:
         record.stop_iteration = int(itn)
         record.stop_values = json.dumps(r.values(itn), sort_keys=True)
         record.stop_policy = r.policy_json()
+        record.solver_tests = r.solver_tests_note()
         logger.info(self.describe_stop(record))
 
     def describe_stop(self, record) -> str:
@@ -670,7 +707,9 @@ class Watch:
         r = self.rules
         joined = ' and ' if r.combine == 'all' else ' or '
         policy = (f"stop rules ({joined.strip()} of: {', '.join(_RULE_TITLES[n][4:] for n in r.given)}"
-                  + (f"; not before iteration {r.min_iterations}" if r.min_iterations else '') + ')')
+                  + (f"; not before iteration {r.min_iterations}" if r.min_iterations else '')
+                  + ("" if r.solver_tests else "; the solver's tolerance tests off: atol, btol and conlim unused")
+                  + ')')
         if r.fired is not None:
             itn, held = r.fired
             head = (f"Stopped by {' and '.join(_RULE_TITLES[n] for n in held)} at iteration {itn} "
@@ -678,7 +717,7 @@ class Watch:
         else:
             itn = int(record.iterations)
             head = (f"No stop rule ended the solve ({policy}); it stopped after {itn} iterations with istop "
-                    f"{record.istop}: {record.stop}. The rules then:")
+                    f"{record.istop}: {record.stop_reason}. The rules then:")
         return head + ''.join(f"\n  {r.describe(n, r.state[n])}." for n in r.given)
 
     def arrays(self, before=0) -> dict:

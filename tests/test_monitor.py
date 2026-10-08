@@ -98,10 +98,23 @@ def _near_null_system(weak=0.005, noise=0.05, seed=0, hole=3):
 NEAR_NULL = _near_null_system()
 
 
+@pytest.fixture(scope='module', autouse=True)
+def scratch(tmp_path_factory):
+    """The scratch directory the solves of this module park their right-hand side in."""
+    global _SCRATCH
+    _SCRATCH = str(tmp_path_factory.mktemp('scratch'))
+    yield _SCRATCH
+    assert os.listdir(_SCRATCH) == []                   # every parked copy was removed
+
+
+_SCRATCH = None
+
+
 def _solve(stop=None, monitor=None, solver='lsqr', iter_lim=150, **kw):
     A, b, active, n_full = NEAR_NULL
     opts = dict(ref_shape=(H, W), atol=0.0, btol=0.0, conlim=0.0, damp=0.0, solver=solver, n_threads=1,
-                use_float32=False, iter_lim=iter_lim, active_mask=active, num_cols_full=n_full, return_record=True)
+                use_float32=False, iter_lim=iter_lim, active_mask=active, num_cols_full=n_full, return_record=True,
+                scratch_dir=_SCRATCH)
     opts.update(kw)
     return apply_lsqr(A.copy(), b.copy(), stop=stop, monitor=monitor, **opts)
 
@@ -125,7 +138,8 @@ def test_residual_and_gradient_rules_stop_before_the_large_scales_converge(solve
                   ('large_scale', sc.Stop(large_scale=sc.LargeScaleRule(1e-2, every=10))))}
     its = {name: rec.iterations for name, (x, rec) in early.items()}
     for name, (x, rec) in early.items():
-        assert rec.istop == RULE_ISTOP and rec.stop == STOP_REASONS[RULE_ISTOP]
+        assert rec.istop == RULE_ISTOP and rec.stop_reason == STOP_REASONS[RULE_ISTOP]
+        assert rec.solver_tests.startswith('off: atol, btol and conlim unused')
         assert rec.stop_rule == name and rec.stop_iteration == rec.iterations
     assert its['gradient'] <= 20 and its['residual'] <= 25 and its['large_scale'] >= 60
     for name in ('gradient', 'residual'):
@@ -254,7 +268,7 @@ def test_each_rule_fires_where_it_should_and_not_before():
     tests = lambda itn: (itn >= 30, itn >= 20, itn >= 10, False, False, False, False)  # noqa: E731
     for kept, at in ((True, 10), (('compatible',), 30), (('least_squares',), 20), (('condition',), 10),
                      (('compatible', 'least_squares'), 20)):
-        itn, rules = _run_rules(sc.Stop(lsqr_tests=kept), _FakeWatch(), 50, tests)
+        itn, rules = _run_rules(sc.Stop(solver_tests=kept), _FakeWatch(), 50, tests)
         assert itn == at, kept
 
 
@@ -267,31 +281,52 @@ def test_a_watch_returns_the_hard_stops():
         w.history.add(code, 1, 1, 1, 0, 0, 0, 1, 1)
         tests = tuple(k == code - 1 for k in range(7))
         assert w(code, None, 0, tests) == code
-    # the solver's tolerance tests without lsqr_tests: ignored
+    # the solver's tolerance tests without solver_tests: ignored
     w.history.add(8, 1, 1, 1, 0, 0, 0, 1, 1)
     assert w(8, None, 1, (True, True, True, False, False, False, False)) == 0
 
 
 def test_the_solver_tests_switchable_on_their_own():
-    """On a well-conditioned system the default tolerances stop LSQR at k; Stop(lsqr_tests=True) stops at
+    """On a well-conditioned system the default tolerances stop LSQR at k; Stop(solver_tests=True) stops at
     the same k with the same solution (istop 8, the test recorded); a Stop without them runs on."""
     A = sp.random(400, 60, density=0.2, random_state=1, format='csr')
     b = np.random.default_rng(0).normal(size=400)
     kw = dict(ref_shape=(1, 1), damp=0.0, n_threads=1, solver='lsqr', iter_lim=200, return_record=True,
-              atol=1e-6, btol=1e-6)
+              atol=1e-6, btol=1e-6, scratch_dir=_SCRATCH)
     x, plain = apply_lsqr(A.copy(), b.copy(), **kw)
-    assert plain.istop in (1, 2)
-    x1, rec = apply_lsqr(A.copy(), b.copy(), stop=sc.Stop(lsqr_tests=True), **kw)
+    assert plain.istop in (1, 2) and plain.solver_tests is None and 'solver_tests' not in plain.attrs()
+    x1, rec = apply_lsqr(A.copy(), b.copy(), stop=sc.Stop(solver_tests=True), **kw)
     assert _same(x, x1) and rec.iterations == plain.iterations and rec.istop == RULE_ISTOP
-    st = json.loads(rec.stop_values)['rules']['lsqr_tests']
-    assert rec.stop_rule == 'lsqr_tests' and st['holds'] and st['tests'][{1: 'compatible', 2: 'least_squares'}[
+    assert rec.solver_tests == 'compatible, least_squares, condition (a rule of the Stop)'
+    assert rec.true_residual == plain.true_residual
+    st = json.loads(rec.stop_values)['rules']['solver_tests']
+    assert rec.stop_rule == 'solver_tests' and st['holds'] and st['tests'][{1: 'compatible', 2: 'least_squares'}[
         plain.istop]]
     h = plain.history.arrays()
     first_ls = int(np.argmax(h['test2'][1:] <= 1e-6)) + 1
-    x2, ls = apply_lsqr(A.copy(), b.copy(), stop=sc.Stop(lsqr_tests='least_squares'), **kw)
+    x2, ls = apply_lsqr(A.copy(), b.copy(), stop=sc.Stop(solver_tests='least_squares'), **kw)
     assert ls.iterations == first_ls
     x3, off = apply_lsqr(A.copy(), b.copy(), stop=sc.Stop(gradient=1e-30), **kw)
     assert off.iterations > plain.iterations and off.istop in (4, 5, 6, 7) and off.stop_rule == 'none'
+    assert off.solver_tests == 'off: atol, btol and conlim unused (a Stop without solver_tests)'
+
+
+def test_without_the_right_hand_side_the_true_values_are_nan_and_their_rules_never_hold(caplog):
+    """LSQR's copy of b could not be parked (here: no scratch directory): the monitor's true residual and
+    gradient are NaN, a rule on them never holds (the solve runs to its limit), and the solution is the
+    same; the estimate-based rules are unaffected."""
+    with caplog.at_level(logging.WARNING, logger='selfcal.core.monitor'):
+        x, rec = _solve(stop=sc.Stop(residual=sc.ResidualRule(1e-3, window=10, every=5)), monitor=sc.Monitor(5),
+                        iter_lim=60, scratch_dir=None)
+    assert any('true residual and gradient are not computed' in r.getMessage() for r in caplog.records)
+    assert rec.istop == 7 and rec.iterations == 60 and rec.stop_rule == 'none' and np.isnan(rec.true_residual)
+    arr = rec.watch.arrays()
+    assert 'true_residual' not in arr and np.all(np.isnan(arr['stop_residual']))      # never measured
+    st = json.loads(rec.stop_values)['rules']['residual']
+    assert not st['holds'] and st['value'] is None
+    assert _same(x, _solve(iter_lim=60)[0])
+    g = _solve(stop=sc.Stop(gradient=1e-3), scratch_dir=None)[1]                      # the estimate: as before
+    assert g.stop_rule == 'gradient' and g.iterations == _solve(stop=sc.Stop(gradient=1e-3))[1].iterations
 
 
 def test_monitors_and_rules_need_the_csr_system():
@@ -340,12 +375,12 @@ def test_the_settings():
     assert s.residual == sc.ResidualRule(1e-3) and s.gradient == sc.GradientRule(2e-3)
     assert s.large_scale == sc.LargeScaleRule(1e-2) and s.combine == 'all' and s.rules == (
         'residual', 'gradient', 'large_scale')
-    assert sc.Stop(lsqr_tests=['condition', 'compatible', 'least_squares']).lsqr_tests is True
-    assert sc.Stop(lsqr_tests='condition').tests == ('condition',) and sc.Stop(lsqr_tests=True).tests == (
+    assert sc.Stop(solver_tests=['condition', 'compatible', 'least_squares']).solver_tests is True
+    assert sc.Stop(solver_tests='condition').tests == ('condition',) and sc.Stop(solver_tests=True).tests == (
         'compatible', 'least_squares', 'condition')
-    for bad, match in ((dict(), 'at least one rule'), (dict(lsqr_tests=()), 'at least one rule'),
+    for bad, match in ((dict(), 'at least one rule'), (dict(solver_tests=()), 'at least one rule'),
                        (dict(residual=0), 'positive'), (dict(gradient=1e-3, combine='both'), 'expected one of'),
-                       (dict(lsqr_tests='fast'), "one of 'compatible'"), (dict(gradient=1e-3, min_iterations=-1), '0')):
+                       (dict(solver_tests='fast'), "one of 'compatible'"), (dict(gradient=1e-3, min_iterations=-1), '0')):
         with pytest.raises(ConfigError, match=match):
             sc.Stop(**bad)
     with pytest.raises(ConfigError, match='multiple of every'):
@@ -353,16 +388,28 @@ def test_the_settings():
     with pytest.raises(ConfigError, match='degree'):
         sc.LargeScaleRule(1e-3, degree=0)
     with pytest.raises(ConfigError, match='tolerance=0 turns'):
-        sc.Fit(100, tolerance=0, stop=sc.Stop(lsqr_tests=True))
-    with pytest.raises(ConfigError, match='no rule could end'):
-        sc.Fit(100, stop=sc.Stop(gradient=1e-3, min_iterations=101))
+        sc.Fit(100, tolerance=0, stop=sc.Stop(solver_tests=True))
+    # a rule that cannot hold before the limit: a note of the plan, not an error
+    late = sc.Fit(100, stop=sc.Stop(gradient=1e-3, min_iterations=101))
+    assert late.stop.unreachable(100) == [
+        'min_iterations=101 is after the iteration limit (100)',
+        'so no stop rule can end the solve: it runs its 100 iterations (or stops at machine precision)']
+    assert sc.Stop(large_scale=sc.LargeScaleRule(1e-3, every=10)).unreachable(5)[0] == \
+        'the large-scale rule cannot hold before iteration 20, after the iteration limit (5)'
+    assert sc.Stop(gradient=sc.GradientRule(1e-3, window=30)).unreachable(20)[0].startswith(
+        'the gradient rule cannot hold before iteration 30')
+    some = sc.Stop(gradient=1e-3, large_scale=sc.LargeScaleRule(1e-3, every=50), combine='any').unreachable(60)
+    assert len(some) == 1 and some[0].startswith('the large-scale rule')        # "any": the gradient can still
+    assert len(sc.Stop(gradient=1e-3, large_scale=sc.LargeScaleRule(1e-3, every=50)).unreachable(60)) == 2
+    assert sc.Stop(gradient=1e-3, solver_tests=True).unreachable(10) == []
     assert sc.Monitor() == sc.Monitor(10) and sc.Monitor().large_scale is True
     for bad in (dict(every=0), dict(large_scale=9), dict(step=0),
                 dict(residual=False, gradient=False, large_scale=False)):
         with pytest.raises(ConfigError):
             sc.Monitor(**bad)
-    from selfcal.run.schedule import as_monitor
+    from selfcal.run.schedule import as_monitor, as_snapshots
     assert as_monitor(5) == sc.Monitor(5) and as_monitor(True) == sc.Monitor() and as_monitor(None) is None
+    assert as_monitor(False) is None and as_snapshots(False) is None and as_snapshots(None) is None
     with pytest.raises(ConfigError, match='a sc.Monitor'):
         as_monitor('5')
     # one large-scale fit per solve: a monitor asking for another than the rule's is refused
@@ -465,6 +512,8 @@ def test_the_stop_record_in_the_cal_the_record_and_the_log(field, caplog):
     g = values['rules']['gradient']
     assert values['iteration'] == n and g['holds'] and g['value'] <= 1e-3 and g['window'] == 5
     assert policy == stop.to_dict()
+    assert solve['solver_tests'] == 'off: atol, btol and conlim unused (a Stop without solver_tests)'
+    assert 'stop' not in solve and solve['stop_reason'] == STOP_REASONS[RULE_ISTOP]
     assert f"Stopped by the gradient rule at iteration {n}" in out and 'the gradient rule holds' in out
     (entry,) = json.load(open(res.record))['solves']
     assert entry['stop_rule'] == 'gradient' and entry['stop_values'] == values and entry['stop_policy'] == policy
@@ -476,8 +525,14 @@ def test_the_stop_record_in_the_cal_the_record_and_the_log(field, caplog):
     a = products.cal_inputs(field, _recipe(300, name='stopped', stop=stop), job, field.frames)
     b = products.cal_inputs(field, plain, job, field.frames)
     assert products.fingerprint(a) != products.fingerprint(b) and 'stop' not in json.dumps(b['fit'])
-    assert 'stop        the largest |A^T r| over 5 iterations at most 0.001 of its start; not before iteration 8' \
+    assert ("stop        the largest |A^T r| over 5 iterations at most 0.001 of its start; not before iteration 8; "
+            "the solver's tolerance tests off (tolerance=0 unused: a Stop without solver_tests)") \
         in str(field.plan(_recipe(300, name='stopped', stop=stop)))
+    loose = sc.Recipe(sc.continuum(), fit=sc.Fit(300, stop=stop), coadd=None, numerics=NUMERICS, name='stopped')
+    assert "the solver's tolerance tests off (atol, btol (tolerance=1e-06) and conlim unused" in str(field.plan(loose))
+    kept = loose.replace(fit=sc.Fit(300, stop=stop.replace(solver_tests=True)))
+    shown = str(field.plan(kept))
+    assert "tolerance tests off" not in shown and "the solver's tests compatible, least_squares, condition" in shown
 
 
 def test_snapshots_monitors_and_a_stop_together(field):
@@ -508,6 +563,21 @@ def test_tiles_are_monitored_one_history_each(field):
         assert list(h['check_itn']) == [0, 3, 6] and e['monitor']['checks'] == 3
 
 
+def test_a_rule_that_cannot_fire_is_a_note_of_the_plan(field, caplog):
+    stop = sc.Stop(large_scale=sc.LargeScaleRule(1e-3, every=10))
+    with caplog.at_level(logging.WARNING, logger='selfcal.run.plan'):
+        plan = field.plan(_recipe(5, name='never', stop=stop))
+    assert ('note        stop rules: the large-scale rule cannot hold before iteration 20, after the iteration '
+            'limit (5)') in str(plan)
+    assert any('the large-scale rule cannot hold' in r.getMessage() for r in caplog.records)
+    assert not [n for n in field.plan(_recipe(40, name='never', stop=stop)).notes if 'stop rules' in n]
+    res = field.calibrate(_recipe(5, name='never', stop=stop), monitor=False, snapshots=False)
+    with CalFile(res.cal_paths[0]) as c:
+        assert c.solve['iterations'] == 5 and c.solve['stop_rule'] == 'none'
+    record = json.load(open(res.record))
+    assert 'monitor' not in record['settings'] and 'snapshots' not in record['settings']
+
+
 def test_a_mosaic_takes_no_monitor(field):
     from selfcal.run.plan import make_plan
     with pytest.raises(ConfigError, match='only a calibration'):
@@ -527,4 +597,6 @@ def test_history_files_of_old_solves_read_as_before(tmp_path):
                                           'test1', 'test2', 'elapsed_s'])
     with h5py.File(tmp_path / 'c.h5', 'w') as f:
         rec.write(f.create_group('solve'))
-        assert not any(k.startswith('stop_') for k in f['solve'].attrs)
+        attrs = set(f['solve'].attrs)
+        assert 'stop_reason' in attrs and not attrs & {'stop_rule', 'stop_iteration', 'stop_values', 'stop_policy',
+                                                       'solver_tests'}

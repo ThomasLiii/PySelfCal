@@ -43,7 +43,7 @@ from ..io.atomic import atomic_path
 __all__ = ['sidecar_path', 'read_sidecar', 'write_sidecar', 'fingerprint', 'check', 'cal_inputs',
            'mosaic_inputs', 'stitched_inputs', 'pass_inputs', 'frames_digest', 'diff_inputs', 'Product', 'Book',
            'expected_products', 'verify', 'remove_product', 'clear_stale_intermediates', 'start_identity',
-           'start_label']
+           'start_label', 'recorded_start']
 
 SCHEMA = 1
 
@@ -294,6 +294,30 @@ def start_label(identity) -> str:
     return f'{kind}:{value}'
 
 
+def recorded_start(cal_path) -> dict | None:
+    """The start an existing cal was continued from, as its inputs hold it (:func:`start_identity`),
+    or None (a cal solved from the default guess, or no such cal): its sidecar's ``start`` input,
+    else the ``start_identity`` its ``solve`` group records (:func:`start_label`, read back). An
+    action that reuses a cal without solving it (a mosaic of it) takes the cal's start from here."""
+    path = os.fspath(cal_path)
+    if not os.path.exists(path):
+        return None
+    side = read_sidecar(path)
+    if side is not None:
+        start = (side.get('inputs') or {}).get('start')
+        return dict(start) if isinstance(start, dict) else None
+    try:
+        from ..io.calfile import CalFile
+        with CalFile(path) as cal:
+            label = (cal.solve or {}).get('start_identity')
+    except Exception:
+        return None
+    if not isinstance(label, str) or ':' not in label:
+        return None
+    kind, value = label.split(':', 1)
+    return {kind: value}
+
+
 def stitched_inputs(tile_fingerprints, line) -> dict:
     """The inputs of a stitched cal: its tile cals (by fingerprint)."""
     return {'kind': 'stitched', 'tiles': dict(sorted(tile_fingerprints.items())), 'line': bool(line)}
@@ -359,11 +383,17 @@ class Book:
     called by the engine as each product is written (``RunSpec.on_product``), its sidecar. The
     same builders serve both, so a product the run writes is current for the same settings later.
     Each solve the engine ends (``kind="solve"``) is entered in the action's record
-    (``action_record``: :meth:`selfcal.run.records.Record.add_solve`)."""
+    (``action_record``: :meth:`selfcal.run.records.Record.add_solve`).
 
-    def __init__(self, field, recipe, *, passes=None, tiles=None, record=None, start=None):
+    ``start``: ``{job name: the cal its solve starts from}`` (``calibrate(start=...)``).
+    ``recorded_starts``: an action that uses existing cals without solving them (a mosaic) takes
+    each cal's start from the cal itself (:func:`recorded_start`), so a continued cal is current
+    for it."""
+
+    def __init__(self, field, recipe, *, passes=None, tiles=None, record=None, start=None, recorded_starts=False):
         self.field, self.recipe, self.passes, self.tiles = field, recipe, passes, tiles
         self.start = start             # {job name: the cal its solve starts from} (calibrate(start=...))
+        self.recorded_starts = bool(recorded_starts)
         self.record = record           # the action record's path (the sidecars name it)
         self.action_record = None      # the action's Record (its solves are entered in it)
         self.expected = {}             # path -> inputs thunk (the products the action knows of)
@@ -380,10 +410,15 @@ class Book:
         return product_fingerprint(path)
 
     # ---- inputs -------------------------------------------------------------------------------
-    def cal(self, job, frames, tile=None):
+    def cal(self, job, frames, tile=None, path=None):
+        """The inputs of ``job``'s cal (``path``: the cal, for an action that takes the start a cal
+        records, ``recorded_starts``)."""
         start = self.start.get(job.name) if self.start else None
-        return cal_inputs(self.field, self.recipe, job, frames, passes=self.passes, tile=tile,
-                          start=None if start is None else start_identity(start))
+        if start is not None:
+            start = start_identity(start)
+        elif self.recorded_starts and path is not None:
+            start = recorded_start(path)
+        return cal_inputs(self.field, self.recipe, job, frames, passes=self.passes, tile=tile, start=start)
 
     def tile_key(self, tile):
         return {'name': tile.name, 'box': [int(v) for v in tile.bbox], 'assign': self.tiles.assign,
@@ -440,7 +475,7 @@ def expected_products(plan, book, frames) -> list:
                 elsewhere = plan.action == 'mosaic' and spec.cal_override
                 cal = os.fspath(spec.cal_override) if elsewhere else ctx.cal_path(job)
                 if not elsewhere:
-                    add(Product('cal', cal, job, lambda job=job: book.cal(job, frames)))
+                    add(Product('cal', cal, job, lambda job=job, cal=cal: book.cal(job, frames, path=cal)))
                 init = cal
                 if plan.action == 'mosaic' or (recipe.coadd is not None and passes is None):
                     frame_dir = spec.frames.in_place or ctx.pipeline_config.reproj_dir

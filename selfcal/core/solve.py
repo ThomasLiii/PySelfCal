@@ -20,6 +20,7 @@ from the solver's thread (:class:`~selfcal.core.monitor.Watch`;
 from __future__ import annotations
 
 import logging
+import math
 import mmap as _mmap
 import os
 import time
@@ -728,8 +729,8 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
     return op
 
 _SOLVERS = ('lsqr', 'lsmr')
-# The pieces of b the final residual is accumulated over (float64 temporaries of ~400 MB).
-_RESIDUAL_BLOCK = 50_000_000
+# The pieces of b the final residual is accumulated over (float64 temporaries of 64 MB).
+_RESIDUAL_BLOCK = 1 << 23
 
 
 def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
@@ -761,7 +762,10 @@ def _iteration_limit(solver, iter_lim, shape):
 
 def _true_residual(matvec, x, b):
     """``(|b - A x|, |b|)`` from one product ``A x``, accumulated in float64 over pieces of ``b``
-    (which may be memory-mapped)."""
+    (an array, or a :class:`~selfcal.core.spill.ParkedVector` read a piece at a time); ``(NaN,
+    NaN)`` when ``b`` is None (it could not be kept)."""
+    if b is None:
+        return math.nan, math.nan
     ax = matvec(x)
     rr = bb = 0.0
     for start in range(0, b.shape[0], _RESIDUAL_BLOCK):
@@ -781,9 +785,10 @@ def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter
     rec = SolveRecord.from_result(solver, result, history=history, true_residual=residual[0], bnorm=residual[1],
                                   atol=atol, btol=btol, conlim=conlim, damp=damp, iteration_limit=limit,
                                   shape=shape, wall_s=wall_s)
-    logger.info(f"{solver.upper()} stopped after {rec.iterations} iterations (istop {rec.istop}: {rec.stop}) "
+    logger.info(f"{solver.upper()} stopped after {rec.iterations} iterations (istop {rec.istop}: {rec.stop_reason}) "
                 f"in {wall_s:.1f} s; |b - A x| = {rec.true_residual:.6e} (estimate r1norm {rec.r1norm:.6e}), "
-                f"|b| = {rec.bnorm:.6e}")
+                f"|b| = {rec.bnorm:.6e}" + (" (not computed: the right-hand side could not be kept)"
+                                            if math.isnan(rec.true_residual) else ''))
     return rec
 
 
@@ -797,7 +802,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 a_owned: bool = False, conlim: float = 1e8,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
-                sky_names=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                sky_names=None, scratch_dir=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -880,6 +885,14 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         The sky terms, in block order (the first ``len(sky_names) * ref_h * ref_w``
         columns, one ``ref_shape`` grid each), for the large-scale fit (None: one
         term, ``sky``).
+    scratch_dir : str or None, optional
+        Where an LSQR solve on the CSR / block system parks the copy of ``b``
+        it needs after LSQR has overwritten ``b`` (the true residual at the
+        end, the monitors' checks): always on disk, never in memory
+        (:class:`~selfcal.core.spill.ParkedVector`; the run engine gives the
+        run's scratch directory). None, or a directory it cannot be written
+        to: no copy, and those residuals are recorded as NaN (a warning says
+        why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
 
     Returns
     -------
@@ -891,8 +904,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         estimates, its history per iteration (none on the COO path's LSQR,
         scipy's, which has no hook) and the true residual ``|b - A x|``
         (one product with the solution, accumulated in float64; the
-        right-hand side LSQR overwrites is kept for it as a
-        :class:`~selfcal.core.spill.ParkedVector`).
+        right-hand side LSQR overwrites is parked on disk for it,
+        ``scratch_dir``; NaN when it could not be).
     """
     if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
         raise TypeError(
@@ -1089,9 +1102,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         # reference so the solver can release the m-length vector for the
         # rest of the solve. LSMR (scipy's, recorded) reads b in place and
         # keeps it. The final residual needs b after the solve: LSQR's copy
-        # is parked (on scratch disk above the spill threshold).
+        # is parked on disk (never in memory) in scratch_dir; without it
+        # (none given, or the write failed) the residuals are NaN.
         _b_owned = [b]
-        _b_kept = ParkedVector(b, label='the right-hand side (for the final residual)') if solver == 'lsqr' else None
         del b
         history = SolveHistory()
         solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
@@ -1115,8 +1128,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             solve_kw.update(callback=_on_iteration, callback_every=int(snapshot_every))
 
         def _rhs():
-            # The right-hand side the solver started from (LSQR's parked copy; LSMR keeps its own).
-            return _b_kept.array() if _b_kept is not None else _b_owned[0]
+            # The right-hand side the solver started from (LSQR's parked copy, None when it could
+            # not be parked; LSMR keeps its own).
+            if _b_kept is not None:
+                return _b_kept if _b_kept.available else None
+            return _b_owned[0]
 
         def _watch(operator):
             if watch is not None:
@@ -1135,6 +1151,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 watch.finish(rec)
             return rec
 
+        _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
+                   if solver == 'lsqr' else None)
         try:
             if is_block or is_split:
                 op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)

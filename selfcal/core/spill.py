@@ -23,10 +23,17 @@ small runs pay no I/O at all; for tens-of-GB arrays the save+reload round
 trip costs tens of seconds of scratch-disk I/O, negligible against a
 setup+solve that runs for hours. ``$SELFCAL_SPILL_DIR`` overrides the
 location.
+
+:class:`ParkedVector` keeps the right-hand side of an LSQR solve, which the solver overwrites, on
+disk in the run's scratch directory for the residual checks after it (always on disk, never in
+memory).
 """
+import contextlib
 import logging
 import os
+import re
 import shutil
+import socket
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -158,49 +165,132 @@ def restore_pixel_state(spill_dir, cleanup=True, mmap_mode=None):
 
 
 class ParkedVector:
-    """A copy of a vector kept for one read after the solve: in memory below the spill threshold,
-    else on scratch disk.
+    """A copy of a vector parked on disk for reads after the solve has overwritten the original.
 
     LSQR overwrites its right-hand side ``b`` (``lsqr_inplace`` uses its buffer as the first
-    Lanczos vector), yet the solve record needs ``|b - A x|`` at the end. Below
-    ``$SELFCAL_SPILL_MIN_GB`` (default 4 GB, the pixel state's threshold) the copy stays in memory;
-    above it, it is written to a fresh directory under ``$SELFCAL_SPILL_DIR`` (default the system
-    temporary directory) and memory-mapped back for the read, so a production solve keeps its
-    resident memory (an m-length vector is ~8 GB at 2e9 rows) for a few tens of seconds of I/O.
-    ``np.save`` round-trips the values exactly. :meth:`discard` removes the copy.
+    Lanczos vector), yet the record of the solve needs ``|b - A x|`` at the end (and the monitors
+    at their checks). The copy is never kept in memory, whatever its size: it is written to
+    ``directory`` (the run's scratch directory, which the run engine gives) as one ``.npy`` file,
+    and read back a piece at a time through a short-lived memory map (:meth:`__getitem__`), so the
+    solve's resident memory does not grow by the vector and no read maps more than the piece it
+    returns. ``np.save`` round-trips the values exactly.
+
+    Parking is best effort: when ``directory`` is None, or the file cannot be written (no space, an
+    unwritable directory, ...), the reason is logged (a warning for a failure) and :attr:`available`
+    is False; the solve goes on, and the residuals that need the vector are recorded as NaN.
+    :meth:`discard` removes the file. The file is named after this machine and process,
+    ``selfcal_parked_<host>_<pid>_<random>.npy``; parking sweeps the files a dead process of this
+    machine left in ``directory`` (a killed run).
     """
 
-    __slots__ = ('_array', '_dir')
+    __slots__ = ('_path', '_dtype', '_shape', '_offset', 'reason')
 
-    def __init__(self, vec, label='', min_gb=None):
-        vec = np.asarray(vec)
-        if min_gb is None:
-            min_gb = float(os.environ.get('SELFCAL_SPILL_MIN_GB', 4.0))
-        if vec.nbytes < min_gb * 2**30:
-            self._array, self._dir = vec.copy(), None
+    PREFIX = 'selfcal_parked_'
+
+    def __init__(self, vec, directory, label=''):
+        self._path = None
+        self._dtype = self._shape = self._offset = None
+        #: Why the vector is not available (None when it is).
+        self.reason = None
+        what = label or 'a vector'
+        if directory is None:
+            self.reason = 'no scratch directory was given to park it in'
+            logger.info(f"Not parking {what}: {self.reason}")
             return
-        base = os.environ.get('SELFCAL_SPILL_DIR') or tempfile.gettempdir()
-        self._dir = tempfile.mkdtemp(prefix='selfcal_vector_spill_', dir=base)
-        logger.info(f"Parking {label or 'a vector'} ({vec.nbytes/2**30:.1f} GB) in {self._dir}...")
-        np.save(os.path.join(self._dir, 'vector.npy'), vec, allow_pickle=False)
-        self._array = None
+        vec = np.asarray(vec)
+        path = None
+        try:
+            directory = os.fspath(directory)
+            os.makedirs(directory, exist_ok=True)
+            sweep_parked(directory)
+            fd, path = tempfile.mkstemp(prefix=f'{self.PREFIX}{_HOST}_{os.getpid()}_', suffix='.npy',
+                                        dir=directory)
+            logger.info(f"Parking {what} ({vec.nbytes / 2**30:.2f} GB) in {path}")
+            with os.fdopen(fd, 'wb') as fh:
+                np.save(fh, vec, allow_pickle=False)
+            mapped = np.load(path, mmap_mode='r')          # the header only: dtype, shape, offset
+            self._dtype, self._shape, self._offset = mapped.dtype, mapped.shape, int(mapped.offset)
+            del mapped
+            self._path, path = path, None
+        except Exception as e:                    # no space, unwritable, ...: the solve goes on
+            self.reason = f'{type(e).__name__}: {e}'
+            logger.warning(f"Could not park {what} in {directory} ({self.reason}); the solve goes on, and its "
+                           f"true residual |b - A x| is recorded as NaN")
+        finally:
+            if path is not None:                  # a partial file (an error, an interrupt)
+                with contextlib.suppress(OSError):
+                    os.remove(path)
 
     @property
-    def on_disk(self) -> bool:
-        """Whether the copy is on scratch disk."""
-        return self._dir is not None
+    def available(self) -> bool:
+        """Whether the copy is on disk, readable."""
+        return self._path is not None
 
-    def array(self) -> np.ndarray:
-        """The copy (memory-mapped, read-only, when it is on disk)."""
-        if self._dir is not None:
-            return np.load(os.path.join(self._dir, 'vector.npy'), mmap_mode='r')
-        if self._array is None:
-            raise ValueError("the parked vector was discarded")
-        return self._array
+    @property
+    def path(self) -> str | None:
+        """The file of the copy (None when it is not available)."""
+        return self._path
+
+    @property
+    def shape(self) -> tuple:
+        """The vector's shape (None when it is not available)."""
+        return self._shape
+
+    @property
+    def dtype(self):
+        """The vector's dtype (None when it is not available)."""
+        return self._dtype
+
+    def __len__(self):
+        return int(self._shape[0])
+
+    def __getitem__(self, key) -> np.ndarray:
+        """The elements ``key`` (a slice of step 1) as a new array, read through a memory map of
+        just those elements, unmapped before returning."""
+        if self._path is None:
+            raise ValueError(f"the parked vector is not available ({self.reason or 'discarded'})")
+        if not isinstance(key, slice):
+            raise TypeError("a parked vector is read by slices")
+        start, stop, step = key.indices(len(self))
+        if step != 1:
+            raise ValueError("a parked vector is read by slices of step 1")
+        if stop <= start:
+            return np.empty(0, dtype=self._dtype)
+        piece = np.memmap(self._path, dtype=self._dtype, mode='r', shape=(stop - start,),
+                          offset=self._offset + start * self._dtype.itemsize)
+        out = np.array(piece)                     # a copy; dropping the map unmaps it
+        del piece
+        return out
 
     def discard(self):
-        """Drop the copy (and its scratch directory)."""
-        self._array = None
-        if self._dir is not None:
-            shutil.rmtree(self._dir, ignore_errors=True)
-            self._dir = None
+        """Remove the copy."""
+        if self._path is not None:
+            with contextlib.suppress(OSError):
+                os.remove(self._path)
+            self._path = None
+
+
+_HOST = socket.gethostname().replace('_', '-') or 'host'
+_PARKED = re.compile(r'^' + re.escape(ParkedVector.PREFIX) + r'(?P<host>[^_]+)_(?P<pid>\d+)_.*\.npy$')
+
+
+def sweep_parked(directory) -> list[str]:
+    """Delete the parked vectors (:class:`ParkedVector`) that dead processes of this machine left in
+    ``directory`` (a killed run); returns their paths."""
+    from ..io.atomic import _alive
+    removed = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return removed
+    for name in names:
+        m = _PARKED.match(name)
+        if m is None or m['host'] != _HOST or _alive(int(m['pid'])):
+            continue
+        path = os.path.join(directory, name)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+            removed.append(path)
+    if removed:
+        logger.info(f"Removed {len(removed)} parked vector(s) of dead processes from {directory}")
+    return removed

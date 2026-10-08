@@ -241,7 +241,9 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     (:class:`~selfcal.run.schedule.Snapshots`; a plain calibration only). ``monitor``: checks of
     every solve every ``m`` iterations (:class:`~selfcal.run.schedule.Monitor`; a calibration).
     """
+    from .schedule import as_monitor, as_snapshots
     recipe = as_recipe(recipe)
+    snapshots, monitor = as_snapshots(snapshots), as_monitor(monitor)
     compute = compute or field.compute
     inst = field.instrument
     jobs = tuple(inst.default_jobs()) if jobs is None else ((jobs,) if not isinstance(jobs, (list, tuple))

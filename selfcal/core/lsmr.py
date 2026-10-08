@@ -10,18 +10,43 @@ row of every iteration, which returns the ``istop`` the solve goes on with (the 
 rules of :mod:`selfcal.core.monitor`). scipy's ``lsmr`` has no hook for any of them. The statements
 of the solve are scipy's, in scipy's order, so ``x`` and every returned scalar are bit-identical to
 scipy's (``tests/test_solve_record.py`` checks float32 and float64 systems, with and without ``x0``
-and damping); with ``history``, ``callback`` and ``watch`` None it is scipy's function.
+and damping); with ``history``, ``callback`` and ``watch`` None it is scipy's function. The Givens
+rotation it uses, scipy's private ``_sym_ortho``, is copied here too, so the
+module imports only scipy's public API.
 
 Copyright (C) 2010 David Fong and Michael Saunders (the algorithm and scipy's implementation).
 """
 from math import sqrt
 
-from numpy import atleast_1d, inf, result_type, zeros
+from numpy import atleast_1d, inf, result_type, sign, zeros
 from numpy.linalg import norm
 from scipy.sparse.linalg import aslinearoperator
-from scipy.sparse.linalg._isolve.lsqr import _sym_ortho
 
 __all__ = ['lsmr']
+
+
+def _sym_ortho(a, b):
+    """A stable Givens rotation: ``(c, s, r)`` with ``c a + s b = r``, ``-s a + c b = 0``.
+
+    scipy's private ``scipy.sparse.linalg._isolve.lsqr._sym_ortho`` (scipy 1.16.2), copied
+    statement for statement so the solve stays bit-identical to scipy's LSMR without importing a
+    private module (S.-C. Choi's ``SymOrtho``, "Iterative Methods for Singular Linear Equations and
+    Least-Squares Problems", dissertation, Stanford, 2006)."""
+    if b == 0:
+        return sign(a), 0, abs(a)
+    elif a == 0:
+        return 0, sign(b), abs(b)
+    elif abs(b) > abs(a):
+        tau = a / b
+        s = sign(b) / sqrt(1 + tau * tau)
+        c = s * tau
+        r = b / s
+    else:
+        tau = b / a
+        c = sign(a) / sqrt(1 + tau * tau)
+        s = c * tau
+        r = a / c
+    return c, s, r
 
 
 def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
