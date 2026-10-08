@@ -45,9 +45,9 @@ nav:
   - User guide:
       - How selfcal works: guide/concepts.md
       - The Python API: guide/python-api.md
-      - Run configuration (TOML): guide/configuration.md
       - Bring your own telescope: bring_your_own_telescope.md
       - Pipeline runbook: guide/pipeline.md
+      - Migrating from TOML: guide/migrating-from-toml.md
       - Glossary: guide/glossary.md
   - Tools:
       - Zodiacal-light anchor: tools/zodi-anchor.md
@@ -55,6 +55,7 @@ nav:
       - Transfer function details: tools/transfer-function-details.md
   - Developer guide:
       - Architecture: developer/architecture.md
+      - Settings and fingerprints: developer/settings.md
       - Testing: developer/testing.md
       - Regression gates: developer/gates.md
       - Documentation: developer/documentation.md

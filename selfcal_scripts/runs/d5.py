@@ -1,4 +1,4 @@
-"""NEP Detector 5, channels 23 to 34: the NumCol 10 fiducial (was configs/d5.toml)."""
+"""NEP Detector 5, channels 23 to 34: the NumCol 10 fiducial."""
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.spherex import POLY_K1, nep
 

@@ -10,16 +10,16 @@ sparse system from these per-subframe rows) and ``selfcal.core.solve``
 """
 import os
 import traceback
+from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
-from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import csr_matrix
 
+from ..geometry.map_helper import check_invalid, find_outliers, find_outliers_grouped
 from ..io.reproj import FrameLoadError
-from .subframe import _prep_subframe
-from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
 from ..models.offset_basis import eval_offset_basis, n_coef
 from ..models.variables import FrameObservations, ObservationVariables
+from .subframe import _prep_subframe
 
 
 def _prep_lsqr(task_params):
@@ -30,7 +30,6 @@ def _prep_lsqr(task_params):
 
     # 2. Unpack Config for Logic (per-map lists are length K; col_bases is length K+1)
     ref_shape = task_params['ref_shape']
-    num_frames = task_params['num_frames']
     num_chunks_list = task_params['num_chunks_list']
     outlier_thresh = task_params['outlier_thresh']
     reg_weight_list = task_params['reg_weight_list']
@@ -99,8 +98,8 @@ def _prep_lsqr(task_params):
             # Edges None (default) -> whole-frame, byte-identical. A detector
             # variable is binned on the subframe grid (the historical path);
             # any other variable at the frame's valid pixels.
-            edges = task_params.get('outlier_subchannel_edges')
-            wl_key = task_params.get('outlier_aux_key')
+            edges = task_params.get('outlier_group_edges')
+            wl_key = task_params.get('outlier_group_variable')
             if edges is not None and sub_aux is not None and wl_key in aux_keys:
                 bc_sub = sub_aux[aux_keys.index(wl_key)]
                 groups = np.digitize(bc_sub, edges)
@@ -232,7 +231,7 @@ def _prep_lsqr(task_params):
                 # (chunk-contrib, obs) entry emits n_coef nnz into coeff columns
                 # a[frame, group, k], coefficient w * chunk_val * B_k(coord).
                 pb = poly_basis_list[m]
-                ng = int(pb['num_groups']); ncf = n_coef(pb)
+                ng, ncf = int(pb['num_groups']), n_coef(pb)
                 coord = np.asarray(pb['chunk_coord'])[chunk_idx_m]
                 grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
                 B = eval_offset_basis(coord, pb)                                 # (n, ncf)

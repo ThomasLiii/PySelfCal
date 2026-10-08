@@ -1,5 +1,4 @@
-"""Reproject the SEP Detector 4 exposures (the /data3 copy) onto a reference grid fitted to them
-(was configs/reproject_sep_d4.toml)."""
+"""Reproject the SEP Detector 4 exposures (the /data3 copy) onto a reference grid fitted to them."""
 import selfcal as sc
 from selfcal_scripts.recipes.site import ORCA
 

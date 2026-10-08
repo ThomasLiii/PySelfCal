@@ -16,9 +16,8 @@ default::
             grid = sc.ChunkMap.rectangles("grid", (2048, 2048), (self.chunks, self.chunks))
             return sc.Geometry((2048, 2048), oversample, maps=[grid])
 
-The engine receives the instrument object itself; no registry is needed. Under the hood a
-built-in instrument lowers to the engine's registered instrument and its ``[instrument]``
-table (:meth:`Instrument.engine`), the form the TOML run configs use.
+The run engine receives the instrument object itself and calls the methods below; no registry
+is needed.
 """
 from __future__ import annotations
 
@@ -29,14 +28,14 @@ import numpy as np
 
 from ..config.base import Config, ConfigError
 from ..models.offset_structure import ChunkAxes
-from . import base as engine
+from . import base
 from .grid import upsample_chunk_map
 
 __all__ = ['Instrument', 'Job', 'Geometry', 'ChunkMap', 'ChunkAxes', 'JobGeometry', 'ExposureLayout']
 
-ChunkMap = engine.ChunkMap
-JobGeometry = engine.JobGeometry
-ExposureLayout = engine.ExposureLayout
+ChunkMap = base.ChunkMap
+JobGeometry = base.JobGeometry
+ExposureLayout = base.ExposureLayout
 
 
 def Geometry(shape, oversample, maps, *, primary=None, aux=None, wavelength=None, width=None):
@@ -49,7 +48,7 @@ def Geometry(shape, oversample, maps, *, primary=None, aux=None, wavelength=None
     out = {}
     for cm in maps:
         out[cm.name] = replace(cm, grid=upsample_chunk_map(np.asarray(cm.det), int(oversample)))
-    return engine.DetectorGeometry(shape=tuple(int(v) for v in shape), chunk_maps=out,
+    return base.DetectorGeometry(shape=tuple(int(v) for v in shape), chunk_maps=out,
                                    primary=primary or maps[0].name, aux=dict(aux or {}),
                                    wavelength_key=wavelength, width_key=width)
 
@@ -73,67 +72,103 @@ class Job(Config):
         return f"Job({self.name!r})" if self.kind == 'all' and self.value is None else \
             f"Job({self.name!r}, kind={self.kind!r}, value={self.value!r})"
 
-    def engine_job(self):
-        return engine.Job(name=self.name, kind=self.kind, value=self.value)
-
 
 class Instrument(Config):
-    """Base of the instrument settings (see the module docstring).
+    """Base of the instrument settings (see the module docstring): the contract the run engine
+    calls.
 
     A subclass implements :meth:`geometry`; it may override :meth:`layout` (how raw exposure
     files are read), :meth:`default_jobs`, :meth:`job_geometry` (valid pixels and weights of a
-    job), :meth:`frame_variables` (per-frame data variables). A ``tag`` setting names its
-    products (default: the class name); ``unit`` is the mosaic's ``BUNIT``.
+    job), :meth:`frame_variables` (per-frame data variables) and the mosaic's hooks
+    (:meth:`offset_renderer`, :meth:`aux_coadds`, :meth:`finalize_mosaic`), and name its
+    coefficients (:meth:`coefficient_catalog`) and the data files its geometry reads
+    (:meth:`geometry_files`). A ``tag`` setting names its products (default: the class name);
+    ``unit`` is the mosaic's ``BUNIT``.
 
-    It may also define the engine's optional hooks, which then reach the run: ``offset_renderer(geom,
-    jobgeom, map_name=None, render=None)`` (a ``(chunk_map, offsets) -> grid`` renderer for the
-    mosaic; None: constant over each chunk), ``aux_coadds(geom)`` and ``finalize_mosaic(geom,
-    mosaicker, maps, sigma)`` (per-pixel maps to coadd alongside the data, and their labelling),
-    and ``coefficient_catalog()`` (named coefficients, ``sc.catalog(name)``); see
-    :class:`selfcal.instruments.base.Instrument`.
+    The run engine builds the geometry once per action. It keeps it between the actions of a
+    process only when the class says ``geometry_is_pure = True``: its :meth:`geometry` depends on
+    nothing but its settings and the files :meth:`geometry_files` names (no module state, no other
+    file). The built-in instruments say so; a subclass that overrides the geometry of one says so
+    again, or its geometry is built by each action.
     """
 
+    #: The unit of the calibrated data, the mosaic's ``BUNIT`` (a constant here, or a setting).
+    unit = ''
+    #: Whether :meth:`geometry` depends only on the settings and the :meth:`geometry_files`, so that
+    #: the run engine may keep it between actions (a class constant, never a setting).
+    geometry_is_pure = False
+
     # ---- the contract -------------------------------------------------------------------
-    def geometry(self, oversample=1) -> engine.DetectorGeometry:
+    def geometry(self, oversample=1) -> base.DetectorGeometry:
         """The detector geometry: chunk maps with their axes, per-pixel maps (:func:`Geometry`),
         the detector-plane maps sampled ``oversample`` times per pixel. A new instrument
-        implements it; a built-in one (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``) returns the
-        run engine's."""
-        inst, table = self.engine(())
-        if isinstance(inst, _ContractAdapter):
-            raise NotImplementedError(f"{type(self).__name__}: a subclass of sc.Instrument implements "
-                                      f"geometry(oversample)")
-        if isinstance(inst, str):
-            inst = engine.get_instrument(inst)
-        return inst.detector_geometry(table, oversample)
+        implements it, as the built-in ones (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``) do."""
+        raise NotImplementedError(f"{type(self).__name__}: a subclass of sc.Instrument implements "
+                                  f"geometry(oversample)")
 
-    def layout(self) -> engine.ExposureLayout:
+    def layout(self) -> base.ExposureLayout:
         """How a raw exposure file is read (default: a FITS file, science in extension 1, no mask)."""
-        return engine.ExposureLayout(sci_ext=[1], dq_ext=None, detector_ids=[0], ref_use_ext=(1,),
+        return base.ExposureLayout(sci_ext=[1], dq_ext=None, detector_ids=[0], ref_use_ext=(1,),
                                      cache_tag=f'headers_{self.product_tag}')
 
     def default_jobs(self) -> tuple:
         """The jobs a run makes when the action names none (default: one, ``All``)."""
         return (Job('All'),)
 
-    def job_geometry(self, geom, job) -> engine.JobGeometry:
+    def job_geometry(self, geom, job) -> base.JobGeometry:
         """Valid pixels and weights of ``job`` (default: every pixel of a chunk, weight 1)."""
         cm = geom.chunk_map
         det = (np.asarray(cm.det) >= 0).astype(np.float32)
         grid = (np.asarray(cm.grid) >= 0).astype(np.float32)
         n = cm.n_chunks
-        return engine.JobGeometry(det_valid_weight=det, grid_valid_weight=grid,
+        return base.JobGeometry(det_valid_weight=det, grid_valid_weight=grid,
                                   chunk_valid=np.ones(n, dtype=bool), chunk_valid_strict=np.ones(n, dtype=bool),
                                   det_valid_mask=det, grid_valid_mask=grid)
 
     def frame_variables(self, frames) -> dict:
-        """Per-frame data variables ``{name: (n_frames,) array}`` (default: ``exposure`` and
-        ``detector``, from the frame file names)."""
-        return engine.Instrument.frame_variables(None, frames)
+        """Per-frame data variables ``{name: (n_frames,) array}``: one value per frame (time,
+        filter, angle, temperature, ...), usable by any model function and as an offset grouping.
+        Default: ``exposure`` and ``detector``, the indices in each frame's file name. Override
+        (keeping the defaults) to read header keywords (``selfcal.io.frames.frame_header_values``),
+        tables or anything else."""
+        from ..io.reproj import parse_reproj_basename
+        idx = np.array([parse_reproj_basename(f) for f in frames], dtype=np.int64).reshape(-1, 2)
+        return {'exposure': idx[:, 0], 'detector': idx[:, 1]}
 
     def frame_variable_names(self) -> tuple:
         """The names :meth:`frame_variables` provides (checked before any frame is read)."""
         return ('exposure', 'detector')
+
+    def frame_groups(self, frames) -> dict:
+        """Named per-frame groupings a grouped offset term can share an offset over:
+        ``{name: integer array (n_frames,)}``. Default: the integer-valued :meth:`frame_variables`
+        (``detector``: each frame's detector; ``exposure``)."""
+        return {k: v for k, v in self.frame_variables(frames).items() if np.asarray(v).dtype.kind in 'iu'}
+
+    def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
+        """The ``(chunk_map, offsets) -> grid`` function the mosaic draws the offsets of chunk map
+        ``map_name`` (None: the primary map) with, for one job; ``render`` names one of the
+        instrument's renderers when the model asks for one. Default None: constant over each chunk."""
+        return None
+
+    def aux_coadds(self, geom):
+        """The ``(band centre, band width)`` detector maps whose per-pixel weighted mean and std the
+        mosaic coadds with the data (``Coadd(instrument_maps=True)``); default None: nothing."""
+        return None
+
+    def finalize_mosaic(self, geom, mosaicker, maps, sigma):
+        """Label or complete the mosaic's instrument maps once the coadd is done (only when
+        :meth:`aux_coadds` gives some)."""
+
+    def coefficient_catalog(self) -> dict:
+        """Named sky coefficients ``{name: factory(**overrides) -> Coefficient}`` (``sc.catalog(name)``);
+        default none."""
+        return {}
+
+    def geometry_files(self) -> tuple:
+        """The data files :meth:`geometry` reads, beyond the settings (default none): a geometry kept
+        by the run engine (``geometry_is_pure``) is built again when one of them changes."""
+        return ()
 
     def default_ignore_flags(self) -> tuple:
         """The data-quality bits that do not flag a pixel unless a recipe says otherwise."""
@@ -145,68 +180,8 @@ class Instrument(Config):
         """The products' tag (``cal_<tag>_<job><suffix>.h5``)."""
         return str(getattr(self, 'tag', None) or type(self).__name__)
 
-    # ---- lowering -------------------------------------------------------------------------
-    def engine(self, jobs):
-        """``(instrument, table)`` the run engine takes: an engine instrument (a registered name or
-        an object) and the ``[instrument]`` table that selects ``jobs``."""
-        return _ContractAdapter(self), {'name': type(self).__name__, 'jobs': tuple(jobs)}
-
     def check_jobs(self, jobs):
         """Raise :class:`~selfcal.config.base.ConfigError` for a job this instrument cannot run."""
         for j in jobs:
             if not isinstance(j, Job):
                 raise ConfigError(f"{type(self).__name__}: a job is a Job, got {j!r}")
-
-
-class _ContractAdapter(engine.Instrument):
-    """The engine's interface over an :class:`Instrument` settings object (a user subclass)."""
-
-    def __init__(self, inst):
-        self.inst = inst
-        self.name = type(inst).__name__
-        self.capabilities = frozenset(getattr(inst, 'capabilities', ()))
-
-    def __reduce__(self):
-        return (_ContractAdapter, (self.inst,))
-
-    def jobs(self, inst_cfg):
-        return [j.engine_job() for j in (inst_cfg.get('jobs') or self.inst.default_jobs())]
-
-    def frame_tag(self, inst_cfg):
-        return self.inst.product_tag
-
-    def exposure_layout(self, inst_cfg):
-        return self.inst.layout()
-
-    def detector_geometry(self, inst_cfg, oversample):
-        return self.inst.geometry(oversample)
-
-    def job_geometry(self, inst_cfg, geom, job):
-        return self.inst.job_geometry(geom, job)
-
-    def frame_variable_names(self, inst_cfg):
-        return tuple(self.inst.frame_variable_names())
-
-    def frame_variables(self, frames, inst_cfg=None):
-        return dict(self.inst.frame_variables(frames))
-
-    def data_unit(self, inst_cfg):
-        return str(getattr(self.inst, 'unit', '') or '')
-
-    # the engine's optional hooks, when the settings object defines them
-    def offset_renderer(self, inst_cfg, geom, jobgeom, map_name=None, render=None):
-        hook = getattr(self.inst, 'offset_renderer', None)
-        return hook(geom, jobgeom, map_name=map_name, render=render) if hook else None
-
-    def aux_coadds(self, geom):
-        hook = getattr(self.inst, 'aux_coadds', None)
-        return hook(geom) if hook else None
-
-    def finalize_mosaic(self, geom, mosaicker, maps, sigma):
-        hook = getattr(self.inst, 'finalize_mosaic', None)
-        if hook:
-            hook(geom, mosaicker, maps, sigma)
-
-    def coefficient_catalog(self):
-        hook = getattr(self.inst, 'coefficient_catalog', None)
-        return dict(hook()) if hook else {}

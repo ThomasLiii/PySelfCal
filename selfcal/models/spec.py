@@ -29,8 +29,8 @@ frame on one reference pixel ``P``, seen at a detector position)::
 * **priors** (:class:`PriorSpec`): any linear rows on the unknowns of one or
   several terms, written as a function (:mod:`selfcal.models.priors`).
 
-A :class:`ModelSpec` is built from the ``[model]`` table of a run config
-(:meth:`ModelSpec.from_config`) or by a mode (the named recipes are presets),
+A :class:`ModelSpec` is built from the ``[model]`` table a
+:class:`~selfcal.models.model.Model` lowers to (:meth:`ModelSpec.from_config`),
 checked against an instrument (:meth:`ModelSpec.check`) and lowered into the
 objects the solver consumes. Every function is a built-in or ANY importable
 ``"package.module:name"``; a new instrument, coefficient, offset set-up or
@@ -41,12 +41,18 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 from .offset_model import Basis, OffsetBlock, OffsetModel
-from .offset_structure import ChunkAxes, adjacency_along, adjacency_union, poly_basis_along, poly_chains_along
+from .offset_structure import (
+    ChunkAxes,
+    adjacency_along,
+    adjacency_union,
+    poly_basis_along,
+    poly_chains_along,
+)
 from .sky_model import Coefficient, ImportedFunction, SkyComponent, SkyModel
 from .variables import BUILTIN_VARIABLES, Derived, FrameFunction, VariableSet
 
@@ -353,17 +359,17 @@ class ModelSpec:
     (:class:`VariableSpec`), ``weight`` an optional function of data variables
     that multiplies every observation's weight (a
     :class:`~selfcal.models.sky_model.Coefficient` or its config form), and
-    ``priors`` the prior functions (:class:`PriorSpec`). ``mosaic`` tells the
-    runner's ``model`` mode what to make after the solve: ``'full'`` (the mosaic
-    and the instrument's auxiliary coadds, such as wavelength maps),
-    ``'no_wav'`` (the mosaic only) or ``'none'``. Terms, variables and priors may
+    ``priors`` the prior functions (:class:`PriorSpec`). ``mosaic`` records the
+    coadd the model was lowered for: ``'full'`` (the mosaic and the instrument's
+    auxiliary coadds, such as wavelength maps), ``'no_wav'`` (the mosaic only) or
+    ``'none'``. Terms, variables and priors may
     be given in their config forms (dicts; ``variables`` as ``{name: table}``),
     which are converted on construction. The constructor raises ``ValueError``
     when there is no sky term, or when a variable is defined twice or named like
     a built-in.
 
-    Build one from a ``[model]`` table (:meth:`from_config`) or in Python (as the
-    runner's preset modes do), validate it against an instrument (:meth:`check`)
+    Build one from a ``[model]`` table (:meth:`from_config`) or in Python,
+    validate it against an instrument (:meth:`check`)
     and lower it into the solver's inputs with :meth:`build_sky_model`,
     :meth:`build_offset_model`, :meth:`build_variables`, :meth:`build_weight`,
     :meth:`build_priors` and :meth:`setup_kwargs`.

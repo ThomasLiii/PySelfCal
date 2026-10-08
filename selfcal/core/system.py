@@ -16,27 +16,29 @@ import os
 import shutil
 import tempfile
 import threading
-
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as _FutTimeout
+from concurrent.futures.process import BrokenProcessPool
+from multiprocessing.shared_memory import SharedMemory
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
-
-from .shmbuf import SharedBuffer, worker_pool_context
-from tqdm import tqdm
-from concurrent.futures import (ProcessPoolExecutor, ThreadPoolExecutor,
-                                as_completed, TimeoutError as _FutTimeout)
-from concurrent.futures.process import BrokenProcessPool
-from multiprocessing.shared_memory import SharedMemory
-from scipy.sparse import csr_matrix
 from scipy.sparse import _sparsetools as _spt
+from scipy.sparse import csr_matrix
+from tqdm import tqdm
 
 from .. import _state
-from .layout import SystemLayout
-from .spill import spill_pixel_state, PixelSpill
 from ..models.sky_model import SkyModel
-from .constraint_builders import (mean_offset_block, sky_damping_block,
-                                  offset_damping_block, grouped_adjacency_block)
 from .assembly import _prep_lsqr_batch_worker
+from .constraint_builders import (
+    grouped_adjacency_block,
+    mean_offset_block,
+    offset_damping_block,
+    sky_damping_block,
+)
+from .layout import SystemLayout
+from .shmbuf import SharedBuffer, worker_pool_context
+from .spill import PixelSpill, spill_pixel_state
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,8 +65,8 @@ class SetupResult(NamedTuple):
     ``pixel_counts`` / ``pixel_fisher`` / ``pixel_cross`` are None exactly
     when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
     caller restores them (once) when it needs them. ``active_mask`` is None
-    unless the early zero-coverage-column compaction ran (see
-    ``compact_zero_columns`` in :func:`setup_lsqr`).
+    unless the early zero-coverage-column compaction ran (it does unless a
+    constraint row touches an otherwise-uncovered column).
     """
     A: object
     b: object
@@ -248,7 +250,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                apply_mask: bool = True, apply_weight: bool = False,
                valid_threshold: float = 0.99,
                outlier_thresh: float | None = 3, outlier_group_edges=None,
-               outlier_subchannel_edges=None,
                max_workers: int = 20,
                ignore_list: list[int] | None = None, oversample_factor: int = 1,
                batch_size: int = 10, offset_regularization: bool = False,
@@ -261,18 +262,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.1,
-               damp_offset: float = 0.0,
                damp_offset_maps: list[float] | None = None,
                mean_offset_group_rows: bool = False,
                group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
                aux_keys: list[str] | None = None,
-               outlier_aux_key: str | None = None,
-               spectral_fit: bool = False, line_center: float | None = None,
-               line_sigma: float | None = None,
                damp_weight_line: float | None = None,
                sky_model: SkyModel | None = None,
-               compact_zero_columns: bool = True,
                sky_rhs_moments: bool = False,
                batch_spill_dir: str | None = None,
                basis_list: list | None = None,
@@ -357,13 +353,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         semi-convergence on low-diversity pixels. Returned as
         ``SetupResult.pixel_rhs`` (``(num_sky_blocks * num_sky,)`` float64) or
         None. Default False = byte-identical to before.
-    compact_zero_columns : bool, optional
-        Enable the early drop of zero-coverage columns from the assembled
-        CSR (default True); ``apply_lsqr`` then skips its own full-nnz
-        column elimination. Automatically skipped when a constraint row
-        touches an otherwise-uncovered column. Set False to keep the uncompacted column layout and let
-        ``apply_lsqr`` compact instead (debug aid for isolating a suspected
-        regression to the compaction step).
     apply_mask : bool, optional
         Apply each subframe's data-quality mask when reading it (default True).
     apply_weight : bool, optional
@@ -395,15 +384,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Enable coverage-weighted Tikhonov damping of the sky blocks.
     damp_weight : float, optional
         Coverage-weighted damping weight for the continuum sky block (default 0.1).
-    damp_offset : float, optional
-        Coverage-weighted damping weight for the offset columns; 0 disables it.
     damp_offset_maps : list of float or None, optional
-        Per-map form of ``damp_offset`` (length K): map ``m`` is damped with
-        weight ``damp_offset_maps[m]`` and maps with weight 0 stay free; the
-        per-frame scalar is never damped. Use it to gauge a per-frame map
-        that should absorb only frame-unique artifacts while a
-        detector-fixed map stays undamped. Mutually exclusive with
-        ``damp_offset > 0``.
+        Coverage-weighted damping of the offset columns, per map (length K):
+        map ``m`` is damped with weight ``damp_offset_maps[m]`` and maps with
+        weight 0 stay free; the per-frame scalar is never damped. Use it to
+        gauge a per-frame map that should absorb only frame-unique artifacts
+        while a detector-fixed map stays undamped.
     mean_offset_group_rows : bool, optional
         Emit each det-grouped map's mean-offset anchor once per group with
         weight ``w·√k`` instead of once per frame (k frames per group). The
@@ -420,12 +406,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         ``aux_keys`` (default: the sky model's variables in order).
     aux_keys : list of str or None, optional
         The names of the ``det_aux`` maps.
-    outlier_aux_key : str or None, optional
-        Historical name of ``outlier_group_variable``.
-    spectral_fit : bool, optional
-        Removed: raises. Pass ``sky_model=``.
-    line_center, line_sigma : float or None, optional
-        Ignored (historical; the model carries its coefficients).
     damp_weight_line : float or None, optional
         Damping weight of the sky terms after the first that set none of their
         own; defaults to ``3 * damp_weight`` when there are several terms.
@@ -455,8 +435,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         ``ConstraintBlock`` (or ``(rows_local, cols, data, b)``) or ``None``;
         appended after the built-in constraint blocks.
     outlier_group_variable : str or None, optional
-        The data variable the grouped clip bins with ``outlier_group_edges``
-        (the historical spelling is ``outlier_aux_key``).
+        The data variable the grouped clip bins with ``outlier_group_edges``.
     outlier_chunk_groups : array of int or None, optional
         A group per chunk of the first chunk map: the clip judges each pixel
         within the group of the chunk that contributes most to it. Exclusive
@@ -469,13 +448,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         active_mask, pixel_spill)``. Returns ``(None, None)`` instead when no
         valid data is found in any subframe.
     """
-    # outlier_group_edges: bin edges of the grouped outlier clip (groups = values
-    # of the chunk map's spectral axis); outlier_subchannel_edges is the
-    # historical spelling.
-    if outlier_group_edges is not None:
-        if outlier_subchannel_edges is not None:
-            raise ValueError("give outlier_group_edges or outlier_subchannel_edges, not both")
-        outlier_subchannel_edges = outlier_group_edges
     # Mutable-default normalization: an empty ignore_list means "ignore nothing".
     if ignore_list is None:
         ignore_list = []
@@ -575,8 +547,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                              f"(got {len(damp_offset_maps)})")
         if any(w < 0 for w in damp_offset_maps):
             raise ValueError("damp_offset_maps entries must be >= 0")
-        if damp_offset > 0:
-            raise ValueError("pass either damp_offset or damp_offset_maps, not both")
     group_adjacency_maps = list(group_adjacency_maps or [])
     for m in group_adjacency_maps:
         if not (isinstance(m, (int, np.integer)) and 0 <= m < K):
@@ -596,9 +566,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # maps, frame values, sky maps, stored layers, functions of those — see
     # selfcal.models.variables); a constant term has c = 1 (the J=1 identity
     # fast path in the worker).
-    if spectral_fit:
-        raise ValueError("spectral_fit=True is no longer supported: pass sky_model= "
-                         "(an explicit SkyModel with the line component).")
     if sky_model is None:
         sky_model = SkyModel.continuum_only()
     num_sky_blocks = sky_model.n_blocks
@@ -629,18 +596,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             raise ValueError(f"detector variables {clash} are given both in det_aux and in variables")
         det_aux = list(det_aux or []) + [np.asarray(variables.detector[k]) for k in variables.detector]
         aux_keys = aux_keys + list(variables.detector)
-    if outlier_group_variable is not None:
-        if outlier_aux_key is not None and outlier_aux_key != outlier_group_variable:
-            raise ValueError("give outlier_group_variable or outlier_aux_key, not both")
-        outlier_aux_key = outlier_group_variable
     if outlier_chunk_groups is not None:
-        if outlier_subchannel_edges is not None:
+        if outlier_group_edges is not None:
             raise ValueError("give outlier_group_edges or outlier_chunk_groups, not both")
         n0 = int(np.max(chunk_maps[0])) + 1
         if np.shape(outlier_chunk_groups) != (n0,):
             raise ValueError(f"outlier_chunk_groups has shape {np.shape(outlier_chunk_groups)}: one group per "
                              f"chunk of the first chunk map ({n0},)")
-    if outlier_subchannel_edges is not None and outlier_aux_key is None:
+    if outlier_group_edges is not None and outlier_group_variable is None:
         raise ValueError("outlier_group_edges needs outlier_group_variable: the data variable the "
                          "grouped clip bins")
     available = set(aux_keys) | set(variables.names) | set(BUILTIN_VARIABLES)
@@ -650,8 +613,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             wanted[f'offset map {m}'] = list(bm.main_variables)
     if weight_function is not None:
         wanted['the observation weight'] = list(getattr(weight_function, 'main_variables', ()))
-    if outlier_subchannel_edges is not None:
-        wanted['the grouped clip'] = [outlier_aux_key]
+    if outlier_group_edges is not None:
+        wanted['the grouped clip'] = [outlier_group_variable]
     for who, names in wanted.items():
         missing = [v for v in names if v not in available]
         if missing:
@@ -670,13 +633,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             raise ValueError(f"sky variable {name!r} has shape {np.shape(m_)}, expected the "
                              f"reference grid {tuple(ref_shape)}")
     if num_sky_blocks > 1:
-        # Terms after the first default to their own damping weight
-        # damp_weight_line (a varying coefficient has a smaller average than
-        # 1, so ~3x more Tikhonov shrinkage at the same data S/N).
-        if damp_weight_line is None:
-            damp_weight_line = 3.0 * damp_weight
-        logger.info(f"Sky model: {num_sky_blocks} terms {sky_model.names}, "
-                    f"{num_sky_blocks * num_sky} sky cols, damp_weight_line={damp_weight_line}.")
+        logger.info(f"Sky model: {num_sky_blocks} terms {sky_model.names}, {num_sky_blocks * num_sky} sky cols, "
+                    f"damping {sky_model.damp_weights(damp_weight, damp_weight_line)}.")
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
@@ -715,7 +673,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
         'outlier_thresh': outlier_thresh,
-        'outlier_subchannel_edges': outlier_subchannel_edges,
+        'outlier_group_edges': outlier_group_edges,
         'outlier_chunk_groups': None if outlier_chunk_groups is None else np.asarray(outlier_chunk_groups,
                                                                                         dtype=np.int64),
         'num_chunks_list': num_chunks_list,
@@ -746,9 +704,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'aux_keys': aux_keys,
-        'outlier_aux_key': outlier_aux_key,
-        'line_center': line_center,
-        'line_sigma': line_sigma,
+        'outlier_group_variable': outlier_group_variable,
         'basis_list': basis_list if any(b is not None for b in basis_list) else None,
         'weight_function': weight_function,
         'layer_names': tuple(variables.layers),
@@ -1300,12 +1256,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             blk = offset_damping_block(w_m, offset_pixel_counts[b0:b1], col_bases[m])
             if blk is not None:
                 constraint_blocks.append(blk.as_dict())
-    elif damp_offset > 0:
-        logger.info(f"Applying Coverage-Weighted Offset Damping (damp_offset={damp_offset})...")
-        n_offset_cols = scalar_col_start - num_sky_eff
-        blk = offset_damping_block(damp_offset, offset_pixel_counts[:n_offset_cols], num_sky_eff)
-        if blk is not None:
-            constraint_blocks.append(blk.as_dict())
 
 
     # --- User priors (any linear rows on the unknowns), after the built-ins ---
@@ -1519,31 +1469,20 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ~5e-6 relative in the maps), which is why it used to be excluded for
     # template modes under the byte-equality rule.
     # ----------------------------------------------------------------
+    # Some runs still need the uncompacted path — e.g. when the caller passes
+    # mean_offsets_list (per-frame chunk constraint rows write into specific
+    # column indices that must not be dropped). mean_offsets / damping rows
+    # already register coverage via the data rows, so columns they touch will
+    # have pixel_counts > 0. Constraint rows pointing at otherwise-uncovered
+    # cols would still need those slots: when one does, the compaction is left
+    # to apply_lsqr.
+    active_mask = pixel_counts > 0
     compaction_active = True
-    # Debug knob: caller can force compaction off to compare against the
-    # uncompacted-CSR layout — useful for isolating a suspected regression
-    # to the compaction step itself. Default True is the production path.
-    if not compact_zero_columns:
-        compaction_active = False
-    if compaction_active:
-        # Some non-template runs still need the uncompacted path — e.g. when
-        # the caller passes mean_offsets_list (per-frame chunk constraint rows
-        # write into specific column indices that must not be dropped).
-        # mean_offsets / damping rows already register coverage via the
-        # data rows, so columns they touch will have pixel_counts > 0.
-        # Constraint rows pointing at otherwise-uncovered cols would still
-        # need those slots; guard with a coverage check.
-        active_mask = pixel_counts > 0
-        # Verify every constraint col is "active" — otherwise gating must
-        # bail out and let apply_lsqr handle compaction.
-        all_constraint_cols_active = True
-        for blk in constraint_blocks:
-            cols_b = blk['cols']
-            if cols_b.size and not active_mask[cols_b].all():
-                all_constraint_cols_active = False
-                break
-        if not all_constraint_cols_active:
+    for blk in constraint_blocks:
+        cols_b = blk['cols']
+        if cols_b.size and not active_mask[cols_b].all():
             compaction_active = False
+            break
 
     if compaction_active:
         n_active = int(active_mask.sum())

@@ -631,7 +631,7 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False):
             and rmatvec_threads(n_threads, bcsr.shape[1]) <= 1
             and len(bcsr.blocks) > 0 and bcsr.nnz * 8 <= _split_max * 1e9):
         # Column-partitioned bit-equal parallel SpMV; consumes the blocks,
-        # hence only when the caller handed A over (keep_state=False).
+        # hence only when the caller handed A over (a_owned; Calibrator.apply_lsqr always does).
         return _make_parallel_operator_colsplit(bcsr, n_threads, _nranges)
 
     m, n = bcsr.shape

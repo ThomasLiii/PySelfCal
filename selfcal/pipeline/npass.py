@@ -1,4 +1,4 @@
-"""Primitives of the N-pass alternating solve (runner task ``npass``).
+"""Primitives of the N-pass alternating solve (the run engine's task ``npass``).
 
 Model, per frame *k* and reference pixel *p*::
 
@@ -29,31 +29,31 @@ subtracting before the weights would bias every fit toward zero amplitude.
 Nothing here knows an instrument: the chunk→(coordinate, group) encoding comes
 in as a ``poly_basis`` spec (see :mod:`selfcal.models.offset_basis`) and the
 per-subchannel clip edges as an array (see
-``SPHERExInstrument.subchannel_bc_edges``).
+:meth:`selfcal.run.engine.RunContext.clip_group_edges`).
 """
 from __future__ import annotations
 
+import json
 import os
 import time
-import json
 from concurrent.futures import ProcessPoolExecutor
 
-import numpy as np
 import h5py
 import hdf5plugin  # noqa: F401
+import numpy as np
 from scipy.ndimage import map_coordinates
 
 from ..core.shmbuf import worker_pool_context
-from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
+from ..core.subframe import _prep_subframe
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
+from ..io.atomic import atomic_path
+from ..io.calfile import CalFile
 from ..models.offset_basis import eval_offset_basis
 from ..models.offset_structure import group_aux_edges
-from ..io.calfile import CalFile
-from ..io.atomic import atomic_path
 
 __all__ = [
-    "group_wavelength_edges", "sky_damp_weights",
+    "group_wavelength_edges",
     "OffsetSubtractor", "SkySubtractor",
     "refit_offsets_per_frame", "dump_moments", "combine_moments", "write_sky_cal",
     "sky_monitors", "offset_monitors", "append_monitor",
@@ -67,13 +67,6 @@ def group_wavelength_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pi
     """Wavelength bin edges between consecutive chunk groups for the grouped
     outlier clip — :func:`selfcal.models.offset_structure.group_aux_edges`."""
     return group_aux_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=min_pixels)
-
-
-def sky_damp_weights(sky_model, damp_weight, damp_weight_line=None):
-    """Per-term damping weights (``SkyModel.damp_weights``: a term's own
-    ``damp_weight`` when set, else ``damp_weight`` for the first term and
-    ``damp_weight_line`` for the others)."""
-    return sky_model.damp_weights(damp_weight or 0.0, damp_weight_line)
 
 
 def _basename(p):
@@ -303,7 +296,7 @@ def _refit_frame(path):
             det_aux=g["det_aux"], chunk_maps=[g["cm"]],
             apply_weight=True, apply_mask=True, ignore_list=g["ignore_list"],
             grid_valid_weight=g["grid_valid"], oversample_factor=1,
-            valid_threshold=0.5, postprocess_func=g["sky"], preprocess_func=None)
+            valid_threshold=0.5, postprocess_func=g["sky"])
         sub_h, sub_w = sub_data.shape
         valid = sub_weight > 0
         if g["edges"] is not None:
@@ -605,7 +598,8 @@ def offset_monitors(off_path, prev_off_path=None):
         idx = {n: i for i, n in enumerate(pnames)}
         pairs = [(i, idx[n]) for i, n in enumerate(names) if n in idx and ok[i]]
         if pairs and poff.shape[1] == off.shape[1]:
-            a = np.array([i for i, _ in pairs]); b = np.array([j for _, j in pairs])
+            a = np.array([i for i, _ in pairs])
+            b = np.array([j for _, j in pairs])
             out["step_rms"] = float(np.sqrt(np.mean((off[a] - poff[b]) ** 2)))
             out["n_shared"] = len(pairs)
     return out

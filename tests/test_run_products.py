@@ -1,6 +1,7 @@
 """Products and records of the Python API (selfcal.run.products, records, compare, convert, the CLI):
 a product is reused only when it was made by the same inputs; records rerun byte-identically;
-products are written atomically; conversion of TOML configs checks itself."""
+products are written atomically; old TOML configs convert to run scripts, and the converter's rules
+for settings the Python API has no switch for give the expected objects, which run."""
 import os
 import shutil
 import subprocess
@@ -21,7 +22,14 @@ from selfcal import _state  # noqa: E402
 from selfcal.config import ConfigError  # noqa: E402
 from selfcal.io.atomic import atomic_path, is_partial  # noqa: E402
 from selfcal.run import products  # noqa: E402
-from tests.synthetic_exposures import DET, N_CHUNK_SIDE, REF_ARCSEC, write_exposures  # noqa: E402
+from tests.synthetic_exposures import (  # noqa: E402
+    DET,
+    N_CHUNK_SIDE,
+    REF_ARCSEC,
+    write_exposures,
+    x_ramp,
+    xtilde,
+)
 
 
 def test_atomic_writes_leave_nothing_behind_on_failure(tmp_path):
@@ -141,14 +149,264 @@ def _cli(*args, cwd=None):
                           text=True, timeout=600)
 
 
-def test_convert_writes_scripts_that_run_identically(tmp_path):
-    for name in ('reproject', 'cal'):
-        out = tmp_path / f'{name}.py'
-        proc = _cli('convert', os.path.join(_REPO, 'examples', 'quickstart', f'{name}.toml'), '-o', str(out))
-        assert proc.returncode == 0, proc.stderr[-3000:]
-        text = out.read_text()
-        assert 'FIELD = Field(' in text and 'if __name__ == "__main__":' in text
-        compile(text, str(out), 'exec')
+# An old TOML run config: the quickstart's (examples/quickstart/{reproject,cal}.toml until October 2026).
+QUICKSTART_TOML = {'reproject': """task = "reproject"
+output_dir = "quickstart_output"
+run_name = "quickstart"
+resolution_arcsec = 10.0
+
+[instrument]
+name = "grid"
+tag = "Sim"
+detector_shape = [64, 64]
+chunks = [4, 4]
+sci_ext = 1
+dq_ext = 2
+
+[reproject]
+input_dirs = ["quickstart_output/exposures"]
+file_pattern = "/sim_*.fits"
+reproj_func = "interp"
+padding_pixels = 8
+max_workers = 2
+""", 'cal': """task = "cal"
+mode = "continuum"
+output_dir = "quickstart_output"
+run_name = "quickstart"
+resolution_arcsec = 10.0
+cache_dir = "quickstart_output/cache/"
+suffix = "_quickstart"
+apply_n_threads = 2
+
+[instrument]
+name = "grid"
+tag = "Sim"
+detector_shape = [64, 64]
+chunks = [4, 4]
+sci_ext = 1
+dq_ext = 2
+
+[params]
+reg_weight = 0.1
+
+[calibration]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+outlier_thresh = 5.0
+offset_regularization = true
+weighted_damping = true
+damp_weight = 0.001
+batch_size = 4
+max_workers = 2
+
+[lsqr]
+solver = "lsqr"
+iter_lim = 200
+atol = 1e-8
+btol = 1e-8
+damp = 0
+precondition = true
+
+[mosaic]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+make_std_map = true
+apply_sigma_clipping = true
+sigma = 3.0
+cache_intermediate = true
+cache_batch_size = 4
+coadd_batch_size = 4
+max_workers = 2
+"""}
+
+
+def test_convert_writes_run_scripts(tmp_path):
+    for name, text in QUICKSTART_TOML.items():
+        config, out = tmp_path / f'{name}.toml', tmp_path / f'{name}.py'
+        config.write_text(text)
+        proc = _cli('convert', str(config), '-o', str(out))
+        assert proc.returncode == 0 and 'not run' in proc.stdout, proc.stderr[-3000:]
+        script = out.read_text()
+        assert 'FIELD = Field(' in script and 'if __name__ == "__main__":' in script
+        compile(script, str(out), 'exec')
+    assert sorted(os.listdir(tmp_path)) == ['cal.py', 'cal.toml', 'reproject.py', 'reproject.toml']
+    module = _import(tmp_path / 'cal.py')
+    assert module.RECIPE == sc.Recipe(sc.continuum(damping=0.001), fit=sc.Fit(200, clip=5.0, ignore_flags=(),
+                                                                             tolerance=1e-8),
+                                      coadd=sc.Coadd(clip=3.0, ignore_flags=()),
+                                      numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4), name='quickstart')
+    assert module.FIELD.instrument == sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Sim')
+
+
+def _import(path):
+    """The module of the script ``path``, imported without running its ``__main__`` block."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('_converted_' + path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The converter's rules for TOML settings the Python API has no switch for, each written as what the
+# engine built or read alike: the converted script holds the expected objects, and runs on the toy field.
+_RULE_TOML = """task = "cal"
+mode = "{mode}"
+output_dir = "{out}"
+run_name = "toy"
+resolution_arcsec = {res}
+cache_dir = "{cache}/"
+suffix = "_{name}"
+apply_n_threads = 2
+skip_mosaic = {skip}
+
+[instrument]
+name = "grid"
+tag = "Toy"
+detector_shape = [{det}, {det}]
+chunks = [{side}, {side}]
+dq_ext = 2
+
+[calibration]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+outlier_thresh = 5.0
+batch_size = 4
+max_workers = 2
+{cal}
+
+[lsqr]
+solver = "lsqr"
+iter_lim = 30
+atol = 1e-8
+btol = 1e-8
+damp = 0
+precondition = true
+
+[mosaic]
+apply_mask = true
+apply_weight = false
+ignore_list = []
+{mosaic}
+cache_intermediate = true
+cache_batch_size = 4
+coadd_batch_size = 4
+max_workers = 2
+{rest}"""
+
+_CLIPPED = 'make_std_map = true\napply_sigma_clipping = true\nsigma = 3.0'
+_RULES = {
+    # no smoothness or polynomial rows (the switch) -> every offset term smooth=0 and no poly_prior
+    'noreg': dict(mode='continuum', cal='offset_regularization = false\nweighted_damping = true\ndamp_weight = 0.001',
+                  rest='[params]\nreg_weight = 0.1\npoly_weight = 0.5\npoly_degree = 1\n',
+                  python='offsets=(Offsets(mean_zero=True),)',
+                  model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(mean_zero=True)])),
+    # no sky damping rows (the switch, despite damp_weight, damp_weight_line and a term's own) -> damping=0.0
+    'nodamp': dict(mode='model', cal='offset_regularization = true\nweighted_damping = false\ndamp_weight = 0.01\n'
+                                     'damp_weight_line = 0.02',
+                   rest='[model]\nscalar = true\nmosaic = "none"\n\n[[model.sky]]\nname = "continuum"\n\n'
+                        '[[model.sky]]\nname = "ramp"\ndamp_weight = 0.05\n'
+                        'coefficient = { variable = "det_x", function = "tests.synthetic_exposures:x_ramp" }\n\n'
+                        '[[model.offset]]\nkind = "free"\nreg_weight = 0.1\nmean_zero = true\n',
+                   python="sky=(Sky(damping=0.0), Sky('ramp', times=Function(x_ramp, of='det_x'), damping=0.0))",
+                   model=sc.Model(sky=[sc.Sky(damping=0.0), sc.Sky('ramp', times=sc.Function(x_ramp, of='det_x'),
+                                                                   damping=0.0)],
+                                  offsets=[sc.Offsets(smooth=0.1, mean_zero=True)])),
+    # a basis of one function -> times= (the cal labels the map 'basis' alike); with the mosaic, which
+    # subtracts the term through the same basis
+    'basis1': dict(mode='model', cal='offset_regularization = true\nweighted_damping = true\ndamp_weight = 0.001',
+                   rest='[model]\nscalar = true\nmosaic = "full"\n\n[[model.sky]]\nname = "continuum"\n\n'
+                        '[[model.offset]]\nkind = "free"\nreg_weight = 0.1\nmean_zero = true\n\n'
+                        '[[model.offset]]\nkind = "free"\nname = "xslope"\n'
+                        'basis = { variable = "det_x", function = "tests.synthetic_exposures:xtilde", n = 1 }\n',
+                   mosaic=_CLIPPED, python="Offsets('xslope', times=Function(xtilde, of='det_x'))",
+                   model=sc.Model(sky=[sc.Sky(damping=0.001)],
+                                  offsets=[sc.Offsets(smooth=0.1, mean_zero=True),
+                                           sc.Offsets('xslope', times=sc.Function(xtilde, of='det_x'))])),
+    # the mosaic's sigma without a sigma-clip pass (nor instrument maps) is read by nothing -> the Coadd's
+    # default
+    'nosigma': dict(mode='continuum', cal='weighted_damping = true\ndamp_weight = 0.001', rest='',
+                    mosaic='make_std_map = false\napply_sigma_clipping = false\nsigma = 1.0',
+                    python='coadd=Coadd(None, std=False, ignore_flags=())',
+                    model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(mean_zero=True)]),
+                    coadd=sc.Coadd(None, std=False, ignore_flags=())),
+}
+
+
+@pytest.mark.parametrize('name', sorted(_RULES))
+def test_converter_rules(toy_field, tmp_path, name):
+    from selfcal.run.convert import convert_file
+    case = _RULES[name]
+    mosaic = case.get('mosaic')
+    config = tmp_path / f'{name}.toml'
+    config.write_text(_RULE_TOML.format(mode=case['mode'], out=os.path.dirname(toy_field.path), res=REF_ARCSEC,
+                                        cache=tmp_path / 'cache', name=name, skip=str(mosaic is None).lower(),
+                                        det=DET, side=N_CHUNK_SIDE, cal=case['cal'], mosaic=mosaic or _CLIPPED,
+                                        rest=case['rest']))
+    script = tmp_path / f'{name}.py'
+    convert_file(str(config), str(script))
+    text = script.read_text()
+    assert case['python'] in text and 'basis=' not in text, text
+    module = _import(script)
+    coadd = case.get('coadd', sc.Coadd(clip=3.0, ignore_flags=()) if mosaic is not None else None)
+    assert module.RECIPE == sc.Recipe(case['model'], fit=sc.Fit(30, clip=5.0, ignore_flags=(), tolerance=1e-8),
+                                      coadd=coadd, numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4),
+                                      name=name)
+    assert module.FIELD.path == toy_field.path and module.FIELD.instrument == toy_field.instrument
+    result = module.FIELD.calibrate(module.RECIPE, **module.RUN)
+    assert [os.path.basename(p) for p in result.cal_paths] == [f'cal_Toy_Chunks{N_CHUNK_SIDE}x{N_CHUNK_SIDE}_All_{name}.h5']
+    assert len(result.mosaic_paths) == (mosaic is not None)
+
+
+def test_converter_refuses_what_it_cannot_translate(tmp_path):
+    """The N-pass SKY pass of a TOML run ignored weighted_damping and defaulted damp_weight to 0.0: a config whose
+    SKY passes damped otherwise than its joint solve has no Python form (a term carries one damping). Options the
+    library no longer has are refused unless at the value it always uses."""
+    from selfcal.run.convert import from_toml
+
+    def converted(calibration, n=3, lsqr=''):
+        passes = f'[passes]\nn = {n}\n[passes.sky]\nsubch_clip = false\n[passes.offset]\nsubch_clip = false\n'
+        path = tmp_path / 'npass.toml'
+        path.write_text(f'task = "npass"\nmode = "continuum"\noutput_dir = "{tmp_path}"\nrun_name = "toy"\n'
+                        f'resolution_arcsec = 20.0\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "grid"\n'
+                        f'detector_shape = [64, 64]\n\n[calibration]\n{calibration}\n\n[lsqr]\n{lsqr}\n\n{passes}')
+        return from_toml(str(path))
+
+    for refused in ('weighted_damping = false\ndamp_weight = 0.1',      # SKY pass 0.1, joint none
+                    'weighted_damping = true'):                       # joint 0.1 (setup_lsqr), SKY pass 0.0
+        with pytest.raises(ConfigError, match='N-pass SKY passes damp'):
+            converted(refused)
+    assert converted('weighted_damping = false').recipe.model.sky_dampings() == [0.0]
+    assert converted('weighted_damping = true\ndamp_weight = 0.1').recipe.model.sky_dampings() == [0.1]
+    assert converted('weighted_damping = false\ndamp_weight = 0.1', n=1).recipe.model.sky_dampings() == [0.0]  # no SKY pass
+    with pytest.raises(ConfigError, match='compact_zero_columns'):
+        converted('weighted_damping = false\ncompact_zero_columns = false')
+    with pytest.raises(ConfigError, match='keep_state'):
+        converted('weighted_damping = false', lsqr='keep_state = true')
+    kept = converted('weighted_damping = false\ncompact_zero_columns = true', lsqr='resume = false')
+    assert any('compact_zero_columns' in n for n in kept.notes) and any('resume' in n for n in kept.notes)
+
+
+def test_converter_passes_the_zodi_anchor_only_its_keys(tmp_path):
+    """A [zodi] table becomes spherex.zodi_anchor(result, ...) after the calibration, which takes the predictions
+    (pred_dir) and the clip keys; any other key (the TOML engine ignored it) is refused."""
+    from selfcal.run.convert import from_toml
+
+    def converted(zodi):
+        path = tmp_path / 'zodi.toml'
+        path.write_text(f'task = "cal"\nmode = "continuum"\noutput_dir = "{tmp_path}"\nrun_name = "zodi"\n'
+                        f'resolution_arcsec = 6.2\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "spherex"\n'
+                        f'detector = 4\nchannels = [17]\n\n[calibration]\nweighted_damping = false\n\n[lsqr]\n\n'
+                        f'[zodi]\n{zodi}\n')
+        return from_toml(str(path))
+
+    kept = converted('pred_dir = "/predictions"\nclip_sigma = 2.5\nclip_iters = 3')
+    assert kept.zodi == {'predictions': '/predictions', 'clip_sigma': 2.5, 'clip_iters': 3}
+    assert "spherex.zodi_anchor(result, predictions='/predictions', clip_sigma=2.5, clip_iters=3)" in kept.to_python()
+    with pytest.raises(ConfigError, match=r"\[zodi\] keys \['anchor_method'\] have no Python form"):
+        converted('pred_dir = "/predictions"\nanchor_method = "raw"')
 
 
 def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):
@@ -165,6 +423,15 @@ def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):
     assert proc.returncode == 0 and os.path.basename(cal) in proc.stdout, proc.stdout + proc.stderr[-3000:]
     assert products.read_sidecar(cal)['adopted'] is True
     assert '(refused' not in _cli('plan', str(script)).stdout
+
+
+def test_cli_refuses_a_toml_config(tmp_path):
+    config = tmp_path / 'cal.toml'
+    config.write_text(QUICKSTART_TOML['cal'])
+    for command in ('run', 'plan', 'adopt'):
+        proc = _cli(command, str(config))
+        assert proc.returncode == 2, proc.stdout + proc.stderr[-3000:]
+        assert proc.stderr.strip() == f"TOML configs are no longer run; convert it: selfcal convert {config}"
 
 
 def test_submit_runs_detached_and_records(toy_field, tmp_path):

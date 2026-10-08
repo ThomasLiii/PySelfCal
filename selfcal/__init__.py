@@ -30,8 +30,8 @@ The pieces: an instrument (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``, or an
 ``sc.Offsets`` terms), a ``sc.Recipe`` (the model with ``sc.Fit``, ``sc.Coadd`` and
 ``sc.Numerics``), and ``sc.Compute`` (the machine). Big fields add ``sc.Tiles``
 and ``sc.Passes``. The library underneath (``Calibrator``, ``Mosaicker``,
-``SkyModel``, ``OffsetModel``, ...) stays available for direct use, and the run
-engine (:mod:`selfcal.run`) also runs the TOML run configs.
+``SkyModel``, ``OffsetModel``, ...) stays available for direct use; the run
+engine behind the actions is :mod:`selfcal.run`.
 
 Names load on first use, so ``import selfcal`` (and every worker process) stays light.
 """

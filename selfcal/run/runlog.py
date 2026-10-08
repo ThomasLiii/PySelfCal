@@ -22,23 +22,6 @@ import time
 _active = None
 
 
-def default_log_path(cfg, now=None):
-    """``<output_dir>/<run_name>/logs/<task>_<YYYYmmdd-HHMMSS>_<pid>.log``.
-
-    Falls back to ``<cache_dir>/logs/`` for tasks without a run folder; None if
-    neither is configured.
-    """
-    run_name = cfg.resolved_run_name()
-    if cfg.output_dir and run_name:
-        base = os.path.join(cfg.output_dir, run_name, 'logs')
-    elif getattr(cfg, 'cache_dir', None):
-        base = os.path.join(cfg.cache_dir, 'logs')
-    else:
-        return None
-    stamp = (now or datetime.datetime.now()).strftime('%Y%m%d-%H%M%S')
-    return os.path.join(base, f'{cfg.task}_{stamp}_{os.getpid()}.log')
-
-
 def _git_description(repo):
     try:
         sha = subprocess.run(['git', '-C', repo, 'rev-parse', '--short', 'HEAD'], capture_output=True,

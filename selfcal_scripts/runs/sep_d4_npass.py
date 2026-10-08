@@ -1,5 +1,5 @@
 """SEP Detector 4: the realistic-template PAH 3.29 um fit over 60 subchannels, on the two halves, then
-4 N-pass passes, sky first (was configs/sep_d4_npass.toml)."""
+4 N-pass passes, sky first."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

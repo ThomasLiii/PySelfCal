@@ -3,8 +3,8 @@
 1. The API reference: one page per public module of ``selfcal`` (the run
    engine ``selfcal.run`` included), and ``reference/SUMMARY.md`` for the
    navigation (mkdocs-literate-nav).
-2. The guides that live next to the code (``PIPELINE.md``, the package and
-   config READMEs, ...): each is imported at a site path with its relative links
+2. The guides that live next to the code (``PIPELINE.md``, the package, gates
+   and tool READMEs, ...): each is imported at a site path with its relative links
    rewritten -- to the imported page, to a module's API page, or to the file on
    GitHub -- so every guide keeps one source, readable both on GitHub and here.
    A link to a file that does not exist is logged as a warning, which fails
@@ -28,7 +28,6 @@ API_ROOTS = ["selfcal"]
 
 # repository path -> site path of the guides imported from outside docs/
 GUIDES = {
-    "selfcal_scripts/configs/README.md": "guide/configuration.md",
     "PIPELINE.md": "guide/pipeline.md",
     "selfcal_scripts/zodi_anchor/README.md": "tools/zodi-anchor.md",
     "selfcal_scripts/transfer_function/README.md": "tools/transfer-function.md",
@@ -71,9 +70,10 @@ package: the model ([`selfcal.models`](selfcal/models/index.md)), the solver
 ([`selfcal.core`](selfcal/core/index.md)), instruments
 ([`selfcal.instruments`](selfcal/instruments/index.md)), file I/O
 ([`selfcal.io`](selfcal/io/index.md)), the calibration and mosaic passes
-([`selfcal.pipeline`](selfcal/pipeline/index.md)) and the run engine
-([`selfcal.run`](selfcal/run/index.md)) behind `selfcal_scripts/run.sh`: the TOML run config,
-tasks, modes and N-pass scheduling.
+([`selfcal.pipeline`](selfcal/pipeline/index.md)), and the Python API's actions with the run
+engine behind them ([`selfcal.run`](selfcal/run/index.md)): the field and the recipe, their
+lowering to the engine's run specification, the tasks, the N-pass scheduling, and the products'
+records and fingerprints.
 
 Each page documents one module. A page opens with the module docstring, then
 summary tables of its classes and functions, then every public object with its

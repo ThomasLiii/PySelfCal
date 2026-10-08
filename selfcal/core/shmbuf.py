@@ -2,7 +2,7 @@
 
 Why this exists: forking a worker pool from a multi-threaded parent is unsafe —
 a child inherits every lock in the state it had at fork time, owned by threads
-that do not exist in the child. The runner's RSS-guardrail thread prints to
+that do not exist in the child. The run engine's RSS-guardrail thread prints to
 stderr every 15 s; a child forked while that print holds the stderr buffer lock
 hangs at its own EXIT (multiprocessing's child bootstrap flushes stderr), the
 parent's pool shutdown joins it forever, and its finished siblings pile up as

@@ -2,11 +2,9 @@
 
 The example's files are copied into a temporary directory and run there exactly as the
 quickstart page runs them from the repository root, each in its own process: simulate.py,
-quickstart.py (steps 2 and 3), inspect_results.py, then damping.py (step 5). The TOML form of
-steps 2 and 3, reproject.toml and cal.toml through the runner (``python -m
-selfcal_scripts.run``, what ``run.sh`` calls), runs in a second directory and must make the same
-products. Nothing is written into the repository. Checks that every product exists and that the
-recovered offsets and scalars follow the injected ones. 30 to 45 s on an idle machine.
+quickstart.py (steps 2 and 3), inspect_results.py, then damping.py (step 5). Nothing is written
+into the repository. Checks that every product exists and that the recovered offsets and scalars
+follow the injected ones. 20 to 30 s on an idle machine.
 """
 import os
 import shutil
@@ -18,7 +16,6 @@ from astropy.io import fits
 
 from selfcal.io.calfile import CalFile
 from selfcal.io.reproj import parse_reproj_basename
-from selfcal.run.compare import compare
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLE = os.path.join(REPO, "examples", "quickstart")
@@ -54,9 +51,6 @@ def test_quickstart_example(tmp_path):
     _run(["examples/quickstart/quickstart.py"], here)
     report = _run(["examples/quickstart/inspect_results.py"], here)
     _run(["examples/quickstart/damping.py"], here)
-    toml = _example_in(tmp_path / "toml")
-    _run(["-m", "selfcal_scripts.run", "--config", "examples/quickstart/reproject.toml"], toml)
-    _run(["-m", "selfcal_scripts.run", "--config", "examples/quickstart/cal.toml"], toml)
 
     out = here / "quickstart_output"
     run_dir = out / "quickstart"
@@ -69,9 +63,6 @@ def test_quickstart_example(tmp_path):
     assert (out / "results_quickstart.png").is_file()
     assert "Offsets, gauge removed: correlation" in report
     assert list((out / "cache").iterdir()) == []            # staged frames and caches cleaned up
-    for product in (cal_path, mosaic_path):                  # the TOML form: the same products
-        other = toml / "quickstart_output" / "quickstart" / product.parent.name / product.name
-        assert compare(product, other).verdict == "identical", product.name
 
     with fits.open(mosaic_path) as hdul:
         names = [hdu.name for hdu in hdul[1:]]

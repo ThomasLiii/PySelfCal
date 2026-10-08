@@ -1,6 +1,6 @@
-"""The byte-equality gates, written in Python: each TOML gate config of ``configs/`` as a run
-script of the Python API. Their products carry a ``py`` suffix and must equal the same goldens
-as the TOML gates (``run_python_gates.sh`` runs and compares them).
+"""The byte-equality gates: each a run of the Python API on a fixture of this machine. Their
+products carry a ``py`` suffix and must equal the float64-norm goldens (``run_gates.sh`` runs them
+and compares; ``make_goldens.sh`` makes the goldens from a committed tree).
 
     python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13
 
@@ -29,7 +29,7 @@ EDFN_Y = sc.Field(f'{OUTPUTS}/EDFN_Y_1p5arcsec_unifygolden', sc.Euclid(band='Y',
 
 
 def continuum():
-    """configs/gate_continuum_unify.toml: D3 Ch17, 300 frames, no mosaic."""
+    """D3 Ch17, 300 frames, no mosaic."""
     recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(50, clip=5.0, ignore_flags=[]), coadd=None,
                        name='unify_gate_py')
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(QR2_FIXTURE)[:300],
@@ -37,7 +37,7 @@ def continuum():
 
 
 def spectral():
-    """configs/gate_spectral_unify.toml: the PAH catalogue line on D4, 150 frames, no mosaic."""
+    """The PAH catalogue line on D4, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=sc.catalog('pah_3p29'), damping=0.0)],
                         poly_prior=sc.Poly(1, weight=0.5))
     recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
@@ -47,7 +47,7 @@ def spectral():
 
 
 def e2e():
-    """configs/gate_e2e.toml: D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
+    """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
     recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[]),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
@@ -57,7 +57,7 @@ def e2e():
 
 
 def npass3():
-    """configs/gate_npass3_unify.toml: three lines, the hard polynomial, INIT + SKY + OFFSET."""
+    """Three lines, the hard polynomial, INIT + SKY + OFFSET."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
                        fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
                        name='unify_npass3_gate_py')
@@ -68,7 +68,7 @@ def npass3():
 
 
 def euclid():
-    """configs/gate_euclid_unify.toml: the EDFN stripe recipe on 3 exposures x 16 detectors."""
+    """The EDFN stripe recipe on 3 exposures x 16 detectors."""
     model = sc.Model(offsets=[
         sc.Offsets(on='grid', per='detector', smooth=0.1, smooth_along=('row', 'col'), mean_zero=True,
                    exact_group_rows=True),
@@ -90,7 +90,7 @@ M13_BOXES = {
 
 
 def m13():
-    """configs/gate_npass1_M13_unify_gate.toml: the NEP multi-line INIT on the adaptive tile M13."""
+    """The NEP multi-line INIT on the adaptive tile M13."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
                        fit=sc.Fit(300, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
                        numerics=sc.Numerics(32),

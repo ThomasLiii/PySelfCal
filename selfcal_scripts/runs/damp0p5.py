@@ -1,5 +1,5 @@
 """NEP Detector 4, channel 1: the NumCol 10 fiducial with five times the sky damping and smoothness,
-reading the frames another run staged (was configs/damp0p5.toml)."""
+reading the frames another run staged."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

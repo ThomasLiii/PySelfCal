@@ -67,10 +67,10 @@ import h5py
 import numpy as np
 from astropy.wcs import WCS
 
-from selfcal.core.system import setup_lsqr
-from selfcal.core.solve import apply_lsqr
-from selfcal.core.solution import parse_x_sky
 from selfcal.core.layout import SystemLayout
+from selfcal.core.solution import parse_x_sky
+from selfcal.core.solve import apply_lsqr
+from selfcal.core.system import setup_lsqr
 
 FIXED_SEED = 20240722
 
@@ -175,7 +175,6 @@ def _build_and_solve():
             max_workers=1,             # determinism
             batch_size=F,
             offset_regularization=False,
-            compact_zero_columns=True,
         )
         assert res.A is not None, "setup_lsqr found no valid data"
 

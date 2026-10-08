@@ -9,7 +9,7 @@ the same map index ``m``::
 Keeping those in lockstep by hand is error-prone in any multi-map
 configuration — e.g. a two-map setup must pair ``det_groups_list=[None, zeros]``
 in one list with ``mean_offsets_list=[None, target]`` in another (see the
-``k2_readout`` runner mode for a real two-map instance). ``OffsetModel`` bundles
+``sc.two_block`` model for a real two-map instance). ``OffsetModel`` bundles
 each map's configuration into one :class:`OffsetBlock` so a multi-map setup
 reads as cohesive blocks.
 
@@ -25,9 +25,9 @@ remain supported but are deprecated; new code should construct an
 
 Per-block (lives on ``OffsetBlock``): chunk map, frame grouping, template,
 adjacency + its weight, polynomial-chain constraints, mean-offset anchor.
-Global solver settings (per-pixel sky/line damping ``damp_weight`` /
-``damp_weight_line``, ``damp_offset``, ``spectral_fit``/sky model, masking,
-weighting, workers, ...) are NOT per-block and stay as ``setup_lsqr`` kwargs.
+Global solver settings (the sky model and its per-pixel damping ``damp_weight`` /
+``damp_weight_line``, masking, weighting, workers, ...) are NOT per-block and stay
+as ``setup_lsqr`` kwargs; the offset damping is per map (``damp_offset_maps``).
 ``use_per_frame_scalar`` is a model-level flag (the scalar block is shared
 across maps), so it lives on ``OffsetModel``.
 """
@@ -120,7 +120,7 @@ class OffsetBlock:
         Per-frame group labels (length num_frames). ``None`` (default) solves a
         free offset per frame. ``np.zeros(num_frames)`` locks all frames to one
         shared offset vector (a detector-fixed pattern — e.g. a readout
-        stripe — as in the ``k2_readout`` runner mode).
+        stripe — as in the ``sc.two_block`` model).
     template : np.ndarray or None
         Fixed spatial pattern; when set, the block solves only a per-frame
         amplitude. Requires ``det_groups`` to be set (matches setup_lsqr).

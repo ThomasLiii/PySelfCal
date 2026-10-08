@@ -85,9 +85,9 @@ wavelength maps). A recipe's `name` ends the product names. Each action also wri
 `logs/`, a record to `records/` and, next to each product, `<product>.json` with what it was made
 from: a product that exists is reused only when it was made by the same inputs.
 
-Runs can also be written as TOML configs, the form of the shipped production configs, which keep
-working ([Run configuration](guide/configuration.md)); `selfcal convert run.toml` writes the Python
-form of a config and checks that it runs identically.
+A run is a Python script or a notebook. TOML run configs, the earlier form, are no longer run;
+`selfcal convert run.toml` writes the run script of an old config
+([Migrating from TOML](guide/migrating-from-toml.md)).
 
 ## Where to go next
 
@@ -97,12 +97,12 @@ form of a config and checks that it runs identically.
 - [How selfcal works](guide/concepts.md): the method, the model, the priors and the mosaic.
 - [The Python API](guide/python-api.md): the field, the instruments, the model, the recipe, the
   machine, big fields, products, records and reruns, the command line.
-- [Run configuration](guide/configuration.md): the TOML form of a run: the config schema, the
-  tasks, the modes and the `[model]` table.
 - [Bring your own telescope](bring_your_own_telescope.md): a new instrument or model, from
   `sc.Camera` to an `sc.Instrument` subclass.
 - [Pipeline runbook](guide/pipeline.md): tuning knobs, the N-pass solve, staging, and the on-disk
   formats of the frame, calibration and mosaic files.
+- [Migrating from TOML](guide/migrating-from-toml.md): an old TOML run config as a run script,
+  and the products a TOML run made.
 - [API reference](reference/index.md): every module of `selfcal`, the run engine
   `selfcal.run` included, generated from the docstrings.
 

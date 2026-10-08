@@ -1,5 +1,4 @@
-"""SEP Detector 4, tile S06 only, the first pass alone: experiment E4 on the multi-line fit
-(was configs/sep_s06_E4_j2narrow.toml)."""
+"""SEP Detector 4, tile S06 only, the first pass alone: experiment E4 on the multi-line fit."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

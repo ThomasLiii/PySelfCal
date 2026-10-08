@@ -1,5 +1,4 @@
-"""NEP Detector 4: a 1,000-frame probe of the three-line fit and 4 N-pass passes, sky first, untiled
-(was configs/nep_d4_probe1k_npass.toml)."""
+"""NEP Detector 4: a 1,000-frame probe of the three-line fit and 4 N-pass passes, sky first, untiled."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

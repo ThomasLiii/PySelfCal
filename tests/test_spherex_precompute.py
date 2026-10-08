@@ -1,10 +1,10 @@
-"""The SPHEREx ``precompute`` task writes one LVF arc fit per detector.
+"""``spherex.precompute_lvf`` writes one LVF arc fit per detector.
 
-Regression: the adapter unpacked two of the three values ``make_fiducial_chunk_map``
-returns, so the task failed before writing anything. The calibration files (only
-on the processing host) are replaced by a blank band-centre map and the arc fit by
-the shipped Detector 1 fit; ``make_fiducial_chunk_map`` itself runs, with the
-shipped channel table, so its real return value is unpacked.
+Regression: the generator unpacked two of the three values ``make_fiducial_chunk_map``
+returns, so it failed before writing anything. The calibration files (only on the
+processing host) are replaced by a blank band-centre map and the arc fit by the shipped
+Detector 1 fit; ``make_fiducial_chunk_map`` itself runs, with the shipped channel table, so
+its real return value is unpacked.
 Runnable as a script or under pytest.
 """
 import os
@@ -12,9 +12,9 @@ import tempfile
 
 import numpy as np
 
-import selfcal.instruments.spherex.adapter as adapter
+import selfcal.instruments.spherex.settings as settings
 import selfcal.instruments.spherex.spherex_utility as su
-from selfcal.instruments import get_instrument
+from selfcal.instruments import spherex
 
 
 def _run(out_dir, monkeypatch=None):
@@ -29,7 +29,7 @@ def _run(out_dir, monkeypatch=None):
     def blank_calibration(band, calibration_dir=None):
         return np.zeros((2040, 2040), dtype=np.float32), None
 
-    patches = [(su, 'make_fiducial_chunk_map', with_shipped_fit), (adapter, 'load_calibration', blank_calibration)]
+    patches = [(su, 'make_fiducial_chunk_map', with_shipped_fit), (settings, 'load_calibration', blank_calibration)]
     saved = [(mod, name, getattr(mod, name)) for mod, name, _ in patches]
     for mod, name, value in patches:
         if monkeypatch is not None:
@@ -37,7 +37,7 @@ def _run(out_dir, monkeypatch=None):
         else:
             setattr(mod, name, value)
     try:
-        get_instrument('spherex').precompute({'detectors': [1], 'lvf_output_dir': out_dir})
+        spherex.precompute_lvf([1], output_dir=out_dir)
     finally:
         if monkeypatch is None:
             for mod, name, value in saved:

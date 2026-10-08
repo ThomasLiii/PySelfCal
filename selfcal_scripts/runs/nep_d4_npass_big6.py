@@ -1,5 +1,4 @@
-"""NEP Detector 4: the three-line PAH fit on six large tiles, then 8 N-pass passes, sky first
-(was configs/nep_d4_npass_big6.toml)."""
+"""NEP Detector 4: the three-line PAH fit on six large tiles, then 8 N-pass passes, sky first."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

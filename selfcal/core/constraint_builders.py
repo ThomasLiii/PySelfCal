@@ -11,8 +11,7 @@ order that the CSR scatter depends on:
     2. grouped adjacency, one block per map in ``group_adjacency_maps``
        (absent by default)
     3. sky damping, in sky-component order (continuum, then each line block)
-    4. offset damping (global ``damp_offset``, or per map with
-       ``damp_offset_maps``)
+    4. offset damping, per map with ``damp_offset_maps``
     5. user priors (``setup_lsqr(priors=...)``), in the order given — any
        linear rows a caller builds from :class:`SystemInfo`
        (:func:`as_constraint_block` normalises them)
@@ -172,7 +171,7 @@ def sky_damping_block(block_index, weight, coverage, num_sky):
 
 
 def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
-    """Coverage-weighted damping on the offset columns (``damp_offset``).
+    """Coverage-weighted damping on the offset columns of one map (``damp_offset_maps``).
 
     Columns are ``num_sky_eff + valid_offset_cols``. Returns None if empty.
     """

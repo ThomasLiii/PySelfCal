@@ -1,5 +1,5 @@
 """NEP Detector 4: as nep_d4_npass_big6, with 5 passes, offset first (the frames re-levelled against the
-stitched first sky before the first exact sky) (was configs/nep_d4_npass_big6_offsetfirst.toml)."""
+stitched first sky before the first exact sky)."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

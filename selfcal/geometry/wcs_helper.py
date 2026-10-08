@@ -12,13 +12,13 @@ routes, and :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` and
 """
 import logging
 import os
-from tqdm import tqdm
-import numpy as np
 
+import astropy.units as u
+import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-import astropy.units as u
 from reproject.mosaicking import find_optimal_celestial_wcs
+from tqdm import tqdm
 
 from .. import _state
 
@@ -83,9 +83,8 @@ def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use
     use_ext : iterable[int]
         The entries of each exposure whose WCS are read: FITS extension numbers, or
         whatever ``reader`` accepts. The default is the Euclid NISP layout: the science
-        extensions (``3k + 1``) of the four corner detectors 0, 3, 12 and 15. The runner
-        passes the instrument's :attr:`~selfcal.instruments.base.ExposureLayout.ref_use_ext`
-        unless the ``[reproject]`` table sets ``use_ext``.
+        extensions (``3k + 1``) of the four corner detectors 0, 3, 12 and 15. The run engine
+        passes the instrument's :attr:`~selfcal.instruments.base.ExposureLayout.ref_use_ext`.
     reader : callable or None
         The instrument's exposure reader (:mod:`selfcal.io.frames`), called with
         ``header_only=True``; ``None`` reads the FITS headers.

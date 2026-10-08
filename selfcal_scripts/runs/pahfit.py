@@ -1,6 +1,6 @@
 """NEP Detector 4 (the /data3 copy), the PAH 3.29 um window at NumCol 5: a constant sky plus the
 catalogue PAH line (undamped), the column-polynomial offsets, shot-noise weights, the source-mask
-bit ignored (was configs/pahfit.toml)."""
+bit ignored."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

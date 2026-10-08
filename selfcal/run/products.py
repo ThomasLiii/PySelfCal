@@ -328,7 +328,7 @@ def _cal_frames(cal_path):
 
 class Book:
     """The products of one action: what each would be made from (checked before the run) and,
-    called by the engine as each product is written (``RunConfig.on_product``), its sidecar. The
+    called by the engine as each product is written (``RunSpec.on_product``), its sidecar. The
     same builders serve both, so a product the run writes is current for the same settings later."""
 
     def __init__(self, field, recipe, *, passes=None, tiles=None, record=None):
@@ -395,46 +395,43 @@ def expected_products(plan, book, frames) -> list:
         book.expected[product.path] = product.inputs
 
     recipe, tiles, passes = plan.recipe, plan.tiles, plan.passes
-    for low, ctx in zip(plan.lowered, plan.contexts):
-        cfg = low.cfg
+    for spec, ctx in zip(plan.lowered, plan.contexts):
         cal_dir = ctx.pipeline_config.cal_dir
         for job in ctx.jobs():
             if tiles is None:
-                elsewhere = plan.action == 'mosaic' and cfg.cal_override
-                cal = os.fspath(cfg.cal_override) if elsewhere else ctx.cal_path(job)
+                elsewhere = plan.action == 'mosaic' and spec.cal_override
+                cal = os.fspath(spec.cal_override) if elsewhere else ctx.cal_path(job)
                 if not elsewhere:
                     add(Product('cal', cal, job, lambda job=job: book.cal(job, frames)))
                 init = cal
                 if plan.action == 'mosaic' or (recipe.coadd is not None and passes is None):
-                    frame_dir = cfg.reproj_override or ctx.pipeline_config.reproj_dir
+                    frame_dir = spec.frames.in_place or ctx.pipeline_config.reproj_dir
 
                     def mosaic_inputs_(job=job, cal=cal, d=frame_dir):
                         here = [f for f in _cal_frames(cal) if os.path.exists(os.path.join(d, os.path.basename(f)))]
                         return book.mosaic(job, cal, here)
                     add(Product('mosaic', ctx.mosaic_path(job), job, mosaic_inputs_, depends=(cal,)))
             else:
-                t = cfg.tiling
-                specs, only = resolve_tiles(t, tuple(t['ref_shape']))
+                specs, only = resolve_tiles(spec.tiling)
                 assignment = {}
 
-                def tile_frames(name, t=t, assignment=assignment):
+                def tile_frames(name, tiling=spec.tiling, assignment=assignment):
                     if not assignment:
-                        assignment.update(tile_assignment(t, tuple(t['ref_shape']))[3])
+                        assignment.update(tile_assignment(tiling)[3])
                     return assignment[name][0]
                 tile_paths = {}
-                for spec in specs:
-                    path = os.path.join(cal_dir, ctx.tile_cal_file(job, spec))
-                    tile_paths[spec.name] = path
-                    add(Product('cal', path, job, lambda job=job, spec=spec: book.cal(
-                        job, tile_frames(spec.name), book.tile_key(spec)), tile=spec.name))
+                for tile in specs:
+                    path = os.path.join(cal_dir, ctx.tile_cal_file(job, tile))
+                    tile_paths[tile.name] = path
+                    add(Product('cal', path, job, lambda job=job, tile=tile: book.cal(
+                        job, tile_frames(tile.name), book.tile_key(tile)), tile=tile.name))
                 init = ctx.stitched_cal_path(job)
                 if not only:
                     add(Product('stitched', init, job, lambda paths=tile_paths: book.stitched(paths),
                                 depends=tuple(tile_paths.values())))
             book.init_path[job.name] = init
             if passes is not None:
-                base = cfg.tiling['stitched_suffix'] if cfg.tiling else cfg.suffix
-                stem = 'cal_' + ctx.stem(job, base)
+                stem = ctx.pass_stem(job)
                 for i, kind in enumerate(schedule(passes.n, passes.order)[1:], start=2):
                     t_ = 'sky' if kind == 'sky' else 'off'
                     add(Product('pass', os.path.join(cal_dir, f'{stem}_pass{i}{t_}.h5'), job,

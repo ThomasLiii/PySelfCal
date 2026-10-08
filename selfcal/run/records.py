@@ -2,9 +2,9 @@
 
 Every action of a :class:`~selfcal.run.field.Field` writes
 ``<field>/records/<action>_<YYYYmmdd-HHMMSS>_<pid>.json`` (its log, when there is one, has the
-same stem under ``logs/``): the resolved settings (every default expanded), the run configs they
-lowered to, the code version, the packages, the environment knobs in effect, the products and the
-outcome. The record is written when the action starts and rewritten when it ends.
+same stem under ``logs/``): the resolved settings (every default expanded), the engine runs they
+lowered to (:meth:`~selfcal.run.runspec.RunSpec.describe`), the code version, the packages, the
+environment knobs in effect, the products and the outcome. The record is written when the action starts and rewritten when it ends.
 
 :func:`rerun` runs a recorded action again from its record (``selfcal rerun RECORD``);
 :func:`write_request` writes the same form for an action that runs elsewhere
@@ -124,20 +124,6 @@ def _functions(obj, out):
     return out
 
 
-def _encode_cfg(cfg) -> dict:
-    """A run config in JSON form (objects encoded as settings, functions by reference)."""
-    from dataclasses import fields
-    out = {}
-    for f in fields(cfg):
-        v = getattr(cfg, f.name)
-        if f.name == 'on_product':
-            continue                      # the action's product book (in-process only)
-        if f.name == 'instrument' and not isinstance(v, (str, type(None))):
-            v = {'object': repr(v.inst) if hasattr(v, 'inst') else repr(getattr(v, 'camera', v))}
-        out[f.name] = encode(v)
-    return out
-
-
 class Record:
     """The JSON record of one action (see the module docstring)."""
 
@@ -157,7 +143,7 @@ class Record:
             'field': field.to_dict(),
             'settings': {k: (v.to_dict() if isinstance(v, Config) else encode(v)) for k, v in settings.items()},
             'functions': _functions(list(settings.values()) + [field], {}),
-            'lowered': [_encode_cfg(low.cfg) for low in lowered],
+            'lowered': [spec.describe() for spec in lowered],
             'log': log_path, 'status': 'running', 'products': {}, 'wall_s': None, 'error': None,
         }
         self.write()

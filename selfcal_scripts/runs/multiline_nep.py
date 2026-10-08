@@ -1,5 +1,5 @@
 """NEP Detector 4: the three-line PAH fit over the Multiline3 window, solved on the 16 adaptive-overlap
-tiles and stitched (was configs/multiline_nep.toml)."""
+tiles and stitched."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

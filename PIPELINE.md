@@ -18,27 +18,11 @@ tilings of [`selfcal_scripts/recipes/`](selfcal_scripts/recipes/):
 ./selfcal_scripts/run.sh selfcal_scripts/runs/<run>.py --dry-run   # the plan only (selfcal plan)
 ```
 
-The same runs as TOML configs (`selfcal_scripts/configs/<run>.toml`, run by the same `run.sh`)
-keep working, and each run script is checked to make the engine do exactly what its config does
-(`selfcal_scripts/gates/config_equivalence.py runs`). The knobs below are named by their TOML keys,
-the names in the engine and in the cal files' attributes; the Python settings that carry them:
-
-| TOML | Python |
-| --- | --- |
-| `[instrument]` `detector`, `num_col`, `channels` / `windows` | `sc.SPHEREx(detector, num_col=)`, `jobs=spherex.channel(n)` / `spherex.window(...)` |
-| `[params] reg_weight`, `poly_degree` / `poly_weight` | `sc.continuum(smooth=, poly_prior=sc.Poly(degree, weight=))`, `sc.Offsets(smooth=, poly_prior=)` |
-| `damp_weight`, `damp_weight_line` | `sc.Sky(damping=)` per term |
-| `[calibration] outlier_thresh`, `outlier_group_*` | `sc.Fit(clip=sigma)`, `sc.Clip(sigma, per=..., variable=, edges=)` |
-| `[lsqr] iter_lim`, `atol` / `btol`, `damp`, `solver` | `sc.Fit(iterations, tolerance=, damp=, method=)` |
-| `[mosaic]`, `oversample`, `wavelength_coadd` | `sc.Coadd(clip=, std=, oversample=, instrument_maps=, ...)` |
-| `apply_n_threads`, `batch_size`, `cache_batch_size`, `coadd_batch_size` | `sc.Numerics(threads, batch=, mosaic_batch=, coadd_batch=)` |
-| `suffix` | `sc.Recipe(name=)` |
-| `cache_dir`, `staging`, `keep_nvme`, `hdd_io_limit`, `max_workers` | `sc.Compute(scratch, stage=, keep_staged=, io_limit=, workers=, coadd_workers=)` |
-| the mode (offset-model structure: adjacency, poly groups, the K=2 readout block) | the model: a preset (`sc.continuum`, `sc.spectral`, `sc.two_block`) or `sc.Model(...)` |
-
-The full table is in [From a TOML config](docs/guide/python-api.md#from-a-toml-config); the TOML
-schema, and how to add a mode or an instrument to it, in
-[`selfcal_scripts/configs/README.md`](selfcal_scripts/configs/README.md).
+The knobs below are named by the Python settings that carry them (`sc.SPHEREx`, `sc.Offsets`,
+`sc.Sky`, `sc.Fit`, `sc.Coadd`, `sc.Numerics`, `sc.Compute`, `sc.Tuning`, `sc.Tiles`, `sc.Passes`)
+and, where it helps, by the keyword of the library call they reach (`Calibrator.setup_lsqr`,
+`apply_lsqr`, `Mosaicker.make_mosaic`). TOML run configs are no longer run;
+[Migrating from TOML](docs/guide/migrating-from-toml.md) maps their keys to these settings.
 
 ## Calibration model
 
@@ -52,18 +36,18 @@ where:
 - `v_i` are the observation's **data variables** (detector maps such as SPHEREx's band centre,
   per-frame values such as the time, reference-grid maps, stored layers, the built-in
   coordinates, functions of those); `c_j` and `φ_mn` are any known functions of them
-  (`selfcal/models/variables.py`, `[model.variables]`).
+  (`selfcal/models/variables.py`; `sc.Model(variables=...)`).
 - `j` indexes **sky terms** (one map each; `c = 1` for a constant sky).
 - `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case); `φ = 1` (one function) is the classic chunk offset.
-- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; can lock multiple frames to share an offset vector via `det_groups_list[m]`, or group by any per-frame value).
+- `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; `sc.Offsets(per=...)` locks several frames to one offset vector: `per="all"`, or any per-frame value; the library's `det_groups_list[m]`).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** added when `use_per_frame_scalar=True` (set by the continuum / spectral / tiled modes). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- `scalar[k]` is an optional **per-frame DC scalar** (`sc.Model(scalar=True)`, the default, and in `sc.continuum` / `sc.spectral`; the library's `use_per_frame_scalar=True`). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
 
-For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see `selfcal_scripts/configs/README.md` and `docs/bring_your_own_telescope.md`.
+For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see [Bring your own telescope](docs/bring_your_own_telescope.md).
 
 ## Calibration pipeline tuning
 
-Chunk geometry (the `[instrument]` TOML table):
+Chunk geometry (`sc.SPHEREx(detector, num_sub=, num_ch=, num_col=)`):
 
 - `num_sub`, `num_ch` (`NumSub`, `NumCh` in the product names) — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
@@ -77,30 +61,30 @@ Chunk geometry (the `[instrument]` TOML table):
   channels (relying on the per-frame scalar + adjacency reg) or `NumCol=3-10`
   for wider channels / poly-constrained runs.
 
-`[calibration]` (production defaults, e.g. the `d4_aromatic` config) — passed
-verbatim as `setup_lsqr` kwargs. Per-block knobs (`reg_weight`, `poly_degree`/
-`poly_weight`) live in `[params]` and the mode lowers them onto the `OffsetBlock`:
+The production recipe of the NumCol 10 era, `POLY_K1` of
+[`selfcal_scripts/recipes/spherex.py`](selfcal_scripts/recipes/spherex.py) (the channel maps
+since 2026-09-29 use `NUMCOL3`: NumCol 3, no column polynomial), with the production machine of
+`selfcal_scripts/recipes/site.py`:
 
-```toml
-[calibration]
-apply_mask = true
-apply_weight = true          # d4_aromatic/pahfit use Poisson weighting; d5/k2 false
-outlier_thresh = 5.0
-ignore_list = []             # [21] for pahfit/tiled (drop source-mask bit)
-batch_size = 50              # tuned 2026-05 from 20
-offset_regularization = true
-weighted_damping = true
-damp_weight = 0.1
-max_workers = 48             # tuned 2026-05 from 32
+```python
+import selfcal as sc
 
-[params]
-reg_weight = 0.1             # adjacency-smoothness weight (per chunk map)
-poly_degree = 1              # omit poly_weight to disable the column poly-constraint
-poly_weight = 0.5
+POLY_K1 = sc.Recipe(
+    sc.continuum(smooth=0.1,                     # adjacency smoothness between neighbouring chunks
+                 poly_prior=sc.Poly(1, weight=0.5)),   # the linear column polynomial; omit for none
+    fit=sc.Fit(50, clip=5.0),                    # shot_noise_weights=True in d4_aromatic / the PAH fits
+    coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),   # drop the source-mask bit
+    name="damp0p1_reg0p1_outThresh5_sigma2_polyK1")
+ORCA = sc.Compute(scratch, workers=48, coadd_workers=48)        # workers tuned 2026-05 from 32
+# sc.Numerics() is production's: 48 solver threads, batches of 50 frames (tuned 2026-05 from 20)
 ```
 
+The sky damping is each sky term's `sc.Sky(damping=)`: 0.1 for the first term and 0.3 for the
+others unless given. The spectral recipes ignore bit 21 in the fit too
+(`sc.Fit(ignore_flags=[21])`).
+
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
-(the runner builds it from the mode; `Calibrator.setup_lsqr` still accepts the older flat per-map
+(the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
 lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
 `mean_offsets_list=` / `det_groups_list=` / `det_templates=`, deprecated — they remain the native
 arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
@@ -118,26 +102,26 @@ cc.setup_lsqr(
 )
 ```
 
-Key knobs (per map `m`; the block field is named in parentheses):
+Key knobs (per map `m`; the block field, then the model's setting, in parentheses):
 
-- **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `selfcal/instruments/spherex/spherex_utility.py` (the modes build the same pairs with `selfcal.models.offset_structure.adjacency_along`):
+- **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`; `sc.Offsets(smooth=, smooth_along=)`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `selfcal/instruments/spherex/spherex_utility.py` (the run engine builds the same pairs from a term's `smooth_along` axes with `selfcal.models.offset_structure.adjacency_along`):
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
 
-- **`poly_constraints_list[m]`** (`poly_constraints`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
+- **`poly_constraints_list[m]`** (`poly_constraints`; `sc.Offsets(poly_prior=sc.Poly(...))`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
-- **`mean_offsets_list[m]`** (`mean_offset`) — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `selfcal/core/system.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
+- **`mean_offsets_list[m]`** (`mean_offset`; `sc.Offsets(mean_zero=True)`) — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `selfcal/core/system.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
 
-- **`use_per_frame_scalar=True`** — adds an explicit `num_frames` block to `x` (one scalar per frame) decoupled from `det_groups_list`. Combined with mean-zero anchors on all maps, this pushes per-frame DC entirely into the scalar so chunk offsets only carry within-frame structure. **Required for narrow channels** (D3 Ch17 etc.) where sparse chunk coverage was previously letting per-frame DC leak into scan-stripe residuals.
+- **`use_per_frame_scalar=True`** (`sc.Model(scalar=True)`) — adds an explicit `num_frames` block to `x` (one scalar per frame) decoupled from `det_groups_list`. Combined with mean-zero anchors on all maps, this pushes per-frame DC entirely into the scalar so chunk offsets only carry within-frame structure. **Required for narrow channels** (D3 Ch17 etc.) where sparse chunk coverage was previously letting per-frame DC leak into scan-stripe residuals.
 
-- **`weighted_damping=True`** + **`damp_weight`** damps **sky pixels** (not offsets) toward zero, weighted by `sqrt(damp_weight * coverage)`.
+- **`weighted_damping=True`** + **`damp_weight`** (`sc.Sky(damping=)`, per term) damps **sky pixels** (not offsets) toward zero, weighted by `sqrt(damp_weight * coverage)`. Offsets are damped per term with `sc.Offsets(damping=)`.
 
 `lsqr_kwargs`:
 
 - Use **`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)], num_sky_blocks=cc.num_sky_blocks, active_mask=cc.active_mask)`** for the warm start when `use_per_frame_scalar=True`. It seeds *only* the scalar block from the diagonal-LS estimate (≈ weighted mean of valid `b` per frame), leaving chunks and sky at 0. Critical to avoid scan-stripe regressions on narrow channels. `active_mask` is required because `setup_lsqr` compacts the zero columns by default; `x0` comes back in the full column layout `apply_lsqr` expects.
 - For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape, active_mask=cc.active_mask)` — diagonal-LS over the full offset region.
-- `iter_lim=50` is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
-- `precondition=True` (column-norm) is essential — much faster convergence.
+- `iter_lim=50` (`sc.Fit(50)`) is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
+- `precondition=True` (column-norm; `sc.Fit(precondition=True)`, the default) is essential — much faster convergence.
 - **The transpose product, and what "statistical equality" means here.**
   `A^T @ y` is a scatter into output columns, so it cannot be threaded
   without changing the order in which each column's contributions are
@@ -150,13 +134,13 @@ Key knobs (per map `m`; the block field is named in parentheses):
   integer coverage, Fisher and separability outputs are untouched. Measured
   on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
   (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
-  capped so the private buffers stay under `SELFCAL_RMATVEC_BUFFER_GB`
-  (default 16); `SELFCAL_PARALLEL_RMATVEC=<n>` pins it, and `=1` selects the
+  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`
+  pins it (the action sets `SELFCAL_PARALLEL_RMATVEC`), and `1` selects the
   sequential kernel — the byte-exact verification mode the pre-2026-09-10
-  goldens were made with. In practice the count equals `apply_n_threads` for
-  every production tile: the buffer cap binds only when compaction is off
+  goldens were made with. In practice the count equals the solver's threads
+  (`sc.Numerics(threads)`) for every production tile: the buffer cap binds only when compaction is off
   (803 M uncompacted columns x 32 threads would want 103 GB), so all tiles of
-  one mosaic are treated identically — but **keep `apply_n_threads` fixed
+  one mosaic are treated identically — but **keep `sc.Numerics(threads)` fixed
   across the tiles you intend to stitch**, since the solution depends on the
   count at the reassociation level. How much depends on how converged the
   solve is: a converged 1k-frame solve moves by ~1e-6 of each pixel's noise,
@@ -168,36 +152,36 @@ Key knobs (per map `m`; the block field is named in parentheses):
   tile), which removes ~17 GB of n-space vectors and is what makes the
   row-split buffers affordable. The compact solve differs from the
   uncompacted one at ~5e-6 relative (n-space reductions regroup), the same
-  class of difference as the row-split product. `compact_zero_columns=False`
-  is a debugging escape hatch.
+  class of difference as the row-split product.
 - **Column-partitioned storage.** Above the `SELFCAL_BLOCK_NNZ` threshold,
   `setup_lsqr` writes the matrix as **storage blocks x column ranges** (one
   block per spill batch and per constraint block), placing rows with scipy's
   `coo_tocsr` in one pass per block. The default is ONE range, i.e.
   block-major storage with one int32 indptr per block (the same bytes per row
   as a plain `BlockCSR`, but built without the int64 global indptr and with
-  the per-row sorts threaded). `SELFCAL_RMATVEC_SPLIT=<T>` cuts T column
+  the per-row sorts threaded). `sc.Tuning(split_ranges=T)` (`SELFCAL_RMATVEC_SPLIT`) cuts T column
   ranges, which only the sequential verification kernel uses (one thread per
   range folds its columns in the sequential order — the byte-equal parallel
   transpose product of the 2026-09 byte-equality rounds); T ranges hold
-  `(T-1) * 4 B/row` more indptr, and `SELFCAL_SPLIT_EXTRA_GB` (default 24)
-  halves T until that fits.
-- **Memory env knobs** (defaults need no tuning): `SELFCAL_BLOCK_NNZ` —
+  `(T-1) * 4 B/row` more indptr, and `sc.Tuning(split_extra_gb=)` (`SELFCAL_SPLIT_EXTRA_GB`,
+  default 24) halves T until that fits.
+- **Memory knobs** (`sc.Tuning`, each a `SELFCAL_*` environment variable;
+  defaults need no tuning): `block_nnz` (`SELFCAL_BLOCK_NNZ`) —
   nnz threshold at which `setup_lsqr` emits int32 block storage instead of a
   unified CSR (default `2**31`, the point where scipy would force int64
-  indices; outputs are bit-identical either way). `SELFCAL_SPILL_MIN_GB`
-  (default 4) / `SELFCAL_SPILL_DIR` (default system tmp) — `Calibrator.apply_lsqr`
+  indices; outputs are bit-identical either way). `spill_min_gb` (`SELFCAL_SPILL_MIN_GB`,
+  default 4) / `spill_dir` (`SELFCAL_SPILL_DIR`, default system tmp) — `Calibrator.apply_lsqr`
   spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
   duration of the solve when they exceed the threshold (exact byte
   round-trip; ~1 min I/O against a multi-hour production solve).
 - **Process pools & the parallel scatter.** The assembly and Phase-4a CSR
-  scatter pools (and the frame check of the `reproject` task) run on the
+  scatter pools (and the frame check of `field.reproject(verify=True)`) run on the
   **forkserver** start method (`selfcal.core.shmbuf.worker_pool_context`;
-  `SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
+  `sc.Tuning(start_method=)`, `SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
   escape hatch only); the other pools (coadd, reprojection, N-pass OFFSET
   refit, the standalone `wav_coadd`) use `multiprocessing`'s default start
   method (`fork` on Linux before Python 3.14). Forking a pool from the
-  runner's multi-threaded process can hand a child the stderr lock in a
+  engine's multi-threaded process can hand a child the stderr lock in a
   locked state (the RSS guardrail prints
   every 15 s); the child then hangs at exit and the parent joins it forever —
   a production tile lost 6 h to this on 2026-09-09. Consequences: (1) entry
@@ -205,37 +189,36 @@ Key knobs (per map `m`; the block field is named in parentheses):
   (children re-import the main module, the standard multiprocessing rule);
   (2) shared arrays reach workers as explicit `selfcal.core.shmbuf.SharedBuffer`
   handles (memfd-backed, fd-passed — no `/dev/shm` size cap), never by fork
-  inheritance. The scatter: `SELFCAL_SCATTER_WORKERS` (default `min(8,
-  max_workers)`; `0`/`1` = the byte-identical serial path) and
-  `SELFCAL_SCATTER_TIMEOUT_S` (default 1800 per batch) — on timeout or a
+  inheritance. The scatter: `sc.Tuning(scatter_workers=)` (`SELFCAL_SCATTER_WORKERS`, default
+  `min(8, workers)`; `0`/`1` = the byte-identical serial path) and
+  `scatter_timeout_s` (`SELFCAL_SCATTER_TIMEOUT_S`, default 1800 per batch) — on timeout or a
   broken pool the remaining batches are re-scattered serially, so an
   unattended run degrades to slow, never to a hang. Serial and parallel
   scatters are element-wise identical (pure data movement).
-- `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. The runner passes `apply_n_threads` (default 48, tuned 2026-05); `Calibrator.apply_lsqr` itself defaults to `n_threads=32`.
+- `apply_lsqr` builds a custom row-block-parallel `LinearOperator` when `n_threads > 1`, with BLAS pinned to a single thread via `threadpool_limits(limits=1, user_api='blas')` so BLAS doesn't fight the SpMV threads. The engine passes `sc.Numerics(threads)` (default 48, tuned 2026-05); called directly, `Calibrator.apply_lsqr` defaults to `n_threads=32`.
 - The solver's elementwise vector updates (`x += t1*w`, `u *= alfa`, ...)
-  run across `SELFCAL_VEC_THREADS` threads (default 8; serial below 16 M
+  run across `sc.Tuning(vector_threads=)` threads (`SELFCAL_VEC_THREADS`, default 8; serial below 16 M
   elements). Each element depends only on its own inputs, so the split is
   bit-identical; the reductions (norms) stay one ordered pass.
 
-`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp.
+`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from the instrument's `offset_renderer` (`sc.Offsets(render=)` chooses among them).
 
-**Channel / window selection** lives in `[instrument]` (de-mixed into typed keys,
-one per run): `channels = [[14],[15]]` (one calibration run per entry),
-`channel_range = [23, 35]` (expands to single-channel jobs), `windows =
-["Aromatic","Aliphatic"]` (named subchannel ranges 225–235 / 249–259 covering the
-PAH bands, registry in the SPHEREx adapter), or `subch_window = [lo, hi]` +
-`window_name` (an explicit subchannel range, e.g. the PAHfit 210–250 / 200–260
-windows). The instrument's `frame_tag` is `Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}`,
-so cal filenames are deterministically
-`cal_{frame_tag}_{job}{suffix}.h5` (job = `Ch<n>` or the window name).
+**Channel / window selection** is the action's `jobs=`: `spherex.channel(17)` (one
+channel), `spherex.channels(1, 34)` (one job per channel), `spherex.group(17, 18)` (one
+map over several channels), `spherex.window("Aromatic")` / `spherex.window("Aliphatic")`
+(the named subchannel windows 225–235 / 249–259, covering the PAH bands), or
+`spherex.window(name, subchannels=range(lo, hi))` (an explicit subchannel range, e.g.
+the PAHfit windows `range(210, 250)` / `range(200, 260)`). The SPHEREx product tag is
+`Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}`, so cal filenames are deterministically
+`cal_{tag}_{job}_{name}.h5` (job = `Ch<n>` or the window name; `name` the recipe's).
 
 ## Advanced Calibrator solve modes
 
 Beyond the default per-frame, per-chunk solve, `Calibrator.setup_lsqr`
-supports restricted-solve modes that the mainline `continuum` mode does not use
-but exist in the API (the `two_block_fixed` mode, preset `k2_readout`, uses
-`det_groups_list`; in a `[model]` table they are the `fixed` / `grouped` offset kinds). Each is
-an `OffsetBlock` field (named in parentheses):
+supports restricted-solve modes that the mainline `sc.continuum` model does not use
+but exist in the API (`sc.two_block` uses `det_groups_list`; in a model they are offset terms
+with `per="all"` or `per=<frame variable>`). Each is an `OffsetBlock` field (named in
+parentheses):
 
 - **Locked offsets via `det_groups_list[m]`** (`det_groups`). Pass an array of length
   `num_frames` giving a group ID per frame for map `m`; frames in the same
@@ -246,7 +229,7 @@ an `OffsetBlock` field (named in parentheses):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — the `two_block_fixed` mode / `configs/k2_readout.toml`).
+  stripes — `sc.two_block`, `selfcal_scripts/runs/k2_readout.py`).
 - **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
@@ -265,12 +248,12 @@ this whenever `use_per_frame_scalar=True`. For runs without the scalar,
 `compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks, active_mask)` is the older full-offset warm
 start. Pass `active_mask` whenever `setup_lsqr` compacted the zero columns (the default).
 
-## N-pass alternating solve (task `npass`)
+## N-pass alternating solve
 
-One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4),
-implemented as the runner task `npass` (`selfcal/run/npass.py`;
-primitives in `selfcal/pipeline/npass.py`; config table `[passes]`, see
-`selfcal_scripts/configs/README.md`). Model per frame *k*, map pixel *p*:
+One formalism for the spectral calibrations (SEP PAH J=2, NEP multi-line J=4):
+`field.calibrate(recipe, passes=sc.Passes(n, ...))`, run by the engine's `npass` task
+(`selfcal/run/npass.py`; primitives in `selfcal/pipeline/npass.py`). Model per frame
+*k*, map pixel *p*:
 
 ```
 d_k(p) = Σ_j S_j(p)·c_j(λ_k(p)) + Σ_d a_{k,col(p),d} B_d(sub(p)) + s_k
@@ -285,7 +268,7 @@ with each half exact:
 
 | pass | type | solves | mechanism | tiles |
 | --- | --- | --- | --- | --- |
-| 1 | INIT | `S, a, s` jointly | the joint LSQR of the `cal` task (tiled when `[tiling]` is present) | yes (memory) |
+| 1 | INIT | `S, a, s` jointly | the joint LSQR of a plain `calibrate` (tiled with `tiles=`) | yes (memory) |
 | even | SKY | `S` given `a, s` | per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv) summed, one per-pixel closed-form solve (`solve_sky_closed_form`) | no — exact full-field |
 | odd ≥ 3 | OFFSET | `a, s` given `S` | dense least squares per frame against the one global sky (deg 4, per-subchannel clip, bright-sky exclusion) | no |
 
@@ -297,9 +280,9 @@ not, and past that point the iterate drifts along the exact null spaces
 (uniform line floor ↔ static detector pattern; uniform sky ↔ scalars). Each
 SKY/OFFSET pass is an exact block minimization, so the objective is
 non-increasing in `n`, but drift along the null spaces is not excluded — the
-runner records per-pass monitors in `<stem>_npass_monitor.json` (per-block
+scheduler records per-pass monitors in `<stem>_npass_monitor.json` (per-block
 median / % positive / step RMS, offset DC, residual RMS, bright-cut
-fallbacks) and `stop_tol` can stop early; pick `n` from those, not by
+fallbacks) and `sc.Passes(stop_tol=)` can stop early; pick `n` from those, not by
 assumption. The remaining zero points (line floor, continuum DC) are
 unobservable from the data in any `n` and need the post-hoc anchors
 (`selfcal/line_floor.py`, `selfcal/zodi_anchor.py`).
@@ -308,7 +291,7 @@ Why the SKY passes need no tiles: a pixel's normal equations are sums over its
 observations, so per-tile dumps over **disjoint** frame sets are additive and
 summing them is identical to a single full-field solve — no seam can exist.
 Overlapping tile bboxes are de-duplicated first-tile-wins. The OFFSET pass
-reads every frame of the field (`[tiling].full_reproj_dir`). Verified at full
+reads every frame of the field (the run's `frames=` directory). Verified at full
 scale on the NEP (17,647 frames, J=4): re-running a SKY pass from the same
 offsets with a completely different partition (3 vertical bands instead of 6
 blocks) reproduced the product to float32 rounding — 4–87 differing elements
@@ -316,9 +299,9 @@ of 160.6 M, max 4.7e-10 against a p99 signal of 1.7–4.1e-2, Fisher and
 coverage byte-equal, and the median difference **exactly zero in every
 distance bin from either partition's boundaries**.
 
-**The OFFSET basis must resolve the window** (`[passes].offset.segments`). The
-per-frame refit is a degree-`poly_degree` Chebyshev per column over the whole
-`spectral_poly_lo..hi` window. On the SEP, the same degree 4 over the 121-subchannel
+**The OFFSET basis must resolve the window** (`sc.Refit(segments=)`). The
+per-frame refit is a degree-`degree` Chebyshev per column (`sc.Refit(degree)`) over the whole
+polynomial window of the model. On the SEP, the same degree 4 over the 121-subchannel
 multi-line window (200–320) captured 3–5× less of the per-frame structure at the
 ~15-subchannel scale in the aromatic band than over the 60-subchannel aromatic
 window (200–259): the wide fit is constrained by the red-end data, so red-end
@@ -333,8 +316,8 @@ shape on each range (the aromatic band gets exactly the narrow-window basis, the
 red end its own), with nothing to extrapolate. One segment equal to the window is
 bit-identical to the unsegmented basis.
 
-**Ordering matters when INIT is tiled** (`[passes].order`, default
-`sky_first`). Each INIT tile is an independent joint solve, so it picks its own
+**Ordering matters when INIT is tiled** (`sc.Passes(order=)`, default
+`offset_first`). Each INIT tile is an independent joint solve, so it picks its own
 gauge along the near-null directions; frames in neighbouring tiles come out on
 mutually inconsistent gauges. A SKY pass fed those offsets has to compromise,
 which puts smooth footprint-scale lobes within ~1 frame footprint of every INIT
@@ -347,15 +330,16 @@ first sky has no lobes (measured on the NEP: the pass-3-to-pass-5 step shows
 sky-first chain's maps). Use it whenever pass 1 is tiled; with an untiled INIT
 there is no gauge mismatch to fix and the extra OFFSET pass is close to a
 no-op. Note the parity: `offset_first` ends on a sky for **odd** `n`
-(`sky_first` for even `n`) — the runner warns when a schedule ends on an OFFSET
-pass, whose product carries no sky map.
+(`sky_first` for even `n`) — `sc.Passes` refuses a schedule that ends on an OFFSET
+pass, whose product carries no sky map, unless `ends_on_offset=True`.
 
 Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
 coverage, `sky_separability/<name>`; written by the same
 `selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
 `<stem>_pass{i}off.h5` (`offsets/map_0` + `frame_scalar` + `fit_ok` +
-`resid_rms`, consumable by `OffsetSubtractor`). Re-running the same config
-resumes at the first missing product. Hooks are POSTprocess functions
+`resid_rms`, consumable by `OffsetSubtractor`). Running the same script again
+reuses every pass product that is current and resumes at the first missing one.
+The subtractors are post-weight frame hooks
 (weights are computed on the raw data first); `SkySubtractor.window` handles
 subframes overhanging any map edge (a negative `ref_coords` start is a Python
 negative slice — the SEP LMC-streak bug).
@@ -367,11 +351,11 @@ min, OFFSET ≈ 4 min.
 ## NVMe staging pattern
 
 Reprojected `.h5` files live on RAID (HDD); parallel reads thrash the
-heads. The pattern (in `selfcal/run/staging.py`, driven by the
-top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
+heads. The pattern (in `selfcal/run/staging.py`, driven by
+`sc.Compute(stage=, keep_staged=, io_limit=)`):
 
 1. `set_hdd_io_limit(20)` — throttle the initial HDD copy
-2. Copy `*.h5` to `{CACHE_DIR}/reproj_nvme_{run_name}/` via
+2. Copy `*.h5` to `{scratch}/reproj_nvme_{field name}/` (or `sc.Compute(stage_dir=)`) via
    `ThreadPoolExecutor`. Each frame is copied under a temporary name and
    renamed when complete, so an interrupted copy never leaves a truncated
    frame; a complete copy already there (same size) is kept, so a staging
@@ -382,11 +366,11 @@ top-level `staging` / `keep_nvme` / `hdd_io_limit` config keys):
 4. Pass `reproj_dir=nvme_reproj_dir` to `Calibrator` / `Mosaicker`
 5. Before `save_calibration`, swap `cc.reproj_list` basenames back to HDD
    paths so the cal file remains valid after NVMe cleanup
-6. `shutil.rmtree(nvme_reproj_dir)` at the end, unless `keep_nvme = true` or
-   `staging = "reuse"`, and only for a marked directory
+6. `shutil.rmtree(nvme_reproj_dir)` at the end, unless `keep_staged=True` or
+   `stage="reuse"`, and only for a marked directory
 
-A tiled run stages each tile's frames into `[tiling].nvme_subdir` under
-`cache_dir`, under the same marker rule, and never deletes it.
+A tiled run stages each tile's frames into `sc.Compute(stage_dir=)` under
+the scratch directory, under the same marker rule, and never deletes it.
 
 `set_hdd_io_limit(n)` installs a `multiprocessing.BoundedSemaphore` in
 `selfcal/_state.py:_hdd_io_semaphore`, which `ThreadPoolExecutor` workers
@@ -413,7 +397,7 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 - `skymap_coverage` — `(ref_h, ref_w)` int64 — frames touching each pixel
 - `reproj_list` — list of HDD paths to the reprojected files (dataset of bytes)
 - `num_maps` (attr) — number of chunk maps `K`
-- `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when the solve has one: `use_per_frame_scalar=True`, or a map with `det_groups`)
+- `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when the solve has one: `sc.Model(scalar=True)`, or a map with `det_groups`)
 
 **Groups (one dataset per map):**
 - `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
@@ -459,15 +443,13 @@ Datasets:
   coordinates.
 - `layers/<name>` `(sub_w, sub_w)` float32 — optional per-observation planes
   (a variance, a per-frame wavelength map, ...) from the reader, reprojected
-  bilinearly; the source of *layer* data variables (`[model.variables]
-  name = { layer = "name" }`).
+  bilinearly; the source of *layer* data variables (`sc.Layer("name")`).
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
   `load_reproj_file` reconstructs `sub_wcs` / `det_wcs` on demand. The
   keywords of `det_header` are the source of *header* frame variables
-  (`[model.variables] time = { header = "MJD-AVG" }`,
-  `selfcal.io.frames.frame_header_values`).
+  (`sc.Header("MJD-AVG")`, `selfcal.io.frames.frame_header_values`).
 - `file_path` (str) — path to the source FITS the subframe came from.
 - `ref_coords` `(4,)` int32 — `[y_min, y_max, x_min, x_max]` in the
   reference frame, where `sub_data` should be splatted back. Can extend
@@ -477,7 +459,7 @@ Sub-frame side length sized to fit the detector diagonal at mosaic
 resolution:
 `sub_width = ceil(sqrt(2) * max(det_height, det_width) / (ref_reso/det_reso) * (1 + 2*padding_percentage))`.
 
-Cached intermediates from the mosaic's cache pass live in `cache_dir` as
+Cached intermediates from the mosaic's cache pass live in the scratch directory as
 `cached_<original>.h5` in the **sparse** format (`attrs['format'] =
 'sparse-v1'`): only the frame's nonzero-weight pixels are stored —
 `ref_coords` (the nonzero-weight bbox in reference coordinates),
@@ -527,8 +509,8 @@ N-pass product, a mosaic) has a sidecar next to it, `<product>.json`, written af
 | `adopted` | true when `field.adopt(...)` recorded a product made without one |
 
 An action reuses a product only when its fingerprint matches what it would make; one made by other
-inputs, or one without a sidecar (a TOML run's), is refused until it is adopted or the action
-passes `overwrite=True`. TOML runs neither write nor read sidecars. The N-pass work directory keeps
+inputs, or one without a sidecar (made by a TOML run of an earlier version, say), is refused until
+it is adopted or the action passes `overwrite=True`. The N-pass work directory keeps
 `intermediates.json`, the fingerprints its moment dumps and sky exports were made from; the Python
 API deletes those that differ before a run.
 
@@ -554,8 +536,9 @@ Ordering (after cal+mosaic exist):
 #    Add --smooth ONLY for atmospheric detectors (D1 He I/OI; D2) — see below.
 python selfcal_scripts/zodi_anchor/build_anchor.py --run-dir <run> [--smooth]
 
-# (alternatively, a cal config with [zodi].pred_dir set writes the anchor
-#  inline per channel as the cal loop runs — step 2 then already done.)
+# (alternatively, in the run script after the calibration:
+#  spherex.zodi_anchor(result, predictions='<run>/zodi_preds') fits and records
+#  the same anchor per channel — step 2 then already done.)
 
 # 3. (optional) slope smoothing as a separate, inspectable step:
 python selfcal_scripts/zodi_anchor/smooth_anchor.py --run-dir <run> --dry-run --plot
@@ -586,10 +569,13 @@ only the slope is.
 ## Regression testing
 
 The byte-equality gates live in `selfcal_scripts/gates/` (see its README): `run_gates.sh <tag>` runs
-the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit, vs `*_gate_golden_stat.h5`), the
+pytest, then the gates of `python_gates.py`, written with the Python API, against the float64-norm
+goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit), the
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
-refit) and the Euclid EDFN recipe, each compared dataset by dataset with `gates/h5_diff.py` /
-`gates/fits_diff.py` (or `selfcal_scripts/drivers/diff_cal_h5.py`); `run_m13_gate.sh` runs the npass
-n=1 gate on the NEP M13 tile; `mode_lowering_snapshot.py` checks what every mode lowers to without a
-solve. The pre-runner harnesses (`run_cal_baseline_test.py`, `regress_cal*.py`, the
-`benchmark_d3_ch17_*` timing scripts) are archived under the gitignored `archive/scripts/benchmarks/`.
+refit; no float64 golden yet), the Euclid EDFN recipe and the rerun of the continuum gate's record,
+each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
+`selfcal_scripts/drivers/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
+NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
+the engine does with every run script without a solve. The older harnesses
+(`run_cal_baseline_test.py`, `regress_cal*.py`, the `benchmark_d3_ch17_*` timing scripts) are
+archived under the gitignored `archive/scripts/benchmarks/`.

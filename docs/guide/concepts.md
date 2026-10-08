@@ -2,8 +2,7 @@
 
 This page explains what a selfcal run computes, and why, for readers who want to understand the
 method before they configure a run. It links the guides with the details:
-[The Python API](python-api.md) (every setting), [Run configuration](configuration.md) (the TOML
-form),
+[The Python API](python-api.md) (every setting),
 [Bring your own telescope](../bring_your_own_telescope.md) (new instruments and models), the
 [Pipeline runbook](pipeline.md) (tuning, file formats) and
 [Architecture](../developer/architecture.md) (the code). The [Glossary](glossary.md) defines the
@@ -58,10 +57,9 @@ calibration/cal_<stem>.h5    sky maps, offsets, per-frame scalars, coverage
 mosaic/mosaic_<stem>.fits    mean, standard-deviation and sigma-clipped mean maps
 ```
 
-The paths are relative to the field's directory (`sc.Field(path, ...)`; in a TOML config,
-`<output_dir>/<run_name>/`).
+The paths are relative to the field's directory (`sc.Field(path, ...)`).
 
-1. **Reproject** (`field.reproject`; TOML task `reproject`). The instrument's exposure layout says
+1. **Reproject** (`field.reproject`). The instrument's exposure layout says
    how to read a raw file and which detectors it holds.
    [`Reprojector.define_reference`][selfcal.pipeline.pipeline_wrapper.Reprojector.define_reference]
    loads `ref.fits` if it exists; otherwise it computes a WCS at the field's `pixel_scale` that
@@ -75,7 +73,7 @@ The paths are relative to the field's directory (`sc.Field(path, ...)`; in a TOM
    of every box pixel (`sub_mapping`), which tell the solver where on the detector each value was
    recorded. Data that are not images with a WCS can be written as frame files directly
    ([`write_frame`][selfcal.io.frames.write_frame]).
-2. **Calibrate** (`field.calibrate`; TOML task `cal`), once per [job](glossary.md#job): a SPHEREx
+2. **Calibrate** (`field.calibrate`), once per [job](glossary.md#job): a SPHEREx
    [channel](glossary.md#channel) or subchannel window, or the one job of a camera or of Euclid. [`Calibrator.setup_lsqr`][selfcal.pipeline.pipeline_wrapper.Calibrator.setup_lsqr]
    ([`setup_lsqr`][selfcal.core.system.setup_lsqr]) reads the frames in parallel worker processes
    and builds the sparse system: one row per observation, plus the rows of the priors.
@@ -95,10 +93,9 @@ The paths are relative to the field's directory (`sc.Field(path, ...)`; in a TOM
    FITS file.
 
 A job's products are named by its [stem](glossary.md#stem), `<frame_tag>_<job>_<name>`: the
-instrument's [frame tag](glossary.md#frame-tag), the job name and the recipe's `name` (a TOML
-config's `suffix`), for example `MyCam_Chunks8x8_All_v1` for a camera tagged `MyCam` and a recipe
-named `v1`. A field's actions run these steps through the run engine, which TOML configs drive as
-well; the same classes can also be used directly
+instrument's [frame tag](glossary.md#frame-tag), the job name and the recipe's `name`, for
+example `MyCam_Chunks8x8_All_v1` for a camera tagged `MyCam` and a recipe named `v1`. A field's
+actions run these steps through the run engine; the same classes can also be used directly
 ([Using the pipeline](../developer/architecture.md#using-the-pipeline)). The
 [Quickstart](../getting-started/quickstart.md) runs all three on simulated exposures.
 
@@ -125,8 +122,7 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   offset a polynomial along one chunk axis, fitted by its coefficients. `times=φ` multiplies the
   offset by a known function of data variables (a pattern times the detector temperature);
   `basis=` with `n=` functions gives `n` unknowns per chunk (a gradient across the detector in every
-  frame). With neither, `φ = 1`: the plain chunk offset. (A TOML `[[model.offset]]` table says
-  `kind = "free"`, `"fixed"`, `"grouped"` or `"polybasis"`, and `coefficient` or `basis`.)
+  frame). With neither, `φ = 1`: the plain chunk offset.
 - **Per-frame scalar** `s` (`sc.Model(scalar=True)`, the default): one additive constant per frame.
 - **Data variables** `v`: named quantities with one value per observation, which every function of
   the model reads by name ([`selfcal.models.variables`](../reference/selfcal/models/variables.md)):
@@ -162,8 +158,8 @@ Model(offsets=(Offsets(smooth=0.1, mean_zero=True),))
 True
 ```
 
-A TOML config names a preset (a [mode](configuration.md#modes-presets-of-the-model), with its
-`[params]`) or writes the model out in a `[model]` table.
+A preset is a plain function that returns a `Model`, and so is a calibration variant of your own:
+a new variant needs no change to the engine.
 [Bring your own telescope](../bring_your_own_telescope.md#2-the-model-is-yours) describes every
 kind of term, variable and prior, with worked examples.
 
@@ -178,7 +174,7 @@ map, so an observation within a pixel of a chunk edge shares its offset between 
 
 *Chunk axes* ([`ChunkAxes`][selfcal.models.offset_structure.ChunkAxes]) are the named coordinates of
 the chunks: for each axis, the value of every chunk along it and the image direction in which
-neighbouring chunks differ in it. Priors and modes are written in axes ("smoothness along
+neighbouring chunks differ in it. Priors and offset terms are written in axes ("smoothness along
 `column`", "a degree-3 polynomial along `subchannel`, one per `column`"), so a recipe runs on any
 instrument whose chunk map declares the axes it needs. A map also names its default adjacency
 axes, its *spectral axis* (along which the wavelength changes; none for a broadband instrument) and
@@ -186,7 +182,7 @@ its *group axis* (one polynomial per value in a `polybasis` term).
 
 | instrument | chunk maps | axes |
 | --- | --- | --- |
-| `sc.Camera` (TOML: `grid`) | `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both; group axis `row` |
+| `sc.Camera` | `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both; group axis `row` |
 | `sc.SPHEREx` | `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `readout`: one chunk per read-out channel of the detector | `subchannel` (spectral axis), `column` (group axis and default adjacency); `readout` |
 | `sc.Euclid` | `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes on which a degree-1 `polybasis` term is one linear ramp per frame | `row`, `col`; `strip`, `all` |
 
@@ -216,9 +212,9 @@ solution along each such direction, a choice called a *gauge*:
   line's coefficient are exactly degenerate when the coefficient depends only on the detector
   position, as a template of the wavelength map does
   ([`selfcal.line_floor`](../reference/selfcal/line_floor.md)). Sky terms with overlapping
-  coefficients are nearly degenerate at every pixel; with `[[params.lines]]` the spectral modes
-  print the normalised Gram matrix of the coefficients and warn when an entry exceeds 0.7 in
-  absolute value.
+  coefficients are nearly degenerate at every pixel: when the coefficients of two terms, sampled
+  over the window's wavelengths, have a normalised inner product above about 0.7 in absolute
+  value, expect cross-talk between their maps.
 
 The priors, and the rows each adds to the system:
 
@@ -231,10 +227,7 @@ The priors, and the rows each adds to the system:
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
 
-In a TOML config these are an offset term's `mean_zero`, `reg_weight` with `adjacency`, `poly` and
-`damp`, the `damp_weight` keys of the sky damping and the `[[model.prior]]` tables; there the
-smoothness and polynomial rows are added only with `[calibration] offset_regularization = true`,
-and the sky damping only with `weighted_damping = true`. What each settles:
+What each settles:
 
 - The **mean-zero anchor** moves each frame's mean offset into its scalar, so the chunk offsets
   carry only structure within the frame. The mean runs over every chunk of the map, observed or
@@ -248,8 +241,8 @@ and the sky damping only with `weighted_damping = true`. What each settles:
   **polynomial constraint** lets the offset follow a polynomial of its degree along its axis (a
   degree-1 constraint along the columns leaves linear ramps free) and penalises the rest; a
   [`polybasis`](glossary.md#polybasis) term makes that shape exact.
-- `sc.Fit(damp=)` damps every unknown (default 0; a TOML `[lsqr]` table without `damp` uses
-  0.01). With a limited number of iterations (`sc.Fit(iterations)`), LSQR also stops before it has
+- `sc.Fit(damp=)` damps every unknown (default 0). With a limited number of iterations
+  (`sc.Fit(iterations)`), LSQR also stops before it has
   moved far along weakly constrained directions, where the result then depends on the
   [warm start](glossary.md#warm-start).
 
@@ -262,9 +255,9 @@ Compare quantities that a change of gauge leaves alone:
   ([`CalFile.total_offsets`][selfcal.io.calfile.CalFile.total_offsets] folds the scalar into the
   first map), rather than either part;
 - offsets with each frame's mean over chunks and each chunk's mean over frames removed, which also
-  removes a pattern common to every frame, such as the detector ramp of a sky gradient; the test
-  suite compares recovered and injected offsets this way (`_degauge` in
-  [tests/test_runner_e2e_toy.py](https://github.com/ThomasLiii/PySelfCal/blob/main/tests/test_runner_e2e_toy.py));
+  removes a pattern common to every frame, such as the detector ramp of a sky gradient; the
+  quickstart compares recovered and injected offsets this way (`remove_gauge` in
+  [examples/quickstart/inspect_results.py](https://github.com/ThomasLiii/PySelfCal/blob/main/examples/quickstart/inspect_results.py));
 - sky maps after removing their mean, or after an external anchor has set their level;
 - maps of terms with a coefficient only where their [separability](glossary.md#separability) or
   [Fisher information](glossary.md#fisher) is high enough.
@@ -272,14 +265,13 @@ Compare quantities that a change of gauge leaves alone:
 ## Masks, outliers and weights
 
 - **Data-quality masks.** A sample is dropped when any bit of its data-quality mask is set, except
-  the bits listed in `ignore_flags` (`sc.Fit(use_mask=True, ignore_flags=[...])`; TOML
-  `apply_mask`, `ignore_list`). The mask comes from the exposure's DQ extension and is resampled bit
-  by bit during the reprojection. `sc.Fit` and `sc.Coadd` each have their own `use_mask` and
-  `ignore_flags`, so the solve can leave out pixels that the mosaic uses, or the reverse.
-- **Outlier rejection in the solve.** With `sc.Fit(clip=5.0)` (TOML `[calibration]
-  outlier_thresh`), every sample is scored
-  against its frame's median, in units of `1.4826 · MAD` (the median absolute deviation), and
-  samples scoring above the threshold are left out of the solve
+  the bits listed in `ignore_flags` (`sc.Fit(use_mask=True, ignore_flags=[...])`). The mask comes
+  from the exposure's DQ extension and is resampled bit by bit during the reprojection. `sc.Fit`
+  and `sc.Coadd` each have their own `use_mask` and `ignore_flags`, so the solve can leave out
+  pixels that the mosaic uses, or the reverse.
+- **Outlier rejection in the solve.** With `sc.Fit(clip=5.0)`, every sample is scored against its
+  frame's median, in units of `1.4826 · MAD` (the median absolute deviation), and samples scoring
+  above the threshold are left out of the solve
   ([`find_outliers`][selfcal.geometry.map_helper.find_outliers]). The score uses the frame's own
   values, before any model is subtracted, so it removes compact bright sources and artefacts. When
   a frame's brightness changes strongly across the detector (SPHEREx sees a different wavelength in
@@ -287,24 +279,23 @@ Compare quantities that a change of gauge leaves alone:
   group instead: `sc.Clip(5.0, per="chunk")` (its chunk of the primary map),
   `sc.Clip(5.0, per=sc.ChunkGroups.along("subchannel"))` (the chunks of its subchannel; for
   SPHEREx, binned by wavelength) or `sc.Clip(5.0, variable=..., edges=[...])` (bins of a data
-  variable, by default the instrument's wavelength map; TOML `outlier_group_variable`,
-  `outlier_group_edges`). The N-pass passes clip the same way (`sc.Passes(sky_clip=...,
-  offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or basis value is not finite are
-  dropped as well.
+  variable, by default the instrument's wavelength map). The N-pass passes clip the same way
+  (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
+  basis value is not finite are dropped as well.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
-  the same in the mosaic (TOML `[hooks]`: `pre_cal`, `post_cal`, `post_mosaic`); for example
-  Euclid's star mask (`selfcal.instruments.euclid.hooks.StarMask`, before the fit) and residual
-  mask (`ResidualMask`, after).
+  the same in the mosaic; for example Euclid's star mask
+  (`selfcal.instruments.euclid.hooks.StarMask`, before the fit) and residual mask (`ResidualMask`,
+  after).
 - **Weights.** An observation's weight `w_i` multiplies its row of the system, so the fit weights
   the observation by `w_i²`. It is the product of
     - the data-quality mask (0 or 1);
     - the job's [valid weight](glossary.md#valid-weight) on the detector, from the instrument: 1
-      everywhere for `grid`; for a SPHEREx channel, 1 on the channel's subchannels and on one more
+      everywhere for a camera; for a SPHEREx channel, 1 on the channel's subchannels and on one more
       subchannel on each side (shared with the neighbouring channels), 0 elsewhere; for Euclid,
       an optional taper at the detector edges (`edge_zero_px`, `edge_ramp_px`);
-    - with `shot_noise_weights=True` (`sc.Fit`; TOML `apply_weight`), `1 / sqrt(|data| + 1e-4)`,
-      which weights bright pixels down as shot noise would;
+    - with `shot_noise_weights=True` (`sc.Fit`), `1 / sqrt(|data| + 1e-4)`, which weights bright
+      pixels down as shot noise would;
     - the model's `weight` (`sc.Model(weight=...)`), a function of data variables (for example
       `1/σ` from a stored variance plane).
 
@@ -330,17 +321,16 @@ SC_MEAN_MAP  = Σ w·d / Σ w  over the d with |d − MEAN_MAP| ≤ sigma · STD
 
 Here `w` is the mosaic's weight: the data-quality mask, the job's valid weight for the mosaic
 (SPHEREx tapers it linearly toward the edges of the job's subchannels), the factor
-`1 / sqrt(|data| + 1e-4)` with `sc.Coadd(shot_noise_weights=True)` (off by default; a TOML
-`[mosaic]` table turns it on unless it sets `apply_weight = false`), and the square of the model's
-`weight`. Each map is written with its summed weight (`MEAN_MAP_WEIGHT`, ...). For SPHEREx
+`1 / sqrt(|data| + 1e-4)` with `sc.Coadd(shot_noise_weights=True)` (off by default), and the
+square of the model's `weight`. Each map is written with its summed weight (`MEAN_MAP_WEIGHT`, ...). For SPHEREx
 the mosaic also coadds the band-centre and band-width maps over the same clipped observations into
 `WAV_MEAN_MAP` and `WAV_STD_MAP`, the effective wavelength of each mosaic pixel and its spread, in
-µm (`sc.Coadd(instrument_maps=True)`, the default; TOML `wavelength_coadd`). The [mosaic schema](pipeline.md#mosaic-fits-schema)
-lists every extension and header key.
+µm (`sc.Coadd(instrument_maps=True)`, the default). The
+[mosaic schema](pipeline.md#mosaic-fits-schema) lists every extension and header key.
 
 The mosaic is not the sky map of the solve (`sky/<name>` in the cal file): it is a weighted mean of
 corrected frames, without the sky damping and the solve's outlier rejection, and with its own
-weights and clipping. `sc.Coadd(oversample=n)` (TOML `oversample`) sets how finely the mosaic
+weights and clipping. `sc.Coadd(oversample=n)` sets how finely the mosaic
 samples the detector-plane maps (chunk maps, valid weights, rendered offsets): `oversample` x `oversample`
 points per detector pixel. The mosaic stays on the reference grid, and the solve always samples at
 one point per pixel.
@@ -354,16 +344,14 @@ frames and their pixels. The [Pipeline runbook](pipeline.md) covers the knobs; i
   `sc.Numerics(batch=)` the frames each takes at a time; `sc.Numerics(threads)` the solver's
   threads; `sc.Compute(coadd_workers=)` and `sc.Numerics(mosaic_batch=, coadd_batch=)` the
   coadd's. With `sc.Compute(cache_frames=True)` (the default) the mosaic caches every corrected
-  frame once for its later passes. (TOML: `max_workers`, `batch_size`, `apply_n_threads`,
-  `cache_batch_size`, `coadd_batch_size`, `cache_intermediate`.)
+  frame once for its later passes.
 - **NVMe staging.** Before an action reads the frames, it copies them to
   `<scratch>/reproj_nvme_<field name>` on fast storage (`sc.Compute(scratch)`; at most `io_limit`
-  concurrent reads from the slow disk) and deletes the copy at the end unless `keep_staged=True`
-  (TOML: `cache_dir`, `hdd_io_limit`, `keep_nvme`); the cal file records the frames' permanent
-  paths. Each frame is copied atomically, and an action only stages into, or deletes, a directory
+  concurrent reads from the slow disk) and deletes the copy at the end unless `keep_staged=True`;
+  the cal file records the frames' permanent paths. Each frame is copied atomically, and an action only stages into, or deletes, a directory
   it created (marked by a `.selfcal-staging.json` file). See
   [NVMe staging pattern](pipeline.md#nvme-staging-pattern).
-- **Tiling.** `calibrate(tiles=sc.Tiles(...))` (TOML `[tiling]`) splits the reference grid into
+- **Tiling.** `calibrate(tiles=sc.Tiles(...))` splits the reference grid into
   tiles: a grid (`grid=(ny, nx)`, with `overlap=` pixels), or explicit boxes (`boxes={name: (y0, y1,
   x0, x1)}`), which may overlap. Each tile takes the frames whose footprint centre falls inside it
   (or, with `assign="overlap"`, every frame that overlaps it) and is solved
@@ -372,13 +360,13 @@ frames and their pixels. The [Pipeline runbook](pipeline.md) covers the knobs; i
   information. The stitched cal holds no per-frame offsets, so a tiled run makes no mosaic. Every
   tile picks its own gauge, which can leave seams; keep `sc.Numerics(threads)` the same for all
   tiles you stitch.
-- **N-pass solve.** For spectral models, `calibrate(passes=sc.Passes(n))` (TOML task `npass`)
-  alternates exact half-solves. Pass 1 (INIT) is the joint solve of a plain `calibrate`, tiled or
+- **N-pass solve.** For spectral models, `calibrate(passes=sc.Passes(n))` alternates exact
+  half-solves. Pass 1 (INIT) is the joint solve of a plain `calibrate`, tiled or
   not. SKY passes then solve the sky terms of every pixel
   in closed form, from moments summed over all tiles (one solve for the whole field, so no seams),
   and OFFSET passes refit every frame's polynomial offset and scalar against that one sky.
   `sc.Passes` sets the number of passes `n` and their order; `n = 1` reproduces the plain
-  calibration byte for byte. See [N-pass alternating solve](pipeline.md#n-pass-alternating-solve-task-npass).
+  calibration byte for byte. See [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 
 ## The absolute level
 
@@ -397,8 +385,7 @@ the frames, is a check. The anchor never rewrites the cal file or the mosaic: th
 `<run>/zodi_anchor/anchor_D<N>.h5` and is applied when a product is read
 ([`load_anchor`][selfcal.zodi_anchor.load_anchor],
 [`load_anchored_mosaic`][selfcal.zodi_anchor.load_anchored_mosaic]).
-`spherex.zodi_anchor(result, predictions=...)` fits it after a calibration (a TOML config: `[zodi]
-pred_dir`); the
+`spherex.zodi_anchor(result, predictions)` fits it after a calibration; the
 [Zodiacal-light anchor](../tools/zodi-anchor.md) guide gives the full workflow. The uniform level
 of a spectral line map is set the same way, from a reference region declared free of emission
 ([`selfcal.line_floor`](../reference/selfcal/line_floor.md)).

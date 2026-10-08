@@ -1,6 +1,5 @@
-"""The transfer-function run in Python: the fiducial calibration and mosaic of one SPHEREx channel,
-on frames that carry a simulated sky. It makes what run_transfer_function.sh makes (which fills
-transfer_function.toml), from the same six inputs:
+"""The transfer-function run: the fiducial calibration and mosaic of one SPHEREx channel, on frames
+that carry a simulated sky, from six inputs:
 
     python selfcal_scripts/transfer_function/transfer_function.py \\
         --detector 3 --channel 17 --frames <simsky_frames_dir> --ref <ref.fits> \\
@@ -39,12 +38,12 @@ INPUTS = (
 
 
 def arguments(argv=None):
-    """The inputs (an empty environment variable counts as unset, as in the shell launcher)."""
+    """The inputs (an empty environment variable counts as unset)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for flags, variable, default, what in INPUTS:
         parser.add_argument(*flags, type=type(default), default=os.environ.get(variable) or default,
                             help=f'{what}; env {variable}, default {default}')
-    # The machine never changes a byte; the defaults are transfer_function.toml's.
+    # The machine never changes a byte; the defaults are the processing host's.
     parser.add_argument('--scratch', default='/home/thomasli/selfcal-project/selfcal/cache/',
                         help="fast local disk for the solver's spill files; default %(default)s")
     parser.add_argument('--workers', type=int, default=48, help='worker processes; default %(default)s')
@@ -63,7 +62,7 @@ def setup(args):
 
 def link_reference(ref, run_dir):
     """Point ``<run_dir>/ref.fits``, where the engine reads the reference grid, at ``ref``: a
-    symlink, as the shell launcher's ``ln -sf`` (the file is not copied or modified)."""
+    symlink (the file is not copied or modified)."""
     link = os.path.join(run_dir, 'ref.fits')
     if not os.path.isfile(ref):
         raise SystemExit(f'--ref {ref}: no such file')

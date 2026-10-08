@@ -1,14 +1,14 @@
 """The self-calibration model: data variables, sky terms, offset terms and priors.
 
 :class:`~selfcal.models.spec.ModelSpec` describes a whole model as data (the ``[model]`` table
-of a run config, or a mode's preset) and lowers it into the arguments of
+that :meth:`~selfcal.models.model.Model.lower` gives the run engine) and lowers it into the arguments of
 :meth:`~selfcal.pipeline.pipeline_wrapper.Calibrator.setup_lsqr`: a
 :class:`~selfcal.models.sky_model.SkyModel`, an :class:`~selfcal.models.offset_model.OffsetModel`,
 a :class:`~selfcal.models.variables.VariableSet`, the observation weight and the priors. The
 solver itself is :mod:`selfcal.core`.
 
 - :mod:`~selfcal.models.spec`: :class:`~selfcal.models.spec.ModelSpec`, the model as data, built
-  from a config table, checked against an instrument and lowered for the solver.
+  from its table, checked against an instrument and lowered for the solver.
 - :mod:`~selfcal.models.variables`: data variables, the named per-observation quantities every
   function of the model reads, and their sources.
 - :mod:`~selfcal.models.sky_model`: the sky terms, each a per-pixel map times a known

@@ -1,5 +1,5 @@
 """NEP QR2 Detector 5, channel 3, one column: a free offset per frame and subchannel plus a
-detector-fixed offset per readout channel, shared by every frame (was configs/k2_readout.toml)."""
+detector-fixed offset per readout channel, shared by every frame."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

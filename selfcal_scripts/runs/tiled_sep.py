@@ -1,5 +1,5 @@
 """SEP Detector 4 (the /data3 copy) at NumCol 5: the tiled PAH 3.29 um fit, 2x2 tiles overlapping by 50 pixels,
-200 iterations, stitched (was configs/tiled_sep.toml)."""
+200 iterations, stitched."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA

@@ -1,5 +1,5 @@
 """SEP Detector 4: the three-line PAH fit with a piecewise polynomial (two segments) in the solve and the
-offset refit (ridge 0.03), six tiles, 5 passes offset first (was configs/sep_d4_npass_multiline_seg_of.toml)."""
+offset refit (ridge 0.03), six tiles, 5 passes offset first."""
 import selfcal as sc
 from selfcal.instruments import spherex
 from selfcal_scripts.recipes.site import ORCA
