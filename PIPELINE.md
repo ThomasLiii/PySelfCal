@@ -152,6 +152,41 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   with this hook, bit-identical) reports one residual norm, as both `r1norm` and `r2norm`.
   Plot convergence with
   `h = np.load(CalFile(cal).solve["history_file"]); plt.semilogy(h["itn"], h["r1norm"])`.
+- **Continuing a solve (a warm start from a cal).** `field.calibrate(recipe, start=<cal>)`
+  (a cal file, the `Result` of an earlier calibration, or `{job: cal}`) starts each job's
+  solve from the solution in that cal instead of the default guess above, to continue a solve
+  that has not converged (the D3 Ch9 transfer-function run went 122 → 422 → 722 iterations in
+  three runs) or to start a variant from an earlier solution. `x0` is read back as the exact
+  inverse of how the cal is written (`selfcal.core.warm_start`): each sky term's `sky/<name>`
+  in the model's order (pixels the source did not solve start at 0), each offset term's
+  `offsets/map_<m>` frame-major (a `times=` / `basis=` term: one coefficient per chunk and
+  function; a term shared by groups of frames: its group's row, checked to be the same on every
+  frame of the group), then `frame_scalar`; in physical units and the full column layout, which
+  `apply_lsqr` compacts and scales as it does the default `x0` (no extra copy of `A`, one `x0`).
+  Columns active now that the source left at zero start at 0; source values of columns with no
+  data now are dropped; the log gives both counts. **The source must be a solution of the same
+  system**, else the action is refused with what differs: the same frames in the same order, the
+  same model (sky terms and their coefficients, offset terms on the same chunk maps, shared over
+  the same groups of frames, with the same basis functions), the same reference grid (its shape
+  and WCS) and the same job. Every cal records the identity of its system in its `solve` group
+  (`system`, `system_identity`); a cal solved before 2026-10-08 has none and is checked by its
+  contents only (frames, sky terms, chunk maps, column counts, grid shape), with a warning. The
+  plan checks the frames, sky terms, grid shape, chunk maps and job before the solve is set up,
+  the solve the rest. Not supported: an offset term with a hard polynomial basis
+  (`Offsets(polynomial=...)`; its cal holds the offsets the polynomial expands to, not the
+  coefficients), and tiled or N-pass runs (refused). The start's identity (its product
+  fingerprint, or the hash of its bytes when it has no current sidecar) enters the new cal's
+  fingerprint (the key is absent without a start, so every other cal keeps its fingerprint);
+  the new cal records `start_from` (its path), `start_identity` and `iterations_total` (the
+  source's total plus this solve's iterations; -1 when the source has no record of its
+  iterations), so do the action's record (`settings.start`, `solves`) and a rerun of that record
+  replays the start. Give the continuation a recipe name of its own
+  (`recipe.replace(fit=sc.Fit(300, tolerance=0), name="it422")`): the cal the action writes is
+  never its own start. **A continuation restarts the Krylov space**: LSQR / LSMR solve
+  `A dx = b - A x0` from `dx = 0`, so a solve of N iterations continued for M more is not one
+  solve of N + M (the search directions start again from the residual of `x0`), and its
+  estimates (`anorm`, `acond`; LSQR's `xnorm` = ‖dx‖, LSMR's ‖x‖) are those of the restarted
+  solve.
 - `precondition=True` (column-norm; `sc.Fit(precondition=True)`, the default) is essential — much faster convergence.
 - **The transpose product, and what "statistical equality" means here.**
   `A^T @ y` is a scatter into output columns, so it cannot be threaded
@@ -458,7 +493,7 @@ The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read 
 | --- | --- |
 | `version` | the record's layout (1) |
 | `method` | `lsqr` or `lsmr` |
-| `iterations`, `iterations_total` | iterations this solve ran; the cumulative count of the solution (equal until a solve continues another's) |
+| `iterations`, `iterations_total` | iterations this solve ran; the cumulative count of the solution (equal unless the solve continued another's: then the source's total plus this solve's, -1 when the source's is unknown) |
 | `iteration_limit` | `sc.Fit(iterations=)` |
 | `istop`, `stop` | the solver's stop code (0-7, see [the tuning notes](#calibration-pipeline-tuning)) and its meaning |
 | `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates: ‖b − A x‖, the same with the damping term, ‖Aᵀ r‖, ‖A‖, cond(A), ‖x‖ (in the column-scaled unknowns) |
@@ -466,6 +501,8 @@ The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read 
 | `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `sc.Fit(tolerance=0)`) |
 | `rows`, `columns` | the system's shape (the active columns) |
 | `history_file` | the NPZ of the solver's state at every iteration, `<field>/records/<cal stem>_history.npz` |
+| `system`, `system_identity` | the identity of the system solved (`selfcal.core.warm_start.System`): the JSON of its frames (in order), reference grid (shape and WCS), sky terms, offset terms (chunk maps, groups of frames, basis functions, columns), per-frame scalar columns, total columns and job, and its sha256; what a later solve's start is checked against (cals solved since 2026-10-08) |
+| `start_from`, `start_identity` | a continued solve only: the cal it started from (its path) and that cal's identity, `fingerprint:<sha256>` (its sidecar's) or `sha256:<sha256>` (its bytes) |
 
 Every value there is a function of the solve, so a cal file stays byte-identical from run to run;
 the solver's wall time (`wall_s`), which is not, is in the action's record (`solves`) only, with
@@ -561,7 +598,7 @@ N-pass product, a mosaic) has a sidecar next to it, `<product>.json`, written af
 
 | key | content |
 | --- | --- |
-| `inputs` | the settings and files that decided the product's bytes: instrument, reference grid (`ref.fits`, by content), job, model (template and map files by content), fit, solve numerics and frames (by name) for a cal; plus tile box and assignment for a tile cal; tile fingerprints for a stitched cal; first-pass fingerprint, pass number/type and pass settings for an N-pass product; cal fingerprint, reference grid, model, coadd, coadd numerics and frames for a mosaic. A function sent by value counts by its source, defaults and closure values; a hook object by its class and state |
+| `inputs` | the settings and files that decided the product's bytes: instrument, reference grid (`ref.fits`, by content), job, model (template and map files by content), fit, solve numerics and frames (by name) for a cal, and for a continued solve (`calibrate(start=...)`) the start's identity (`start`: its fingerprint, or the sha256 of its bytes without a current sidecar); plus tile box and assignment for a tile cal; tile fingerprints for a stitched cal; first-pass fingerprint, pass number/type and pass settings for an N-pass product; cal fingerprint, reference grid, model, coadd, coadd numerics and frames for a mosaic. A function sent by value counts by its source, defaults and closure values; a hook object by its class and state |
 | `fingerprint` | SHA-256 of the canonical JSON of `inputs` |
 | `size`, `mtime_ns` | the product when the sidecar was written: a product written again afterwards (another size or modification time) is refused as `changed` |
 | `record` | the action's record that made it |

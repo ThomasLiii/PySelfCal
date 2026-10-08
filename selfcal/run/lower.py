@@ -14,7 +14,7 @@ from ..models.model import Model
 from .recipe import ChunkGroups, Recipe
 from .runspec import FrameSource, PassClip, PassesSpec, RunSpec, TilingSpec
 
-__all__ = ['lower', 'setup_options', 'solver_options', 'coadd_options', 'passes_spec', 'tiling_spec']
+__all__ = ['lower', 'setup_options', 'solver_options', 'coadd_options', 'passes_spec', 'tiling_spec', 'start_paths']
 
 
 def as_recipe(recipe) -> Recipe:
@@ -143,6 +143,46 @@ def tiling_spec(tiles, field, recipe, compute, scratch, frames_dir) -> TilingSpe
                       memory_guard=True if compute.memory_guard is None else bool(compute.memory_guard))
 
 
+# --------------------------------------------------------------------------- a warm start
+def start_paths(start, jobs) -> dict | None:
+    """``{job name: cal path}`` of ``calibrate(start=...)`` for ``jobs`` (None without a start).
+
+    ``start``: a cal file (a path or an open :class:`~selfcal.io.calfile.CalFile`), for an action of
+    one job; an earlier :class:`~selfcal.run.result.Result`, whose cal of each job (by name) starts
+    the job of the same name; or a mapping ``{job (or its name): cal}``. Every job needs its start;
+    a result's or a mapping's other jobs are left out. The paths are made absolute (they are
+    recorded)."""
+    if start is None:
+        return None
+    from ..io.calfile import CalFile
+    from .result import Result
+
+    def path(p):
+        if isinstance(p, CalFile):
+            p = p.path
+        if not isinstance(p, (str, os.PathLike)):
+            raise ConfigError(f"calibrate(start=...): a cal file, a Result or {{job: cal}}; got {p!r}")
+        return os.path.abspath(os.fspath(p))
+    names = [j.name for j in jobs]
+    if isinstance(start, Result):
+        if start.tile_cals or start.passes:
+            raise ConfigError("calibrate(start=...): a tiled or an N-pass result is no start (its cals are a "
+                              "stitched sky or the passes'); give a plain calibration's result or cal")
+        given = {j.name: p for j, p in zip(start.jobs, start.cal_paths)}
+    elif isinstance(start, dict):
+        given = {getattr(k, 'name', k): v for k, v in start.items()}
+    else:
+        if len(names) != 1:
+            raise ConfigError(f"calibrate(start=...): one cal for {len(names)} jobs; give a Result of these jobs "
+                              f"or {{job: cal}}")
+        given = {names[0]: start}
+    missing = [n for n in names if n not in given]
+    if missing:
+        raise ConfigError(f"calibrate(start=...): no start for the job(s) {missing} (the start has "
+                          f"{sorted(given)})")
+    return {n: path(given[n]) for n in names}
+
+
 # --------------------------------------------------------------------------- the engine runs
 def _scratch(field, recipe, compute, tiles, passes):
     """The engine's scratch area (with its trailing ``/``): ``Compute.scratch``; without one,
@@ -186,13 +226,14 @@ def _frame_source(field, frames, compute, scratch, tiles):
 
 
 def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None, frames=None, cal=None,
-          compute=None) -> list[RunSpec]:
+          compute=None, start=None) -> list[RunSpec]:
     """The engine runs of one action: a :class:`~selfcal.run.runspec.RunSpec` per group of jobs the
     instrument runs together (SPHEREx: its channel jobs, then its window jobs).
 
     ``task``: ``"cal"`` (with ``tiles``: tiled; with ``passes``: the N-pass solve) or ``"mosaic"``
     (of the cal ``cal``, default each job's own). ``frames``: None (the field's frames), a number
     (the first ``n``), a directory (its frames, read in place) or a list of frame files.
+    ``start``: the cal each job's solve starts from (:func:`start_paths`; a plain calibration only).
     """
     recipe = as_recipe(recipe)
     compute = compute or field.compute
@@ -200,6 +241,10 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     jobs = tuple(inst.default_jobs()) if jobs is None else ((jobs,) if not isinstance(jobs, (list, tuple))
                                                             else tuple(jobs))
     inst.check_jobs(jobs)
+    if start is not None and (task != 'cal' or tiles is not None or passes is not None):
+        raise ConfigError("calibrate(start=...): a warm start continues a plain calibration, one solve per job; "
+                          "a tiled or an N-pass calibration takes no start")
+    starts = start_paths(start, jobs)
     groups = {}
     for j in jobs:
         groups.setdefault(j.kind, []).append(j)
@@ -219,7 +264,8 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             mosaic=coadd_options(recipe, compute, inst), pre_cal=recipe.fit.raw_frame_hook,
             post_cal=recipe.fit.frame_hook, post_mosaic=coadd.frame_hook if coadd is not None else None,
             make_mosaic=coadd is not None, instrument_maps=coadd is not None and coadd.instrument_maps,
-            cal_override=cal, passes=None if passes is None else passes_spec(passes))
+            cal_override=cal, passes=None if passes is None else passes_spec(passes),
+            start=None if starts is None else {j.name: starts[j.name] for j in group})
         if tiles is not None:
             spec.suffix = _suffix(tiles.tile_name, recipe.name)
             spec.tiling = tiling_spec(tiles, field, recipe, compute, scratch, frames_dir)

@@ -122,8 +122,10 @@ class RunSpec:
     ``line_fisher_threshold`` and ``spectral_window`` (the model's polynomial window, the N-pass
     refit's) as the recipe says. ``make_mosaic``: the run coadds; ``instrument_maps``: with the
     instrument's maps; ``reuse_mosaics``: an existing mosaic is kept (the plan checked it);
-    ``cal_override``: the cal a mosaic task coadds. ``on_product`` is told of every product written
-    (the action's book, :class:`~selfcal.run.products.Book`).
+    ``cal_override``: the cal a mosaic task coadds. ``start``: a warm start, ``{job name: cal}``,
+    the cal each job's solve starts from (:mod:`selfcal.core.warm_start`; plain calibrations only).
+    ``on_product`` is told of every product written (the action's book,
+    :class:`~selfcal.run.products.Book`).
     """
     task: str
     field: object
@@ -150,6 +152,7 @@ class RunSpec:
     instrument_maps: bool = False
     reuse_mosaics: bool = False
     cal_override: str | None = None
+    start: dict | None = None
     tiling: TilingSpec | None = None
     passes: PassesSpec | None = None
     reproject: ReprojectSpec | None = None

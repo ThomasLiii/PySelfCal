@@ -194,6 +194,38 @@ is refused unless `ends_on_offset=True`).
 `result.show()` (a mosaic with a colour bar), `result[job]`. `field.result(recipe, jobs=...)`
 finds the products of an earlier run without running anything.
 
+### Continuing a solve
+
+```python
+IT122 = NUMCOL3.replace(fit=sc.Fit(122, tolerance=0), name="it122")
+first = field.calibrate(IT122, jobs=spherex.channel(9))
+more = field.calibrate(IT122.replace(fit=sc.Fit(300, tolerance=0), name="it422"),
+                       jobs=spherex.channel(9), start=first)       # 300 more iterations
+```
+
+`start=` starts each job's solve from the solution of an earlier cal instead of the default
+guess: a cal file, the `Result` of an earlier calibration (each job from its cal), or
+`{job: cal}`. It continues a solve that has not converged, or starts a variant (another fit,
+another clip) from an earlier solution. The cal must be a solution of the same system, or the
+action is refused, saying what differs: the same frames in the same order, the same model (sky
+terms, offset terms on the same chunk maps shared over the same groups of frames, the same basis
+functions), the same reference grid and the same job (the plan checks most of it before the
+solve is set up). Columns with data now that the source left at zero start at zero; the log
+counts them. Plain calibrations only: `tiles=` and `passes=` take no start, and a model with a
+hard polynomial basis (`Offsets(polynomial=...)`) cannot be continued (its cal holds the offsets
+the polynomial expands to, not its coefficients). Give the continuation a name of its own: the
+cal an action writes is never its start.
+
+The start is part of the new cal's inputs: its fingerprint (see below) holds the start's
+identity, and the cal's `solve` group records it (`start_from`, `start_identity`) with
+`iterations_total`, the iterations of the solution across continuations (122 + 300 = 422
+above). A rerun of the action's record starts from the same cal.
+
+A continuation restarts the solver's Krylov space: LSQR and LSMR solve `A dx = b - A x0` from
+`dx = 0`. So `M` more iterations after a solve of `N` are not one solve of `N + M` iterations: the
+two differ (the search directions start again from the residual of the start), and the solver's
+running estimates (‖A‖, cond(A), and LSQR's ‖x‖, which becomes ‖dx‖) start again too.
+
 ## Products, records and reruns
 
 ### A product is reused only when it was made by the same inputs
@@ -204,7 +236,7 @@ mosaic) is written under a temporary name and renamed when complete, then gets a
 
 | product | inputs |
 | --- | --- |
-| cal | the instrument, the reference grid (`ref.fits`, by content), the job, the model (template and map files by content), the fit (the N-pass first pass: with its clip), the solve's `Numerics`, the frames (by name) |
+| cal | the instrument, the reference grid (`ref.fits`, by content), the job, the model (template and map files by content), the fit (the N-pass first pass: with its clip), the solve's `Numerics`, the frames (by name); a [continued solve](#continuing-a-solve)'s start (by fingerprint, or by content without a sidecar) |
 | tile cal | the same, plus the tile's box and how frames were assigned to it |
 | stitched cal | its tile cals (by fingerprint) |
 | N-pass product | the first pass (by fingerprint), the pass number and type, the pass settings |
@@ -256,7 +288,7 @@ file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` op
 
 | key | content |
 | --- | --- |
-| `method`, `iterations`, `iterations_total`, `iteration_limit` | the solver; the iterations it ran, the cumulative count of the solution (the same until a solve continues another's), `Fit(iterations=)` |
+| `method`, `iterations`, `iterations_total`, `iteration_limit` | the solver; the iterations it ran, the cumulative count of the solution (the same unless the solve continued another's, [`start=`](#continuing-a-solve): then the source's total plus these; -1 when the source's is unknown), `Fit(iterations=)` |
 | `istop`, `stop` | the solver's stop code and its meaning: 1-2 the tolerance tests, 3 the condition estimate, 4-6 machine precision, 7 the iteration limit |
 | `r1norm`, `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm` | the solver's final estimates of ‖b − A x‖ (without and with the damping term), ‖Aᵀ r‖, ‖A‖, cond(A) and ‖x‖ |
 | `true_residual`, `bnorm` | ‖b − A x‖ and ‖b‖, computed once at the end with one product, in float64: an estimate drifting from the true residual shows here |
@@ -264,6 +296,8 @@ file's `solve` group (`selfcal.io.calfile.CalFile(cal).solve`; `result.cal()` op
 | `rows`, `columns` | the system's shape (the active columns) |
 | `wall_s` | the solver's wall time (in the record only: the cal file stays byte-identical from run to run) |
 | `history_file` | `<field>/records/<cal stem>_history.npz`: the solver's state at every iteration |
+| `system`, `system_identity` | the identity of the system solved: its frames in order, reference grid, sky and offset terms, columns and job (JSON), and its sha256; a later [start](#continuing-a-solve) from this cal is checked against it |
+| `start_from`, `start_identity` | a continued solve only: the cal it started from, and that cal's identity (`fingerprint:...`, its sidecar's, or `sha256:...`, its bytes) |
 
 The history file holds one array per column, row 0 the starting vector: `itn`, `r1norm`, `r2norm`,
 `arnorm`, `anorm`, `acond`, `xnorm`, `test1` (‖r‖ / ‖b‖), `test2` (‖Aᵀ r‖ / (‖A‖ ‖r‖)) and
