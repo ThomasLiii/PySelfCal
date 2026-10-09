@@ -43,6 +43,13 @@ channel table, interpolated (`num_ch` must be a multiple of 17; 34 splits each t
 two). Channels are numbered from 1 and are the usual SPHEREx jobs (`jobs=spherex.channel(n)` or
 `spherex.channels(first, last)`; job name `Ch<n>`).
 
+## CGLS { #cgls }
+
+Conjugate gradients on the least-squares normal equations, the default solver (`sc.Fit(method="cgls")`).
+The same products and, while converging, the same iterates as LSQR; it carries its residual, recomputes
+it from the data every 50 iterations and takes steps that vanish with the gradient, so a converged solve
+stays put however many iterations follow. See [The solver](python-api.md#the-solver).
+
 ## Chunk { #chunk }
 
 A region of the detector that carries its own offset unknowns, one per frame (or group of frames)
@@ -534,8 +541,9 @@ sky pixel becomes the mean of the tiles that cover it, weighted by their
 ## Stop rule { #stop-rule }
 
 An opt-in rule that may end a solve before its iteration limit (`sc.Fit(stop=sc.Stop(...))`): a
-residual plateau, a gradient drop, the stability of the sky terms' large scales, or the solver's
-own tests, combined by `all` or `any`. A solve a rule ended has `istop = 8`, and its cal, its
+residual plateau, a gradient drop, the stability of the sky terms' large scales, the χ² gained over a
+window (the scale-free rule: converged to a fraction of the error bars), or the solver's own tests,
+combined by `all` or `any`. A solve a rule ended has `istop = 8`, and its cal, its
 record and the log say which rule fired and what it measured. See
 [The Python API](python-api.md#monitors-and-stop-rules).
 

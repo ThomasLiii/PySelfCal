@@ -1,6 +1,6 @@
 """The record of one iterative solve: how it stopped, its final state, and its state at every iteration.
 
-:func:`~selfcal.core.solve.apply_lsqr` fills a :class:`SolveRecord` for every solve, LSQR or
+:func:`~selfcal.core.solve.apply_lsqr` fills a :class:`SolveRecord` for every solve, CGLS, LSQR or
 LSMR: the method, the iterations run, ``istop`` and its meaning (``stop_reason``), the solver's
 final estimates (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``, ``xnorm``), the
 tolerances and ``conlim`` it ran with, its wall time, and the true residual ``|b - A x|``, computed
@@ -51,7 +51,7 @@ OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_id
 #: The values held as JSON text in the cal's attributes, decoded in the action's record.
 JSON_VALUES = ('stop_values', 'stop_policy', 'deflation')
 
-#: What each ``istop`` of LSQR and LSMR means (the two solvers share the codes).
+#: What each ``istop`` of CGLS, LSQR and LSMR means (the solvers share the codes; CGLS never sets 3 or 6).
 STOP_REASONS = {
     0: 'the starting vector solves the system (zero residual or zero gradient)',
     1: '|b - A x| is small enough, given atol and btol (a compatible system)',

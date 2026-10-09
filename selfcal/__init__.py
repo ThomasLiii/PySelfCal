@@ -61,7 +61,7 @@ _EXPORTS = {
                      'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
                      'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
-                     'GradientRule', 'LargeScaleRule', 'Deflate'), 'selfcal.run.recipe'),
+                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate'), 'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
@@ -171,6 +171,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .run.field import Field, Submitted, frames_in
     from .run.plan import Plan
     from .run.recipe import (
+        ChiSquaredRule,
         ChunkGroups,
         Clip,
         Coadd,

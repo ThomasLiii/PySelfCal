@@ -96,7 +96,8 @@ class Iterate:
     ``settings``: what the solver runs with (``method``, ``atol``, ``btol``, ``conlim``, ``damp``,
     ``iteration_limit``, ``rows``, ``columns``)."""
 
-    def __init__(self, itn, x, *, scale=None, active=None, num_cols=None, estimates=None, settings=None):
+    def __init__(self, itn, x, *, scale=None, active=None, num_cols=None, estimates=None, settings=None,
+                 cast=None):
         self.itn = int(itn)
         self._x = x
         self._scale = scale
@@ -104,8 +105,12 @@ class Iterate:
         self.num_cols = int(x.shape[0] if num_cols is None else num_cols)
         self.estimates = dict(estimates or {})
         self.settings = dict(settings or {})
+        #: ``x`` is first cast to this dtype (the products' precision when the solver's vectors are wider; None:
+        #: no cast), as the solve's end does.
+        self._cast = None if cast is None or np.dtype(cast) == x.dtype else np.dtype(cast)
+        xd = x.dtype if self._cast is None else self._cast
         #: The solution's dtype: that of ``x * scale`` (the solve's end makes the same product).
-        self.dtype = x.dtype if scale is None else np.result_type(x.dtype, scale.dtype)
+        self.dtype = xd if scale is None else np.result_type(xd, scale.dtype)
 
     def read(self, start, stop, *, compact_start=None) -> np.ndarray:
         """The solution's columns ``start:stop`` of the full layout, a new array of :attr:`dtype`:
@@ -116,12 +121,14 @@ class Iterate:
         start, stop = int(start), int(stop)
         if self._active is None:
             seg = self._x[start:stop]
+            seg = seg if self._cast is None else seg.astype(self._cast)
             return seg * self._scale[start:stop] if self._scale is not None else seg.copy()
         mask = self._active.mask[start:stop]
         c0 = self._active.compact_start(start) if compact_start is None else int(compact_start)
         c1 = c0 + int(np.count_nonzero(mask))
         out = np.zeros(stop - start, dtype=self.dtype)
         seg = self._x[c0:c1]
+        seg = seg if self._cast is None else seg.astype(self._cast)
         out[mask] = seg * self._scale[c0:c1] if self._scale is not None else seg
         return out
 

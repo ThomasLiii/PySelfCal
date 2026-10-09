@@ -1106,7 +1106,7 @@ class Calibrator(Reprojector):
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
-                   scratch_dir: str | None = None, deflate=None) -> None:
+                   scratch_dir: str | None = None, deflate=None, vectors=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1126,7 +1126,7 @@ class Calibrator(Reprojector):
         precondition : bool, optional
             Enable diagonal preconditioning of the system.
         solver : str, optional
-            Iterative solver to use (``'lsmr'`` or ``'lsqr'``).
+            Iterative solver to use (``'cgls'``, ``'lsqr'`` or ``'lsmr'``).
         use_float32 : bool, optional
             Solve in single precision to halve the working-set memory.
         n_threads : int, optional
@@ -1161,6 +1161,9 @@ class Calibrator(Reprojector):
             :class:`~selfcal.run.recipe.Deflate`, ``sc.Fit(deflate=...)``; :mod:`selfcal.core.deflation`):
             the same solution, in fewer iterations when the large scales are what is slow. The record
             keeps what it did (``deflation``).
+        vectors : {'float32', 'float64'} or None, optional
+            The precision of the solver's vectors (``sc.Fit(vectors=...)``;
+            :func:`~selfcal.core.solve.apply_lsqr`). None: the method's own.
 
         Returns
         -------
@@ -1205,6 +1208,8 @@ class Calibrator(Reprojector):
                     snap.update(stop=stop, monitor=monitor, sky_names=self._cal_sky_names())
                 if deflate is not None:
                     snap.update(deflate=deflate, sky_names=self._cal_sky_names())
+                if vectors is not None:
+                    snap['vectors'] = vectors
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.

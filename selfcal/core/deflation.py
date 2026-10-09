@@ -535,6 +535,21 @@ class Deflation:
         self._scatter(y0, self.project(x0))
         return y0
 
+    def shifted(self, b, dtype=np.float32) -> np.ndarray:
+        """The deflated right-hand side ``b - B x_c`` as a new array of ``dtype`` (``b``: the original one, an
+        array or a parked vector, read in blocks; the product in float64, one pass over the matrix): what the
+        solver's residual is measured against (CGLS's refresh)."""
+        m = self.shape[0]
+        out = np.empty(m, dtype=dtype)
+        for r0, r1, pieces in _pieces(self._storage):
+            nr = r1 - r0
+            acc = np.zeros(nr)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), self.x_c, acc)
+            out[r0:r1] = np.asarray(b[r0:r1], dtype=np.float64) - acc
+        return out
+
     def bind(self, op, storage):
         """The solver's operator ``op`` (the column-scaled system) and the matrix it reads (for the float64
         passes of :meth:`start` and :meth:`resolve`)."""

@@ -138,6 +138,10 @@ def describe_stop(stop, fit=None) -> str:
         ls = stop.large_scale
         parts.append(f"the sky terms' smooth fit (degree {ls.degree}) changes less than {ls.below:g} at two checks, "
                      f"every {ls.every}")
+    if stop.chi2 is not None:
+        c = stop.chi2
+        parts.append(f"the chi-squared gained over the last {c.window} iterations below {c.sigma}^2 (the true residual "
+                     f"every {c.every}; the noise {'given' if c.noise is not None else 'from the residual'})")
     if stop.solver_tests:
         parts.append(f"the solver's tests {', '.join(stop.tests)}")
     joined = (' and ' if stop.combine == 'all' else ' or ').join(parts)

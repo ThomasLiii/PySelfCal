@@ -36,8 +36,8 @@ from ..config.base import Config, ConfigError, added
 from ..config.functions import check_picklable
 from ..models.model import Model, continuum
 
-__all__ = ['ChunkGroups', 'Clip', 'ResidualRule', 'GradientRule', 'LargeScaleRule', 'Stop', 'Deflate', 'Fit',
-           'Coadd', 'Numerics', 'Recipe']
+__all__ = ['ChunkGroups', 'Clip', 'ResidualRule', 'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Stop',
+           'Deflate', 'Fit', 'Coadd', 'Numerics', 'Recipe']
 
 
 @dataclass(frozen=True)
@@ -191,6 +191,47 @@ class LargeScaleRule(Config):
             raise ConfigError(f"LargeScaleRule(step={self.step}): at least 1")
 
 
+@dataclass(frozen=True)
+class ChiSquaredRule(Config):
+    """Stop when iterating on can no longer change the solution by a meaningful fraction of its
+    statistical error: the chi-squared the solve gained over the last ``window`` iterations is below
+    ``sigma`` squared.
+
+    The chi-squared of a solution is its squared residual in units of the data's noise variance per
+    row, ``|b - A x|^2 / s^2``. A fall of it by ``g`` between two iterates means the data prefer the
+    later one by ``g``; when the whole remaining fall is at most ``sigma^2``, every linear quantity of
+    the map (a pixel, a large-scale mode, ...) is within ``sigma`` standard deviations of its converged
+    value. So ``sigma = 0.1`` means the same on any field and model: converged to a tenth of the error
+    bars. The noise variance per row is estimated from the residual itself, ``s^2 = |b - A x|^2 / (rows
+    - unknowns)``, or given (``noise``, in the weighted units of the system: for a noise-free simulation,
+    whose residual is not noise).
+
+    The rule reads the true residual, from a product ``A x`` every ``every`` iterations (``window`` a
+    multiple of ``every``), and compares the checks ``window`` iterations apart: the gain it sees is a
+    lower bound on what remains (a solve can rest on a plateau before a slow direction moves), which
+    the deflation of the smooth sky patterns and the large-scale rule guard against. A solver that
+    idles once converged (CGLS, the default) makes the iteration limit a safe cap, so this rule is an
+    early exit, not a safety device. ``sc.Stop(chi2=0.1)`` is ``ChiSquaredRule(0.1)``.
+    """
+    sigma: float = 0.1
+    _: KW_ONLY
+    window: int = 50
+    every: int = 10
+    noise: float | None = None
+
+    def _validate(self):
+        if self.sigma <= 0:
+            raise ConfigError(f"ChiSquaredRule(sigma={self.sigma}): positive")
+        if self.every < 1:
+            raise ConfigError(f"ChiSquaredRule(every={self.every}): at least 1 iteration (the true residual)")
+        if self.window < self.every or self.window % self.every:
+            raise ConfigError(f"ChiSquaredRule(window={self.window}, every={self.every}): the window is a whole "
+                              f"number of checks (a multiple of every, at least one)")
+        if self.noise is not None and self.noise <= 0:
+            raise ConfigError(f"ChiSquaredRule(noise={self.noise}): a positive noise variance per row, or None "
+                              f"(estimated from the residual)")
+
+
 _SOLVER_TESTS = ('compatible', 'least_squares', 'condition')
 
 
@@ -200,7 +241,8 @@ class Stop(Config):
 
     ``residual`` (a :class:`ResidualRule`, or its ``below``), ``gradient`` (a
     :class:`GradientRule`, or its ``below``), ``large_scale`` (a :class:`LargeScaleRule`, or its
-    ``below``): the rules; ``solver_tests``: the solver's own tolerance tests (LSQR's or LSMR's)
+    ``below``), ``chi2`` (a :class:`ChiSquaredRule`, or its ``sigma``: converged to that fraction of the
+    error bars, the scale-free rule): the rules; ``solver_tests``: the solver's own tolerance tests (LSQR's or LSMR's)
     that count as a rule (``True``: all three; or some of ``"compatible"``, ``"least_squares"``,
     ``"condition"``). With a Stop, the solver's tests stop the solve only through it: ``False``, the
     default, turns them off, so the fit's ``tolerance`` (``atol``, ``btol``) and the condition limit
@@ -223,9 +265,11 @@ class Stop(Config):
     solver_tests: bool | tuple[Literal['compatible', 'least_squares', 'condition'], ...] = False
     min_iterations: int = 0
     combine: Literal['all', 'any'] = 'all'
+    chi2: float | ChiSquaredRule | None = added(None, since='2026-10')
 
     def _validate(self):
-        for name, cls in (('residual', ResidualRule), ('gradient', GradientRule), ('large_scale', LargeScaleRule)):
+        for name, cls in (('residual', ResidualRule), ('gradient', GradientRule), ('large_scale', LargeScaleRule),
+                          ('chi2', ChiSquaredRule)):
             v = getattr(self, name)
             if isinstance(v, float):
                 object.__setattr__(self, name, cls(v))
@@ -235,13 +279,15 @@ class Stop(Config):
             object.__setattr__(self, 'solver_tests', True if kept == _SOLVER_TESTS else (kept or False))
         if self.min_iterations < 0:
             raise ConfigError(f"Stop(min_iterations={self.min_iterations}): at least 0")
-        if self.residual is None and self.gradient is None and self.large_scale is None and not self.solver_tests:
-            raise ConfigError("Stop(): give at least one rule (residual=, gradient=, large_scale= or solver_tests=)")
+        if (self.residual is None and self.gradient is None and self.large_scale is None and self.chi2 is None
+                and not self.solver_tests):
+            raise ConfigError("Stop(): give at least one rule (residual=, gradient=, large_scale=, chi2= or "
+                              "solver_tests=)")
 
     @property
     def rules(self) -> tuple[str, ...]:
-        """The rules given, in the order ``residual``, ``gradient``, ``large_scale``, ``solver_tests``."""
-        return tuple(n for n in ('residual', 'gradient', 'large_scale', 'solver_tests') if getattr(self, n))
+        """The rules given, in the order ``residual``, ``gradient``, ``large_scale``, ``chi2``, ``solver_tests``."""
+        return tuple(n for n in ('residual', 'gradient', 'large_scale', 'chi2', 'solver_tests') if getattr(self, n))
 
     @property
     def tests(self) -> tuple[str, ...]:
@@ -252,7 +298,7 @@ class Stop(Config):
         """The first iteration at which ``rule`` (one of :attr:`rules`) can hold: the window of a
         residual or gradient rule, two checks after the start for the large-scale rule, 1 for the
         solver's tests."""
-        if rule in ('residual', 'gradient'):
+        if rule in ('residual', 'gradient', 'chi2'):
             return int(getattr(self, rule).window)
         if rule == 'large_scale':
             return 2 * int(self.large_scale.every)
@@ -342,11 +388,18 @@ def _check_hook(hook, what):
 class Fit(Config):
     """How the model is fitted to the frames.
 
-    ``iterations``: of the iterative solver (``method``: ``"lsqr"`` or ``"lsmr"``; ``tolerance``:
-    its stopping tolerance, one number or ``(atol, btol)``, where ``tolerance=0`` turns every
-    stopping test off, the condition-estimate stop too, so the solve runs exactly ``iterations``
-    iterations; ``damp``: its global damping; ``precondition``: column scaling; ``float32``:
-    single-precision products). Every solve is recorded: in the cal file's ``solve`` group, in the
+    ``iterations``: of the iterative solver (``method``: ``"cgls"``, the default, ``"lsqr"`` or
+    ``"lsmr"``; ``tolerance``: its stopping tolerance, one number or ``(atol, btol)``, where
+    ``tolerance=0`` turns every stopping test off, the condition-estimate stop too, so the solve runs
+    exactly ``iterations`` iterations; ``damp``: its global damping; ``precondition``: column scaling;
+    ``float32``: single-precision products; ``vectors``: the precision of the solver's own vectors,
+    ``"float32"`` or ``"float64"``, None for the method's own: CGLS float64, LSQR and LSMR the products').
+    The three methods take the same products per iteration and give the same iterates while a solve
+    converges; CGLS carries its residual as a vector it recomputes from the data every 50 iterations and
+    takes steps that vanish with the gradient, so a converged CGLS solve stays put however many
+    iterations follow, where LSQR in float32 drifts. CGLS has no estimate of the condition number
+    (``conlim`` and the ``"condition"`` test never stop it). With ``vectors="float64"``, LSQR and LSMR
+    keep float64 vectors on a float32 matrix, with the products computed in float64 (slower). Every solve is recorded: in the cal file's ``solve`` group, in the
     action's record, and its history per iteration in ``<field>/records/<cal stem>_history.npz``
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
@@ -357,7 +410,8 @@ class Fit(Config):
     ``line_fisher_threshold``: below this Fisher information, a pixel of a sky term after the
     first reads as unconstrained. ``stop``: opt-in rules that may end the solve before
     ``iterations`` (a :class:`Stop`; None: the solver's own tests, by ``tolerance``; with a Stop,
-    ``tolerance`` is used only by its ``solver_tests``). ``deflate``: solve the smooth sky patterns
+    ``tolerance`` is used only by its ``solver_tests``; ``Stop(chi2=0.1)``: the scale-free rule, converged to a
+    tenth of the error bars). ``deflate``: solve the smooth sky patterns
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations).
     """
     iterations: int = 50
@@ -367,7 +421,7 @@ class Fit(Config):
     ignore_flags: tuple[int, ...] | None = None
     shot_noise_weights: bool = False
     tolerance: float | tuple[float, float] = 1e-6
-    method: Literal['lsqr', 'lsmr'] = 'lsqr'
+    method: Literal['cgls', 'lsqr', 'lsmr'] = 'cgls'
     damp: float = 0.0
     precondition: bool = True
     float32: bool = True
@@ -376,12 +430,12 @@ class Fit(Config):
     line_fisher_threshold: float = 10.0
     stop: Stop | None = added(None, since='2026-10')
     deflate: Deflate | None = added(None, since='2026-10')
+    vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
 
     def _validate(self):
         if self.iterations < 1:
             raise ConfigError(f"Fit(iterations={self.iterations}): at least 1")
-        if self.deflate is not None and self.damp:
-            raise ConfigError(f"Fit(deflate=..., damp={self.damp}): deflation needs an undamped fit (damp=0)")
+
         if self.stop is not None and self.stop.solver_tests and self.exact_iterations:
             raise ConfigError("Fit(tolerance=0, stop=Stop(solver_tests=...)): tolerance=0 turns the solver's tests "
                               "off; give a tolerance, or no solver_tests")
@@ -392,6 +446,17 @@ class Fit(Config):
             raise ConfigError("Fit: the data-quality bits to ignore are Fit(ignore_flags=...), not the clip's")
         _check_hook(self.frame_hook, 'Fit(frame_hook=...)')
         _check_hook(self.raw_frame_hook, 'Fit(raw_frame_hook=...)')
+        if self.deflate is not None and self.damp:
+            raise ConfigError(f"Fit(deflate=..., damp={self.damp}): deflation needs an undamped fit (damp=0)")
+        if self.vectors not in (None, 'float32', 'float64'):
+            raise ConfigError(f"Fit(vectors={self.vectors!r}): 'float32', 'float64' or None (the method's own)")
+        if self.vectors == 'float32' and not self.float32:
+            raise ConfigError("Fit(vectors='float32', float32=False): float32 vectors need float32 products")
+        if (self.stop is not None and self.method == 'cgls' and isinstance(self.stop.solver_tests, tuple)
+                and 'condition' in self.stop.solver_tests):
+            raise ConfigError("Fit(method='cgls', stop=Stop(solver_tests=...)): CGLS has no condition estimate, so "
+                              "the 'condition' test never holds; keep 'compatible' and 'least_squares' (or True: "
+                              "the tests the method has)")
 
     @property
     def atol_btol(self) -> tuple[float, float]:

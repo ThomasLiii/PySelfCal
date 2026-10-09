@@ -48,6 +48,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Compute(scratch, workers=, ...)` | the machine (never changes a byte) |
 | `sc.Tiles`, `sc.Passes` | big fields: tiling, the N-pass solve |
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
+| `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
 | `sc.Result` | the products, with readers |
 
@@ -332,9 +333,11 @@ fit = sc.Fit(1000, tolerance=0, stop=sc.Stop(gradient=1e-3, large_scale=1e-3, mi
 | `residual=sc.ResidualRule(below)` | ‖r‖ fell by less than `below` (relative) over the last `window` iterations | `window=10`; `every=None` (the estimate, every iteration) or `m` (the true residual every m iterations) |
 | `gradient=sc.GradientRule(below)` | the largest ‖Aᵀ r‖ over the last `window` iterations is at most `below` times its value at the start of the solve | `window=10`; `every` as above |
 | `large_scale=sc.LargeScaleRule(below)` | every sky term's large-scale fit changed by less than `below` (relative) at the last two checks | `every=10`, `degree=2`, `step=4` |
+| `chi2=sc.ChiSquaredRule(sigma)` | the χ² the solve gained over the last `window` iterations is below `sigma`²: every quantity of the solution is within `sigma` standard deviations of its converged value (the scale-free rule; the noise variance per row from the residual, `|b − A x|² / (rows − unknowns)`, or `noise=` for a noise-free simulation) | `window=50`, `every=10` (the true residual), `noise=None` |
 | `solver_tests=True` | one of the solver's own tests (LSQR's or LSMR's) holds: `"compatible"`, `"least_squares"`, `"condition"` (or the ones named) | the tolerances of `sc.Fit(tolerance=)` |
 
-A number is the rule's `below` with its defaults (`gradient=1e-3` is `sc.GradientRule(1e-3)`).
+A number is the rule's `below` with its defaults (`gradient=1e-3` is `sc.GradientRule(1e-3)`, `chi2=0.1`
+is `sc.ChiSquaredRule(0.1)`).
 `combine="all"` (the default) stops when every rule given holds at the same iteration, `"any"` when
 one does; `min_iterations` keeps every rule from ending the solve before that iteration. **With a
 Stop, the solver's own tests stop the solve only as one of its rules** (`solver_tests`, refused
@@ -374,6 +377,46 @@ and gradient tests do not see the slowest large-scale directions, combine them w
 `large_scale` (`combine="all"`) to stop only once the large scales have settled too; even then, an
 iterative solver can rest on a plateau for a while before a slow mode moves, so prefer a strict
 `below`, and read the history. A continuation (`start=`) starts its rules afresh.
+
+The χ² rule is the one whose threshold needs no calibration: a fall of the χ² by `g` between two
+iterates means the data prefer the later one by `g`, so once the remaining fall is below `sigma`²
+no linear quantity of the map can still move by more than `sigma` of its error bar. On real data
+the noise scale comes from the residual itself. Its gain over a window is a lower bound on what
+remains (the plateau caveat above), which [deflation](#deflation) and the large-scale rule guard
+against; and with [CGLS](#the-solver), which idles once converged, the iteration limit is a safe
+cap, so the rule is an early exit rather than a safety device.
+
+### The solver
+
+```python
+fit = sc.Fit(300, tolerance=0)                       # CGLS, the default
+fit = sc.Fit(300, tolerance=0, method="lsqr", vectors="float64")
+```
+
+`sc.Fit(method=)` picks the iterative solver: `"cgls"` (the default), `"lsqr"` or `"lsmr"`. All three
+take one product by the matrix and one by its transpose per iteration and, while a solve converges, give
+the same iterates: the iterations a solve needs are set by the system (see [Deflation](#deflation)),
+not by the solver. They differ in what they carry from one iteration to the next, which matters once a
+solve has converged in floating point:
+
+- **CGLS** carries its residual as a vector in the products' precision, recomputes it from the data
+  every 50 iterations, and takes steps proportional to the gradient's size, so once converged it stays
+  where it is. A CGLS solve can be given a generous iteration count: past convergence the extra
+  iterations cost time, not accuracy. Its stopping tests are LSQR's on the same quantities, so
+  `tolerance=` means the same; it has no estimate of the condition number, so the `"condition"` test
+  and `conlim` never stop it.
+- **LSQR** renormalises its vectors every iteration, so after convergence its steps are made of
+  rounding noise; in float32, far past convergence, it can wander along the directions the data see
+  least. It estimates the condition number and keeps every existing product reproducible
+  (`method="lsqr"`).
+- **LSMR** is LSQR's sibling that makes the gradient, rather than the residual, decrease monotonically.
+
+`vectors=` sets the precision of the solver's own vectors (the iterate, the directions, the residual it
+carries): `"float32"`, `"float64"`, or None for the method's own, which is float64 for CGLS and the
+products' precision (`float32=`) for LSQR and LSMR, as before. `vectors="float64"` with the default
+`float32=True` keeps float64 vectors on the float32 matrix; for LSQR and LSMR the products are then
+computed in float64 from the float32 matrix, which costs about one extra pass over it per product. The
+record of every solve says which method ran and in what precision.
 
 ### Deflation
 

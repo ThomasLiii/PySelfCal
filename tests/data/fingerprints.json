@@ -2,7 +2,7 @@
  "about": "tests/test_fingerprints.py: the canonical inputs and fingerprint of each product. Regenerating this file makes the sidecar of every product whose inputs changed 'different': do it only on purpose.",
  "products": {
   "camera_maps/cal": {
-   "fingerprint": "4404c66456a8224d63ecbdcc586c1d072ef9396069befc8fcf7d6724ba0187ec",
+   "fingerprint": "bf13113bef775f5c1612d69ed2ad6866f15710c315203d7f3b6434879f2e873e",
    "inputs": {
     "fit": {
      "clip": {
@@ -19,7 +19,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -234,7 +234,7 @@
    }
   },
   "coadd_settings/cal": {
-   "fingerprint": "de88dc291f9c4d96c2e9516ed38b25fe4db64e062bf4fd1a0589ff163e751029",
+   "fingerprint": "4dfb997ff77d0752104d31d00263c07b530099f75deca53daa076adc138d9a62",
    "inputs": {
     "fit": {
      "clip": {
@@ -251,7 +251,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -439,7 +439,7 @@
    }
   },
   "continuum_smooth_poly/cal": {
-   "fingerprint": "1cdafd0596ba23154f9feb48ead249819a98b648696ad41abc6175fed3a3d501",
+   "fingerprint": "39c2a3a0637254d04dc416399edbe979fc14db17f39c17e95afe74472d794969",
    "inputs": {
     "fit": {
      "clip": {
@@ -456,7 +456,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -657,7 +657,7 @@
    }
   },
   "euclid/cal": {
-   "fingerprint": "4f02b5e8de7443710138c321cc22206f85935624c9201cb522d8d9a63bd303b8",
+   "fingerprint": "9a3d698e7867e89f7e95fc6d18cb2916be143e324ff6d06f4c6d865cd6d78c09",
    "inputs": {
     "fit": {
      "clip": {
@@ -677,7 +677,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -863,7 +863,7 @@
    }
   },
   "fit_clip_edges/cal": {
-   "fingerprint": "7948c87aa90c950d88fde1344c5c1f44217be6ef11594ddcb6873d2b1208c712",
+   "fingerprint": "a8a3b1dbed52f6a35f96267718e69becd81901fabf51c54e5f40e9cd7370de45",
    "inputs": {
     "fit": {
      "clip": {
@@ -884,7 +884,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -963,7 +963,7 @@
    }
   },
   "fit_clip_mapping/cal": {
-   "fingerprint": "60c261cd0284027781ae8f4cf4188c71f9704a7791c70a047adc01f550558186",
+   "fingerprint": "b7d3fa905ee2cdb75dd8b2b736ec2ba5173e890c359a81784193eee5c9d2f850",
    "inputs": {
     "fit": {
      "clip": {
@@ -1002,7 +1002,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -1090,7 +1090,7 @@
    }
   },
   "fit_clip_per_chunk/cal": {
-   "fingerprint": "bf9f964bdc14c0df37f45a85a53a1727fea2965c7897e6aeacba0da0c5fd7d32",
+   "fingerprint": "605787d85a2841d2258b21ae711f3d86dd4ec675b6d167e960c8eb67b5a7b6fa",
    "inputs": {
     "fit": {
      "clip": {
@@ -1107,7 +1107,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -1195,7 +1195,7 @@
    }
   },
   "fit_no_clip/cal": {
-   "fingerprint": "5d74e3f7aea300ba8ed285fff342a88d0eb62528ed3d1036f0b0806c06ca1771",
+   "fingerprint": "cb5fcd2ecdb14a2a07e302ae3d421c2832f794e24e48ce45ef4a4ffecc92ef6e",
    "inputs": {
     "fit": {
      "clip": null,
@@ -1208,7 +1208,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -1505,7 +1505,7 @@
    }
   },
   "model_with_everything/cal": {
-   "fingerprint": "22f82eca26322be2236c03eaf471c02a8a8014ecefc923aaee7eabc8afbcb42d",
+   "fingerprint": "65948a1fd4c4578d829a6512c1effb73aae2b9b8567af08f1a2e549ebef972b7",
    "inputs": {
     "fit": {
      "clip": {
@@ -1524,7 +1524,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -2301,7 +2301,7 @@
    }
   },
   "numerics/cal": {
-   "fingerprint": "972e4ba2504e3f1c5dadb3f2cbb69f8aaaca3a24de18104a40ad204769aa13a3",
+   "fingerprint": "1c9eb67712adfb9f4c1540c85cf556c25472ebc7bb71933363e1a128e3bcd613",
    "inputs": {
     "fit": {
      "clip": {
@@ -2318,7 +2318,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -2499,7 +2499,7 @@
    }
   },
   "passes_default/cal": {
-   "fingerprint": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+   "fingerprint": "4a345e07ed224511625a1d758c23c6b130738b0ef87f72f2b8ed9a317f0887d6",
    "inputs": {
     "fit": {
      "clip": {
@@ -2516,7 +2516,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -2626,10 +2626,10 @@
    }
   },
   "passes_default/pass 2 off": {
-   "fingerprint": "969bbb1be28bd8c27f3784f47acc9a1c6f13ccaac1e0a7ac4b0bb3555689e91a",
+   "fingerprint": "dcec2f97ab573475362479f1c36d73fcd2a576426187990d0be409f34156724c",
    "inputs": {
     "index": 2,
-    "init": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+    "init": "4a345e07ed224511625a1d758c23c6b130738b0ef87f72f2b8ed9a317f0887d6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2664,10 +2664,10 @@
    }
   },
   "passes_default/pass 3 sky": {
-   "fingerprint": "ebd96b4d5ffcc2edc59561f97d74a892a2e97e2ecd7e88b582c995faa9c9064d",
+   "fingerprint": "61bb3f4cdc4adfee7be59e1097e1c18e24ee41db47e4d0354f4b056a80788a8b",
    "inputs": {
     "index": 3,
-    "init": "5e02947a9db76911480ffd542f5668e6c8b9eb0f6910fa5446692c27b52e5ccc",
+    "init": "4a345e07ed224511625a1d758c23c6b130738b0ef87f72f2b8ed9a317f0887d6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2702,7 +2702,7 @@
    }
   },
   "passes_init_sigma/cal": {
-   "fingerprint": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+   "fingerprint": "7ffa14b8c90bde5428ee02259952eef21c6445afeab34618221c3e9db6513406",
    "inputs": {
     "fit": {
      "clip": {
@@ -2719,7 +2719,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -2829,10 +2829,10 @@
    }
   },
   "passes_init_sigma/pass 2 off": {
-   "fingerprint": "56c6d63aea763232f9e682648528e73982be326740f128b2826a9b65855b987c",
+   "fingerprint": "e6395e42e3843879fdc00be89d62c8dd317704a235d5eb1aa437b507fd30b517",
    "inputs": {
     "index": 2,
-    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "init": "7ffa14b8c90bde5428ee02259952eef21c6445afeab34618221c3e9db6513406",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2867,10 +2867,10 @@
    }
   },
   "passes_init_sigma/pass 3 sky": {
-   "fingerprint": "61a94b846cecfa67d802801febf789b988a6921a0700812dba14bbb5c563f3bd",
+   "fingerprint": "205f59150230695cc02bfa18ea73f5b3b8b005eca041808803428163b3815b15",
    "inputs": {
     "index": 3,
-    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "init": "7ffa14b8c90bde5428ee02259952eef21c6445afeab34618221c3e9db6513406",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2905,10 +2905,10 @@
    }
   },
   "passes_init_sigma/pass 4 off": {
-   "fingerprint": "b67fe2ab2cdb06e8d6cfd2fdc776e8e5cb567ceee342c131ed8a4bbc15b6755f",
+   "fingerprint": "469ada54d3575b21b4812fe5747538774aa58b9944b2a5c1d6b4cc53b729d093",
    "inputs": {
     "index": 4,
-    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "init": "7ffa14b8c90bde5428ee02259952eef21c6445afeab34618221c3e9db6513406",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2943,10 +2943,10 @@
    }
   },
   "passes_init_sigma/pass 5 sky": {
-   "fingerprint": "91cbfa198d6ff40a72a2e2dae5acde1bf84a177d4cc6508c5f3a71f4369b9a2f",
+   "fingerprint": "abc83546eb70a7927aec21ae2e935c9093b1b4c8b39128c910a956579a5bb814",
    "inputs": {
     "index": 5,
-    "init": "38d231404cb2a6f969d566be990b03eb2b80264cb64093219e2b1390b59118b9",
+    "init": "7ffa14b8c90bde5428ee02259952eef21c6445afeab34618221c3e9db6513406",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -2981,7 +2981,7 @@
    }
   },
   "passes_settings/cal": {
-   "fingerprint": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+   "fingerprint": "207a042d1b236346078ba77f86f448d7504ca633c13967f8582dc1626c0a3e01",
    "inputs": {
     "fit": {
      "clip": {
@@ -3005,7 +3005,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3115,10 +3115,10 @@
    }
   },
   "passes_settings/pass 2 sky": {
-   "fingerprint": "3128bd2290d7871f195b3c22932e00ebd631ecfb323a7ed474628ec008d2c03f",
+   "fingerprint": "c1b0bf4c37abc94ba7f38786a9966a517522ea9e5fe94651dd9f5628ef38d3db",
    "inputs": {
     "index": 2,
-    "init": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+    "init": "207a042d1b236346078ba77f86f448d7504ca633c13967f8582dc1626c0a3e01",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3172,10 +3172,10 @@
    }
   },
   "passes_settings/pass 3 off": {
-   "fingerprint": "9a18f4045b4f6f60f6391453faa6c7d82ce79bd3708f74b1f4ae1f97d076ffb7",
+   "fingerprint": "ec0809bf484a103ad71257f13eeb6b72b6212d7bdafe484e4dde8e39d2f06247",
    "inputs": {
     "index": 3,
-    "init": "dce5fe077edcfa964431af883722f7dcd536ab629674afc612a1ecfb27422c6f",
+    "init": "207a042d1b236346078ba77f86f448d7504ca633c13967f8582dc1626c0a3e01",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3229,7 +3229,7 @@
    }
   },
   "plan camera maps/calibration/cal_Toy_Chunks4x4_All_m.h5": {
-   "fingerprint": "53ad2aec3f4b22f3439e4b66ab87fa25220878384be210c6cc85ebbcde5f7676",
+   "fingerprint": "89a9e2ceb596f87d7099508ce8a6adf5ada9c2087695f01116b973a211640026",
    "inputs": {
     "fit": {
      "clip": {
@@ -3246,7 +3246,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3353,7 +3353,7 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_m.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_E.h5": {
-   "fingerprint": "3e08709d52c18691b48aae8958f10e8bdf376e9d09a5412a0a67a43cae6dddb1",
+   "fingerprint": "07fbc91ada5f92e6eff34d43852d2e83e06ccf4323ebf2c5d0c164a14716c6ec",
    "inputs": {
     "fit": {
      "clip": {
@@ -3370,7 +3370,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3471,7 +3471,7 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_E.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_W.h5": {
-   "fingerprint": "e18dc1bc5e2ebb2cf39d7a67ee1387d623c64e4015dd4dae6b666c894f9df6b7",
+   "fingerprint": "fdefa29000a57e133c8441ac41a83dd73479ca0edd4ead7d44caed496d8dd7b3",
    "inputs": {
     "fit": {
      "clip": {
@@ -3488,7 +3488,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3589,20 +3589,20 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_W.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_stitched.h5": {
-   "fingerprint": "14e54756665f4d410e1f680eed8d771db06edb37c24ee5eea1cb2dacc0dbe6e4",
+   "fingerprint": "5c53be2906b260ccc6210b9d87a1c844c9a43b9f40dfee10f554e93fc2f7c607",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "3e08709d52c18691b48aae8958f10e8bdf376e9d09a5412a0a67a43cae6dddb1",
-     "W": "e18dc1bc5e2ebb2cf39d7a67ee1387d623c64e4015dd4dae6b666c894f9df6b7"
+     "E": "07fbc91ada5f92e6eff34d43852d2e83e06ccf4323ebf2c5d0c164a14716c6ec",
+     "W": "fdefa29000a57e133c8441ac41a83dd73479ca0edd4ead7d44caed496d8dd7b3"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Toy_Chunks4x4_All_t_stitched.h5"
   },
   "plan camera/calibration/cal_Toy_Chunks4x4_All_c.h5": {
-   "fingerprint": "a2fef151e79560df771864eacfba4c67f28c13b6829d1df0e6cc89136a19e3b9",
+   "fingerprint": "98b746cdbd8fc38e0db418e04441b801cf110830859654baf4ef7e1826dcd7c4",
    "inputs": {
     "fit": {
      "clip": {
@@ -3619,7 +3619,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3713,7 +3713,7 @@
    "path": "mosaic/mosaic_Toy_Chunks4x4_All_c.fits"
   },
   "plan euclid/calibration/cal_EDFN_J_e.h5": {
-   "fingerprint": "93320e0ade1b6beafc1a538cffb4fb1d8df6480e9a12095182b8701f9f2dffca",
+   "fingerprint": "24bc5f7cb7cd76f76967e3652e2f14d801d4ae1b51652d22dbc53ff8df64cfa7",
    "inputs": {
     "fit": {
      "clip": {
@@ -3733,7 +3733,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3828,7 +3828,7 @@
    "path": "mosaic/mosaic_EDFN_J_e.fits"
   },
   "plan prism passes/calibration/cal_Prism_All_np.h5": {
-   "fingerprint": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+   "fingerprint": "efd23f49fbdcd3e11e0788e273a4473cbdb055c7e359984d3606e3d63387e7ff",
    "inputs": {
     "fit": {
      "clip": {
@@ -3847,7 +3847,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -3952,10 +3952,10 @@
    "path": "calibration/cal_Prism_All_np.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
-   "fingerprint": "0d12e19c9bdffb3f1e23da22c97f9892b156f120d991b318c66b4557667ab815",
+   "fingerprint": "a640b34515653eb4ad32cfbc577ec53107a60984cc3fbdb112615c814dd53101",
    "inputs": {
     "index": 2,
-    "init": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+    "init": "efd23f49fbdcd3e11e0788e273a4473cbdb055c7e359984d3606e3d63387e7ff",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3992,10 +3992,10 @@
    "path": "calibration/cal_Prism_All_np_pass2off.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
-   "fingerprint": "c8dbf85f01c7d8b4165f4148eab19e57057bf48ea41009e479a8b804c2ffe8e1",
+   "fingerprint": "1bf416b993d8dbb7844548b80cd89b5dcf6c01242d008e91e1559ac783c59b94",
    "inputs": {
     "index": 3,
-    "init": "c72c2f27a6c696b15669d78eda65b9bce1d9e868857466a3b0155dd7cf83a75f",
+    "init": "efd23f49fbdcd3e11e0788e273a4473cbdb055c7e359984d3606e3d63387e7ff",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4032,7 +4032,7 @@
    "path": "calibration/cal_Prism_All_np_pass3sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
-   "fingerprint": "3c1cc6ee55cc693bed69f1efa87dde1b3c33d7c371b577487d7e31a70a377a18",
+   "fingerprint": "4270d0ef5629771820d8b42b11e58e3b6a68076b3de702343c5dcbf348fd6dc3",
    "inputs": {
     "fit": {
      "clip": {
@@ -4051,7 +4051,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -4167,7 +4167,7 @@
    "path": "calibration/cal_Prism_All_tp_north.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
-   "fingerprint": "23cc1393e2ed5502bd5d846de90e39b48a0e6e348769ab39a929e4adda43b32b",
+   "fingerprint": "ec9f4b152ec4098814bbf19d018b68b7bb6d7084d567df46b1c543e5b76323b2",
    "inputs": {
     "fit": {
      "clip": {
@@ -4186,7 +4186,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -4302,23 +4302,23 @@
    "path": "calibration/cal_Prism_All_tp_south.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
-   "fingerprint": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+   "fingerprint": "127aed9f8d5c1f6968ddc17908706b6f92cb2f07da046c4d80975f0d3dd91bd2",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "3c1cc6ee55cc693bed69f1efa87dde1b3c33d7c371b577487d7e31a70a377a18",
-     "south": "23cc1393e2ed5502bd5d846de90e39b48a0e6e348769ab39a929e4adda43b32b"
+     "north": "4270d0ef5629771820d8b42b11e58e3b6a68076b3de702343c5dcbf348fd6dc3",
+     "south": "ec9f4b152ec4098814bbf19d018b68b7bb6d7084d567df46b1c543e5b76323b2"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Prism_All_tp_stitched.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
-   "fingerprint": "8b6962e065552056b4b1cd212b0d3e2f679fc737fa12519bb20e1a6ff3fd8d83",
+   "fingerprint": "32a4cbbae7ddc7d0ad42b61a53428a7c5b838f2ae00dd15f616db08939555104",
    "inputs": {
     "index": 2,
-    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "init": "127aed9f8d5c1f6968ddc17908706b6f92cb2f07da046c4d80975f0d3dd91bd2",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4355,10 +4355,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
-   "fingerprint": "d11ceb70c253057f0286a045cda006e3c55964f8b50188d7f4331173d49fe87d",
+   "fingerprint": "e8078bf62a1f4f9341ee9c30ab4e4fd473d06048fe3848bb20ee20487ec67a72",
    "inputs": {
     "index": 3,
-    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "init": "127aed9f8d5c1f6968ddc17908706b6f92cb2f07da046c4d80975f0d3dd91bd2",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4395,10 +4395,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
-   "fingerprint": "22820bf2082bc03d9e9b469013ac5bab69db6187d69ef37ddef4072d31630c2b",
+   "fingerprint": "970a94b11dfa4d18e604603c420fe2b26a5c28510fd5fcac3a714426e3145d77",
    "inputs": {
     "index": 4,
-    "init": "c65b9d20caeabaf78e47e2a80d2cf1baf729ea3b084377ce0a41ca512c3d57b2",
+    "init": "127aed9f8d5c1f6968ddc17908706b6f92cb2f07da046c4d80975f0d3dd91bd2",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4435,7 +4435,7 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
   },
   "spectral_lines/cal": {
-   "fingerprint": "1262051f31437b4778c5619f3e187a18184ff33da05523a68993101a71a8ebbe",
+   "fingerprint": "5a4392d32b625d90fc55911a96c1b5680fd8809954f9a525b9c64776d1a92b13",
    "inputs": {
     "fit": {
      "clip": {
@@ -4452,7 +4452,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -4665,7 +4665,7 @@
    }
   },
   "spectral_soft_poly/cal": {
-   "fingerprint": "f927e658e8929ab9993e666180d739a5a8fd3cd1beea445420e098ee85459143",
+   "fingerprint": "6e62b12ca36d71de7a1ce560043bc3bf831e65ccad6bbc86336518443854e6ed",
    "inputs": {
     "fit": {
      "clip": {
@@ -4682,7 +4682,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -4911,7 +4911,7 @@
    }
   },
   "spherex_channel/cal": {
-   "fingerprint": "ad93e4375b015e6d592231396d289fb39d50f5fd0845b5cddf26b48e1546d367",
+   "fingerprint": "a9ba9cb77973cb1fb81f2e38473295e362620cfc328481bb582dbe361f61aadc",
    "inputs": {
     "fit": {
      "clip": {
@@ -4928,7 +4928,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5091,7 +5091,7 @@
    }
   },
   "spherex_group_two_block/cal": {
-   "fingerprint": "7f45e1c42a440916090323cd094fd9c8fbd59efdf52882a00508dd6654737661",
+   "fingerprint": "efea6b237c26a6d67a3ab74041eb21208f0ed258ecab1c8c0d4e0c8e1e61d0b2",
    "inputs": {
     "fit": {
      "clip": {
@@ -5108,7 +5108,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5313,7 +5313,7 @@
    }
   },
   "spherex_settings_window/cal": {
-   "fingerprint": "c5ca643a14b2e46e8c4d96e807674558312122d83fb60ece06d1a54164d73448",
+   "fingerprint": "986f7d5bf43052635ba9c2458c289c00fcb6d73169c5a56aa45ab28fe4a8ab0a",
    "inputs": {
     "fit": {
      "clip": {
@@ -5330,7 +5330,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5495,10 +5495,10 @@
    }
   },
   "tiles_boxes_passes/pass 2 off": {
-   "fingerprint": "37f2ddd2750468e9e14d9c6ff3722e6b2229f206832665d44e183c2af033a6f4",
+   "fingerprint": "4b055aaf9704eb782b838a18baaffad08097330b3063fc3f9065daf90fd19ee6",
    "inputs": {
     "index": 2,
-    "init": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+    "init": "2c4bdc3a4e7da218b42e29424178c394fdf2035e1c18bf03e44d360116bae452",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5533,10 +5533,10 @@
    }
   },
   "tiles_boxes_passes/pass 3 sky": {
-   "fingerprint": "bf918d4ce1294b363a353c44aa2701606e22e81c9c58b3e33c8fadfcde0f2f60",
+   "fingerprint": "0e3c4cf43910c3efc53df25d9722c1f2387e2852a1b6cafa7054f7ea50052192",
    "inputs": {
     "index": 3,
-    "init": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+    "init": "2c4bdc3a4e7da218b42e29424178c394fdf2035e1c18bf03e44d360116bae452",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5571,18 +5571,18 @@
    }
   },
   "tiles_boxes_passes/stitched": {
-   "fingerprint": "3baecdfbff3b5385fdc3528e9804f72f0e21e65676ef073b01efed5dea5f8335",
+   "fingerprint": "2c4bdc3a4e7da218b42e29424178c394fdf2035e1c18bf03e44d360116bae452",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "b197a230376237507b417a3051b8013315098acb5cc0503085813658fbc4db8e",
-     "south": "e06e1d81761ce09cf412b17d6dbc77230d0aa56c344854d8d4d625bf6d50d68e"
+     "north": "34f7dfa06a2881d917d0511dc7b0bd0309fd09cb18e5d912efeddf0fe1e2b36c",
+     "south": "b2ca841f3b063645cc356bcbd043eda9aac0fb476285a2e72a4c1e1ef3c7f3c3"
     }
    }
   },
   "tiles_boxes_passes/tile north": {
-   "fingerprint": "b197a230376237507b417a3051b8013315098acb5cc0503085813658fbc4db8e",
+   "fingerprint": "34f7dfa06a2881d917d0511dc7b0bd0309fd09cb18e5d912efeddf0fe1e2b36c",
    "inputs": {
     "fit": {
      "clip": {
@@ -5599,7 +5599,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5720,7 +5720,7 @@
    }
   },
   "tiles_boxes_passes/tile south": {
-   "fingerprint": "e06e1d81761ce09cf412b17d6dbc77230d0aa56c344854d8d4d625bf6d50d68e",
+   "fingerprint": "b2ca841f3b063645cc356bcbd043eda9aac0fb476285a2e72a4c1e1ef3c7f3c3",
    "inputs": {
     "fit": {
      "clip": {
@@ -5737,7 +5737,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5858,18 +5858,18 @@
    }
   },
   "tiles_grid/stitched": {
-   "fingerprint": "63f1ab46eff67231715c6314d9e5f6dcf4527c55aaafd89c1f2f28feab086f33",
+   "fingerprint": "cdb2a7c549d0660f3d019a7f68a8aed24fea6ccad0a8c0831d3c092c55941bde",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "78b6496e2de3bbac1d1d6fbed6e5322fd6ec3384b3f0b0db175fbd14db4cd850",
-     "W": "0c61d2a8eef4104ca8a82893b6acb80a69cb4e1e921390b30080ad931966fdad"
+     "E": "ada6d57ae660a7adf7787956dffb9ae0e2c9310070d92b0df4964ae7d1deb140",
+     "W": "bee782b02362b56b622aeaa4594de5ddca8e64f9d9b311b0a526bea2b146375d"
     }
    }
   },
   "tiles_grid/tile E": {
-   "fingerprint": "78b6496e2de3bbac1d1d6fbed6e5322fd6ec3384b3f0b0db175fbd14db4cd850",
+   "fingerprint": "ada6d57ae660a7adf7787956dffb9ae0e2c9310070d92b0df4964ae7d1deb140",
    "inputs": {
     "fit": {
      "clip": {
@@ -5886,7 +5886,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -5985,7 +5985,7 @@
    }
   },
   "tiles_grid/tile W": {
-   "fingerprint": "0c61d2a8eef4104ca8a82893b6acb80a69cb4e1e921390b30080ad931966fdad",
+   "fingerprint": "bee782b02362b56b622aeaa4594de5ddca8e64f9d9b311b0a526bea2b146375d",
    "inputs": {
     "fit": {
      "clip": {
@@ -6002,7 +6002,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6101,20 +6101,20 @@
    }
   },
   "tiles_grid_named_by_the_engine/stitched": {
-   "fingerprint": "a3a92f9f3115a0cda123d141923399d01a777cf0d61dbdfc467f8edb270c58e8",
+   "fingerprint": "76beddb11b2a62973de6ea2797679687e9a7f3130fcc7e4edba35baf81c7f020",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "r0c0": "800f80c89c167563006590b28fb18868c2446c5ac775c9b63afea53d06d64c70",
-     "r0c1": "d8318ed1fe0f14d058480cca09cb4a125867f5bffd9e856f10b66579e9aaa3ed",
-     "r1c0": "5af320d6d0df132fa3d32da146763ff5f6f69cf4b6a38314aebb846420d79dcd",
-     "r1c1": "6f3e1f129dbf37dee993db88eff022bb5a6d548df62f826b148ef6cca01df56d"
+     "r0c0": "3f2321068df37a95a35bbacac98412194cacc43ff377251b3d2eec6c13f2418f",
+     "r0c1": "c45ef07689fd66f111c3ca95a471d832e7f70908a39a3caef26baeeedd3f67a3",
+     "r1c0": "81310c5d24fe75d9ef78234b984558f0f0902550a0d52fbe08c5b2f7d8048da9",
+     "r1c1": "d87900c5fcfce92ae65eb3e9dd1b8350cf72d421cd89a53958983345475b44be"
     }
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c0": {
-   "fingerprint": "800f80c89c167563006590b28fb18868c2446c5ac775c9b63afea53d06d64c70",
+   "fingerprint": "3f2321068df37a95a35bbacac98412194cacc43ff377251b3d2eec6c13f2418f",
    "inputs": {
     "fit": {
      "clip": {
@@ -6131,7 +6131,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6230,7 +6230,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c1": {
-   "fingerprint": "d8318ed1fe0f14d058480cca09cb4a125867f5bffd9e856f10b66579e9aaa3ed",
+   "fingerprint": "c45ef07689fd66f111c3ca95a471d832e7f70908a39a3caef26baeeedd3f67a3",
    "inputs": {
     "fit": {
      "clip": {
@@ -6247,7 +6247,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6346,7 +6346,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c0": {
-   "fingerprint": "5af320d6d0df132fa3d32da146763ff5f6f69cf4b6a38314aebb846420d79dcd",
+   "fingerprint": "81310c5d24fe75d9ef78234b984558f0f0902550a0d52fbe08c5b2f7d8048da9",
    "inputs": {
     "fit": {
      "clip": {
@@ -6363,7 +6363,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6462,7 +6462,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c1": {
-   "fingerprint": "6f3e1f129dbf37dee993db88eff022bb5a6d548df62f826b148ef6cca01df56d",
+   "fingerprint": "d87900c5fcfce92ae65eb3e9dd1b8350cf72d421cd89a53958983345475b44be",
    "inputs": {
     "fit": {
      "clip": {
@@ -6479,7 +6479,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6578,7 +6578,7 @@
    }
   },
   "two_block_settings/cal": {
-   "fingerprint": "e1c09f09b77181effd2d3643410971463bdfa9b22604caa9210880fe5c801f3d",
+   "fingerprint": "433472fcb369c991f101b73b41dd511cda720d9b1b3eaa8e1b5527e1a1f664f5",
    "inputs": {
     "fit": {
      "clip": {
@@ -6595,7 +6595,7 @@
      "ignore_flags": [],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,
@@ -6694,7 +6694,7 @@
    }
   },
   "user_instrument/cal": {
-   "fingerprint": "07b50d17906694bb1dd27add2e38dd6e1b7e9b8f9ae1608983a85565aa0be5a5",
+   "fingerprint": "3bc4cfa7d384329a0adc98019e9a177312c17cc11bd6f3c81facc25cab0385ad",
    "inputs": {
     "fit": {
      "clip": {
@@ -6713,7 +6713,7 @@
      ],
      "iterations": 50,
      "line_fisher_threshold": 10.0,
-     "method": "lsqr",
+     "method": "cgls",
      "precondition": true,
      "raw_frame_hook": null,
      "shot_noise_weights": false,

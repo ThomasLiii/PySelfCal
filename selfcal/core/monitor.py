@@ -121,7 +121,8 @@ DEFAULT_STEP = 4
 _BLOCK = 1 << 23
 
 _RULE_TITLES = {'residual': 'the residual rule', 'gradient': 'the gradient rule',
-                'large_scale': 'the large-scale rule', 'solver_tests': "the solver's tests"}
+                'large_scale': 'the large-scale rule', 'chi2': 'the chi-squared rule',
+                'solver_tests': "the solver's tests"}
 
 
 def monomials(degree) -> list[tuple[int, int]]:
@@ -348,17 +349,19 @@ class StopRules:
         self.residual = getattr(stop, 'residual', None)
         self.gradient = getattr(stop, 'gradient', None)
         self.large_scale = getattr(stop, 'large_scale', None)
+        self.chi2 = getattr(stop, 'chi2', None)
         self.solver_tests = _tests_of(getattr(stop, 'solver_tests', False))
         self.min_iterations = int(getattr(stop, 'min_iterations', 0) or 0)
         self.combine = getattr(stop, 'combine', 'all')
         if self.combine not in ('all', 'any'):
             raise ValueError(f"combine={self.combine!r}: 'all' or 'any'")
-        #: The rules given, in this order: residual, gradient, large_scale, solver_tests.
+        #: The rules given, in this order: residual, gradient, large_scale, chi2, solver_tests.
         self.given = tuple(n for n, v in (('residual', self.residual), ('gradient', self.gradient),
-                                          ('large_scale', self.large_scale), ('solver_tests', self.solver_tests))
+                                          ('large_scale', self.large_scale), ('chi2', self.chi2),
+                                          ('solver_tests', self.solver_tests))
                            if v)
         if not self.given:
-            raise ValueError("a Stop needs at least one rule (residual, gradient, large_scale or solver_tests)")
+            raise ValueError("a Stop needs at least one rule (residual, gradient, large_scale, chi2 or solver_tests)")
         self.state = dict.fromkeys(self.given)            # each rule's latest evaluation
         self.series = {n: [] for n in self.given}         # each rule's value per iteration (NaN: not evaluated)
         self.holds = []                                   # the combination per iteration
@@ -378,6 +381,8 @@ class StopRules:
             out['gradient'].append(int(self.gradient.every))
         if self.large_scale is not None:
             out['large_scale'].append(int(self.large_scale.every))
+        if self.chi2 is not None:
+            out['residual'].append(int(self.chi2.every))
         return out
 
     # ---- one iteration ---------------------------------------------------------------------------
@@ -397,6 +402,8 @@ class StopRules:
             evaluated['gradient'] = self._gradient(itn, watch)
         if self.large_scale is not None:
             evaluated['large_scale'] = self._large_scale(itn, watch)
+        if self.chi2 is not None:
+            evaluated['chi2'] = self._chi2(itn, watch)
         if self.solver_tests:
             flags = {name: bool(tests[SOLVER_TESTS.index(name)]) for name in self.solver_tests}
             evaluated['solver_tests'] = {'holds': any(flags.values()), 'value': float(any(flags.values())),
@@ -477,6 +484,27 @@ class StopRules:
                 'step': int(rule.step), 'changes': [previous, largest],
                 'terms': dict(zip(watch.smooth.names, (float(c) for c in changes)))}
 
+    def _chi2(self, itn, watch):
+        rule = self.chi2
+        w, e = int(rule.window), int(rule.every)
+        if itn % e or itn < w:
+            return None
+        old, new = watch.check_value(itn - w, 'true_residual'), watch.check_value(itn, 'true_residual')
+        rows, cols = watch.shape
+        if rule.noise is not None:
+            s2, noise = float(rule.noise), 'given'
+        else:
+            s2 = new * new / max(rows - cols, 1) if math.isfinite(new) else math.nan
+            noise = 'estimated from the residual: |b - A x|^2 / (rows - unknowns)'
+        if not (math.isfinite(old) and math.isfinite(new) and math.isfinite(s2) and s2 > 0):
+            gain = math.nan                     # not measured (the true residual could not be computed)
+        else:
+            gain = (old * old - new * new) / s2
+        return {'holds': bool(math.isfinite(gain) and gain < rule.sigma ** 2), 'value': float(gain),
+                'sigma': float(rule.sigma), 'below': float(rule.sigma ** 2), 'window': w, 'every': e, 'at': itn,
+                'from': float(old), 'to': float(new), 'noise_variance': float(s2), 'noise': noise,
+                'rows': int(rows), 'unknowns': int(cols)}
+
     # ---- the record --------------------------------------------------------------------------------
     def values(self, itn) -> dict:
         """The rules' state at iteration ``itn`` (their latest evaluations), for the record."""
@@ -505,7 +533,7 @@ class StopRules:
     def describe(self, n, st) -> str:
         """Rule ``n``'s state ``st`` in words."""
         if st is None:
-            if n in ('residual', 'gradient'):
+            if n in ('residual', 'gradient', 'chi2'):
                 return f"{_RULE_TITLES[n]} not evaluated yet (it needs {int(getattr(self, n).window)} iterations)"
             if n == 'large_scale':
                 return f"{_RULE_TITLES[n]} not evaluated yet (it needs checks at 0, {int(self.large_scale.every)} " \
@@ -526,6 +554,12 @@ class StopRules:
                     f"every sky term changed by at most {st['value']:.4g} of its size at the last two checks, "
                     f"iterations {st['at'][0]} and {st['at'][1]} (changes {st['changes'][0]:.4g}, {st['changes'][1]:.4g}; "
                     f"at {st['at'][1]}: {terms}; the rule: less than {st['below']:g})")
+        if n == 'chi2':
+            return (f"{_RULE_TITLES[n]} {verdict}: the chi-squared fell by {st['value']:.4g} over the last "
+                    f"{st['window']} iterations to iteration {st['at']} (|b - A x| {st['from']:.6e} -> {st['to']:.6e}, "
+                    f"the noise variance per row {st['noise_variance']:.4e}, {st['noise']}; the rule: less than "
+                    f"{st['sigma']:g}^2 = {st['below']:.4g}, so every quantity of the solution within "
+                    f"{st['sigma']:g} standard deviations of its converged value)")
         held = [k for k, v in st['tests'].items() if v]
         return (f"{_RULE_TITLES[n]} {verdict} at iteration {st['at']}"
                 + (f": {', '.join(f'{k} (istop {SOLVER_TESTS.index(k) + 1})' for k in held)}" if held else
@@ -581,6 +615,8 @@ class Watch:
         full layout's ``num_cols``; prepares the large-scale fit."""
         self._op = aslinearoperator(operator)
         self._b = b
+        #: The system's ``(rows, columns)`` as the solver sees it.
+        self.shape = tuple(int(v) for v in self._op.shape)
         self._scale, self._active, self._num_cols = scale, active, num_cols
         if self.smooth is not None:
             self.smooth.bind(active)

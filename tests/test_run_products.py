@@ -234,7 +234,7 @@ def test_convert_writes_run_scripts(tmp_path):
     assert sorted(os.listdir(tmp_path)) == ['cal.py', 'cal.toml', 'reproject.py', 'reproject.toml']
     module = _import(tmp_path / 'cal.py')
     assert module.RECIPE == sc.Recipe(sc.continuum(damping=0.001), fit=sc.Fit(200, clip=5.0, ignore_flags=(),
-                                                                             tolerance=1e-8),
+                                                                             tolerance=1e-8, method='lsqr'),
                                       coadd=sc.Coadd(clip=3.0, ignore_flags=()),
                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4), name='quickstart')
     assert module.FIELD.instrument == sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Sim')
@@ -351,7 +351,8 @@ def test_converter_rules(toy_field, tmp_path, name):
     assert case['python'] in text and 'basis=' not in text, text
     module = _import(script)
     coadd = case.get('coadd', sc.Coadd(clip=3.0, ignore_flags=()) if mosaic is not None else None)
-    assert module.RECIPE == sc.Recipe(case['model'], fit=sc.Fit(30, clip=5.0, ignore_flags=(), tolerance=1e-8),
+    assert module.RECIPE == sc.Recipe(case['model'], fit=sc.Fit(30, clip=5.0, ignore_flags=(), tolerance=1e-8,
+                                                                  method='lsqr'),
                                       coadd=coadd, numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4),
                                       name=name)
     assert module.FIELD.path == toy_field.path and module.FIELD.instrument == toy_field.instrument
