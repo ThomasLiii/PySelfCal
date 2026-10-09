@@ -602,15 +602,6 @@ class Deflation:
         self._scatter(x, xS)
         return x
 
-    def coarse_rms(self, scale) -> dict:
-        """The rms of the part in the space over each sky term's covered pixels, in physical units (the content
-        the space holds of each term)."""
-        xc = self.x_c[:self.n_sky_S]
-        if scale is not None:
-            s = np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64)[:self.n_sky_S]
-            xc = xc * s
-        return {name: float(np.sqrt(np.mean(xc[a:b] ** 2))) for name, a, b in self._term_slices}
-
     def summary(self) -> dict:
         """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
         st = self.settings

@@ -1202,9 +1202,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 if defl is not None:
                     record.deflation = defl.summary_json()
                     record.deflation_s = setup_s
-                    rms = ', '.join(f"{k} {v:.3e}" for k, v in defl.coarse_rms(M).items())
-                    logger.info(f"Deflation: {defl.kept} directions solved directly (setup {setup_s:.1f} s); their part "
-                                f"of the sky has rms {rms}; the final re-solve changed it by {defl.resolve_change:.1e}")
+                    d = defl.summary()
+                    logger.info(f"Deflation: {defl.kept} directions solved directly (setup {setup_s:.1f} s): they took "
+                                f"{d['coarse_residual_drop']:.4e} off |b|^2 at the start; the final re-solve of them "
+                                f"changed them by {defl.resolve_change:.1e} (relative)")
             finally:
                 if defl is not None:
                     defl.close()

@@ -425,8 +425,8 @@ one iteration's products), one at the end and one per snapshot; memory of `2 × 
 per covered unknown, and six passes over it per iteration (threaded). The solve's record keeps a
 summary, `deflation` (the patterns and the directions solved directly, the gauges left out, the
 `nullness`, the residual removed at the start, the size of the final re-solve), and its setup time
-`deflation_s` (in the action's record only); the log says how much of each sky term the deflated
-part holds. Snapshots and monitors see the solution itself. The solver's estimates are those of the
+`deflation_s` (in the action's record only); the log says how much of the residual the directions
+solved directly took at the start. Snapshots and monitors see the solution itself. The solver's estimates are those of the
 deflated problem: `r1norm` and `arnorm` are still the full system's residual and gradient, `anorm`,
 `acond` and `xnorm` those of the deflated operator and iterate. Deflation needs an undamped fit
 (`sc.Fit(damp=0)`) and is part of the fit's inputs.

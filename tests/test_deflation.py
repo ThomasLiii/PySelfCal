@@ -364,7 +364,7 @@ def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
         _recipe(20, name='d1', deflate=sc.Deflate(2))))
     with caplog.at_level(logging.INFO, logger='selfcal'):
         res = field.calibrate(_recipe(20, name='d1', deflate=sc.Deflate(2)), monitor=sc.Monitor(5))
-    assert 'Deflation: ' in caplog.text and 'directions solved directly' in caplog.text
+    assert 'Deflation: ' in caplog.text and 'directions solved directly' in caplog.text and 'off |b|^2' in caplog.text
     cal = res.cal_paths[0]
     with h5py.File(cal, 'r') as f:
         attrs = dict(f['solve'].attrs)
