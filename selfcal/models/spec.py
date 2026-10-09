@@ -233,8 +233,9 @@ class OffsetTerm:
     Priors: ``reg_weight`` pulls chunks that neighbour along the ``adjacency``
     axes together (None = the map's default axes; ``()`` = none;
     ``adjacency_step`` restricts pairs to that difference), ``poly`` adds soft
-    polynomial constraints, ``mean_zero`` anchors the per-frame mean over chunks
-    at zero (per basis function), ``damp`` is Tikhonov damping toward zero.
+    polynomial constraints, ``mean_zero`` anchors the per-frame mean over the
+    observed chunks (those with data) at zero (per basis function), ``damp`` is
+    Tikhonov damping toward zero.
     ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
     the adjacency rows once per group instead of once per frame (exact; far
     fewer rows). ``render``: which of the instrument's offset renderers draws the

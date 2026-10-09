@@ -809,6 +809,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # bincount would need a full-nnz float64 squared-data temp — 8 B per
     # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
+    # The offset columns the data rows touch (the observed chunks; the regularisation rows do not count):
+    # the mean-offset anchor runs over them.
+    observed_cols = np.zeros(total_cols, dtype=bool)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
     pixel_rhs = (np.zeros(num_sky_blocks * num_sky, dtype=np.float64)
                  if sky_rhs_moments else None)
@@ -910,6 +913,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             # each range.
             range_nnz_per_batch[batch_id] = np.add.reduceat(
                 _cnt, _full_cuts[:-1]).astype(np.int64)
+        _obs = result.get('offset_observed')
+        if _obs is not None and _obs.size:
+            observed_cols[_obs] = True            # a boolean OR: the same in any batch order
         _oc = result.get('offset_counts')
         if _oc is not None:
             # The worker merged duplicate offset entries; pixel_counts
@@ -1209,10 +1215,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             continue
         logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
         _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
-        constraint_blocks.append(mean_offset_block(
+        # Over the chunks with data (the frame's observed chunks: a chunk outside the job's window
+        # has no data and would otherwise enter the anchor only, leaving its constant and the
+        # frame's scalar free to shift against each other, and uncompactable).
+        _blk = mean_offset_block(
             m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
             col_bases, weight=constraint_weight,
-            group_rows=mean_offset_group_rows, n_basis=_nb).as_dict())
+            group_rows=mean_offset_group_rows, n_basis=_nb, covered=observed_cols)
+        if _blk.num_rows == 0:
+            logger.warning(f"Skipping mean-offset constraint for map {m}: no frame has an observed chunk")
+            continue
+        constraint_blocks.append(_blk.as_dict())
 
     # --- Grouped adjacency (maps in group_adjacency_maps) ---
     # Same conditions as the worker-side per-frame rows it replaces.
@@ -1271,7 +1284,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # These slices are views: left alive they would pin the whole
     # pixel_counts array through the CSR build even after it is spilled.
-    sky_pixel_counts = offset_pixel_counts = None
+    sky_pixel_counts = offset_pixel_counts = observed_cols = None
 
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row
@@ -1291,7 +1304,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         row_nnz[cursor:cursor + rn.size] = rn
         cursor += rn.size
     assert cursor == total_rows_data, (cursor, total_rows_data)
-    # Constraint-row half: each block is uniform nnz_per_row.
+    # Constraint-row half: each block's nnz_per_row (one value, or one per row).
     for blk in constraint_blocks:
         row_nnz[cursor:cursor + blk['num_rows']] = blk['nnz_per_row']
         cursor += blk['num_rows']

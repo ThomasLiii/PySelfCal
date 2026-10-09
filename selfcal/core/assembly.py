@@ -129,7 +129,7 @@ def _prep_lsqr(task_params):
             # Same arity as the success return (the caller unpacks 6 and skips
             # on an empty b); off_counts is None, as it is whenever there is no
             # per-offset bookkeeping to report.
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None, np.empty(0, dtype=np.int64)
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
@@ -351,6 +351,12 @@ def _prep_lsqr(task_params):
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
         sub_data_vec = sub_data_vec[valid_mask]
+        # The offset columns the DATA rows touch (rows before the regularisation rows), with a nonzero
+        # entry: the chunks this frame observed. The anchor runs over them (setup_lsqr); the entry
+        # counts (pixel_counts) also count the regularisation rows, which touch every chunk.
+        _num_sky_eff = task_params['num_sky_blocks'] * task_params['ref_shape'][0] * task_params['ref_shape'][1]
+        _data_entry = (sub_rows < num_valid_pixels) & (sub_cols >= _num_sky_eff) & (sub_data_vec != 0)
+        observed = np.unique(sub_cols[_data_entry]).astype(np.int64)
 
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
         sub_rows = new_row_indices.astype(np.int32)
@@ -365,7 +371,7 @@ def _prep_lsqr(task_params):
                 sub_rows, sub_cols, sub_data_vec, len(sub_b),
                 task_params['scalar_col_start'] + task_params['num_scalar_cols'],
                 task_params['num_sky_blocks'] * ref_h * ref_w)
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts, observed
 
     except FrameLoadError:
         raise                                   # a missing/corrupt frame is fatal, never silently dropped
@@ -503,6 +509,7 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_data = []
         batch_b = []
         off_ids_parts, off_cnt_parts = [], []
+        observed_parts = []
         batch_row_offset = 0
         n_entries = 0
 
@@ -515,12 +522,13 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, observed = result
             if len(sub_b) == 0:
                 continue
             if off_counts is not None:
                 off_ids_parts.append(off_counts[0])
                 off_cnt_parts.append(off_counts[1])
+            observed_parts.append(observed)
 
             if spill_fhs is not None:
                 (sub_rows + batch_row_offset).tofile(spill_fhs[0])
@@ -557,6 +565,9 @@ def _prep_lsqr_batch_worker(batch_params):
             _tot = np.zeros(_u.size, dtype=np.int64)
             np.add.at(_tot, _inv, np.concatenate(off_cnt_parts))
             offset_counts = (_u, _tot)
+        # The offset columns the batch's data rows touch (the observed chunks), sparse.
+        offset_observed = (np.unique(np.concatenate(observed_parts)) if observed_parts
+                           else np.empty(0, dtype=np.int64))
 
         if spill_fhs is not None:
             for fh in spill_fhs:
@@ -568,7 +579,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
             return {'files': spill_paths, 'shm': [b_meta],
                     'num_rows': batch_row_offset, 'n_entries': n_entries,
-                    'offset_counts': offset_counts}
+                    'offset_counts': offset_counts, 'offset_observed': offset_observed}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)
@@ -584,7 +595,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
 
         return {'shm': result_shm, 'num_rows': batch_row_offset,
-                'offset_counts': offset_counts}
+                'offset_counts': offset_counts, 'offset_observed': offset_observed}
     finally:
         for shm in shm_handles:
             shm.close()
