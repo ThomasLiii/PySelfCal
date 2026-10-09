@@ -60,6 +60,16 @@ logger = logging.getLogger(__name__)
 __all__ = ["apply_lsqr"]
 
 
+def _out_buffer(holder, m, dtype):
+    """The product's output vector, kept between calls (one per dtype): a fresh ``np.empty`` of 1e9 elements
+    is faulted in page by page on every product, which costs more than the product itself; every consumer
+    of a product in this module has finished with it before it asks for the next."""
+    out = holder.get(dtype)
+    if out is None:
+        out = holder[dtype] = np.empty(m, dtype=dtype)
+    return out
+
+
 def _partition_csr(A, n_blocks):
     """Split CSR matrix into row-blocks sharing data/indices arrays (zero-copy).
 
@@ -113,8 +123,10 @@ def _make_parallel_operator(A_csr, n_threads, promote=False):
     executor = ThreadPoolExecutor(max_workers=n_threads)
     dtype = A_csr.dtype
 
+    _outs = {}
+
     def _matvec(x):
-        out = np.empty(m, dtype=np.promote_types(dtype, x.dtype) if promote else dtype)
+        out = _out_buffer(_outs, m, np.promote_types(dtype, x.dtype) if promote else dtype)
         def _work(i):
             out[A_bounds[i]:A_bounds[i+1]] = A_blocks[i] @ x
         list(executor.map(_work, range(n_threads)))
@@ -560,9 +572,12 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges, promote=False):
     executor = ThreadPoolExecutor(max_workers=max(1, n_threads))
     rexecutor = ThreadPoolExecutor(max_workers=nranges)
 
+    _outs = {}
+
     def _matvec(x):
         od = np.promote_types(dtype, x.dtype) if promote else dtype      # n_threads>1 regime: output in A dtype
-        out = np.zeros(m, dtype=od)
+        out = _out_buffer(_outs, m, od)
+        out.fill(0)
         xs = x if x.dtype == od else np.ascontiguousarray(x, dtype=od)
         for t in range(nranges):        # ordered continuation passes
             c0, c1 = int(cuts[t]), int(cuts[t + 1])
@@ -683,9 +698,11 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False, promote=False
     # use_float32=True where both agree; we reproduce each regime exactly.
     promote_matvec = n_threads <= 1 or promote
 
+    _outs = {}
+
     def _matvec(x):
         od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
-        out = np.empty(m, dtype=od)
+        out = _out_buffer(_outs, m, od)
         def _work(i):
             r0, r1, shell = pieces[i]
             out[r0:r1] = shell @ x

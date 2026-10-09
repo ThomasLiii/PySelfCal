@@ -39,36 +39,79 @@ REFRESH = 50
 _BLOCK = 50_000_000
 
 
-_BUF64 = np.empty(_BLOCK, dtype=np.float64)
+from concurrent.futures import ThreadPoolExecutor
+
+from .lsqr_inplace import _vec_threads
+
+_POOL = None
+_BUFS = {}
+
+
+def _pool():
+    global _POOL
+    if _POOL is None:
+        n = _vec_threads()
+        _POOL = ThreadPoolExecutor(max_workers=n) if n > 1 else False
+    return _POOL or None
+
+
+def _buffer(key, dtype):
+    """One scratch block per (thread key, dtype), kept between calls."""
+    b = _BUFS.get((key, dtype))
+    if b is None:
+        b = _BUFS[(key, dtype)] = np.empty(_BLOCK, dtype=dtype)
+    return b
+
+
+def _blocks(n):
+    return [(s, min(n, s + _BLOCK)) for s in range(0, n, _BLOCK)]
+
+
+import threading
+
+_LOCAL = threading.local()
+
+
+def _run(fn, blocks):
+    """``fn(thread key, start, stop)`` over the blocks, in threads when the vector is long; the results in
+    block order (so a reduction's sum is the same for any thread count). The key names the running thread's
+    own scratch."""
+    pool = _pool() if len(blocks) > 1 else None
+
+    def call(t):
+        key = getattr(_LOCAL, 'key', None)
+        if key is None:
+            key = _LOCAL.key = threading.get_ident()
+        return fn(key, *t)
+    if pool is None:
+        return [call(t) for t in blocks]
+    return list(pool.map(call, blocks))
 
 
 def _dot(a, b):
-    """``a . b`` accumulated in float64, in blocks, each block copied into one reused float64 buffer (the
-    same products and sums as a blocked ``astype`` + ``dot``, without faulting in a fresh copy per block:
-    2-3x faster on long float32 vectors)."""
-    acc = 0.0
-    for s in range(0, a.shape[0], _BLOCK):
-        e = min(a.shape[0], s + _BLOCK)
-        t = _BUF64[:e - s]
+    """``a . b`` accumulated in float64: each block copied into a float64 scratch block (the same products and
+    sums as a blocked ``astype`` + ``dot``, without faulting in a fresh copy), the blocks in threads, their
+    partial sums added in block order (the result is independent of the thread count)."""
+    def part(k, s, e):
+        t = _buffer(k, np.float64)[:e - s]
         np.copyto(t, a[s:e], casting='unsafe')
-        acc += float(np.dot(t, t if a is b else b[s:e].astype(np.float64, copy=False)))
+        return float(np.dot(t, t if a is b else b[s:e].astype(np.float64, copy=False)))
+    acc = 0.0
+    for v in _run(part, _blocks(a.shape[0])):
+        acc += v
     return acc
 
 
-_SCRATCH = {}
-
-
 def _sub_scaled(r, alpha, q):
-    """``r -= alpha * q`` in place, in blocks through one reused scratch block of ``r``'s dtype."""
+    """``r -= alpha * q`` in place, in blocks through scratch blocks of ``r``'s dtype, the blocks in threads
+    (elementwise: the same bytes in any order)."""
     a = r.dtype.type(alpha)
-    buf = _SCRATCH.get(r.dtype)
-    if buf is None:
-        buf = _SCRATCH[r.dtype] = np.empty(_BLOCK, dtype=r.dtype)
-    for s in range(0, r.shape[0], _BLOCK):
-        e = min(r.shape[0], s + _BLOCK)
-        t = buf[:e - s]
+
+    def part(k, s, e):
+        t = _buffer(k, r.dtype)[:e - s]
         np.multiply(q[s:e], a, out=t, casting='unsafe')
         np.subtract(r[s:e], t, out=r[s:e])
+    _run(part, _blocks(r.shape[0]))
 
 
 def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=False, calc_var=False,
