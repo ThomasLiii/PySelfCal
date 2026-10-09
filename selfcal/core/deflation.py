@@ -195,14 +195,14 @@ def _block_pinv_solve(G, R):
     return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero}
 
 
-def _transform_in_place(M, T, rows=1 << 20):
-    """``M T`` written over the first ``T.shape[1]`` columns of ``M`` (n x k, C order), a row block at a
-    time; returns that view (row stride ``k``)."""
+def _transform_in_place(M, T, cols=1 << 20):
+    """``T^T M`` written over the first ``T.shape[1]`` rows of ``M`` (k x n, C order), a column block at a
+    time; returns those rows (contiguous)."""
     kk = T.shape[1]
-    for a in range(0, M.shape[0], rows):
-        c = min(M.shape[0], a + rows)
-        M[a:c, :kk] = M[a:c] @ T
-    return M[:, :kk]
+    for a in range(0, M.shape[1], cols):
+        c = min(M.shape[1], a + cols)
+        M[:kk, a:c] = T.T @ M[:, a:c]
+    return M[:kk]
 
 
 class Deflation:
@@ -294,9 +294,9 @@ class Deflation:
         if k == 0:
             raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
         self.labels = labels
-        Z = np.zeros((nS, k))
+        Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
         for i, (sel, vals) in enumerate(rows_of):
-            Z[sel, i] = vals * col_norm[sel]
+            Z[i, sel] = vals * col_norm[sel]
         del rows_of, term_of, iy, ix
         self._colmap = None
         if self.S is not None:
@@ -305,92 +305,116 @@ class Deflation:
             self._colmap = cm
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)")
+        self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
+        try:
+            # Pass 1 (float64; the patterns in threads, one each, the offsets' normal matrix alongside): each
+            # pattern's sky image U = B F, the offsets' response R = B_off^T U and G = B_off^T B_off.
+            t = time.perf_counter()
+            sky_norm2 = np.zeros(k)
+            R = np.zeros((k, n_off))
+            gparts = []
+            for r0, r1, pieces in _pieces(storage):
+                nr = r1 - r0
+                chunk = []
+                offs = []
+                for lip, cols, data in pieces:
+                    pos = cols if self._colmap is None else self._colmap[cols]
+                    d64 = data.astype(np.float64)
+                    chunk.append((lip, pos, d64))
+                    o = pos >= n_sky_S
+                    if o.any():
+                        rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+                        offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
+                sub = None
+                if offs:
+                    rr = np.concatenate([o[0] for o in offs])
+                    cc = np.concatenate([o[1] for o in offs])
+                    dd = np.concatenate([o[2] for o in offs])
+                    sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
+                    sub_ip, sub_ix = sub.indptr.astype(np.int64), sub.indices.astype(np.int64)
 
-        # Pass 1: each pattern's sky image U = B F and the offsets' normal matrix and response
-        # (float64): G = B_off^T B_off, R = B_off^T U.
-        t = time.perf_counter()
-        sky_norm2 = np.zeros(k)
-        R = np.zeros((n_off, k))
-        gparts = []
-        for r0, r1, pieces in _pieces(storage):
-            nr = r1 - r0
-            U = np.zeros((nr, k))
-            offs = []
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                d64 = data.astype(np.float64)
-                _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Z.ravel(), U.ravel())
-                o = pos >= n_sky_S
-                if o.any():
-                    rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-                    offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
-            sky_norm2 += np.einsum('ij,ij->j', U, U)
-            if offs:
-                rr = np.concatenate([o[0] for o in offs])
-                cc = np.concatenate([o[1] for o in offs])
-                dd = np.concatenate([o[2] for o in offs])
-                sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
-                _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64),
-                                         sub.data, U.ravel(), R.ravel())
-                g = (sub.T @ sub).tocoo()
-                gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
-                del sub, g
-            del U
-        if gparts:
-            G = coo_matrix((np.concatenate([p[2] for p in gparts]),
-                            (np.concatenate([p[0] for p in gparts]), np.concatenate([p[1] for p in gparts]))),
-                           shape=(n_off, n_off)).tocsr()
-        else:
-            G = coo_matrix((n_off, n_off)).tocsr()
-        del gparts
-        G.sum_duplicates()
-        t_pass1 = time.perf_counter() - t
-        t = time.perf_counter()
-        X, info = _block_pinv_solve(G, R)
-        res = G @ (-X) + R
-        self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) / np.maximum(np.linalg.norm(R, axis=0),
-                                                                                       1e-300)))
-        Z[n_sky_S:] = -X
-        del G, R, X, res
-        t_pair = time.perf_counter() - t
+                def pattern(i, chunk=chunk, nr=nr, sub=sub):
+                    u = np.zeros(nr)
+                    for lip, pos, d64 in chunk:
+                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
+                    sky_norm2[i] += float(u @ u)
+                    if sub is not None:
+                        _sparsetools.csc_matvec(n_off, nr, sub_ip, sub_ix, sub.data, u, R[i])
 
-        # Pass 2: N Z = B^T (B Z) and B^T b (float64).
-        t = time.perf_counter()
-        NZ = np.zeros((nS, k))
-        ATb = np.zeros(nS)
-        pair_norm2 = np.zeros(k)
-        bnorm2 = 0.0
-        for r0, r1, pieces in _pieces(storage):
-            nr = r1 - r0
-            BZ = np.zeros((nr, k))
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvecs(nr, nS, k, lip, pos, data.astype(np.float64), Z.ravel(), BZ.ravel())
-            pair_norm2 += np.einsum('ij,ij->j', BZ, BZ)
-            bc = np.asarray(b[r0:r1], dtype=np.float64)
-            bnorm2 += float(bc @ bc)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                d64 = data.astype(np.float64)
-                _sparsetools.csc_matvecs(nS, nr, k, lip, pos, d64, BZ.ravel(), NZ.ravel())
-                _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
-            del BZ
-        t_pass2 = time.perf_counter() - t
-        self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
+                futures = self._submit(pattern, k)
+                if sub is not None:
+                    g = (sub.T @ sub).tocoo()
+                    gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
+                    del g
+                self._wait(futures)
+                del chunk, offs, sub
+            if gparts:
+                G = coo_matrix((np.concatenate([p[2] for p in gparts]),
+                                (np.concatenate([p[0] for p in gparts]), np.concatenate([p[1] for p in gparts]))),
+                               shape=(n_off, n_off)).tocsr()
+            else:
+                G = coo_matrix((n_off, n_off)).tocsr()
+            del gparts
+            G.sum_duplicates()
+            t_pass1 = time.perf_counter() - t
+            t = time.perf_counter()
+            X, info = _block_pinv_solve(G, R.T)
+            res = G @ (-X) + R.T
+            self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
+                                                 np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
+            Z[:, n_sky_S:] = -X.T
+            del G, R, X, res
+            t_pair = time.perf_counter() - t
 
-        # An orthonormal basis of the space diagonalising E = V^T N V; the directions kept: those the
-        # data see (E's eigenvalue above DEPENDENT of the largest: exact gauges have ~0); the rest stays
-        # orthogonal to the dropped. The obliqueness |N v| / v^T N v of each (about 1 for an eigenvector of
-        # N, large for a slow direction mixed with fast ones) is kept as information.
-        E = Z.T @ NZ
-        E = 0.5 * (E + E.T)
-        GZ = Z.T @ Z
-        w1, U1 = np.linalg.eigh(0.5 * (GZ + GZ.T))
+            # Pass 2 (float64, the patterns in threads): N Z = B^T (B Z), and B^T b alongside.
+            t = time.perf_counter()
+            NZ = np.zeros((k, nS))
+            ATb = np.zeros(nS)
+            pair_norm2 = np.zeros(k)
+            bnorm2 = 0.0
+            for r0, r1, pieces in _pieces(storage):
+                nr = r1 - r0
+                chunk = []
+                for lip, cols, data in pieces:
+                    pos = cols if self._colmap is None else self._colmap[cols]
+                    chunk.append((lip, pos, data.astype(np.float64)))
+                bc = np.asarray(b[r0:r1], dtype=np.float64)
+
+                def pattern(i, chunk=chunk, nr=nr):
+                    u = np.zeros(nr)
+                    for lip, pos, d64 in chunk:
+                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
+                    pair_norm2[i] += float(u @ u)
+                    for lip, pos, d64 in chunk:
+                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, u, NZ[i])
+
+                def rhs(_i, chunk=chunk, nr=nr, bc=bc):
+                    for lip, pos, d64 in chunk:
+                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
+
+                futures = self._submit(pattern, k) + self._submit(rhs, 1)
+                bnorm2 += float(bc @ bc)
+                self._wait(futures)
+                del chunk, bc
+            t_pass2 = time.perf_counter() - t
+            self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
+
+            # An orthonormal basis of the space diagonalising E = V^T N V; the directions kept: those the
+            # data see (E's eigenvalue above DEPENDENT of the largest: exact gauges have ~0); the rest
+            # stays orthogonal to the dropped. The obliqueness |N v| / v^T N v of each (about 1 for an
+            # eigenvector of N, large for a slow direction mixed with fast ones) is kept as information.
+            E = self._gram(Z, NZ)
+            GZ = self._gram(Z, Z)
+            NN = self._gram(NZ, NZ)
+        except BaseException:
+            self.close()
+            raise
+        w1, U1 = np.linalg.eigh(GZ)
         ok1 = w1 > DEPENDENT * w1.max()
         T = U1[:, ok1] / np.sqrt(w1[ok1])
-        lam, U2 = np.linalg.eigh(0.5 * (T.T @ E @ T + (T.T @ E @ T).T))
+        E2 = T.T @ E @ T
+        lam, U2 = np.linalg.eigh(0.5 * (E2 + E2.T))
         T = T @ U2
-        NN = NZ.T @ NZ
         wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
         with np.errstate(divide='ignore', invalid='ignore'):
             rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
@@ -401,22 +425,21 @@ class Deflation:
         self.lam = lam[keep].copy()
         self.kept = int(self.lam.size)
         if self.kept == 0:
+            self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
-        # V = Z T and W = N Z T, in place (row blocks; the first kept columns of Z and NZ): the setup's
-        # peak stays at the two arrays.
+        # V = T^T Z and W = T^T N Z (one direction per row), in place: the setup's peak stays at the two arrays.
         self.V = _transform_in_place(Z, T)
         self.W = _transform_in_place(NZ, T)
         del Z, NZ
-        self.c_star = (self.V.T @ ATb) / self.lam
+        self.c_star = (self.V @ ATb) / self.lam
         del ATb
-        self.x_c = self.V @ self.c_star
         self._bnorm2 = bnorm2
-        self.setup_s = time.perf_counter() - t0
-        self._pool = ThreadPoolExecutor(max_workers=max(1, int(threads))) if threads > 1 and nS >= 2 * _MIN_BLOCK \
-            else None
         nb = 1 if self._pool is None else max(1, min(int(threads), nS // _MIN_BLOCK))
-        self._blocks = [(int(a), int(c)) for a, c in zip(np.linspace(0, nS, nb + 1, dtype=np.int64)[:-1],
-                                                          np.linspace(0, nS, nb + 1, dtype=np.int64)[1:])]
+        cuts = np.linspace(0, nS, nb + 1, dtype=np.int64)
+        self._blocks = [(int(a), int(c)) for a, c in zip(cuts[:-1], cuts[1:])]
+        self.x_c = np.zeros(nS)
+        self._sub(self.x_c, self.V, -self.c_star)
+        self.setup_s = time.perf_counter() - t0
         self.resolve_change = math.nan
         self.op = None
         logger.info(
@@ -427,22 +450,52 @@ class Deflation:
             f"blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
 
     # ---------------------------------------------------------------- the projections (float64, threaded)
-    def _map(self, fn):
+    def _submit(self, fn, count):
+        """Run ``fn(i)`` for ``i < count`` in the pool (now, without a pool); returns the futures."""
         if self._pool is None:
+            for i in range(count):
+                fn(i)
+            return []
+        return [self._pool.submit(fn, i) for i in range(count)]
+
+    @staticmethod
+    def _wait(futures):
+        for f in futures:
+            f.result()
+
+    def _gram(self, A, B):
+        """``A B^T`` (k x k, float64) over column blocks, the partial sums added in a fixed order."""
+        n = A.shape[1]
+        nb = 1 if self._pool is None else max(1, min(self._pool._max_workers, n // _MIN_BLOCK))
+        cuts = np.linspace(0, n, nb + 1, dtype=np.int64)
+        parts = [None] * nb
+
+        def part(j):
+            parts[j] = A[:, cuts[j]:cuts[j + 1]] @ B[:, cuts[j]:cuts[j + 1]].T
+
+        self._wait(self._submit(part, nb))
+        out = parts[0].copy()
+        for q in parts[1:]:
+            out += q
+        return 0.5 * (out + out.T) if A is B else out
+
+    def _map(self, fn):
+        if self._pool is None or len(self._blocks) == 1:
             return [fn(a, c) for a, c in self._blocks]
         return list(self._pool.map(lambda ac: fn(*ac), self._blocks))
 
     def _dot(self, M, v):
-        """``M^T v`` (``M``: (nS, k'), ``v``: (nS,) float64), block partial sums in a fixed order."""
-        parts = self._map(lambda a, c: M[a:c].T @ v[a:c])
+        """``M v`` (``M``: (k', nS), one direction per row; ``v``: (nS,) float64), block partial sums in a
+        fixed order."""
+        parts = self._map(lambda a, c: M[:, a:c] @ v[a:c])
         out = parts[0].copy()
         for p in parts[1:]:
             out += p
         return out
 
     def _sub(self, v, M, c):
-        """``v -= M c`` in place."""
-        self._map(lambda a, e: np.subtract(v[a:e], M[a:e] @ c, out=v[a:e]))
+        """``v -= M^T c`` in place."""
+        self._map(lambda a, e: np.subtract(v[a:e], M[:, a:e].T @ c, out=v[a:e]))
 
     def _gather(self, y):
         y = np.asarray(y)

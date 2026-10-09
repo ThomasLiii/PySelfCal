@@ -319,10 +319,16 @@ def test_the_space_is_orthonormal_and_diagonalises_the_normal_matrix():
     B = (Ac @ sp.diags(1 / cn)).tocsr()
     D = Deflation(B, b, scale=1 / cn, active_mask=active, ref_shape=grid, sky_names=('sky',),
                   settings=sc.Deflate(3, basis='polynomial'), threads=1)
-    np.testing.assert_allclose(D.V.T @ D.V, np.eye(D.kept), atol=1e-12)
-    np.testing.assert_allclose(D.V.T @ (B.T @ (B @ D.V)), np.diag(D.lam), atol=1e-12 * D.lam.max())
-    np.testing.assert_allclose(D.W, B.T @ (B @ D.V), atol=1e-12 * np.abs(D.W).max())
+    V = D.V.T                                   # one direction per row of D.V
+    np.testing.assert_allclose(V.T @ V, np.eye(D.kept), atol=1e-12)
+    np.testing.assert_allclose(V.T @ (B.T @ (B @ V)), np.diag(D.lam), atol=1e-12 * D.lam.max())
+    np.testing.assert_allclose(D.W.T, B.T @ (B @ V), atol=1e-12 * np.abs(D.W).max())
     D.close()
+    # the same space, threaded or not (the patterns' passes in threads: disjoint outputs, the same sums)
+    D4 = Deflation(B, b, scale=1 / cn, active_mask=active, ref_shape=grid, sky_names=('sky',),
+                   settings=sc.Deflate(3, basis='polynomial'), threads=4)
+    assert np.array_equal(D4.V, D.V) and np.array_equal(D4.W, D.W) and np.array_equal(D4.lam, D.lam)
+    D4.close()
 
 
 # =================================================================== through the API
