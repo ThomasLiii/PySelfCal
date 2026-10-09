@@ -21,6 +21,11 @@ A :class:`Stop` gives the fit opt-in rules that may end the solve before its ite
 they decide where the solve stops, so they are part of the recipe (:mod:`selfcal.core.monitor`)::
 
     fit = sc.Fit(1000, tolerance=0, stop=sc.Stop(gradient=1e-3, large_scale=1e-3, min_iterations=40))
+
+A :class:`Deflate` solves the smooth sky patterns of the fit directly and runs the iterations on the
+rest, for solves whose slowest part is the large scales (:mod:`selfcal.core.deflation`)::
+
+    fit = sc.Fit(300, tolerance=0, deflate=sc.Deflate(4))
 """
 from __future__ import annotations
 
@@ -31,8 +36,8 @@ from ..config.base import Config, ConfigError, added
 from ..config.functions import check_picklable
 from ..models.model import Model, continuum
 
-__all__ = ['ChunkGroups', 'Clip', 'ResidualRule', 'GradientRule', 'LargeScaleRule', 'Stop', 'Fit', 'Coadd',
-           'Numerics', 'Recipe']
+__all__ = ['ChunkGroups', 'Clip', 'ResidualRule', 'GradientRule', 'LargeScaleRule', 'Stop', 'Deflate', 'Fit',
+           'Coadd', 'Numerics', 'Recipe']
 
 
 @dataclass(frozen=True)
@@ -271,6 +276,63 @@ class Stop(Config):
         return out
 
 
+@dataclass(frozen=True)
+class Deflate(Config):
+    """Solve the smooth sky patterns directly and iterate on the rest (deflation).
+
+    The slowest part of a solve is usually the sky's largest scales: each frame's offsets absorb almost
+    all of a pattern much larger than a frame, so the data see it weakly and the solver resolves it last
+    (hundreds to thousands of iterations when the offsets also absorb gradients, as a per-chunk slope
+    does). With a Deflate, the solve takes, for each sky term, the patterns ``f_a(x) f_b(y)`` for
+    ``a, b = 0 ... order`` over the bounding box of the term's covered pixels (``basis="cosine"``:
+    ``cos(pi a u)``, ``u`` from 0 to 1 across the box; ``"polynomial"``: Legendre polynomials), plus the
+    polynomials of degree at most 2, each with the offsets that absorb it best (computed from the system:
+    any offset model), solves the least squares along them directly, and runs the iterations on the
+    rest of the unknowns only. The solution is the same least-squares solution as without; the
+    iterations it takes are fewer when those patterns are what is slow. ``terms``: the sky terms to
+    deflate (None: all).
+
+    The solution includes the patterns' least-squares values at once: where the data barely constrain
+    a pattern (the record's ``nullness``), that value is what the data say, however large, while an
+    unconverged plain solve would still be near its start. Directions the data cannot see at all
+    (gauges: the sky's mean against per-frame scalars; a plane or quadratic the offsets absorb
+    exactly) are recognised and left as a plain solve leaves them. A gauge the patterns contain only in
+    part (a higher-degree pattern the offsets absorb exactly, which needs a flat geometry and offsets
+    of that degree) would make the solve drift along it once converged: deflate it whole
+    (``basis="polynomial"`` of at least its degree).
+
+    Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
+    one per snapshot); memory and per-iteration work of ``2 x 8 x patterns`` bytes per covered unknown
+    (six passes over them per iteration), with :attr:`patterns_per_term` patterns per deflated term.
+    Undamped fits only (``Fit(damp=0)``). The solve's record says what it did
+    (:mod:`selfcal.core.deflation`).
+    """
+    order: int = 4
+    _: KW_ONLY
+    basis: Literal['cosine', 'polynomial'] = 'cosine'
+    terms: tuple[str, ...] | None = None
+
+    def _validate(self):
+        if not 0 <= self.order <= 16:
+            raise ConfigError(f"Deflate(order={self.order}): 0 to 16")
+        if self.basis not in ('cosine', 'polynomial'):
+            raise ConfigError(f"Deflate(basis={self.basis!r}): 'cosine' or 'polynomial'")
+        if self.terms is not None:
+            terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
+            if not terms or not all(isinstance(t, str) and t for t in terms):
+                raise ConfigError(f"Deflate(terms={self.terms!r}): sky term names, or None for all")
+            object.__setattr__(self, 'terms', terms)
+
+    @property
+    def patterns_per_term(self) -> int:
+        """The patterns of each deflated sky term: ``(order + 1)^2`` products, plus the polynomials of
+        degree at most 2 they do not contain."""
+        k = int(self.order)
+        extra = [(a, c) for a in range(3) for c in range(3 - a) if (a, c) != (0, 0)
+                 and not (self.basis == 'polynomial' and a <= k and c <= k)]
+        return (k + 1) ** 2 + len(extra)
+
+
 def _check_hook(hook, what):
     if hook is not None:
         check_picklable(hook, what)
@@ -295,7 +357,8 @@ class Fit(Config):
     ``line_fisher_threshold``: below this Fisher information, a pixel of a sky term after the
     first reads as unconstrained. ``stop``: opt-in rules that may end the solve before
     ``iterations`` (a :class:`Stop`; None: the solver's own tests, by ``tolerance``; with a Stop,
-    ``tolerance`` is used only by its ``solver_tests``).
+    ``tolerance`` is used only by its ``solver_tests``). ``deflate``: solve the smooth sky patterns
+    directly and iterate on the rest (a :class:`Deflate`; None: plain iterations).
     """
     iterations: int = 50
     _: KW_ONLY
@@ -312,10 +375,13 @@ class Fit(Config):
     raw_frame_hook: Callable | None = None
     line_fisher_threshold: float = 10.0
     stop: Stop | None = added(None, since='2026-10')
+    deflate: Deflate | None = added(None, since='2026-10')
 
     def _validate(self):
         if self.iterations < 1:
             raise ConfigError(f"Fit(iterations={self.iterations}): at least 1")
+        if self.deflate is not None and self.damp:
+            raise ConfigError(f"Fit(deflate=..., damp={self.damp}): deflation needs an undamped fit (damp=0)")
         if self.stop is not None and self.stop.solver_tests and self.exact_iterations:
             raise ConfigError("Fit(tolerance=0, stop=Stop(solver_tests=...)): tolerance=0 turns the solver's tests "
                               "off; give a tolerance, or no solver_tests")

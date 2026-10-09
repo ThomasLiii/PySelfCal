@@ -98,6 +98,8 @@ class Plan:
                             else ''))
         if r is not None and r.fit.stop is not None:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
+        if r is not None and r.fit.deflate is not None:
+            lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
         if self.monitor is not None:
             lines.append(f"  monitor     {describe_monitor(self.monitor, r.fit.stop if r is not None else None)}")
         if self.tiles is not None:
@@ -110,6 +112,13 @@ class Plan:
         return '\n'.join(lines)
 
     __repr__ = __str__
+
+
+def describe_deflate(deflate) -> str:
+    """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
+    terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
+    return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
+            f"offsets that absorb them, solved directly; the iterations run on the rest")
 
 
 def describe_stop(stop, fit=None) -> str:

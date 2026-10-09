@@ -42,10 +42,11 @@ except ImportError as e:  # pragma: no cover - depends on scipy internals
         "transpose product; that private module is present and verified "
         "through scipy 1.16. Pin a compatible scipy version or upgrade selfcal."
     ) from e
-from scipy.sparse.linalg import lsqr, LinearOperator
+from scipy.sparse.linalg import lsqr, LinearOperator, aslinearoperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
+from .deflation import Deflation, storage_of
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
 from .monitor import Watch
@@ -734,17 +735,20 @@ _RESIDUAL_BLOCK = 1 << 23
 
 
 def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
-                callback_every=1, watch=None):
+                callback_every=1, watch=None, constrain=None):
     """Run LSQR or LSMR on the (scaled) operator ``A``.
 
     ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
     overwrites ``b`` and uses ``x0``'s buffer as the solution), LSMR (scipy's, recorded) reads them
     in place. ``callback(itn, x)``: called every ``callback_every`` iterations while the solve goes
-    on; ``watch``: the monitors and stop rules (:class:`~selfcal.core.monitor.Watch`). Returns the
-    solver's tuple."""
+    on; ``watch``: the monitors and stop rules (:class:`~selfcal.core.monitor.Watch`); ``constrain``:
+    applied to each normalised right Lanczos vector (a deflated solve's,
+    :meth:`~selfcal.core.deflation.Deflation.constrain`). Returns the solver's tuple."""
     hook = {} if callback is None else {'callback': callback, 'callback_every': int(callback_every)}
     if watch is not None:
         hook['watch'] = watch
+    if constrain is not None:
+        hook['constrain'] = constrain
     if solver == 'lsmr':
         return lsmr(A, b_owned[0], x0=x0_owned[0], show=True, atol=atol, btol=btol, damp=damp, conlim=conlim,
                     maxiter=iter_lim, history=history, **hook)
@@ -802,7 +806,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 a_owned: bool = False, conlim: float = 1e8,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
-                sky_names=None, scratch_dir=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                sky_names=None, scratch_dir=None, deflate=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -916,6 +920,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         raise ValueError("ref_shape must be a list or tuple of length 2")
     if solver not in _SOLVERS:
         raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
+    if deflate is not None:
+        if isinstance(A, coo_matrix):
+            raise ValueError("deflation needs the CSR or block system setup_lsqr builds, not the COO path")
+        if damp:
+            raise ValueError(f"deflation needs an undamped solve (damp=0, got {damp}): the solver's damping would act on "
+                             "the deflated unknowns only")
     if (stop is not None or monitor is not None) and isinstance(A, coo_matrix):
         raise ValueError("monitors and stop rules need the CSR or block system setup_lsqr builds; the COO path's "
                          "LSQR (scipy's) has no iteration hook")
@@ -1123,13 +1133,13 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                              columns=int(A_shape[1]))
 
             def _on_iteration(itn, x_iter):
-                snapshot(Iterate(itn, x_iter, scale=M, active=_active, num_cols=num_cols, estimates=history.last(),
-                                 settings=_settings))
+                snapshot(Iterate(itn, _as_solution(x_iter, exact=True), scale=M, active=_active, num_cols=num_cols,
+                                 estimates=history.last(), settings=_settings))
             solve_kw.update(callback=_on_iteration, callback_every=int(snapshot_every))
 
         def _rhs():
             # The right-hand side the solver started from (LSQR's parked copy, None when it could
-            # not be parked; LSMR keeps its own).
+            # not be parked; LSMR keeps its own, or parks it too when deflating, which changes it).
             if _b_kept is not None:
                 return _b_kept if _b_kept.available else None
             return _b_owned[0]
@@ -1138,7 +1148,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             if watch is not None:
                 watch.bind(operator, _rhs, scale=M, active=_active, num_cols=num_cols)
 
-        def _finish(matvec):
+        def _finish(matvec, result, t_solve):
             # The solve's wall time, then |b - A x| with one product of the
             # operator the solver ran on (the scaled A, the scaled x).
             wall = time.perf_counter() - t_solve
@@ -1151,8 +1161,57 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 watch.finish(rec)
             return rec
 
+        defl = None
+
+        def _as_solution(y, exact=False):
+            # The solution an iterate of the solver stands for (itself, unless deflating); exact: with
+            # the part in the deflated space solved again against it (one float64 pass over the matrix).
+            if defl is None:
+                return y
+            x_full = defl.full(y)
+            if exact:
+                b_ref = _rhs()
+                if b_ref is not None:
+                    defl.resolve(x_full, b_ref)
+            return x_full
+
+        def _solve(op, storage):
+            # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
+            # deflated when asked; returns (the solver's result with the solution first, the record).
+            nonlocal defl
+            _watch(op)
+            kw, solver_op, setup_s = solve_kw, op, None
+            if deflate is not None:
+                t0 = time.perf_counter()
+                defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
+                                 sky_names=sky_names, settings=deflate, threads=n_threads)
+                defl.bind(op, storage)
+                _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
+                setup_s = time.perf_counter() - t0
+                solver_op = defl.operator()
+                kw = dict(solve_kw, constrain=defl.constrain)
+                if watch is not None:
+                    kw['watch'] = (lambda itn, y, istop, tests:
+                                   watch(itn, _as_solution(y) if any(watch._due(itn).values()) else y, istop, tests))
+            t_solve = time.perf_counter()
+            try:
+                result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)
+                if defl is not None:
+                    result = (_as_solution(result[0], exact=True),) + tuple(result[1:])
+                record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve)
+                if defl is not None:
+                    record.deflation = defl.summary_json()
+                    record.deflation_s = setup_s
+                    rms = ', '.join(f"{k} {v:.3e}" for k, v in defl.coarse_rms(M).items())
+                    logger.info(f"Deflation: {defl.kept} directions solved directly (setup {setup_s:.1f} s); their part "
+                                f"of the sky has rms {rms}; the final re-solve changed it by {defl.resolve_change:.1e}")
+            finally:
+                if defl is not None:
+                    defl.close()
+            return result, record
+
         _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
-                   if solver == 'lsqr' else None)
+                   if solver == 'lsqr' or deflate is not None else None)
         try:
             if is_block or is_split:
                 op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges)
@@ -1160,10 +1219,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                       _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned))
                 try:
                     with threadpool_limits(limits=1, user_api='blas'):
-                        _watch(op)
-                        t_solve = time.perf_counter()
-                        result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
-                        record = _finish(op.matvec)
+                        result, record = _solve(op, storage_of(op, A_csr) if deflate is not None else None)
                 finally:
                     for _ex_name in ('_executor', '_rmatvec_executor', '_rowsplit_executor'):
                         if getattr(op, _ex_name, None) is not None:
@@ -1172,19 +1228,13 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 op = _make_parallel_operator(A_csr, n_threads)
                 try:
                     with threadpool_limits(limits=1, user_api='blas'):
-                        _watch(op)
-                        t_solve = time.perf_counter()
-                        result = _run_solver(op, _b_owned, _x0_owned, solver, **solve_kw)
-                        record = _finish(op.matvec)
+                        result, record = _solve(op, A_csr)
                 finally:
                     op._executor.shutdown(wait=False)
                     if getattr(op, '_rmatvec_executor', None) is not None:
                         op._rmatvec_executor.shutdown(wait=False)
             else:
-                _watch(A_csr)
-                t_solve = time.perf_counter()
-                result = _run_solver(A_csr, _b_owned, _x0_owned, solver, **solve_kw)
-                record = _finish(A_csr.dot)
+                result, record = _solve(A_csr if deflate is None else aslinearoperator(A_csr), A_csr)
         finally:
             if _b_kept is not None:
                 _b_kept.discard()

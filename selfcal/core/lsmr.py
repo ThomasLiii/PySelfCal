@@ -50,7 +50,8 @@ def _sym_ortho(a, b):
 
 
 def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
-         maxiter=None, show=False, x0=None, history=None, callback=None, callback_every=1, watch=None):
+         maxiter=None, show=False, x0=None, history=None, callback=None, callback_every=1, watch=None,
+         constrain=None):
     """``scipy.sparse.linalg.lsmr`` (same arguments, same return tuple), with the solver's state
     recorded in ``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`, or None) at
     iteration 0 and after each iteration. See the module docstring.
@@ -126,6 +127,8 @@ def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
 
     if alpha > 0:
         v = (1 / alpha) * v
+        if constrain is not None:
+            constrain(v)
 
     # Initialize variables for 1st iteration.
 
@@ -213,6 +216,8 @@ def lsmr(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             alpha = norm(v)
             if alpha > 0:
                 v *= (1 / alpha)
+                if constrain is not None:
+                    constrain(v)
 
         # At this point, beta = beta_{k+1}, alpha = alpha_{k+1}.
 

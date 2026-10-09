@@ -1106,7 +1106,7 @@ class Calibrator(Reprojector):
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
-                   scratch_dir: str | None = None) -> None:
+                   scratch_dir: str | None = None, deflate=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1156,6 +1156,11 @@ class Calibrator(Reprojector):
             after LSQR has overwritten ``b`` (:func:`~selfcal.core.solve.apply_lsqr`; the run
             engine gives the run's scratch directory). None: no copy, and the true residual is
             recorded as NaN.
+        deflate : Deflate or None, optional
+            Solve the smooth sky patterns of each sky term directly and iterate on the rest (a
+            :class:`~selfcal.run.recipe.Deflate`, ``sc.Fit(deflate=...)``; :mod:`selfcal.core.deflation`):
+            the same solution, in fewer iterations when the large scales are what is slow. The record
+            keeps what it did (``deflation``).
 
         Returns
         -------
@@ -1198,6 +1203,8 @@ class Calibrator(Reprojector):
                         snap.update(snapshot=snapshots, snapshot_every=snapshots.every)
                 if stop is not None or monitor is not None:
                     snap.update(stop=stop, monitor=monitor, sky_names=self._cal_sky_names())
+                if deflate is not None:
+                    snap.update(deflate=deflate, sky_names=self._cal_sky_names())
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.

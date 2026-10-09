@@ -193,7 +193,7 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None):
+                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None, constrain=None):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
@@ -292,6 +292,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     if alfa > 0:
         v = _promote(v, 1 / alfa)
         vec.imul(v, (1 / alfa))
+        if constrain is not None:
+            constrain(v)
     w = v.copy()
     tmp = np.empty_like(w)          # scratch for dk / t1*w
 
@@ -352,6 +354,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             if alfa > 0:
                 v = _promote(v, 1 / alfa)
                 vec.imul(v, (1 / alfa))
+                if constrain is not None:
+                    constrain(v)
 
         if damp > 0:
             rhobar1 = sqrt(rhobar**2 + dampsq)

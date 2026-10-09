@@ -68,7 +68,7 @@ def setup_options(recipe, compute, instrument) -> dict:
 def solver_options(recipe) -> dict:
     """The solver's ``apply_lsqr`` keywords: with ``Fit(tolerance=0)`` also ``conlim=0``, so the
     solve runs exactly ``Fit.iterations`` iterations (otherwise the solver's own ``conlim``); with
-    ``Fit(stop=...)`` the stop rules (``stop``)."""
+    ``Fit(stop=...)`` the stop rules (``stop``); with ``Fit(deflate=...)`` the deflation (``deflate``)."""
     fit = recipe.fit
     atol, btol = fit.atol_btol
     out = {'solver': fit.method, 'iter_lim': fit.iterations, 'atol': atol, 'btol': btol, 'damp': float(fit.damp),
@@ -77,6 +77,8 @@ def solver_options(recipe) -> dict:
         out['conlim'] = 0.0
     if fit.stop is not None:
         out['stop'] = fit.stop
+    if fit.deflate is not None:
+        out['deflate'] = fit.deflate
     return out
 
 

@@ -1,0 +1,579 @@
+"""Deflation: solve the smooth sky patterns of a selfcal system exactly, iterate on the rest.
+
+The slowest directions of a selfcal least-squares system are sky patterns much larger than a frame:
+each frame's offsets absorb almost all of such a pattern's signal, so the data constrain it only
+weakly, and a Krylov solver (LSQR, LSMR) resolves it last. How slowly depends on the offset model
+(the more of a smooth pattern its offsets absorb, the slower) and on the field (the larger, the
+more such patterns): from tens of iterations to thousands. Deflation removes them from the
+iterations.
+
+**The space.** For each sky term, the patterns ``f_a(x) f_b(y)`` (``a, b = 0 ... order``) over the
+bounding box of the term's covered pixels: cosines ``cos(pi a u)`` (``u`` from 0 to 1 across the
+box) or Legendre polynomials, plus the Legendre polynomials of degree at most :data:`POLY_ALWAYS`
+(so a plane or quadratic gauge is in the space whole, never in part). A pattern alone is not slow (the offsets cannot leave it); a pattern
+together with the offsets that absorb it best is. So each pattern ``F`` is paired with its exact
+offset response,
+
+    g(F) = argmin_g | B_sky F + B_off g |,
+
+the least squares over every non-sky column (offsets of any form, per-frame scalars, templates ...),
+solved directly: the normal matrix of those columns, ``B_off^T B_off``, is built from the system
+itself and solved exactly on each of its connected blocks (a block per frame, or per group of frames
+that share offsets), by the pseudo-inverse (the response of minimum norm). The pairs ``z = (F, g(F))``
+span the deflation space. A combination the data cannot see at all (``|B z|`` below
+:data:`GAUGE_RATIO` of ``|B F|``: a gauge, such as the sky's mean against per-frame scalars) is left
+out, and the rest is made orthogonal to it, so the solution keeps the gauge a plain solve gives
+(the minimum-norm one).
+
+**The solve.** With ``V`` an orthonormal basis of the space and ``N = B^T B`` (``B`` the column-scaled
+system the solver sees), ``E = V^T N V`` and ``W = N V``:
+
+    x = x_c + P y,   x_c = V E^-1 V^T B^T b,   P = I - V E^-1 W^T,
+
+where ``y`` solves ``min | B P y - (b - B x_c) |`` with the unchanged solver (LSQR or LSMR, in the
+same precision): the range of ``B P`` is orthogonal to that of ``B V``, so the part in the space is
+solved exactly at the start and the iterations run on the complement only, where the slow patterns
+are gone. ``x`` is the least-squares solution of the full system (the same one, gauge included);
+its residual and gradient are those of the full system at every iteration. The solver's right Lanczos
+vectors are projected onto the complement of the space after each normalisation (in exact arithmetic
+they are there already; rounding, which the recurrence amplifies once the solve has converged, would
+otherwise let the iterate drift along the directions ``B P`` cannot see: :meth:`Deflation.constrain`).
+At the end, the part in the space is solved again against the final iterate in float64 (one pass over
+the matrix), which removes the rounding of ``P``.
+
+**Cost.** Setup: the patterns' products with the matrix in float64, two passes over it with all
+the patterns at once (forward and transposed), plus one for the start; per iteration, six passes over
+``V`` and ``W`` (float64, ``2 x 8 x patterns`` bytes per covered column: ``P`` in the product, ``P^T``
+in the transposed product, and the projection of the Lanczos vector), threaded; at the end one
+pass for the re-solve (and one per snapshot). Only the covered columns take part: a system that
+was not compacted (all-zero columns kept) costs as one that was.
+
+:class:`Deflation` is used by :func:`~selfcal.core.solve.apply_lsqr` (``deflate=``; the run engine's
+``sc.Fit(deflate=sc.Deflate(...))``).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+from numpy.polynomial import legendre as _legendre
+from scipy.sparse import coo_matrix
+from scipy.sparse import _sparsetools
+from scipy.sparse.csgraph import connected_components
+from scipy.sparse.linalg import LinearOperator, minres
+
+from .blockcsr import BlockCSR, ColSplitCSR
+
+logger = logging.getLogger(__name__)
+
+__all__ = ['Deflation', 'GAUGE_RATIO', 'axis_functions', 'storage_of']
+
+#: A combination of the paired patterns whose residual ``|B z|`` is below about this fraction of the
+#: residual of its sky part alone, ``|B F|``, is a gauge (a direction the data cannot see at all):
+#: it is left out of the space, and the rest is orthogonal to it (:data:`DEPENDENT`).
+GAUGE_RATIO = 1e-6
+#: Directions of the space whose normal-equation eigenvalue (or Euclidean Gram eigenvalue) is below
+#: this fraction of the largest are dropped: numerically dependent, or gauges (directions the data
+#: cannot see at all: their eigenvalue is the square of their ``|B z| / |B F|``, so this is
+#: :data:`GAUGE_RATIO` squared).
+DEPENDENT = 1e-12
+#: The polynomial patterns every basis includes: the products of Legendre polynomials of total degree
+#: at most this. A gauge the patterns contain only in part (a sky pattern the offsets absorb exactly,
+#: such as a plane under per-chunk slopes on a flat geometry) would be set differently from a plain
+#: solve and let the iterate drift along it after convergence; with the low-degree polynomials always in
+#: the space, such gauges up to this degree are recognised whole (and left out).
+POLY_ALWAYS = 2
+#: Rows of the matrix per chunk of the float64 passes.
+_ROWS = 1 << 21
+#: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES).
+_DENSE_BLOCK = 4096
+#: Elements per thread block of the projections.
+_MIN_BLOCK = 1 << 18
+
+
+def axis_functions(basis, order, n) -> np.ndarray:
+    """The 1-D functions of a pattern basis at ``n`` cells spanning [0, 1] (cell centres), ``(order + 1, n)``:
+    ``cos(pi a u)`` for ``basis='cosine'``, the Legendre polynomial ``P_a(2 u - 1)`` for ``'polynomial'``."""
+    u = (np.arange(n, dtype=np.float64) + 0.5) / max(int(n), 1)
+    a = np.arange(int(order) + 1)
+    if basis == 'cosine':
+        return np.cos(np.pi * a[:, None] * u[None, :])
+    if basis == 'polynomial':
+        t = 2.0 * u - 1.0
+        return np.stack([_legendre.legval(t, [0] * int(k) + [1]) for k in a])
+    raise ValueError(f"unknown pattern basis {basis!r}: 'cosine' or 'polynomial'")
+
+
+def storage_of(operator, fallback=None):
+    """The matrix storage behind one of :mod:`selfcal.core.solve`'s operators (a csr matrix, a
+    :class:`~selfcal.core.blockcsr.BlockCSR` or a :class:`~selfcal.core.blockcsr.ColSplitCSR`), or
+    ``fallback`` when the operator keeps none."""
+    if getattr(operator, '_AT_view', None) is not None:
+        return operator._AT_view.T
+    bcsr = getattr(operator, '_bcsr', None)
+    if bcsr is not None and len(bcsr.blocks) > 0:
+        return bcsr
+    split = getattr(operator, '_colsplit', None)
+    sub = getattr(operator, '_split_sub', None)
+    if split is not None and sub is not None:
+        return ColSplitCSR(sub, split.row_bounds, split.cuts, split.shape)
+    return fallback
+
+
+def _pieces(storage, rows=_ROWS):
+    """The matrix in row chunks: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr
+    (int64, from 0) per piece; one piece per column range of a ColSplitCSR, one otherwise."""
+    if isinstance(storage, ColSplitCSR):
+        for bi in range(storage.nblocks):
+            base = int(storage.row_bounds[bi])
+            nrows = int(storage.row_bounds[bi + 1]) - base
+            for lr0 in range(0, nrows, rows):
+                lr1 = min(nrows, lr0 + rows)
+                out = []
+                for t, (d, idx, ip) in enumerate(storage.sub[bi]):
+                    s0, s1 = int(ip[lr0]), int(ip[lr1])
+                    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
+                    out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
+                yield base + lr0, base + lr1, out
+        return
+    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
+    for blk, base in zip(blocks, bounds):
+        nrows = blk.shape[0]
+        ip = blk.indptr
+        for lr0 in range(0, nrows, rows):
+            lr1 = min(nrows, lr0 + rows)
+            s0, s1 = int(ip[lr0]), int(ip[lr1])
+            lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
+            yield int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+
+
+def _block_pinv_solve(G, R):
+    """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
+    connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
+    :data:`DEPENDENT` of the block's largest count as zero: the solution of minimum norm), MINRES on
+    blocks larger than :data:`_DENSE_BLOCK`. Returns ``(X, info)``."""
+    n = G.shape[0]
+    X = np.zeros((n, R.shape[1]))
+    if n == 0:
+        return X, {'blocks': 0, 'largest': 0, 'zero_eigenvalues': 0}
+    ncomp, labels = connected_components(G, directed=False)
+    counts = np.bincount(labels, minlength=ncomp)
+    order = np.argsort(labels, kind='stable')
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    pos = np.empty(n, dtype=np.int64)
+    pos[order] = np.arange(n) - np.repeat(starts, counts)
+    Gc = G.tocoo()
+    er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
+    ecomp = labels[er]
+    zero = 0
+    for s in np.unique(counts):
+        comps = np.flatnonzero(counts == s)
+        cols = order[starts[comps][:, None] + np.arange(s)[None, :]]            # (blocks, s)
+        if s > _DENSE_BLOCK:
+            for ci, cc in zip(comps, cols):
+                sel = ecomp == ci
+                Gb = coo_matrix((ev[sel], (pos[er[sel]], pos[ec[sel]])), shape=(s, s)).tocsr()
+                for j in range(R.shape[1]):
+                    X[cc, j] = minres(Gb, R[cc, j], rtol=1e-14, maxiter=20 * s)[0]
+            continue
+        bidx = np.full(ncomp, -1, dtype=np.int64)
+        bidx[comps] = np.arange(comps.size)
+        sel = bidx[ecomp] >= 0
+        blocks = np.zeros((comps.size, s, s))
+        blocks[bidx[ecomp[sel]], pos[er[sel]], pos[ec[sel]]] = ev[sel]
+        w, U = np.linalg.eigh(blocks)
+        top = np.maximum(w.max(axis=1, keepdims=True), 1e-300)
+        ok = w > DEPENDENT * top
+        zero += int((~ok).sum())
+        inv = np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0)
+        X[cols] = U @ (inv[:, :, None] * (np.swapaxes(U, 1, 2) @ R[cols]))
+    return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero}
+
+
+def _transform_in_place(M, T, rows=1 << 20):
+    """``M T`` written over the first ``T.shape[1]`` columns of ``M`` (n x k, C order), a row block at a
+    time; returns that view (row stride ``k``)."""
+    kk = T.shape[1]
+    for a in range(0, M.shape[0], rows):
+        c = min(M.shape[0], a + rows)
+        M[a:c, :kk] = M[a:c] @ T
+    return M[:, :kk]
+
+
+class Deflation:
+    """The deflation of one solve (see the module docstring).
+
+    Built on the column-scaled system the solver runs on: ``storage`` (its matrix: a csr matrix, a
+    :class:`~selfcal.core.blockcsr.BlockCSR` or a :class:`~selfcal.core.blockcsr.ColSplitCSR`; read
+    only), ``b`` (its right-hand side, read only), ``scale`` (``x * scale`` is physical; None: no
+    scaling), ``active_mask`` (the full layout's columns in the
+    system: None when every column is), ``ref_shape`` and ``sky_names`` (the sky terms: the first
+    ``len(sky_names) * h * w`` columns of the full layout, one grid each), and ``settings`` (with
+    ``order``, ``basis`` and ``terms``, a :class:`~selfcal.run.recipe.Deflate`). ``threads``: of the
+    projections.
+
+    Then :meth:`start` (the part in the space, from ``b``: the right-hand side and the start the
+    solver gets), :meth:`operator` (the solver's operator), :meth:`full` (an iterate as the
+    solution), :meth:`resolve` (the part in the space again, against an iterate) and :meth:`summary`
+    (what the solve's record keeps). :meth:`bind` gives it the solver's operator and the matrix before
+    :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
+
+    def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1):
+        t0 = time.perf_counter()
+        self.settings = settings
+        m, n = int(storage.shape[0]), int(storage.shape[1])
+        self.shape = (m, n)
+        h, w = int(ref_shape[0]), int(ref_shape[1])
+        npix = h * w
+        names = tuple(sky_names) if sky_names else ('sky',)
+        terms = tuple(names) if settings.terms is None else tuple(settings.terms)
+        unknown = [t for t in terms if t not in names]
+        if unknown:
+            raise ValueError(f"Deflate(terms={settings.terms!r}): no sky term {unknown} (the model's: {list(names)})")
+        nsb = len(names)
+        # The columns the space lives on: those with entries (all of a compacted system's).
+        covered = np.zeros(n, dtype=bool)
+        for _r0, _r1, pieces in _pieces(storage):
+            for _lip, cols, _data in pieces:
+                covered[cols] = True
+        self.S = None if covered.all() else np.flatnonzero(covered)
+        del covered
+        nS = n if self.S is None else int(self.S.size)
+        self.nS = nS
+        # Solver column -> full layout, for the sky columns (the first ones, in grid order per term).
+        if active_mask is not None:
+            full_sky = np.flatnonzero(np.asarray(active_mask, dtype=bool)[:nsb * npix])
+        else:
+            full_sky = np.arange(nsb * npix, dtype=np.int64)
+        n_sky = int(full_sky.size)
+        sky_S = np.arange(n_sky) if self.S is None else self.S[self.S < n_sky]
+        self.n_sky_S = n_sky_S = int(sky_S.size)
+        n_off = nS - n_sky_S
+        fs = full_sky[sky_S]
+        term_of = fs // npix
+        pix = fs - term_of * npix
+        iy, ix = np.divmod(pix, w)
+        del fs, pix
+        col_norm = (np.ones(nS) if scale is None
+                    else 1.0 / np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64))
+        # The patterns: (order + 1)^2 per deflated term, on the term's covered bounding box.
+        order, basis = int(settings.order), str(settings.basis)
+        labels, rows_of = [], []
+        for name in terms:
+            j = names.index(name)
+            sel = np.flatnonzero(term_of == j)
+            if sel.size == 0:
+                continue
+            x0, x1, y0, y1 = int(ix[sel].min()), int(ix[sel].max()), int(iy[sel].min()), int(iy[sel].max())
+            fx = axis_functions(basis, order, x1 - x0 + 1)
+            fy = axis_functions(basis, order, y1 - y0 + 1)
+            for a in range(order + 1):
+                for c in range(order + 1):
+                    labels.append(f"{name}:{a},{c}")
+                    rows_of.append((sel, fx[a][ix[sel] - x0] * fy[c][iy[sel] - y0]))
+            if basis != 'polynomial' or order < POLY_ALWAYS:
+                px = axis_functions('polynomial', POLY_ALWAYS, x1 - x0 + 1)
+                py = axis_functions('polynomial', POLY_ALWAYS, y1 - y0 + 1)
+                for a in range(POLY_ALWAYS + 1):
+                    for c in range(POLY_ALWAYS + 1 - a):
+                        if a + c == 0 or (basis == 'polynomial' and a <= order and c <= order):
+                            continue
+                        labels.append(f"{name}:P{a},{c}")
+                        rows_of.append((sel, px[a][ix[sel] - x0] * py[c][iy[sel] - y0]))
+        self._term_slices = []
+        for j, name in enumerate(names):
+            a_, b_ = int(np.searchsorted(term_of, j, 'left')), int(np.searchsorted(term_of, j, 'right'))
+            if b_ > a_:
+                self._term_slices.append((name, a_, b_))
+        k = len(labels)
+        if k == 0:
+            raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
+        self.labels = labels
+        Z = np.zeros((nS, k))
+        for i, (sel, vals) in enumerate(rows_of):
+            Z[sel, i] = vals * col_norm[sel]
+        del rows_of, term_of, iy, ix
+        self._colmap = None
+        if self.S is not None:
+            cm = np.full(n, -1, dtype=np.int64)
+            cm[self.S] = np.arange(nS)
+            self._colmap = cm
+        logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
+                    f"columns ({n_sky_S} sky, {n_off} offset and other)")
+
+        # Pass 1: each pattern's sky image U = B F and the offsets' normal matrix and response
+        # (float64): G = B_off^T B_off, R = B_off^T U.
+        t = time.perf_counter()
+        sky_norm2 = np.zeros(k)
+        R = np.zeros((n_off, k))
+        gparts = []
+        for r0, r1, pieces in _pieces(storage):
+            nr = r1 - r0
+            U = np.zeros((nr, k))
+            offs = []
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                d64 = data.astype(np.float64)
+                _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Z.ravel(), U.ravel())
+                o = pos >= n_sky_S
+                if o.any():
+                    rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+                    offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
+            sky_norm2 += np.einsum('ij,ij->j', U, U)
+            if offs:
+                rr = np.concatenate([o[0] for o in offs])
+                cc = np.concatenate([o[1] for o in offs])
+                dd = np.concatenate([o[2] for o in offs])
+                sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
+                _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64),
+                                         sub.data, U.ravel(), R.ravel())
+                g = (sub.T @ sub).tocoo()
+                gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
+                del sub, g
+            del U
+        if gparts:
+            G = coo_matrix((np.concatenate([p[2] for p in gparts]),
+                            (np.concatenate([p[0] for p in gparts]), np.concatenate([p[1] for p in gparts]))),
+                           shape=(n_off, n_off)).tocsr()
+        else:
+            G = coo_matrix((n_off, n_off)).tocsr()
+        del gparts
+        G.sum_duplicates()
+        t_pass1 = time.perf_counter() - t
+        t = time.perf_counter()
+        X, info = _block_pinv_solve(G, R)
+        res = G @ (-X) + R
+        self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) / np.maximum(np.linalg.norm(R, axis=0),
+                                                                                       1e-300)))
+        Z[n_sky_S:] = -X
+        del G, R, X, res
+        t_pair = time.perf_counter() - t
+
+        # Pass 2: N Z = B^T (B Z) and B^T b (float64).
+        t = time.perf_counter()
+        NZ = np.zeros((nS, k))
+        ATb = np.zeros(nS)
+        pair_norm2 = np.zeros(k)
+        bnorm2 = 0.0
+        for r0, r1, pieces in _pieces(storage):
+            nr = r1 - r0
+            BZ = np.zeros((nr, k))
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvecs(nr, nS, k, lip, pos, data.astype(np.float64), Z.ravel(), BZ.ravel())
+            pair_norm2 += np.einsum('ij,ij->j', BZ, BZ)
+            bc = np.asarray(b[r0:r1], dtype=np.float64)
+            bnorm2 += float(bc @ bc)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                d64 = data.astype(np.float64)
+                _sparsetools.csc_matvecs(nS, nr, k, lip, pos, d64, BZ.ravel(), NZ.ravel())
+                _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
+            del BZ
+        t_pass2 = time.perf_counter() - t
+        self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
+
+        # An orthonormal basis of the space diagonalising E = V^T N V; the directions kept: those the
+        # data see (E's eigenvalue above DEPENDENT of the largest: exact gauges have ~0); the rest stays
+        # orthogonal to the dropped. The obliqueness |N v| / v^T N v of each (about 1 for an eigenvector of
+        # N, large for a slow direction mixed with fast ones) is kept as information.
+        E = Z.T @ NZ
+        E = 0.5 * (E + E.T)
+        GZ = Z.T @ Z
+        w1, U1 = np.linalg.eigh(0.5 * (GZ + GZ.T))
+        ok1 = w1 > DEPENDENT * w1.max()
+        T = U1[:, ok1] / np.sqrt(w1[ok1])
+        lam, U2 = np.linalg.eigh(0.5 * (T.T @ E @ T + (T.T @ E @ T).T))
+        T = T @ U2
+        NN = NZ.T @ NZ
+        wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
+        keep = lam > DEPENDENT * max(float(lam.max()), 1e-300)
+        self.gauges = int((~keep).sum())
+        self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
+        T = T[:, keep]
+        self.lam = lam[keep].copy()
+        self.kept = int(self.lam.size)
+        if self.kept == 0:
+            raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
+        # V = Z T and W = N Z T, in place (row blocks; the first kept columns of Z and NZ): the setup's
+        # peak stays at the two arrays.
+        self.V = _transform_in_place(Z, T)
+        self.W = _transform_in_place(NZ, T)
+        del Z, NZ
+        self.c_star = (self.V.T @ ATb) / self.lam
+        del ATb
+        self.x_c = self.V @ self.c_star
+        self._bnorm2 = bnorm2
+        self.setup_s = time.perf_counter() - t0
+        self._pool = ThreadPoolExecutor(max_workers=max(1, int(threads))) if threads > 1 and nS >= 2 * _MIN_BLOCK \
+            else None
+        nb = 1 if self._pool is None else max(1, min(int(threads), nS // _MIN_BLOCK))
+        self._blocks = [(int(a), int(c)) for a, c in zip(np.linspace(0, nS, nb + 1, dtype=np.int64)[:-1],
+                                                          np.linspace(0, nS, nb + 1, dtype=np.int64)[1:])]
+        self.resolve_change = math.nan
+        self.op = None
+        logger.info(
+            f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
+            f"{info['zero_eigenvalues']} zero eigenvalues), normal-equation residual {self.pairing_residual:.1e}; "
+            f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
+            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s + {t_pass2:.1f} s, "
+            f"blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+
+    # ---------------------------------------------------------------- the projections (float64, threaded)
+    def _map(self, fn):
+        if self._pool is None:
+            return [fn(a, c) for a, c in self._blocks]
+        return list(self._pool.map(lambda ac: fn(*ac), self._blocks))
+
+    def _dot(self, M, v):
+        """``M^T v`` (``M``: (nS, k'), ``v``: (nS,) float64), block partial sums in a fixed order."""
+        parts = self._map(lambda a, c: M[a:c].T @ v[a:c])
+        out = parts[0].copy()
+        for p in parts[1:]:
+            out += p
+        return out
+
+    def _sub(self, v, M, c):
+        """``v -= M c`` in place."""
+        self._map(lambda a, e: np.subtract(v[a:e], M[a:e] @ c, out=v[a:e]))
+
+    def _gather(self, y):
+        y = np.asarray(y)
+        return y.astype(np.float64) if self.S is None else y[self.S].astype(np.float64)
+
+    def _scatter(self, out, vS):
+        if self.S is None:
+            out[...] = vS
+        else:
+            out[self.S] = vS
+
+    def project(self, y) -> np.ndarray:
+        """``P y`` on the covered columns, float64 (nS,)."""
+        vS = self._gather(y)
+        self._sub(vS, self.V, self._dot(self.W, vS) / self.lam)
+        return vS
+
+    def _project_transposed(self, vS):
+        """``P^T v`` in place."""
+        self._sub(vS, self.W, self._dot(self.V, vS) / self.lam)
+        return vS
+
+    # ---------------------------------------------------------------- the solve
+    def start(self, b, x0=None):
+        """Subtract the part in the space from ``b`` in place (``b - B x_c``, computed in float64, stored in
+        ``b``'s dtype) and return the solver's start: ``P x0`` (in ``x0``'s dtype), or None."""
+        for r0, r1, pieces in _pieces(self._storage):
+            nr = r1 - r0
+            acc = np.zeros(nr)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), self.x_c, acc)
+            b[r0:r1] = (np.asarray(b[r0:r1], dtype=np.float64) - acc).astype(b.dtype)
+        if x0 is None:
+            return None
+        y0 = np.array(x0, copy=True)
+        self._scatter(y0, self.project(x0))
+        return y0
+
+    def bind(self, op, storage):
+        """The solver's operator ``op`` (the column-scaled system) and the matrix it reads (for the float64
+        passes of :meth:`start` and :meth:`resolve`)."""
+        self.op = op
+        self._storage = storage
+
+    def operator(self) -> LinearOperator:
+        """``B P`` as the solver's operator (same shape and dtype as the bound one)."""
+        op = self.op
+        m, n = op.shape
+        dt = np.dtype(op.dtype)
+        buf = np.empty(n, dtype=dt)
+
+        def matvec(y):
+            y = np.asarray(y).reshape(-1)
+            np.copyto(buf, y, casting='unsafe')
+            self._scatter(buf, self.project(y))
+            return op.matvec(buf)
+
+        def rmatvec(u):
+            out = np.asarray(op.rmatvec(u))
+            self._scatter(out, self._project_transposed(self._gather(out)))
+            return out
+
+        return LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
+
+    def constrain(self, v):
+        """Remove from ``v`` (a solver vector, in place) its part along the space: the solver's right Lanczos
+        vectors lie in the complement of the space in exact arithmetic; rounding, which the recurrence
+        amplifies once the solve has converged, would otherwise let the iterate drift along directions the
+        deflated operator cannot see."""
+        vS = self._gather(v)
+        self._sub(vS, self.V, self._dot(self.V, vS))
+        self._scatter(v, vS)
+
+    def full(self, y) -> np.ndarray:
+        """The solution an iterate ``y`` of the solver stands for, ``x_c + P y``, in ``y``'s dtype."""
+        x = np.array(y, copy=True)
+        vS = self.project(y)
+        vS += self.x_c
+        self._scatter(x, vS)
+        return x
+
+    def resolve(self, x, b) -> np.ndarray:
+        """The part in the space solved again against ``x`` (``x += V E^-1 V^T B^T (b - B x)``, float64, one pass
+        over the matrix; ``b``: the original right-hand side, an array or a parked vector), in place; returns
+        ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
+        xS = self._gather(x)
+        g = np.zeros(self.nS)
+        for r0, r1, pieces in _pieces(self._storage):
+            nr = r1 - r0
+            r = np.array(b[r0:r1], dtype=np.float64)
+            acc = np.zeros(nr)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), xS, acc)
+            r -= acc
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csc_matvec(self.nS, nr, lip, pos, data.astype(np.float64), r, g)
+        dc = self._dot(self.V, g) / self.lam
+        cnorm = float(np.linalg.norm(self.c_star))
+        self.resolve_change = float(np.linalg.norm(dc)) / cnorm if cnorm > 0 else 0.0
+        self._sub(xS, self.V, -dc)
+        self._scatter(x, xS)
+        return x
+
+    def coarse_rms(self, scale) -> dict:
+        """The rms of the part in the space over each sky term's covered pixels, in physical units (the content
+        the space holds of each term)."""
+        xc = self.x_c[:self.n_sky_S]
+        if scale is not None:
+            s = np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64)[:self.n_sky_S]
+            xc = xc * s
+        return {name: float(np.sqrt(np.mean(xc[a:b] ** 2))) for name, a, b in self._term_slices}
+
+    def summary(self) -> dict:
+        """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
+        st = self.settings
+        return {'basis': str(st.basis), 'order': int(st.order),
+                'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
+                'kept': self.kept, 'gauges': self.gauges,
+                'obliqueness_max': None if math.isnan(self.rho_max) else float(self.rho_max), 'columns': int(self.nS),
+                'nullness_min': float(self.nullness.min()), 'nullness_median': float(np.median(self.nullness)),
+                'pairing_residual': float(self.pairing_residual),
+                'coarse_residual_drop': float(self.c_star @ (self.lam * self.c_star)),
+                'resolve_change': None if math.isnan(self.resolve_change) else float(self.resolve_change)}
+
+    def summary_json(self) -> str:
+        return json.dumps(self.summary(), sort_keys=True)
+
+    def close(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None

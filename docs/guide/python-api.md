@@ -48,6 +48,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Compute(scratch, workers=, ...)` | the machine (never changes a byte) |
 | `sc.Tiles`, `sc.Passes` | big fields: tiling, the N-pass solve |
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
+| `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
 | `sc.Result` | the products, with readers |
 
 ### Instruments and jobs
@@ -373,6 +374,62 @@ and gradient tests do not see the slowest large-scale directions, combine them w
 `large_scale` (`combine="all"`) to stop only once the large scales have settled too; even then, an
 iterative solver can rest on a plateau for a while before a slow mode moves, so prefer a strict
 `below`, and read the history. A continuation (`start=`) starts its rules afresh.
+
+### Deflation
+
+```python
+fit = sc.Fit(300, tolerance=0, deflate=sc.Deflate(4))
+```
+
+The slowest part of a solve is usually the sky's largest scales (see
+[Monitors and stop rules](#monitors-and-stop-rules)): every frame's offsets absorb almost all of a
+pattern much larger than a frame, so the data see it weakly and an iterative solver resolves it
+last. How slowly depends on the offset model: the more of a smooth pattern the offsets can absorb,
+the slower (a per-chunk slope in x absorbs field-wide gradients almost entirely, and its planes and
+quadratics take thousands of iterations); and on the field: the larger, the more such patterns.
+
+With `deflate=`, the solve takes each sky term's smooth patterns, the products `f_a(x) f_b(y)` for
+`a, b = 0 ... order` over the bounding box of the term's covered pixels (`basis="cosine"`, the
+default: `cos(π a u)` with `u` from 0 to 1 across the box; `"polynomial"`: Legendre polynomials),
+plus the polynomials of degree at most 2, and pairs each one with **the offsets that absorb it
+best**, computed from the system itself, whatever the offset model (constants, slopes, other bases,
+per-frame scalars, templates, grouped offsets). It solves the least squares along these pairs
+exactly at the start and runs the iterations on the rest of the unknowns only. The solution is the
+same least-squares solution, gauge included; the iterations it takes are fewer when those patterns
+are what is slow, and the same otherwise.
+
+| `sc.Deflate(...)` | what it sets |
+| --- | --- |
+| `order=4` | patterns per axis: `(order + 1)²` products per sky term (25 at 4), plus the polynomials of degree ≤ 2 the basis does not contain |
+| `basis="cosine"` | `"cosine"` or `"polynomial"` |
+| `terms=None` | the sky terms to deflate (None: all) |
+
+Read it with three facts in mind:
+
+- **The deflated patterns arrive at their least-squares values at once.** Where the data barely
+  constrain a pattern, its least-squares value is what the data say, however large, while a plain
+  solve stopped early would still be near its start. The record says how weakly the data see the
+  patterns (`nullness_min`, `nullness_median`: `|B z| / |B F|`, the residual of a pattern with its
+  offsets over that of the pattern alone; small means nearly invisible).
+- **Gauges stay where a plain solve leaves them.** A direction the data cannot see at all (the sky's
+  mean against per-frame scalars; a plane or quadratic the offsets absorb exactly) is recognised and
+  left out. A higher-degree pattern absorbed exactly, possible only on a flat geometry with offsets
+  of that degree, would be in the space only in part: deflate it whole (`basis="polynomial"` of at
+  least its degree).
+- **Fewer iterations to converge means converging sooner** in a fixed-length solve
+  (`tolerance=0`): what an iterative solver does after its precision is reached applies sooner too.
+  A stop rule ends the solve when it has converged.
+
+The cost: two float64 passes over the matrix with all the patterns at the start (one pass is about
+one iteration's products), one at the end and one per snapshot; memory of `2 × 8 × patterns` bytes
+per covered unknown, and six passes over it per iteration (threaded). The solve's record keeps a
+summary, `deflation` (the patterns and the directions solved directly, the gauges left out, the
+`nullness`, the residual removed at the start, the size of the final re-solve), and its setup time
+`deflation_s` (in the action's record only); the log says how much of each sky term the deflated
+part holds. Snapshots and monitors see the solution itself. The solver's estimates are those of the
+deflated problem: `r1norm` and `arnorm` are still the full system's residual and gradient, `anorm`,
+`acond` and `xnorm` those of the deflated operator and iterate. Deflation needs an undamped fit
+(`sc.Fit(damp=0)`) and is part of the fit's inputs.
 
 ## Products, records and reruns
 

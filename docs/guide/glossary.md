@@ -114,6 +114,14 @@ and the model's own `variables={...}` (`sc.Header`, `sc.PerFrame`, `sc.DetectorM
 `sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction`). See [The model](concepts.md#the-model)
 and [Data variables](../bring_your_own_telescope.md#data-variables).
 
+## Deflation { #deflation }
+
+A way of solving the slowest directions of a self-calibration system directly
+(`sc.Fit(deflate=sc.Deflate(order))`): each sky term's smooth patterns (cosine or polynomial products
+over its covered area) together with the offsets that absorb them best are solved exactly at the
+start, and the solver's iterations run on the rest of the unknowns only. The solution is the same
+least-squares solution; the iterations to reach it are fewer when the large scales are what is slow.
+See [The Python API](python-api.md#deflation).
 ## Detector { #detector }
 
 One detector array of the instrument. Each detector of each exposure becomes its own frame, whose
