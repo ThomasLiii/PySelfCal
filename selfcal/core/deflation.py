@@ -44,8 +44,9 @@ iterate in float64 (one pass over the matrix), which removes the rounding of ``P
 
 **Cost.** Setup: the patterns' products with the matrix in float64, two passes over it with all
 the patterns at once (forward and transposed), plus one for the start; per iteration, four passes over
-``V`` and ``W`` (float64, ``2 x 8 x patterns`` bytes per covered column: ``P`` in the product and ``P^T``
-in the transposed product; six with LSQR's guard), threaded; at the end one
+``V`` and ``W`` (kept in the products' precision, ``2 x 4 x patterns`` bytes per covered column with
+float32 products, the arithmetic in float64 on cache-sized blocks: ``P`` in the product and ``P^T`` in the
+transposed product; six with LSQR's guard), threaded; at the end one
 pass for the re-solve (and one per snapshot). Only the covered columns take part: a system that
 was not compacted (all-zero columns kept) costs as one that was.
 
@@ -57,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -307,6 +309,7 @@ class Deflation:
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)")
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
+        self._scratch = {}
         try:
             # Pass 1 (float64; the patterns in threads, one each, the offsets' normal matrix alongside): each
             # pattern's sky image U = B F, the offsets' response R = B_off^T U and G = B_off^T B_off.
@@ -432,6 +435,13 @@ class Deflation:
         self.V = _transform_in_place(Z, T)
         self.W = _transform_in_place(NZ, T)
         del Z, NZ
+        # Kept in the products' precision when that is float32 (half the traffic of every projection; the
+        # arithmetic stays float64 and the rounding is that of the products: a converged float32 solve stays as
+        # put as with float64 storage, measured), in float64 otherwise (float32 storage then lets a converged
+        # solve drift).
+        self.store = np.dtype(storage.dtype) if np.dtype(storage.dtype) == np.float32 else np.dtype(np.float64)
+        if self.store == np.float32:
+            self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
         self.c_star = (self.V @ ATb) / self.lam
         del ATb
         self._bnorm2 = bnorm2
@@ -485,10 +495,34 @@ class Deflation:
             return [fn(a, c) for a, c in self._blocks]
         return list(self._pool.map(lambda ac: fn(*ac), self._blocks))
 
+    _SUB = 32768          # columns per sub-block: a float64 copy of k' x _SUB stays in cache
+
+    def _rows(self, M, a, c):
+        """The columns ``a:c`` of ``M`` as float64 sub-blocks (a view in float64 storage; in float32 storage a
+        copy into a cache-sized scratch, so the float32 bytes are read once and the arithmetic is float64)."""
+        if M.dtype == np.float64:
+            yield a, c, M[:, a:c]
+            return
+        key = ('sub', threading.get_ident())
+        buf = self._scratch.get(key)
+        if buf is None:
+            buf = self._scratch[key] = np.empty((M.shape[0], self._SUB), dtype=np.float64)
+        for s0 in range(a, c, self._SUB):
+            s1 = min(c, s0 + self._SUB)
+            t = buf[:, :s1 - s0]
+            np.copyto(t, M[:, s0:s1])
+            yield s0, s1, t
+
     def _dot(self, M, v):
         """``M v`` (``M``: (k', nS), one direction per row; ``v``: (nS,) float64), block partial sums in a
         fixed order."""
-        parts = self._map(lambda a, c: M[:, a:c] @ v[a:c])
+        def part(a, c):
+            acc = None
+            for s0, s1, t in self._rows(M, a, c):
+                q = t @ v[s0:s1]
+                acc = q if acc is None else acc + q
+            return acc
+        parts = self._map(part)
         out = parts[0].copy()
         for p in parts[1:]:
             out += p
@@ -496,7 +530,10 @@ class Deflation:
 
     def _sub(self, v, M, c):
         """``v -= M^T c`` in place."""
-        self._map(lambda a, e: np.subtract(v[a:e], M[:, a:e].T @ c, out=v[a:e]))
+        def part(a, e):
+            for s0, s1, t in self._rows(M, a, e):
+                np.subtract(v[s0:s1], t.T @ c, out=v[s0:s1])
+        self._map(part)
 
     def _gather(self, y):
         y = np.asarray(y)
@@ -621,7 +658,7 @@ class Deflation:
     def summary(self) -> dict:
         """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
         st = self.settings
-        return {'basis': str(st.basis), 'order': int(st.order),
+        return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
                 'kept': self.kept, 'gauges': self.gauges,
                 'obliqueness_max': None if math.isnan(self.rho_max) else float(self.rho_max), 'columns': int(self.nS),
