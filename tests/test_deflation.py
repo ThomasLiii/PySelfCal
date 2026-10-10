@@ -298,6 +298,13 @@ def test_what_deflation_refuses():
     with pytest.raises(ConfigError):
         sc.Deflate(2, basis='fourier')
     assert sc.Deflate(2, terms='continuum').terms == ('continuum',)
+    with pytest.raises(ConfigError):
+        sc.Deflate(2, storage='float16')
+    with pytest.raises(ValueError, match="needs float32 products"):
+        _solve(CHUNK, deflate=sc.Deflate(2, storage='float32'), iter_lim=5)
+    for store, f32 in (('float64', True), (None, True), (None, False), ('float32', True)):
+        x, rec = _solve(CHUNK, deflate=sc.Deflate(2, storage=store), float32=f32, iter_lim=5)
+        assert json.loads(rec.deflation)['storage'] == ('float32' if (store == 'float32' or (store is None and f32)) else 'float64')
     assert sc.Deflate(3).patterns_per_term == 21 and sc.Deflate(3, basis='polynomial').patterns_per_term == 16
     assert sc.Deflate(1, basis='polynomial').patterns_per_term == 6 and sc.Deflate(0).patterns_per_term == 6
 

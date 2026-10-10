@@ -446,6 +446,7 @@ are what is slow, and the same otherwise.
 | `order=4` | patterns per axis: `(order + 1)²` products per sky term (25 at 4), plus the polynomials of degree ≤ 2 the basis does not contain |
 | `basis="cosine"` | `"cosine"` or `"polynomial"` |
 | `terms=None` | the sky terms to deflate (None: all) |
+| `storage=None` | the precision of the deflation's vectors: None, the products' (float32 with `float32=True`); `"float64"` always; `"float32"` needs float32 products |
 
 Read it with three facts in mind:
 

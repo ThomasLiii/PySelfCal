@@ -336,7 +336,11 @@ class Deflate(Config):
     any offset model), solves the least squares along them directly, and runs the iterations on the
     rest of the unknowns only. The solution is the same least-squares solution as without; the
     iterations it takes are fewer when those patterns are what is slow. ``terms``: the sky terms to
-    deflate (None: all).
+    deflate (None: all). ``storage``: the precision the deflation's two vector sets are kept in (None: the
+    products', ``Fit(float32=)``; ``"float64"``: always float64, twice the memory and projection traffic with
+    float32 products, the same solution to the products' rounding; ``"float32"`` needs float32 products, with
+    float64 ones it would let a converged solve drift). The arithmetic of the projections is float64 either
+    way.
 
     The solution includes the patterns' least-squares values at once: where the data barely constrain
     a pattern (the record's ``nullness``), that value is what the data say, however large, while an
@@ -357,12 +361,16 @@ class Deflate(Config):
     _: KW_ONLY
     basis: Literal['cosine', 'polynomial'] = 'cosine'
     terms: tuple[str, ...] | None = None
+    storage: Literal['float32', 'float64'] | None = None
 
     def _validate(self):
         if not 0 <= self.order <= 16:
             raise ConfigError(f"Deflate(order={self.order}): 0 to 16")
         if self.basis not in ('cosine', 'polynomial'):
             raise ConfigError(f"Deflate(basis={self.basis!r}): 'cosine' or 'polynomial'")
+        if self.storage not in (None, 'float32', 'float64'):
+            raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
+                              f"precision)")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):

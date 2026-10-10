@@ -217,8 +217,8 @@ class Deflation:
     scaling), ``active_mask`` (the full layout's columns in the
     system: None when every column is), ``ref_shape`` and ``sky_names`` (the sky terms: the first
     ``len(sky_names) * h * w`` columns of the full layout, one grid each), and ``settings`` (with
-    ``order``, ``basis`` and ``terms``, a :class:`~selfcal.run.recipe.Deflate`). ``threads``: of the
-    projections.
+    ``order``, ``basis``, ``terms`` and ``storage``, a :class:`~selfcal.run.recipe.Deflate`). ``threads``: of
+    the projections.
 
     Then :meth:`start` (the part in the space, from ``b``: the right-hand side and the start the
     solver gets), :meth:`operator` (the solver's operator), :meth:`full` (an iterate as the
@@ -439,7 +439,13 @@ class Deflation:
         # arithmetic stays float64 and the rounding is that of the products: a converged float32 solve stays as
         # put as with float64 storage, measured), in float64 otherwise (float32 storage then lets a converged
         # solve drift).
-        self.store = np.dtype(storage.dtype) if np.dtype(storage.dtype) == np.float32 else np.dtype(np.float64)
+        pdt = np.dtype(storage.dtype)
+        want = getattr(settings, 'storage', None)
+        if want == 'float32' and pdt != np.float32:
+            raise ValueError("Deflate(storage='float32') needs float32 products (Fit(float32=True)): with float64 "
+                             "products the stored vectors would be coarser than the products and a converged solve "
+                             "would drift")
+        self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
         if self.store == np.float32:
             self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
         self.c_star = (self.V @ ATb) / self.lam
