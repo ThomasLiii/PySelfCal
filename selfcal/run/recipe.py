@@ -349,7 +349,7 @@ class Deflate(Config):
 
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 8 x patterns`` bytes per covered unknown
-    (six passes over them per iteration), with :attr:`patterns_per_term` patterns per deflated term.
+    (four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
     Undamped fits only (``Fit(damp=0)``). The solve's record says what it did
     (:mod:`selfcal.core.deflation`).
     """

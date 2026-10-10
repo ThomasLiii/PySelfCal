@@ -1235,7 +1235,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0
                 solver_op = defl.operator()
-                kw = dict(solve_kw, constrain=defl.constrain)
+                # LSQR / LSMR: the Lanczos vectors are kept in the complement of the space as well (constrain);
+                # CGLS: the two projections alone (its gradients stay there by construction; the guard on top of
+                # P^T was found to let a float32 solve drift far past convergence).
+                kw = dict(solve_kw, constrain=None if solver == 'cgls' else defl.constrain)
                 if solver == 'cgls':
                     # CGLS measures its residual against the deflated right-hand side b - B x_c (its refresh
                     # recomputes it from the parked original: one float64 pass over the matrix every 50 iterations).

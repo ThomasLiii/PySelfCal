@@ -465,7 +465,7 @@ Read it with three facts in mind:
 
 The cost: two float64 passes over the matrix with all the patterns at the start (one pass is about
 one iteration's products), one at the end and one per snapshot; memory of `2 × 8 × patterns` bytes
-per covered unknown, and six passes over it per iteration (threaded). The solve's record keeps a
+per covered unknown, and four passes over it per iteration, six with LSQR (threaded). The solve's record keeps a
 summary, `deflation` (the patterns and the directions solved directly, the gauges left out, the
 `nullness`, the residual removed at the start, the size of the final re-solve), and its setup time
 `deflation_s` (in the action's record only); the log says how much of the residual the directions

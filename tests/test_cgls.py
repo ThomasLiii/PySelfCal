@@ -147,6 +147,11 @@ def test_cgls_with_deflation_and_on_the_near_null_system():
     x, rec = _solve(NEAR_NULL, iter_lim=15, deflate=sc.Deflate(4))
     assert abs(plain / converged - 1) > 0.1 and abs(_x_gradient(x) / converged - 1) < 1e-3
     assert json.loads(rec.deflation)['kept'] >= 1 and rec.method == 'cgls'
+    # far past convergence, in float32, the deflated solve stays put (the two projections, no Lanczos guard)
+    x_star = _converged(CHUNK)
+    for n in (400, 2000):
+        x, rec = _solve(CHUNK, deflate=sc.Deflate(3), float32=True, iter_lim=n)
+        assert _rel(x.astype(np.float64), x_star) < 1e-5, n
     # past the residual refresh (every 50 iterations) the solver's residual is the full system's true one
     x, rec = _solve(CHUNK, iter_lim=120, deflate=sc.Deflate(3, basis='polynomial'), monitor=sc.Monitor(20))
     assert abs(rec.r1norm / rec.true_residual - 1) < 1e-6

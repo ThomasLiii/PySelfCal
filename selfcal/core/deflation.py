@@ -34,17 +34,18 @@ where ``y`` solves ``min | B P y - (b - B x_c) |`` with the unchanged solver (LS
 same precision): the range of ``B P`` is orthogonal to that of ``B V``, so the part in the space is
 solved exactly at the start and the iterations run on the complement only, where the slow patterns
 are gone. ``x`` is the least-squares solution of the full system (the same one, gauge included);
-its residual and gradient are those of the full system at every iteration. The solver's right Lanczos
-vectors are projected onto the complement of the space after each normalisation (in exact arithmetic
-they are there already; rounding, which the recurrence amplifies once the solve has converged, would
-otherwise let the iterate drift along the directions ``B P`` cannot see: :meth:`Deflation.constrain`).
-At the end, the part in the space is solved again against the final iterate in float64 (one pass over
-the matrix), which removes the rounding of ``P``.
+its residual and gradient are those of the full system at every iteration. With LSQR or LSMR, the
+solver's right Lanczos vectors are also projected onto the complement of the space after each
+normalisation (in exact arithmetic they are there already; rounding, which the recurrence amplifies
+once the solve has converged, would otherwise let the iterate drift along the directions ``B P``
+cannot see: :meth:`Deflation.constrain`); CGLS's gradients stay there by construction, and it takes
+the two projections only. At the end, the part in the space is solved again against the final
+iterate in float64 (one pass over the matrix), which removes the rounding of ``P``.
 
 **Cost.** Setup: the patterns' products with the matrix in float64, two passes over it with all
-the patterns at once (forward and transposed), plus one for the start; per iteration, six passes over
-``V`` and ``W`` (float64, ``2 x 8 x patterns`` bytes per covered column: ``P`` in the product, ``P^T``
-in the transposed product, and the projection of the Lanczos vector), threaded; at the end one
+the patterns at once (forward and transposed), plus one for the start; per iteration, four passes over
+``V`` and ``W`` (float64, ``2 x 8 x patterns`` bytes per covered column: ``P`` in the product and ``P^T``
+in the transposed product; six with LSQR's guard), threaded; at the end one
 pass for the re-solve (and one per snapshot). Only the covered columns take part: a system that
 was not compacted (all-zero columns kept) costs as one that was.
 
