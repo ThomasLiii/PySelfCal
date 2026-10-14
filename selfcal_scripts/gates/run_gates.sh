@@ -64,7 +64,8 @@ for g in $GATES; do
     run m13
     echo "--- m13: byte-diff vs golden_f64"; $PY $G/h5_diff.py ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5 ${M13}_M13_UNIFYNPASS1GOLDEN_F64_${M13_TAIL}.h5 2>&1 | tail -1 ;;
   transfer)
-    $PY -m selfcal_scripts.gates.python_gates transfer 2>&1 | tail -3
+    rmp ${D3C9}_transfer_gate_py.h5 ${D3C9_MOS}_transfer_gate_py.fits; rm -rf $R/cache/transfer_gate
+    PYTHONPATH=$R $PY -m selfcal_scripts.gates.python_gates transfer 2>&1 | tail -3
     echo "--- transfer cal: offsets vs the ungauged golden, sky vs the gauged golden"; $PY $G/transfer/transfer_check.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 ${D3C9}_transfer_gq2_golden_f64.h5 2>&1 | tail -1
     echo "--- transfer mosaic (weighted coadd + the gauge on the map): byte-diff vs transfer_gq2map_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_transfer_gate_py.fits ${D3C9_MOS}_transfer_gq2map_golden_f64.fits 2>&1 | tail -1 ;;
   rerun)
