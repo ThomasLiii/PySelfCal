@@ -273,6 +273,14 @@ def test_gauge_through_the_offsets_agrees_with_the_map(tmp_path, degree):
     assert d.std() < 0.02 * a0[w > 0].std()
 
 
+def test_the_plan_names_the_gauge_and_the_weight():
+    from selfcal.run.plan import describe_gauge, describe_weight
+    assert describe_gauge(sc.Gauge('slope')).startswith("the sky plane that the slopes 'slope' absorbed")
+    assert 'quadratic (position degree 2)' in describe_gauge(sc.Gauge('slope', degree=2))
+    assert 'moved from the offsets' in describe_gauge(sc.Gauge('slope', apply='offsets'))
+    assert '1/sqrt' in describe_weight(sc.shot_noise())
+
+
 def test_gauge_settings_are_checked():
     with pytest.raises(sc.ConfigError):
         sc.Gauge('')
