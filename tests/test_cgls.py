@@ -140,6 +140,32 @@ def test_hooks_history_snapshots_monitors_warm_start_and_damping():
     assert _rel(xd, xl) < 1e-7
 
 
+def test_a_damped_solve_stays_converged_on_every_blas_kernel():
+    """Past convergence the recursive residual drifts by rounding; a damped CGLS that kept iterating on it
+    diverged on OpenBLAS's Haswell and Zen kernels (x1.14 per iteration: a relative error of 4e12 at 600
+    iterations, as on GitHub's AMD runners), so a damped solve given no right-hand side to read again keeps
+    a copy of its own. Run in a subprocess on the Haswell kernel, which OpenBLAS picks when it loads."""
+    import platform
+    import subprocess
+    try:
+        avx2 = platform.machine() in ('x86_64', 'AMD64') and 'avx2' in open('/proc/cpuinfo').read()
+    except OSError:
+        avx2 = False
+    if not avx2:
+        pytest.skip('needs an x86-64 CPU with AVX2 (the Haswell kernel)')
+    code = ("import sys; sys.path[:0] = sys.argv[1:3]\n"
+            "import test_cgls as T\n"
+            "Bs, bs, _, _ = T._scaled(T.CHUNK)\n"
+            "xd = T.cgls(Bs, bs.copy(), damp=0.3, atol=0, btol=0, iter_lim=1000)[0]\n"
+            "xl = T.lsqr_inplace(Bs, bs.copy(), damp=0.3, atol=1e-14, btol=1e-14, conlim=0, iter_lim=2000)[0]\n"
+            "print(T._rel(xd, xl))\n")
+    env = dict(os.environ, OPENBLAS_CORETYPE='Haswell', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
+    out = subprocess.run([sys.executable, '-c', code, _REPO, os.path.join(_REPO, 'tests')], env=env,
+                         capture_output=True, text=True, timeout=900)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert float(out.stdout.strip().splitlines()[-1]) < 1e-9, out.stdout
+
+
 def test_cgls_with_deflation_and_on_the_near_null_system():
     """Deflated CGLS has the near-null system's field-wide gradient after 15 iterations; plain CGLS has not."""
     converged = _x_gradient(_converged(NEAR_NULL))
