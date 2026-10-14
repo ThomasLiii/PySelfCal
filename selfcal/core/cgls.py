@@ -24,7 +24,7 @@ rules) and ``constrain`` (deflation) are the hooks of :func:`~selfcal.core.lsqr_
 Memory: the residual and one product in the products' precision (``m`` each, like LSQR's ``u`` and its
 product), and three ``n``-vectors in ``vectors``' precision (the iterate, the direction, the gradient).
 The right-hand side is read again for each refresh (``refresh``: a function returning it, an array or a
-parked copy; None: no refresh).
+parked copy; None: no refresh, except in a damped solve, which then keeps a copy of ``b``: ``m`` more).
 """
 from __future__ import annotations
 
@@ -124,7 +124,10 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
     (the full solver layout) is the start, copied unless ``x0_owned``. ``refresh``: a function returning
     the right-hand side the solve started from (read in blocks: an array or a
     :class:`~selfcal.core.spill.ParkedVector`), for the residual's recomputation every :data:`REFRESH`
-    iterations; None: never recomputed. ``vectors``: the dtype of the iterate, the direction and the
+    iterations; None: never recomputed, unless the solve is damped (``damp > 0``), which then keeps a copy
+    of ``b`` to recompute it from: the recursive residual drifts by rounding once the solve has converged,
+    and the damping term turns that drift into a divergence on some BLAS kernels (OpenBLAS's Haswell and
+    Zen kernels: x1.14 per iteration). ``vectors``: the dtype of the iterate, the direction and the
     gradient. The returned ``x`` is in that dtype; ``anorm`` is the estimate above, ``acond`` 0."""
     A = aslinearoperator(A)
     m, n = A.shape
@@ -138,6 +141,9 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
 
     b = np.asarray(b)
     bnorm = sqrt(_dot(b, b))
+    if refresh is None and d2 > 0:                     # a damped solve needs its true residual (see refresh)
+        kept = b.copy()
+        refresh = lambda: kept  # noqa: E731
     if x0 is None:
         x = np.zeros(n, dtype=vdt)
         r = b if b.dtype == pdt else b.astype(pdt)
