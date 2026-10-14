@@ -30,7 +30,7 @@ changes across them. The chunk maps therefore cut the detector into subchannels
 Package data: the per-detector arc fits ``data/lvf_params/lvf_params_D<n>.npy`` and
 the line templates ``data/line_templates/*.npz``.
 """
-_SETTINGS = ('SPHEREx', 'channel', 'channels', 'group', 'window', 'line', 'LINE_TEMPLATES', 'precompute_lvf',
+_SETTINGS = ('SPHEREx', 'channel', 'channels', 'group', 'window', 'line', 'frame_slope', 'LINE_TEMPLATES', 'precompute_lvf',
              'zodi_anchor')
 
 

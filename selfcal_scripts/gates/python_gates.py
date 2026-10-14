@@ -106,18 +106,15 @@ def transfer():
     """D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted
     solve (sc.shot_noise(): every row weighted 1/sqrt(max(|value|, the frame's median)), no clip, the
     per-frame x-slope model, deflated CGLS to the chi-squared stop) and the weighted coadd of the ungauged
-    cal (mean, std, 2-sigma clipped mean, flag 21 ignored, weights 1/max(|value|, that median)) -- against the
-    goldens the archived workspace implementations made (transfer/make_transfer_goldens.sh)."""
-    from selfcal_scripts.gates.transfer.xbasis import xtilde
+    cal (mean, std, 2-sigma clipped mean, flag 21 ignored, weights 1/max(|value|, that median)) and the post-solve
+    quad gauge applied on the map (sc.Gauge('xs_term')) -- against the goldens the archived workspace implementations
+    made (transfer/make_transfer_goldens.sh): the cal's offsets against the ungauged golden, its sky term against the
+    gauged one, the mosaic against the gauged map (transfer/transfer_check.py)."""
+    import dataclasses
+
+    from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
     inst = sc.SPHEREx(3, num_col=1, num_ch=17, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
-    model = sc.Model(sky=(sc.Sky(damping=0.0),),
-                     offsets=(sc.Offsets(on='subchannel', mean_zero=True),
-                              sc.Offsets('xs_term', on='subchannel', per='frame', times=sc.Function(xtilde, of='det_x'))),
-                     weight=sc.shot_noise())
-    fit = sc.Fit(600, clip=None, ignore_flags=(), tolerance=0.0, deflate=sc.Deflate(4),
-                 stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)))
-    recipe = sc.Recipe(model, fit=fit, coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=(21,), instrument_maps=False),
-                       numerics=sc.Numerics(30, batch=40), name='transfer_gate_py')
+    recipe = dataclasses.replace(SLOPE_GAUGE, name='transfer_gate_py')     # the production recipe itself
     field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
     return field.calibrate(recipe, jobs=spherex.channel(9), frames=sc.frames_in(E2E_FIXTURE),
                            compute=sc.Compute(f'{REPO}/cache/transfer_gate', workers=30, stage=None),

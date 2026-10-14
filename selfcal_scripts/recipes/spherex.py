@@ -17,27 +17,27 @@ from selfcal.instruments import spherex
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL', 'NEP_OVERLAP_TILES',
+__all__ = ['nep', 'sep', 'nep_qr2', 'NUMCOL3', 'POLY_K1', 'SLOPE_GAUGE', 'LINES3', 'SUBCHANNEL', 'NEP_OVERLAP_TILES',
            'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES', 'pahfit_tiled']
 
 
 # ---------------------------------------------------------------------------------------------- fields
-def nep(detector, num_col=3, compute=ORCA, outputs=OUTPUTS):
+def nep(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
     """The NEP deep field (2026W17 data), 6.2" pixels."""
-    return sc.Field(f'{outputs}/SPHEREx_NEP_2026W17_D{detector}_6p2arcsec', sc.SPHEREx(detector, num_col=num_col),
-                    6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_NEP_2026W17_D{detector}_6p2arcsec',
+                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
 
 
-def sep(detector, num_col=3, compute=ORCA, outputs=OUTPUTS):
+def sep(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
     """The SEP deep field (2025 data), 6.2" pixels."""
-    return sc.Field(f'{outputs}/SPHEREx_SEP_2025_D{detector}_6p2arcsec', sc.SPHEREx(detector, num_col=num_col),
-                    6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_SEP_2025_D{detector}_6p2arcsec',
+                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
 
 
-def nep_qr2(detector, num_col=3, compute=ORCA, outputs=OUTPUTS):
+def nep_qr2(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
     """The NEP QR2 data set, 6.2" pixels (the continuum gates' field)."""
-    return sc.Field(f'{outputs}/SPHEREx_nep_qr2_det{detector}_6p2arcsec', sc.SPHEREx(detector, num_col=num_col),
-                    6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_nep_qr2_det{detector}_6p2arcsec',
+                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
 
 
 # ---------------------------------------------------------------------------------------------- channel maps
@@ -47,6 +47,22 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
                     fit=sc.Fit(50, clip=5.0),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
+
+#: The channel recipe of 2026-10 (the transfer-function and zodi-leak work on Ch9, NumCol 1 with 17
+#: channels): subchannel constants plus a free gradient per frame along detector x, undamped and
+#: unregularised, no clip, every observation weighted by its shot noise floored at the frame's median
+#: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve quadratic gauge applied
+#: on the map (``sc.Gauge``); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
+#: ignored). The gate `transfer` pins it to the workspace implementations it replaced.
+SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
+                                 offsets=[sc.Offsets(on='subchannel', mean_zero=True), spherex.frame_slope()],
+                                 weight=sc.shot_noise()),
+                        fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
+                                   stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)),
+                                   gauge=sc.Gauge('xs_term')),
+                        coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
+                        numerics=sc.Numerics(30, batch=40),
+                        name='slope_gauge')
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
