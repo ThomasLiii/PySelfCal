@@ -68,11 +68,11 @@ for g in $GATES; do
   transfer)
     rmp ${D3C9}_transfer_gate_py.h5 ${D3C9_MOS}_transfer_gate_py.fits; rm -rf $R/cache/transfer_gate
     PYTHONPATH=$R $PY -m selfcal_scripts.gates.python_gates transfer 2>&1 | tail -3
-    echo "--- transfer cal: offsets vs the ungauged golden, sky vs the plane-gauged golden"; $PY $G/transfer/transfer_check.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 ${D3C9}_transfer_plane_golden_f64.h5 2>&1 | tail -1
+    echo "--- transfer cal: offsets vs the ungauged golden, sky vs the plane-gauged golden"; $PY $G/transfer_check.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 ${D3C9}_transfer_plane_golden_f64.h5 2>&1 | tail -1
     echo "--- transfer mosaic (weighted coadd + the plane on the map): byte-diff vs transfer_planemap_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_transfer_gate_py.fits ${D3C9_MOS}_transfer_planemap_golden_f64.fits 2>&1 | tail -1 ;;
   transfer_quad)
     # the quadratic gauge (sc.Gauge(degree=2)) on the golden ungauged cal and map, against the workspace's: no solve
-    echo "--- transfer_quad: the library's quad gauge vs transfer_gq2{,map}_golden_f64"; PYTHONPATH=$R $PY $G/transfer/quad_check.py ${D3C9}_transfer_golden_f64.h5 ${D3C9_MOS}_transfer_golden_f64.fits ${D3C9}_transfer_gq2_golden_f64.h5 ${D3C9_MOS}_transfer_gq2map_golden_f64.fits $E2E_FX $O/SPHEREx_nep_qr2_det3_6p2arcsec/ref.fits $R/cache/transfer_quad 2>&1 | tail -1 ;;
+    echo "--- transfer_quad: the library's quad gauge vs transfer_gq2{,map}_golden_f64"; PYTHONPATH=$R $PY $G/quad_check.py ${D3C9}_transfer_golden_f64.h5 ${D3C9_MOS}_transfer_golden_f64.fits ${D3C9}_transfer_gq2_golden_f64.h5 ${D3C9_MOS}_transfer_gq2map_golden_f64.fits $E2E_FX $O/SPHEREx_nep_qr2_det3_6p2arcsec/ref.fits $R/cache/transfer_quad 2>&1 | tail -1 ;;
   rerun)
     # the record the continuum gate wrote, run again from the record alone (made again: --overwrite)
     REC=$(ls -t $O/SPHEREx_nep_qr2_det3_6p2arcsec/records/calibrate_*.json | xargs grep -l "_unify_gate_py.h5" | head -1)

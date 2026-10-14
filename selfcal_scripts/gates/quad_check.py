@@ -1,6 +1,6 @@
 """The transfer gate's check of the quadratic gauge (``sc.Gauge(degree=2)``), which the production recipe no longer
 runs: the library's computation (``selfcal.core.gauge``) on the golden UNGAUGED cal and map must reproduce what the
-archived apply_gauge_q.py (HDEG=2) and gauge_map.py made from them -- the cal's sky term and the mosaic's mean and
+campaign's apply_gauge_q.py (HDEG=2) and gauge_map.py (kept in the workspace) made from them -- the cal's sky term and the mosaic's mean and
 clipped-mean maps, byte for byte. No solve: the gauge runs on a copy of the ungauged golden cal in SCRATCH, with the
 gauge settings the engine passes for the SPHEREx slope term (map 1, constants map 0, centre 1019.5, half 1020).
 Exit 0 iff everything matches.
