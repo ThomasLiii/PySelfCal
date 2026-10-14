@@ -15,8 +15,8 @@ The entry point is the **Python API**: a run is a Python script (or a notebook).
 The production runs are the scripts of `selfcal_scripts/runs/`:
 
 ```bash
-./selfcal_scripts/run.sh selfcal_scripts/runs/d4_aromatic.py            # or any run script
-./selfcal_scripts/run.sh selfcal_scripts/runs/d4_aromatic.py --dry-run  # the plan: products made, reused or refused
+./selfcal_scripts/run.sh selfcal_scripts/runs/channel_maps.py            # or any run script
+./selfcal_scripts/run.sh selfcal_scripts/runs/channel_maps.py --dry-run  # the plan: products made, reused or refused
 ```
 
 A run script builds an **instrument** (`sc.SPHEREx`, `sc.Euclid`, `sc.Camera`, or an
@@ -803,8 +803,7 @@ maps and user priors are further `setup_lsqr` arguments (`sky_model`, a block's
 [`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md). The
 flat per-map keyword lists (`chunk_maps=`, `adj_infos=`, ...) are still accepted
 but deprecated. For a K=2 example (LVF chunks + detector-fixed readout-channel
-stripes shared across all frames), see `sc.two_block` and
-[`../selfcal_scripts/runs/k2_readout.py`](../selfcal_scripts/runs/k2_readout.py).
+stripes shared across all frames), see the preset `sc.two_block(second="readout")`.
 
 ## Dependencies
 

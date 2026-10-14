@@ -61,10 +61,15 @@ Chunk geometry (`sc.SPHEREx(detector, num_sub=, num_ch=, num_col=)`):
   channels (relying on the per-frame scalar + adjacency reg) or `NumCol=3-10`
   for wider channels / poly-constrained runs.
 
-The production recipe of the NumCol 10 era, `POLY_K1` of
-[`selfcal_scripts/recipes/spherex.py`](selfcal_scripts/recipes/spherex.py) (the channel maps
-since 2026-09-29 use `NUMCOL3`: NumCol 3, no column polynomial), with the production machine of
-`selfcal_scripts/recipes/site.py`:
+The fiducial channel maps since 2026-10-14 use `CHANNEL_MAPS` of
+[`selfcal_scripts/recipes/spherex.py`](selfcal_scripts/recipes/spherex.py): `SLOPE_GAUGE`, the
+recipe the transfer function was measured with, on 17 channels and one column (the per-frame
+gradient model, the shot-noise weights, deflated CGLS to the chi-squared stop, the post-solve plane
+gauge and the weighted coadd, below), with the wavelength maps in the mosaics;
+[`selfcal_scripts/runs/channel_maps.py`](selfcal_scripts/runs/channel_maps.py) makes them
+(`launch/channel_maps.sh [detectors]`). The production recipe of the NumCol 10 era, `POLY_K1`
+(the channel maps of 2026-09-29 to 2026-10-14 used `NUMCOL3`: NumCol 3, no column polynomial),
+with the production machine of `selfcal_scripts/recipes/site.py`:
 
 ```python
 import selfcal as sc
@@ -72,7 +77,7 @@ import selfcal as sc
 POLY_K1 = sc.Recipe(
     sc.continuum(smooth=0.1,                     # adjacency smoothness between neighbouring chunks
                  poly_prior=sc.Poly(1, weight=0.5)),   # the linear column polynomial; omit for none
-    fit=sc.Fit(50, clip=5.0),                    # shot_noise_weights=True in d4_aromatic / the PAH fits
+    fit=sc.Fit(50, clip=5.0),                    # shot_noise_weights=True in the PAH fits
     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),   # drop the source-mask bit
     name="damp0p1_reg0p1_outThresh5_sigma2_polyK1")
 ORCA = sc.Compute(scratch, workers=48, coadd_workers=48)        # workers tuned 2026-05 from 32
@@ -458,7 +463,7 @@ parentheses):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — `sc.two_block`, `selfcal_scripts/runs/k2_readout.py`).
+  stripes — `sc.two_block(second="readout")`).
 - **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only
