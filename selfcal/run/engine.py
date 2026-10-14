@@ -640,6 +640,8 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     # The model's observation weight (a row weight w) weights the coadd by w², as
     # in the solve.
     weight_hook = _observation_weight_hook(ctx, mm)
+    if weight_hook is not None and weight_hook.needs_raw:
+        mosaic_kwargs['keep_raw'] = True           # the weight reads the stored values / flag bits
     hooks = [h for h in (basis_hook, spec.post_mosaic, weight_hook) if h is not None]
     post = None
     if len(hooks) > 1:

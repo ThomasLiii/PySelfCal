@@ -46,7 +46,7 @@ def _ref(fn):
     """How a function is handed to the model's data form: its import path, or the by-value object itself."""
     return fn if isinstance(fn, by_value) else function_ref(fn)
 
-__all__ = ['Function', 'Shape', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
+__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
            'Prior', 'Model', 'continuum', 'spectral', 'two_block']
 
@@ -187,6 +187,30 @@ class Function(Config):
             out['params'] = dict(self.params)
         if n is not None:
             out['n'] = int(n)
+        return out
+
+
+@dataclass(frozen=True, init=False)
+class Variance(Function):
+    """A :class:`Function` read as the noise variance of each observation, for the model's
+    observation weight: with ``sc.Model(weight=sc.Variance(fn, of=...))`` the solve weights every
+    observation's row by ``1/sqrt(variance)`` and the coadd by ``1/variance``, both computed in
+    float64 (a plain Function is the row weight itself, which the coadd squares). ``fn`` returns the
+    variance per observation in the data's units squared, from a whole frame's observations at
+    once, so it may use per-frame statistics: :func:`selfcal.models.noise.shot_noise_variance`
+    (``sc.shot_noise()``) floors shot noise at the frame's median::
+
+        sc.Model(weight=sc.Variance(my_variance, of=("value", "flags")))
+        sc.Model(weight=sc.shot_noise())            # variance max(|value|, the frame's median value)
+    """
+
+    def __repr__(self):
+        of = self.of[0] if len(self.of) == 1 else self.of
+        return _call('Variance', (_Named(_fn_name(self.fn)),), (('of', of),) + tuple(self.params.items()))
+
+    def lower(self, n=None) -> dict:
+        out = super().lower(n)
+        out['kind'] = 'variance'
         return out
 
 
@@ -757,7 +781,8 @@ class Model(Config):
     model's own data variables, ``{name: source}`` (:class:`Header`, :class:`PerFrame`,
     :class:`DetectorMap`, :class:`SkyMap`, :class:`SolvedSky`, :class:`Layer`,
     :class:`Derived`, :class:`FrameFunction`). ``weight``: a function of data variables that
-    multiplies every observation's weight (the coadd uses its square). ``priors``:
+    multiplies every observation's weight (the coadd uses its square), or a :class:`Variance` (the
+    observation's noise variance: the weight is ``1/sqrt`` of it, the coadd's ``1/`` it). ``priors``:
     :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block`
     build the standard models.
     """

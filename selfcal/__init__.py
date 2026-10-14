@@ -57,9 +57,10 @@ _logging.getLogger(__name__).addHandler(_logging.NullHandler())
 _EXPORTS = {
     # the Python API
     **dict.fromkeys(('Config', 'ConfigError', 'by_value'), 'selfcal.config'),
-    **dict.fromkeys(('Function', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets', 'Header',
-                     'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
-                     'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
+    **dict.fromkeys(('Function', 'Variance', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
+                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
+                     'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
+    'shot_noise': 'selfcal.models.noise',
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
                      'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate'), 'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),

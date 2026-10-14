@@ -116,7 +116,7 @@ default) a sample with any bit set is dropped, except the bits in
 
 A named quantity with one value per observation, which the functions of a model read by name
 ([`selfcal.models.variables`](../reference/selfcal/models/variables.md)). Sources: the built-ins
-`det_x`, `det_y`, `sky_x`, `sky_y` and `frame`; the instrument's detector maps and frame variables;
+`det_x`, `det_y`, `sky_x`, `sky_y`, `frame`, `value` and `flags`; the instrument's detector maps and frame variables;
 and the model's own `variables={...}` (`sc.Header`, `sc.PerFrame`, `sc.DetectorMap`, `sc.SkyMap`,
 `sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction`). See [The model](concepts.md#the-model)
 and [Data variables](../bring_your_own_telescope.md#data-variables).

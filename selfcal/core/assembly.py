@@ -52,6 +52,7 @@ def _prep_lsqr(task_params):
     try:
         # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
         extras = {'layers': task_params.get('layer_names') or ()}
+        keep_raw = bool(task_params.get('keep_raw'))       # a function reads `value` / `flags`
         ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux = _prep_subframe(
             file=reproj_file,
             chunk_offsets=None,
@@ -68,6 +69,7 @@ def _prep_lsqr(task_params):
             postprocess_func=task_params['postprocess_func'],
             preprocess_func=task_params['preprocess_func'],
             extras=extras,
+            keep_raw=keep_raw,
         )
 
         sub_h, sub_w = sub_data.shape
@@ -86,7 +88,8 @@ def _prep_lsqr(task_params):
                 detector=det, frame_values=task_params.get('frame_values'),
                 sky=task_params.get('sky_variables'), layers=extras.get('layer_values'),
                 derived=task_params.get('derived_variables'),
-                frame_functions=task_params.get('frame_functions'), context=ctx)
+                frame_functions=task_params.get('frame_functions'), context=ctx,
+                values=extras.get('raw_data'), flags=extras.get('flags'))
 
         sub_valid = sub_weight > 0
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
@@ -143,7 +146,9 @@ def _prep_lsqr(task_params):
         weight_function = task_params.get('weight_function')
         factors = []                     # per-observation factors that must be finite
         if weight_function is not None:
-            wf = np.asarray(weight_function.evaluate(obs), dtype=np.float32)
+            # a Coefficient: the value as a float32 row weight; a NoiseVariance: 1/sqrt of it in float64
+            wf = (weight_function.row_weight(obs) if hasattr(weight_function, 'row_weight')
+                  else np.asarray(weight_function.evaluate(obs), dtype=np.float32))
             factors.append(wf)
         if sky_components is None:
             J = 1

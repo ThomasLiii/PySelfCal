@@ -9,8 +9,9 @@ committed tree; the library's run of the same recipe (``python_gates.py transfer
 Precision: the workspace patch computed the weights in float32 (``d`` is float32 and ``m`` a Python float, which NumPy
 keeps at float32), while its coadd counterpart (``before_mosaic.py``) computed them in float64. The library computes a
 noise variance in float64 everywhere, so this golden maker evaluates the same expression in float64; the production
-arithmetic is kept behind ``TRANSFER_FLOAT32_PATCH=1`` (it changes every weight by up to 9e-8 relative; the measured
-effect on the fixture's cal is recorded in the gates README).
+arithmetic is kept behind ``TRANSFER_FLOAT32_PATCH=1`` (it changes every weight by up to 9e-8 relative, which moves
+the chi-squared stop by 20 iterations on the fixture and the cal by the solve's convergence tolerance, ~2 % of the
+sky's rms: see the gates README).
     DET=d SCENE_FIELD=<field dir> SCENE_SCRATCH=<scratch dir> python before_solve.py FRAMES_DIR NAME"""
 import os
 import sys

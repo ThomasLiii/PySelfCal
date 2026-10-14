@@ -21,6 +21,8 @@ D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh3
 E2E_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 NP=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3
 EU=$O/EDFN_Y_1p5arcsec_unifygolden
+D3C9=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh17_NumCol1_Ch9
+D3C9_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh17_NumCol1_Ch9
 M13=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3_multiline3_NEPovlp
 M13_TAIL=iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2
 cd $R
@@ -61,6 +63,10 @@ for g in $GATES; do
     rm -f ${M13}_UNIFYNPASS1GATEPY_STITCHED_${M13_TAIL}_npass_monitor.json
     run m13
     echo "--- m13: byte-diff vs golden_f64"; $PY $G/h5_diff.py ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5 ${M13}_M13_UNIFYNPASS1GOLDEN_F64_${M13_TAIL}.h5 2>&1 | tail -1 ;;
+  transfer)
+    $PY -m selfcal_scripts.gates.python_gates transfer 2>&1 | tail -3
+    echo "--- transfer cal (weighted solve): byte-diff vs transfer_golden_f64"; $PY selfcal_scripts/drivers/diff_cal_h5.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 2>&1 | tail -1
+    echo "--- transfer mosaic (weighted coadd): byte-diff vs transfer_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_transfer_gate_py.fits ${D3C9_MOS}_transfer_golden_f64.fits 2>&1 | tail -1 ;;
   rerun)
     # the record the continuum gate wrote, run again from the record alone (made again: --overwrite)
     REC=$(ls -t $O/SPHEREx_nep_qr2_det3_6p2arcsec/records/calibrate_*.json | xargs grep -l "_unify_gate_py.h5" | head -1)

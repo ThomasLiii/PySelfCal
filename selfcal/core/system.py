@@ -707,6 +707,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'outlier_group_variable': outlier_group_variable,
         'basis_list': basis_list if any(b is not None for b in basis_list) else None,
         'weight_function': weight_function,
+        # the stored values / flag bits are kept per frame only when a function reads them
+        'keep_raw': any(v in ('value', 'flags') for names in wanted.values() for v in names)
+                    or any(v in ('value', 'flags') for d in variables.derived.values() for v in d.inputs),
         'layer_names': tuple(variables.layers),
         'derived_variables': dict(variables.derived) or None,
         'frame_functions': dict(variables.frame_functions) or None,

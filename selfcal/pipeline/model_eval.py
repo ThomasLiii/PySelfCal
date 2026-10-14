@@ -63,7 +63,8 @@ def frame_observations(ctx, index, variables, pixels=None, oversample_factor=1, 
         pixels, index=index, ref_coords=ctx.ref_coords, sub_mapping=ctx.sub_mapping, detector=det,
         frame_values=fv, sky=None if variables is None else variables.sky, layers=layers,
         derived=None if variables is None else variables.derived,
-        frame_functions=None if variables is None else variables.frame_functions, context=fctx)
+        frame_functions=None if variables is None else variables.frame_functions, context=fctx,
+        values=getattr(ctx, 'raw_data', None), flags=getattr(ctx, 'flags', None))
     return obs, interp
 
 
@@ -123,7 +124,8 @@ class ObservationWeight:
     """A frame hook multiplying every observation's coadd weight by the model's
     observation weight to the power ``power`` (default 2: the model's weight is a
     row weight ``w`` — ``1/σ`` for an inverse-variance fit — which enters the
-    least squares as ``w²``, so the mosaic's weighted mean matches the solve).
+    least squares as ``w²``, so the mosaic's weighted mean matches the solve); a
+    noise variance (``sc.Variance``) weights by ``1/variance``.
 
     ``weight``: the model's weight function (``evaluate(obs)``); ``variables``:
     the data variables, frame values aligned with ``frame_names``; ``det_shape``:
@@ -139,13 +141,23 @@ class ObservationWeight:
         self.oversample_factor = oversample_factor
         self.power = float(power)
 
+    @property
+    def needs_raw(self) -> bool:
+        """Whether the weight reads the frames' stored values or flag bits (``keep_raw``)."""
+        return bool(set(getattr(self.weight, 'variables', ())) & {'value', 'flags'})
+
     def __call__(self, ctx):
         i = self.index.get(os.path.basename(ctx.file), 0)
-        obs, _ = frame_observations(ctx, i, self.variables, oversample_factor=self.oversample_factor,
+        # the observations of the frame: the pixels that carry weight (a per-frame statistic of
+        # the weight function, e.g. a median, is over those); the others keep weight 0
+        sm = np.asarray(ctx.sub_mapping, dtype=np.float64)
+        pixels = np.nonzero((np.asarray(ctx.sub_weight) > 0) & np.isfinite(sm[0]) & np.isfinite(sm[1]))
+        obs, _ = frame_observations(ctx, i, self.variables, pixels=pixels, oversample_factor=self.oversample_factor,
                                     det_shape=self.det_shape)
         factor = np.zeros(np.shape(ctx.sub_data), dtype=np.float64)
         if obs.n:
-            w = np.abs(np.asarray(self.weight.evaluate(obs), dtype=np.float64)) ** self.power
+            w = (self.weight.coadd_weight(obs, self.power) if hasattr(self.weight, 'coadd_weight')
+                 else np.abs(np.asarray(self.weight.evaluate(obs), dtype=np.float64)) ** self.power)
             rows, cols = obs.pixels
             factor[rows, cols] = np.where(np.isfinite(w), w, 0.0)
         return ctx.sub_data, np.asarray(ctx.sub_weight) * factor

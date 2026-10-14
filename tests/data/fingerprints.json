@@ -6868,6 +6868,190 @@
      "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
     }
    }
+  },
+  "variance_weight/cal": {
+   "fingerprint": "87a21e765746ab5973a726b224851c1af06babe93a8514d6673dc2c8e520b2a7",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": {
+      "fn": {
+       "function": "selfcal.models.noise:shot_noise_variance"
+      },
+      "of": [
+       "value",
+       "flags"
+      ],
+      "params": {
+       "floor": "median"
+      },
+      "type": "selfcal.models.model:Variance"
+     }
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "variance_weight/mosaic": {
+   "fingerprint": "882a2a36976fa88166e8af597eaaa214d7df9297c0a35b25fcdb156bcebe6e21",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "chunks": [
+      4,
+      4
+     ],
+     "detector_maps": {},
+     "dq_ext": 2,
+     "headers": {},
+     "job": "All",
+     "reader": null,
+     "reference_ext": null,
+     "sci_ext": 1,
+     "shape": [
+      64,
+      64
+     ],
+     "tag": "Toy",
+     "type": "selfcal.instruments.camera:Camera",
+     "unit": ""
+    },
+    "job": {
+     "kind": "all",
+     "name": "All",
+     "value": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [],
+     "priors": [],
+     "scalar": true,
+     "sky": [
+      {
+       "damping": 0.1,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": {
+      "fn": {
+       "function": "selfcal.models.noise:shot_noise_variance"
+      },
+      "of": [
+       "value",
+       "flags"
+      ],
+      "params": {
+       "floor": "median"
+      },
+      "type": "selfcal.models.model:Variance"
+     }
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
   }
  }
 }
