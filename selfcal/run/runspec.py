@@ -158,6 +158,7 @@ class RunSpec:
     start: dict | None = None
     snapshots: object = None
     monitor: object = None
+    gauge: object = None
     tiling: TilingSpec | None = None
     passes: PassesSpec | None = None
     reproject: ReprojectSpec | None = None

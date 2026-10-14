@@ -263,6 +263,9 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     if snapshots is not None and (task != 'cal' or tiles is not None or passes is not None):
         raise ConfigError("calibrate(snapshots=...): snapshots are written by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
+    if recipe is not None and recipe.fit.gauge is not None and (task != 'cal' or tiles is not None or passes is not None):
+        raise ConfigError("Fit(gauge=...): the post-solve gauge is applied by a plain calibration, one solve per job; "
+                          "a tiled or an N-pass calibration takes none")
     groups = {}
     for j in jobs:
         groups.setdefault(j.kind, []).append(j)
@@ -284,7 +287,7 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             make_mosaic=coadd is not None, instrument_maps=coadd is not None and coadd.instrument_maps,
             cal_override=cal, passes=None if passes is None else passes_spec(passes),
             start=None if starts is None else {j.name: starts[j.name] for j in group}, snapshots=snapshots,
-            monitor=monitor)
+            monitor=monitor, gauge=recipe.fit.gauge)
         if tiles is not None:
             spec.suffix = _suffix(tiles.tile_name, recipe.name)
             spec.tiling = tiling_spec(tiles, field, recipe, compute, scratch, frames_dir)

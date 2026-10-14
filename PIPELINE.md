@@ -91,6 +91,18 @@ window (the 2026-10 Ch9 recipe); `sc.Variance(fn, of=("value", "flags"))` takes 
 the stored values, their flag bits and the other data variables (see
 [bring_your_own_telescope.md](docs/bring_your_own_telescope.md)).
 
+The post-solve gauge, `sc.Fit(gauge=sc.Gauge("xs_term"))`: a model with per-subchannel constants
+and a per-frame slope along detector x (`sc.Offsets("xs_term", on="subchannel", per="frame",
+times=sc.Function(xtilde, of="det_x"))`, `xtilde = (det_x - 1019.5) / 1020`) cannot tell a sky plane,
+or with `degree=2` a sky quadratic, from its image in those offsets, and the solve lands anywhere in
+that family. After the solve the survey-mean polynomial the offsets absorbed is fitted to the solved
+slopes (with a detector-fixed slope per subchannel and a degree-`position_degree` polynomial in the
+frame's position as the nuisance; the frames' axes on the grid from a tangent plane through each
+stored header) and moved into the sky: the cal's sky term gains it, the cal records it (`gauge/`)
+and every mosaic of the cal adds it to its mean maps (`apply="map"`, the 2026-10 Ch9 recipe: exact)
+-- or it is removed from the offsets instead (`apply="offsets"`: exact only up to the band
+discretisation and the curvature within a frame). `selfcal.core.gauge` has the computation.
+
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
 (the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
 lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /

@@ -393,6 +393,53 @@ def _check_hook(hook, what):
 
 
 @dataclass(frozen=True)
+class Gauge(Config):
+    """The post-solve gauge of a per-frame gradient model (:mod:`selfcal.core.gauge`).
+
+    A model with, per frame, a constant per chunk (a band of detector rows) and a slope along
+    detector x (an :class:`~selfcal.models.model.Offsets` term ``times`` a function
+    ``(det_x - centre) / half``) cannot tell a sky plane -- or, with ``degree=2``, a sky quadratic --
+    from its image in those offsets. After the solve the survey-mean polynomial the offsets absorbed
+    is fitted to the solved slopes (``slope``: that term's name; ``constants``: the chunk-constant
+    term's, default the first term on the same chunk map without a basis), with a detector-fixed
+    slope per chunk and a polynomial of degree ``position_degree`` in the frame's position as the
+    nuisance, and moved into the sky: added to the cal's sky term and, ``apply="map"``, to the maps
+    of every mosaic made from the cal (the offsets stay as solved; exact), or, ``apply="offsets"``,
+    removed from the offsets instead (exact only up to the band discretisation and the curvature
+    within a frame). ``geometry``: each frame's axes and centre on the reference grid from a tangent
+    plane through its stored header (``"tangent"``: pointing, reference pixel, PC matrix, scale; no
+    distortion) or from its full stored WCS (``"header"``). ``centre`` and ``half`` (default: the
+    detector's ``((n_x - 1) / 2, (n_y - 1) / 2)`` and ``n_x / 2``) are checked against the slope
+    term's basis.
+    """
+    slope: str
+    _: KW_ONLY
+    constants: str | None = None
+    degree: Literal[1, 2] = 2
+    position_degree: int = 2
+    apply: Literal['map', 'offsets'] = 'map'
+    geometry: Literal['tangent', 'header'] = 'tangent'
+    centre: tuple[float, float] | None = None
+    half: float | None = None
+
+    def _validate(self):
+        if not self.slope:
+            raise ConfigError("Gauge(slope=...): the name of the per-frame x-slope term")
+        if self.degree not in (1, 2):
+            raise ConfigError(f"Gauge(degree={self.degree}): 1 (a plane) or 2 (plane + quadratic)")
+        if self.position_degree < 0:
+            raise ConfigError(f"Gauge(position_degree={self.position_degree}): at least 0 (none)")
+        if self.apply not in ('map', 'offsets'):
+            raise ConfigError(f"Gauge(apply={self.apply!r}): 'map' or 'offsets'")
+        if self.geometry not in ('tangent', 'header'):
+            raise ConfigError(f"Gauge(geometry={self.geometry!r}): 'tangent' or 'header'")
+        if self.centre is not None:
+            object.__setattr__(self, 'centre', (float(self.centre[0]), float(self.centre[1])))
+        if self.half is not None and self.half <= 0:
+            raise ConfigError(f"Gauge(half={self.half}): positive")
+
+
+@dataclass(frozen=True)
 class Fit(Config):
     """How the model is fitted to the frames.
 
@@ -422,7 +469,9 @@ class Fit(Config):
     ``iterations`` (a :class:`Stop`; None: the solver's own tests, by ``tolerance``; with a Stop,
     ``tolerance`` is used only by its ``solver_tests``; ``Stop(chi2=0.1)``: the scale-free rule, converged to a
     tenth of the error bars). ``deflate``: solve the smooth sky patterns
-    directly and iterate on the rest (a :class:`Deflate`; None: plain iterations).
+    directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
+    the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
+    :class:`Gauge`; None: the solution as solved).
     """
     iterations: int = 50
     _: KW_ONLY
@@ -441,8 +490,11 @@ class Fit(Config):
     stop: Stop | None = added(None, since='2026-10')
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
+    gauge: Gauge | None = added(None, since='2026-10')
 
     def _validate(self):
+        if self.gauge is not None and not isinstance(self.gauge, Gauge):
+            raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:
             raise ConfigError(f"Fit(iterations={self.iterations}): at least 1")
 
