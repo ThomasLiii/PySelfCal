@@ -4,10 +4,10 @@ Shared by the run scripts (``selfcal_scripts/runs/``), the gates, the transfer-f
 the notebooks::
 
     from selfcal.instruments import spherex
-    from selfcal_scripts.recipes.spherex import NUMCOL3, nep
+    from selfcal_scripts.recipes.spherex import CHANNEL_MAPS, nep
 
     if __name__ == "__main__":
-        nep(3).calibrate(NUMCOL3, jobs=spherex.channels(1, 34))
+        nep(3, num_col=1, num_ch=17).calibrate(CHANNEL_MAPS, jobs=spherex.channels(1, 17))
 
 A recipe's ``name`` is its products' suffix, so the names below are those of the existing
 products; ``field.result(recipe, jobs=...)`` finds them.
@@ -17,8 +17,9 @@ from selfcal.instruments import spherex
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'NUMCOL3', 'POLY_K1', 'SLOPE_GAUGE', 'LINES3', 'SUBCHANNEL', 'NEP_OVERLAP_TILES',
-           'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES', 'pahfit_tiled']
+__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+           'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
+           'pahfit_tiled']
 
 
 # ---------------------------------------------------------------------------------------------- fields
@@ -41,8 +42,9 @@ def nep_qr2(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
 
 
 # ---------------------------------------------------------------------------------------------- channel maps
-#: The channel-map production recipe since 2026-09-29: NumCol 3, no column polynomial (the transfer
-#: function showed NumCol 10 with a linear column polynomial overfits), a 2x oversampled coadd.
+#: The channel-map recipe from 2026-09-29 to 2026-10-14 (its maps: Detectors 1 to 4, Detector 5 channels 1 to 16):
+#: NumCol 3, no column polynomial (the transfer function showed NumCol 10 with a linear column polynomial
+#: overfits), a 2x oversampled coadd.
 NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
                     fit=sc.Fit(50, clip=5.0),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
@@ -63,6 +65,12 @@ SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
                         coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
                         numerics=sc.Numerics(30, batch=40),
                         name='slope_gauge')
+
+#: The fiducial channel maps since 2026-10-14: the transfer function's recipe (SLOPE_GAUGE, solved on 17
+#: channels and one column: ``nep(detector, num_col=1, num_ch=17)``), the mosaics also carrying the
+#: wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same name and the same cal; the mosaic's other maps
+#: are SLOPE_GAUGE's.
+CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_maps=True))
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),

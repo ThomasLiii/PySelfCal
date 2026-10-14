@@ -68,9 +68,12 @@ processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
 You do not edit the script for normal use — the six run-specific inputs are its
 flags. Copy it and change `RECIPE` only to deliberately deviate from the production
 recipe. The machine settings (`--scratch`, `--workers`) never change a product's
-bytes. Until 2026-10 the kit ran the NumCol 10 fiducial behind the D1–D6 channel
-mosaics of 2026-05 (`POLY_K1`, on 34 channels and 10 columns, with a mean-only
-coadd); the README shows the line that runs it again.
+bytes. The fiducial channel maps since 2026-10-14 (`selfcal_scripts/runs/channel_maps.py`)
+are made with this recipe too, their mosaics also carrying the wavelength maps
+(`CHANNEL_MAPS`: the same cal, the same mean, std and clipped maps). Until 2026-10 the kit
+ran the NumCol 10 fiducial behind the D1–D6 channel mosaics of 2026-05 (`POLY_K1`, on
+34 channels and 10 columns, with a mean-only coadd); the README shows the line that
+runs it again.
 
 Until October 2026 the kit also had a TOML form (`transfer_function.toml`, filled
 by `run_transfer_function.sh`); the run engine was proven to be handed the same
