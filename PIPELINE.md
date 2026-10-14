@@ -83,6 +83,14 @@ The sky damping is each sky term's `sc.Sky(damping=)`: 0.1 for the first term an
 others unless given. The spectral recipes ignore bit 21 in the fit too
 (`sc.Fit(ignore_flags=[21])`).
 
+Pixel weights: `sc.Fit(shot_noise_weights=True)` weights every row by `1/sqrt(|value|)` (the PAH
+fits; the coadd's `sc.Coadd(shot_noise_weights=True)` likewise). A noise model is the model's
+weight instead: `sc.Model(weight=sc.shot_noise())` weights the rows by `1/sqrt(max(|value|, m))` and
+the coadd by `1/max(|value|, m)`, `m` the median of the frame's unflagged values inside the job's
+window (the 2026-10 Ch9 recipe); `sc.Variance(fn, of=("value", "flags"))` takes any function of
+the stored values, their flag bits and the other data variables (see
+[bring_your_own_telescope.md](docs/bring_your_own_telescope.md)).
+
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
 (the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
 lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /

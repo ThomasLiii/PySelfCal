@@ -485,11 +485,12 @@ def _finalize_wav(wav_sums):
 
 
 def _prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs, oversample_factor, valid_threshold,
-                 postprocess_func):
+                 postprocess_func, keep_raw=False):
     return {
         'apply_weight': apply_weight, 'apply_mask': apply_mask, 'ignore_list': ignore_list,
         'det_offset_funcs': det_offset_funcs, 'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold, 'for_lsqr': False, 'postprocess_func': postprocess_func,
+        'keep_raw': keep_raw,
     }
 
 
@@ -528,8 +529,11 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       apply_mask=True, chunk_maps=None, grid_valid_weight=None,
                       max_workers=10, ignore_list=None, det_offset_funcs=None, oversample_factor=1,
                       batch_size=10, valid_threshold=0.99,
-                      cache_dir='cache/', use_cached=False, det_aux=None, postprocess_func=None):
+                      cache_dir='cache/', use_cached=False, det_aux=None, postprocess_func=None, keep_raw=False):
     """Unified mean / std / sigma-clipped-mean / cache builder, multi-chunk-map aware.
+
+    ``keep_raw``: hand the hook each frame's stored values and flag bits (the data
+    variables ``value`` / ``flags``).
 
     Each per-frame subframe is offset-corrected by the sum of K per-map
     contributions ``Σ_m det_offset_funcs[m](chunk_maps[m], offset_lists[m][k])``
@@ -593,7 +597,7 @@ def compute_coadd_map(mode, ref_shape, file_list, mean_map=None, std_map=None, s
                       offsets=None if use_cached else offset_lists, source=source, wav=False,
                       shared=shared, n_maps=len(chunk_maps), n_aux=n_aux,
                       prep=_prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs,
-                                        oversample_factor, valid_threshold, postprocess_func),
+                                        oversample_factor, valid_threshold, postprocess_func, keep_raw),
                       sigma=sigma, max_workers=max_workers, batch_size=batch_size)
         if mode == 'cache':
             cached, _ = _run_pass(accumulate=None, write_dir=cache_dir, label="Cache pass", **common)
@@ -615,8 +619,11 @@ def run_coadd_schedule(ref_shape, file_list, offset_lists=None, apply_weight=Tru
                        det_offset_funcs=None, oversample_factor=1, cache_batch_size=10, coadd_batch_size=10,
                        valid_threshold=0.99, cache_dir='cache/', cache_intermediate=False, det_aux=None,
                        postprocess_func=None, make_std_map=False,
-                       apply_sigma_clipping=False, sigma=2.0, wav_maps=None):
+                       apply_sigma_clipping=False, sigma=2.0, wav_maps=None, keep_raw=False):
     """All coadd passes of a mosaic in one schedule.
+
+    ``keep_raw``: hand the hook each frame's stored values and flag bits (the data
+    variables ``value`` / ``flags``).
 
     Passes: (1) prepare every frame, write the intermediate cache if
     ``cache_intermediate`` and accumulate the mean; (2) std (if
@@ -657,7 +664,7 @@ def run_coadd_schedule(ref_shape, file_list, offset_lists=None, apply_weight=Tru
         _publish_inputs(shared, chunk_maps, grid_valid_weight, det_aux, wav_maps)
         common = dict(ref_shape=ref_shape, shared=shared, n_maps=len(chunk_maps), n_aux=n_aux,
                       prep=_prep_kwargs(apply_weight, apply_mask, ignore_list, det_offset_funcs,
-                                        oversample_factor, valid_threshold, postprocess_func),
+                                        oversample_factor, valid_threshold, postprocess_func, keep_raw),
                       sigma=sigma, max_workers=max_workers)
         if cache_intermediate:
             os.makedirs(cache_dir, exist_ok=True)

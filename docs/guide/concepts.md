@@ -126,8 +126,8 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
 - **Per-frame scalar** `s` (`sc.Model(scalar=True)`, the default): one additive constant per frame.
 - **Data variables** `v`: named quantities with one value per observation, which every function of
   the model reads by name ([`selfcal.models.variables`](../reference/selfcal/models/variables.md)):
-  the built-ins `det_x`, `det_y` (detector position), `sky_x`, `sky_y` (reference pixel) and
-  `frame`; the instrument's detector maps (SPHEREx: the band centre `BC` and band width `BW`, also
+  the built-ins `det_x`, `det_y` (detector position), `sky_x`, `sky_y` (reference pixel),
+  `frame`, `value` (the stored value) and `flags` (its flag bits); the instrument's detector maps (SPHEREx: the band centre `BC` and band width `BW`, also
   called `wavelength` and `bandwidth`) and per-frame values (`exposure`, `detector`); and the
   model's own `variables={...}` (header keywords, maps, stored planes, functions; see
   [Data variables](../bring_your_own_telescope.md#data-variables)).

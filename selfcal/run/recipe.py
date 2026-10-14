@@ -412,7 +412,9 @@ class Fit(Config):
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
-    ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)``.
+    ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
+    :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
+    weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
     ``frame_hook`` / ``raw_frame_hook``: called on each frame after / before its corrections
     (an importable function or a picklable object; see :mod:`selfcal.config.functions`).
     ``line_fisher_threshold``: below this Fisher information, a pixel of a sky term after the

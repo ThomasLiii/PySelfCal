@@ -322,6 +322,7 @@ def cases(files):
              sc.Recipe(sc.two_block('readout', smooth=0.2, second_smooth=0.05, along='subchannel', damping=0.2),
                        coadd=None, name='k2s'), spherex.channel(3)),
         Case('model_with_everything', Prism(), sc.Recipe(model_with_everything(files), name='all')),
+        Case('variance_weight', CAMERA, sc.Recipe(sc.Model(weight=sc.shot_noise()), name='nv')),
         # the fit
         Case('fit_settings', sc.SPHEREx(4),
              sc.Recipe(sc.continuum(), fit=sc.Fit(120, clip=sc.Clip(4.0, per=SUBCHANNEL), ignore_flags=(3, 21),

@@ -96,7 +96,7 @@ process, in seconds, before anything runs.
 
 | source | Python | one value per | examples |
 | --- | --- | --- | --- |
-| built-in | — | observation | `det_x`, `det_y` (detector position), `sky_x`, `sky_y` (reference pixel), `frame` |
+| built-in | — | observation | `det_x`, `det_y` (detector position), `sky_x`, `sky_y` (reference pixel), `frame`, `value` (the stored value), `flags` (its flag bits) |
 | instrument detector map | `sc.Camera(detector_maps=...)`, an instrument's `sc.Geometry(aux=...)` | detector pixel | SPHEREx `BC` / `BW` (aliases `wavelength` / `bandwidth`), a pixel polariser angle |
 | instrument frame value | `sc.Camera(headers=...)`, an instrument's `frame_variables()` | frame | `exposure`, `detector` (built in), time, filter, HWP angle |
 | header keyword | `sc.Header("KEY", default=...)` | frame | `MJD-AVG`, `FILTER`, `TEMP` |
@@ -130,6 +130,10 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
   function for a basis), `damping`, `exact_group_rows`.
 * **weight**, `sc.Model(weight=fn)`: a function of data variables multiplying every observation's
   row weight (`1/σ` for an inverse-variance fit); the mosaic coadds with its square, like the solve.
+  `sc.Variance(fn, of=...)` gives the noise variance instead: the row weight is `1/sqrt` of it, the
+  coadd's weight `1/` it. The function receives a whole frame's observations at once, so it can use
+  per-frame statistics of the stored values (`value`) and flag bits (`flags`): `sc.shot_noise()` is
+  the shot-noise variance `max(|value|, m)` floored at the frame's median `m`.
 * **prior**, `sc.Prior(fn, terms, weight=, **params)`: `terms` names the terms the rows act on
   (sky-term names, offset-term names, `"scalar"`). A prior function receives one `TermInfo` per
   term (the unknowns' shape, their coverage, the frame → group map, the solve's variables, the
@@ -182,6 +186,7 @@ More set-ups the same machinery expresses (each a few lines and one function):
 | offsets tied to a predicted value | `sc.priors.toward(term, variable)` (or your own rows with a target) |
 | sky smoothness or in-painting | `sc.priors.sky_smoothness(term, covered_only=False)` smooths into gaps |
 | inverse-variance weighting | `"variance": sc.Layer("variance")` + `weight=inverse_sigma` |
+| shot-noise weighting, floored at each frame's median | `weight=sc.shot_noise()` (`sc.Variance(shot_noise_variance, of=("value", "flags"))`) |
 | windowed or binned read-outs | a reader returning the window's full-detector `coords` |
 
 ## 4. With code: an instrument

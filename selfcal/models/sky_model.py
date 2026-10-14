@@ -135,6 +135,49 @@ class Coefficient:
             c = np.broadcast_to(c, n).copy()
         return c
 
+    # ---- as the observation weight -----------------------------------------------------------
+    def row_weight(self, obs: dict) -> np.ndarray:
+        """The coefficient as the weight of the observations' rows in the solve: the value itself
+        (float32). :class:`NoiseVariance` reads it as a variance instead."""
+        return np.asarray(self.evaluate(obs), dtype=np.float32)
+
+    def coadd_weight(self, obs: dict, power: float = 2.0) -> np.ndarray:
+        """The coefficient as the weight of the observations in a coadd: ``|value| ** power``
+        (float64), by default the square of the row weight, so the coadd's weighted mean matches
+        the solve."""
+        return np.abs(np.asarray(self.evaluate(obs), dtype=np.float64)) ** float(power)
+
+
+@dataclass(frozen=True)
+class NoiseVariance(Coefficient):
+    """A coefficient read as the noise variance of each observation (``sc.Variance``): the solve
+    weights an observation's row by ``1/sqrt(variance)`` and a coadd by ``1/variance``, the variance
+    evaluated in float64 (a plain :class:`Coefficient` is a float32 row weight, squared by the
+    coadd). A variance that is not finite or not positive gives a weight the callers drop."""
+
+    def evaluate(self, obs: dict) -> np.ndarray:
+        f = self.function
+        names = self.main_variables
+        if hasattr(f, 'evaluate'):
+            return np.asarray(f.evaluate(obs[names[0]], obs), dtype=np.float64)
+        x = [obs[v] for v in names]
+        c = np.asarray(f(*x), dtype=np.float64)
+        n = np.shape(x[0])
+        if c.shape != n:
+            c = np.broadcast_to(c, n).copy()
+        return c
+
+    def row_weight(self, obs: dict) -> np.ndarray:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return 1.0 / np.sqrt(self.evaluate(obs))
+
+    def coadd_weight(self, obs: dict, power: float = 2.0) -> np.ndarray:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return 1.0 / self.evaluate(obs)
+
+    def describe(self) -> str:
+        return f"variance {super().describe()}"
+
 
 # ---------------------------------------------------------------------------
 # components (one per sky term)

@@ -1745,8 +1745,12 @@ class Mosaicker(Reprojector):
         cache_intermediate: bool = False, det_aux: np.ndarray | None = None,
         postprocess_func: Callable | None = None,
         valid_chunk_thresh: float = 0.01,
-        wav_maps: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
+        wav_maps: tuple[np.ndarray, np.ndarray] | None = None, keep_raw: bool = False) -> dict:
         """Build coadded maps applying per-map calibration offsets.
+
+        ``keep_raw`` hands ``postprocess_func`` each frame's stored values and flag
+        bits too (``raw_data`` / ``flags`` of its context: the data variables
+        ``value`` / ``flags``).
 
         ``chunk_maps`` is a length-K list of (typically grid-resolution) chunk
         maps; ``det_offset_funcs`` is the matching length-K list of
@@ -1876,6 +1880,7 @@ class Mosaicker(Reprojector):
                 cache_intermediate=cache_intermediate,
                 det_aux=det_aux,
                 postprocess_func=postprocess_func,
+                keep_raw=keep_raw,
                 make_std_map=make_std_map,
                 apply_sigma_clipping=apply_sigma_clipping,
                 sigma=sigma,

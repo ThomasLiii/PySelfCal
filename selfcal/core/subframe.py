@@ -41,6 +41,8 @@ class FrameContext:
     sub_mapping: object
     chunk_maps: object = ()
     sub_aux: object = None
+    raw_data: object = None     # the frame's stored values (a copy taken before any hook or subtraction), when kept
+    flags: object = None        # the frame's stored flag bits, when kept (``keep_raw``)
 
     def __getitem__(self, key):
         """Return the field named ``key``; an unknown name raises ``AttributeError``."""
@@ -125,9 +127,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                    # These arguments are accepted for compatibility/internal logic
                    # but might not be used depending on logic path
                    det_aux=None, postprocess_func=None, preprocess_func=None,
-                   extras=None):
+                   extras=None, keep_raw=False):
     """
     Prepares data from a single file for co-addition or lsqr.
+
+    ``keep_raw``: keep a copy of the frame's stored values and its flag bits, as
+    read, for the data variables ``value`` and ``flags`` (``extras['raw_data']`` /
+    ``extras['flags']`` and the hook context's ``raw_data`` / ``flags``).
 
     Parameters
     ----------
@@ -176,7 +182,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         chunk_maps = []
 
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
-    if apply_mask:
+    if apply_mask or keep_raw:
         fields.append('sub_bitmask')
     layer_names = tuple(extras.get('layers') or ()) if extras is not None else ()
     fields.extend(f'layers/{name}' for name in layer_names)
@@ -189,6 +195,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         extras['layer_values'] = {n: result[f'layers/{n}'] for n in layer_names}
 
     sub_data = result['sub_data']
+    raw_data = flags = None
+    if keep_raw:                 # before anything below modifies sub_data in place
+        raw_data = np.array(sub_data, copy=True)
+        flags = result.get('sub_bitmask')
+        if extras is not None:
+            extras['raw_data'] = raw_data
+            extras['flags'] = flags
     ref_coords = result['ref_coords']
     sub_weight = np.ones_like(sub_data, dtype=np.float32)
     sub_mapping = result['sub_mapping']
@@ -321,7 +334,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         chunk_contribs = []
     else:
         # Apply bitmask
-        if 'sub_bitmask' in result:
+        if apply_mask and 'sub_bitmask' in result:
             # invert=True: 1 = Good pixel, 0 = Bad pixel
             sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
             sub_weight *= sub_boolmask
@@ -378,7 +391,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         out = postprocess_func(FrameContext(
             stage='post', file=file, exp_idx=exp_idx, det_idx=det_idx, ref_coords=ref_coords,
             sub_data=sub_data, sub_weight=sub_weight, sub_mapping=sub_mapping, chunk_maps=chunk_maps,
-            sub_aux=sub_aux))
+            sub_aux=sub_aux, raw_data=raw_data, flags=flags))
         if isinstance(out, tuple):              # (sub_data, sub_weight): the hook reweights too
             sub_data, new_weight = out
             sub_weight = np.asarray(new_weight, dtype=sub_weight.dtype)

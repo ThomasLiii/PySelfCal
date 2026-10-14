@@ -53,7 +53,7 @@ from .offset_structure import (
     poly_basis_along,
     poly_chains_along,
 )
-from .sky_model import Coefficient, ImportedFunction, SkyComponent, SkyModel
+from .sky_model import Coefficient, ImportedFunction, NoiseVariance, SkyComponent, SkyModel
 from .variables import BUILTIN_VARIABLES, Derived, FrameFunction, VariableSet
 
 __all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'VariableSpec', 'PriorSpec', 'ModelSpec',
@@ -852,8 +852,16 @@ def build_coefficient(spec, geom, catalog=None, name=None, log=print, known=()) 
     the ``known`` variables."""
     if isinstance(spec, Coefficient):
         keys = tuple(resolve_variable(v, geom, known) for v in spec.main_variables)
-        return Coefficient(keys[0] if isinstance(spec.variable, str) else keys, spec.function)
+        return type(spec)(keys[0] if isinstance(spec.variable, str) else keys, spec.function)
     spec = dict(spec)
+    kind = spec.pop('kind', None)           # 'variance': the coefficient is a noise variance (sc.Variance)
+    if kind not in (None, 'variance'):
+        raise ValueError(f"unknown coefficient kind {kind!r} (None or 'variance')")
+    coef = _build_coefficient(spec, geom, catalog, name, log, known)
+    return NoiseVariance(coef.variable, coef.function) if kind == 'variance' else coef
+
+
+def _build_coefficient(spec, geom, catalog, name, log, known):
     if 'catalog' in spec:
         entry = spec.pop('catalog')
         cat = catalog or {}

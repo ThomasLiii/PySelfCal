@@ -29,7 +29,7 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   offset has a single `φ = 1`.
 - **Per-frame scalar** `s`: one additive constant per frame.
 - **Data variables** `v`: named per-observation quantities that every coefficient and function
-  reads by name: the detector position (`det_x`, `det_y`), the reference pixel (`sky_x`, `sky_y`),
+  reads by name: the detector position (`det_x`, `det_y`), the reference pixel (`sky_x`, `sky_y`), the stored value and flag bits (`value`, `flags`),
   the instrument's detector maps (SPHEREx: the wavelength), header keywords such as the time,
   planes stored with each frame, and functions of these.
 

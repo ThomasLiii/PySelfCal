@@ -20,6 +20,7 @@ logs to `m13_gate_<tag>.log`).
 | euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
 | m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
+| transfer | D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe, the weighted solve (`sc.shot_noise()`) + the weighted coadd (mean, std, 2-sigma clip), against what the archived workspace implementations made | `*_transfer_golden_f64.{h5,fits}` |
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
 themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly.
@@ -37,6 +38,23 @@ makes one. The earlier goldens (`*_golden_stat*`, `*_golden.*`, `*_UNIFYNPASS1GO
 are kept as made, by the float32 norms. The assembly folds its per-pixel moments
 deterministically (batch-id order), so two runs of the same tree are byte-identical on any box
 load.
+
+## The transfer gate
+
+`transfer/` holds the workspace implementations of the pixel weights (and, in the next step, the post-solve
+gauge) as they ran in production before they entered the library -- `before_solve.py` (the weighted solve:
+the assembly's subframe preparation wrapped to weight every row by `1/sqrt(max(|value|, the frame's window
+median))`), `before_mosaic.py` (the weighted coadd: `1/max(|raw value|, that median)`) and the gauge scripts
+-- and `make_transfer_goldens.sh <tag>`, which runs them on the 300-frame qr2 D3 fixture (Ch9) with the
+library of a committed tree (`SELFCAL_REPO`, a tree whose library predates the features) and keeps every
+product as a golden. The `transfer` gate runs the same recipe on the library's own features
+(`sc.Model(weight=sc.shot_noise())`; `python_gates.py transfer`) and must reproduce them byte for byte.
+`before_solve.py` evaluates its weights in float64, as the library does; the production patch computed
+them in float32 (`TRANSFER_FLOAT32_PATCH=1` reproduces it), which changes every weight by up to 9e-8
+relative. On the fixture that moves the chi-squared stop from 520 to 540 iterations and the two cals
+differ by the solve's own convergence tolerance: rms 6.2e-4 MJy/sr over the sky (2.1 % of the sky's
+rms), 3-5 % of the offsets' rms (measured 2026-10-14; the products made in production with the float32
+patch differ from the library's by that much, not by the weights' rounding).
 
 ## The engine views
 
