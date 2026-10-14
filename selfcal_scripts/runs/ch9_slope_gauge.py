@@ -1,6 +1,6 @@
 """Channel 9 of the NEP 2026W17 field with the 2026-10 channel recipe (``SLOPE_GAUGE``: the per-frame gradient
 model, shot-noise weights floored at the frame's median, deflated CGLS to the chi-squared stop, the post-solve
-quadratic gauge on the map, the weighted coadd with its mean, std and 2-sigma clipped mean), NumCol 1 with 17
+plane gauge on the map, the weighted coadd with its mean, std and 2-sigma clipped mean), NumCol 1 with 17
 channels -- the library form of the workspace runs that chose the recipe (workspace/lsqr-convergence).
 
     selfcal run selfcal_scripts/runs/ch9_slope_gauge.py            # Detectors 1 to 6, real frames

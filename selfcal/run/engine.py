@@ -599,8 +599,8 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
         from selfcal.core.gauge import gauge_cal
         g = spec.gauge
         gauge_summary = gauge_cal(cal_path, list(staged_list), cc.ref_wcs, degree=g.degree,
-                                  position_degree=g.position_degree, apply=g.apply, geometry=g.geometry,
-                                  log=print, **gauge_terms(ctx, g))
+                                  position_degree=2 if g.position_degree is None else g.position_degree,
+                                  apply=g.apply, geometry=g.geometry, log=print, **gauge_terms(ctx, g))
     del cc
     gc.collect()
     entry = record.entry()

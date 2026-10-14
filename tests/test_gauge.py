@@ -1,7 +1,8 @@
 """The post-solve gauge (``Fit(gauge=sc.Gauge(...))``, :mod:`selfcal.core.gauge`): a model with per-chunk
-constants and a per-frame slope along detector x cannot tell a sky plane or quadratic from its image
-in those offsets; the gauge fits the survey-mean polynomial the offsets absorbed to the solved slopes
-and moves it into the sky -- on the map (the cal's sky term and every mosaic) or through the offsets.
+constants and a per-frame slope along detector x cannot tell a sky plane from its image in those
+offsets; the gauge fits the survey-mean plane (``degree=2``: and quadratic) the offsets absorbed to the
+solved slopes and moves it into the sky -- on the map (the cal's sky term and every mosaic) or through
+the offsets.
 A toy camera whose exposures roll through many angles; the solves take seconds."""
 import os
 import sys
@@ -136,8 +137,26 @@ def test_fit_recovers_the_polynomial_from_synthetic_slopes():
     g_fit, H_fit, stats = fit_gauge(b, ocov, J, D, dy, half, degree=2, position_degree=2, scale_D=scale)
     assert np.allclose(g_fit, g, rtol=1e-8) and np.allclose(H_fit, Hq, rtol=1e-6), (g_fit, H_fit)
     assert stats['residual_rms'] < 1e-12 * stats['slope_rms']
-    g1, H1, _ = fit_gauge(b, ocov, J, D, dy, half, degree=1, position_degree=2, scale_D=scale)
-    assert np.all(H1 == 0) and g1.shape == (2,)
+
+
+def test_the_plane_from_the_frames_mean_slopes():
+    """``degree=1`` (the default): each frame's mean slope over its covered chunks is ``x_k . g + c``,
+    unweighted least squares over the frames; a plane and a detector-fixed slope come back exactly, an
+    uncovered chunk does not enter its frame's mean and a frame without coverage does not enter at all."""
+    rng = np.random.default_rng(2)
+    K, S, half = 300, 10, 1020.0
+    th = rng.uniform(0, 2 * np.pi, K)
+    J = np.stack([np.stack([np.cos(th), np.sin(th)], -1), np.stack([-np.sin(th), np.cos(th)], -1)], -1)
+    g, c = np.array([-8e-6, 4.5e-6]), 3e-6
+    b = np.repeat((half * (J[:, :, 0] @ g + c))[:, None], S, axis=1)
+    ocov = np.full((K, S), 100.0)
+    ocov[5] = 0                                       # a frame without coverage
+    ocov[7, 3] = 0
+    b[7, 3] = 1e9                                     # an uncovered chunk's slope: not data
+    g_fit, H_fit, stats = fit_gauge(b, ocov, J, None, None, half)
+    assert np.allclose(g_fit, g, rtol=1e-9, atol=0) and np.all(H_fit == 0), g_fit
+    assert abs(stats['detector_slope'] - c) < 1e-9 * c and stats['residual_rms'] < 1e-9 * stats['slope_rms']
+    assert stats['n_frames'] == K - 1 and stats['n_slopes'] == (K - 1) * S - 1 and stats['n_parameters'] == 3
 
 
 def test_frame_geometry_from_the_header(tmp_path):
@@ -230,19 +249,22 @@ def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
     assert f1 < 0.15 * scale, (f1, scale)
 
 
-def test_gauge_through_the_offsets_agrees_with_the_map(tmp_path):
-    """``apply='offsets'`` gives the same sky term and nearly the same mosaic as the map route."""
+@pytest.mark.parametrize('degree', [1, 2])
+def test_gauge_through_the_offsets_agrees_with_the_map(tmp_path, degree):
+    """``apply='offsets'`` gives the same sky term and nearly the same mosaic as the map route, for the
+    plane and for the plane + quadratic."""
     field, sky, truth = toy_field(tmp_path, n_exp=24, seed=5)
     on_map = field.calibrate(sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12,
-                                                             gauge=sc.Gauge('slope')), coadd=COADD, numerics=NUMERICS,
-                                       name='map'))
+                                                             gauge=sc.Gauge('slope', degree=degree)), coadd=COADD,
+                                       numerics=NUMERICS, name='map'))
     via = field.calibrate(sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12,
-                                                          gauge=sc.Gauge('slope', apply='offsets')), coadd=COADD,
-                                    numerics=NUMERICS, name='off'))
+                                                          gauge=sc.Gauge('slope', degree=degree, apply='offsets')),
+                                    coadd=COADD, numerics=NUMERICS, name='off'))
     with on_map.cal() as c0, via.cal() as c1:
         assert np.allclose(c0.sky(0), c1.sky(0), equal_nan=True)
         assert not np.array_equal(c0.offsets[1], c1.offsets[1])          # the offsets moved
-        assert c1.gauge['applied_to'] == 'offsets'
+        assert c1.gauge['applied_to'] == 'offsets' and c0.gauge['degree'] == degree
+        assert ('position_degree' in c0.gauge) == (degree == 2)
     with on_map.mosaic() as m0, via.mosaic() as m1:
         a0, a1 = np.asarray(m0['MEAN_MAP'], np.float64), np.asarray(m1['MEAN_MAP'], np.float64)
         w = np.asarray(m0.weight('MEAN_MAP'))
@@ -258,7 +280,10 @@ def test_gauge_settings_are_checked():
         sc.Gauge('slope', degree=3)
     with pytest.raises(sc.ConfigError):
         sc.Gauge('slope', apply='sky')
-    g = sc.Gauge('slope', position_degree=0, centre=(1, 2))
+    with pytest.raises(sc.ConfigError):
+        sc.Gauge('slope', position_degree=1)              # the plane's fit has no position polynomial
+    assert sc.Gauge('slope').degree == 1 and sc.Gauge('slope').position_degree is None
+    g = sc.Gauge('slope', degree=2, position_degree=0, centre=(1, 2))
     assert g.centre == (1.0, 2.0)
     assert 'gauge' not in sc.Fit().to_dict() and 'gauge' in sc.Fit(gauge=g).to_dict()
     with pytest.raises(sc.ConfigError):

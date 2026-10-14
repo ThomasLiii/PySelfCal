@@ -325,7 +325,7 @@ def cases(files):
         Case('variance_weight', CAMERA, sc.Recipe(sc.Model(weight=sc.shot_noise()), name='nv')),
         Case('fit_gauge', CAMERA, sc.Recipe(sc.Model(offsets=[sc.Offsets(mean_zero=True),
                                                                  sc.Offsets('slope', times=sc.Function(ramp, of='det_x'))]),
-                                              fit=sc.Fit(gauge=sc.Gauge('slope', position_degree=1, apply='offsets')),
+                                              fit=sc.Fit(gauge=sc.Gauge('slope', degree=2, position_degree=1, apply='offsets')),
                                               name='gq')),
         # the fit
         Case('fit_settings', sc.SPHEREx(4),

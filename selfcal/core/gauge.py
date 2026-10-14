@@ -1,35 +1,48 @@
 """The post-solve gauge of a per-frame gradient model.
 
 A model whose offsets hold, per frame, a constant per chunk (a band of detector rows) and a slope
-along detector x leaves a family of solutions the data cannot tell apart: a sky polynomial of
-degree one or two is indistinguishable from its image in those offsets -- per frame, the
-polynomial's value at the frame's centre, its steps from band to band and its slope along x --
-apart from its curvature along x within a frame, which the offsets have no term for. The solve
-lands anywhere in that family. The gauge is the survey-mean part of the polynomial that the
-offsets absorbed; this module finds it and moves it into the sky.
+along detector x leaves a family of solutions the data cannot tell apart: a sky plane is
+indistinguishable from its image in those offsets -- per frame, the plane's value at the frame's
+centre, its steps from band to band and its slope along x (exactly when a band is one detector
+row; with bands of a few rows, up to the plane's ramp across a band). The solve lands anywhere in
+that family. The gauge picks one member: the survey-mean plane the offsets absorbed, found in the
+solved slopes and moved into the sky. A sky quadratic is absorbed the same way apart from its
+curvature along x within a frame, which the offsets have no term for: the data pin it, weakly, so
+it is not a freedom of the model, and moving it (``degree=2``) can take real sky curvature out of
+the map along with what the solve left there. The plane is the default.
 
-The fit reads the solved slopes ``b[k, s]`` (frame ``k``, chunk ``s``), per detector pixel after
-dividing by the basis's half-width, and separates what turns with the frame from what does not::
+The plane (``degree=1``) is fitted to each frame's mean slope over its covered chunks, per detector
+pixel after dividing by the basis's half-width ``h``::
+
+    mean_s b[k, s] / h = x_k . g + c
+
+``x_k`` is the frame's detector x axis on the reference grid (its Jacobian's first column), ``g`` the
+sky plane and ``c`` a slope fixed on the detector, the same in every frame. The frames roll through
+many angles, so the two separate; least squares over the frames, unweighted.
+
+With ``degree=2`` the plane and the quadratic are fitted to every solved slope ``b[k, s]`` (frame
+``k``, chunk ``s``), separating what turns with the frame from what does not::
 
     b[k, s] / h = x_k . (g + H D_k) + (x_k^T H y_k) dy_s + h_s + h_D(D_k)
 
-``x_k``, ``y_k`` are the detector axes on the reference grid (the frame's Jacobian), ``D_k`` the
-frame's centre from ``p0`` (the mean covered pixel), ``dy_s`` the chunk's row offset from the
-detector centre, ``g`` the sky plane, ``H`` the sky quadratic (degree 2), ``h_s`` a detector-fixed
-slope per chunk and ``h_D`` a polynomial in the frame's position of such a slope (degree
-``position_degree``; the amplitude of a detector-fixed gradient may vary with pointing). The frames
-roll through many angles, so the sky terms separate from the detector-fixed ones. A
-coverage-weighted least squares over every (frame, chunk) gives ``g`` and ``H``. The polynomial
-``P(p) = g . (p - p0) + (p - p0)^T H (p - p0) / 2``, minus its mean over the covered pixels, is then
-added to the sky term and recorded on the cal (``gauge/``); with ``apply='map'`` every mosaic made
-from the cal adds it to its maps (the offsets stay as solved), with ``apply='offsets'`` its image
-is removed from the offsets instead (the slopes, the chunk constants, the per-frame scalar), which
-is exact only up to the band discretisation and the curvature within a frame.
+``y_k`` is the frame's detector y axis on the grid, ``D_k`` the frame's centre from ``p0`` (the mean
+covered pixel), ``dy_s`` the chunk's row offset from the detector centre, ``H`` the sky quadratic,
+``h_s`` a detector-fixed slope per chunk and ``h_D`` a polynomial in the frame's position of such a
+slope (degree ``position_degree``; the amplitude of a detector-fixed gradient may vary with
+pointing); a coverage-weighted least squares over every (frame, chunk).
+
+The polynomial ``P(p) = g . (p - p0) + (p - p0)^T H (p - p0) / 2`` (``H = 0`` for the plane), minus its
+mean over the covered pixels, is then added to the sky term and recorded on the cal (``gauge/``);
+with ``apply='map'`` every mosaic made from the cal adds it to its maps (the offsets stay as solved),
+with ``apply='offsets'`` its image is removed from the offsets instead (the slopes, the chunk
+constants, the per-frame scalar), which is exact only up to the band discretisation (and, for a
+quadratic, its curvature within a frame).
 
 The geometry: each frame's detector axes and centre on the reference grid, from a tangent plane
 through the frame's stored header (``geometry='tangent'``: its pointing, reference pixel, PC matrix
-and scale, no distortion terms) or from its full stored WCS (``'header'``). This is the computation
-of the transfer-function campaign's post-solve gauge, kept bit for bit (``selfcal_scripts/gates/transfer``).
+and scale, no distortion terms) or from its full stored WCS (``'header'``). These are the
+computations of the transfer-function campaign's post-solve gauges, the plane and the quadratic,
+kept bit for bit (``selfcal_scripts/gates/transfer``).
 """
 from __future__ import annotations
 
@@ -102,11 +115,15 @@ def chunk_row_offsets(chunk_map, n_chunks, row_centre):
 
 
 # ---------------------------------------------------------------------------------------------- the fit
-def fit_gauge(b, ocov, J, D, dy, half, *, degree=2, position_degree=2, scale_D=1.0):
+def fit_gauge(b, ocov, J, D, dy, half, *, degree=1, position_degree=2, scale_D=1.0):
     """``g`` (2,), ``H`` (2, 2) and the fit's statistics from the solved slopes ``b`` (n_frames,
-    n_chunks; coverage ``ocov``), the frames' Jacobians ``J`` and centres ``D`` (from ``p0``), the
-    chunks' row offsets ``dy`` and the basis's half-width ``half``; ``degree`` 1 fits the plane
-    only. The positions in ``h_D`` are scaled by ``scale_D`` (half the grid)."""
+    n_chunks; coverage ``ocov``), the frames' Jacobians ``J`` and the basis's half-width ``half``.
+    ``degree`` 1: the plane, from each frame's mean slope (``H`` is zero). 2: the plane and the
+    quadratic from every slope, with the frames' centres ``D`` (from ``p0``), the chunks' row offsets
+    ``dy`` and a position polynomial of degree ``position_degree`` whose positions are scaled by
+    ``scale_D`` (half the grid); the plane ignores these four."""
+    if degree == 1:
+        return _fit_plane(b, ocov, J[:, :, 0], half)
     K, S = b.shape
     xk, yk = J[:, :, 0], J[:, :, 1]
     good = (ocov > 0) & np.isfinite(b)
@@ -148,6 +165,24 @@ def fit_gauge(b, ocov, J, D, dy, half, *, degree=2, position_degree=2, scale_D=1
     return g, H, stats
 
 
+def _fit_plane(b, ocov, xk, half):
+    """The plane alone: each frame's mean slope over its covered chunks, per detector pixel, is
+    ``x_k . g + c`` with ``c`` a slope fixed on the detector; unweighted least squares over the frames."""
+    K = b.shape[0]
+    good = ocov > 0
+    frame_ok = good.any(axis=1)
+    bx = np.array([b[k, good[k]].mean() if frame_ok[k] else np.nan for k in range(K)]) / half
+    ok = np.isfinite(bx)
+    if not ok.any():
+        raise ValueError('the gauge has no solved slopes to fit (no frame covers the slope term)')
+    A = np.column_stack([xk[ok], np.ones(ok.sum())])
+    sol = np.linalg.lstsq(A, bx[ok], rcond=None)[0]
+    stats = {'n_slopes': int(good[ok].sum()), 'n_frames': int(ok.sum()), 'n_parameters': 3,
+             'slope_rms': float(np.nanstd(bx)), 'residual_rms': float(np.std(bx[ok] - A @ sol)),
+             'detector_slope': float(sol[2])}
+    return sol[:2].copy(), np.zeros((2, 2)), stats
+
+
 def move_into_offsets(c, b, scalar, good, J, D, dy, g, H, half):
     """The image of the polynomial removed from the offsets (``apply='offsets'``): the slopes ``b``,
     the chunk constants ``c`` (per frame, mean-zero over its covered chunks) and the per-frame
@@ -178,14 +213,15 @@ def _polynomial_at(pxx, pyy, g, H, p0):
 
 
 # ---------------------------------------------------------------------------------------------- on a cal
-def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, half, degree=2, position_degree=2,
+def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, half, degree=1, position_degree=2,
               apply='map', geometry='tangent', sky_name=None, log=print, max_workers=8):
-    """Gauge the cal at ``cal_path`` in place: fit the sky polynomial to the solved slopes of offset map
-    ``slope_map`` (the chunk constants in map ``constant_map``), add it (minus its mean over the
-    covered pixels) to the sky term ``sky_name`` (default: the first), record it under ``gauge/`` and,
-    with ``apply='offsets'``, remove its image from the offsets. ``frames``: the cal's frames (their
-    headers give the geometry); ``centre`` ``(cx, cy)`` and ``half``: the slope basis's detector
-    centre and half-width, ``b = (det_x - cx) / half``. Returns a summary for the record."""
+    """Gauge the cal at ``cal_path`` in place: fit the sky plane (``degree=1``) or plane and quadratic
+    (``degree=2``, with a position polynomial of degree ``position_degree`` in the nuisance) to the
+    solved slopes of offset map ``slope_map`` (the chunk constants in map ``constant_map``), add it
+    (minus its mean over the covered pixels) to the sky term ``sky_name`` (default: the first), record
+    it under ``gauge/`` and, with ``apply='offsets'``, remove its image from the offsets. ``frames``:
+    the cal's frames (their headers give the geometry); ``centre`` ``(cx, cy)`` and ``half``: the slope
+    basis's detector centre and half-width, ``b = (det_x - cx) / half``. Returns a summary for the record."""
     import h5py
 
     from ..io.frames import frame_header_values
@@ -230,12 +266,18 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     sky_add = _polynomial_at(pxx.astype(np.float64), pyy.astype(np.float64), g, H, p0)
     mean = float(sky_add.mean())
     sky[m] += sky_add - mean
-    log(f"[gauge] {stats['n_slopes']} slopes of {K} frames x {S} chunks, {stats['n_parameters']} parameters (degree "
-        f"{degree}, position degree {position_degree}, {geometry} geometry): slope rms {stats['slope_rms']:.3e} -> "
-        f"{stats['residual_rms']:.3e} per det px after the fit; plane g = ({g[0] * w / 2:+.3e}, {g[1] * h / 2:+.3e}) per "
-        f"half-field" + (f"; quadratic H (half-field^2) = [[{H[0, 0] * (w / 2) ** 2:+.3e}, {H[0, 1] * (w / 2) * (h / 2):+.3e}], "
-                         f"[., {H[1, 1] * (h / 2) ** 2:+.3e}]], curvature left in the frames rms "
-                         f"{stats['curvature_left_rms']:.3e}" if degree == 2 else '') + f"; applied to the {apply}")
+    if degree == 1:
+        fitted = (f"the plane, from {stats['n_frames']} frames' mean slopes (of {K} frames x {S} chunks): mean slope rms "
+                  f"{stats['slope_rms']:.3e} -> {stats['residual_rms']:.3e} per det px after the fit, the detector-fixed "
+                  f"slope {stats['detector_slope']:+.3e} per det px stays in the offsets")
+    else:
+        fitted = (f"the plane and the quadratic, from {stats['n_slopes']} slopes of {K} frames x {S} chunks, "
+                  f"{stats['n_parameters']} parameters (position degree {position_degree}): slope rms "
+                  f"{stats['slope_rms']:.3e} -> {stats['residual_rms']:.3e} per det px after the fit")
+    log(f"[gauge] {fitted} ({geometry} geometry); plane g = ({g[0] * w / 2:+.3e}, {g[1] * h / 2:+.3e}) per half-field"
+        + (f"; quadratic H (half-field^2) = [[{H[0, 0] * (w / 2) ** 2:+.3e}, {H[0, 1] * (w / 2) * (h / 2):+.3e}], "
+           f"[., {H[1, 1] * (h / 2) ** 2:+.3e}]], curvature left in the frames rms "
+           f"{stats['curvature_left_rms']:.3e}" if degree == 2 else '') + f"; applied to the {apply}")
     with h5py.File(cal_path, 'r+') as f:
         f[f'sky/{sky_name}'][...] = sky.astype(np.float32)
         if apply == 'offsets':
@@ -253,7 +295,8 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
         grp.attrs['mean'] = mean
         grp.attrs['sky'] = sky_name
         grp.attrs['degree'] = int(degree)
-        grp.attrs['position_degree'] = int(position_degree)
+        if degree == 2:
+            grp.attrs['position_degree'] = int(position_degree)
         grp.attrs['applied_to'] = apply
         grp.attrs['geometry'] = geometry
         grp.attrs['slope_map'] = int(slope_map)
@@ -263,8 +306,8 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
         for k_, v_ in stats.items():
             grp.attrs[k_] = v_
     return {'g': [float(x) for x in g], 'H': [[float(x) for x in row] for row in H], 'p0': [float(x) for x in p0],
-            'mean': mean, 'degree': int(degree), 'position_degree': int(position_degree), 'applied_to': apply,
-            'geometry': geometry, 'sky': sky_name, **stats}
+            'mean': mean, 'degree': int(degree), **({'position_degree': int(position_degree)} if degree == 2 else {}),
+            'applied_to': apply, 'geometry': geometry, 'sky': sky_name, **stats}
 
 
 def _stored_header(path):

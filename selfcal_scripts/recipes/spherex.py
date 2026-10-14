@@ -51,15 +51,15 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
 #: The channel recipe of 2026-10 (the transfer-function and zodi-leak work on Ch9, NumCol 1 with 17
 #: channels): subchannel constants plus a free gradient per frame along detector x, undamped and
 #: unregularised, no clip, every observation weighted by its shot noise floored at the frame's median
-#: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve quadratic gauge applied
-#: on the map (``sc.Gauge``); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
+#: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve plane gauge applied on
+#: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
 #: ignored). The gate `transfer` pins it to the workspace implementations it replaced.
 SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
                                  offsets=[sc.Offsets(on='subchannel', mean_zero=True), spherex.frame_slope()],
                                  weight=sc.shot_noise()),
                         fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
                                    stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)),
-                                   gauge=sc.Gauge('xs_term')),
+                                   gauge=sc.Gauge('xs_term', degree=1)),
                         coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
                         numerics=sc.Numerics(30, batch=40),
                         name='slope_gauge')

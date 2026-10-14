@@ -398,16 +398,20 @@ class Gauge(Config):
 
     A model with, per frame, a constant per chunk (a band of detector rows) and a slope along
     detector x (an :class:`~selfcal.models.model.Offsets` term ``times`` a function
-    ``(det_x - centre) / half``) cannot tell a sky plane -- or, with ``degree=2``, a sky quadratic --
-    from its image in those offsets. After the solve the survey-mean polynomial the offsets absorbed
+    ``(det_x - centre) / half``) cannot tell a sky plane from its image in those offsets, and the
+    solve lands anywhere in that family. After the solve the survey-mean plane the offsets absorbed
     is fitted to the solved slopes (``slope``: that term's name; ``constants``: the chunk-constant
-    term's, default the first term on the same chunk map without a basis), with a detector-fixed
-    slope per chunk and a polynomial of degree ``position_degree`` in the frame's position as the
-    nuisance, and moved into the sky: added to the cal's sky term and, ``apply="map"``, to the maps
-    of every mosaic made from the cal (the offsets stay as solved; exact), or, ``apply="offsets"``,
-    removed from the offsets instead (exact only up to the band discretisation and the curvature
-    within a frame). ``geometry``: each frame's axes and centre on the reference grid from a tangent
-    plane through its stored header (``"tangent"``: pointing, reference pixel, PC matrix, scale; no
+    term's, default the first term on the same chunk map without a basis) -- each frame's mean slope
+    against the frame's x axis on the grid, with a slope fixed on the detector as the nuisance -- and
+    moved into the sky: added to the cal's sky term and, ``apply="map"``, to the maps of every mosaic
+    made from the cal (the offsets stay as solved; exact), or, ``apply="offsets"``, removed from the
+    offsets instead (exact only up to the band discretisation). ``degree=2`` moves a sky quadratic
+    too, fitted with the plane to every (frame, chunk) slope, with a detector-fixed slope per chunk
+    and a polynomial of degree ``position_degree`` (default 2) in the frame's position as the
+    nuisance. A quadratic is not a freedom of the model: its curvature along x within a frame has no
+    term in the offsets, so the data pin it, weakly, and moving it can take real sky curvature out of
+    the map. ``geometry``: each frame's axes and centre on the reference grid from a tangent plane
+    through its stored header (``"tangent"``: pointing, reference pixel, PC matrix, scale; no
     distortion) or from its full stored WCS (``"header"``). ``centre`` and ``half`` (default: the
     detector's ``((n_x - 1) / 2, (n_y - 1) / 2)`` and ``n_x / 2``) are checked against the slope
     term's basis.
@@ -415,8 +419,8 @@ class Gauge(Config):
     slope: str
     _: KW_ONLY
     constants: str | None = None
-    degree: Literal[1, 2] = 2
-    position_degree: int = 2
+    degree: Literal[1, 2] = 1
+    position_degree: int | None = None
     apply: Literal['map', 'offsets'] = 'map'
     geometry: Literal['tangent', 'header'] = 'tangent'
     centre: tuple[float, float] | None = None
@@ -427,8 +431,12 @@ class Gauge(Config):
             raise ConfigError("Gauge(slope=...): the name of the per-frame x-slope term")
         if self.degree not in (1, 2):
             raise ConfigError(f"Gauge(degree={self.degree}): 1 (a plane) or 2 (plane + quadratic)")
-        if self.position_degree < 0:
-            raise ConfigError(f"Gauge(position_degree={self.position_degree}): at least 0 (none)")
+        if self.position_degree is not None:
+            if self.degree != 2:
+                raise ConfigError(f"Gauge(position_degree={self.position_degree}): the nuisance of the quadratic's fit "
+                                  "(degree=2); the plane's has none")
+            if self.position_degree < 0:
+                raise ConfigError(f"Gauge(position_degree={self.position_degree}): at least 0 (none)")
         if self.apply not in ('map', 'offsets'):
             raise ConfigError(f"Gauge(apply={self.apply!r}): 'map' or 'offsets'")
         if self.geometry not in ('tangent', 'header'):
