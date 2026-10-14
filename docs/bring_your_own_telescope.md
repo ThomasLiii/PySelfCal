@@ -187,6 +187,7 @@ More set-ups the same machinery expresses (each a few lines and one function):
 | sky smoothness or in-painting | `sc.priors.sky_smoothness(term, covered_only=False)` smooths into gaps |
 | inverse-variance weighting | `"variance": sc.Layer("variance")` + `weight=inverse_sigma` |
 | shot-noise weighting, floored at each frame's median | `weight=sc.shot_noise()` (`sc.Variance(shot_noise_variance, of=("value", "flags"))`) |
+| a per-frame gradient model's gauge (the sky plane the offsets absorbed) | `sc.Fit(gauge=sc.Gauge("slope"))` with `sc.Offsets("slope", times=sc.Function(xtilde, of="det_x"))` |
 | windowed or binned read-outs | a reader returning the window's full-detector `coords` |
 
 ## 4. With code: an instrument

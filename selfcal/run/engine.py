@@ -594,9 +594,18 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     cc.reproj_list = staging.remap_to_nvme(staged_list, hdd_reproj_dir)
     cal_path = cc.save_calibration(cal_file=cal_file)
     cc.reproj_list = staged_list
+    gauge_summary = None
+    if spec.gauge is not None:                 # the post-solve gauge: the survey-mean polynomial into the sky
+        from selfcal.core.gauge import gauge_cal
+        g = spec.gauge
+        gauge_summary = gauge_cal(cal_path, list(staged_list), cc.ref_wcs, degree=g.degree,
+                                  position_degree=2 if g.position_degree is None else g.position_degree,
+                                  apply=g.apply, geometry=g.geometry, log=print, **gauge_terms(ctx, g))
     del cc
     gc.collect()
     entry = record.entry()
+    if gauge_summary is not None:
+        entry['gauge'] = gauge_summary
     if snapshots is not None:
         entry['snapshots'] = snapshots.summary()
         print(f"{len(snapshots.written)} snapshots kept in {snapshots.directory}"
@@ -675,6 +684,12 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
         cache_dir=cache_dir,
         wav_maps=wav_maps,
         **mosaic_kwargs)
+    # A cal gauged on the map (Fit(gauge=sc.Gauge(..., apply='map'))): its polynomial, which the cal's sky
+    # term carries, is added to the mean maps here, so the mosaic matches that sky term.
+    from selfcal.core.gauge import apply_to_maps
+    from selfcal.io.calfile import CalFile
+    with CalFile(cal_path) as cal_:
+        apply_to_maps(maps, cal_.gauge, log=print)
     if want_wav:
         inst.finalize_mosaic(geom, mm, maps, spec.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
@@ -682,6 +697,51 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir)
     return mos_path
+
+
+def gauge_terms(ctx, gauge):
+    """What the post-solve gauge reads from the model: the offset map of the per-frame x-slope term
+    (``Gauge.slope``), the map of the chunk-constant term on the same chunk map (``Gauge.constants``,
+    default the first such term without a basis) and the slope basis's detector centre and
+    half-width (``Gauge.centre`` / ``half``, default from the detector's shape), checked against the
+    term's function ``(det_x - centre) / half``."""
+    from selfcal.config.base import ConfigError
+    from selfcal.models.model import Function
+
+    terms = list(ctx.spec.recipe.model.offsets)
+    names = [t.name for t in terms]
+    if gauge.slope not in names:
+        raise ConfigError(f"Gauge(slope={gauge.slope!r}): the model has no offset term of that name (its terms: {names})")
+    m_s = names.index(gauge.slope)
+    slope = terms[m_s]
+    if gauge.constants is not None:
+        if gauge.constants not in names:
+            raise ConfigError(f"Gauge(constants={gauge.constants!r}): the model has no offset term of that name (its terms: "
+                              f"{names})")
+        m_c = names.index(gauge.constants)
+    else:
+        found = [m for m, t in enumerate(terms) if m != m_s and t.on == slope.on and t.times is None and t.basis is None]
+        if not found:
+            raise ConfigError(f"Gauge(slope={gauge.slope!r}): no chunk-constant term on its chunk map ({slope.on!r}); "
+                              f"give constants=")
+        m_c = found[0]
+    if terms[m_c].on != slope.on:
+        raise ConfigError(f"Gauge: the slope term ({slope.on!r}) and the constant term ({terms[m_c].on!r}) must share "
+                          f"their chunk map")
+    ny, nx = (int(v) for v in ctx.geom.shape)
+    centre = gauge.centre if gauge.centre is not None else ((nx - 1) / 2.0, (ny - 1) / 2.0)
+    half = float(gauge.half) if gauge.half is not None else nx / 2.0
+    fn = slope.times
+    if not isinstance(fn, Function) or tuple(fn.of) != ('det_x',):
+        raise ConfigError(f"Gauge(slope={gauge.slope!r}): the term must be `times` a function of det_x alone "
+                          f"(got {fn!r})")
+    x = np.linspace(0.0, nx - 1.0, 9)
+    got = np.asarray(fn.fn(x, **dict(fn.params)), dtype=np.float64)
+    want = (x - centre[0]) / half
+    if got.shape != x.shape or not np.allclose(got, want, rtol=0, atol=1e-9):
+        raise ConfigError(f"Gauge(slope={gauge.slope!r}): the term's basis is not (det_x - {centre[0]}) / {half} "
+                          f"(give Gauge(centre=, half=) for another linear basis)")
+    return {'slope_map': m_s, 'constant_map': m_c, 'centre': (float(centre[0]), float(centre[1])), 'half': half}
 
 
 def _basis_offset_hook(ctx, mm, cal_path):

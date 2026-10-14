@@ -52,12 +52,15 @@ from .spherex_utility import (
 )
 from .wavemap import wav_coadd
 
-__all__ = ['SPHEREx', 'channel', 'channels', 'group', 'window', 'line', 'LINE_TEMPLATES', 'precompute_lvf',
-           'zodi_anchor']
+__all__ = ['SPHEREx', 'channel', 'channels', 'group', 'window', 'line', 'frame_slope', 'LINE_TEMPLATES',
+           'precompute_lvf', 'zodi_anchor']
 
 logger = logging.getLogger(__name__)
 
 _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'line_templates')
+
+#: Pixels per side of a SPHEREx detector (the frames are 2040 x 2040).
+DETECTOR_SIZE = 2040
 
 #: The shipped line templates (``data/line_templates``): name -> file.
 LINE_TEMPLATES = {
@@ -326,6 +329,18 @@ def line(name, damping=None, *, file=None) -> Sky:
                               f"give file=")
         file = os.path.join(_DATA, LINE_TEMPLATES[name])
     return Sky(name, times=template(file), damping=damping)
+
+
+def frame_slope(name='xs_term', per='frame'):
+    """An offset term that is a free gradient along detector x per subchannel: one coefficient per
+    frame (``per``) and subchannel, times :func:`selfcal.models.bases.tilt` of the detector
+    column, -1 at the left edge and +1 at the right (the 2040-pixel detector: centre 1019.5, half
+    width 1020). With the subchannel constants it is the per-frame gradient model whose gauge
+    :class:`~selfcal.run.recipe.Gauge` fixes: ``sc.Fit(gauge=sc.Gauge(name))``."""
+    from ...models.bases import tilt
+    from ...models.model import Function, Offsets
+    n = DETECTOR_SIZE
+    return Offsets(name, on='subchannel', per=per, times=Function(tilt, of='det_x', centre=(n - 1) / 2.0, half=n / 2.0))
 
 
 def precompute_lvf(detectors, *, output_dir=None, calib_dir=None, num_sub=10, num_ch=34):

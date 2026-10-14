@@ -234,6 +234,14 @@ class CalFile:
         return f['frame_scalar'][()] if 'frame_scalar' in f else None
 
     @property
+    def gauge(self) -> dict | None:
+        """The post-solve gauge recorded on the cal (:mod:`selfcal.core.gauge`: the polynomial's
+        ``g``, ``H``, ``p0``, its ``mean`` over the covered pixels, ``applied_to`` 'map' or
+        'offsets', the fit's statistics), or None."""
+        from ..core.gauge import read_gauge
+        return read_gauge(self._f)
+
+    @property
     def fit_ok(self) -> np.ndarray | None:
         """Per-frame fit flag of an N-pass OFFSET product (None elsewhere)."""
         f = self._f

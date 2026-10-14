@@ -122,7 +122,8 @@ BY_SUBCHANNEL = NUMCOL3.replace(fit=sc.Fit(50, clip=sc.Clip(5.0, per=SUBCHANNEL)
 ```
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver,
-per-frame hooks); `sc.Coadd` the mosaic (`None`: no mosaic); `sc.Numerics` the summation
+per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the
+mosaic (`None`: no mosaic); `sc.Numerics` the summation
 layout (threads and batch sizes). `Numerics` belongs to the recipe because it changes the last
 bits of the products; its defaults are production's, so a recipe reproduces production on any
 machine. A clip compares each observation with the robust spread of its group: its frame

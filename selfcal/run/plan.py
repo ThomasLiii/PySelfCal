@@ -74,6 +74,8 @@ class Plan:
                     lines.append(f"  sky term    {t.name}: damping {d:g}" + (f", times {t.times!r}" if t.times else ''))
                 for t in r.model.offsets:
                     lines.append(f"  offsets     {t!r}")
+                if r.model.weight is not None:
+                    lines.append(f"  weight      {describe_weight(r.model.weight)}")
         if self.frames is not None:
             n, where, how = self.frames
             lines.append(f"  frames      {n} in {where}{' (' + how + ')' if how else ''}")
@@ -100,6 +102,8 @@ class Plan:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if r is not None and r.fit.deflate is not None:
             lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
+        if r is not None and r.fit.gauge is not None:
+            lines.append(f"  gauge       {describe_gauge(r.fit.gauge)}")
         if self.monitor is not None:
             lines.append(f"  monitor     {describe_monitor(self.monitor, r.fit.stop if r is not None else None)}")
         if self.tiles is not None:
@@ -112,6 +116,24 @@ class Plan:
         return '\n'.join(lines)
 
     __repr__ = __str__
+
+
+def describe_weight(weight) -> str:
+    """A model's observation weight in words (the plan's ``weight`` line)."""
+    from ..models.model import Variance
+    if isinstance(weight, Variance):
+        return (f"{weight!r}: each observation's variance; the solve weights its row by 1/sqrt(variance), "
+                "the coadd by 1/variance")
+    return f"{weight!r}: each observation's row weight; the coadd weights by its square"
+
+
+def describe_gauge(gauge) -> str:
+    """A :class:`~selfcal.run.recipe.Gauge` in words (the plan's ``gauge`` line)."""
+    what = ('the sky plane' if gauge.degree == 1 else 'the sky plane and quadratic (position degree '
+            f"{2 if gauge.position_degree is None else gauge.position_degree})")
+    where = ('added to the sky term and the maps, the offsets kept as solved' if gauge.apply == 'map'
+             else 'moved from the offsets into the sky term')
+    return f"{what} that the slopes {gauge.slope!r} absorbed, after the solve: {where} ({gauge.geometry} geometry)"
 
 
 def describe_deflate(deflate) -> str:

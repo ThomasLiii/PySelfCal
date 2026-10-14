@@ -73,8 +73,8 @@ field at its default.
 
 Rules for every change to a fingerprinted class (`sc.SPHEREx`, `sc.Euclid`, `sc.Camera`, the model's
 classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Stop` and its rules (`sc.ResidualRule`,
-`sc.GradientRule`, `sc.LargeScaleRule`), `sc.Coadd`, `sc.Numerics`, `sc.Tiles`, `sc.Passes`,
-`sc.Refit`):
+`sc.GradientRule`, `sc.LargeScaleRule`), `sc.Deflate`, `sc.Gauge`, `sc.Coadd`, `sc.Numerics`, `sc.Tiles`,
+`sc.Passes`, `sc.Refit`):
 
 - a new field is declared with `added(default, since=...)`;
 - a class is never renamed or moved, a field never renamed or removed, a default never changed:

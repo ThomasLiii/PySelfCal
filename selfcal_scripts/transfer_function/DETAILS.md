@@ -19,7 +19,7 @@ sub_data_new = S[y0:y1, x0:x1]      # keep NaN wherever the real frame was NaN
 ```
 
 Preserving the original NaN pattern keeps each frame's **observed footprint**
-identical to the fiducial run — only the sky values change, not the coverage.
+identical to the real-data run — only the sky values change, not the coverage.
 `inject_simulated_sky.py` copies every frame whole (so `sub_mapping`, `sub_bitmask`,
 `sub_foot`, `ref_coords`, WCS headers, and the **filename** are unchanged) and
 overwrites only `sub_data`. Because the filenames are kept, the `exp_<n>_det_<n>.h5`
@@ -41,28 +41,37 @@ band-centre / band-width files) from `sc.SPHEREx(calib_dir=)`, by default
 `$SELFCAL_SPHEREX_CALIB_DIR`, else the SPHEREx calibration directory of the
 processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
 
-## The fiducial recipe
+## The recipe
 
-`FIDUCIAL` in `transfer_function.py` is the frozen fiducial continuum recipe — the
-same one behind the fiducial D1–D6 mosaics: the shared `POLY_K1` of
-`selfcal_scripts/recipes/spherex.py` (the recipe of `selfcal_scripts/runs/d5.py`)
-on `sc.SPHEREx(detector, num_col=10)`:
+`RECIPE` in `transfer_function.py` is the production recipe of 2026-10, unchanged:
+`SLOPE_GAUGE` of `selfcal_scripts/recipes/spherex.py` (the recipe of
+`selfcal_scripts/runs/ch9_slope_gauge.py`), on
+`sc.SPHEREx(detector, num_col=1, num_ch=17)`:
 
-- the model `sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5))`: adjacency
-  smoothness 0.1, a linear column polynomial of weight 0.5, the sky damped at 0.1
-- the fit `sc.Fit(50, clip=5.0)`: 50 LSQR iterations, preconditioned, tolerance
-  1e-6, a 5-sigma clip
-- the coadd: the mean map only (`clip=None, std=False, instrument_maps=False`,
-  `oversample=2`), without a frame cache (`cache_frames=False` in `setup()`): the
-  transfer function is read off `MEAN_MAP`, and the other maps cost roughly half
-  the mosaic's wall time without being read. This is a mosaic-side choice only —
-  the calibration is the fiducial one, and `MEAN_MAP` is the same map whether or
-  not the others are built: the coadd accumulates in a fixed order (batch order),
-  so the maps depend only on the frames and the batch sizes.
+- the model: per frame, a constant per subchannel (mean zero over the frame) and a
+  free gradient along detector x (`spherex.frame_slope()`: `(det_x - 1019.5) / 1020`
+  times one number per frame and subchannel), the sky undamped; no adjacency,
+  no polynomial, no prior
+- the weights (`sc.shot_noise()`): every observation's variance is
+  `max(|value|, the frame's median)`; the solve weights each row by its inverse
+  square root, the coadd each pixel by its inverse
+- the fit: deflated CGLS (`sc.Deflate(4)`) to the chi-squared stop
+  (`sc.ChiSquaredRule(0.1, window=50, every=10)`: the chi-squared fell by less than
+  0.1² over the last 50 iterations, checked every 10 — converged to a tenth of the
+  error bars; at most 600 iterations), no clip, no flag ignored at the solve
+- the post-solve gauge (`sc.Gauge("xs_term", degree=1)`): the per-frame gradients
+  cannot tell a sky plane from its image in the offsets, so after the solve the
+  survey-mean plane the offsets absorbed is fitted to them and moved into the sky:
+  the cal's sky term and every mosaic of the cal gain it, the offsets stay as solved
+- the coadd: the weighted mean, the std and the 2-sigma clipped mean, flag 21
+  (the source mask) ignored, no instrument maps
 
 You do not edit the script for normal use — the six run-specific inputs are its
-flags. Copy it and change `RECIPE` only to deliberately deviate from the fiducial.
-The machine settings (`--scratch`, `--workers`) never change a product's bytes.
+flags. Copy it and change `RECIPE` only to deliberately deviate from the production
+recipe. The machine settings (`--scratch`, `--workers`) never change a product's
+bytes. Until 2026-10 the kit ran the NumCol 10 fiducial behind the D1–D6 channel
+mosaics of 2026-05 (`POLY_K1`, on 34 channels and 10 columns, with a mean-only
+coadd); the README shows the line that runs it again.
 
 Until October 2026 the kit also had a TOML form (`transfer_function.toml`, filled
 by `run_transfer_function.sh`); the run engine was proven to be handed the same
@@ -70,11 +79,13 @@ work by both forms before the TOML form was removed with selfcal's TOML support.
 
 ## Channels
 
-Each SPHEREx detector is a linear variable filter split into 34 spectral channels
-(`num_ch = 34`); each channel is an independent calibration + mosaic at its
-wavelength. The kit runs a **single** channel (default the mid-band `Ch17`, the job
-`spherex.channel(N)`) — enough to characterize the transfer function without 34× the
-compute. Valid channel indices are 1..34; pick with `--channel N`.
+Each SPHEREx detector is a linear variable filter; the production recipe splits it
+into 17 spectral channels (`num_ch = 17`, each the width of two of the 34 science
+channels), and each channel is an independent calibration + mosaic at its
+wavelength. The kit runs a **single** channel (default `Ch9`, the channel of the
+transfer-function campaign of 2026-10; the job `spherex.channel(N)`) — enough to
+characterize the transfer function without 17× the compute. Valid channel indices
+are 1..17; pick with `--channel N`.
 
 ## The six inputs and three ways to set them
 
@@ -85,7 +96,7 @@ compute. Valid channel indices are 1..34; pick with `--channel N`.
 | input | flag | env var |
 | --- | --- | --- |
 | detector (1..6) | `-d`, `--detector` | `DETECTOR` |
-| channel (1..34) | `-c`, `--channel` | `CHANNEL` |
+| channel (1..17) | `-c`, `--channel` | `CHANNEL` |
 | simulated-sky frames dir | `-f`, `--frames` | `REPROJ_FRAME_DIR` |
 | ref.fits | `-r`, `--ref` | `REF_FITS` |
 | output dir | `-o`, `--output-dir` | `OUTPUT_DIR` |
@@ -121,4 +132,4 @@ real run's folder).
 - `verify_frame.py` — schema + injection sanity check on one frame (with `--orig`,
   confirms only `sub_data` changed).
 - `transfer_function.py` — the run: the six inputs, the `ref.fits` link, the
-  frozen recipe `FIDUCIAL`, then the plan and the run.
+  production recipe `RECIPE` (and its chunk axes), then the plan and the run.

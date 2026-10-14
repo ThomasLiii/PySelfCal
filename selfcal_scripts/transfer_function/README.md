@@ -1,8 +1,8 @@
 # SelfCal transfer-function kit (SPHEREx D1–D6)
 
-Measure the SelfCal pipeline's transfer function: run the **fiducial**
-calibration + mosaic on frames carrying a **known simulated sky**, and compare
-the output mosaic to what went in. It runs the standard pipeline — no special
+Measure the SelfCal pipeline's transfer function: run the **production**
+calibration + mosaic (the 2026-10 recipe) on frames carrying a **known simulated
+sky**, and compare the output mosaic to what went in. It runs the standard pipeline — no special
 code path. For the how and why (geometry, schema details, options), see
 [`DETAILS.md`](DETAILS.md).
 
@@ -20,7 +20,7 @@ pip install -e .          # installs the `selfcal` package + dependencies
 
 - **Reprojected frames carrying your simulated sky**, and the detector's
   **`ref.fits`** — `ref.fits` is provided by the pipeline owner (it defines the
-  exact fiducial geometry; too large for git).
+  exact geometry of the real-data run; too large for git).
   - If you **already have simulated-sky frames** in the format below, you are
     ready: go straight to [step 3](#3-run).
   - If you have a simulated sky as a 2-D array and real reprojected frames to
@@ -78,12 +78,12 @@ python selfcal_scripts/transfer_function/verify_frame.py \
     --orig <real_reproj_dir>/exp_0000_det_00.h5    # --orig is optional
 ```
 
-**c) Run the fiducial calibration + mosaic** (a single channel).
+**c) Run the production calibration + mosaic** (a single channel).
 
 ```bash
 python selfcal_scripts/transfer_function/transfer_function.py \
     --detector   3 \
-    --channel    17 \
+    --channel    9 \
     --frames     <simsky_frames_dir> \
     --ref        <ref.fits> \
     --output-dir <output_dir> \
@@ -98,20 +98,23 @@ environment variable (`DETECTOR`, `CHANNEL`, `REPROJ_FRAME_DIR`, `REF_FITS`,
 machine (fast local disk, processes), which never changes the products.
 Swap detector = change `--detector`, `--frames`, `--ref`, `--run-name`.
 
-**Another recipe.** The recipe is Python: `FIDUCIAL` in
-[`transfer_function.py`](transfer_function.py) is the shared NumCol 10 fiducial
-(`POLY_K1` in [`recipes/spherex.py`](../recipes/spherex.py)) with a mean-only
-coadd. Copy the script and change its line `RECIPE = FIDUCIAL`, under a name of
-its own (the products carry it, so they do not collide with the fiducial's):
+**Another recipe.** The recipe is Python: `RECIPE` in
+[`transfer_function.py`](transfer_function.py) is the production recipe
+(`SLOPE_GAUGE` in [`recipes/spherex.py`](../recipes/spherex.py)), solved on 17
+channels and one column (`NUM_CH, NUM_COL = 17, 1` next to it). Copy the script
+and change `RECIPE` under a name of its own (the products carry it, so they do
+not collide with the production recipe's):
 
 ```python
-RECIPE = FIDUCIAL.replace(fit=sc.Fit(100, clip=5.0), name="iter100")       # 100 iterations
-RECIPE = FIDUCIAL.replace(model=sc.continuum(smooth=0.1), name="nopoly")   # no column polynomial
+RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=None), name="nogauge")       # no gauge
+RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=sc.Gauge("xs_term", degree=2)),
+                             name="quadgauge")                                              # the quadratic gauge
+RECIPE, NUM_CH, NUM_COL = POLY_K1, 34, 10       # the NumCol 10 fiducial of 2026-05 (from recipes/spherex.py)
 ```
 
 Settings are checked as they are built; the [Python API guide](../../docs/guide/python-api.md)
-lists them. (The number of columns belongs to the instrument: `num_col=10` in
-the script's `setup()`.)
+lists them. (The chunk axes belong to the instrument: `NUM_CH` and `NUM_COL`
+build `sc.SPHEREx(detector, num_col=NUM_COL, num_ch=NUM_CH)` in `setup()`.)
 
 The kit's TOML form (`run_transfer_function.sh` filling `transfer_function.toml`)
 was removed with selfcal's TOML support; the script above makes the same products.
@@ -121,16 +124,12 @@ was removed with selfcal's TOML support; the script above makes the same product
 Under `<output_dir>/<run-name>/`:
 
 - **`mosaic/mosaic_*.fits`** — the recovered map, on the same WCS as `ref.fits`.
-  Extension `MEAN_MAP` is what you compare against; `MEAN_MAP_WEIGHT` is its
-  coverage. (The fiducial science mosaics also carry std, sigma-clipped-mean
-  and wavelength maps; the kit skips those — the transfer function does not
-  read them, and building them costs ~30 % more mosaic wall time. The
-  calibration is unaffected, and `MEAN_MAP` is the same map either way: the
-  coadd accumulates in a fixed order, so the maps depend only on the frames
-  and the batch sizes. To get the other maps, give the recipe the fiducial
-  coadd back, `RECIPE = FIDUCIAL.replace(coadd=POLY_K1.coadd)` with
-  `cache_frames=True` in `setup()`.)
-- `calibration/cal_*.h5` — the calibration solution.
+  Extension `MEAN_MAP` is what you compare against: the weighted mean, with the
+  post-solve plane gauge added; `MEAN_MAP_WEIGHT` is its coverage. The mosaic
+  also carries what the production mosaics do: the std map and the 2-sigma
+  clipped mean (`SC_MEAN_MAP`, the gauge added too).
+- `calibration/cal_*.h5` — the calibration solution. Its sky term carries the
+  plane gauge, recorded in the group `gauge/`; the offsets stay as solved.
 - `logs/transfer_function_<timestamp>_<pid>.log` — everything the run printed
   (including worker processes and any error traceback), headed by the command,
   the code version and the script used. One file per run, so reruns never

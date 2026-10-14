@@ -323,6 +323,10 @@ def cases(files):
                        coadd=None, name='k2s'), spherex.channel(3)),
         Case('model_with_everything', Prism(), sc.Recipe(model_with_everything(files), name='all')),
         Case('variance_weight', CAMERA, sc.Recipe(sc.Model(weight=sc.shot_noise()), name='nv')),
+        Case('fit_gauge', CAMERA, sc.Recipe(sc.Model(offsets=[sc.Offsets(mean_zero=True),
+                                                                 sc.Offsets('slope', times=sc.Function(ramp, of='det_x'))]),
+                                              fit=sc.Fit(gauge=sc.Gauge('slope', degree=2, position_degree=1, apply='offsets')),
+                                              name='gq')),
         # the fit
         Case('fit_settings', sc.SPHEREx(4),
              sc.Recipe(sc.continuum(), fit=sc.Fit(120, clip=sc.Clip(4.0, per=SUBCHANNEL), ignore_flags=(3, 21),

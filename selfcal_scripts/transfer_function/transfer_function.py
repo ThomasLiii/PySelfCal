@@ -1,33 +1,35 @@
-"""The transfer-function run: the fiducial calibration and mosaic of one SPHEREx channel, on frames
+"""The transfer-function run: the production calibration and mosaic of one SPHEREx channel, on frames
 that carry a simulated sky, from six inputs:
 
     python selfcal_scripts/transfer_function/transfer_function.py \\
-        --detector 3 --channel 17 --frames <simsky_frames_dir> --ref <ref.fits> \\
+        --detector 3 --channel 9 --frames <simsky_frames_dir> --ref <ref.fits> \\
         --output-dir <output_dir> --run-name TF_D3
 
 Each input is a flag, else its environment variable, else its default (flag > env var > default).
---dry-run prints the plan and runs nothing. Another recipe: copy this script and change RECIPE.
+--dry-run prints the plan and runs nothing. Another recipe: copy this script and change RECIPE (with
+the chunk axes it is solved on, NUM_CH and NUM_COL).
 """
 import argparse
 import os
 
 import selfcal as sc
 from selfcal.instruments import spherex
-from selfcal_scripts.recipes.spherex import POLY_K1
+from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
 
-#: The fiducial NumCol 10 recipe (damp0p1 / reg0p1 / outThresh5 / polyK1) with a mean-only coadd:
-#: the transfer function is read off MEAN_MAP, which is the same map with or without the std,
-#: sigma-clipped and wavelength maps. No name, so the products carry no suffix.
-FIDUCIAL = POLY_K1.replace(coadd=POLY_K1.coadd.replace(clip=None, std=False, instrument_maps=False), name='')
+#: The production recipe of 2026-10, unchanged (SLOPE_GAUGE): per frame, a constant per subchannel and
+#: a free gradient along detector x, undamped and unregularised; every observation weighted by its shot
+#: noise floored at its frame's median; deflated CGLS to the chi-squared stop, no clip; the post-solve
+#: plane gauge, added to the sky term and the maps; the coadd weighted the same way (mean, std and
+#: 2-sigma clipped mean, flag 21 ignored). The transfer function is read off MEAN_MAP.
+RECIPE = SLOPE_GAUGE
 
-#: The recipe this script runs. A copy of the script changes it under a name of its own, which its
-#: products carry, e.g. RECIPE = FIDUCIAL.replace(fit=sc.Fit(100, clip=5.0), name='iter100').
-RECIPE = FIDUCIAL
+#: The chunk axes RECIPE is solved on: 17 channels (the channels are 1..17) and one column.
+NUM_CH, NUM_COL = 17, 1
 
 #: The six inputs: flags, environment variable, default, what it is.
 INPUTS = (
     (('-d', '--detector'), 'DETECTOR', 3, '1..6'),
-    (('-c', '--channel'), 'CHANNEL', 17, '1..34, a single LVF channel'),
+    (('-c', '--channel'), 'CHANNEL', 9, f'1..{NUM_CH}, a single LVF channel'),
     (('-f', '--frames', '--reproj-frame-dir'), 'REPROJ_FRAME_DIR', '/scratch/tf/D3_simsky_frames',
      'the simulated-sky frames, read in place'),
     (('-r', '--ref', '--ref-fits'), 'REF_FITS',
@@ -45,7 +47,8 @@ def arguments(argv=None):
                             help=f'{what}; env {variable}, default {default}')
     # The machine never changes a byte; the defaults are the processing host's.
     parser.add_argument('--scratch', default='/home/thomasli/selfcal-project/selfcal/cache/',
-                        help="fast local disk for the solver's spill files; default %(default)s")
+                        help="fast local disk for the solver's spill files and the coadd's frame cache; "
+                             "default %(default)s")
     parser.add_argument('--workers', type=int, default=48, help='worker processes; default %(default)s')
     parser.add_argument('--dry-run', action='store_true', help='print the plan and run nothing')
     return parser.parse_args(argv)
@@ -53,10 +56,9 @@ def arguments(argv=None):
 
 def setup(args):
     """The field and the calibrate() arguments of the run."""
-    # No frame cache: the mean map is one pass over the frames, and nothing else reads the cache.
-    compute = sc.Compute(args.scratch, workers=args.workers, cache_frames=False)
-    field = sc.Field(os.path.join(args.output_dir, args.run_name), sc.SPHEREx(args.detector, num_col=10), 6.2,
-                     compute=compute)
+    compute = sc.Compute(args.scratch, workers=args.workers)
+    field = sc.Field(os.path.join(args.output_dir, args.run_name),
+                     sc.SPHEREx(args.detector, num_col=NUM_COL, num_ch=NUM_CH), 6.2, compute=compute)
     return field, dict(jobs=spherex.channel(args.channel), frames=args.frames)
 
 

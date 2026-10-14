@@ -62,7 +62,7 @@ _EXPORTS = {
                      'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     'shot_noise': 'selfcal.models.noise',
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
-                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate'), 'selfcal.run.recipe'),
+                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Gauge'), 'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
