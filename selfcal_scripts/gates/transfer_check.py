@@ -1,8 +1,8 @@
 """The transfer gate's cal comparison: the gate cal (the library's weighted solve + the gauge applied on the map:
-the plane, the production recipe since 2026-10-14) against two goldens of the archived workspace implementations -- its offsets, offset coverage, chunk maps,
-frame scalars, sky coverage and frame list must equal the UNGAUGED golden's byte for byte (the library leaves the
-offsets as solved), and its sky term the GAUGED golden's (the script gauged the sky the same way and moved the
-offsets too). Exit 0 iff everything matches.
+the plane, the production recipe since 2026-10-14) against two goldens of the transfer-function campaign's own
+implementations -- its offsets, offset coverage, chunk maps, frame scalars, sky coverage and frame list must equal
+the UNGAUGED golden's byte for byte (the library leaves the offsets as solved), and its sky term the GAUGED golden's
+(the campaign's script gauged the sky the same way and moved the offsets too). Exit 0 iff everything matches.
     python transfer_check.py GATE_CAL.h5 UNGAUGED_GOLDEN.h5 GAUGED_GOLDEN.h5"""
 import sys
 

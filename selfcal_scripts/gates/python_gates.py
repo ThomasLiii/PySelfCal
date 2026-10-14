@@ -107,9 +107,9 @@ def transfer():
     solve (sc.shot_noise(): every row weighted 1/sqrt(max(|value|, the frame's median)), no clip, the
     per-frame x-slope model, deflated CGLS to the chi-squared stop) and the weighted coadd of the ungauged
     cal (mean, std, 2-sigma clipped mean, flag 21 ignored, weights 1/max(|value|, that median)) and the post-solve
-    plane gauge applied on the map (sc.Gauge('xs_term', degree=1)) -- against the goldens the archived workspace implementations
-    made (transfer/make_transfer_goldens.sh): the cal's offsets against the ungauged golden, its sky term against the
-    gauged one, the mosaic against the gauged map (transfer/transfer_check.py)."""
+    plane gauge applied on the map (sc.Gauge('xs_term', degree=1)) -- against the goldens the transfer-function
+    campaign's own implementations made (kept in the workspace, see README.md): the cal's offsets against the
+    ungauged golden, its sky term against the gauged one, the mosaic against the gauged map (transfer_check.py)."""
     import dataclasses
 
     from selfcal_scripts.recipes.spherex import SLOPE_GAUGE

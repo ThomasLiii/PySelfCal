@@ -20,8 +20,8 @@ logs to `m13_gate_<tag>.log`).
 | euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
 | m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
-| transfer | D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted solve (`sc.shot_noise()`), the post-solve plane gauge on the map (`sc.Gauge('xs_term', degree=1)`), the weighted coadd (mean, std, 2-sigma clip) -- against what the archived workspace implementations made | `*_transfer_golden_f64.h5` (the cal's offsets), `*_transfer_plane_golden_f64.h5` (its sky), `*_transfer_planemap_golden_f64.fits` (the mosaic) |
-| transfer_quad | the quadratic gauge (`sc.Gauge(degree=2)`) of the library on the golden ungauged cal and map of `transfer`, against the workspace's (`transfer/quad_check.py`; no solve) | `*_transfer_gq2_golden_f64.h5` (the sky), `*_transfer_gq2map_golden_f64.fits` (the maps) |
+| transfer | D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted solve (`sc.shot_noise()`), the post-solve plane gauge on the map (`sc.Gauge('xs_term', degree=1)`), the weighted coadd (mean, std, 2-sigma clip) -- against what the campaign's own implementations made | `*_transfer_golden_f64.h5` (the cal's offsets), `*_transfer_plane_golden_f64.h5` (its sky), `*_transfer_planemap_golden_f64.fits` (the mosaic) |
+| transfer_quad | the quadratic gauge (`sc.Gauge(degree=2)`) of the library on the golden ungauged cal and map of `transfer`, against the campaign's (`quad_check.py`; no solve) | `*_transfer_gq2_golden_f64.h5` (the sky), `*_transfer_gq2map_golden_f64.fits` (the maps) |
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
 themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly.
@@ -42,27 +42,22 @@ load.
 
 ## The transfer gate
 
-`transfer/` holds the workspace implementations of the pixel weights and the post-solve gauge as they ran in
-production before they entered the library -- `before_solve.py` (the weighted solve:
-the assembly's subframe preparation wrapped to weight every row by `1/sqrt(max(|value|, the frame's window
-median))`), `before_mosaic.py` (the weighted coadd: `1/max(|raw value|, that median)`) and the gauge scripts
--- and `make_transfer_goldens.sh <tag>`, which runs them on the 300-frame qr2 D3 fixture (Ch9) with the
-library of a committed tree (`SELFCAL_REPO`, a tree whose library predates the features) and keeps every
-product as a golden. The `transfer` gate runs the same recipe on the library's own features
-(`sc.Model(weight=sc.shot_noise())`, `sc.Fit(gauge=sc.Gauge('xs_term'))`; `python_gates.py transfer`) and must
-reproduce them byte for byte: `transfer_check.py` compares the gate cal's offsets, coverage and frame scalars
-with the ungauged golden and its sky term with the plane-gauged golden's (the library gauges the sky term and
-the maps, the archived script also moved the offsets), `fits_diff.py` the mosaic with the plane-gauged map.
-The production gauge is the plane (`apply_gauge.py --no-quadratic`, since 2026-10-14); the quadratic gauge
-(`apply_gauge_q.py`, `sc.Gauge(degree=2)`) stays in the library as an option, and `transfer_quad` checks it on
-the golden ungauged cal and map without a solve. `GAUGE_ONLY=1 make_transfer_goldens.sh <tag>` makes gauged
-goldens that are missing from the existing ungauged ones (the plane's were added that way, 2026-10-14).
-`before_solve.py` evaluates its weights in float64, as the library does; the production patch computed
-them in float32 (`TRANSFER_FLOAT32_PATCH=1` reproduces it), which changes every weight by up to 9e-8
-relative. On the fixture that moves the chi-squared stop from 520 to 540 iterations and the two cals
-differ by the solve's own convergence tolerance: rms 6.2e-4 MJy/sr over the sky (2.1 % of the sky's
-rms), 3-5 % of the offsets' rms (measured 2026-10-14; the products made in production with the float32
-patch differ from the library's by that much, not by the weights' rounding).
+The `transfer` gate pins the 2026-10 production recipe (`SLOPE_GAUGE`: the per-frame x-slope model, the weights
+`sc.shot_noise()`, deflated CGLS to the chi-squared stop, the post-solve plane gauge on the map, the weighted
+coadd; `python_gates.py transfer`) to goldens made by the transfer-function campaign's own implementations of
+these features, before the features entered the library: its weighted solve and weighted coadd (`1/sqrt(max(|value|,
+the frame's window median))` per row, `1/max(|raw value|, that median)` per pixel) and its gauge scripts. Those
+experimental scripts stay in the workspace (`workspace/lsqr-convergence/transfer_gate/`, with the record of which
+golden each made and `make_transfer_goldens.sh` to remake them); the library reproduced every golden byte for byte.
+`transfer_check.py` compares the gate cal's offsets, coverage and frame scalars with the ungauged golden and its
+sky term with the plane-gauged golden's (the library gauges the sky term and the maps, the campaign's script also
+moved the offsets), `fits_diff.py` the mosaic with the plane-gauged map. The quadratic gauge
+(`sc.Gauge(degree=2)`) stays in the library as an option: `transfer_quad` runs it (`quad_check.py`) on the golden
+ungauged cal and map, without a solve, against the campaign's quadratic gauge.
+The campaign's weights were float32 in its solve; the goldens' maker evaluates them in float64, as the library
+does (on the fixture the float32 weights move the chi-squared stop from 520 to 540 iterations, and the two cals
+differ by the solve's convergence tolerance: rms 6.2e-4 MJy/sr over the sky, 2.1 % of its rms; measured
+2026-10-14).
 
 ## The engine views
 

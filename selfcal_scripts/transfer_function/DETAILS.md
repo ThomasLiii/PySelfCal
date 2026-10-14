@@ -44,8 +44,7 @@ processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
 ## The recipe
 
 `RECIPE` in `transfer_function.py` is the production recipe of 2026-10, unchanged:
-`SLOPE_GAUGE` of `selfcal_scripts/recipes/spherex.py` (the recipe of
-`selfcal_scripts/runs/ch9_slope_gauge.py`), on
+`SLOPE_GAUGE` of `selfcal_scripts/recipes/spherex.py`, on
 `sc.SPHEREx(detector, num_col=1, num_ch=17)`:
 
 - the model: per frame, a constant per subchannel (mean zero over the frame) and a
