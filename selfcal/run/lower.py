@@ -263,7 +263,9 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     if snapshots is not None and (task != 'cal' or tiles is not None or passes is not None):
         raise ConfigError("calibrate(snapshots=...): snapshots are written by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
-    if recipe is not None and recipe.fit.gauge is not None and (task != 'cal' or tiles is not None or passes is not None):
+    # a mosaic adds the gauge its cal recorded, whatever the recipe's fit says: only the solves take the setting
+    if (recipe is not None and recipe.fit.gauge is not None and task == 'cal'
+            and (tiles is not None or passes is not None)):
         raise ConfigError("Fit(gauge=...): the post-solve gauge is applied by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
     groups = {}

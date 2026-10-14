@@ -273,6 +273,28 @@ def test_gauge_through_the_offsets_agrees_with_the_map(tmp_path, degree):
     assert d.std() < 0.02 * a0[w > 0].std()
 
 
+def test_a_mosaic_of_a_gauged_cal(tmp_path):
+    """``field.mosaic`` of a gauged cal adds the gauge the cal recorded, with the recipe that made it (its fit
+    gauges) or any other: the calibration's own mosaic, byte for byte. Only a tiled or an N-pass calibration
+    refuses a gauge."""
+    from selfcal.run.lower import lower
+    field, _, _ = toy_field(tmp_path, n_exp=24, seed=5)
+    recipe = sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12, gauge=sc.Gauge('slope')),
+                       coadd=COADD, numerics=NUMERICS, name='gauged')
+    made = field.calibrate(recipe)
+    again = field.mosaic(recipe.replace(name='again'), cal=made)
+    ungauged_fit = field.mosaic(recipe.replace(fit=recipe.fit.replace(gauge=None), name='nogauge'), cal=made)
+    with made.cal() as cal:
+        assert np.any(np.asarray(cal.gauge['g']) != 0)                  # the maps differ without the gauge
+    with made.mosaic() as m0, again.mosaic() as m1, ungauged_fit.mosaic() as m2:
+        for name in ('MEAN_MAP', 'STD_MAP'):
+            a0 = np.asarray(m0[name])
+            assert np.array_equal(a0, np.asarray(m1[name])) and np.array_equal(a0, np.asarray(m2[name])), name
+    for kw in (dict(tiles=sc.Tiles(grid=(2, 1))), dict(passes=sc.Passes(3))):
+        with pytest.raises(sc.ConfigError, match='post-solve gauge'):
+            lower(field, recipe, **kw)
+
+
 def test_the_plan_names_the_gauge_and_the_weight():
     from selfcal.run.plan import describe_gauge, describe_weight
     assert describe_gauge(sc.Gauge('slope')).startswith("the sky plane that the slopes 'slope' absorbed")

@@ -685,11 +685,16 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
         wav_maps=wav_maps,
         **mosaic_kwargs)
     # A cal gauged on the map (Fit(gauge=sc.Gauge(..., apply='map'))): its polynomial, which the cal's sky
-    # term carries, is added to the mean maps here, so the mosaic matches that sky term.
+    # term carries, is added to the mean maps here, so the mosaic matches that sky term. The cal decides,
+    # not the recipe: a mosaic of an existing cal (field.mosaic) adds the gauge that cal recorded.
     from selfcal.core.gauge import apply_to_maps
     from selfcal.io.calfile import CalFile
     with CalFile(cal_path) as cal_:
-        apply_to_maps(maps, cal_.gauge, log=print)
+        recorded = cal_.gauge
+    apply_to_maps(maps, recorded, log=print)
+    if spec.gauge is not None and recorded is None:
+        print(f"[gauge] the recipe's fit has a gauge, but {os.path.basename(cal_path)} records none: the maps "
+              f"are as solved")
     if want_wav:
         inst.finalize_mosaic(geom, mm, maps, spec.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
