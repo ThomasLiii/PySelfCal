@@ -1,6 +1,6 @@
 """The record of one iterative solve: how it stopped, its final state, and its state at every iteration.
 
-:func:`~selfcal.core.solve.apply_lsqr` fills a :class:`SolveRecord` for every solve, LSQR or
+:func:`~selfcal.core.solve.apply_lsqr` fills a :class:`SolveRecord` for every solve, CGLS, LSQR or
 LSMR: the method, the iterations run, ``istop`` and its meaning (``stop_reason``), the solver's
 final estimates (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``, ``xnorm``), the
 tolerances and ``conlim`` it ran with, its wall time, and the true residual ``|b - A x|``, computed
@@ -41,17 +41,17 @@ VERSION = 1
 
 #: The values of a record that change from one run of the same solve to the next (kept out of the cal
 #: file, which is byte-reproducible; the action's record holds them).
-VOLATILE = ('wall_s',)
+VOLATILE = ('wall_s', 'deflation_s')
 
 #: The values of a record present only when set (a saved history, the system solved, a start, the
 #: stop rules).
 OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_identity', 'stop_rule',
-            'stop_iteration', 'stop_values', 'stop_policy', 'solver_tests')
+            'stop_iteration', 'stop_values', 'stop_policy', 'solver_tests', 'deflation', 'deflation_s')
 
 #: The values held as JSON text in the cal's attributes, decoded in the action's record.
-JSON_VALUES = ('stop_values', 'stop_policy')
+JSON_VALUES = ('stop_values', 'stop_policy', 'deflation')
 
-#: What each ``istop`` of LSQR and LSMR means (the two solvers share the codes).
+#: What each ``istop`` of CGLS, LSQR and LSMR means (the solvers share the codes; CGLS never sets 3 or 6).
 STOP_REASONS = {
     0: 'the starting vector solves the system (zero residual or zero gradient)',
     1: '|b - A x| is small enough, given atol and btol (a compatible system)',
@@ -143,7 +143,13 @@ class SolveRecord:
     those the Stop keeps as its rule ``solver_tests``; ``"off: atol, btol and conlim unused ..."``
     without them, so the tolerances above were not used). ``watch``: the solve's
     :class:`~selfcal.core.monitor.Watch` (not an attribute; its arrays go to the history file), None
-    for a solve without monitors or rules."""
+    for a solve without monitors or rules.
+
+    A deflated solve (``Fit(deflate=...)``, :mod:`selfcal.core.deflation`): ``deflation``, the JSON of
+    what the deflation did (the patterns and how many directions it solved directly, the gauges and
+    mostly-gauge directions it left out, how weakly the data see the patterns, the residual it removed at
+    the start and the size of its final re-solve), and ``deflation_s``, its setup time (kept out of the
+    cal file, like ``wall_s``). The solver's estimates are then those of the deflated problem."""
     method: str
     iterations: int
     iterations_total: int
@@ -176,6 +182,8 @@ class SolveRecord:
     stop_values: str | None = None
     stop_policy: str | None = None
     solver_tests: str | None = None
+    deflation: str | None = None
+    deflation_s: float | None = None
     watch: object = field(default=None, repr=False)
 
     @classmethod

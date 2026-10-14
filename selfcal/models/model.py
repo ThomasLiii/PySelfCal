@@ -373,7 +373,9 @@ class Offsets(Config):
     Priors: ``smooth`` pulls chunks that neighbour along ``smooth_along`` (default: the map's
     own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given;
     ``poly_prior`` pulls the offsets toward soft polynomials; ``mean_zero`` anchors each group's
-    mean over chunks at zero; ``damping`` pulls every offset toward zero (coverage weighted).
+    mean over the chunks it observed at zero (the chunks with data in the job: an unobserved chunk's
+    offset is then not an unknown of the solve); ``damping`` pulls every offset toward zero (coverage
+    weighted).
     ``exact_group_rows`` (shared terms): the anchor and smoothness rows once per group, not per
     frame (the same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.

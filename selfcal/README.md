@@ -211,6 +211,25 @@ clarity:
   (`StopRules`: residual plateau, gradient, large-scale stability, the solver's
   own tests; `all` / `any`, `min_iterations`); the checks extend the history
   file, the stop record goes to the cal's `solve` group (`istop = 8`).
+- **[`core/cgls.py`](core/cgls.py)** — CGLS (`sc.Fit(method="cgls")`, the default):
+  conjugate gradients on the normal equations with this package's solver
+  hooks (history, callback, watch, constrain, a residual refresh from the
+  parked right-hand side every 50 iterations); the same iterates as LSQR
+  while converging and an iterate that stays put once converged. The
+  stopping tests are LSQR's on the same quantities (`|A|` estimated from the
+  products), without a condition estimate. `apply_lsqr(vectors=)` sets the
+  precision of any solver's vectors (`sc.Fit(vectors=)`).
+- **[`core/deflation.py`](core/deflation.py)** — deflation of the smooth sky
+  patterns (`sc.Fit(deflate=sc.Deflate(order))`): each sky term's cosine or
+  polynomial patterns over its covered box, each paired with its exact offset
+  response (the offset columns' normal matrix, built from the system in one
+  float64 pass, solved per connected block by pseudo-inverse: general for any
+  offset model), gauges recognised and left out; `apply_lsqr` then solves the
+  part in that space directly (`x_c`), runs LSQR / LSMR on the projected
+  operator `B P` (the Lanczos vectors kept in the complement by the solvers'
+  `constrain` hook), and returns `x_c + P y` after a float64 re-solve of the
+  space. Same least-squares solution; fewer iterations when the large scales
+  are the slow part. Only the covered columns take part.
 
 - **[`core/subframe.py`](core/subframe.py)** — `_prep_subframe` is the single
   shared routine that loads an HDF5 reprojected file and produces
@@ -818,7 +837,9 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/warm_start.py`](core/warm_start.py) | `System`, `WarmStart`: the identity of a solve's system, and a solve continued from an earlier cal (`calibrate(start=...)`). |
 | [`core/snapshots.py`](core/snapshots.py) | `Iterate`, `SnapshotWriter`: the solution every `k` iterations as a cal file (`calibrate(snapshots=...)`). |
 | [`core/monitor.py`](core/monitor.py) | `Watch`, `StopRules`, `SmoothFit`: convergence monitors (`calibrate(monitor=...)`) and opt-in stop rules (`Fit(stop=...)`). |
-| [`core/lsqr_inplace.py`](core/lsqr_inplace.py), [`core/lsmr.py`](core/lsmr.py) | scipy's LSQR (in-place vector updates, float64 norms of long vectors) and LSMR, each with the per-iteration history hook and the iteration callback. |
+| [`core/cgls.py`](core/cgls.py) | `cgls`: conjugate gradients on the normal equations with the solver hooks (`Fit(method="cgls")`, the default). |
+| [`core/deflation.py`](core/deflation.py) | `Deflation`: the smooth sky patterns solved directly, the iterations on the rest (`Fit(deflate=...)`). |
+| [`core/lsqr_inplace.py`](core/lsqr_inplace.py), [`core/lsmr.py`](core/lsmr.py) | scipy's LSQR (in-place vector updates, float64 norms of long vectors) and LSMR, each with the per-iteration history hook, the iteration callback and the `constrain` hook (a deflated solve's). |
 | [`core/blockcsr.py`](core/blockcsr.py) | `BlockCSR` int32 row-block matrix for nnz >= 2^31; `ColSplitCSR` row-blocks x column-ranges for the bit-equal parallel transpose product. |
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |

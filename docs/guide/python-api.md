@@ -48,6 +48,8 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Compute(scratch, workers=, ...)` | the machine (never changes a byte) |
 | `sc.Tiles`, `sc.Passes` | big fields: tiling, the N-pass solve |
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
+| `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
+| `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
 | `sc.Result` | the products, with readers |
 
 ### Instruments and jobs
@@ -331,9 +333,11 @@ fit = sc.Fit(1000, tolerance=0, stop=sc.Stop(gradient=1e-3, large_scale=1e-3, mi
 | `residual=sc.ResidualRule(below)` | ‖r‖ fell by less than `below` (relative) over the last `window` iterations | `window=10`; `every=None` (the estimate, every iteration) or `m` (the true residual every m iterations) |
 | `gradient=sc.GradientRule(below)` | the largest ‖Aᵀ r‖ over the last `window` iterations is at most `below` times its value at the start of the solve | `window=10`; `every` as above |
 | `large_scale=sc.LargeScaleRule(below)` | every sky term's large-scale fit changed by less than `below` (relative) at the last two checks | `every=10`, `degree=2`, `step=4` |
+| `chi2=sc.ChiSquaredRule(sigma)` | the χ² the solve gained over the last `window` iterations is below `sigma`²: every quantity of the solution is within `sigma` standard deviations of its converged value (the scale-free rule; the noise variance per row from the residual, `|b − A x|² / (rows − unknowns)`, or `noise=` for a noise-free simulation) | `window=50`, `every=10` (the true residual), `noise=None` |
 | `solver_tests=True` | one of the solver's own tests (LSQR's or LSMR's) holds: `"compatible"`, `"least_squares"`, `"condition"` (or the ones named) | the tolerances of `sc.Fit(tolerance=)` |
 
-A number is the rule's `below` with its defaults (`gradient=1e-3` is `sc.GradientRule(1e-3)`).
+A number is the rule's `below` with its defaults (`gradient=1e-3` is `sc.GradientRule(1e-3)`, `chi2=0.1`
+is `sc.ChiSquaredRule(0.1)`).
 `combine="all"` (the default) stops when every rule given holds at the same iteration, `"any"` when
 one does; `min_iterations` keeps every rule from ending the solve before that iteration. **With a
 Stop, the solver's own tests stop the solve only as one of its rules** (`solver_tests`, refused
@@ -373,6 +377,104 @@ and gradient tests do not see the slowest large-scale directions, combine them w
 `large_scale` (`combine="all"`) to stop only once the large scales have settled too; even then, an
 iterative solver can rest on a plateau for a while before a slow mode moves, so prefer a strict
 `below`, and read the history. A continuation (`start=`) starts its rules afresh.
+
+The χ² rule is the one whose threshold needs no calibration: a fall of the χ² by `g` between two
+iterates means the data prefer the later one by `g`, so once the remaining fall is below `sigma`²
+no linear quantity of the map can still move by more than `sigma` of its error bar. On real data
+the noise scale comes from the residual itself. Its gain over a window is a lower bound on what
+remains (the plateau caveat above), which [deflation](#deflation) and the large-scale rule guard
+against; and with [CGLS](#the-solver), which idles once converged, the iteration limit is a safe
+cap, so the rule is an early exit rather than a safety device.
+
+### The solver
+
+```python
+fit = sc.Fit(300, tolerance=0)                       # CGLS, the default
+fit = sc.Fit(300, tolerance=0, method="lsqr", vectors="float64")
+```
+
+`sc.Fit(method=)` picks the iterative solver: `"cgls"` (the default), `"lsqr"` or `"lsmr"`. All three
+take one product by the matrix and one by its transpose per iteration and, while a solve converges, give
+the same iterates: the iterations a solve needs are set by the system (see [Deflation](#deflation)),
+not by the solver. They differ in what they carry from one iteration to the next, which matters once a
+solve has converged in floating point:
+
+- **CGLS** carries its residual as a vector in the products' precision, recomputes it from the data
+  every 50 iterations, and takes steps proportional to the gradient's size, so once converged it stays
+  where it is. A CGLS solve can be given a generous iteration count: past convergence the extra
+  iterations cost time, not accuracy. Its stopping tests are LSQR's on the same quantities, so
+  `tolerance=` means the same; it has no estimate of the condition number, so the `"condition"` test
+  and `conlim` never stop it.
+- **LSQR** renormalises its vectors every iteration, so after convergence its steps are made of
+  rounding noise; in float32, far past convergence, it can wander along the directions the data see
+  least. It estimates the condition number and keeps every existing product reproducible
+  (`method="lsqr"`).
+- **LSMR** is LSQR's sibling that makes the gradient, rather than the residual, decrease monotonically.
+
+`vectors=` sets the precision of the solver's own vectors (the iterate, the directions, the residual it
+carries): `"float32"`, `"float64"`, or None for the method's own, which is float64 for CGLS and the
+products' precision (`float32=`) for LSQR and LSMR, as before. `vectors="float64"` with the default
+`float32=True` keeps float64 vectors on the float32 matrix; for LSQR and LSMR the products are then
+computed in float64 from the float32 matrix, which costs about one extra pass over it per product. The
+record of every solve says which method ran and in what precision.
+
+### Deflation
+
+```python
+fit = sc.Fit(300, tolerance=0, deflate=sc.Deflate(4))
+```
+
+The slowest part of a solve is usually the sky's largest scales (see
+[Monitors and stop rules](#monitors-and-stop-rules)): every frame's offsets absorb almost all of a
+pattern much larger than a frame, so the data see it weakly and an iterative solver resolves it
+last. How slowly depends on the offset model: the more of a smooth pattern the offsets can absorb,
+the slower (a per-chunk slope in x absorbs field-wide gradients almost entirely, and its planes and
+quadratics take thousands of iterations); and on the field: the larger, the more such patterns.
+
+With `deflate=`, the solve takes each sky term's smooth patterns, the products `f_a(x) f_b(y)` for
+`a, b = 0 ... order` over the bounding box of the term's covered pixels (`basis="cosine"`, the
+default: `cos(π a u)` with `u` from 0 to 1 across the box; `"polynomial"`: Legendre polynomials),
+plus the polynomials of degree at most 2, and pairs each one with **the offsets that absorb it
+best**, computed from the system itself, whatever the offset model (constants, slopes, other bases,
+per-frame scalars, templates, grouped offsets). It solves the least squares along these pairs
+exactly at the start and runs the iterations on the rest of the unknowns only. The solution is the
+same least-squares solution, gauge included; the iterations it takes are fewer when those patterns
+are what is slow, and the same otherwise.
+
+| `sc.Deflate(...)` | what it sets |
+| --- | --- |
+| `order=4` | patterns per axis: `(order + 1)²` products per sky term (25 at 4), plus the polynomials of degree ≤ 2 the basis does not contain |
+| `basis="cosine"` | `"cosine"` or `"polynomial"` |
+| `terms=None` | the sky terms to deflate (None: all) |
+| `storage=None` | the precision of the deflation's vectors: None, the products' (float32 with `float32=True`); `"float64"` always; `"float32"` needs float32 products |
+
+Read it with three facts in mind:
+
+- **The deflated patterns arrive at their least-squares values at once.** Where the data barely
+  constrain a pattern, its least-squares value is what the data say, however large, while a plain
+  solve stopped early would still be near its start. The record says how weakly the data see the
+  patterns (`nullness_min`, `nullness_median`: `|B z| / |B F|`, the residual of a pattern with its
+  offsets over that of the pattern alone; small means nearly invisible).
+- **Gauges stay where a plain solve leaves them.** A direction the data cannot see at all (the sky's
+  mean against per-frame scalars; a plane or quadratic the offsets absorb exactly) is recognised and
+  left out. A higher-degree pattern absorbed exactly, possible only on a flat geometry with offsets
+  of that degree, would be in the space only in part: deflate it whole (`basis="polynomial"` of at
+  least its degree).
+- **Fewer iterations to converge means converging sooner** in a fixed-length solve
+  (`tolerance=0`): what an iterative solver does after its precision is reached applies sooner too.
+  A stop rule ends the solve when it has converged.
+
+The cost: two float64 passes over the matrix with all the patterns at the start (one pass is about
+one iteration's products), one at the end and one per snapshot; memory of `2 × 4 × patterns` bytes
+per covered unknown with float32 products (`2 × 8` with float64), and four passes over it per
+iteration, six with LSQR (threaded). The solve's record keeps a
+summary, `deflation` (the patterns and the directions solved directly, the gauges left out, the
+`nullness`, the residual removed at the start, the size of the final re-solve), and its setup time
+`deflation_s` (in the action's record only); the log says how much of the residual the directions
+solved directly took at the start. Snapshots and monitors see the solution itself. The solver's estimates are those of the
+deflated problem: `r1norm` and `arnorm` are still the full system's residual and gradient, `anorm`,
+`acond` and `xnorm` those of the deflated operator and iterate. Deflation needs an undamped fit
+(`sc.Fit(damp=0)`) and is part of the fit's inputs.
 
 ## Products, records and reruns
 

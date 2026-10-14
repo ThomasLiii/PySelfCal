@@ -140,13 +140,16 @@ def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
 
 
 # =================================================================== a start at the solution stays there
-def test_a_warm_start_from_the_least_squares_solution_stays_there(toy):
+@pytest.mark.parametrize('method', ['lsqr', 'cgls'])
+def test_a_warm_start_from_the_least_squares_solution_stays_there(toy, method):
     field, _ = toy
-    exact = field.calibrate(_recipe(MODELS['times'], 400, name='exact'))
+    exact = field.calibrate(_recipe(MODELS['times'], 400, name=f'exact_{method}', method=method))
     first = _solve(exact.cal_paths[0])
-    # the least-squares solution: |A^T r| / (|A| |r|) far below float32 precision
-    assert np.load(first['history_file'])['test2'][-1] < 1e-8
-    more = field.calibrate(_recipe(MODELS['times'], 20, name='exact_more'), start=exact)
+    if method == 'lsqr':
+        # the least-squares solution: |A^T r| / (|A| |r|) far below float32 precision (LSQR's estimates; CGLS's
+        # anorm is a lower bound of |A| and its gradient the true one, at the float32 products' floor)
+        assert np.load(first['history_file'])['test2'][-1] < 1e-8
+    more = field.calibrate(_recipe(MODELS['times'], 20, name=f'exact_more_{method}', method=method), start=exact)
     then = _solve(more.cal_paths[0])
     h = np.load(then['history_file'])
     eps = np.finfo(np.float32).eps
@@ -154,7 +157,9 @@ def test_a_warm_start_from_the_least_squares_solution_stays_there(toy):
     assert abs(then['true_residual'] - first['true_residual']) <= 10 * eps * first['true_residual']   # stays
     with CalFile(exact.cal_paths[0]) as a, CalFile(more.cal_paths[0]) as b:
         sky_a, sky_b = a.sky(0), b.sky(0)
-        assert np.nanmax(np.abs(sky_b - sky_a)) <= 1e-5 * np.nanmax(np.abs(sky_a))
+        # LSQR's steps from the solution vanish with its alfa; CGLS takes one step the size of the float32
+        # products' rounding and stays there
+        assert np.nanmax(np.abs(sky_b - sky_a)) <= (1e-5 if method == 'lsqr' else 1e-4) * np.nanmax(np.abs(sky_a))
 
 
 def test_a_variant_starts_from_an_earlier_solution(toy, caplog):

@@ -98,6 +98,8 @@ class Plan:
                             else ''))
         if r is not None and r.fit.stop is not None:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
+        if r is not None and r.fit.deflate is not None:
+            lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
         if self.monitor is not None:
             lines.append(f"  monitor     {describe_monitor(self.monitor, r.fit.stop if r is not None else None)}")
         if self.tiles is not None:
@@ -110,6 +112,13 @@ class Plan:
         return '\n'.join(lines)
 
     __repr__ = __str__
+
+
+def describe_deflate(deflate) -> str:
+    """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
+    terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
+    return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
+            f"offsets that absorb them, solved directly; the iterations run on the rest")
 
 
 def describe_stop(stop, fit=None) -> str:
@@ -129,6 +138,10 @@ def describe_stop(stop, fit=None) -> str:
         ls = stop.large_scale
         parts.append(f"the sky terms' smooth fit (degree {ls.degree}) changes less than {ls.below:g} at two checks, "
                      f"every {ls.every}")
+    if stop.chi2 is not None:
+        c = stop.chi2
+        parts.append(f"the chi-squared gained over the last {c.window} iterations below {c.sigma}^2 (the true residual "
+                     f"every {c.every}; the noise {'given' if c.noise is not None else 'from the residual'})")
     if stop.solver_tests:
         parts.append(f"the solver's tests {', '.join(stop.tests)}")
     joined = (' and ' if stop.combine == 'all' else ' or ').join(parts)

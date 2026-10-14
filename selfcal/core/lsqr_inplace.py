@@ -79,17 +79,28 @@ _NORM64_BLOCK = 50_000_000
 _FLOAT32_NORMS = os.environ.get("SELFCAL_LSQR_FLOAT32_NORMS", "") == "1"
 
 
+_NORM64_BUF = None
+
+
 def _norm(x):
     """``np.linalg.norm(x)`` for a 1-D vector, with float64 accumulation when ``x`` is a long float32 vector.
 
-    The chunked sum of squares reads ``x`` once in ``_NORM64_BLOCK`` pieces (one 400 MB float64
-    temporary); short or float64 vectors take scipy's exact call so small systems stay bit-identical.
+    The chunked sum of squares reads ``x`` once in ``_NORM64_BLOCK`` pieces, each copied into one float64
+    buffer kept between calls (400 MB; the same values and the same BLAS dot as a fresh ``astype`` copy per
+    piece, so the result is bit-identical, without faulting in a fresh copy per piece: a production
+    iteration takes four such norms over vectors of 1e9 elements). Short or float64 vectors take scipy's
+    exact call so small systems stay bit-identical.
     """
+    global _NORM64_BUF
     if _FLOAT32_NORMS or x.dtype != np.float32 or x.ndim != 1 or x.shape[0] < _NORM64_MIN:
         return np.linalg.norm(x)
+    if _NORM64_BUF is None:
+        _NORM64_BUF = np.empty(_NORM64_BLOCK, dtype=np.float64)
     acc = 0.0
     for start in range(0, x.shape[0], _NORM64_BLOCK):
-        chunk = x[start:start + _NORM64_BLOCK].astype(np.float64)
+        stop = min(x.shape[0], start + _NORM64_BLOCK)
+        chunk = _NORM64_BUF[:stop - start]
+        np.copyto(chunk, x[start:stop])
         acc += float(np.dot(chunk, chunk))
     return np.float32(sqrt(acc))
 
@@ -193,7 +204,7 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None):
+                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None, constrain=None):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
@@ -292,6 +303,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     if alfa > 0:
         v = _promote(v, 1 / alfa)
         vec.imul(v, (1 / alfa))
+        if constrain is not None:
+            constrain(v)
     w = v.copy()
     tmp = np.empty_like(w)          # scratch for dk / t1*w
 
@@ -352,6 +365,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             if alfa > 0:
                 v = _promote(v, 1 / alfa)
                 vec.imul(v, (1 / alfa))
+                if constrain is not None:
+                    constrain(v)
 
         if damp > 0:
             rhobar1 = sqrt(rhobar**2 + dampsq)

@@ -30,7 +30,7 @@ EDFN_Y = sc.Field(f'{OUTPUTS}/EDFN_Y_1p5arcsec_unifygolden', sc.Euclid(band='Y',
 
 def continuum():
     """D3 Ch17, 300 frames, no mosaic."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(50, clip=5.0, ignore_flags=[]), coadd=None,
+    recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(QR2_FIXTURE)[:300],
                             compute=sc.Compute(workers=48))
@@ -40,7 +40,7 @@ def spectral():
     """The PAH catalogue line on D4, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=sc.catalog('pah_3p29'), damping=0.0)],
                         poly_prior=sc.Poly(1, weight=0.5))
-    recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+    recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return NEP_D4_COL5.calibrate(recipe, jobs=spherex.window('AromaticPAHfit', subchannels=range(210, 250)),
                                  frames=sc.frames_in(PAH_FIXTURE)[:150], compute=sc.Compute(workers=48))
@@ -49,7 +49,7 @@ def spectral():
 def e2e():
     """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
     recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
-                       fit=sc.Fit(50, clip=5.0, ignore_flags=[]),
+                       fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
     compute = sc.Compute(f'{REPO}/workspace/coaddopt/cache', workers=48, stage='reuse', keep_staged=True)
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(E2E_FIXTURE)[:300],
@@ -59,7 +59,7 @@ def e2e():
 def npass3():
     """Three lines, the hard polynomial, INIT + SKY + OFFSET."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
-                       fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+                       fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_npass3_gate_py')
     passes = sc.Passes(3, order='sky_first', sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
                        offset=sc.Refit(2, clip=sc.Clip(2.5, per=SUBCHANNEL)), ends_on_offset=True)
@@ -74,7 +74,7 @@ def euclid():
                    exact_group_rows=True),
         sc.Offsets(on='col_strips', smooth_along=(), damping=0.3),
         sc.Offsets(on='row_strips', smooth_along=(), damping=0.3)])
-    recipe = sc.Recipe(model, fit=sc.Fit(30, clip=5.0, float32=False),
+    recipe = sc.Recipe(model, fit=sc.Fit(30, clip=5.0, float32=False, method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, instrument_maps=False, min_chunk_coverage=0.0),
                        numerics=sc.Numerics(8, batch=8, mosaic_batch=8, coadd_batch=8), name='unify_gate_py')
     return EDFN_Y.calibrate(recipe, compute=sc.Compute(f'{REPO}/cache', workers=8, stage=None))
@@ -92,7 +92,7 @@ M13_BOXES = {
 def m13():
     """The NEP multi-line INIT on the adaptive tile M13."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
-                       fit=sc.Fit(300, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+                       fit=sc.Fit(300, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        numerics=sc.Numerics(32),
                        name='multiline3_NEPovlp_UNIFYNPASS1GATEPY_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2')
     tiles = sc.Tiles(boxes=M13_BOXES, only=['M13'], stitched_name='{name}',
