@@ -93,8 +93,9 @@ Each shipped config has its run script: `selfcal_scripts/runs/<name>.py` for
 `selfcal_scripts/configs/<name>.toml`, the gate functions of `selfcal_scripts/gates/python_gates.py`
 for the gate configs, `examples/quickstart/quickstart.py` for the quickstart and
 `selfcal_scripts/transfer_function/transfer_function.py` for the transfer-function kit. The run
-scripts of the retired campaigns (the NumCol 10 and NumCol 3 channel maps, the NEP PAH 3.29 um fits
-at NumCol 5, the readout-stripe test) were removed on 2026-10-14 and are in the git history too
+scripts of the retired campaigns and experiments (the NumCol 10 and NumCol 3 channel maps, the PAH
+3.29 um fits at NumCol 5, the readout-stripe test, the N-pass variants and probes besides the SEP
+multi-line fit) were removed on 2026-10-14 and are in the git history too
 (`git log --oneline --diff-filter=D -- selfcal_scripts/runs`).
 
 ## Products a TOML run made
