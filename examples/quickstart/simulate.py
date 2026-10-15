@@ -15,7 +15,7 @@ seen at a random pointing, `offset` is an additive offset per chunk of the
 detector (4 x 4 chunks of 16 x 16 pixels) that changes from exposure to
 exposure, and `scalar` is one additive level per exposure. Extension 1 holds the
 image and its celestial WCS, extension 2 an integer data-quality (DQ) mask: the
-layout the built-in `grid` instrument reads (sci_ext = 1, dq_ext = 2).
+layout `sc.Camera((64, 64), chunks=(4, 4), dq_ext=2)` reads (sci_ext = 1, dq_ext = 2).
 """
 import os
 
@@ -28,7 +28,7 @@ from selfcal.instruments.grid import rect_grid_chunk_map
 OUT_DIR = "quickstart_output"   # relative to the current directory
 N_EXP = 24                      # number of exposures
 DET_SHAPE = (64, 64)            # detector (rows, columns)
-CHUNKS = (4, 4)                 # offset chunks (rows, columns), as [instrument].chunks
+CHUNKS = (4, 4)                 # offset chunks (rows, columns), as the camera's chunks
 PIXEL_ARCSEC = 10.0             # detector pixel scale
 RA0, DEC0 = 150.0, 2.0          # field centre (degrees)
 DITHER_ARCMIN = 4.0             # pointings are uniform within +-4 arcmin of the centre
@@ -69,7 +69,7 @@ def main():
     exp_dir = os.path.join(OUT_DIR, "exposures")
     os.makedirs(exp_dir, exist_ok=True)
 
-    # The chunk of every detector pixel, numbered as the `grid` instrument numbers them
+    # The chunk of every detector pixel, numbered as sc.Camera numbers them
     # (chunk = row * n_columns + column).
     chunk_map = rect_grid_chunk_map(DET_SHAPE, *CHUNKS)
     n_chunks = CHUNKS[0] * CHUNKS[1]

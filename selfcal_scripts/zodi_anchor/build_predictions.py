@@ -4,7 +4,7 @@ For each reproj file listed in the cal's /reproj_list, read MJD +
 pointing, sample the channel-valid mask centroid, evaluate ZodiPy at
 (RA, Dec, MJD, channel-mean wavelength), and aggregate to a single
 per-frame mean in MJy/sr. Writes the result as an .npz that
-build_anchor.py (or the cal runner's inline anchor step,
+build_anchor.py (or spherex.zodi_anchor(result, ...), through
 selfcal.zodi_anchor.append_anchor_channel) consumes to fit the
 per-channel zodi anchor.
 

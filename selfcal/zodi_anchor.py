@@ -37,7 +37,6 @@ import h5py
 import numpy as np
 from astropy.io import fits
 
-
 # Anchor-file schema version. Bump when the on-disk layout of
 # anchor_D{N}.h5 changes in a backward-incompatible way.
 ANCHOR_VERSION = 1
@@ -203,9 +202,8 @@ def fit_anchor_for_channel(cal_path, zodi_pred_npz,
     """Fit the per-channel anchor from a PRISTINE cal + zodi-pred npz.
 
     Pure read + fit; never mutates cal or mosaic. Shared by
-    selfcal_scripts/zodi_anchor/build_anchor.py and the cal runner's inline
-    anchor step (``_run_zodi_anchor`` in ``selfcal/run/pipelines.py``,
-    enabled when the run config sets ``[zodi].pred_dir``).
+    selfcal_scripts/zodi_anchor/build_anchor.py and
+    :func:`selfcal.instruments.spherex.settings.zodi_anchor`.
 
     Returns a dict of the per-channel summary scalars destined for the
     anchor-file Ch{c}/ group (plus npz identity fields).
@@ -335,11 +333,10 @@ def append_anchor_channel(out_path, detector, source_run, channel,
     """Add/replace one channel in a per-detector anchor file, in place.
 
     Creates the file (and root attrs + channels group) if absent. Used by
-    the cal runner's inline anchor step (``_run_zodi_anchor`` in
-    ``selfcal/run/pipelines.py``, enabled by ``[zodi].pred_dir``
-    in the run config), which fits channels sequentially and grows the
-    detector anchor file as each finishes. Safe to re-run for a channel
-    (overwrites its group).
+    :func:`selfcal.instruments.spherex.settings.zodi_anchor`, which fits the
+    channels of a calibration one after the other and grows the detector
+    anchor file as each finishes. Safe to re-run for a channel (overwrites
+    its group).
     """
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with h5py.File(out_path, 'a') as f:

@@ -6,7 +6,6 @@ import h5py
 import hdf5plugin
 import numpy as np
 from tqdm import tqdm
-from multiprocessing import Pool
 
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -15,6 +14,7 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 from reproject import reproject_interp, reproject_exact, reproject_adaptive
 
 from .. import _state
+from ..core.shmbuf import worker_pool_context
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
 from .frames import read_exposure
 from .reproj import reproj_basename
@@ -327,7 +327,9 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
 
     results = []
     if num_processes > 1 and len(tasks) > 0:
-        with Pool(processes=num_processes) as pool:
+        # forkserver, as every pool of the pipeline: a forked child of a process that already runs
+        # threads (a notebook, a script after another action) can wait forever on a lock held at the fork
+        with worker_pool_context().Pool(processes=num_processes) as pool:
             results = list(tqdm(pool.imap_unordered(_reproject_worker, tasks),
                                 total=len(tasks), desc='Reprojecting frames',
                                 disable=not _state.progress_enabled))

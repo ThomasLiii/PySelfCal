@@ -11,8 +11,7 @@ order that the CSR scatter depends on:
     2. grouped adjacency, one block per map in ``group_adjacency_maps``
        (absent by default)
     3. sky damping, in sky-component order (continuum, then each line block)
-    4. offset damping (global ``damp_offset``, or per map with
-       ``damp_offset_maps``)
+    4. offset damping, per map with ``damp_offset_maps``
     5. user priors (``setup_lsqr(priors=...)``), in the order given — any
        linear rows a caller builds from :class:`SystemInfo`
        (:func:`as_constraint_block` normalises them)
@@ -20,7 +19,7 @@ order that the CSR scatter depends on:
 Bit-identity contract: the exact cols/data/b values, dtypes, and nnz_per_row
 emitted here are frozen by the byte-equality regression goldens (reference
 ``cal_*.h5`` files of the byte-equality gates (``selfcal_scripts/gates/``), diffed with
-``selfcal_scripts/drivers/diff_cal_h5.py``); re-baseline those before changing
+``selfcal_scripts/gates/diff_cal_h5.py``); re-baseline those before changing
 any of them. ``sky_damping_block`` damps every sky component uniformly: block
 ``j`` lives at columns ``j*num_sky + valid_pixels`` with
 ``data = sqrt(weight * coverage)`` (block 0 = continuum, blocks 1+ = line
@@ -43,6 +42,26 @@ class ConstraintBlock:
     num_rows: int
     nnz_per_row: object  # int (uniform) or ndarray (per-row)
 
+    def restrict(self, keep):
+        """The block without the entries whose column is not in ``keep`` (a boolean mask over the full
+        column layout): each row keeps its other entries and its right-hand side is rescaled to the
+        entries kept (the rows are sums over equal weights, so a row of ``n`` entries with right-hand side
+        ``b`` asks for the same per-entry mean with ``n'`` entries and ``b n' / n``); rows left with no entry
+        are dropped. Returns a new block (``nnz_per_row`` per row)."""
+        keep = np.asarray(keep, dtype=bool)
+        sel = keep[self.cols]
+        if sel.all():
+            return self
+        old_nnz = np.bincount(self.rows_local, minlength=self.num_rows).astype(np.float64)
+        rows = self.rows_local[sel]
+        new_nnz = np.bincount(rows, minlength=self.num_rows)
+        alive = new_nnz > 0
+        renumber = np.cumsum(alive) - 1
+        with np.errstate(divide='ignore', invalid='ignore'):
+            b = np.where(alive, self.b * new_nnz / np.where(old_nnz > 0, old_nnz, 1), 0.0)[alive]
+        return ConstraintBlock(renumber[rows].astype(np.int64), self.cols[sel], self.data[sel], b,
+                               num_rows=int(alive.sum()), nnz_per_row=new_nnz[alive].astype(np.int64))
+
     def as_dict(self):
         """Return the block as the dict the CSR scatter consumes, keyed by field name.
 
@@ -60,12 +79,21 @@ class ConstraintBlock:
 
 
 def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                      weight=10.0, group_rows=False, n_basis=1):
+                      weight=10.0, group_rows=False, n_basis=1, covered=None):
     """Per-frame mean-offset anchor for chunk map ``m``.
 
     Constrains each frame's per-chunk offset mean toward ``mean_off`` (length
     num_frames) with the given Lagrange ``weight``. Caller must skip template-
     mode maps (no per-chunk offsets) and None ``mean_off``.
+
+    ``covered`` (a boolean mask over the full column layout, or None): the anchor
+    runs over the chunks the frame observed, i.e. the offset columns with data
+    (:meth:`ConstraintBlock.restrict`). Over every chunk of the map, as before
+    (``covered=None``), a chunk outside the job's window, with no data, enters
+    the anchor only: the frame's scalar and its observed constants can then
+    shift against each other with the unobserved constants taking up the mean,
+    a direction the data barely see (exactly unseen without smoothing rows), and
+    those columns cannot be compacted away.
 
     ``group_rows``: when several frames share one offset group (det_groups),
     their per-frame rows are identical (same columns, same weight, and the same
@@ -82,8 +110,15 @@ def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
     ``k`` — the mean over chunks of each function's coefficient.
     """
     if n_basis > 1:
-        return _mean_offset_block_basis(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                                        weight, group_rows, int(n_basis))
+        blk = _mean_offset_block_basis(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
+                                       weight, group_rows, int(n_basis))
+        return blk if covered is None else blk.restrict(covered)
+    blk = _mean_offset_block_plain(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases, weight, group_rows)
+    return blk if covered is None else blk.restrict(covered)
+
+
+def _mean_offset_block_plain(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases, weight, group_rows):
+    """``mean_offset_block`` over every chunk of the map, one function per chunk."""
     mean_offsets_arr = np.asarray(mean_off)
     nc_m = num_chunks_m
     if group_rows:
@@ -172,7 +207,7 @@ def sky_damping_block(block_index, weight, coverage, num_sky):
 
 
 def offset_damping_block(weight, offset_block_coverage, num_sky_eff):
-    """Coverage-weighted damping on the offset columns (``damp_offset``).
+    """Coverage-weighted damping on the offset columns of one map (``damp_offset_maps``).
 
     Columns are ``num_sky_eff + valid_offset_cols``. Returns None if empty.
     """

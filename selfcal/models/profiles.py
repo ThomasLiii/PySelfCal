@@ -22,7 +22,7 @@ in ``selfcal.core.assembly._prep_lsqr`` for the per-pixel Gaussian was::
 ``PAH_INTRINSIC_SIGMA_UM**2``) — are carried verbatim. Do not "fix" them
 without re-baselining the byte-equality regression goldens (reference
 ``cal_*.h5`` outputs of the byte-equality gates (``selfcal_scripts/gates/``)
-and compared with ``selfcal_scripts/drivers/diff_cal_h5.py``).
+and compared with ``selfcal_scripts/gates/diff_cal_h5.py``).
 """
 from __future__ import annotations
 

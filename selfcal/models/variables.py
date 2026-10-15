@@ -10,7 +10,8 @@ once, by its *source*; the functions never know::
     source           one value per ...      examples
     ---------------  ---------------------  ---------------------------------------------
     built-in         observation            det_x, det_y (detector position),
-                                            sky_x, sky_y (reference pixel), frame (index)
+                                            sky_x, sky_y (reference pixel), frame (index),
+                                            value (the stored value), flags (its flag bits)
     detector         detector pixel         SPHEREx band-centre map BC, a pixel polariser angle
     frame            frame                  time, filter, half-wave-plate angle, temperature
     sky              reference pixel        ecliptic latitude, a dust template, a previous sky
@@ -53,6 +54,8 @@ BUILTIN_VARIABLES = {
     'sky_x': 'reference-grid column of the observation',
     'sky_y': 'reference-grid row of the observation',
     'frame': 'index of the frame in the solve',
+    'value': "the stored value of the observation (the frame's data before any hook or subtraction)",
+    'flags': 'the stored flag bits of the observation (0 where the frame has none)',
 }
 
 
@@ -207,8 +210,10 @@ class ObservationVariables(Mapping):
 
     def __init__(self, pixels, *, index=0, ref_coords=None, sub_mapping=None, detector=None,
                  frame_values=None, sky=None, layers=None, derived=None, frame_functions=None,
-                 context=None):
+                 context=None, values=None, flags=None):
         self.pixels = (np.asarray(pixels[0]), np.asarray(pixels[1]))
+        self._values = values          # the frame's stored values (a subframe-grid array or one per observation)
+        self._flags = flags            # the frame's stored flag bits, likewise
         self.n = int(self.pixels[0].shape[0])
         self.index = int(index)
         self.ref_coords = ref_coords
@@ -232,6 +237,10 @@ class ObservationVariables(Mapping):
             out = [n for n in out if n not in ('det_x', 'det_y')]
         if self.ref_coords is None:
             out = [n for n in out if n not in ('sky_x', 'sky_y')]
+        if self._values is None:
+            out.remove('value')
+        if self._flags is None:
+            out.remove('flags')
         for src in (self._detector, self._frame, self._sky, self._layers, self._derived, self._functions):
             out.extend(src)
         return out
@@ -308,6 +317,12 @@ class ObservationVariables(Mapping):
             if self._context is None:
                 raise ValueError(f"frame function {name!r} needs the frame context")
             return self._broadcast(name, self._functions[name].function(self._context))
+        if name == 'value':
+            v = np.asarray(self._values)
+            return (v[rows, cols] if v.ndim == 2 else v).astype(np.float64)
+        if name == 'flags':
+            f = np.asarray(self._flags)
+            return (f[rows, cols] if f.ndim == 2 else f).astype(np.int64)
         if name == 'det_x':
             return np.asarray(self.sub_mapping[0])[rows, cols]
         if name == 'det_y':

@@ -29,9 +29,11 @@ The pieces: an instrument (``sc.Camera``, ``sc.SPHEREx``, ``sc.Euclid``, or an
 (``sc.continuum()``, ``sc.spectral(...)``, or ``sc.Model`` with ``sc.Sky`` and
 ``sc.Offsets`` terms), a ``sc.Recipe`` (the model with ``sc.Fit``, ``sc.Coadd`` and
 ``sc.Numerics``), and ``sc.Compute`` (the machine). Big fields add ``sc.Tiles``
-and ``sc.Passes``. The library underneath (``Calibrator``, ``Mosaicker``,
-``SkyModel``, ``OffsetModel``, ...) stays available for direct use, and the run
-engine (:mod:`selfcal.run`) also runs the TOML run configs.
+and ``sc.Passes``; ``sc.Snapshots`` writes a long solve's solution every k iterations,
+``sc.Monitor`` checks it every m iterations, ``sc.Fit(stop=sc.Stop(...))`` gives it opt-in
+stop rules, and ``sc.Fit(deflate=sc.Deflate(...))`` solves its smooth sky patterns directly. The library underneath (``Calibrator``, ``Mosaicker``,
+``SkyModel``, ``OffsetModel``, ...) stays available for direct use; the run
+engine behind the actions is :mod:`selfcal.run`.
 
 Names load on first use, so ``import selfcal`` (and every worker process) stays light.
 """
@@ -54,17 +56,21 @@ _logging.getLogger(__name__).addHandler(_logging.NullHandler())
 # name -> the module that defines it (loaded on first access: PEP 562)
 _EXPORTS = {
     # the Python API
-    **dict.fromkeys(('Config', 'ConfigError'), 'selfcal.config'),
-    **dict.fromkeys(('Function', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets', 'Header',
-                     'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction', 'Prior',
-                     'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
-    **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe'), 'selfcal.run.recipe'),
-    **dict.fromkeys(('Tiles', 'Refit', 'Passes'), 'selfcal.run.schedule'),
-    'Compute': 'selfcal.run.compute',
-    **dict.fromkeys(('Field', 'frames_in'), 'selfcal.run.field'),
+    **dict.fromkeys(('Config', 'ConfigError', 'by_value'), 'selfcal.config'),
+    **dict.fromkeys(('Function', 'Variance', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
+                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
+                     'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
+    'shot_noise': 'selfcal.models.noise',
+    **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
+                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Gauge'), 'selfcal.run.recipe'),
+    **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
+    **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
+    **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
+    'rerun': 'selfcal.run.records',
+    'compare': 'selfcal.run.compare',
     **dict.fromkeys(('Result', 'MosaicFile'), 'selfcal.run.result'),
     'Plan': 'selfcal.run.plan',
-    **dict.fromkeys(('Instrument', 'Job', 'Geometry', 'ChunkMap', 'JobGeometry', 'ExposureLayout'),
+    **dict.fromkeys(('Instrument', 'Job', 'Geometry', 'ChunkMap', 'ChunkAxes', 'JobGeometry', 'ExposureLayout'),
                     'selfcal.instruments.contract'),
     'Camera': 'selfcal.instruments.camera',
     'SPHEREx': 'selfcal.instruments.spherex.settings',
@@ -103,10 +109,11 @@ def __dir__():
 
 if TYPE_CHECKING:                     # what the names are, for type checkers and the documentation
     from ._state import set_hdd_io_limit, set_progress
-    from .config import Config, ConfigError, SelfCalConfigError, resolve_path
+    from .config import Config, ConfigError, SelfCalConfigError, by_value, resolve_path
     from .core.layout import SystemLayout
     from .instruments.camera import Camera
     from .instruments.contract import (
+        ChunkAxes,
         ChunkMap,
         ExposureLayout,
         Geometry,
@@ -160,9 +167,24 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
     from .models.variables import VariableSet
     from .pipeline.pipeline_wrapper import Calibrator, Mosaicker, PipelineConfig, Reprojector
     from .pipeline.tiled import TiledCalibration, TileSpec, make_tile_grid
-    from .run.compute import Compute
-    from .run.field import Field, frames_in
+    from .run.compare import compare
+    from .run.compute import Compute, Tuning
+    from .run.field import Field, Submitted, frames_in
     from .run.plan import Plan
-    from .run.recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
+    from .run.recipe import (
+        ChiSquaredRule,
+        ChunkGroups,
+        Clip,
+        Coadd,
+        Deflate,
+        Fit,
+        GradientRule,
+        LargeScaleRule,
+        Numerics,
+        Recipe,
+        ResidualRule,
+        Stop,
+    )
+    from .run.records import rerun
     from .run.result import MosaicFile, Result
-    from .run.schedule import Passes, Refit, Tiles
+    from .run.schedule import Monitor, Passes, Refit, Snapshots, Tiles

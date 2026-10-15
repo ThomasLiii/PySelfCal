@@ -18,6 +18,16 @@ Building and solving the system:
   runs LSQR or LSMR with a thread-parallel sparse product.
 - :mod:`~selfcal.core.lsqr_inplace`: scipy's LSQR with in-place vector updates (bit-identical,
   less memory).
+- :mod:`~selfcal.core.lsmr`: scipy's LSMR, with its state recorded at every iteration
+  (bit-identical).
+- :mod:`~selfcal.core.solve_record`: the record of a solve: how it stopped, its final estimates,
+  the true residual and its history per iteration.
+- :mod:`~selfcal.core.warm_start`: the identity of a solve's system, and a solve continued from
+  the solution of an earlier cal.
+- :mod:`~selfcal.core.snapshots`: a solve's solution every ``k`` iterations, written as a cal
+  file.
+- :mod:`~selfcal.core.monitor`: convergence monitors of a solve (the true residual and gradient,
+  the large-scale fit of the sky terms) and the opt-in rules that may stop it early.
 - :mod:`~selfcal.core.solution`: the solution vector split into maps, initial guesses, and the
   closed-form per-pixel sky solve.
 - :mod:`~selfcal.core.lsqr`: the former single module, now a re-export of ``assembly``,
@@ -34,5 +44,6 @@ Memory and parallelism:
 - :mod:`~selfcal.core.blockcsr`: int32-indexed block storage for a matrix with ``2**31`` or more
   nonzeros.
 - :mod:`~selfcal.core.shmbuf`: shared-memory arrays handed explicitly to worker processes.
-- :mod:`~selfcal.core.spill`: parks large per-pixel setup arrays on scratch disk during the solve.
+- :mod:`~selfcal.core.spill`: parks large per-pixel setup arrays on scratch disk during the solve,
+  and the right-hand side LSQR overwrites (for the true residual after it).
 """

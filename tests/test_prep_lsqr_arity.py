@@ -1,6 +1,6 @@
 """``_prep_lsqr`` must return the same number of values on every path.
 
-Its caller (``_prep_lsqr_batch_worker``) unpacks six values, so an early return
+Its caller (``_prep_lsqr_batch_worker``) unpacks seven values, so an early return
 with five raises ``ValueError: not enough values to unpack`` inside a pool
 worker and takes down the whole solve. That is what happened on the SEP
 offset-first run (2026-09-13): a frame whose subframe had zero valid pixels
@@ -20,14 +20,14 @@ def _returns(fn_name):
     return [n.value for n in ast.walk(fn) if isinstance(n, ast.Return)]
 
 
-def test_prep_lsqr_tuple_returns_all_have_six_values():
+def test_prep_lsqr_tuple_returns_all_have_seven_values():
     widths = {len(r.elts) for r in _returns("_prep_lsqr") if isinstance(r, ast.Tuple)}
-    assert widths == {6}, (
+    assert widths == {7}, (
         f"_prep_lsqr returns tuples of widths {sorted(widths)}; the caller in "
-        "_prep_lsqr_batch_worker unpacks exactly 6")
+        "_prep_lsqr_batch_worker unpacks exactly 7")
 
 
-def test_prep_lsqr_batch_worker_unpacks_six():
+def test_prep_lsqr_batch_worker_unpacks_seven():
     tree = ast.parse(ASSEMBLY.read_text())
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "_prep_lsqr_batch_worker")
@@ -35,7 +35,7 @@ def test_prep_lsqr_batch_worker_unpacks_six():
                if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Tuple)
                and isinstance(n.value, ast.Name) and n.value.id == "result"]
     assert targets, "expected `... = result` tuple unpacking in _prep_lsqr_batch_worker"
-    assert all(len(t.elts) == 6 for t in targets)
+    assert all(len(t.elts) == 7 for t in targets)
 
 
 def test_zero_valid_pixel_return_is_skippable():
@@ -49,6 +49,7 @@ def test_zero_valid_pixel_return_is_skippable():
             "num_rows must be 0 on the degenerate path"
         assert isinstance(r.elts[5], ast.Constant) and r.elts[5].value is None, \
             "off_counts must be None on the degenerate path"
+        assert isinstance(r.elts[6], ast.Call), "observed must be an empty array on the degenerate path"
 
 
 if __name__ == "__main__":

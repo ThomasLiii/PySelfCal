@@ -1,16 +1,19 @@
 """Phase 3c unit tests: global constraint builders reproduce the legacy blocks.
 
 The cal gates exercise mean-offset + continuum damping on real data, but NOT
-line damping (production runs damp_weight_line=0) or offset damping
-(damp_offset=0). These tests check all four builder paths against the exact
+line damping (production runs damp_weight_line=0) or offset damping (no
+damp_offset_maps). These tests check all four builder paths against the exact
 inline formulas that used to live in lsqr.setup_lsqr.
 
 Runnable as ``python tests/test_constraint_builders.py`` or under pytest.
 """
 import numpy as np
 
-from selfcal.core.constraint_builders import (ConstraintBlock, mean_offset_block,
-                                         sky_damping_block, offset_damping_block)
+from selfcal.core.constraint_builders import (
+    mean_offset_block,
+    offset_damping_block,
+    sky_damping_block,
+)
 
 
 def test_mean_offset_block_matches_legacy():

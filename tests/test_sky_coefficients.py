@@ -5,12 +5,11 @@ results broadcast), functions referenced by import path (and pickled the way the
 worker processes receive them), bit-identity of the historical spelling, the
 config form and its errors, the per-term damping rule.
 
-End to end: an instrument providing one data variable ``u`` (a detector-plane
-ramp), synthetic exposures carrying a second sky term ``S1(p) * shape(u)`` with
-``shape`` an arbitrary function defined in this file, and a ``[model]`` whose
-second term names that function — the solve recovers ``S1``.
+End to end: a camera with one detector map ``u`` (a detector-plane ramp),
+synthetic exposures carrying a second sky term ``S1(p) * shape(u)`` with ``shape``
+an arbitrary function defined in this file, and a model whose second term is that
+function of ``u`` — the solve recovers ``S1``.
 """
-import dataclasses
 import os
 import pickle
 import shutil
@@ -25,14 +24,19 @@ if _REPO not in sys.path:
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
-from selfcal import _state                                                   # noqa: E402
-from selfcal.instruments import register_instrument, get_instrument          # noqa: E402
-from selfcal.instruments.grid import GridInstrument                          # noqa: E402
-from selfcal.io.calfile import CalFile                                       # noqa: E402
-from selfcal.models.profiles import GaussianProfile, QuadratureSigma, TemplateProfile   # noqa: E402
-from selfcal.models.sky_model import (Coefficient, ImportedFunction, SkyComponent,     # noqa: E402
-                                      SkyModel, SpectralComponent, ContinuumComponent)
-from selfcal.models.spec import ModelSpec, SkyTerm, build_coefficient                 # noqa: E402
+import selfcal as sc  # noqa: E402
+from selfcal import _state  # noqa: E402
+from selfcal.io.calfile import CalFile  # noqa: E402
+from selfcal.models.profiles import GaussianProfile, QuadratureSigma, TemplateProfile  # noqa: E402
+from selfcal.models.sky_model import (  # noqa: E402
+    Coefficient,
+    ContinuumComponent,
+    ImportedFunction,
+    SkyComponent,
+    SkyModel,
+    SpectralComponent,
+)
+from selfcal.models.spec import ModelSpec, SkyTerm, build_coefficient  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +105,8 @@ def test_damp_weight_rule():
     m = SkyModel((ContinuumComponent(), SkyComponent('a', Coefficient('u', shape)),
                   SkyComponent('b', Coefficient('u', shape), damp_weight=0.02)))
     assert m.damp_weights(0.1, 0.3) == [0.1, 0.3, 0.02]
-    assert m.damp_weights(0.1, None) == [0.1, 0.0, 0.02]
+    assert m.damp_weights(0.1, None) == [0.1, 3.0 * 0.1, 0.02]        # the terms after the first: 3 x by default
+    assert m.damp_weights(None) == [0.0, 0.0, 0.02]
     m2 = SkyModel((SkyComponent('sky', damp_weight=0.5),))
     assert m2.damp_weights(0.1) == [0.5]                  # the first term honours its own prior too
 
@@ -155,22 +160,9 @@ def _u_map():
     return np.broadcast_to(np.linspace(0.0, 1.0, W, dtype=np.float32)[None, :], (H, W)).copy()
 
 
-@register_instrument('grid_with_u')
-class GridWithVariable(GridInstrument):
-    """The grid instrument plus one data variable ``u`` (a detector-plane map)."""
-
-    def detector_geometry(self, inst_cfg, oversample):
-        geom = super().detector_geometry(inst_cfg, oversample)
-        return dataclasses.replace(geom, aux={'u': _u_map()})
-
-
 def test_arbitrary_coefficient_end_to_end():
-    from selfcal.run import pipelines
     from tests.synthetic_exposures import write_exposures
-    from tests.test_runner_e2e_toy import _write_config
     _state.set_progress(False)
-    # (importing the coefficient function by path re-imports this module, which re-registers the class)
-    assert type(get_instrument('grid_with_u')).__name__ == 'GridWithVariable'
     tmp = tempfile.mkdtemp(prefix='selfcal_coeff_')
     try:
         rng = np.random.default_rng(21)
@@ -179,31 +171,17 @@ def test_arbitrary_coefficient_end_to_end():
         c_det = shape(_u_map(), power=2.0, offset=0.2)                   # its coefficient per detector pixel
         exp_dir = os.path.join(tmp, 'exposures')
         write_exposures(exp_dir, 40, rng, det_shape=(H, W), chunks=(3, 4), noise=0.01, extra_term=(s1, c_det))
-        out, cache = os.path.join(tmp, 'out'), os.path.join(tmp, 'cache')
-        os.makedirs(cache, exist_ok=True)
-        inst = {'name': 'grid_with_u', 'tag': 'Coeff', 'detector_shape': [H, W], 'chunks': [3, 4],
-                'sci_ext': 1, 'dq_ext': 2}
-        rcfg = _write_config(os.path.join(tmp, 'reproject.toml'), 'reproject', out, cache, instrument=inst,
-                             reproject=dict(input_dirs=[exp_dir], file_pattern='/toy_exp_*_D0.fits',
-                                            padding_pixels=8, max_workers=2, inner_parallel=1,
-                                            reproj_func='interp', padding_percentage=0.05, replace_existing=True))
-        pipelines.run(rcfg)
-        model = {'scalar': True, 'mosaic': 'none',
-                 'sky': [{'name': 'continuum'},
-                         {'name': 'shaped', 'damp_weight': 1e-4,
-                          'coefficient': {'variable': 'u', 'function': 'tests.test_sky_coefficients:shape',
-                                          'params': {'power': 2.0, 'offset': 0.2}}}],
-                 'offset': [{'kind': 'free', 'reg_weight': 0.1, 'mean_zero': True}]}
+        camera = sc.Camera((H, W), chunks=(3, 4), dq_ext=2, tag='Coeff', detector_maps={'u': _u_map()})
+        field = sc.Field(os.path.join(tmp, 'out', 'toy_run'), camera, 20.0,
+                         compute=sc.Compute(os.path.join(tmp, 'cache'), workers=2))
+        field.reproject(os.path.join(exp_dir, 'toy_exp_*_D0.fits'), method='interp', padding=8)
         # light sky damping: a strong prior on the constant term would push part of it into
         # the second term (its coefficient is positive everywhere)
-        ccfg = _write_config(os.path.join(tmp, 'cal.toml'), 'cal', out, cache, scalars={'mode': 'model'},
-                             instrument=inst, model=model,
-                             calibration=dict(apply_mask=True, apply_weight=False, outlier_thresh=8.0,
-                                              ignore_list=[], batch_size=4, offset_regularization=True,
-                                              weighted_damping=True, damp_weight=1e-4, max_workers=2),
-                             lsqr=dict(atol=1e-12, btol=1e-12, damp=0, iter_lim=400, precondition=True,
-                                       solver='lsqr'))
-        res = pipelines.run(ccfg)
+        model = sc.Model(sky=[sc.Sky(damping=1e-4),
+                              sc.Sky('shaped', times=sc.Function(shape, of='u', power=2.0, offset=0.2), damping=1e-4)],
+                         offsets=[sc.Offsets(smooth=0.1, mean_zero=True)])
+        res = field.calibrate(sc.Recipe(model, fit=sc.Fit(400, clip=8.0, tolerance=1e-12), coadd=None,
+                                        numerics=sc.Numerics(2, batch=4)))
         with CalFile(res.cal_paths[0]) as cal:
             assert cal.sky_names == ['continuum', 'shaped']
             got = cal.sky('shaped')
@@ -212,8 +190,9 @@ def test_arbitrary_coefficient_end_to_end():
         assert ok.sum() > 2000, ok.sum()
         # compare on the truth grid: map each covered reference pixel back through the WCS
         from astropy.wcs import WCS
+
         from selfcal.geometry import wcs_helper
-        ref_wcs, _ = wcs_helper.load_from_fits(os.path.join(out, 'toy_run', 'ref.fits'))
+        ref_wcs, _ = wcs_helper.load_from_fits(os.path.join(field.path, 'ref.fits'))
         truth = WCS(naxis=2)
         truth.wcs.ctype = ['RA---TAN', 'DEC--TAN']
         truth.wcs.crpix = [W / 2 + 0.5, H / 2 + 0.5]

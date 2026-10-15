@@ -1,19 +1,18 @@
-"""This package holds the built-in ``euclid`` instrument for Euclid NISP and its helpers.
+"""Euclid NISP: the instrument ``sc.Euclid`` and its helpers.
 
-Importing :mod:`selfcal.instruments` registers the instrument; a run config selects it with
-``[instrument].name = "euclid"``.
-
-- :mod:`~selfcal.instruments.euclid.adapter`: the instrument class (16 detectors per exposure,
-  grid, stripe and tilt chunk maps, edge taper, mosaic renderers).
-- :mod:`~selfcal.instruments.euclid.conventions`: NISP constants (FITS extension numbers,
-  detector shape, DQ bits to ignore) and the square grid chunk map.
-- :mod:`~selfcal.instruments.euclid.hooks`: the recipe's per-frame hooks, ``star_position_mask``
-  and ``residual_mask``.
-- :mod:`~selfcal.instruments.euclid.exposures`: lists of exposure files from a VOTable catalogue,
-  a CSV file or a directory.
-- :mod:`~selfcal.instruments.euclid.settings`: Euclid as settings of the Python API,
-  :class:`~selfcal.instruments.euclid.settings.Euclid` (available from this package, with the hook
-  classes: ``euclid.Euclid``, ``euclid.StarMask``, ``euclid.ResidualMask``).
+- :mod:`~selfcal.instruments.euclid.settings`: :class:`~selfcal.instruments.euclid.settings.Euclid`,
+  which implements the instrument contract (16 detectors per exposure, grid, stripe and tilt chunk
+  maps, edge taper, mosaic renderers); available from this package, with the hook classes:
+  ``euclid.Euclid``, ``euclid.StarMask``, ``euclid.ResidualMask``.
+- :mod:`~selfcal.instruments.euclid.adapter`: the helpers of the chunk maps, the edge taper and the
+  mosaic renderers.
+- :mod:`~selfcal.instruments.euclid.conventions`: NISP constants (FITS extension numbers, detector
+  shape, DQ bits to ignore) and the square grid chunk map.
+- :mod:`~selfcal.instruments.euclid.hooks`: the recipe's per-frame hooks,
+  :class:`~selfcal.instruments.euclid.hooks.StarMask` and
+  :class:`~selfcal.instruments.euclid.hooks.ResidualMask`.
+- :mod:`~selfcal.instruments.euclid.exposures`: lists of exposure files from a VOTable catalogue, a
+  CSV file or a directory.
 """
 _EXPORTS = {'Euclid': 'settings', 'StarMask': 'hooks', 'ResidualMask': 'hooks'}
 

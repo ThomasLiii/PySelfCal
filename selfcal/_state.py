@@ -19,7 +19,7 @@ def set_hdd_io_limit(n: int | None) -> None:
 
 
 # Whether library functions render tqdm progress bars (stderr). Applications
-# (the runner, interactive sessions) usually want them; embedding callers and
+# (the run engine, interactive sessions) usually want them; embedding callers and
 # batch logs usually do not. Read at each call site via
 # ``disable=not _state.progress_enabled`` so a mid-run toggle takes effect on
 # the next bar. Default True preserves the historical behavior.

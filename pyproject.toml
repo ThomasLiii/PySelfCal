@@ -23,6 +23,9 @@ dependencies = [
     "tqdm",
 ]
 
+[project.scripts]
+selfcal = "selfcal.__main__:main"   # selfcal run | convert | rerun | compare
+
 [project.optional-dependencies]
 # mpsplines is git-only (not on PyPI), so it cannot be a core dependency. It is
 # needed only for the optional external mean-preserving interpolator

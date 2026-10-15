@@ -290,7 +290,9 @@ def make_linear_interp_matrix(coords, input_shape, valid_row_mask=None):
     
     n_valid = len(row_coords)
     if n_valid == 0:
-        return coo_matrix((0, 0), shape=(N_total, H * W)).tocsr()
+        # an empty matrix of the documented shape (coo_matrix((0, 0), shape=...) read (0, 0) as the shape:
+        # a 0x0 matrix, which a detector-map product then refused)
+        return coo_matrix((N_total, H * W), dtype=np.float32).tocsr()
 
     # 2. Integer floors and fractional parts
     # Floor returns float, safe to cast to int32 for indexing

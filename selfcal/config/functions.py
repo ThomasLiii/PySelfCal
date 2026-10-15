@@ -12,13 +12,16 @@ and recorded by its import path ``"module:qualname"``:
   launched another way records the same name. The parent never runs the script twice (the
   stem is an alias of the running script), nor does a worker (:func:`import_module`);
 * a lambda, a function defined inside another function, a function defined under the
-  ``__main__`` guard, or one defined in a notebook cell: rejected, with the fix.
+  ``__main__`` guard, or one defined in a notebook cell: rejected, with the fix; or wrapped in
+  :class:`by_value`, which sends the function itself (needs ``cloudpickle``).
 """
 from __future__ import annotations
 
 import ast
 import functools
+import hashlib
 import importlib
+import inspect
 import os
 import pickle
 import sys
@@ -26,15 +29,17 @@ import types
 
 from .base import ConfigError
 
-__all__ = ['function_ref', 'load_callable', 'import_module', 'describe_callable', 'check_picklable']
+__all__ = ['function_ref', 'load_callable', 'import_module', 'describe_callable', 'check_picklable', 'by_value']
 
 _MAIN_NAMES = ('__main__', '__mp_main__')
 
 
-def _running_script():
+def _running_script(module_name='__main__'):
     """The module object of the running script and its file stem, or (module, None) when the
-    main module has no file (an interactive session, a notebook)."""
-    main = sys.modules.get('__main__')
+    module has no file (an interactive session, a notebook). ``module_name`` is the module the
+    function lives in: ``__main__``, or ``__mp_main__`` in a worker process, where
+    multiprocessing imports the script under that name and ``__main__`` is its own bootstrap."""
+    main = sys.modules.get(module_name)
     path = getattr(main, '__file__', None)
     if not path:
         return main, None
@@ -144,7 +149,7 @@ def function_ref(fn, what='function') -> str:
                           f"so the worker processes cannot import it; move it to the top level of a "
                           f"module or of the run script")
     if module in _MAIN_NAMES:
-        main, stem = _running_script()
+        main, stem = _running_script(module)
         if stem is None:
             raise ConfigError(
                 f"{what}: {qual} is defined in a notebook cell or an interactive session, which the "
@@ -178,11 +183,13 @@ def function_ref(fn, what='function') -> str:
 
 def describe_callable(obj) -> str:
     """A best-effort ``"module:qualname"`` of a function, or of an object's class (never raises)."""
+    if isinstance(obj, by_value):
+        return f'by_value:{obj.__qualname__}'
     target = obj if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType, type)) else type(obj)
     module = getattr(target, '__module__', None) or '?'
     qual = getattr(target, '__qualname__', None) or getattr(target, '__name__', None) or repr(target)
     if module in _MAIN_NAMES:
-        _, stem = _running_script()
+        _, stem = _running_script(module)
         module = stem or module
     return f'{module}:{qual}'
 
@@ -199,3 +206,88 @@ def check_picklable(obj, what):
         raise ConfigError(f"{what}: {type(obj).__name__} cannot be sent to the worker processes "
                           f"({type(e).__name__}: {e}); keep only importable functions and plain "
                           f"values in it") from None
+
+
+def _code_digest(fn, source, fallback):
+    """What a function computes, the same in every process: the hash of its source, its default and
+    keyword-default values and the values its closure holds. (Its cloudpickle blob also holds the
+    file it was compiled from, which changes with every notebook kernel and every way of launching
+    the script.) ``fallback`` when the source cannot be read."""
+    if source is None:
+        return fallback
+    import json
+
+    from .base import encode
+    cells = []
+    for cell in getattr(fn, '__closure__', None) or ():
+        try:
+            cells.append(cell.cell_contents)
+        except ValueError:                 # an empty cell
+            cells.append(None)
+    parts = {'source': source, 'defaults': encode(list(getattr(fn, '__defaults__', None) or ())),
+             'kwdefaults': encode(dict(getattr(fn, '__kwdefaults__', None) or {})), 'closure': encode(cells)}
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=repr).encode()).hexdigest()
+
+
+class by_value:
+    """A function sent to the worker processes by value instead of by name.
+
+    For a function the workers cannot import, typically one defined in a notebook cell::
+
+        def ratio(wavelength, scale=2.0):
+            return wavelength / scale
+
+        model = sc.Model(sky=[sc.Sky(), sc.Sky("line", times=sc.by_value(ratio))])
+
+    The function is serialised with the optional package ``cloudpickle`` (``pip install
+    cloudpickle``), together with what it refers to; its source is kept in the run's record. A
+    run with such a function cannot be submitted or rerun from its record: write the function to a
+    module when the run should be repeatable.
+    """
+
+    def __init__(self, fn):
+        try:
+            import cloudpickle
+        except ImportError:
+            raise ConfigError("sc.by_value(...) needs the optional package cloudpickle (pip install cloudpickle); "
+                              "or write the function to a module and import it") from None
+        if isinstance(fn, by_value):
+            fn = fn.function
+        if not callable(fn):
+            raise ConfigError(f"sc.by_value(...): expected a function, got {fn!r}")
+        self._function = fn
+        self._blob = cloudpickle.dumps(fn)
+        self.__name__ = getattr(fn, '__name__', 'function')
+        self.__qualname__ = getattr(fn, '__qualname__', self.__name__)
+        try:
+            self.source = inspect.getsource(fn)
+        except (OSError, TypeError):
+            self.source = None
+        self.sha256 = hashlib.sha256(self._blob).hexdigest()
+        self.digest = _code_digest(fn, self.source, self.sha256)
+
+    @property
+    def function(self):
+        if self._function is None:
+            self._function = pickle.loads(self._blob)
+        return self._function
+
+    @property
+    def __signature__(self):
+        return inspect.signature(self.function)
+
+    def __call__(self, *args, **kwargs):
+        return self.function(*args, **kwargs)
+
+    def __getstate__(self):
+        return {'_blob': self._blob, '__name__': self.__name__, '__qualname__': self.__qualname__,
+                'source': self.source, 'sha256': self.sha256, 'digest': self.digest, '_function': None}
+
+    def __eq__(self, other):
+        return isinstance(other, by_value) and other.digest == self.digest
+
+    def __hash__(self):
+        return hash(self.digest)
+
+    def __repr__(self):
+        return f"sc.by_value({self.__qualname__})"

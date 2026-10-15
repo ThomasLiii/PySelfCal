@@ -1,9 +1,11 @@
-"""Big fields: tiles, and the N-pass alternating solve.
+"""Big fields and long solves: tiles, the N-pass alternating solve, snapshots and monitors of a solve.
 
 :class:`Tiles` splits the reference grid into tiles solved one at a time and stitched (each
 pixel the Fisher-weighted mean of the tiles that cover it). :class:`Passes` alternates exact
 sky and per-frame offset solves after a first joint solve (the N-pass schedule of
-``PIPELINE.md``); :class:`Refit` is its offset pass.
+``PIPELINE.md``); :class:`Refit` is its offset pass. :class:`Snapshots` writes a solve's
+solution every ``k`` iterations as a cal file (:mod:`selfcal.core.snapshots`); :class:`Monitor`
+checks a solve every ``m`` iterations (:mod:`selfcal.core.monitor`).
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from typing import Literal
 from ..config.base import Config, ConfigError
 from .recipe import Clip, as_clip
 
-__all__ = ['Tiles', 'Refit', 'Passes', 'schedule']
+__all__ = ['Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor', 'schedule', 'as_snapshots', 'as_monitor']
 
 
 @dataclass(frozen=True)
@@ -129,3 +131,95 @@ class Passes(Config):
                               f"ends_on_offset=True")
         if self.stop_tol < 0:
             raise ConfigError("Passes(stop_tol=...): at least 0")
+
+
+@dataclass(frozen=True)
+class Snapshots(Config):
+    """Snapshots of a solve: its solution after every ``every``-th iteration, written as a cal file.
+
+    ``field.calibrate(recipe, snapshots=sc.Snapshots(every=50, keep=3))`` writes
+    ``calibration/snapshots/<cal stem>_it<NNNN>.h5`` after iterations 50, 100, ... (``NNNN``: the
+    cumulative iteration, counted from a warm start's total); not after the iteration the solve
+    stops at (the cal is written then). Each is a complete cal file (the cal's schema, its
+    ``solve`` group marked ``snapshot = True`` with the ``iteration``), so it can be mosaicked
+    (``field.mosaic(recipe, cal=...)``), continued (``calibrate(start=...)``) and read like any
+    cal. ``keep``: how many of the solve's snapshots to keep, the latest (None: all). Snapshots
+    do not change the solve, so they are an action's setting, recorded and replayed by a rerun,
+    and never part of a product's inputs; they are not products (no sidecar). Plain
+    calibrations only (no ``tiles`` or ``passes``). See :mod:`selfcal.core.snapshots`.
+    """
+    every: int
+    _: KW_ONLY
+    keep: int | None = None
+
+    def _validate(self):
+        if self.every < 1:
+            raise ConfigError(f"Snapshots(every={self.every}): at least 1 iteration")
+        if self.keep is not None and self.keep < 1:
+            raise ConfigError(f"Snapshots(keep={self.keep}): at least 1 (None: keep them all)")
+
+
+def as_snapshots(value) -> Snapshots | None:
+    """``calibrate(snapshots=...)`` as a :class:`Snapshots`: None or False (none), a :class:`Snapshots`,
+    or a number of iterations (``snapshots=50`` is ``Snapshots(every=50)``)."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Snapshots):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Snapshots(value)
+    raise ConfigError(f"calibrate(snapshots=...): a sc.Snapshots(every=..., keep=...), a number of iterations, or "
+                      f"None / False; got {value!r}")
+
+
+@dataclass(frozen=True)
+class Monitor(Config):
+    """Convergence monitors of a solve: checks every ``every`` iterations, saved in its history.
+
+    ``field.calibrate(recipe, monitor=sc.Monitor(every=10))`` checks each solve at iterations 0,
+    10, 20, ...: ``residual``, the true ``|b - A x|`` (one product ``A x``) and the ratio of the
+    solver's estimate to it; ``gradient``, the true ``|A^T r|`` too (one product ``A^T r`` more)
+    and its estimate's ratio; ``large_scale``, the smooth fit of each sky term (``True``: degree 2,
+    or the Fit's large-scale stop rule's; a number: that degree; ``False``: none) on every
+    ``step``-th row and column of its covered pixels (None: 4, or the rule's), its coefficients
+    and their relative change since the previous check. The values go to the solve's history file
+    (``<field>/records/<cal stem>_history.npz``: ``check_itn``, ``check_iteration`` counted across
+    warm starts, ``true_residual``, ``residual_ratio``, ``true_gradient``, ``gradient_ratio``,
+    ``large_scale_*``), the log, and the last check to the action's record.
+
+    Monitors do not change the solve: an action's setting, recorded and replayed by a rerun, never
+    part of a product's inputs; the cal is the same, byte for byte, with or without them. A stop
+    rule that needs a check (:class:`~selfcal.run.recipe.Stop`) runs it at its own cadence, with or
+    without a monitor. See :mod:`selfcal.core.monitor`.
+    """
+    every: int = 10
+    _: KW_ONLY
+    residual: bool = True
+    gradient: bool = False
+    large_scale: bool | int = True
+    step: int | None = None
+
+    def _validate(self):
+        if self.every < 1:
+            raise ConfigError(f"Monitor(every={self.every}): at least 1 iteration")
+        if not isinstance(self.large_scale, bool) and not 1 <= self.large_scale <= 6:
+            raise ConfigError(f"Monitor(large_scale={self.large_scale}): a degree from 1 to 6, True or False")
+        if self.step is not None and self.step < 1:
+            raise ConfigError(f"Monitor(step={self.step}): at least 1 (None: 4, or the stop rule's)")
+        if not (self.residual or self.gradient or self.large_scale is not False):
+            raise ConfigError("Monitor: nothing to check (residual, gradient and large_scale are off)")
+
+
+def as_monitor(value) -> Monitor | None:
+    """``calibrate(monitor=...)`` as a :class:`Monitor`: None or False (none), a :class:`Monitor`,
+    ``True`` (the default monitor) or a number of iterations (``monitor=20`` is ``Monitor(every=20)``)."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Monitor):
+        return value
+    if value is True:
+        return Monitor()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Monitor(value)
+    raise ConfigError(f"calibrate(monitor=...): a sc.Monitor(every=..., ...), True, a number of iterations, or "
+                      f"None / False; got {value!r}")

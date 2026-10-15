@@ -36,6 +36,17 @@ production uses, nothing promotes and no extra vector is ever allocated.
 reference (e.g. ``lsqr_inplace(op, holder.pop(), ...)``) to actually free it.
 ``var`` is only allocated when ``calc_var`` (scipy allocates an n-length
 float64 array regardless); otherwise an empty array is returned in its slot.
+``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`) receives the
+scalars of each iteration (the norms, the estimates of ``|A|`` and
+``cond(A)``, the stopping ratios); reading them changes nothing.
+``callback(itn, x)`` is called with the iterate every ``callback_every``
+iterations while the solve goes on (not after the iteration it stops at); it
+must not change ``x`` (the snapshots of :mod:`selfcal.core.snapshots`).
+``watch(itn, x, istop, tests)`` (a :class:`~selfcal.core.monitor.Watch`) is
+called after the history row of every iteration, the start included, and
+returns the ``istop`` the solve goes on with: the monitors and the opt-in stop
+rules of :mod:`selfcal.core.monitor`. With ``history``, ``callback`` and
+``watch`` all None this is the function described above.
 
 One deliberate departure from scipy (2026-10-05): the norms of LARGE float32
 vectors are accumulated in float64 (``_norm``). ``np.linalg.norm`` on a
@@ -68,17 +79,28 @@ _NORM64_BLOCK = 50_000_000
 _FLOAT32_NORMS = os.environ.get("SELFCAL_LSQR_FLOAT32_NORMS", "") == "1"
 
 
+_NORM64_BUF = None
+
+
 def _norm(x):
     """``np.linalg.norm(x)`` for a 1-D vector, with float64 accumulation when ``x`` is a long float32 vector.
 
-    The chunked sum of squares reads ``x`` once in ``_NORM64_BLOCK`` pieces (one 400 MB float64
-    temporary); short or float64 vectors take scipy's exact call so small systems stay bit-identical.
+    The chunked sum of squares reads ``x`` once in ``_NORM64_BLOCK`` pieces, each copied into one float64
+    buffer kept between calls (400 MB; the same values and the same BLAS dot as a fresh ``astype`` copy per
+    piece, so the result is bit-identical, without faulting in a fresh copy per piece: a production
+    iteration takes four such norms over vectors of 1e9 elements). Short or float64 vectors take scipy's
+    exact call so small systems stay bit-identical.
     """
+    global _NORM64_BUF
     if _FLOAT32_NORMS or x.dtype != np.float32 or x.ndim != 1 or x.shape[0] < _NORM64_MIN:
         return np.linalg.norm(x)
+    if _NORM64_BUF is None:
+        _NORM64_BUF = np.empty(_NORM64_BLOCK, dtype=np.float64)
     acc = 0.0
     for start in range(0, x.shape[0], _NORM64_BLOCK):
-        chunk = x[start:start + _NORM64_BLOCK].astype(np.float64)
+        stop = min(x.shape[0], start + _NORM64_BLOCK)
+        chunk = _NORM64_BUF[:stop - start]
+        np.copyto(chunk, x[start:stop])
         acc += float(np.dot(chunk, chunk))
     return np.float32(sqrt(acc))
 
@@ -89,7 +111,8 @@ _MSG = ('The exact solution is  x = 0                              ',
         'Ax - b is small enough for this machine                   ',
         'The least-squares solution is good enough for this machine',
         'Cond(Abar) seems to be too large for this machine         ',
-        'The iteration limit has been reached                      ')
+        'The iteration limit has been reached                      ',
+        'A stop rule of the caller ended the solve                 ')
 
 
 
@@ -181,13 +204,35 @@ def _scratch(tmp, arr, scalar):
 
 def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                  iter_lim=None, show=False, calc_var=False, x0=None,
-                 x0_owned=False):
+                 x0_owned=False, history=None, callback=None, callback_every=1, watch=None, constrain=None):
     """Drop-in for ``scipy.sparse.linalg.lsqr`` (same arguments, same return
     tuple) with in-place vector updates. See the module docstring.
 
     ``x0`` is copied unless ``x0_owned=True``, in which case its buffer is
     used as the solution vector directly (the caller must hold no other
-    reference it cares about) — one n-length vector less."""
+    reference it cares about) — one n-length vector less.
+
+    ``history`` (a :class:`~selfcal.core.solve_record.SolveHistory`, or
+    None) receives the solver's scalars before the first iteration and after
+    each one (``r1norm``, ``r2norm``, ``arnorm``, ``anorm``, ``acond``,
+    ``xnorm`` and the ratios ``test1``, ``test2``); recording them changes
+    no value the solve computes.
+
+    ``callback`` (or None) is called as ``callback(itn, x)`` after iteration
+    ``itn`` whenever ``itn`` is a multiple of ``callback_every`` and the solve
+    goes on (never after the iteration it stops at), after ``history`` got
+    that iteration's row. ``x`` is the solver's own buffer: read it, never
+    change it or keep it past the call.
+
+    ``watch`` (or None) is called as ``watch(0, x, 0, None)`` after the
+    starting row of ``history`` (its result unused) and as
+    ``istop = watch(itn, x, istop, tests)`` after the row of each iteration,
+    before ``callback``: ``tests`` are the solver's seven stopping conditions in
+    ``istop`` order (``test1 <= rtol``, ``test2 <= atol``, ``test3 <= ctol``,
+    the three at machine precision, ``itn >= iter_lim``) and ``istop`` the code
+    the solver would stop with (0: none). The solve stops when the returned code
+    is not 0 (:class:`selfcal.core.monitor.Watch`: the monitors and stop rules).
+    The arithmetic of the solve does not change."""
     A = aslinearoperator(A)
     b = np.atleast_1d(b)
     if b.ndim > 1:
@@ -258,6 +303,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     if alfa > 0:
         v = _promote(v, 1 / alfa)
         vec.imul(v, (1 / alfa))
+        if constrain is not None:
+            constrain(v)
     w = v.copy()
     tmp = np.empty_like(w)          # scratch for dk / t1*w
 
@@ -268,6 +315,11 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
     r2norm = rnorm
 
     arnorm = alfa * beta
+    if history is not None:
+        history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm,
+                    float(rnorm) / float(bnorm) if bnorm > 0 else 0.0, float('nan'))
+    if watch is not None:
+        watch(itn, x, istop, None)
     if arnorm == 0:
         if show:
             print(_MSG[0])
@@ -313,6 +365,8 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
             if alfa > 0:
                 v = _promote(v, 1 / alfa)
                 vec.imul(v, (1 / alfa))
+                if constrain is not None:
+                    constrain(v)
 
         if damp > 0:
             rhobar1 = sqrt(rhobar**2 + dampsq)
@@ -397,6 +451,12 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
         if test1 <= rtol:
             istop = 1
 
+        if history is not None:
+            history.add(itn, r1norm, r2norm, arnorm, anorm, acond, xnorm, test1, test2)
+        if watch is not None:
+            istop = watch(itn, x, istop, (test1 <= rtol, test2 <= atol, test3 <= ctol, 1 + t1 <= 1,
+                                          1 + test2 <= 1, 1 + test3 <= 1, itn >= iter_lim))
+
         if show:
             prnt = False
             if n <= 40:
@@ -420,6 +480,9 @@ def lsqr_inplace(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8,
                 str3 = f'  {test1:8.1e} {test2:8.1e}'
                 str4 = f' {anorm:8.1e} {acond:8.1e}'
                 print(str1, str2, str3, str4)
+
+        if callback is not None and istop == 0 and itn % callback_every == 0:
+            callback(itn, x)
 
         if istop != 0:
             break

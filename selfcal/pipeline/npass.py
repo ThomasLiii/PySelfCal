@@ -1,4 +1,4 @@
-"""Primitives of the N-pass alternating solve (runner task ``npass``).
+"""Primitives of the N-pass alternating solve (the run engine's task ``npass``).
 
 Model, per frame *k* and reference pixel *p*::
 
@@ -29,30 +29,31 @@ subtracting before the weights would bias every fit toward zero amplitude.
 Nothing here knows an instrument: the chunk→(coordinate, group) encoding comes
 in as a ``poly_basis`` spec (see :mod:`selfcal.models.offset_basis`) and the
 per-subchannel clip edges as an array (see
-``SPHERExInstrument.subchannel_bc_edges``).
+:meth:`selfcal.run.engine.RunContext.clip_group_edges`).
 """
 from __future__ import annotations
 
+import json
 import os
 import time
-import json
 from concurrent.futures import ProcessPoolExecutor
 
-import numpy as np
 import h5py
 import hdf5plugin  # noqa: F401
+import numpy as np
 from scipy.ndimage import map_coordinates
 
 from ..core.shmbuf import worker_pool_context
-from ..core.subframe import _prep_subframe
 from ..core.solution import solve_sky_closed_form
+from ..core.subframe import _prep_subframe
 from ..geometry.map_helper import chunk_to_det, find_outliers_grouped
+from ..io.atomic import atomic_path
+from ..io.calfile import CalFile
 from ..models.offset_basis import eval_offset_basis
 from ..models.offset_structure import group_aux_edges
-from ..io.calfile import CalFile
 
 __all__ = [
-    "group_wavelength_edges", "sky_damp_weights",
+    "group_wavelength_edges",
     "OffsetSubtractor", "SkySubtractor",
     "refit_offsets_per_frame", "dump_moments", "combine_moments", "write_sky_cal",
     "sky_monitors", "offset_monitors", "append_monitor",
@@ -66,13 +67,6 @@ def group_wavelength_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pi
     """Wavelength bin edges between consecutive chunk groups for the grouped
     outlier clip — :func:`selfcal.models.offset_structure.group_aux_edges`."""
     return group_aux_edges(det_wavelength, det_chunk_map, group_of_chunk, min_pixels=min_pixels)
-
-
-def sky_damp_weights(sky_model, damp_weight, damp_weight_line=None):
-    """Per-term damping weights (``SkyModel.damp_weights``: a term's own
-    ``damp_weight`` when set, else ``damp_weight`` for the first term and
-    ``damp_weight_line`` for the others)."""
-    return sky_model.damp_weights(damp_weight or 0.0, damp_weight_line)
 
 
 def _basename(p):
@@ -172,7 +166,8 @@ class SkySubtractor:
                 src = f["sky"][n] if "sky" in f else (f["skymap"] if n == self.names[0]
                                                         else f["skymap_line"])
                 if not os.path.exists(self.paths[n]):
-                    np.save(self.paths[n], np.nan_to_num(src[:].astype(np.float32)))
+                    with atomic_path(self.paths[n]) as tmp:
+                        np.save(tmp, np.nan_to_num(src[:].astype(np.float32)))
             self.shape = tuple(f["skymap"].shape)
 
     def __getstate__(self):
@@ -301,7 +296,7 @@ def _refit_frame(path):
             det_aux=g["det_aux"], chunk_maps=[g["cm"]],
             apply_weight=True, apply_mask=True, ignore_list=g["ignore_list"],
             grid_valid_weight=g["grid_valid"], oversample_factor=1,
-            valid_threshold=0.5, postprocess_func=g["sky"], preprocess_func=None)
+            valid_threshold=0.5, postprocess_func=g["sky"])
         sub_h, sub_w = sub_data.shape
         valid = sub_weight > 0
         if g["edges"] is not None:
@@ -405,7 +400,7 @@ def refit_offsets_per_frame(frames, sky, *, det_chunk_map, grid_valid, det_aux, 
                 print(f"[npass]   {i+1}/{len(frames)}  ({time.time()-t0:.0f}s)", flush=True)
     print(f"[npass] OFFSET refit done in {time.time()-t0:.0f}s; fitted {ok.sum()}/{len(frames)}; "
           f"{fell_back} bright-cut fallbacks", flush=True)
-    with h5py.File(out_h5, "w") as f:
+    with atomic_path(out_h5) as tmp, h5py.File(tmp, "w") as f:
         f.create_dataset("offsets/map_0", data=offsets, **hdf5plugin.Blosc())
         f.create_dataset("frame_scalar", data=scalars)
         f.create_dataset("chunk_maps/map_0", data=np.asarray(det_chunk_map), **hdf5plugin.Blosc())
@@ -447,7 +442,8 @@ def dump_moments(cc, out_npz):
                    reproj_list=np.array([str(p).encode() for p in cc.reproj_list]))
     for (i, j), c in cross.items():
         payload[f"cross_{i}_{j}"] = np.asarray(c, dtype=np.float64)
-    np.savez(out_npz, **payload)
+    with atomic_path(out_npz) as tmp:
+        np.savez(tmp, **payload)
     print(f"[npass] moments dumped ({len(cc.reproj_list)} frames, J={J}) -> {out_npz}", flush=True)
     return out_npz
 
@@ -522,7 +518,7 @@ def write_sky_cal(path, *, ref_shape, sky_names, sky_maps, sky_counts, sky_fishe
     """
     from ..io.cal_writer import write_sky_groups
     J = len(sky_names)
-    with h5py.File(path, "w") as f:
+    with atomic_path(path) as tmp, h5py.File(tmp, "w") as f:
         f.attrs["num_maps"] = 0
         write_sky_groups(f, sky_names=list(sky_names),
                          sky_maps=[np.asarray(m, np.float32) for m in sky_maps],
@@ -602,7 +598,8 @@ def offset_monitors(off_path, prev_off_path=None):
         idx = {n: i for i, n in enumerate(pnames)}
         pairs = [(i, idx[n]) for i, n in enumerate(names) if n in idx and ok[i]]
         if pairs and poff.shape[1] == off.shape[1]:
-            a = np.array([i for i, _ in pairs]); b = np.array([j for _, j in pairs])
+            a = np.array([i for i, _ in pairs])
+            b = np.array([j for _, j in pairs])
             out["step_rms"] = float(np.sqrt(np.mean((off[a] - poff[b]) ** 2)))
             out["n_shared"] = len(pairs)
     return out

@@ -1,43 +1,92 @@
 # Byte-equality gates
 
 Every structural change to the pipeline is gated on reproducing fixed products byte for byte.
-`run_gates.sh <tag>` runs, on this box (paths to `/mnt/md124` and the staged fixtures are inside
-the configs), and writes `workspace/unify/logs/gates_<tag>.log`:
+The gates are Python: each is a function of `python_gates.py`, a calibration written with the
+[Python API](../../docs/guide/python-api.md) on a fixed set of frames
+(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13`).
+Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
+to `/mnt/md124` and the staged fixtures are in `python_gates.py`), the steps named, compares each
+product with its golden and writes `workspace/unify/logs/gates_<tag>.log`; `SELFCAL_REPO` picks
+the tree. The steps are `pytest` (the test suite, first), then the gates below; the default is
+every step but `m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and
+logs to `m13_gate_<tag>.log`).
 
-| step | config | what | reference |
-| --- | --- | --- | --- |
-| pytest | — | the test suite | — |
-| continuum | `configs/gate_continuum_unify.toml` | D3 Ch17 NumCol3, 300 frames, iter 50 | `cal_..._Ch17_gate_golden_stat.h5` |
-| spectral | `configs/gate_spectral_unify.toml` | D4 AromaticPAHfit NumCol5, 150 frames, iter 20 | `cal_..._AromaticPAHfit_gate_golden_stat.h5` |
-| e2e | `configs/gate_e2e.toml` | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps) | `*_unify_e2e_golden.{h5,fits}` |
-| npass probe | `configs/gate_npass3_unify.toml` | multiline J=4, n=3: INIT + closed-form SKY + per-frame OFFSET refit | `*_unify_npass3_golden{,_pass2sky,_pass3off}.h5` |
-| euclid | `configs/gate_euclid_unify.toml` | the EDFN recipe as a `[model]` table on the `euclid` instrument, 3 exposures x 16 detectors | products of `run_euclid_golden.sh` (the original script) |
+| gate | what | golden |
+| --- | --- | --- |
+| continuum | D3 Ch17 NumCol3, 300 frames, iter 50 (51 MB cal) | `cal_..._Ch17_gate_golden_f64.h5` |
+| spectral | D4 AromaticPAHfit NumCol5, 150 frames, iter 20 (73 MB cal) | `cal_..._AromaticPAHfit_gate_golden_f64.h5` |
+| e2e | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps; a 4.8 GB mosaic) | `*_unify_e2e_golden_f64.{h5,fits}` |
+| npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame OFFSET refit | none yet (see below) |
+| euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
+| m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
+| rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
+| transfer | D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted solve (`sc.shot_noise()`), the post-solve plane gauge on the map (`sc.Gauge('xs_term', degree=1)`), the weighted coadd (mean, std, 2-sigma clip) -- against what the campaign's own implementations made | `*_transfer_golden_f64.h5` (the cal's offsets), `*_transfer_plane_golden_f64.h5` (its sky), `*_transfer_planemap_golden_f64.fits` (the mosaic) |
+| transfer_quad | the quadratic gauge (`sc.Gauge(degree=2)`) of the library on the golden ungauged cal and map of `transfer`, against the campaign's (`quad_check.py`; no solve) | `*_transfer_gq2_golden_f64.h5` (the sky), `*_transfer_gq2map_golden_f64.fits` (the maps) |
 
-`run_m13_gate.sh <tag>` runs the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300,
-~50 min) against `*_UNIFYNPASS1GOLDEN_*.h5`. `mode_lowering_snapshot.py dump|compare` snapshots
-what every mode lowers to (offset model, sky model, aux maps, mosaic geometry, x0, N-pass hooks)
-for a config, so a refactor of the modes/instruments is checked without a solve
-(`configs/snap_*.toml` cover the modes without a shipped config). `h5_diff.py` / `fits_diff.py`
-compare every dataset / extension exactly.
-
-`python_gates.py` is the same gate set written with the [Python API](../../docs/guide/python-api.md)
-(each gate a function: `python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e |
-npass3 | euclid | m13`); its products carry a `py` suffix and `run_python_gates.sh <tag> [gate ...]`
-compares them with the same goldens (`SELFCAL_REPO` picks the tree). The script imports numpy
-before selfcal on purpose: the actions pin the threads themselves.
-
-`config_equivalence.py` checks the configuration layer without a solve: `baseline` / `compare`
-record what the engine reads from every shipped config and what its mode lowers to on the real
-geometry (before and after an engine change); `typed` converts each config to the Python API's
-objects, lowers them again and compares what the engine does with each (the library calls with
-defaults filled, per-term damping, offset rows, sky coefficients, jobs, product paths, frames,
-staging, tiles, passes).
+`python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
+themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly;
+`diff_cal_h5.py` compares two cal files dataset by dataset across the cal schemas (a legacy
+single-offset file against a multi-map one), for the continuum, spectral, e2e and rerun gates.
 
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
-the commit says so. The assembly folds its per-pixel moments deterministically (batch-id order),
-so two runs of the same tree are byte-identical on any box load.
+the commit says so: `make_goldens.sh <tag> [gate ...]` runs the Python gates on a clean tree
+(`SELFCAL_REPO`) and keeps each product as its golden (an existing golden is replaced only with
+`FORCE=1`; the log records the commit). The goldens are float64-norm (`*golden_f64*`): since
+2026-10-05 (e8781bb) LSQR accumulates the norms of long float32 vectors in float64, which changed
+the bytes of production-size solves, and every run uses those norms
+(`SELFCAL_LSQR_FLOAT32_NORMS=1`, the old norms, is refused by `make_goldens.sh`). The npass3 gate
+has no float64 golden yet: its only goldens (`*_unify_npass3_golden*.h5`, 2026-09-28) were made
+with the float32 norms, so the gate fails with a missing file until `make_goldens.sh <tag> npass3`
+makes one. The earlier goldens (`*_golden_stat*`, `*_golden.*`, `*_UNIFYNPASS1GOLDEN_iter300*`)
+are kept as made, by the float32 norms. The assembly folds its per-pixel moments
+deterministically (batch-id order), so two runs of the same tree are byte-identical on any box
+load.
 
-The `configs/*_golden.toml` files are records of how each golden was produced by the tree that
-made it (some on the frozen baseline worktree); they keep that tree's config spelling
-(`mode = "multiline"`, `[tiled]`, `subch_poly_*`) and are not run by the gate scripts. The gate
-configs themselves use the current spelling.
+## The transfer gate
+
+The `transfer` gate pins the 2026-10 production recipe (`SLOPE_GAUGE`: the per-frame x-slope model, the weights
+`sc.shot_noise()`, deflated CGLS to the chi-squared stop, the post-solve plane gauge on the map, the weighted
+coadd; `python_gates.py transfer`) to goldens made by the transfer-function campaign's own implementations of
+these features, before the features entered the library: its weighted solve and weighted coadd (`1/sqrt(max(|value|,
+the frame's window median))` per row, `1/max(|raw value|, that median)` per pixel) and its gauge scripts. Those
+experimental scripts stay in the workspace (`workspace/lsqr-convergence/transfer_gate/`, with the record of which
+golden each made and `make_transfer_goldens.sh` to remake them); the library reproduced every golden byte for byte.
+`transfer_check.py` compares the gate cal's offsets, coverage and frame scalars with the ungauged golden and its
+sky term with the plane-gauged golden's (the library gauges the sky term and the maps, the campaign's script also
+moved the offsets), `fits_diff.py` the mosaic with the plane-gauged map. The quadratic gauge
+(`sc.Gauge(degree=2)`) stays in the library as an option: `transfer_quad` runs it (`quad_check.py`) on the golden
+ungauged cal and map, without a solve, against the campaign's quadratic gauge.
+The campaign's weights were float32 in its solve; the goldens' maker evaluates them in float64, as the library
+does (on the fixture the float32 weights move the chi-squared stop from 520 to 540 iterations, and the two cals
+differ by the solve's convergence tolerance: rms 6.2e-4 MJy/sr over the sky, 2.1 % of its rms; measured
+2026-10-14).
+
+## The engine views
+
+`config_equivalence.py` checks what the run engine does with each run without a solve, to show
+that a change to the engine leaves it unchanged:
+
+```bash
+python selfcal_scripts/gates/config_equivalence.py views <dir> [name ...]   # on the tree before the change, then after
+python selfcal_scripts/gates/config_equivalence.py compare-views <dir_before> <dir_after>
+```
+
+`views` writes the engine view (`selfcal.run.equivalence.engine_view`) of every engine run of
+each producer, one JSON file per producer: the library calls' keywords with their defaults filled,
+the per-term damping, the offset rows and the sky coefficients on the instrument's real geometry,
+the jobs, the product paths, the frames, the staging, the tiles and the passes. The producers and
+their files:
+
+| file | producer |
+| --- | --- |
+| `script__<name>.json` | the run script `selfcal_scripts/runs/<name>.py` (a campaign's views by field) |
+| `example__quickstart.json` | `examples/quickstart/quickstart.py` |
+| `tool__transfer_function.json` | `selfcal_scripts/transfer_function/transfer_function.py` with its default inputs |
+| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `m13`), its `Field.calibrate` call captured |
+
+The views read this machine's files (frame lists, reference grids, calibration data) and its CPU
+count (the default number of workers): compare views made on one machine.
+
+The gates were TOML configs (`configs/*.toml`) before October 2026; they and the configs that
+recorded how each golden was made are in the git history
+([Migrating from TOML](../../docs/guide/migrating-from-toml.md)).

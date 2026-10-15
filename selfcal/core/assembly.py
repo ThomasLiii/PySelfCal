@@ -10,16 +10,16 @@ sparse system from these per-subframe rows) and ``selfcal.core.solve``
 """
 import os
 import traceback
+from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
-from multiprocessing.shared_memory import SharedMemory
 from scipy.sparse import csr_matrix
 
+from ..geometry.map_helper import check_invalid, find_outliers, find_outliers_grouped
 from ..io.reproj import FrameLoadError
-from .subframe import _prep_subframe
-from ..geometry.map_helper import find_outliers, find_outliers_grouped, check_invalid
 from ..models.offset_basis import eval_offset_basis, n_coef
 from ..models.variables import FrameObservations, ObservationVariables
+from .subframe import _prep_subframe
 
 
 def _prep_lsqr(task_params):
@@ -30,7 +30,6 @@ def _prep_lsqr(task_params):
 
     # 2. Unpack Config for Logic (per-map lists are length K; col_bases is length K+1)
     ref_shape = task_params['ref_shape']
-    num_frames = task_params['num_frames']
     num_chunks_list = task_params['num_chunks_list']
     outlier_thresh = task_params['outlier_thresh']
     reg_weight_list = task_params['reg_weight_list']
@@ -53,6 +52,7 @@ def _prep_lsqr(task_params):
     try:
         # 3. Explicit Call to _prep_subframe — returns one chunk_contrib per map
         extras = {'layers': task_params.get('layer_names') or ()}
+        keep_raw = bool(task_params.get('keep_raw'))       # a function reads `value` / `flags`
         ref_coords, sub_data, sub_weight, chunk_contribs, sub_aux = _prep_subframe(
             file=reproj_file,
             chunk_offsets=None,
@@ -69,6 +69,7 @@ def _prep_lsqr(task_params):
             postprocess_func=task_params['postprocess_func'],
             preprocess_func=task_params['preprocess_func'],
             extras=extras,
+            keep_raw=keep_raw,
         )
 
         sub_h, sub_w = sub_data.shape
@@ -87,7 +88,8 @@ def _prep_lsqr(task_params):
                 detector=det, frame_values=task_params.get('frame_values'),
                 sky=task_params.get('sky_variables'), layers=extras.get('layer_values'),
                 derived=task_params.get('derived_variables'),
-                frame_functions=task_params.get('frame_functions'), context=ctx)
+                frame_functions=task_params.get('frame_functions'), context=ctx,
+                values=extras.get('raw_data'), flags=extras.get('flags'))
 
         sub_valid = sub_weight > 0
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
@@ -99,8 +101,8 @@ def _prep_lsqr(task_params):
             # Edges None (default) -> whole-frame, byte-identical. A detector
             # variable is binned on the subframe grid (the historical path);
             # any other variable at the frame's valid pixels.
-            edges = task_params.get('outlier_subchannel_edges')
-            wl_key = task_params.get('outlier_aux_key')
+            edges = task_params.get('outlier_group_edges')
+            wl_key = task_params.get('outlier_group_variable')
             if edges is not None and sub_aux is not None and wl_key in aux_keys:
                 bc_sub = sub_aux[aux_keys.index(wl_key)]
                 groups = np.digitize(bc_sub, edges)
@@ -130,7 +132,7 @@ def _prep_lsqr(task_params):
             # Same arity as the success return (the caller unpacks 6 and skips
             # on an empty b); off_counts is None, as it is whenever there is no
             # per-offset bookkeeping to report.
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None, np.empty(0, dtype=np.int64)
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
@@ -144,7 +146,9 @@ def _prep_lsqr(task_params):
         weight_function = task_params.get('weight_function')
         factors = []                     # per-observation factors that must be finite
         if weight_function is not None:
-            wf = np.asarray(weight_function.evaluate(obs), dtype=np.float32)
+            # a Coefficient: the value as a float32 row weight; a NoiseVariance: 1/sqrt of it in float64
+            wf = (weight_function.row_weight(obs) if hasattr(weight_function, 'row_weight')
+                  else np.asarray(weight_function.evaluate(obs), dtype=np.float32))
             factors.append(wf)
         if sky_components is None:
             J = 1
@@ -232,7 +236,7 @@ def _prep_lsqr(task_params):
                 # (chunk-contrib, obs) entry emits n_coef nnz into coeff columns
                 # a[frame, group, k], coefficient w * chunk_val * B_k(coord).
                 pb = poly_basis_list[m]
-                ng = int(pb['num_groups']); ncf = n_coef(pb)
+                ng, ncf = int(pb['num_groups']), n_coef(pb)
                 coord = np.asarray(pb['chunk_coord'])[chunk_idx_m]
                 grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
                 B = eval_offset_basis(coord, pb)                                 # (n, ncf)
@@ -352,6 +356,12 @@ def _prep_lsqr(task_params):
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
         sub_data_vec = sub_data_vec[valid_mask]
+        # The offset columns the DATA rows touch (rows before the regularisation rows), with a nonzero
+        # entry: the chunks this frame observed. The anchor runs over them (setup_lsqr); the entry
+        # counts (pixel_counts) also count the regularisation rows, which touch every chunk.
+        _num_sky_eff = task_params['num_sky_blocks'] * task_params['ref_shape'][0] * task_params['ref_shape'][1]
+        _data_entry = (sub_rows < num_valid_pixels) & (sub_cols >= _num_sky_eff) & (sub_data_vec != 0)
+        observed = np.unique(sub_cols[_data_entry]).astype(np.int64)
 
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
         sub_rows = new_row_indices.astype(np.int32)
@@ -366,7 +376,7 @@ def _prep_lsqr(task_params):
                 sub_rows, sub_cols, sub_data_vec, len(sub_b),
                 task_params['scalar_col_start'] + task_params['num_scalar_cols'],
                 task_params['num_sky_blocks'] * ref_h * ref_w)
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts, observed
 
     except FrameLoadError:
         raise                                   # a missing/corrupt frame is fatal, never silently dropped
@@ -504,6 +514,7 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_data = []
         batch_b = []
         off_ids_parts, off_cnt_parts = [], []
+        observed_parts = []
         batch_row_offset = 0
         n_entries = 0
 
@@ -516,12 +527,13 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, observed = result
             if len(sub_b) == 0:
                 continue
             if off_counts is not None:
                 off_ids_parts.append(off_counts[0])
                 off_cnt_parts.append(off_counts[1])
+            observed_parts.append(observed)
 
             if spill_fhs is not None:
                 (sub_rows + batch_row_offset).tofile(spill_fhs[0])
@@ -558,6 +570,9 @@ def _prep_lsqr_batch_worker(batch_params):
             _tot = np.zeros(_u.size, dtype=np.int64)
             np.add.at(_tot, _inv, np.concatenate(off_cnt_parts))
             offset_counts = (_u, _tot)
+        # The offset columns the batch's data rows touch (the observed chunks), sparse.
+        offset_observed = (np.unique(np.concatenate(observed_parts)) if observed_parts
+                           else np.empty(0, dtype=np.int64))
 
         if spill_fhs is not None:
             for fh in spill_fhs:
@@ -569,7 +584,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
             return {'files': spill_paths, 'shm': [b_meta],
                     'num_rows': batch_row_offset, 'n_entries': n_entries,
-                    'offset_counts': offset_counts}
+                    'offset_counts': offset_counts, 'offset_observed': offset_observed}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)
@@ -585,7 +600,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
 
         return {'shm': result_shm, 'num_rows': batch_row_offset,
-                'offset_counts': offset_counts}
+                'offset_counts': offset_counts, 'offset_observed': offset_observed}
     finally:
         for shm in shm_handles:
             shm.close()

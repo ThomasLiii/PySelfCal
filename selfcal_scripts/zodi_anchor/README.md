@@ -29,8 +29,8 @@ File-name roles:
   `zodi_preds/`.
 - `build_anchor.py` — fit the per-channel anchor from pristine cal +
   `zodi_pred_*.npz`, write `anchor_D{N}.h5`. No cal/mosaic mutation.
-  (The cal runner does the same per channel inline when a config sets
-  `[zodi].pred_dir`, via `append_anchor_channel`.)
+  (In a run script, `spherex.zodi_anchor(result, predictions)` does the same
+  per channel right after `field.calibrate`, via `append_anchor_channel`.)
 - `diag_*` (archived under `archive/scripts/zodi_anchor/`) — read-only diagnostics; read the anchor file (+ cal/npz as
   needed). Never modify cal/mosaic files.
 - `revert_anchor.py` — historical migration: undo a legacy in-place
@@ -46,8 +46,8 @@ File-name roles:
            │   produces zodi_preds/zodi_pred_*.npz  (cache + env hand-off)
            v
         ┌────────────────────────┐
-        │ build_anchor.py        │  (cheap linear fit; selfcal env)
-        └──┬─────────────────────┘
+        │ build_anchor.py        │  (cheap linear fit; selfcal env;
+        └──┬─────────────────────┘   or spherex.zodi_anchor(result, ...))
            │   writes <run>/zodi_anchor/anchor_D{N}.h5   (PRISTINE cal/mosaic)
            v
         ┌──────────────────────────────────────────────┐

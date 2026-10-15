@@ -1,12 +1,13 @@
 """Staging (selfcal/run/staging.py): frames are copied atomically, and the pipeline only stages
-into, or deletes, a directory it made (one holding the STAGE_MARKER file)."""
+into, or deletes, a directory it made (one holding the STAGE_MARKER file); a tiled run takes every
+frame of its directory."""
 import os
-from types import SimpleNamespace
 
 import pytest
 
 from selfcal.run import staging
 from selfcal.run.engine import tiling_frames
+from selfcal.run.runspec import FrameSource
 
 
 def _frames(d, names, size=64):
@@ -68,14 +69,12 @@ def test_cleanup_only_removes_an_owned_directory(tmp_path, marked, staging_mode,
     _frames(str(d), ['exp_0000_det_00.h5'])
     if marked:
         open(d / staging.STAGE_MARKER, 'w').write('{}')
-    staging.cleanup_nvme(SimpleNamespace(staging=staging_mode, keep_nvme=keep), str(d))
+    staging.cleanup_nvme(FrameSource(stage=staging_mode, keep=keep), str(d))
     assert d.exists() != removed
 
 
-def test_tiling_frames_default_takes_every_detector_in_exposure_order(tmp_path):
+def test_a_tiled_run_takes_every_frame_in_exposure_order(tmp_path):
     names = ['exp_0010_det_01.h5', 'exp_0002_det_00.h5', 'exp_0010_det_00.h5', 'exp_0002_det_15.h5']
     _frames(str(tmp_path), names + ['notes.txt'])
-    got = [os.path.basename(p) for p in tiling_frames({'full_reproj_dir': str(tmp_path)})]
+    got = [os.path.basename(p) for p in tiling_frames(str(tmp_path))]
     assert got == ['exp_0002_det_00.h5', 'exp_0002_det_15.h5', 'exp_0010_det_00.h5', 'exp_0010_det_01.h5']
-    one = tiling_frames({'full_reproj_dir': str(tmp_path), 'frame_glob': 'exp_*_det_00.h5'})
-    assert [os.path.basename(p) for p in one] == ['exp_0002_det_00.h5', 'exp_0010_det_00.h5']

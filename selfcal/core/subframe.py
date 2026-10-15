@@ -1,23 +1,27 @@
 """Shared subframe preparation logic used by both coadd and LSQR pipelines."""
 
 import inspect
-
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
+from ..geometry.map_helper import (
+    bit_to_bool,
+    chunk_to_det,
+    compute_chunk_contrib,
+    det_to_sub,
+    make_linear_interp_matrix,
+    make_weight,
+)
 from ..io.reproj import load_reproj_file
-from ..geometry.map_helper import (bit_to_bool, make_weight, make_linear_interp_matrix,
-                        chunk_to_det, det_to_sub, compute_chunk_contrib)
-
 
 
 @dataclass
 class FrameContext:
     """What a per-frame hook (``preprocess_func`` / ``postprocess_func`` of
-    ``setup_lsqr`` / ``make_mosaic``) receives: the frame's identity and its
-    subframe arrays. A hook returns the (possibly modified) ``sub_data``.
+    ``setup_lsqr``, ``postprocess_func`` of ``make_mosaic``) receives: the frame's
+    identity and its subframe arrays. A hook returns the (possibly modified) ``sub_data``.
 
     ``stage`` is ``'pre'`` (right after loading: no offsets subtracted, no
     weights, no aux maps yet) or ``'post'`` (after offsets, weights and aux
@@ -37,6 +41,8 @@ class FrameContext:
     sub_mapping: object
     chunk_maps: object = ()
     sub_aux: object = None
+    raw_data: object = None     # the frame's stored values (a copy taken before any hook or subtraction), when kept
+    flags: object = None        # the frame's stored flag bits, when kept (``keep_raw``)
 
     def __getitem__(self, key):
         """Return the field named ``key``; an unknown name raises ``AttributeError``."""
@@ -121,9 +127,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                    # These arguments are accepted for compatibility/internal logic
                    # but might not be used depending on logic path
                    det_aux=None, postprocess_func=None, preprocess_func=None,
-                   extras=None):
+                   extras=None, keep_raw=False):
     """
     Prepares data from a single file for co-addition or lsqr.
+
+    ``keep_raw``: keep a copy of the frame's stored values and its flag bits, as
+    read, for the data variables ``value`` and ``flags`` (``extras['raw_data']`` /
+    ``extras['flags']`` and the hook context's ``raw_data`` / ``flags``).
 
     Parameters
     ----------
@@ -166,11 +176,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
     outside it the weight is exactly zero and the data untouched, so the
     returned full-frame arrays are identical to the full-frame computation.
     """
-    if ignore_list is None: ignore_list = []
-    if chunk_maps is None: chunk_maps = []
+    if ignore_list is None:
+        ignore_list = []
+    if chunk_maps is None:
+        chunk_maps = []
 
     fields = ['sub_data', 'ref_coords', 'sub_mapping']
-    if apply_mask:
+    if apply_mask or keep_raw:
         fields.append('sub_bitmask')
     layer_names = tuple(extras.get('layers') or ()) if extras is not None else ()
     fields.extend(f'layers/{name}' for name in layer_names)
@@ -183,6 +195,13 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         extras['layer_values'] = {n: result[f'layers/{n}'] for n in layer_names}
 
     sub_data = result['sub_data']
+    raw_data = flags = None
+    if keep_raw:                 # before anything below modifies sub_data in place
+        raw_data = np.array(sub_data, copy=True)
+        flags = result.get('sub_bitmask')
+        if extras is not None:
+            extras['raw_data'] = raw_data
+            extras['flags'] = flags
     ref_coords = result['ref_coords']
     sub_weight = np.ones_like(sub_data, dtype=np.float32)
     sub_mapping = result['sub_mapping']
@@ -315,7 +334,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         chunk_contribs = []
     else:
         # Apply bitmask
-        if 'sub_bitmask' in result:
+        if apply_mask and 'sub_bitmask' in result:
             # invert=True: 1 = Good pixel, 0 = Bad pixel
             sub_boolmask = bit_to_bool(result['sub_bitmask'], ignore_list, invert=True)
             sub_weight *= sub_boolmask
@@ -372,7 +391,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         out = postprocess_func(FrameContext(
             stage='post', file=file, exp_idx=exp_idx, det_idx=det_idx, ref_coords=ref_coords,
             sub_data=sub_data, sub_weight=sub_weight, sub_mapping=sub_mapping, chunk_maps=chunk_maps,
-            sub_aux=sub_aux))
+            sub_aux=sub_aux, raw_data=raw_data, flags=flags))
         if isinstance(out, tuple):              # (sub_data, sub_weight): the hook reweights too
             sub_data, new_weight = out
             sub_weight = np.asarray(new_weight, dtype=sub_weight.dtype)

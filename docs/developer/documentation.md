@@ -26,7 +26,7 @@ plugins).
 | Part | Where | What it does |
 | --- | --- | --- |
 | Configuration | `mkdocs.yml` | theme, navigation, plugins, Markdown extensions, mkdocstrings options, link validation |
-| Native pages | `docs/*.md` | pages written for the site: home, getting started, concepts, glossary, developer pages, and the guide to new instruments |
+| Native pages | `docs/*.md` | pages written for the site: home, getting started, concepts, the Python API, the TOML migration, glossary, developer pages, and the guide to new instruments |
 | Imported guides | `docs/scripts/gen_pages.py` | the guides that live next to the code, imported at build time |
 | API reference | `docs/scripts/gen_pages.py` | one page per module, generated at build time |
 | Docstring markup | `docs/scripts/griffe_rst.py` | renders the docstrings' reStructuredText markup as Markdown |
@@ -36,10 +36,10 @@ plugins).
 ### Imported guides
 
 Some guides belong next to the code they describe and are read on GitHub too: `PIPELINE.md`,
-`selfcal/README.md`, and the READMEs of the run configs, the gates, the zodiacal-light anchor and
-the transfer-function kit. They keep one source. `gen_pages.py` (run by mkdocs-gen-files) copies
-each into the site at the path its `GUIDES` map gives, for example
-`selfcal_scripts/configs/README.md` to `guide/configuration.md`. It rewrites each relative link:
+`selfcal/README.md`, and the READMEs of the gates, the zodiacal-light anchor and the
+transfer-function kit. They keep one source. `gen_pages.py` (run by mkdocs-gen-files) copies each
+into the site at the path its `GUIDES` map gives, for example `selfcal_scripts/gates/README.md` to
+`developer/gates.md`. It rewrites each relative link:
 
 - to another imported guide, or to a page in `docs/`: the link to that page on the site;
 - to a module that has an API page (`core/system.py`): that page;
@@ -109,11 +109,11 @@ every docstring of the project once its package is loaded:
 
 ## Writing pages
 
-- Link other pages with relative paths to their `.md` files: `../guide/configuration.md`, or
-  `../guide/configuration.md#schema` for a section.
+- Link other pages with relative paths to their `.md` files: `../guide/concepts.md`, or
+  `../guide/concepts.md#the-model` for a section.
 - Link an object of the API with an autorefs cross-reference:
   `` [`CalFile`][selfcal.io.calfile.CalFile] `` (an absolute dotted path; it works on any page).
-- Link repository files that are not pages (scripts, configs, notebooks, tests) with their GitHub
+- Link repository files that are not pages (scripts, notebooks, tests) with their GitHub
   URL, `https://github.com/ThomasLiii/PySelfCal/blob/main/<path>`.
 - Include example files instead of copying them. The `pymdownx.snippets` extension is rooted at
   the repository, and a fenced block containing `--8<-- "examples/quickstart/simulate.py"`

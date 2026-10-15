@@ -1,11 +1,10 @@
 """The quickstart example (examples/quickstart/, docs/getting-started/quickstart.md) end to end.
 
 The example's files are copied into a temporary directory and run there exactly as the
-quickstart page runs them from the repository root, each in its own process:
-simulate.py, the reproject and cal configs through the runner (``python -m
-selfcal_scripts.run``, what ``run.sh`` calls), then inspect_results.py. Nothing is written
-into the repository. Checks that every product exists and that the recovered offsets and
-scalars follow the injected ones. 10 to 15 s.
+quickstart page runs them from the repository root, each in its own process: simulate.py,
+quickstart.py (steps 2 and 3), inspect_results.py, then damping.py (step 5). Nothing is written
+into the repository. Checks that every product exists and that the recovered offsets and scalars
+follow the injected ones. 20 to 30 s on an idle machine.
 """
 import os
 import shutil
@@ -39,21 +38,28 @@ def _remove_gauge(a):
     return a - a.mean(axis=0, keepdims=True)
 
 
-def test_quickstart_example(tmp_path):
-    shutil.copytree(EXAMPLE, tmp_path / "examples" / "quickstart",
+def _example_in(directory):
+    """A copy of the example in ``directory``, with the simulated exposures written."""
+    shutil.copytree(EXAMPLE, directory / "examples" / "quickstart",
                     ignore=shutil.ignore_patterns("__pycache__"))
-    _run(["examples/quickstart/simulate.py"], tmp_path)
-    _run(["-m", "selfcal_scripts.run", "--config", "examples/quickstart/reproject.toml"], tmp_path)
-    _run(["-m", "selfcal_scripts.run", "--config", "examples/quickstart/cal.toml"], tmp_path)
-    report = _run(["examples/quickstart/inspect_results.py"], tmp_path)
+    _run(["examples/quickstart/simulate.py"], directory)
+    return directory
 
-    out = tmp_path / "quickstart_output"
+
+def test_quickstart_example(tmp_path):
+    here = _example_in(tmp_path / "python")
+    _run(["examples/quickstart/quickstart.py"], here)
+    report = _run(["examples/quickstart/inspect_results.py"], here)
+    _run(["examples/quickstart/damping.py"], here)
+
+    out = here / "quickstart_output"
     run_dir = out / "quickstart"
     assert (run_dir / "ref.fits").is_file()
     assert len(list((run_dir / "reprojected").glob("exp_*_det_00.h5"))) == 24
     cal_path = run_dir / "calibration" / f"cal_{STEM}.h5"
     mosaic_path = run_dir / "mosaic" / f"mosaic_{STEM}.fits"
     assert cal_path.is_file() and mosaic_path.is_file()
+    assert (run_dir / "calibration" / "cal_Sim_Chunks4x4_All_damp0p1.h5").is_file()
     assert (out / "results_quickstart.png").is_file()
     assert "Offsets, gauge removed: correlation" in report
     assert list((out / "cache").iterdir()) == []            # staged frames and caches cleaned up

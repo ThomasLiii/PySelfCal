@@ -1,8 +1,8 @@
-"""The byte-equality gates, written in Python: each TOML gate config of ``configs/`` as a run
-script of the Python API. Their products carry a ``py`` suffix and must equal the same goldens
-as the TOML gates (``run_python_gates.sh`` runs and compares them).
+"""The byte-equality gates: each a run of the Python API on a fixture of this machine. Their
+products carry a ``py`` suffix and must equal the float64-norm goldens (``run_gates.sh`` runs them
+and compares; ``make_goldens.sh`` makes the goldens from a committed tree).
 
-    python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13
+    python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13 | transfer
 
 Paths are this machine's (the fixtures of ``README.md``).
 """
@@ -29,27 +29,27 @@ EDFN_Y = sc.Field(f'{OUTPUTS}/EDFN_Y_1p5arcsec_unifygolden', sc.Euclid(band='Y',
 
 
 def continuum():
-    """configs/gate_continuum_unify.toml: D3 Ch17, 300 frames, no mosaic."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(50, clip=5.0, ignore_flags=[]), coadd=None,
+    """D3 Ch17, 300 frames, no mosaic."""
+    recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(QR2_FIXTURE)[:300],
                             compute=sc.Compute(workers=48))
 
 
 def spectral():
-    """configs/gate_spectral_unify.toml: the PAH catalogue line on D4, 150 frames, no mosaic."""
+    """The PAH catalogue line on D4, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=sc.catalog('pah_3p29'), damping=0.0)],
                         poly_prior=sc.Poly(1, weight=0.5))
-    recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+    recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return NEP_D4_COL5.calibrate(recipe, jobs=spherex.window('AromaticPAHfit', subchannels=range(210, 250)),
                                  frames=sc.frames_in(PAH_FIXTURE)[:150], compute=sc.Compute(workers=48))
 
 
 def e2e():
-    """configs/gate_e2e.toml: D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
+    """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
     recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
-                       fit=sc.Fit(50, clip=5.0, ignore_flags=[]),
+                       fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
     compute = sc.Compute(f'{REPO}/workspace/coaddopt/cache', workers=48, stage='reuse', keep_staged=True)
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(E2E_FIXTURE)[:300],
@@ -57,9 +57,9 @@ def e2e():
 
 
 def npass3():
-    """configs/gate_npass3_unify.toml: three lines, the hard polynomial, INIT + SKY + OFFSET."""
+    """Three lines, the hard polynomial, INIT + SKY + OFFSET."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
-                       fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+                       fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_npass3_gate_py')
     passes = sc.Passes(3, order='sky_first', sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
                        offset=sc.Refit(2, clip=sc.Clip(2.5, per=SUBCHANNEL)), ends_on_offset=True)
@@ -68,13 +68,13 @@ def npass3():
 
 
 def euclid():
-    """configs/gate_euclid_unify.toml: the EDFN stripe recipe on 3 exposures x 16 detectors."""
+    """The EDFN stripe recipe on 3 exposures x 16 detectors."""
     model = sc.Model(offsets=[
         sc.Offsets(on='grid', per='detector', smooth=0.1, smooth_along=('row', 'col'), mean_zero=True,
                    exact_group_rows=True),
         sc.Offsets(on='col_strips', smooth_along=(), damping=0.3),
         sc.Offsets(on='row_strips', smooth_along=(), damping=0.3)])
-    recipe = sc.Recipe(model, fit=sc.Fit(30, clip=5.0, float32=False),
+    recipe = sc.Recipe(model, fit=sc.Fit(30, clip=5.0, float32=False, method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, instrument_maps=False, min_chunk_coverage=0.0),
                        numerics=sc.Numerics(8, batch=8, mosaic_batch=8, coadd_batch=8), name='unify_gate_py')
     return EDFN_Y.calibrate(recipe, compute=sc.Compute(f'{REPO}/cache', workers=8, stage=None))
@@ -90,9 +90,9 @@ M13_BOXES = {
 
 
 def m13():
-    """configs/gate_npass1_M13_unify_gate.toml: the NEP multi-line INIT on the adaptive tile M13."""
+    """The NEP multi-line INIT on the adaptive tile M13."""
     recipe = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
-                       fit=sc.Fit(300, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
+                       fit=sc.Fit(300, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        numerics=sc.Numerics(32),
                        name='multiline3_NEPovlp_UNIFYNPASS1GATEPY_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2')
     tiles = sc.Tiles(boxes=M13_BOXES, only=['M13'], stitched_name='{name}',
@@ -102,7 +102,28 @@ def m13():
                             passes=sc.Passes(1), compute=compute)
 
 
-GATES = {'continuum': continuum, 'spectral': spectral, 'e2e': e2e, 'npass3': npass3, 'euclid': euclid, 'm13': m13}
+def transfer():
+    """D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted
+    solve (sc.shot_noise(): every row weighted 1/sqrt(max(|value|, the frame's median)), no clip, the
+    per-frame x-slope model, deflated CGLS to the chi-squared stop) and the weighted coadd of the ungauged
+    cal (mean, std, 2-sigma clipped mean, flag 21 ignored, weights 1/max(|value|, that median)) and the post-solve
+    plane gauge applied on the map (sc.Gauge('xs_term', degree=1)) -- against the goldens the transfer-function
+    campaign's own implementations made (kept in the workspace, see README.md): the cal's offsets against the
+    ungauged golden, its sky term against the gauged one, the mosaic against the gauged map (transfer_check.py)."""
+    import dataclasses
+
+    from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
+    inst = sc.SPHEREx(3, num_col=1, num_ch=17, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
+    recipe = dataclasses.replace(SLOPE_GAUGE, name='transfer_gate_py')     # the production recipe itself
+    field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
+    return field.calibrate(recipe, jobs=spherex.channel(9), frames=sc.frames_in(E2E_FIXTURE),
+                           compute=sc.Compute(f'{REPO}/cache/transfer_gate', workers=30, stage=None),
+                           monitor=sc.Monitor(every=10, residual=True, gradient=False, large_scale=2),
+                           snapshots=sc.Snapshots(every=100))
+
+
+GATES = {'continuum': continuum, 'spectral': spectral, 'e2e': e2e, 'npass3': npass3, 'euclid': euclid, 'm13': m13,
+         'transfer': transfer}
 
 if __name__ == '__main__':
     names = sys.argv[1:] or list(GATES)

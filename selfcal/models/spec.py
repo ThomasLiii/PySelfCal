@@ -29,8 +29,8 @@ frame on one reference pixel ``P``, seen at a detector position)::
 * **priors** (:class:`PriorSpec`): any linear rows on the unknowns of one or
   several terms, written as a function (:mod:`selfcal.models.priors`).
 
-A :class:`ModelSpec` is built from the ``[model]`` table of a run config
-(:meth:`ModelSpec.from_config`) or by a mode (the named recipes are presets),
+A :class:`ModelSpec` is built from the ``[model]`` table a
+:class:`~selfcal.models.model.Model` lowers to (:meth:`ModelSpec.from_config`),
 checked against an instrument (:meth:`ModelSpec.check`) and lowered into the
 objects the solver consumes. Every function is a built-in or ANY importable
 ``"package.module:name"``; a new instrument, coefficient, offset set-up or
@@ -41,13 +41,19 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 from .offset_model import Basis, OffsetBlock, OffsetModel
-from .offset_structure import ChunkAxes, adjacency_along, adjacency_union, poly_basis_along, poly_chains_along
-from .sky_model import Coefficient, ImportedFunction, SkyComponent, SkyModel
+from .offset_structure import (
+    ChunkAxes,
+    adjacency_along,
+    adjacency_union,
+    poly_basis_along,
+    poly_chains_along,
+)
+from .sky_model import Coefficient, ImportedFunction, NoiseVariance, SkyComponent, SkyModel
 from .variables import BUILTIN_VARIABLES, Derived, FrameFunction, VariableSet
 
 __all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'VariableSpec', 'PriorSpec', 'ModelSpec',
@@ -227,8 +233,9 @@ class OffsetTerm:
     Priors: ``reg_weight`` pulls chunks that neighbour along the ``adjacency``
     axes together (None = the map's default axes; ``()`` = none;
     ``adjacency_step`` restricts pairs to that difference), ``poly`` adds soft
-    polynomial constraints, ``mean_zero`` anchors the per-frame mean over chunks
-    at zero (per basis function), ``damp`` is Tikhonov damping toward zero.
+    polynomial constraints, ``mean_zero`` anchors the per-frame mean over the
+    observed chunks (those with data) at zero (per basis function), ``damp`` is
+    Tikhonov damping toward zero.
     ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
     the adjacency rows once per group instead of once per frame (exact; far
     fewer rows). ``render``: which of the instrument's offset renderers draws the
@@ -353,17 +360,17 @@ class ModelSpec:
     (:class:`VariableSpec`), ``weight`` an optional function of data variables
     that multiplies every observation's weight (a
     :class:`~selfcal.models.sky_model.Coefficient` or its config form), and
-    ``priors`` the prior functions (:class:`PriorSpec`). ``mosaic`` tells the
-    runner's ``model`` mode what to make after the solve: ``'full'`` (the mosaic
-    and the instrument's auxiliary coadds, such as wavelength maps),
-    ``'no_wav'`` (the mosaic only) or ``'none'``. Terms, variables and priors may
+    ``priors`` the prior functions (:class:`PriorSpec`). ``mosaic`` records the
+    coadd the model was lowered for: ``'full'`` (the mosaic and the instrument's
+    auxiliary coadds, such as wavelength maps), ``'no_wav'`` (the mosaic only) or
+    ``'none'``. Terms, variables and priors may
     be given in their config forms (dicts; ``variables`` as ``{name: table}``),
     which are converted on construction. The constructor raises ``ValueError``
     when there is no sky term, or when a variable is defined twice or named like
     a built-in.
 
-    Build one from a ``[model]`` table (:meth:`from_config`) or in Python (as the
-    runner's preset modes do), validate it against an instrument (:meth:`check`)
+    Build one from a ``[model]`` table (:meth:`from_config`) or in Python,
+    validate it against an instrument (:meth:`check`)
     and lower it into the solver's inputs with :meth:`build_sky_model`,
     :meth:`build_offset_model`, :meth:`build_variables`, :meth:`build_weight`,
     :meth:`build_priors` and :meth:`setup_kwargs`.
@@ -770,9 +777,11 @@ class _bind:
 
 
 def _map_source(v, call, shape, where):
-    """A detector / sky map from a function (``call(fn)``) or a .npy / .fits file."""
+    """A detector / sky map: an array, a function (``call(fn)``) or a .npy / .fits file."""
     val = v.value
-    if callable(val) or (isinstance(val, str) and ':' in val and not os.path.exists(val)):
+    if isinstance(val, np.ndarray):
+        m = np.asarray(val, dtype=np.float32)
+    elif callable(val) or (isinstance(val, str) and ':' in val and not os.path.exists(val)):
         m = np.asarray(call(load_function(val)), dtype=np.float32)
     elif str(val).endswith('.npy'):
         m = np.load(val).astype(np.float32)
@@ -843,8 +852,16 @@ def build_coefficient(spec, geom, catalog=None, name=None, log=print, known=()) 
     the ``known`` variables."""
     if isinstance(spec, Coefficient):
         keys = tuple(resolve_variable(v, geom, known) for v in spec.main_variables)
-        return Coefficient(keys[0] if isinstance(spec.variable, str) else keys, spec.function)
+        return type(spec)(keys[0] if isinstance(spec.variable, str) else keys, spec.function)
     spec = dict(spec)
+    kind = spec.pop('kind', None)           # 'variance': the coefficient is a noise variance (sc.Variance)
+    if kind not in (None, 'variance'):
+        raise ValueError(f"unknown coefficient kind {kind!r} (None or 'variance')")
+    coef = _build_coefficient(spec, geom, catalog, name, log, known)
+    return NoiseVariance(coef.variable, coef.function) if kind == 'variance' else coef
+
+
+def _build_coefficient(spec, geom, catalog, name, log, known):
     if 'catalog' in spec:
         entry = spec.pop('catalog')
         cat = catalog or {}

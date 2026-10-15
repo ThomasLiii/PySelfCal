@@ -1,15 +1,12 @@
-"""selfcal.run -- the run engine: one run (a field, a recipe, jobs) from configuration to products.
+"""selfcal.run -- the Python API's actions and the run engine behind them.
 
-The engine is instrument- and mode-agnostic. A run is resolved once into a
-:class:`~selfcal.run.engine.RunContext` (the instrument, the mode, the detector
-geometry and every product name) and executed by tasks (:mod:`selfcal.run.pipelines`:
-``cal``, optionally tiled; ``mosaic``; ``npass``; ``reproject``; ``precompute``) built on two
-primitives, one joint solve and one coadd. A run is described by a TOML config read by
-:func:`~selfcal.run.config.load_config` (``python -m selfcal_scripts.run --config <file>``).
-Adding a calibration variant is a new mode (:mod:`selfcal.run.modes`); adding a telescope is
-an instrument (:mod:`selfcal.instruments`); neither touches the engine.
-
-The engine was ``selfcal_scripts.runner`` before; that import path is an alias of this package.
+An action of a :class:`~selfcal.run.field.Field` (``calibrate``, ``mosaic``, ``reproject``) plans
+first (:mod:`selfcal.run.plan`), lowers its settings to engine runs
+(:class:`~selfcal.run.runspec.RunSpec`, :mod:`selfcal.run.lower`) and runs them: each resolved once
+into a :class:`~selfcal.run.engine.RunContext` (the instrument, the detector geometry, the model and
+every product name) and executed by a task (:mod:`selfcal.run.pipelines`: ``cal``, optionally tiled;
+``mosaic``; ``npass``; ``reproject``) built on two primitives, one joint solve and one coadd. The
+engine is instrument-agnostic: a telescope is an instrument object
+(:class:`~selfcal.instruments.contract.Instrument`) and a calibration variant a model
+(:class:`~selfcal.models.model.Model`); neither touches the engine.
 """
-from .config import RunConfig, get_instrument, load_config  # noqa: F401
-from .pipelines import run  # noqa: F401

@@ -12,13 +12,13 @@ routes, and :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` and
 """
 import logging
 import os
-from tqdm import tqdm
-import numpy as np
 
+import astropy.units as u
+import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
-import astropy.units as u
 from reproject.mosaicking import find_optimal_celestial_wcs
+from tqdm import tqdm
 
 from .. import _state
 
@@ -83,9 +83,8 @@ def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use
     use_ext : iterable[int]
         The entries of each exposure whose WCS are read: FITS extension numbers, or
         whatever ``reader`` accepts. The default is the Euclid NISP layout: the science
-        extensions (``3k + 1``) of the four corner detectors 0, 3, 12 and 15. The runner
-        passes the instrument's :attr:`~selfcal.instruments.base.ExposureLayout.ref_use_ext`
-        unless the ``[reproject]`` table sets ``use_ext``.
+        extensions (``3k + 1``) of the four corner detectors 0, 3, 12 and 15. The run engine
+        passes the instrument's :attr:`~selfcal.instruments.base.ExposureLayout.ref_use_ext`.
     reader : callable or None
         The instrument's exposure reader (:mod:`selfcal.io.frames`), called with
         ``header_only=True``; ``None`` reads the FITS headers.
@@ -101,7 +100,9 @@ def find_optimal_frame(exposure_list, resolution_arcsec, padding_pixels=100, use
         raise ValueError('No exposure files provided to define WCS.')
     logger.info('Defining optimal celestial WCS...')
     wcs_list = _load_det_wcs(exposure_list, use_ext, reader=reader)
-    ref_wcs, ref_shape = find_optimal_celestial_wcs(wcs_list, resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
+    # (shape, WCS) pairs: a list of exactly two bare WCS would be read as one (shape, WCS) input
+    ref_wcs, ref_shape = find_optimal_celestial_wcs([(w.array_shape, w) for w in wcs_list],
+                                                    resolution=resolution_arcsec * u.arcsec, auto_rotate=False)
     ref_wcs, ref_shape = _pad_wcs(ref_wcs, ref_shape, padding_pixels)
     return ref_wcs, ref_shape
 
@@ -225,7 +226,9 @@ def save_to_fits(wcs, shape, filename):
     # NAXIS/NAXIS1/NAXIS2 are set automatically by PrimaryHDU from the data shape.
     hdu_0 = fits.PrimaryHDU(header=header, data=np.zeros(shape))
     hdul = fits.HDUList([hdu_0])
-    hdul.writeto(filename, overwrite=True)
+    from ..io.atomic import atomic_path
+    with atomic_path(filename) as tmp:              # a reused ref.fits is always complete
+        hdul.writeto(tmp)
     logger.info(f'Reference frame FITS saved to: {filename}')
 
 
