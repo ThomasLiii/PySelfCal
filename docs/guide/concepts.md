@@ -320,7 +320,7 @@ SC_MEAN_MAP  = Σ w·d / Σ w  over the d with |d − MEAN_MAP| ≤ sigma · STD
 ```
 
 Here `w` is the mosaic's weight: the data-quality mask, the job's valid weight for the mosaic
-(SPHEREx tapers it linearly toward the edges of the job's subchannels), the factor
+(SPHEREx: the job's subchannels as 0/1, so the mosaic's weights are the solve's), the factor
 `1 / sqrt(|data| + 1e-4)` with `sc.Coadd(shot_noise_weights=True)` (off by default), and the
 square of the model's `weight`. Each map is written with its summed weight (`MEAN_MAP_WEIGHT`, ...). For SPHEREx
 the mosaic also coadds the band-centre and band-width maps over the same clipped observations into

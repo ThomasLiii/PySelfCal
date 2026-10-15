@@ -601,8 +601,6 @@ clarity:
     guess or the mean-offset constraint.
   - `fill_invalid_offsets` fills zeros in a 2-D offset grid via
     Delaunay-linear interpolation with nearest-neighbor fallback.
-  - `fast_vertical_dist` computes a per-pixel distance-to-edge metric
-    used as a smooth vertical tapering weight.
 
 - **[`instruments/spherex/wavemap.py`](instruments/spherex/wavemap.py)** —
   `wav_coadd(det_BC, det_BW, mean_map, std_map, reproj_list, cache_list,

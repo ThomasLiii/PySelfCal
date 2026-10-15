@@ -44,7 +44,6 @@ from .spherex_utility import (
     _LVF_PARAMS_DIR,
     DEFAULT_CALIBRATION_DIR,
     DEFAULT_CHANNEL_FILE,
-    fast_vertical_dist,
     load_calibration,
     load_lvf_params,
     make_spherex_stripped_offset_map,
@@ -198,12 +197,15 @@ class SPHEREx(Instrument):
 
         ``det_valid_weight``, the solve's weight, is the padded set's 0/1 mask on
         the detector grid (float64 for a channel job, boolean for a window job). The mosaic's
-        ``grid_valid_weight`` (float32, on the primary map's ``grid``) tapers the strict set
-        linearly with each pixel's distance in rows to the set's edge
-        (:func:`~selfcal.instruments.spherex.spherex_utility.fast_vertical_dist`),
-        divided by its maximum. ``chunk_valid`` / ``chunk_valid_strict`` hold the
-        padded / strict sets per chunk of the primary map, and ``det_valid_mask``
-        / ``grid_valid_mask`` the strict set on the two grids."""
+        ``grid_valid_weight`` (float32, on the primary map's ``grid``) is the strict set's 0/1
+        mask: every valid pixel weighs the same, so the mosaic's weights are the solve's and
+        its mean map is the solved sky term. (Until 2026-10-15 it tapered the strict set
+        linearly toward its edges, which narrowed each map pixel's effective bandpass from the
+        strip's top hat to a triangle and evened the effective wavelength over the map, for
+        14 % more noise rms; measured on NEP D3 Ch9, the wavelength scatter it removed was ten
+        times below the pixel noise, so it was dropped.) ``chunk_valid`` / ``chunk_valid_strict``
+        hold the padded / strict sets per chunk of the primary map, and ``det_valid_mask`` /
+        ``grid_valid_mask`` the strict set on the two grids."""
         ns, nch, ncol = self.num_sub, self.num_ch, self.num_col
         det_chunk_map = geom.chunk_map.det
         grid_chunk_map = geom.chunk_map.grid
@@ -220,12 +222,10 @@ class SPHEREx(Instrument):
         det_valid_mask = cvm[det_chunk_map]
         det_valid_mask_padded = cvm_pad[det_chunk_map]
         grid_valid_mask = cvm[grid_chunk_map]
-        grid_valid_weight = fast_vertical_dist(grid_valid_mask)
-        if np.max(grid_valid_weight) > 0:
-            grid_valid_weight /= np.max(grid_valid_weight)
+        grid_valid_weight = np.asarray(grid_valid_mask, dtype=bool).astype(np.float32)
         # The solve weights every pixel of the padded window equally (the
         # padding subchannels overlap the neighbouring jobs for stitching); the
-        # mosaic tapers with the distance to the window's arc edges.
+        # mosaic every pixel of the strict window.
         return JobGeometry(det_valid_weight=det_valid_mask_padded, grid_valid_weight=grid_valid_weight,
                            chunk_valid=cvm_pad, chunk_valid_strict=cvm,
                            det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)
