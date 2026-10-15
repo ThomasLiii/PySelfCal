@@ -12,7 +12,7 @@
 Keeping this in one place means a cal produced by either path reads
 identically through ``selfcal.pipeline.pipeline_wrapper`` / the analysis
 loaders. Bit-identity contract: the datasets written here are compared
-element-wise by the refactor gates (``selfcal_scripts/drivers/diff_cal_h5.py``).
+element-wise by the refactor gates (``selfcal_scripts/gates/diff_cal_h5.py``).
 """
 from __future__ import annotations
 

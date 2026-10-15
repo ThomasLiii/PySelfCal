@@ -40,13 +40,13 @@ for g in $GATES; do
     echo "--- pytest"; $PY -m pytest tests/ -q -p no:cacheprovider 2>&1 | tail -2 ;;
   continuum)
     rmp ${D3}_unify_gate_py.h5; run continuum
-    echo "--- continuum: byte-diff vs golden_f64"; $PY selfcal_scripts/drivers/diff_cal_h5.py ${D3}_unify_gate_py.h5 ${D3}_gate_golden_f64.h5 2>&1 | tail -1 ;;
+    echo "--- continuum: byte-diff vs golden_f64"; $PY $G/diff_cal_h5.py ${D3}_unify_gate_py.h5 ${D3}_gate_golden_f64.h5 2>&1 | tail -1 ;;
   spectral)
     rmp ${D4}_unify_gate_py.h5; run spectral
-    echo "--- spectral: byte-diff vs golden_f64"; $PY selfcal_scripts/drivers/diff_cal_h5.py ${D4}_unify_gate_py.h5 ${D4}_gate_golden_f64.h5 2>&1 | tail -1 ;;
+    echo "--- spectral: byte-diff vs golden_f64"; $PY $G/diff_cal_h5.py ${D4}_unify_gate_py.h5 ${D4}_gate_golden_f64.h5 2>&1 | tail -1 ;;
   e2e)
     rmp ${D3}_unify_e2e_gate_py.h5 ${E2E_MOS}_unify_e2e_gate_py.fits; run e2e
-    echo "--- e2e cal: byte-diff vs unify_e2e_golden_f64"; $PY selfcal_scripts/drivers/diff_cal_h5.py ${D3}_unify_e2e_gate_py.h5 ${D3}_unify_e2e_golden_f64.h5 2>&1 | tail -1
+    echo "--- e2e cal: byte-diff vs unify_e2e_golden_f64"; $PY $G/diff_cal_h5.py ${D3}_unify_e2e_gate_py.h5 ${D3}_unify_e2e_golden_f64.h5 2>&1 | tail -1
     echo "--- e2e mosaic: byte-diff vs unify_e2e_golden_f64"; $PY $G/fits_diff.py ${E2E_MOS}_unify_e2e_gate_py.fits ${E2E_MOS}_unify_e2e_golden_f64.fits 2>&1 | tail -1 ;;
   npass3)
     rmp ${NP}_unify_npass3_gate_py.h5 ${NP}_unify_npass3_gate_py_pass2sky.h5 ${NP}_unify_npass3_gate_py_pass3off.h5
@@ -78,7 +78,7 @@ for g in $GATES; do
     REC=$(ls -t $O/SPHEREx_nep_qr2_det3_6p2arcsec/records/calibrate_*.json | xargs grep -l "_unify_gate_py.h5" | head -1)
     echo "=== python gate rerun: $REC"
     PYTHONPATH=$R PYTHONUNBUFFERED=1 $PY -m selfcal rerun --overwrite "$REC" 2>&1 | grep -E "$FILTER"
-    echo "--- rerun of the continuum record: byte-diff vs golden_f64"; $PY selfcal_scripts/drivers/diff_cal_h5.py ${D3}_unify_gate_py.h5 ${D3}_gate_golden_f64.h5 2>&1 | tail -1 ;;
+    echo "--- rerun of the continuum record: byte-diff vs golden_f64"; $PY $G/diff_cal_h5.py ${D3}_unify_gate_py.h5 ${D3}_gate_golden_f64.h5 2>&1 | tail -1 ;;
   *) echo "unknown gate $g" ;;
   esac
 done
