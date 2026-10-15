@@ -174,3 +174,39 @@ def test_variance_is_encoded_as_a_variance():
     assert v.lower()['kind'] == 'variance' and 'kind' not in f.lower()
     assert sc.Model(weight=v).to_dict() != sc.Model(weight=f).to_dict()
     assert repr(v).startswith('Variance(')
+
+
+def test_a_frame_without_weighted_pixels_gets_zero_coadd_weight():
+    """A frame with no observation carrying weight (in a large field, a frame whose job window is all
+    masked) crashed the coadd's weight hook: the bilinear matrix of zero pixels came out 0x0 instead of
+    0 x (detector pixels), so a detector-map variable could not be read. It now gets weight 0."""
+    from selfcal.core.subframe import FrameContext
+    from selfcal.geometry.map_helper import make_linear_interp_matrix
+    from selfcal.models.variables import VariableSet
+    from selfcal.pipeline.model_eval import ObservationWeight, frame_observations
+    H, W = 6, 5
+    m = make_linear_interp_matrix(np.full((2, 4), np.nan), input_shape=(H, W))
+    assert m.shape == (4, H * W) and m.nnz == 0 and m.dtype == np.float32
+    assert make_linear_interp_matrix(np.zeros((2, 0)), input_shape=(H, W)).shape == (0, H * W)
+    yy, xx = np.mgrid[0:3, 0:3].astype(np.float64)
+    variables = VariableSet(detector={'gain': np.tile(np.arange(W, dtype=np.float64), (H, 1))})
+
+    def ctx(weight):
+        return FrameContext(stage='post', file='f.h5', exp_idx=0, det_idx=0, ref_coords=(0, 3, 0, 3),
+                            sub_data=np.ones((3, 3), np.float32), sub_weight=weight, sub_mapping=np.stack([xx, yy]))
+
+    none = (np.array([], dtype=int), np.array([], dtype=int))
+    obs, interp = frame_observations(ctx(np.zeros((3, 3), np.float32)), 0, variables, pixels=none, det_shape=(H, W))
+    assert obs.n == 0 and interp.shape == (0, H * W)
+
+    class OnePlusGain:                # a row weight read off a detector map
+        variables = ('gain',)
+
+        def evaluate(self, obs):
+            return 1.0 + obs['gain']
+
+    hook = ObservationWeight(OnePlusGain(), variables, det_shape=(H, W))
+    _, w0 = hook(ctx(np.zeros((3, 3), np.float32)))
+    assert np.all(w0 == 0)
+    _, w1 = hook(ctx(np.ones((3, 3), np.float32)))
+    assert np.allclose(w1, (1.0 + xx) ** 2)
