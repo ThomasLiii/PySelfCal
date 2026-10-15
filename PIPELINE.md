@@ -77,7 +77,8 @@ import selfcal as sc
 POLY_K1 = sc.Recipe(
     sc.continuum(smooth=0.1,                     # adjacency smoothness between neighbouring chunks
                  poly_prior=sc.Poly(1, weight=0.5)),   # the linear column polynomial; omit for none
-    fit=sc.Fit(50, clip=5.0),                    # shot_noise_weights=True in the PAH fits
+    fit=sc.Fit(50, clip=5.0, method="lsqr"),     # its solver (CGLS is the default since 2026-10);
+                                                 # shot_noise_weights=True in the PAH fits
     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),   # drop the source-mask bit
     name="damp0p1_reg0p1_outThresh5_sigma2_polyK1")
 ORCA = sc.Compute(scratch, workers=48, coadd_workers=48)        # workers tuned 2026-05 from 32

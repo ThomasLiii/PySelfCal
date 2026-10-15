@@ -113,12 +113,12 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 
 ```python
 NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),               # the NumCol3 channel maps' recipe
-                    fit=sc.Fit(50, clip=5.0),              # 50 iterations; a 5-sigma clip in each frame
+                    fit=sc.Fit(50, clip=5.0, method="lsqr"),  # 50 LSQR iterations; a 5-sigma clip in each frame
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name="damp0p1_reg0p1_outThresh5_sigma2")    # the products' suffix
 
 SUBCHANNEL = sc.ChunkGroups.along("subchannel")              # chunks grouped by subchannel
-BY_SUBCHANNEL = NUMCOL3.replace(fit=sc.Fit(50, clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
+BY_SUBCHANNEL = NUMCOL3.replace(fit=NUMCOL3.fit.replace(clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
 ```
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver,
