@@ -68,7 +68,7 @@ def frame_geometry(headers, ref_wcs, centre, geometry='tangent'):
 
     cx, cy = float(centre[0]), float(centre[1])
     if geometry == 'tangent':
-        ra, dec = np.asarray(headers['CRVAL1'], np.float64), np.asarray(headers['CRVAL2'], np.float64)
+        ra, dec = np.array(headers['CRVAL1'], np.float64), np.array(headers['CRVAL2'], np.float64)
         K = ra.size
         for k in GAUGE_KEYS:
             if k not in headers or len(headers[k]) != K:
@@ -86,6 +86,13 @@ def frame_geometry(headers, ref_wcs, centre, geometry='tangent'):
                         [float(headers['PC2_1'][k]), float(headers['PC2_2'][k])]]
             w.wcs.cdelt = [float(headers['CDELT1'][k]), float(headers['CDELT2'][k])]
             wcs_of.append(w)
+        # A frame's centre is its pointing, CRVAL, when its reference pixel is the detector centre (CRPIX is
+        # 1-based); a frame whose reference pixel is elsewhere has its detector centre projected instead.
+        off = ((np.asarray(headers['CRPIX1'], np.float64) - 1 != cx)
+               | (np.asarray(headers['CRPIX2'], np.float64) - 1 != cy))
+        for k in np.nonzero(off)[0]:
+            s = wcs_of[k].pixel_to_world(cx, cy)
+            ra[k], dec[k] = s.ra.deg, s.dec.deg
     elif geometry == 'header':
         wcs_of = [WCS(h) for h in headers]
         K = len(wcs_of)

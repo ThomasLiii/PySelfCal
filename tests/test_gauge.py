@@ -177,6 +177,30 @@ def test_frame_geometry_from_the_header(tmp_path):
     assert np.allclose(chunk_row_offsets(np.array([[0, 0], [1, 1], [1, 1]]), 2, 1.0), [-1.0, 0.5])
 
 
+def test_frame_geometry_with_an_off_centre_reference_pixel(tmp_path):
+    """A header whose reference pixel is not the detector centre (some SPHEREx frames: CRVAL is then not the
+    frame's centre): the tangent geometry places the frame's centre where its detector centre projects, as
+    the full-header geometry does, not at CRVAL."""
+    import h5py
+
+    from selfcal.core.gauge import _stored_header
+    w, truth = rolled_wcs(30, 20, 0.7)
+    w2 = w.deepcopy()                                     # the same frame, its reference pixel moved by (150, -80)
+    w2.wcs.crpix = w.wcs.crpix + np.array([150.0, -80.0])
+    c = w.pixel_to_world(*(w2.wcs.crpix - 1))
+    w2.wcs.crval = [c.ra.deg, c.dec.deg]
+    path = str(tmp_path / 'f.h5')
+    with h5py.File(path, 'w') as f:
+        f.attrs['det_header'] = w2.to_header().tostring().encode('utf-8')
+    J, centres = frame_geometry(frame_header_values([path], GAUGE_KEYS), truth, CENTRE)
+    J2, centres2 = frame_geometry([_stored_header(path)], truth, CENTRE, geometry='header')
+    want = np.array(truth.world_to_pixel(w2.pixel_to_world(*CENTRE)), np.float64)
+    at_crval = np.array(truth.world_to_pixel(w2.pixel_to_world(*(w2.wcs.crpix - 1))), np.float64)
+    assert np.allclose(centres[0], want, atol=1e-6) and np.allclose(centres, centres2, atol=1e-6)
+    assert np.allclose(J, J2, atol=1e-9)
+    assert np.hypot(*(at_crval - want)) > 100             # CRVAL is ~170 px from the frame's centre
+
+
 # ---- the solve -------------------------------------------------------------------------------------------
 def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
     """A known plane hidden in the offsets of a solved cal (its image in the slopes, the band constants and
