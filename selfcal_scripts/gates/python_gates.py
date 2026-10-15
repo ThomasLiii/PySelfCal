@@ -51,7 +51,7 @@ def e2e():
     recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
-    compute = sc.Compute(f'{REPO}/workspace/coaddopt/cache', workers=48, stage='reuse', keep_staged=True)
+    compute = sc.Compute(f'{REPO}/cache', workers=48, stage='reuse', keep_staged=True)
     return QR2_D3.calibrate(recipe, jobs=spherex.channel(17), frames=sc.frames_in(E2E_FIXTURE)[:300],
                             compute=compute)
 

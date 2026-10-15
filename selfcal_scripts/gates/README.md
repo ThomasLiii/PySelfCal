@@ -6,10 +6,12 @@ The gates are Python: each is a function of `python_gates.py`, a calibration wri
 (`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
 to `/mnt/md124` and the staged fixtures are in `python_gates.py`), the steps named, compares each
-product with its golden and writes `workspace/unify/logs/gates_<tag>.log`; `SELFCAL_REPO` picks
-the tree. The steps are `pytest` (the test suite, first), then the gates below; the default is
-every step but `m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and
-logs to `m13_gate_<tag>.log`).
+product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
+`/mnt/md124/thomasli/selfcal/outputs/_gates/logs`, next to the goldens; `make_goldens.sh` logs there
+too); `SELFCAL_REPO` picks the tree. The gates read and write nothing in `workspace/`: their
+inputs are the repository, the fixtures and the goldens. The steps are `pytest` (the test suite,
+first), then the gates below; the default is every step but `m13`, which `run_m13_gate.sh <tag>`
+runs (it calls `run_gates.sh <tag> m13` and logs to `m13_gate_<tag>.log`).
 
 | gate | what | golden |
 | --- | --- | --- |

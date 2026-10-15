@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Byte-equality gates: pytest, then the gates of python_gates.py (runs of the Python API), each product compared
 # with its float64-norm golden (*golden_f64*, made by make_goldens.sh from a committed tree; a missing golden fails
-# the gate). Usage: run_gates.sh <tag> [gate ...]   -> workspace/unify/logs/gates_<tag>.log
+# the gate). Usage: run_gates.sh <tag> [gate ...]   -> $GATES_LOGDIR/gates_<tag>.log
 # Gates: pytest continuum spectral e2e npass3 euclid m13 rerun transfer transfer_quad (default: all but m13, which
 # run_m13_gate.sh runs, and the two transfer gates; rerun runs the continuum gate's record again, `selfcal rerun
 # --overwrite`, so it follows continuum; transfer_quad runs no solve).
@@ -12,10 +12,11 @@ set -u
 R=${SELFCAL_REPO:-/home/thomasli/selfcal-project/selfcal-memopt}
 PY=/home/thomasli/anaconda3/envs/selfcal-memopt/bin/python
 G=$R/selfcal_scripts/gates
-W=/home/thomasli/selfcal-project/selfcal-memopt/workspace/unify            # logs (gitignored)
+L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
 GATES=${*:-pytest continuum spectral e2e npass3 euclid rerun}
-LOG=${GATES_LOG:-$W/logs/gates_${TAG}.log}
+mkdir -p $L
+LOG=${GATES_LOG:-$L/gates_${TAG}.log}
 O=/mnt/md124/thomasli/selfcal/outputs
 D3=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_AromaticPAHfit
@@ -71,7 +72,7 @@ for g in $GATES; do
     echo "--- transfer cal: offsets vs the ungauged golden, sky vs the plane-gauged golden"; $PY $G/transfer_check.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 ${D3C9}_transfer_plane_golden_f64.h5 2>&1 | tail -1
     echo "--- transfer mosaic (weighted coadd + the plane on the map): byte-diff vs transfer_planemap_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_transfer_gate_py.fits ${D3C9_MOS}_transfer_planemap_golden_f64.fits 2>&1 | tail -1 ;;
   transfer_quad)
-    # the quadratic gauge (sc.Gauge(degree=2)) on the golden ungauged cal and map, against the workspace's: no solve
+    # the quadratic gauge (sc.Gauge(degree=2)) on the golden ungauged cal and map, against the campaign's goldens: no solve
     echo "--- transfer_quad: the library's quad gauge vs transfer_gq2{,map}_golden_f64"; PYTHONPATH=$R $PY $G/quad_check.py ${D3C9}_transfer_golden_f64.h5 ${D3C9_MOS}_transfer_golden_f64.fits ${D3C9}_transfer_gq2_golden_f64.h5 ${D3C9_MOS}_transfer_gq2map_golden_f64.fits $E2E_FX $O/SPHEREx_nep_qr2_det3_6p2arcsec/ref.fits $R/cache/transfer_quad 2>&1 | tail -1 ;;
   rerun)
     # the record the continuum gate wrote, run again from the record alone (made again: --overwrite)
