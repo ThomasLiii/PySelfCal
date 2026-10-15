@@ -7,10 +7,11 @@
 # --overwrite`, so it follows continuum; transfer_quad runs no solve).
 # 1. pytest; 2. continuum + spectral cal gates; 3. the e2e cal + mosaic gate (D3 Ch17, 300 frames, full mosaic incl.
 # wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors);
-# 6. the NEP multi-line INIT on the tile M13. SELFCAL_REPO picks the tree (default: this worktree).
+# 6. the NEP multi-line INIT on the tile M13. SELFCAL_REPO picks the tree (default: the one this script is in),
+# SELFCAL_PYTHON the interpreter (default: python on PATH), SELFCAL_GATE_FIXTURES the frame fixtures.
 set -u
-R=${SELFCAL_REPO:-/home/thomasli/selfcal-project/selfcal-memopt}
-PY=/home/thomasli/anaconda3/envs/selfcal-memopt/bin/python
+R=${SELFCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}   # default: the tree this script is in
+PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active env unless set
 G=$R/selfcal_scripts/gates
 L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
@@ -25,7 +26,7 @@ NP=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh3
 EU=$O/EDFN_Y_1p5arcsec_unifygolden
 D3C9=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh17_NumCol1_Ch9
 D3C9_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh17_NumCol1_Ch9
-E2E_FX=/home/thomasli/selfcal-project/selfcal-memopt/cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec   # the 300-frame fixture
+E2E_FX=${SELFCAL_GATE_FIXTURES:-/home/thomasli/selfcal-project/gate_fixtures}/qr2_d3_frames300   # the 300-frame fixture
 M13=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3_multiline3_NEPovlp
 M13_TAIL=iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2
 cd $R
@@ -35,6 +36,7 @@ run() { PYTHONPATH=$R PYTHONUNBUFFERED=1 $PY -m selfcal_scripts.gates.python_gat
 rmp() { for f in "$@"; do rm -f "$f" "$f.json"; done; }
 {
 echo "=== gates [$TAG] start $(date) tree=$(git rev-parse --short HEAD) dirty=$(git status --short | grep -v '^??' | wc -l) repo=$R gates=[$GATES]"
+echo "    python=$PY numpy=$($PY -c 'import numpy; print(numpy.__version__)')"
 for g in $GATES; do
   case $g in
   pytest)
@@ -85,4 +87,4 @@ for g in $GATES; do
 done
 echo "=== gates [$TAG] end $(date)"
 } > $LOG 2>&1
-grep -E "^=== |^--- |passed|BYTE-EQUAL|DIFFER|Error|Traceback|No such file|unknown gate" $LOG
+grep -E "^=== |^    python=|^--- |passed|BYTE-EQUAL|DIFFER|Error|Traceback|No such file|No module named|unknown gate" $LOG

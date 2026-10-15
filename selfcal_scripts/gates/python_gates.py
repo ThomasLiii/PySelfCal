@@ -4,8 +4,10 @@ and compares; ``make_goldens.sh`` makes the goldens from a committed tree).
 
     python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13 | transfer
 
-Paths are this machine's (the fixtures of ``README.md``).
+Paths are this machine's (the fixtures of ``README.md``): the outputs on the RAID and the frame fixtures in
+``$SELFCAL_GATE_FIXTURES``; the scratch is the ``cache/`` of the repository this file is in.
 """
+import os
 import sys
 
 import numpy as np  # noqa: F401  (imported before selfcal on purpose: the actions pin the threads)
@@ -14,10 +16,12 @@ import selfcal as sc
 from selfcal.instruments import spherex
 
 OUTPUTS = '/mnt/md124/thomasli/selfcal/outputs'
-REPO = '/home/thomasli/selfcal-project/selfcal-memopt'
-QR2_FIXTURE = '/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec'
-E2E_FIXTURE = f'{REPO}/cache/reproj_nvme_SPHEREx_nep_qr2_det3_6p2arcsec'
-PAH_FIXTURE = '/home/thomasli/selfcal-project/selfcal/cache/reproj_nvme_pahfit_sanity_1k'
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the tree under test
+FIXTURES = os.environ.get('SELFCAL_GATE_FIXTURES', '/home/thomasli/selfcal-project/gate_fixtures')
+QR2_FIXTURE = f'{FIXTURES}/qr2_d3_links400'         # D3 qr2: 400 links to the field's frames (continuum)
+E2E_FIXTURE = f'{FIXTURES}/qr2_d3_frames300'        # D3 qr2: 300 frames (e2e, transfer)
+PAH_FIXTURE = f'{FIXTURES}/pahfit_sanity'           # D4: 150 frames (spectral, npass3)
+M13_FIXTURE = f'{FIXTURES}/nep_d4_m13'              # D4: the 1,101 frames of the NEP tile M13, staged (m13)
 
 SUBCHANNEL = sc.ChunkGroups.along('subchannel')           # clip within each subchannel's chunks
 LINES = [spherex.line(n, damping=5e-3) for n in ('aromatic', 'aliphatic', 'plateau')]
@@ -97,7 +101,7 @@ def m13():
                        name='multiline3_NEPovlp_UNIFYNPASS1GATEPY_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2')
     tiles = sc.Tiles(boxes=M13_BOXES, only=['M13'], stitched_name='{name}',
                      tile_name='multiline3_NEPovlp_{tile}_UNIFYNPASS1GATEPY_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2')
-    compute = sc.Compute(f'{REPO}/cache', workers=24, stage_dir='reproj_nvme_unify_npass1_M13')
+    compute = sc.Compute(f'{REPO}/cache', workers=24, stage_dir=M13_FIXTURE)
     return NEP_D4.calibrate(recipe, jobs=spherex.window('Multiline3', subchannels=range(200, 321)), tiles=tiles,
                             passes=sc.Passes(1), compute=compute)
 
