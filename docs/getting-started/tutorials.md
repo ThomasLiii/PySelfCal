@@ -58,8 +58,8 @@ runs a camera on synthetic FITS exposures through `field.calibrate` (with its mo
 ## Production runs
 
 [`selfcal_scripts/runs/`](https://github.com/ThomasLiii/PySelfCal/tree/main/selfcal_scripts/runs)
-holds the run scripts of the SPHEREx campaigns: continuum channel maps (`channel_maps.py`, all 102
-maps of the current recipe), spectral line fits, tiled fields and N-pass chains. They share the
+holds the run scripts of the SPHEREx campaigns: continuum channel maps (`channel_maps.py`, the maps
+of the current recipe), spectral line fits, tiled fields and N-pass chains. They share the
 fields, recipes and tilings of
 [`selfcal_scripts/recipes/spherex.py`](https://github.com/ThomasLiii/PySelfCal/blob/main/selfcal_scripts/recipes/spherex.py)
 and the machine of `selfcal_scripts/recipes/site.py`, point at data on the processing host, and

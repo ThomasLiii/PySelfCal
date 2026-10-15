@@ -1,6 +1,8 @@
 """The fiducial channel maps of the NEP 2026W17 field (the recipe since 2026-10-14: ``CHANNEL_MAPS``, the
 transfer function's recipe with the wavelength maps), solved on 17 channels and one column: every channel of
-every detector, 102 maps.
+every detector but Ch9, 96 maps. Ch9 of Detectors 1 to 6 are the transfer-function campaign's own maps of this
+recipe, delivered on 2026-10-14 with their wavelength maps added (``workspace/DATA_LOCATIONS.md``); their
+products have no record of this script, which would refuse them.
 
     selfcal run selfcal_scripts/runs/channel_maps.py           # Detectors 1 to 6
     selfcal run selfcal_scripts/runs/channel_maps.py 5 6       # some detectors
@@ -18,7 +20,8 @@ from selfcal_scripts.recipes.spherex import CHANNEL_MAPS, nep
 
 FIELDS = [nep(detector, num_col=1, num_ch=17) for detector in range(1, 7)]
 RECIPE = CHANNEL_MAPS
-RUN = dict(jobs=spherex.channels(1, 17))
+#: Ch9 is the campaign's (see above).
+RUN = dict(jobs=spherex.channels([c for c in range(1, 18) if c != 9]))
 
 if __name__ == '__main__':
     chosen = [int(a) for a in sys.argv[1:]] or range(1, 7)
