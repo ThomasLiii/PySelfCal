@@ -16,10 +16,11 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal.models.variables import identity
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
            'pahfit_tiled']
 
@@ -73,6 +74,14 @@ SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
 #: wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same name and the same cal; the mosaic's other maps
 #: are SLOPE_GAUGE's.
 CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_maps=True))
+
+#: SLOPE_GAUGE weighted by the L2b ``VARIANCE`` instead of the shot-noise proxy (2026-10-15, the covariance
+#: work): the frame layer ``variance`` (the SPHEREx reader stores it; frames made before 2026-10-15 get it
+#: from ``selfcal.io.reprojection.add_layers``) weights the solve's rows by 1/sigma and the coadd by
+#: 1/variance. The same model, fit, gauge and coadd.
+SLOPE_GAUGE_VARWEIGHT = SLOPE_GAUGE.replace(
+    model=SLOPE_GAUGE.model.replace(variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
+    name='slope_gauge_varweight')
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
