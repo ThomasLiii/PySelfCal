@@ -10,7 +10,9 @@ the notebooks::
         nep(3, num_col=1, num_ch=17).calibrate(CHANNEL_MAPS, jobs=spherex.channels(1, 17))
 
 A recipe's ``name`` is its products' suffix, so the names below are those of the existing
-products; ``field.result(recipe, jobs=...)`` finds them.
+products; ``field.result(recipe, jobs=...)`` finds them. The recipes of products made before
+2026-10-13 name their solver, LSQR (CGLS has been the default since), so they still describe how
+those products were made.
 """
 import selfcal as sc
 from selfcal.instruments import spherex
@@ -46,7 +48,7 @@ def nep_qr2(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
 #: NumCol 3, no column polynomial (the transfer function showed NumCol 10 with a linear column polynomial
 #: overfits), a 2x oversampled coadd.
 NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
-                    fit=sc.Fit(50, clip=5.0),
+                    fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
 
@@ -74,7 +76,7 @@ CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_ma
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
-                    fit=sc.Fit(50, clip=5.0),
+                    fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2_polyK1')
 
@@ -96,7 +98,8 @@ def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILI
     polynomial along the subchannels of ``window`` (per column), per-pixel shot-noise weights,
     the source-mask bit ignored; no mosaic (tiled and N-pass runs)."""
     return sc.Recipe(sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments)),
-                     fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
+                     fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True,
+                                method='lsqr'),
                      coadd=None, numerics=sc.Numerics(threads), name=name)
 
 
@@ -107,8 +110,8 @@ def pahfit_tiled(name, *, iterations):
     model = sc.spectral([sc.Sky('pah_3p29', times=sc.catalog('pah_3p29'), damping=5e-3)],
                         poly_prior=[sc.Poly(1, weight=0.5), sc.Poly(3, along='subchannel', window=range(200, 260),
                                                                   weight=100.0)])
-    return sc.Recipe(model, fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True), coadd=None,
-                     name=name)
+    return sc.Recipe(model, fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
+                     coadd=None, name=name)
 
 
 #: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel.
