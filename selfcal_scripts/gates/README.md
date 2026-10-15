@@ -24,7 +24,9 @@ logs to `m13_gate_<tag>.log`).
 | transfer_quad | the quadratic gauge (`sc.Gauge(degree=2)`) of the library on the golden ungauged cal and map of `transfer`, against the campaign's (`quad_check.py`; no solve) | `*_transfer_gq2_golden_f64.h5` (the sky), `*_transfer_gq2map_golden_f64.fits` (the maps) |
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
-themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly.
+themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly;
+`diff_cal_h5.py` compares two cal files dataset by dataset across the cal schemas (a legacy
+single-offset file against a multi-map one), for the continuum, spectral, e2e and rerun gates.
 
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so: `make_goldens.sh <tag> [gate ...]` runs the Python gates on a clean tree

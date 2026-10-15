@@ -14,7 +14,7 @@ blocks fit per pixel over the SPHEREx NEP W17 Detector-4 field. Promoted from th
 
 Realistic templates = Drude intrinsic profile ⊗ measured SPHEREx Band-4 spectral
 response (peak-normalized, in `selfcal/instruments/spherex/data/line_templates/`;
-rebuild with `selfcal_scripts/drivers/build_line_template.py`). Recipe: hard
+rebuild with `selfcal_scripts/line_templates/build_line_template.py`). Recipe: hard
 poly-basis offset (deg 2, NumCol 3, no ortho, no weight knob — the DC lives in the
 per-frame scalar), line damping `spherex.line(name, damping=5e-3)`, iter300.
 

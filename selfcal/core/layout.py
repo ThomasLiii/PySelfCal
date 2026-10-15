@@ -24,7 +24,7 @@ collapse to one chunk with ``num_frames`` alpha columns, and the
 of every solved cal file. Do not "fix" edge cases here without deliberately
 re-baselining the byte-equality regression goldens (reference ``cal_*.h5``
 outputs of the byte-equality gates (``selfcal_scripts/gates/``) compared with
-``selfcal_scripts/drivers/diff_cal_h5.py``).
+``selfcal_scripts/gates/diff_cal_h5.py``).
 """
 from __future__ import annotations
 

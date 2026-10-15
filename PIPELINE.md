@@ -651,7 +651,7 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 **Legacy schema (pre-multi-chunk-maps, still readable):**
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
 
-`selfcal_scripts/drivers/diff_cal_h5.py` understands both schemas — pass a legacy file and a new file and it compares the underlying arrays correctly.
+`selfcal_scripts/gates/diff_cal_h5.py` understands both schemas — pass a legacy file and a new file and it compares the underlying arrays correctly.
 
 ### The `solve` group
 
@@ -841,7 +841,7 @@ goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 Aro
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
 refit; no float64 golden yet), the Euclid EDFN recipe and the rerun of the continuum gate's record,
 each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
-`selfcal_scripts/drivers/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
+`gates/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
 NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
 the engine does with every run script without a solve. The older harnesses
 (`run_cal_baseline_test.py`, `regress_cal*.py`, the `benchmark_d3_ch17_*` timing scripts) are
