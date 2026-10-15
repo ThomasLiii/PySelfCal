@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Make the float64-norm goldens (*golden_f64*) the gates compare with, by running the gates of python_gates.py on a
 # COMMITTED tree. Usage: make_goldens.sh <tag> [gate ...]   (gates: continuum spectral e2e npass3 euclid m13;
-# default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: this
-# worktree); it must be clean, so that each golden belongs to a commit (the log records it). An existing golden is
+# default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: the one this
+# script is in; SELFCAL_PYTHON the interpreter, default python on PATH); it must be clean, so that each golden belongs to a commit (the log records it). An existing golden is
 # never replaced unless FORCE=1. The goldens are made with the float64 LSQR norms (selfcal/core/lsqr_inplace.py,
 # since 2026-10-05): SELFCAL_LSQR_FLOAT32_NORMS=1 is refused. The e2e and m13 gates are the large ones (a 4.8 GB
 # mosaic; ~90 GB of memory and ~35 GB of scratch).
 set -u
-R=${SELFCAL_REPO:-/home/thomasli/selfcal-project/selfcal-memopt}
-PY=/home/thomasli/anaconda3/envs/selfcal-memopt/bin/python
+R=${SELFCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}   # default: the tree this script is in
+PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active env unless set
 L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
 GATES=${*:-continuum spectral e2e npass3 euclid m13}
@@ -41,6 +41,7 @@ keep() {
 }
 {
 echo "=== make goldens [$TAG] start $(date) tree=$(git rev-parse HEAD) repo=$R gates=[$GATES]"
+echo "    python=$PY numpy=$($PY -c 'import numpy; print(numpy.__version__)')"
 for g in $GATES; do
   echo "--- $g $(date +%T)"
   case $g in
