@@ -122,7 +122,10 @@ class SolveRecord:
     is ``|b|``, both accumulated in float64 from one product at the end (both NaN when LSQR's copy
     of ``b``, which it overwrites, could not be parked on disk). LSMR reports one residual
     norm, its ``normr``, as both ``r1norm`` and ``r2norm``. ``rows`` and ``columns`` are the system's
-    shape as the solver saw it (the active columns), ``wall_s`` the solver's wall time (the
+    shape as the solver saw it (the active columns); ``degrees_of_freedom`` is ``rows - columns`` (at
+    least 1) and ``noise_variance`` is ``true_residual^2 / degrees_of_freedom``, the noise variance per
+    row the residual implies: with rows weighted by their inverse noise sigma it is the reduced
+    chi-squared of the solution (what the chi-squared stop rule estimates too). ``wall_s`` is the solver's wall time (the
     final product excluded), ``history`` the :class:`SolveHistory` (not an attribute; saved by
     :meth:`save_history`) and ``history_file`` where it was saved.
 
@@ -171,6 +174,8 @@ class SolveRecord:
     rows: int
     columns: int
     wall_s: float
+    degrees_of_freedom: int = 0
+    noise_variance: float = float('nan')
     history: SolveHistory | None = field(default=None, repr=False)
     history_file: str | None = None
     system: str | None = None
@@ -202,7 +207,9 @@ class SolveRecord:
                    r1norm=float(r1), r2norm=float(r2), arnorm=float(ar), anorm=float(an), acond=float(ac),
                    xnorm=float(xn), true_residual=float(true_residual), bnorm=float(bnorm), atol=float(atol),
                    btol=float(btol), conlim=float(conlim), damp=float(damp), rows=int(shape[0]),
-                   columns=int(shape[1]), wall_s=float(wall_s), history=history)
+                   columns=int(shape[1]), wall_s=float(wall_s), degrees_of_freedom=max(int(shape[0]) - int(shape[1]), 1),
+                   noise_variance=float(true_residual) ** 2 / max(int(shape[0]) - int(shape[1]), 1),
+                   history=history)
 
     def attrs(self) -> dict:
         """The record as plain values (what the cal's ``solve`` group and the action's record hold),

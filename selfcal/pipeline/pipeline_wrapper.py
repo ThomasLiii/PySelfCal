@@ -1941,6 +1941,8 @@ class Mosaicker(Reprojector):
         Auxiliary Maps:
             - 'WAV_MEAN': Mean wavelength map
             - 'WAV_STD': Standard deviation of wavelength map
+        A map entry's optional ``'header'`` is a list of cards written after the standard
+        ones: ``(key, value[, comment])`` or ``('COMMENT', text)``.
         '''
         if mos_dir is None:
             mos_dir = self.config.mos_dir
@@ -1959,6 +1961,11 @@ class Mosaicker(Reprojector):
                 hdu.header['BUNIT'] = self.maps[m]['unit']
                 hdu.header['EXTNAME'] = m.upper()
                 hdu.header['MEANOFF'] = float(self.mean_offset) if np.isfinite(self.mean_offset) else 0.0
+                for card in self.maps[m].get('header') or ():         # (key, value[, comment]), or ('COMMENT', text)
+                    if card[0] == 'COMMENT':
+                        hdu.header.add_comment(card[1])
+                    else:
+                        hdu.header.set(*card)
                 hdu_list.append(hdu)
             if self.maps[m]['weight'] is not None:
                 hdu = fits.ImageHDU(data=self.maps[m]['weight'], header=self.ref_wcs.to_header())

@@ -758,6 +758,18 @@ header. `EXTNAME` is one of:
 - `MEAN_MAP`, `MEAN_MAP_WEIGHT` — weighted mean and `sum(weight)`.
 - `STD_MAP`, `STD_MAP_WEIGHT` — weighted std and weight.
 - `SC_MEAN_MAP`, `SC_MEAN_MAP_WEIGHT` — sigma-clipped mean and weight.
+- `VAR_MAP` (since 2026-10-15, when the model's weight is an `sc.Variance`) —
+  `1 / MEAN_MAP_WEIGHT`, the variance of `MEAN_MAP`'s white noise: the noise
+  level at scales above a few map pixels (one pixel of exactly reprojected
+  frames has less, its noise being shared with its neighbours); the correlated
+  noise of the estimated offsets and the free sky plane and zero point are not
+  in it. The mean maps of a cal gauged on the map carry the gauge in their
+  headers: `GAUGEDEG`, `GAUGEG1/2` (the plane per grid pixel), `GAUGESG1/2`
+  and `GAUGERHO` (its uncertainties and correlation), `GAUGEX0/Y0`, `GAUGEMU`,
+  `GAUGEGEO`, `GAUGEAMP` (the polynomial's peak-to-peak over the map) and
+  `GAUGEASG` (the plane's uncertainty of it). Every cal's `solve` record has
+  `noise_variance` (`|b - A x|^2 / degrees_of_freedom`, the reduced
+  chi-squared with inverse-sigma rows) and `degrees_of_freedom`.
 - `WAV_MEAN_MAP`, `WAV_STD_MAP` — LVF wavelength maps (BUNIT=`um`),
   coadded inside the sigma-clip pass (`make_mosaic(wav_maps=...)`) or, when
   sigma clipping is off, by the standalone `wav_coadd` over the cache.
