@@ -72,4 +72,4 @@ for g in $GATES; do
 done
 echo "=== make goldens [$TAG] end $(date)"
 } > $LOG 2>&1
-grep -E "^=== |golden:|kept|MISSING|Error|Traceback|unknown gate" $LOG
+grep -E "^=== |^    python=|golden:|kept|MISSING|Error|Traceback|No module named|unknown gate" $LOG

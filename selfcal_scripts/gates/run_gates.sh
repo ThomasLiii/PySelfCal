@@ -87,4 +87,4 @@ for g in $GATES; do
 done
 echo "=== gates [$TAG] end $(date)"
 } > $LOG 2>&1
-grep -E "^=== |^--- |passed|BYTE-EQUAL|DIFFER|Error|Traceback|No such file|unknown gate" $LOG
+grep -E "^=== |^    python=|^--- |passed|BYTE-EQUAL|DIFFER|Error|Traceback|No such file|No module named|unknown gate" $LOG
