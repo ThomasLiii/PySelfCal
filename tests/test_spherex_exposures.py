@@ -1,10 +1,13 @@
-"""The SPHEREx L2b reader and the variance layer.
+"""The SPHEREx L2b reader, the variance layer and the dilated mask.
 
 ``read_l2b`` stores the L2b ``VARIANCE`` with every frame as the layer ``variance``, finite
 wherever the frame has a detector position (the bad pixels are filled before the interpolation),
-and ``add_layers`` / ``add_reader_layers`` give frames made without the layer the same one. The
-toy L2b files here: a small detector with a TAN WCS and the ``IMAGE`` / ``FLAGS`` / ``VARIANCE``
-extensions.
+and ``add_layers`` / ``add_reader_layers`` give frames made without the layer the same one. It
+also dilates the SUR_ERROR and NONFUNC bits by one pixel, so that the mask covers every output pixel the exact
+reprojection spreads a dead pixel's value into; ``refresh_mask`` / ``refresh_reader_mask`` give
+frames made before that the same mask. The toy L2b files here: a small detector with a TAN WCS
+rotated against the reference grid, and the ``IMAGE`` / ``FLAGS`` / ``VARIANCE`` extensions, with a
+dead pixel of 600 MJy/sr flagged like the real ones.
 """
 import os
 import sys
@@ -22,27 +25,42 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import selfcal as sc  # noqa: E402
-from selfcal.instruments.spherex.exposures import l2b_variance, read_l2b  # noqa: E402
-from selfcal.io.frames import fill_missing  # noqa: E402
+from selfcal.instruments.spherex.exposures import (  # noqa: E402
+    DILATED_BITS,
+    l2b_flags,
+    l2b_variance,
+    read_l2b,
+)
+from selfcal.io.frames import dilate_bits, fill_missing  # noqa: E402
 from selfcal.io.reproj import load_reproj_file  # noqa: E402
-from selfcal.io.reprojection import add_layers, add_reader_layers  # noqa: E402
+from selfcal.io.reprojection import (  # noqa: E402
+    add_layers,
+    add_reader_layers,
+    refresh_mask,
+    refresh_reader_mask,
+)
 
 H, W = 40, 48                   # the toy detector (rows, cols)
 PIX = 20.0                      # arcsec per pixel, detector and reference grid alike
 BAD = [(5, 7), (20, 30), (21, 30), (21, 31), (35, 2)]     # bad pixels: flagged, NaN data, NaN variance
 NO_VARIANCE = [(10, 40), (30, 12)]                       # flagged, data kept, NaN variance
 ZERO_VARIANCE = (25, 25)                                 # flagged, a zero variance
+DEAD = (12, 30)                                          # a dead pixel: 600 MJy/sr, TRANSIENT | SUR_ERROR | NONFUNC, NaN variance
+DEAD_BITS = (1 << 0) | (1 << 2) | (1 << 6)
+ROTATION = 7.0                                           # degrees between the detectors and the reference grid
 
 sc.set_progress(False)
 
 
 def toy_wcs(ox, oy):
-    """The WCS of a detector whose pixel (0, 0) sees the pixel (oy, ox) of a common sky grid."""
+    """The WCS of a detector whose pixel (0, 0) sees the pixel (oy, ox) of a common sky grid, its
+    rows rotated by ``ROTATION`` degrees against that grid."""
     w = WCS(naxis=2)
     w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
     w.wcs.crpix = [W / 2 + 0.5 - ox, H / 2 + 0.5 - oy]
     w.wcs.crval = [180.0, 30.0]
-    w.wcs.cdelt = [-PIX / 3600.0, PIX / 3600.0]
+    s, c, sn = PIX / 3600.0, np.cos(np.radians(ROTATION)), np.sin(np.radians(ROTATION))
+    w.wcs.cd = [[-s * c, s * sn], [s * sn, s * c]]
     return w
 
 
@@ -65,6 +83,9 @@ def write_l2b(path, rng, ox, oy, variance=True):
     flags[15:18, 20:23] |= 1 << 21
     flags[ZERO_VARIANCE] |= 1
     var[ZERO_VARIANCE] = 0.0
+    flags[DEAD] |= DEAD_BITS
+    img[DEAD] = 600.0
+    var[DEAD] = np.nan
     hdr = toy_wcs(ox, oy).to_header()
     hdr['DETECTOR'], hdr['FINAST'] = 3, 0
     hdus = [fits.PrimaryHDU(), fits.ImageHDU(img.astype(np.float32), header=hdr, name='IMAGE'),
@@ -79,6 +100,11 @@ def write_l2b(path, rng, ox, oy, variance=True):
 def _exposures(tmp_path, rng, n=6):
     for k in range(n):
         write_l2b(str(tmp_path / 'exp' / f'l2b_{k:03d}.fits'), rng, int(rng.integers(0, 60)), int(rng.integers(0, 60)))
+
+
+def read_l2b_undilated(path, sci_ext, dq_ext=None, header_only=False):
+    """The L2b reader without the dilation: the frames of before 2026-10-15."""
+    return read_l2b(path, sci_ext, dq_ext, header_only=header_only, dilate=())
 
 
 def _reproject(tmp_path, name, reader):
@@ -110,12 +136,14 @@ def test_read_l2b_reads_the_variance_as_a_finite_layer(tmp_path):
     p = str(tmp_path / 'exp' / 'l2b_000.fits')
     img, flags, var = write_l2b(p, rng, 3, 5)
     exp = read_l2b(p, 1, 2)
-    assert np.array_equal(exp.data, img, equal_nan=True) and np.array_equal(exp.mask, flags)
+    assert np.array_equal(exp.data, img, equal_nan=True)
+    assert np.array_equal(exp.mask, dilate_bits(flags, DILATED_BITS)) and not np.array_equal(exp.mask, flags)
+    assert np.array_equal(read_l2b(p, 1, 2, dilate=()).mask, flags)
     layer = exp.layers['variance']
     assert layer.dtype == np.float64 and np.isfinite(layer).all() and (layer > 0).all()
     usable = np.isfinite(var) & (var > 0)
     assert np.array_equal(layer[usable], var[usable].astype(np.float64))
-    for y, x in [BAD[0], BAD[4], *NO_VARIANCE, ZERO_VARIANCE]:      # isolated: the mean of the eight neighbours
+    for y, x in [BAD[0], BAD[4], *NO_VARIANCE, ZERO_VARIANCE, DEAD]:  # isolated: the mean of the eight neighbours
         nb = var[y - 1:y + 2, x - 1:x + 2].astype(np.float64)
         known = np.isfinite(nb) & (nb > 0)
         known[1, 1] = False
@@ -181,3 +209,69 @@ def test_a_pass_over_existing_frames_writes_what_the_reprojection_writes(tmp_pat
             add_layers(fb, {'variance': np.ones((H + 1, W))}, replace=True)
         with pytest.raises(ValueError, match='no layer'):
             add_reader_layers(fb, read_l2b, 1, 2, names=['nope'])
+
+
+def test_dilate_bits_grows_only_the_given_bits():
+    m = np.zeros((9, 9), dtype=np.int32)
+    m[4, 4] = (1 << 2) | (1 << 0)
+    m[1, 7] = 1 << 2
+    out = dilate_bits(m, (2,))
+    assert out.dtype == m.dtype and m[4, 4] == 5                    # the input untouched
+    bit2 = (out >> 2) & 1
+    expect = np.zeros((9, 9), dtype=np.int32)
+    expect[3:6, 3:6] = 1
+    expect[0:3, 6:9] = 1
+    assert np.array_equal(bit2, expect)
+    assert np.array_equal((out >> 0) & 1, (m >> 0) & 1)              # bit 0 not dilated
+    assert np.array_equal(dilate_bits(m, ()), m)
+
+
+def test_the_dilated_mask_covers_the_dead_pixel_s_spread(tmp_path):
+    """The exact reprojection spreads the dead pixel (600 MJy/sr) into the output pixels its area touches,
+    beyond the bilinear footprint of its mask: with the frames rotated against the grid, the undilated
+    mask leaves some of them unflagged; the reader's dilation of SUR_ERROR flags every one of them."""
+    rng = np.random.default_rng(5)
+    _exposures(tmp_path, rng, n=8)
+    old = _reproject(tmp_path, 'undilated', read_l2b_undilated)
+    new = _reproject(tmp_path, 'dilated', read_l2b)
+    leaked_unflagged_old, leaked, flagged_old, flagged_new = 0, 0, 0, 0
+    for fa, fb in zip(old.frames, new.frames):
+        a = load_reproj_file(fa, ['sub_data', 'sub_bitmask'])
+        b = load_reproj_file(fb, ['sub_data', 'sub_bitmask'])
+        assert np.array_equal(a['sub_data'], b['sub_data'], equal_nan=True)          # the data do not change
+        leak = np.isfinite(a['sub_data']) & (np.abs(a['sub_data'] - 1.0) > 2.0)      # the sky is 1 +- 0.03
+        leaked += int(leak.sum())
+        dil = sum(1 << b for b in DILATED_BITS)
+        leaked_unflagged_old += int((leak & ((a['sub_bitmask'] & dil) == 0)).sum())
+        assert not (leak & ((b['sub_bitmask'] & dil) == 0)).any()                     # every leak flagged now
+        flagged_old += int(((a['sub_bitmask'] & dil) != 0).sum())
+        flagged_new += int(((b['sub_bitmask'] & dil) != 0).sum())
+        assert np.array_equal(b['sub_bitmask'] & ~dil, a['sub_bitmask'] & ~dil)       # only the dilated bits differ
+    assert leaked > 8 and leaked_unflagged_old > 0                                    # the flaw the dilation fixes
+    assert flagged_new > flagged_old
+
+
+def test_refresh_mask_writes_what_the_reprojection_writes(tmp_path):
+    rng = np.random.default_rng(6)
+    _exposures(tmp_path, rng, n=5)
+    old = _reproject(tmp_path, 'undilated', read_l2b_undilated)
+    new = _reproject(tmp_path, 'dilated', read_l2b)
+    keys = ['sub_data', 'sub_foot', 'sub_mapping', 'ref_coords', 'det_header', 'sub_header', 'file_path', 'layers/variance']
+    for fa, fb in zip(old.frames, new.frames):
+        before = load_reproj_file(fa, keys + ['sub_bitmask'])
+        changed = refresh_reader_mask(fa, read_l2b, 1, 2, bits=DILATED_BITS)        # the dilated plane only
+        after = load_reproj_file(fa, keys + ['sub_bitmask'])
+        fresh = load_reproj_file(fb, ['sub_bitmask'])['sub_bitmask']
+        assert np.array_equal(after['sub_bitmask'], fresh)                            # exactly the new reprojection's
+        assert refresh_reader_mask(fa, read_l2b, 1, 2) == 0                           # every plane: the same mask
+        assert changed == int((before['sub_bitmask'] != fresh).sum())
+        for k in keys:                                                                # everything else unchanged
+            if isinstance(before[k], np.ndarray):
+                assert np.array_equal(before[k], after[k], equal_nan=True), k
+            else:
+                assert before[k] == after[k], k
+        raw = open(fa, 'rb').read()
+        assert refresh_reader_mask(fa, read_l2b, 1, 2) == 0 and open(fa, 'rb').read() == raw   # already current
+        assert refresh_mask(fa, l2b_flags(after['file_path'])) == 0
+        with pytest.raises(ValueError, match='detector'):
+            refresh_mask(fa, np.zeros((H + 1, W), dtype=np.int32))

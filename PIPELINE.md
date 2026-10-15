@@ -700,7 +700,13 @@ Datasets:
 - `sub_foot` `(sub_w, sub_w)` float16 — fractional footprint from the
   `reproject` library.
 - `sub_bitmask` `(sub_w, sub_w)` int32 — DQ bitmask after reprojection
-  (per-bit reprojected as float, thresholded at 0.01, then re-packed).
+  (per-bit reprojected as float, thresholded at 0.01, then re-packed:
+  `selfcal.io.reprojection.pack_mask`). The data's exact reprojection spreads a
+  flagged pixel's value further than this bilinear footprint, so a reader may
+  dilate the bits whose values are garbage (`selfcal.io.frames.dilate_bits`;
+  the SPHEREx reader dilates SUR_ERROR and NONFUNC by one pixel since 2026-10-15); frames
+  made before get the current mask from `selfcal.io.reprojection.refresh_mask`
+  / `refresh_reader_mask` (the other datasets byte for byte).
 - `sub_mapping` `(2, sub_w, sub_w)` float32 — for each subframe pixel,
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to

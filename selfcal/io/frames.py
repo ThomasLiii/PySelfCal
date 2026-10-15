@@ -34,12 +34,12 @@ import h5py
 import hdf5plugin
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import convolve
+from scipy.ndimage import binary_dilation, convolve
 
 from .reproj import reproj_basename
 
-__all__ = ['ExposureData', 'read_fits_exposure', 'read_exposure', 'fill_missing', 'write_frame', 'frame_compression',
-           'frame_header_values', 'standard_frame_path']
+__all__ = ['ExposureData', 'read_fits_exposure', 'read_exposure', 'fill_missing', 'dilate_bits', 'write_frame',
+           'frame_compression', 'frame_header_values', 'standard_frame_path']
 
 
 @dataclass
@@ -120,6 +120,22 @@ def fill_missing(plane, missing) -> np.ndarray:
         a[fill] = total[fill] / count[fill]
         missing &= ~fill
     return a
+
+
+def dilate_bits(mask, bits, size=3) -> np.ndarray:
+    """A copy of the integer bit mask ``mask`` in which each of ``bits`` is also set on every pixel
+    within the ``size`` x ``size`` neighbourhood of a pixel that has it (the binary dilation of that
+    bit's plane). For a reader: an exact (area-conserving) reprojection spreads a flagged pixel's
+    value into every output pixel its area touches, further than the bilinear footprint the
+    reprojected mask gives it, so a dead pixel's garbage value can land in unflagged output pixels;
+    dilating by one pixel the bits whose values are garbage makes the mask cover that spread."""
+    out = np.array(mask, copy=True)
+    structure = np.ones((int(size), int(size)), dtype=bool)
+    for b in bits:
+        plane = ((out >> int(b)) & 1).astype(bool)
+        grown = binary_dilation(plane, structure=structure)
+        out[grown] |= out.dtype.type(1 << int(b))
+    return out
 
 
 def frame_compression() -> dict:
