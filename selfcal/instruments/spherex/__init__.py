@@ -17,6 +17,10 @@ changes across them. The chunk maps therefore cut the detector into subchannels
   :func:`~selfcal.instruments.spherex.settings.precompute_lvf` and
   :func:`~selfcal.instruments.spherex.settings.zodi_anchor` (available from this package:
   ``spherex.channel(17)``).
+- :mod:`~selfcal.instruments.spherex.exposures`: the L2b exposure reader
+  (:func:`~selfcal.instruments.spherex.exposures.read_l2b`: ``IMAGE``, ``FLAGS`` and the
+  ``VARIANCE`` as the frame layer ``variance``) and
+  :func:`~selfcal.instruments.spherex.exposures.l2b_variance`.
 - :mod:`~selfcal.instruments.spherex.adapter`: the named subchannel windows and the
   readout-channel map.
 - :mod:`~selfcal.instruments.spherex.spherex_utility`: the LVF geometry: the ``BC`` /

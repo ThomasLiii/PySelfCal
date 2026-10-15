@@ -34,11 +34,12 @@ import h5py
 import hdf5plugin
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import convolve
 
 from .reproj import reproj_basename
 
-__all__ = ['ExposureData', 'read_fits_exposure', 'read_exposure', 'write_frame', 'frame_header_values',
-           'standard_frame_path']
+__all__ = ['ExposureData', 'read_fits_exposure', 'read_exposure', 'fill_missing', 'write_frame', 'frame_compression',
+           'frame_header_values', 'standard_frame_path']
 
 
 @dataclass
@@ -96,6 +97,37 @@ def read_exposure(reader, path, sci_ext, dq_ext=None, header_only=False) -> Expo
     return exp
 
 
+def fill_missing(plane, missing) -> np.ndarray:
+    """A copy of ``plane`` (float64) with the ``missing`` values (a boolean mask) replaced by the
+    mean of the known values among their eight neighbours, in rounds (each round fills the missing
+    pixels that touch a known one) until none is left; what no known value reaches is NaN. For a
+    reader's layer: a bilinear reprojection spreads a NaN to the four pixels around it, so a plane
+    whose bad pixels are filled (the data's flags still exclude them) stays finite wherever the data
+    are."""
+    a = np.array(plane, dtype=np.float64, copy=True)
+    missing = np.array(missing, dtype=bool, copy=True)
+    if missing.shape != a.shape:
+        raise ValueError(f"fill_missing: the mask is {missing.shape}, the plane {a.shape}")
+    a[missing] = 0.0
+    kernel = np.ones((3, 3))
+    while missing.any():
+        total = convolve(a, kernel, mode='constant')                          # the known neighbours' sum
+        count = convolve((~missing).astype(np.float64), kernel, mode='constant')
+        fill = missing & (count > 0)
+        if not fill.any():                                                    # no known value touches them
+            a[missing] = np.nan
+            break
+        a[fill] = total[fill] / count[fill]
+        missing &= ~fill
+    return a
+
+
+def frame_compression() -> dict:
+    """The HDF5 filter keywords every dataset of a frame file is written with: Zstd (level 5) with
+    the byte shuffle, no timestamps."""
+    return {**hdf5plugin.Zstd(clevel=5), 'shuffle': True, 'track_times': False}
+
+
 def write_frame(path, sub_data, ref_coords, sub_mapping, *, bitmask=None, layers=None,
                 header=None, sub_header=None, source='') -> str:
     """Write one frame file (the solver's input format; see the module docstring).
@@ -118,7 +150,7 @@ def write_frame(path, sub_data, ref_coords, sub_mapping, *, bitmask=None, layers
     sub_mapping = np.asarray(sub_mapping, dtype=np.float32)
     if sub_mapping.shape != (2, H, W):
         raise ValueError(f"sub_mapping must be (2, {H}, {W}), got {sub_mapping.shape}")
-    comp = {**hdf5plugin.Zstd(clevel=5), 'shuffle': True, 'track_times': False}
+    comp = frame_compression()
     tmp = f'{path}.tmp.{os.getpid()}'
     with h5py.File(tmp, 'w', libver='latest') as hf:
         hf.create_dataset('sub_data', data=sub_data, chunks=sub_data.shape, **comp)

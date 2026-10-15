@@ -711,6 +711,11 @@ Datasets:
 - `layers/<name>` `(sub_w, sub_w)` float32 — optional per-observation planes
   (a variance, a per-frame wavelength map, ...) from the reader, reprojected
   bilinearly; the source of *layer* data variables (`sc.Layer("name")`).
+  SPHEREx frames made since 2026-10-15 carry `layers/variance`, the L2b
+  `VARIANCE` (`selfcal.instruments.spherex.exposures`, bad pixels filled
+  before the interpolation); frames made before get it from
+  `selfcal.io.reprojection.add_layers` / `add_reader_layers`, a pass that
+  leaves the other datasets byte for byte.
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;

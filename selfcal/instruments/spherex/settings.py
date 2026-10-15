@@ -39,6 +39,7 @@ from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
 from ..contract import Instrument, Job
 from ..grid import upsample_chunk_map
 from .adapter import SUBCH_WINDOWS, make_readout_chunk_map
+from .exposures import read_l2b
 from .spherex_utility import (
     _LVF_PARAMS_DIR,
     DEFAULT_CALIBRATION_DIR,
@@ -125,13 +126,15 @@ class SPHEREx(Instrument):
 
     # ---- the contract -------------------------------------------------------------------
     def layout(self) -> ExposureLayout:
-        """L2b exposures: science in extension 1, DQ bitmask in extension 2, one detector per
-        file; only exposures with a converged astrometric solution (``FINAST == 0``) are kept."""
+        """L2b exposures (read by :func:`~selfcal.instruments.spherex.exposures.read_l2b`): science
+        in extension 1, DQ bitmask in extension 2, the file's ``VARIANCE`` stored with the frame as
+        the layer ``variance``, one detector per file; only exposures with a converged astrometric
+        solution (``FINAST == 0``) are kept."""
         return ExposureLayout(
             sci_ext=[1], dq_ext=[2], detector_ids=[0], ref_use_ext=(1,),
             header_predicate=lambda h: h.get('FINAST', 2) == 0,
             header_keys=('FINAST',), header_ext=1,
-            cache_tag=f"finast_D{self.detector}")
+            cache_tag=f"finast_D{self.detector}", reader=read_l2b)
 
     def geometry(self, oversample=1) -> DetectorGeometry:
         """The LVF parameters, the ``BC`` / ``BW`` maps, the stripped chunk map at detector and

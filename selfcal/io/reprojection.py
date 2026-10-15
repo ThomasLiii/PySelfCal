@@ -2,21 +2,20 @@
 
 import logging
 import os
-import h5py
-import hdf5plugin
-import numpy as np
-from tqdm import tqdm
+import shutil
 
+import h5py
+import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
-
-from reproject import reproject_interp, reproject_exact, reproject_adaptive
+from reproject import reproject_adaptive, reproject_exact, reproject_interp
+from tqdm import tqdm
 
 from .. import _state
 from ..core.shmbuf import worker_pool_context
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
-from .frames import read_exposure
+from .frames import frame_compression, read_exposure
 from .reproj import reproj_basename
 
 logger = logging.getLogger(__name__)
@@ -34,6 +33,20 @@ def _result(task_params, output_file, success, error=None):
         'dq_ext': task_params['dq_ext'],
         'error': error,
     }
+
+
+def reproject_layers(layers, det_wcs, sub_wcs, shape_out) -> dict:
+    """The per-pixel planes of an exposure (a reader's ``layers``, ``{name: (H, W)}``) on a frame's
+    box: each interpolated bilinearly from the detector grid (``det_wcs``) onto the box's grid
+    (``sub_wcs``, ``shape_out``), like the detector coordinates every frame stores
+    (``sub_mapping``), so a plane without NaN covers exactly the pixels that have a detector
+    position. Returns ``{name: (shape_out) float32}``."""
+    out = {}
+    for name, plane in (layers or {}).items():
+        sub_plane, _ = reproject_interp((np.asarray(plane, dtype=np.float64), det_wcs), sub_wcs,
+                                        shape_out=tuple(shape_out), order='bilinear')
+        out[name] = sub_plane.astype(np.float32)
+    return out
 
 
 def _reproject_worker(task_params):
@@ -133,13 +146,8 @@ def _reproject_worker(task_params):
 
             # Compression: Zstd(clevel=5) + byte-shuffle — smaller files than
             # gzip at comparable speed, reducing disk I/O when the many
-            # per-frame files are re-read downstream. hdf5plugin.Zstd()
-            # expands to the HDF5 filter kwargs.
-            comp_args = {
-                **hdf5plugin.Zstd(clevel=5),
-                'shuffle': True,
-                'track_times': False
-            }
+            # per-frame files are re-read downstream.
+            comp_args = frame_compression()
 
             # 1. Save Data
             hf.create_dataset('sub_data', data=sub_data, dtype=np.float32, chunks=sub_data.shape, **comp_args)
@@ -149,11 +157,9 @@ def _reproject_worker(task_params):
 
             # Extra per-pixel planes of the exposure (reader layers): reprojected
             # bilinearly like the coordinates, stored as layers/<name>.
-            for lname, plane in (exp.layers or {}).items():
-                sub_plane, _ = reproject_interp((np.asarray(plane, dtype=np.float64), det_wcs), sub_wcs,
-                                                shape_out=(sub_width, sub_width), order='bilinear')
-                hf.create_dataset(f'layers/{lname}', data=sub_plane.astype(np.float32), dtype=np.float32,
-                                  chunks=sub_plane.shape, **comp_args)
+            for lname, sub_plane in reproject_layers(exp.layers, det_wcs, sub_wcs, (sub_width, sub_width)).items():
+                hf.create_dataset(f'layers/{lname}', data=sub_plane, dtype=np.float32, chunks=sub_plane.shape,
+                                  **comp_args)
 
             # 2. Save Metadata as Attributes
             hf.attrs['sub_header'] = sub_header_str
@@ -345,3 +351,67 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     logger.info(f'Batch reprojection completed. {len(success_file)} frames successfully '
                 f'processed out of {len(tasks)} ({len(failures)} failed).')
     return success_file, failures
+
+
+def _attr_str(hf, key):
+    v = hf.attrs.get(key)
+    if v is None:
+        raise ValueError(f"frame {hf.filename} has no attribute {key!r}")
+    return v.decode('utf-8') if isinstance(v, bytes) else str(v)
+
+
+def add_layers(frame_path, layers, *, replace=False) -> list[str]:
+    """Add per-pixel planes of the exposure to an existing frame file as ``layers/<name>``: the
+    planes its reader did not return when the frame was made (:func:`add_reader_layers` reads
+    them from the source exposure). ``layers``: ``{name: (H, W) detector plane}``; each is
+    reprojected as the reprojection would have (:func:`reproject_layers`, with the WCS and the box
+    the frame stores), so a pass over existing frames writes what a new reprojection writes. A
+    layer the file already holds is kept unless ``replace``. The frame is rewritten atomically (a
+    copy with the layers added takes its place), its other datasets and attributes byte for byte.
+    Returns the names written."""
+    with h5py.File(frame_path, 'r') as hf:
+        have = set(hf['layers'].keys()) if 'layers' in hf else set()
+        det_header = fits.Header.fromstring(_attr_str(hf, 'det_header'))
+        sub_header = fits.Header.fromstring(_attr_str(hf, 'sub_header'))
+        shape = tuple(hf['sub_data'].shape)
+    todo = {name: plane for name, plane in (layers or {}).items() if replace or name not in have}
+    if not todo:
+        return []
+    if 'NAXIS1' in det_header and 'NAXIS2' in det_header:
+        det_shape = (int(det_header['NAXIS2']), int(det_header['NAXIS1']))
+        for name, plane in todo.items():
+            if np.shape(plane) != det_shape:
+                raise ValueError(f"layer {name!r} is {np.shape(plane)}, the frame's detector {det_shape}")
+    planes = reproject_layers(todo, WCS(det_header), WCS(sub_header), shape)
+    tmp = f'{frame_path}.tmp.{os.getpid()}'
+    try:
+        shutil.copyfile(frame_path, tmp)
+        with h5py.File(tmp, 'r+', libver='latest') as hf:
+            comp = frame_compression()
+            for name, plane in planes.items():
+                key = f'layers/{name}'
+                if key in hf:
+                    del hf[key]
+                hf.create_dataset(key, data=plane, dtype=np.float32, chunks=plane.shape, **comp)
+        os.replace(tmp, frame_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return list(planes)
+
+
+def add_reader_layers(frame_path, reader, sci_ext, dq_ext=None, *, names=None, replace=False) -> list[str]:
+    """Add to an existing frame the layers its reader returns now (a reader that gained layers
+    after the frame was made): the source exposure (the frame's ``file_path``) is read again with
+    ``reader`` (None: the default FITS reader) and ``sci_ext`` / ``dq_ext`` (the instrument's
+    layout), and its layers — all of them, or ``names`` — go through :func:`add_layers`."""
+    with h5py.File(frame_path, 'r') as hf:
+        source = _attr_str(hf, 'file_path')
+    exp = read_exposure(reader, source, sci_ext, dq_ext)
+    layers = dict(exp.layers or {})
+    if names is not None:
+        missing = [n for n in names if n not in layers]
+        if missing:
+            raise ValueError(f"the reader of {source} returns no layer(s) {missing} (it returns {sorted(layers)})")
+        layers = {n: layers[n] for n in names}
+    return add_layers(frame_path, layers, replace=replace)
