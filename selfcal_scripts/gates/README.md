@@ -5,11 +5,18 @@ The gates are Python: each is a function of `python_gates.py`, a calibration wri
 [Python API](../../docs/guide/python-api.md) on a fixed set of frames
 (`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
-to `/mnt/md124` and the staged fixtures are in `python_gates.py`), the steps named, compares each
-product with its golden and writes `workspace/unify/logs/gates_<tag>.log`; `SELFCAL_REPO` picks
-the tree. The steps are `pytest` (the test suite, first), then the gates below; the default is
-every step but `m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and
-logs to `m13_gate_<tag>.log`).
+to `/mnt/md124` and the fixtures are in `python_gates.py`), the steps named, compares each
+product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
+`/mnt/md124/thomasli/selfcal/outputs/_gates/logs`, next to the goldens; `make_goldens.sh` logs there
+too). The scripts name no worktree: `SELFCAL_REPO` picks the tree (default: the one the script is
+in; its `cache/` is the scratch), `SELFCAL_PYTHON` the interpreter (default: `python` on `PATH`; the
+log records it and its numpy) and `SELFCAL_GATE_FIXTURES` the frame fixtures (default
+`/home/thomasli/selfcal-project/gate_fixtures`: `qr2_d3_links400` for continuum, `qr2_d3_frames300`
+for e2e and transfer, `pahfit_sanity` for spectral and npass3, `nep_d4_m13` for m13). The gates read
+and write nothing in `workspace/`: their inputs are the repository, the fixtures and the goldens. The
+steps are `pytest` (the test suite, first), then the gates below; the default is every step but
+`m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and logs to
+`m13_gate_<tag>.log`).
 
 | gate | what | golden |
 | --- | --- | --- |
