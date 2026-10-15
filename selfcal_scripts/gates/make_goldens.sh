@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Make the float64-norm goldens (*golden_f64*) the gates compare with, by running the gates of python_gates.py on a
 # COMMITTED tree. Usage: make_goldens.sh <tag> [gate ...]   (gates: continuum spectral e2e npass3 euclid m13;
-# default: all) -> workspace/unify/logs/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: this
+# default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: this
 # worktree); it must be clean, so that each golden belongs to a commit (the log records it). An existing golden is
 # never replaced unless FORCE=1. The goldens are made with the float64 LSQR norms (selfcal/core/lsqr_inplace.py,
 # since 2026-10-05): SELFCAL_LSQR_FLOAT32_NORMS=1 is refused. The e2e and m13 gates are the large ones (a 4.8 GB
@@ -9,10 +9,11 @@
 set -u
 R=${SELFCAL_REPO:-/home/thomasli/selfcal-project/selfcal-memopt}
 PY=/home/thomasli/anaconda3/envs/selfcal-memopt/bin/python
-W=/home/thomasli/selfcal-project/selfcal-memopt/workspace/unify            # logs (gitignored)
+L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
 GATES=${*:-continuum spectral e2e npass3 euclid m13}
-LOG=$W/logs/make_goldens_${TAG}.log
+mkdir -p $L
+LOG=$L/make_goldens_${TAG}.log
 O=/mnt/md124/thomasli/selfcal/outputs
 D3=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol5_AromaticPAHfit

@@ -23,7 +23,7 @@ stitch     sky_first    stitch   the model's default
 =========  ===========  =======  ===================================================================
 
 Until October 2026 every schedule was also run from a TOML config and its products had to be
-identical; their digests were recorded then (``workspace/api-redesign/evidence/stage4``). Before and
+identical; their digests were recorded then (``workspace/_archived_reports/api-redesign/``). Before and
 after a change to the run engine: ``SELFCAL_NPASS_TOY_DIGESTS=<file> pytest tests/test_npass_toy.py``
 writes the digest of every product (the INIT cals and the pass products of every schedule) to
 ``<file>`` (JSON), to compare with the recorded ones. A product records the paths of the run (its
