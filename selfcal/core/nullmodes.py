@@ -307,9 +307,9 @@ class NullModes:
         """``U = B_sky F`` for a row chunk (nr x k, float64) and, with ``with_offsets``, the chunk's offset
         columns as a csr matrix (nr x n_off) or None."""
         k, n_sky_S = self.k, self.n_sky_S
-        U = np.zeros(nr * k)
-        offs = []
-        # The term's pixels: their position among the sky columns -> index into the term's arrays.
+        offs, ent_r, ent_c, ent_v = [], [], [], []
+        # The term's pixels: their position among the sky columns -> index into the term's arrays; the 16
+        # weights of every sky entry become entries of one sparse (rows x patterns) matrix, summed once.
         for lip, cols, data in pieces:
             pos = cols if self._colmap is None else self._colmap[cols]
             rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
@@ -325,17 +325,22 @@ class NullModes:
             if not ok.any():
                 continue
             loc, rrs, val = loc[ok], rr[s][ok], d64[s][ok] * self._cn[loc[ok]]
+            jx, jy = self._jx[loc].astype(np.int64), self._jy[loc].astype(np.int64)
             for a in range(4):
+                wa = val * self._wx[loc, a]
                 for c in range(4):
-                    p = (self._jx[loc].astype(np.int64) + a) * self.nyp + (self._jy[loc].astype(np.int64) + c)
-                    U += np.bincount(rrs * k + p, weights=val * self._wx[loc, a] * self._wy[loc, c], minlength=nr * k)
+                    ent_r.append(rrs); ent_c.append((jx + a) * self.nyp + (jy + c)); ent_v.append(wa * self._wy[loc, c])
+        if ent_r:
+            U = coo_matrix((np.concatenate(ent_v), (np.concatenate(ent_r), np.concatenate(ent_c))), shape=(nr, k)).toarray()
+        else:
+            U = np.zeros((nr, k))
         sub = None
         if offs:
             rr = np.concatenate([x[0] for x in offs])
             cc = np.concatenate([x[1] for x in offs])
             dd = np.concatenate([x[2] for x in offs])
             sub = coo_matrix((dd, (rr, cc)), shape=(nr, self.n_off)).tocsr()
-        return U.reshape(nr, k), sub
+        return U, sub
 
     @property
     def _loc(self):
