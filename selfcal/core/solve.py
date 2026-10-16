@@ -48,7 +48,6 @@ from threadpoolctl import threadpool_limits
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
 from .cgls import cgls
 from .deflation import Deflation, storage_of
-from .nullmodes import NullModes
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
 from .monitor import Watch
@@ -834,7 +833,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None,
-                vectors=None, null_modes=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -869,10 +868,6 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     use_float32 : bool, optional
         If True, cast matrix data and b to float32 before solving.
         Reduces memory bandwidth (~2x faster SpMV) at the cost of precision.
-    null_modes : NullModes or None, optional
-        After the solve, the null-mode analysis and rule on the solution (:mod:`selfcal.core.nullmodes`;
-        ``sc.Fit(null_modes=sc.NullModes(...))``): the record's ``null_modes`` holds its summary and
-        ``null_modes_analysis`` the analysis (its arrays go to the cal's ``null_modes`` group).
     vectors : {'float32', 'float64'} or None, optional
         The dtype of the solver's vectors (the iterate, the directions, the residual it
         carries). None: CGLS keeps float64 vectors (its design; its carried residual stays in
@@ -966,11 +961,6 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         if damp:
             raise ValueError(f"deflation needs an undamped solve (damp=0, got {damp}): the solver's damping would act on "
                              "the deflated unknowns only")
-    if null_modes is not None:
-        if isinstance(A, coo_matrix):
-            raise ValueError("the null-mode analysis needs the CSR or block system setup_lsqr builds, not the COO path")
-        if damp:
-            raise ValueError(f"the null-mode analysis needs an undamped solve (damp=0, got {damp})")
     if vectors not in (None, 'float32', 'float64'):
         raise ValueError(f"vectors={vectors!r}: 'float32', 'float64' or None")
     if vectors == 'float32' and not use_float32:
@@ -1261,27 +1251,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)
                 if defl is not None:
                     result = (_as_solution(result[0], exact=True),) + tuple(result[1:])
-                nm = None
-                if null_modes is not None:
-                    # The null modes of the system, and the rule on the solution before its record is finished,
-                    # so the record (true residual, noise variance) is of the solution the cal holds.
-                    t_nm = time.perf_counter()
-                    nm = NullModes(storage, scale=M, active_mask=active_mask, ref_shape=ref_shape, sky_names=sky_names,
-                                   settings=null_modes, threads=n_threads)
-                    b_ref = _rhs()
-                    mv = op.matvec if hasattr(op, 'matvec') else op.dot
-                    res_before, _bn = _true_residual(mv, result[0], b_ref)
-                    dof = max(A_shape[0] - A_shape[1], 1)
-                    x_sol = np.array(result[0], copy=True)
-                    nm.apply(x_sol, (res_before ** 2) / dof if res_before == res_before else math.nan, res_before)
-                    result = (x_sol,) + tuple(result[1:])
-                    nm_s = time.perf_counter() - t_nm
                 record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve)
-                if nm is not None:
-                    record.null_modes = nm.summary_json()
-                    record.null_modes_s = nm_s
-                    record.null_modes_analysis = nm
-                    logger.info(f"NullModes: {nm.k_eff} directions, {int(nm.applied.sum())} set by rule ({nm_s:.1f} s)")
                 if defl is not None:
                     record.deflation = defl.summary_json()
                     record.deflation_s = setup_s
@@ -1295,7 +1265,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             return result, record
 
         _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
-                   if solver in ('lsqr', 'cgls') or deflate is not None or null_modes is not None else None)
+                   if solver in ('lsqr', 'cgls') or deflate is not None else None)
         if solver == 'cgls':
             solve_kw.update(refresh=_rhs, vectors=vdt)
         elif vdt is not None:
@@ -1307,7 +1277,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                       _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned, promote=promote))
                 try:
                     with threadpool_limits(limits=1, user_api='blas'):
-                        result, record = _solve(op, storage_of(op, A_csr) if (deflate is not None or null_modes is not None) else None)
+                        result, record = _solve(op, storage_of(op, A_csr) if deflate is not None else None)
                 finally:
                     for _ex_name in ('_executor', '_rmatvec_executor', '_rowsplit_executor'):
                         if getattr(op, _ex_name, None) is not None:
@@ -1322,7 +1292,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                     if getattr(op, '_rmatvec_executor', None) is not None:
                         op._rmatvec_executor.shutdown(wait=False)
             else:
-                result, record = _solve(A_csr if (deflate is None and null_modes is None) else aslinearoperator(A_csr), A_csr)
+                result, record = _solve(A_csr if deflate is None else aslinearoperator(A_csr), A_csr)
         finally:
             if _b_kept is not None:
                 _b_kept.discard()

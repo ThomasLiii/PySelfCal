@@ -80,8 +80,6 @@ def solver_options(recipe) -> dict:
         out['stop'] = fit.stop
     if fit.deflate is not None:
         out['deflate'] = fit.deflate
-    if fit.null_modes is not None:
-        out['null_modes'] = fit.null_modes
     if fit.vectors is not None:
         out['vectors'] = fit.vectors
     return out

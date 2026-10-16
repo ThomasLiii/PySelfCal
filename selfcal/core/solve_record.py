@@ -41,16 +41,15 @@ VERSION = 1
 
 #: The values of a record that change from one run of the same solve to the next (kept out of the cal
 #: file, which is byte-reproducible; the action's record holds them).
-VOLATILE = ('wall_s', 'deflation_s', 'null_modes_s')
+VOLATILE = ('wall_s', 'deflation_s')
 
 #: The values of a record present only when set (a saved history, the system solved, a start, the
 #: stop rules).
 OPTIONAL = ('history_file', 'system', 'system_identity', 'start_from', 'start_identity', 'stop_rule',
-            'stop_iteration', 'stop_values', 'stop_policy', 'solver_tests', 'deflation', 'deflation_s',
-            'null_modes', 'null_modes_s')
+            'stop_iteration', 'stop_values', 'stop_policy', 'solver_tests', 'deflation', 'deflation_s')
 
 #: The values held as JSON text in the cal's attributes, decoded in the action's record.
-JSON_VALUES = ('stop_values', 'stop_policy', 'deflation', 'null_modes')
+JSON_VALUES = ('stop_values', 'stop_policy', 'deflation')
 
 #: What each ``istop`` of CGLS, LSQR and LSMR means (the solvers share the codes; CGLS never sets 3 or 6).
 STOP_REASONS = {
@@ -190,10 +189,7 @@ class SolveRecord:
     solver_tests: str | None = None
     deflation: str | None = None
     deflation_s: float | None = None
-    null_modes: str | None = None
-    null_modes_s: float | None = None
     watch: object = field(default=None, repr=False)
-    null_modes_analysis: object = field(default=None, repr=False)
 
     @classmethod
     def from_result(cls, method, result, *, history, true_residual, bnorm, atol, btol, conlim, damp,
@@ -221,7 +217,7 @@ class SolveRecord:
         only when set."""
         out = {'version': VERSION}
         for name in self.__dataclass_fields__:
-            if name in ('history', 'watch', 'null_modes_analysis'):
+            if name in ('history', 'watch'):
                 continue
             value = getattr(self, name)
             if name in OPTIONAL and value is None:
