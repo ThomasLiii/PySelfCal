@@ -515,7 +515,8 @@ class Fit(Config):
     ``seed``: the solver's starting vector: ``'scalar'`` (each frame's scalar at the mean of its data, every
     other column at zero; without scalars each non-sky column at its own diagonal estimate) or ``'offsets'``
     (every non-sky column at its frame's joint least-squares fit to the data, the sky at zero:
-    :func:`~selfcal.core.solution.compute_x0_offsets_fit`). A warm start (``calibrate(start=)``) replaces both.
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). A warm start
+    (``calibrate(start=)``) replaces them.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -536,12 +537,12 @@ class Fit(Config):
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
     null_modes: NullModes | None = added(None, since='2026-10')
-    seed: Literal['scalar', 'offsets'] = added('scalar', since='2026-10')
+    seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
 
     def _validate(self):
-        if self.seed not in ('scalar', 'offsets'):
-            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero) or "
-                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero)")
+        if self.seed not in ('scalar', 'offsets', 'zero'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
+                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
         if self.null_modes is not None and not isinstance(self.null_modes, NullModes):
             raise ConfigError(f"Fit(null_modes={self.null_modes!r}): an sc.NullModes")
         if self.null_modes is not None and self.damp:

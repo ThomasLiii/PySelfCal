@@ -300,6 +300,8 @@ class RunContext:
         if start is not None:
             return start.vector(active_mask=getattr(cc, 'active_mask', None))
         from selfcal.core.solution import compute_x0_from_Ab, compute_x0_offsets_fit, compute_x0_scalar_only
+        if self.seed == 'zero':
+            return None
         if self.seed == 'offsets':
             return compute_x0_offsets_fit(cc.A, cc.b, cc.ref_shape, num_sky_blocks=cc.num_sky_blocks,
                                           active_mask=getattr(cc, 'active_mask', None))

@@ -41,5 +41,6 @@ def test_the_offsets_seed_is_each_frames_joint_least_squares_fit():
 def test_the_setting():
     assert sc.Fit().seed == 'scalar' and 'seed' not in sc.Fit().to_dict()
     assert sc.Fit(seed='offsets').to_dict()['seed'] == 'offsets'
+    assert sc.Fit(seed='zero').to_dict()['seed'] == 'zero'
     with pytest.raises(ConfigError):
         sc.Fit(seed='median')
