@@ -512,6 +512,10 @@ class Fit(Config):
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
     :class:`Gauge`; None: the solution as solved). ``null_modes``: after the solve, find the smooth local sky
     patterns the data do not determine and set them by rule (a :class:`NullModes`; None: not done).
+    ``seed``: the solver's starting vector: ``'scalar'`` (each frame's scalar at the mean of its data, every
+    other column at zero; without scalars each non-sky column at its own diagonal estimate) or ``'offsets'``
+    (every non-sky column at its frame's joint least-squares fit to the data, the sky at zero:
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`). A warm start (``calibrate(start=)``) replaces both.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -532,8 +536,12 @@ class Fit(Config):
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
     null_modes: NullModes | None = added(None, since='2026-10')
+    seed: Literal['scalar', 'offsets'] = added('scalar', since='2026-10')
 
     def _validate(self):
+        if self.seed not in ('scalar', 'offsets'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero) or "
+                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero)")
         if self.null_modes is not None and not isinstance(self.null_modes, NullModes):
             raise ConfigError(f"Fit(null_modes={self.null_modes!r}): an sc.NullModes")
         if self.null_modes is not None and self.damp:
