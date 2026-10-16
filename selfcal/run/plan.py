@@ -102,6 +102,8 @@ class Plan:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if r is not None and r.fit.deflate is not None:
             lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
+        if r is not None and r.fit.null_modes is not None:
+            lines.append(f"  null modes  {describe_null_modes(r.fit.null_modes)}")
         if r is not None and r.fit.gauge is not None:
             lines.append(f"  gauge       {describe_gauge(r.fit.gauge)}")
         if self.monitor is not None:
@@ -141,6 +143,15 @@ def describe_deflate(deflate) -> str:
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
             f"offsets that absorb them, solved directly; the iterations run on the rest")
+
+
+def describe_null_modes(nm) -> str:
+    """A :class:`~selfcal.run.recipe.NullModes` in words (the plan's ``null modes`` line)."""
+    term = 'the first sky term' if nm.terms is None else f'the sky term {nm.terms[0]!r}'
+    rule = ('the analysis alone (the spectrum recorded)' if nm.ratio is None else
+            f'those below nullness {nm.ratio:g} lose their sky amplitude to the offsets')
+    return (f"after the solve, cubic B-spline patterns with {nm.cell:g}-px knots over {term}'s covered box, paired with the "
+            f"offsets that absorb them; the directions the data see least found from the system: {rule}")
 
 
 def describe_stop(stop, fit=None) -> str:

@@ -29,6 +29,7 @@ rest, for solves whose slowest part is the large scales (:mod:`selfcal.core.defl
 """
 from __future__ import annotations
 
+import math
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Callable, Literal
 
@@ -387,6 +388,36 @@ class Deflate(Config):
         return (k + 1) ** 2 + len(extra)
 
 
+@dataclass(frozen=True)
+class NullModes(Config):
+    """Find the sky patterns the data do not determine and set them by rule (:mod:`selfcal.core.nullmodes`).
+
+    Where frames only end, at the field's outer edge or along the cut of a frame selection, a smooth sky
+    pattern confined there is absorbed almost exactly by the per-chunk constants and slopes, and a solve
+    leaves it wherever its path put it. After the solve, smooth local patterns (cubic B-splines with
+    ``cell``-pixel knots over the sky term's covered box) are paired with the offsets that absorb them,
+    the directions the data see least are found from the system (each with its nullness: the fraction of
+    it the data see), and those below ``ratio`` lose their sky amplitude to the offsets (``ratio=None``:
+    the analysis alone; its spectrum is recorded). ``terms``: the one sky term (default the first).
+    Needs an undamped fit; recorded in the cal's ``null_modes`` group and the solve record.
+    """
+    cell: float = 512.0
+    _: KW_ONLY
+    ratio: float | None = None
+    terms: tuple[str, ...] | None = None
+
+    def _validate(self):
+        if not (self.cell > 0 and math.isfinite(self.cell)):
+            raise ConfigError(f"NullModes(cell={self.cell}): a positive knot spacing in grid pixels")
+        if self.ratio is not None and not (0 < self.ratio < 1):
+            raise ConfigError(f"NullModes(ratio={self.ratio}): between 0 and 1 (a nullness), or None for the analysis alone")
+        if self.terms is not None:
+            terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
+            if len(terms) != 1 or not all(isinstance(t, str) and t for t in terms):
+                raise ConfigError(f"NullModes(terms={self.terms!r}): one sky term name, or None for the first")
+            object.__setattr__(self, 'terms', terms)
+
+
 def _check_hook(hook, what):
     if hook is not None:
         check_picklable(hook, what)
@@ -479,7 +510,8 @@ class Fit(Config):
     tenth of the error bars). ``deflate``: solve the smooth sky patterns
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
-    :class:`Gauge`; None: the solution as solved).
+    :class:`Gauge`; None: the solution as solved). ``null_modes``: after the solve, find the smooth local sky
+    patterns the data do not determine and set them by rule (a :class:`NullModes`; None: not done).
     """
     iterations: int = 50
     _: KW_ONLY
@@ -499,8 +531,13 @@ class Fit(Config):
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
+    null_modes: NullModes | None = added(None, since='2026-10')
 
     def _validate(self):
+        if self.null_modes is not None and not isinstance(self.null_modes, NullModes):
+            raise ConfigError(f"Fit(null_modes={self.null_modes!r}): an sc.NullModes")
+        if self.null_modes is not None and self.damp:
+            raise ConfigError(f"Fit(null_modes=..., damp={self.damp}): the null-mode analysis needs an undamped fit (damp=0)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

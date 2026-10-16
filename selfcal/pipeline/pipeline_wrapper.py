@@ -1106,7 +1106,7 @@ class Calibrator(Reprojector):
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
-                   scratch_dir: str | None = None, deflate=None, vectors=None) -> None:
+                   scratch_dir: str | None = None, deflate=None, vectors=None, null_modes=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1161,6 +1161,10 @@ class Calibrator(Reprojector):
             :class:`~selfcal.run.recipe.Deflate`, ``sc.Fit(deflate=...)``; :mod:`selfcal.core.deflation`):
             the same solution, in fewer iterations when the large scales are what is slow. The record
             keeps what it did (``deflation``).
+        null_modes : NullModes or None, optional
+            After the solve, find the smooth local sky patterns the data do not determine and set them
+            by rule (:class:`~selfcal.run.recipe.NullModes`, ``sc.Fit(null_modes=...)``;
+            :mod:`selfcal.core.nullmodes`); recorded in the cal's ``null_modes`` group.
         vectors : {'float32', 'float64'} or None, optional
             The precision of the solver's vectors (``sc.Fit(vectors=...)``;
             :func:`~selfcal.core.solve.apply_lsqr`). None: the method's own.
@@ -1210,6 +1214,8 @@ class Calibrator(Reprojector):
                     snap.update(deflate=deflate, sky_names=self._cal_sky_names())
                 if vectors is not None:
                     snap['vectors'] = vectors
+                if null_modes is not None:
+                    snap.update(null_modes=null_modes, sky_names=self._cal_sky_names())
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.
@@ -1429,6 +1435,9 @@ class Calibrator(Reprojector):
                 # The record of the solve: attributes of a group (no dataset), so every
                 # dataset of the file is what it was before records existed.
                 self.solve_record.write(f.create_group('solve'))
+                if getattr(self.solve_record, 'null_modes_analysis', None) is not None:
+                    from ..core.nullmodes import write_group
+                    write_group(f, self.solve_record.null_modes_analysis)
         logger.info(f"Calibration saved to {cal_path}")
         return cal_path
 
