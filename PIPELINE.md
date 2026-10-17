@@ -857,7 +857,7 @@ The byte-equality gates live in `selfcal_scripts/gates/` (see its README): `run_
 pytest, then the gates of `python_gates.py`, written with the Python API, against the float64-norm
 goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit), the
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
-solve; no float64 golden yet), the Euclid EDFN recipe and the rerun of the continuum gate's record,
+solve), the Euclid EDFN recipe and the rerun of the continuum gate's record,
 each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
 `gates/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
 NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
