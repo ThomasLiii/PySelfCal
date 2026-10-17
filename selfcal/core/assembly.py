@@ -191,8 +191,14 @@ def _prep_lsqr(task_params):
         # identical entry sequence, and after the final int32/float32 casts
         # identical bytes, to the general loop; preserve this equivalence
         # when editing either path. The coefficients were evaluated above from
-        # the observations' data variables.
-        if J == 1 and sky_coeffs[0] is None:
+        # the observations' data variables. A fixed sky (``fixed_sky``: known,
+        # and subtracted from the data by a frame hook) has no unknowns: no
+        # sky entries, the offsets alone are fitted.
+        if task_params.get('fixed_sky'):
+            S_rows = np.empty(0, dtype=np.int64)
+            S_cols = np.empty(0, dtype=np.int64)
+            S_data = np.empty(0, dtype=np.float32)
+        elif J == 1 and sky_coeffs[0] is None:
             S_rows = np.arange(num_valid_pixels)
             S_cols = ref_pix_indices
             S_data = valid_weight
@@ -494,6 +500,26 @@ def _prep_lsqr_batch_worker(batch_params):
     spill_paths = None
     spill_fhs = None
     try:
+        reduce = batch_params.get('reduce')
+        if reduce is not None:
+            # setup_lsqr(reduce=...): each subframe's rows go to `reduce` instead of into the
+            # matrix, returned with the subframe's entry counts per column (the pre-merge counts,
+            # as pixel_counts keeps them) and its observed offset columns.
+            out = []
+            for task_params in sub_tasks:
+                task_params.update(shm_arrays)
+                result = _prep_lsqr(task_params)
+                if result is None or len(result[3]) == 0:
+                    continue
+                sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, observed = result
+                ids, cnt = np.unique(sub_cols, return_counts=True)
+                if off_counts is not None:
+                    num_sky_eff = task_params['num_sky_blocks'] * int(np.prod(task_params['ref_shape']))
+                    sky = ids < num_sky_eff
+                    ids, cnt = np.concatenate([ids[sky], off_counts[0]]), np.concatenate([cnt[sky], off_counts[1]])
+                out.append((task_params['index'], reduce(sub_rows, sub_cols, sub_data, sub_b, num_rows),
+                            (ids.astype(np.int64), cnt.astype(np.int64)), observed))
+            return out
         if spill_dir is not None:
             # Stream the bulk COO arrays straight to files, one append per
             # subframe: no per-batch list retention, no concatenate copy,

@@ -759,8 +759,18 @@ class Calibrator(Reprojector):
                    sky_rhs_moments: bool = False,
                    batch_spill_dir: str | None = None,
                    variables=None, weight_function=None, priors: list | None = None,
-                   outlier_group_variable: str | None = None, outlier_chunk_groups=None) -> None:
+                   outlier_group_variable: str | None = None, outlier_chunk_groups=None,
+                   fixed_sky: bool = False, moments_only: bool = False, reduce=None) -> None:
         """Build the LSQR system for K chunk maps.
+
+        ``fixed_sky``: the sky is known and subtracted from the data by a frame
+        hook (``postprocess_func``): the system fits the offset terms (and the
+        per-frame scalar) alone, and :meth:`save_calibration` writes the solved
+        offsets without sky maps (:func:`selfcal.core.system.setup_lsqr`).
+        ``moments_only`` and ``reduce`` build no matrix (see
+        :func:`selfcal.core.system.setup_lsqr`): the pixel state alone, or each
+        subframe's reduction (``self.reduced``) and the constraint rows
+        (``self.constraint_blocks``) beside ``pixel_counts``.
 
         ``variables`` (a :class:`~selfcal.models.variables.VariableSet`) adds
         data-variable sources beyond ``det_aux`` (per-frame values, sky maps,
@@ -983,13 +993,18 @@ class Calibrator(Reprojector):
                 basis_list=basis_list, variables=variables,
                 weight_function=weight_function, priors=priors,
                 outlier_group_variable=outlier_group_variable,
-                outlier_chunk_groups=outlier_chunk_groups)
+                outlier_chunk_groups=outlier_chunk_groups,
+                fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce)
+            self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
             # back as None and `pixel_spill` carries the handle; we leave them
             # there until save_calibration asks for them, so they never sit
             # alongside the CSR and apply_lsqr has nothing to spill.
-            if _setup_result is None or _setup_result.A is None:
+            r = _setup_result
+            self.reduced = getattr(r, 'reduced', None)
+            self.constraint_blocks = getattr(r, 'constraint_blocks', None)
+            if r is None or getattr(r, 'A', None) is None and getattr(r, 'pixel_counts', None) is None:
                 self.A, self.b = None, None
                 self.pixel_counts, self.pixel_fisher = None, None
                 self.active_mask, self.num_cols_full = None, None
@@ -997,7 +1012,6 @@ class Calibrator(Reprojector):
                 self.pixel_rhs = None
                 self._pixel_spill = None
             else:
-                r = _setup_result
                 self.A, self.b = r.A, r.b
                 self.pixel_counts = r.pixel_counts
                 self.pixel_fisher = r.pixel_fisher
@@ -1397,16 +1411,21 @@ class Calibrator(Reprojector):
         cal_path = os.path.join(cal_dir, cal_file)
         with atomic_path(cal_path) as tmp, h5py.File(tmp, 'w') as f:      # complete or absent
             f.attrs['num_maps'] = K
-            # v3 sky blocks (+ per-block separability + v2 aliases): ONE writer
-            # shared with the sky-only producers (selfcal.io.cal_writer).
-            write_sky_groups(
-                f, sky_names=sky_names, sky_maps=sky_maps, sky_coverages=sky_coverages,
-                sky_fishers=sky_fishers,
-                pixel_cross=(self.pixel_cross if (getattr(self, 'pixel_cross', None) is not None
-                                                  and self.pixel_fisher is not None) else None),
-                pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
-                num_sky_blocks=self.num_sky_blocks,
-                line_fisher_threshold=self.line_fisher_threshold)
+            if getattr(self, 'fixed_sky', False):
+                # The sky was held fixed (subtracted from the data by a frame hook): no unknown of
+                # this solve, so the file holds the solved offsets alone.
+                f.attrs['fixed_sky'] = True
+            else:
+                # v3 sky blocks (+ per-block separability + v2 aliases): ONE writer
+                # shared with the sky-only producers (selfcal.io.cal_writer).
+                write_sky_groups(
+                    f, sky_names=sky_names, sky_maps=sky_maps, sky_coverages=sky_coverages,
+                    sky_fishers=sky_fishers,
+                    pixel_cross=(self.pixel_cross if (getattr(self, 'pixel_cross', None) is not None
+                                                      and self.pixel_fisher is not None) else None),
+                    pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
+                    num_sky_blocks=self.num_sky_blocks,
+                    line_fisher_threshold=self.line_fisher_threshold)
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')

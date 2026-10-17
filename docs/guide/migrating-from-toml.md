@@ -137,7 +137,7 @@ trust: adopt a product only with the script of the config that made it. See
 | `[tiling]` `grid`, `overlap_px`, `tile_names`, `tiles`, `frame_filter`, `halo`, `only_tiles` | `sc.Tiles(grid=, overlap=, names=, boxes=, assign=, halo=, only=)`; the suffix and `stitched_suffix`: `tile_name=`, `stitched_name=` |
 | `[tiling]` `full_reproj_dir`, `nvme_subdir`, `rss_guardrail` | `calibrate(frames=)`, `sc.Compute(stage_dir=, memory_guard=)` |
 | `[passes]` `n`, `order`, `stop_tol`, `sky_merge`, `keep_moments` | `sc.Passes(n, order=, stop_tol=, sky_merge=, keep_moments=)` |
-| `[passes]` `init`, `sky`, `offset` | `sc.Passes(init_clip=, sky_clip=, offset=sc.Refit(degree, clip=, bright_cut=, min_pixels=, segments=, ridge=))`; `subch_clip = true`: `sc.Clip(sigma, per=sc.ChunkGroups.along("subchannel"))` |
+| `[passes]` `init`, `sky`, `offset` | `sc.Passes(init_clip=, sky_clip=, offset=sc.Refit(clip=, bright_cut=, min_pixels=))` (the OFFSET pass refits the model's own offset terms: `poly_degree`, `segments` and `ridge` have no counterpart -- the polynomial is the model's `sc.Poly`); `subch_clip = true`: `sc.Clip(sigma, per=sc.ChunkGroups.along("subchannel"))` |
 | `[reproject]` | `field.reproject(exposures, reference=, method=, padding=, padding_fraction=, replace=, verify=)` |
 | `[zodi]` `pred_dir`, `clip_window_days`, `clip_sigma`, `clip_iters` | `spherex.zodi_anchor(result, predictions, clip_window_days=, clip_sigma=, clip_iters=)` after the calibration |
 

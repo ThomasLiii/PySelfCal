@@ -114,11 +114,13 @@ def pahfit_tiled(name, *, iterations):
                      coadd=None, name=name)
 
 
-#: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel.
+#: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel; the
+#: OFFSET passes fit only observations whose modelled sky is below 0.05 MJy/sr. The OFFSET passes refit the
+#: recipe's own offset terms (until 2026-10 they refitted a separate degree-4 polynomial per column).
 MULTILINE3_PASSES = sc.Passes(5, order='offset_first',
                               init_clip=sc.Clip(2.5, per=SUBCHANNEL, ignore_flags=[21]),
                               sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
-                              offset=sc.Refit(4, clip=sc.Clip(2.5, per=SUBCHANNEL)))
+                              offset=sc.Refit(clip=sc.Clip(2.5, per=SUBCHANNEL), bright_cut=0.05))
 
 
 # ---------------------------------------------------------------------------------------------- tilings

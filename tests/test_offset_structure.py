@@ -52,7 +52,7 @@ def test_grid_map_adjacency_and_chains():
 @pytest.mark.parametrize('det,ncol', [(4, 3), (4, 5)])
 def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     from selfcal.instruments.spherex import spherex_utility as su
-    from selfcal.pipeline.npass import group_wavelength_edges
+    from selfcal.npass.offsets import group_wavelength_edges
     from selfcal import _state
     _state.set_progress(False)
     # The chunk maps come from the shipped LVF fit and the shipped channel table. The
