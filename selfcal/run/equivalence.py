@@ -266,10 +266,9 @@ def engine_view(spec):
         view['passes'] = _canon({'schedule': schedule(p.n, p.order), 'stop_tol': p.stop_tol, 'sky_merge': p.sky_merge,
                                  'keep_moments': p.keep_moments, 'init': init_clip,
                                  'sky': {'outlier_thresh': p.sky_clip.sigma, 'subch_clip': p.sky_clip.grouped},
-                                 'offset': {'poly_degree': p.refit_degree, 'outlier_thresh': p.refit_clip.sigma,
+                                 'offset': {'outlier_thresh': p.refit_clip.sigma,
                                             'subch_clip': p.refit_clip.grouped, 'bright_cut': p.bright_cut,
-                                            'min_pix': p.min_pixels, 'segments': p.segments, 'ridge': p.ridge}})
+                                            'min_pix': p.min_pixels}})
         with contextlib.redirect_stdout(io.StringIO()):
             view['npass_edges'] = _canon(ctx.clip_group_edges())
-            view['npass_refit_basis'] = _canon(ctx.refit_poly_basis(p.refit_degree, segments=p.segments))
     return view

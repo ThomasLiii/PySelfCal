@@ -336,7 +336,7 @@ def test_sky_subtractor_reads_frame_variables(tmp_path):
     import h5py
     from selfcal.core.subframe import FrameContext
     from selfcal.models.sky_model import SkyComponent, SkyModel
-    from selfcal.pipeline.npass import SkySubtractor
+    from selfcal.npass.offsets import SkySubtractor
     ref = (6, 6)
     cal = str(tmp_path / 'sky.h5')
     with h5py.File(cal, 'w') as f:

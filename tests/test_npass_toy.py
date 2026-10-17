@@ -182,13 +182,13 @@ class Schedule:
 
 SCHEDULES = (
     Schedule('skyfirst', sc.spectral([_line()], polynomial=_polynomial()),
-             sc.Passes(3, order='sky_first', ends_on_offset=True, offset=sc.Refit(2))),
+             sc.Passes(3, order='sky_first', ends_on_offset=True, offset=sc.Refit())),
     Schedule('offfirst', sc.spectral([_line(0.05)], polynomial=_polynomial(), damping=0.02),
              sc.Passes(3, order='offset_first', init_clip=sc.Clip(4.0, per=BAND), sky_clip=sc.Clip(5.0, per=BAND),
-                       offset=sc.Refit(2, clip=sc.Clip(2.5, per=BAND), min_pixels=500))),
+                       offset=sc.Refit(clip=sc.Clip(2.5, per=BAND), min_pixels=500))),
     Schedule('stitch', sc.spectral([_line()], polynomial=_polynomial()),
              sc.Passes(3, order='sky_first', ends_on_offset=True, sky_merge='stitch',
-                       offset=sc.Refit(2, min_pixels=500))),
+                       offset=sc.Refit(min_pixels=500))),
 )
 
 
@@ -279,6 +279,8 @@ def test_npass_schedule(toy, schedule):
     expected = [f'{stem}.h5'] + [f'{stem}_pass{i}{t}.h5' for i, t in enumerate(schedule.pass_types, start=2)]
     if schedule.passes.sky_merge == 'stitch':        # the per-tile solves (one tile untiled) the stitch merges
         expected += [f'{stem}_pass{i}sky_all.h5' for i, t in enumerate(schedule.pass_types, start=2) if t == 'sky']
+    # the OFFSET passes' per-tile solves (one tile untiled), joined into the pass product
+    expected += [f'{stem}_pass{i}off_all.h5' for i, t in enumerate(schedule.pass_types, start=2) if t == 'off']
 
     field = sc.Field(field_dir, ToySpectrograph(), PIX)
     result = field.calibrate(schedule.recipe, passes=schedule.passes,

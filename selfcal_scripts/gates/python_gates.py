@@ -66,7 +66,7 @@ def npass3():
                        fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_npass3_gate_py')
     passes = sc.Passes(3, order='sky_first', sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
-                       offset=sc.Refit(2, clip=sc.Clip(2.5, per=SUBCHANNEL)), ends_on_offset=True)
+                       offset=sc.Refit(clip=sc.Clip(2.5, per=SUBCHANNEL)), ends_on_offset=True)
     return NEP_D4.calibrate(recipe, jobs=spherex.window('Multiline3', subchannels=range(200, 321)), passes=passes,
                             frames=sc.frames_in(PAH_FIXTURE)[:150], compute=sc.Compute(f'{REPO}/cache', workers=48))
 

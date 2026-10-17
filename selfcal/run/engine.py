@@ -350,18 +350,6 @@ class RunContext:
                              "wavelength map")
         return group_edges_along(geom.aux[geom.wavelength_key], cm.det, cm.axes, cm.spectral_axis)
 
-    def refit_poly_basis(self, degree, segments=None):
-        """The per-frame polynomial offset basis of the N-pass OFFSET refit: degree ``degree`` along
-        the primary map's spectral axis, one per value of its group axis, over the model's
-        polynomial window (optionally piecewise on ``segments``)."""
-        from selfcal.models.offset_structure import poly_basis_along
-        if self.spec.spectral_window is None:
-            raise ValueError("the OFFSET refit's polynomial spans the model's polynomial window, and the model "
-                             "has none")
-        cm = self.geom.chunk_map
-        lo, hi = self.spec.spectral_window
-        return poly_basis_along(cm.axes, cm.spectral_axis, cm.group_axis, int(degree), lo, hi, segments=segments)
-
     # ---- naming (the one place) ------------------------------------------------------------
     def stem(self, job, suffix=None):
         """The stem of every product name of ``job``: ``<frame_tag>_<job.name><suffix>``.
@@ -523,46 +511,8 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     """
     spec = ctx.spec
     checkpoint = checkpoint or (lambda label: None)
-    cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
-    if frames is not None:
-        cc.reproj_list = list(frames)
-    n_frames = len(cc.reproj_list)
-    # The model's data variables beyond the instrument's detector maps (frame values, sky maps,
-    # stored layers, functions): None when the model reads none.
-    variables = ctx.variables(cc.reproj_list, ref_shape=cc.ref_shape, ref_wcs=cc.ref_wcs)
-    offset_model = ctx.offset_model(cc.reproj_list, variables)
-    sky_model = ctx.sky_model()
-    det_aux, aux_keys = ctx.aux_maps()
-    cal_kwargs = dict(spec.setup)
-    cal_kwargs.update(ctx.model.setup_kwargs())       # the model's own solver options (if any)
-    if variables is not None:
-        cal_kwargs['variables'] = variables
-    weight_function = ctx.weight()
-    if weight_function is not None:
-        cal_kwargs['weight_function'] = weight_function
-    priors = ctx.priors(variables, n_frames)
-    if priors:
-        cal_kwargs['priors'] = priors
-    groups = cal_kwargs.pop('outlier_groups', None)
-    if groups is not None:
-        cal_kwargs.update(clip_groups(ctx, groups))
-    # The grouped clip bins the instrument's wavelength map unless the clip names another variable.
-    if not cal_kwargs.get('outlier_group_variable'):
-        cal_kwargs['outlier_group_variable'] = ctx.geom.wavelength_key
-    if spec.pre_cal is not None:
-        cal_kwargs['preprocess_func'] = spec.pre_cal
-    if spec.post_cal is not None:
-        cal_kwargs['postprocess_func'] = spec.post_cal
     checkpoint('pre-setup_lsqr')
-    cc.setup_lsqr(
-        offset_model=offset_model,
-        grid_valid_weight=jobgeom.det_valid_weight,
-        oversample_factor=1,
-        sky_model=sky_model,
-        det_aux=det_aux,
-        aux_keys=aux_keys,
-        batch_spill_dir=spec.scratch,
-        **cal_kwargs)
+    cc = setup_job(ctx, jobgeom, frame_dir=frame_dir, frames=frames)
     checkpoint('post-setup_lsqr')
     # The identity of the system set up (recorded on the cal) and the solve's start: the solution
     # of an earlier cal of this system (checked against it), or the default guess.
@@ -613,6 +563,55 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
               + (f"; {len(snapshots.failed)} could not be written" if snapshots.failed else ''))
     announce(spec, 'solve', cal_path, job=job, tile=tile, solve=entry)
     return cal_path
+
+
+def setup_job(ctx, jobgeom, *, frame_dir, frames=None, **options):
+    """The system of one job over one frame list, set up as the engine's solve sets it up: a
+    :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` after ``setup_lsqr``, the model lowered
+    by ``ctx`` with the run's ``setup_lsqr`` keywords (and ``options``, keywords of a caller that
+    solves the system its own way). ``frames`` (paths under ``frame_dir``) overrides the directory
+    glob."""
+    spec = ctx.spec
+    cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
+    if frames is not None:
+        cc.reproj_list = list(frames)
+    n_frames = len(cc.reproj_list)
+    # The model's data variables beyond the instrument's detector maps (frame values, sky maps,
+    # stored layers, functions): None when the model reads none.
+    variables = ctx.variables(cc.reproj_list, ref_shape=cc.ref_shape, ref_wcs=cc.ref_wcs)
+    offset_model = ctx.offset_model(cc.reproj_list, variables)
+    sky_model = ctx.sky_model()
+    det_aux, aux_keys = ctx.aux_maps()
+    cal_kwargs = dict(spec.setup)
+    cal_kwargs.update(ctx.model.setup_kwargs())       # the model's own solver options (if any)
+    if variables is not None:
+        cal_kwargs['variables'] = variables
+    weight_function = ctx.weight()
+    if weight_function is not None:
+        cal_kwargs['weight_function'] = weight_function
+    priors = ctx.priors(variables, n_frames)
+    if priors:
+        cal_kwargs['priors'] = priors
+    groups = cal_kwargs.pop('outlier_groups', None)
+    if groups is not None:
+        cal_kwargs.update(clip_groups(ctx, groups))
+    # The grouped clip bins the instrument's wavelength map unless the clip names another variable.
+    if not cal_kwargs.get('outlier_group_variable'):
+        cal_kwargs['outlier_group_variable'] = ctx.geom.wavelength_key
+    if spec.pre_cal is not None:
+        cal_kwargs['preprocess_func'] = spec.pre_cal
+    if spec.post_cal is not None:
+        cal_kwargs['postprocess_func'] = spec.post_cal
+    cc.setup_lsqr(
+        offset_model=offset_model,
+        grid_valid_weight=jobgeom.det_valid_weight,
+        oversample_factor=1,
+        sky_model=sky_model,
+        det_aux=det_aux,
+        aux_keys=aux_keys,
+        batch_spill_dir=spec.scratch,
+        **cal_kwargs, **options)
+    return cc
 
 
 # ---------------------------------------------------------------------------

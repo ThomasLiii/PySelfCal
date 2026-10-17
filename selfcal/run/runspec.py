@@ -72,19 +72,16 @@ class PassClip:
 class PassesSpec:
     """The N-pass schedule: ``n`` passes, ``order`` saying which of the SKY and OFFSET passes comes
     first after the INIT; ``init_clip``: the INIT's clip (None: the fit's); ``sky_clip``; the OFFSET
-    refit's polynomial ``refit_degree`` (piecewise on ``segments``), its clip ``refit_clip``,
-    ``bright_cut``, ``min_pixels`` and ``ridge``; ``stop_tol``, ``sky_merge`` and ``keep_moments``
-    as :class:`~selfcal.run.schedule.Passes` says."""
+    passes' clip ``refit_clip``, ``bright_cut`` and ``min_pixels`` (the OFFSET pass refits the model's own
+    offset terms); ``stop_tol``, ``sky_merge`` and ``keep_moments`` as :class:`~selfcal.run.schedule.Passes`
+    says."""
     n: int
     order: str
     init_clip: PassClip | None
     sky_clip: PassClip
-    refit_degree: int
     refit_clip: PassClip
     bright_cut: float | None
     min_pixels: int
-    segments: tuple | None
-    ridge: float
     stop_tol: float
     sky_merge: str
     keep_moments: bool
@@ -119,8 +116,7 @@ class RunSpec:
     the engine reads as a :class:`~selfcal.models.spec.ModelSpec`. ``setup``, ``lsqr`` and
     ``mosaic``: the keywords of ``setup_lsqr`` (the model's own options aside), ``apply_lsqr`` and
     ``make_mosaic``; ``pre_cal`` / ``post_cal`` / ``post_mosaic``: the frame hooks.
-    ``line_fisher_threshold`` and ``spectral_window`` (the model's polynomial window, the N-pass
-    refit's) as the recipe says. ``make_mosaic``: the run coadds; ``instrument_maps``: with the
+    ``line_fisher_threshold`` as the recipe says. ``make_mosaic``: the run coadds; ``instrument_maps``: with the
     instrument's maps; ``reuse_mosaics``: an existing mosaic is kept (the plan checked it);
     ``cal_override``: the cal a mosaic task coadds. ``start``: a warm start, ``{job name: cal}``,
     the cal each job's solve starts from (:mod:`selfcal.core.warm_start`; plain calibrations only).
@@ -144,7 +140,6 @@ class RunSpec:
     frames: FrameSource = dc_field(default_factory=FrameSource)
     model: dict | None = None
     line_fisher_threshold: float = 10.0
-    spectral_window: tuple[int, int] | None = None
     setup: dict = dc_field(default_factory=dict)
     lsqr: dict = dc_field(default_factory=dict)
     mosaic: dict = dc_field(default_factory=dict)
