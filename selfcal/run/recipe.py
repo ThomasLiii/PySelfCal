@@ -352,6 +352,15 @@ class Deflate(Config):
     of that degree) would make the solve drift along it once converged: deflate it whole
     (``basis="polynomial"`` of at least its degree).
 
+    ``gauge_below``: treat as a gauge every direction of the pattern space the data see below this
+    fraction of the best-seen one (``sqrt(lambda / lambda_max)``, the record's ``seen`` spectrum):
+    not solved, zero sky amplitude, the offsets take it, as the exact gauges are treated. None (the
+    default): exact gauges only. A near-null direction's least-squares value is what little the
+    data say about it, noise and systematics included, and it can be large (a shared detector
+    pattern that a smooth sky mode mimics in every frame); this rule states the convention that
+    such modes have no sky amplitude, whatever the footprint or the model made them. Set it at
+    a gap of the spectrum (the solve's log prints it).
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -363,6 +372,7 @@ class Deflate(Config):
     basis: Literal['cosine', 'polynomial'] = 'cosine'
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
+    gauge_below: float | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -372,6 +382,8 @@ class Deflate(Config):
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
+        if self.gauge_below is not None and not 0.0 <= float(self.gauge_below) < 1.0:
+            raise ConfigError(f"Deflate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):

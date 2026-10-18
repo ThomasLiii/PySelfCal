@@ -621,12 +621,33 @@ class Deflation:
         wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
         with np.errstate(divide='ignore', invalid='ignore'):
             rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
-        keep = lam > DEPENDENT * max(float(lam.max()), 1e-300)
+        lam_max = max(float(lam.max()), 1e-300)
+        self.seen = np.sqrt(np.maximum(lam, 0.0) / lam_max)        # per direction: what the data see of it, relative
+        below = getattr(self.settings, 'gauge_below', None)
+        keep = lam > DEPENDENT * lam_max
+        if below is not None:
+            keep &= self.seen > float(below)                       # the user's rule: unseen directions are gauges
         self.gauges = int((~keep).sum())
+        self.gauge_below = None if below is None else float(below)
         self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
+        # Under the rule the left-out directions are FROZEN at zero amplitude: the solver's iterations are kept
+        # orthogonal to them (an exact gauge needs no such guard, the data never push along it; a near-null
+        # direction they push weakly, and the iterations would rebuild its least-squares value).
+        self.D = None
+        if below is not None and (~keep).any():
+            Dm = T[:, ~keep].T @ Z                                        # (dropped, nS)
+            g = Dm @ Dm.T
+            wd, Ud = np.linalg.eigh(g)
+            okd = wd > DEPENDENT * max(float(wd.max()), 1e-300)
+            self.D = (Ud[:, okd] / np.sqrt(wd[okd])).T @ Dm              # orthonormal rows
+            del Dm, g
         T = T[:, keep]
         self.lam = lam[keep].copy()
         self.kept = int(self.lam.size)
+        spectrum = ', '.join(f'{v:.2g}' for v in np.sort(self.seen)[:12])
+        logger.info(f"Deflation: the directions' seen fractions (sqrt(lambda / lambda_max); the {min(12, self.seen.size)} "
+                    f"smallest of {self.seen.size}): {spectrum}"
+                    + ('' if self.gauge_below is None else f"; the rule gauge_below={self.gauge_below:g} leaves out {self.gauges}"))
         if self.kept == 0:
             self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
@@ -647,6 +668,8 @@ class Deflation:
         self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
         if self.store == np.float32:
             self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
+            if self.D is not None:
+                self.D = self.D.astype(np.float32)
         self.c_star = (self.V @ ATb) / self.lam
         del ATb
         self._bnorm2 = bnorm2
@@ -753,14 +776,18 @@ class Deflation:
             out[self.S] = vS
 
     def project(self, y) -> np.ndarray:
-        """``P y`` on the covered columns, float64 (nS,)."""
+        """``P y`` on the covered columns, float64 (nS,); the frozen directions removed as well."""
         vS = self._gather(y)
         self._sub(vS, self.V, self._dot(self.W, vS) / self.lam)
+        if self.D is not None:
+            self._sub(vS, self.D, self._dot(self.D, vS))
         return vS
 
     def _project_transposed(self, vS):
-        """``P^T v`` in place."""
+        """``P^T v`` in place; the frozen directions removed as well."""
         self._sub(vS, self.W, self._dot(self.V, vS) / self.lam)
+        if self.D is not None:
+            self._sub(vS, self.D, self._dot(self.D, vS))
         return vS
 
     # ---------------------------------------------------------------- the solve
@@ -828,6 +855,8 @@ class Deflation:
         deflated operator cannot see."""
         vS = self._gather(v)
         self._sub(vS, self.V, self._dot(self.V, vS))
+        if self.D is not None:
+            self._sub(vS, self.D, self._dot(self.D, vS))
         self._scatter(v, vS)
 
     def full(self, y) -> np.ndarray:
@@ -867,7 +896,8 @@ class Deflation:
         st = self.settings
         return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
-                'kept': self.kept, 'gauges': self.gauges,
+                'kept': self.kept, 'gauges': self.gauges, 'gauge_below': self.gauge_below,
+                'seen': [float(v) for v in np.sort(self.seen)],
                 'obliqueness_max': None if math.isnan(self.rho_max) else float(self.rho_max), 'columns': int(self.nS),
                 'nullness_min': float(self.nullness.min()), 'nullness_median': float(np.median(self.nullness)),
                 'pairing_residual': float(self.pairing_residual),
