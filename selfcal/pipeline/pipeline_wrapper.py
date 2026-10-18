@@ -1120,7 +1120,7 @@ class Calibrator(Reprojector):
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
-                   scratch_dir: str | None = None, deflate=None, vectors=None) -> None:
+                   scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1233,7 +1233,8 @@ class Calibrator(Reprojector):
                         _owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape, x0=_owned.pop(0), a_owned=True,
                         atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                         solver=solver, use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
-                        num_cols_full=num_cols_full_local, conlim=conlim, return_record=True, **snap)
+                        num_cols_full=num_cols_full_local, conlim=conlim, return_record=True, exclusions=exclusions,
+                        **snap)
                 finally:
                     if _spill_dir is not None:
                         self._restore_pixel_state(_spill_dir)

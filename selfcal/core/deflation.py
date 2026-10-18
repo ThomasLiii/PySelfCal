@@ -167,25 +167,34 @@ def _pieces(storage, rows=_ROWS):
             yield int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
 
 
-def _block_pinv_solve(G, R):
+def _block_pinv_solve(G, R, project=None):
     """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
     connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
     :data:`DEPENDENT` of the block's largest count as zero: the solution of minimum norm), MINRES on
     blocks larger than :data:`_DENSE_BLOCK`, unless hub columns (coupled to :data:`_HUB_RATIO` times
     the block's median: offsets many frames share) explain their size: those are eliminated first by
-    :func:`_schur_pinv_solve`, which leaves the per-frame blocks. Returns ``(X, info)``."""
+    :func:`_schur_pinv_solve`, which leaves the per-frame blocks. ``project`` (a
+    :class:`~selfcal.core.projector.ColumnProjector` over these columns, or None): the solution of the
+    projected system ``P G P X = P R`` (columns the constraints join become hubs; a dense block or a MINRES
+    block holding constrained columns is projected in place). Returns ``(X, info)``."""
     n = G.shape[0]
     X = np.zeros((n, R.shape[1]))
     if n == 0:
         return X, {'blocks': 0, 'largest': 0, 'zero_eigenvalues': 0}
+    if project is not None and project.columns.size == 0:
+        project = None
+    if project is not None:
+        R = project.apply(np.array(R, dtype=np.float64, copy=True))
     ncomp, labels = connected_components(G, directed=False)
     counts = np.bincount(labels, minlength=ncomp)
     if counts.max() > _DENSE_BLOCK:
         deg = np.diff(G.indptr)
         big = counts[labels] > _DENSE_BLOCK
         hub = np.flatnonzero(big & (deg > _HUB_RATIO * np.median(deg[big])))
+        if project is not None:
+            hub = np.union1d(hub, project.columns[big[project.columns]])      # constrained columns of big blocks
         if 0 < hub.size <= _SCHUR_MAX:
-            out = _schur_pinv_solve(G, R, hub)
+            out = _schur_pinv_solve(G, R, hub, project=project)
             if out is not None:
                 return out
     order = np.argsort(labels, kind='stable')
@@ -196,9 +205,27 @@ def _block_pinv_solve(G, R):
     er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
     ecomp = labels[er]
     zero = 0
+    constrained_comp = np.zeros(ncomp, dtype=bool)
+    if project is not None:
+        constrained_comp[labels[project.columns]] = True
     for s in np.unique(counts):
         comps = np.flatnonzero(counts == s)
         cols = order[starts[comps][:, None] + np.arange(s)[None, :]]            # (blocks, s)
+        if project is not None and constrained_comp[comps].any():
+            # a block holding constrained columns: P_b G_b P_b, one block at a time
+            keep = ~constrained_comp[comps]
+            for ci, cc in zip(comps[~keep], cols[~keep]):
+                sel = ecomp == ci
+                Gb = coo_matrix((ev[sel], (pos[er[sel]], pos[ec[sel]])), shape=(s, s)).toarray()
+                pb = project.restricted_to(cc)
+                pb.apply_symmetric(Gb)
+                w, U = np.linalg.eigh(Gb)
+                ok = w > DEPENDENT * max(float(w.max()), 1e-300)
+                zero += int((~ok).sum())
+                X[cc] = U @ (np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0)[:, None] * (U.T @ R[cc]))
+            comps, cols = comps[keep], cols[keep]
+            if comps.size == 0:
+                continue
         if s > _DENSE_BLOCK:
             for ci, cc in zip(comps, cols):
                 sel = ecomp == ci
@@ -220,7 +247,7 @@ def _block_pinv_solve(G, R):
     return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero}
 
 
-def _schur_pinv_solve(G, R, hub):
+def _schur_pinv_solve(G, R, hub, project=None):
     """``G X = R`` with the hub columns eliminated: for ``G = [[D, B], [B^T, C]]`` (``D`` the other
     columns, block-diagonal once the hubs are out; ``C`` the hubs' own part), ``X_hub`` solves the
     Schur complement ``(C - B^T D^+ B) X_hub = R_hub - B^T D^+ R_other`` by its pseudo-inverse and
@@ -231,7 +258,9 @@ def _schur_pinv_solve(G, R, hub):
     each candidate is checked against ``G`` and the verified ones are projected out of ``X`` (a response
     with a null component would put a gauge into the deflation space in part, and the iterate would
     drift along it). None when the other columns still hold a block larger than :data:`_DENSE_BLOCK`
-    (the caller falls back)."""
+    (the caller falls back). ``project`` (every constrained column a hub): the Schur complement is
+    projected, ``P S P X_hub = P rhs``, so the hubs' response and the null vectors live in the allowed
+    subspace."""
     n, k = G.shape[0], R.shape[1]
     is_hub = np.zeros(n, dtype=bool)
     is_hub[hub] = True
@@ -241,6 +270,11 @@ def _schur_pinv_solve(G, R, hub):
     fpos[F] = np.arange(nF)
     hpos = np.full(n, -1, dtype=np.int64)
     hpos[H] = np.arange(nH)
+    ph = None
+    if project is not None:
+        if (hpos[project.columns] < 0).any():
+            raise ValueError('the Schur path needs every constrained column among the hubs')
+        ph = project.mapped(hpos)
     Gc = G.tocoo()
     er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
     hr, hc = is_hub[er], is_hub[ec]
@@ -306,6 +340,9 @@ def _schur_pinv_solve(G, R, hub):
         Zb = U @ (inv[:, :, None] * (Ut @ Rb))
         S -= Bb.reshape(-1, nH).T @ Yb.reshape(-1, nH)
         Rh -= Bb.reshape(-1, nH).T @ Zb.reshape(-1, k)
+    if ph is not None:
+        ph.apply_symmetric(S)
+        ph.apply(Rh)
     w, V = np.linalg.eigh(0.5 * (S + S.T))
     ok = w > DEPENDENT * max(float(w.max()), 1e-300)
     zero += int((~ok).sum())
@@ -340,7 +377,10 @@ def _schur_pinv_solve(G, R, hub):
     if cands:
         Nc = np.concatenate(cands, axis=1)
         gscale = max(float(np.abs(G.diagonal()).max()), 1e-300)
-        good = np.linalg.norm(G @ Nc, axis=0) <= 1e-9 * gscale * np.maximum(np.linalg.norm(Nc, axis=0), 1e-300)
+        GN = G @ (project.apply(Nc.copy()) if project is not None else Nc)
+        if project is not None:
+            project.apply(GN)                              # the projected G: P G P
+        good = np.linalg.norm(GN, axis=0) <= 1e-9 * gscale * np.maximum(np.linalg.norm(Nc, axis=0), 1e-300)
         if good.any():
             Q = np.linalg.qr(Nc[:, good])[0]
             X -= Q @ (Q.T @ X)
@@ -375,7 +415,8 @@ class Deflation:
     (what the solve's record keeps). :meth:`bind` gives it the solver's operator and the matrix before
     :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
 
-    def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1):
+    def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1,
+                 projector=None):
         t0 = time.perf_counter()
         self.settings = settings
         m, n = int(storage.shape[0]), int(storage.shape[1])
@@ -455,6 +496,13 @@ class Deflation:
             cm = np.full(n, -1, dtype=np.int64)
             cm[self.S] = np.arange(nS)
             self._colmap = cm
+        # The column constraints (solver coordinates) on the offset columns of this space: the offsets'
+        # normal matrix is projected, G -> P G P, so the response stays in the allowed subspace.
+        self._proj_off = None
+        if projector is not None:
+            cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+            off = np.where(cm >= n_sky_S, cm - n_sky_S, -1)
+            self._proj_off = projector.mapped(off)
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)")
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
@@ -511,8 +559,10 @@ class Deflation:
             G.sum_duplicates()
             t_pass1 = time.perf_counter() - t
             t = time.perf_counter()
-            X, info = _block_pinv_solve(G, R.T)
+            X, info = _block_pinv_solve(G, R.T, project=self._proj_off)
             res = G @ (-X) + R.T
+            if self._proj_off is not None:
+                self._proj_off.apply(res)                 # the projected normal equations' residual
             self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
                                                  np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
             Z[:, n_sky_S:] = -X.T
