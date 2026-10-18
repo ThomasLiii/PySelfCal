@@ -23,7 +23,7 @@ steps are `pytest` (the test suite, first), then the gates below; the default is
 | continuum | D3 Ch17 NumCol3, 300 frames, iter 50 (51 MB cal) | `cal_..._Ch17_gate_golden_f64.h5` |
 | spectral | D4 AromaticPAHfit NumCol5, 150 frames, iter 20 (73 MB cal) | `cal_..._AromaticPAHfit_gate_golden_f64.h5` |
 | e2e | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps; a 4.8 GB mosaic) | `*_unify_e2e_golden_f64.{h5,fits}` |
-| npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame OFFSET refit | none yet (see below) |
+| npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame direct OFFSET solve | `*_unify_npass3_golden_f64{,_pass2sky,_pass3off}.h5` |
 | euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
 | m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
@@ -41,10 +41,11 @@ the commit says so: `make_goldens.sh <tag> [gate ...]` runs the Python gates on 
 `FORCE=1`; the log records the commit). The goldens are float64-norm (`*golden_f64*`): since
 2026-10-05 (e8781bb) LSQR accumulates the norms of long float32 vectors in float64, which changed
 the bytes of production-size solves, and every run uses those norms
-(`SELFCAL_LSQR_FLOAT32_NORMS=1`, the old norms, is refused by `make_goldens.sh`). The npass3 gate
-has no float64 golden yet: its only goldens (`*_unify_npass3_golden*.h5`, 2026-09-28) were made
-with the float32 norms, so the gate fails with a missing file until `make_goldens.sh <tag> npass3`
-makes one. The earlier goldens (`*_golden_stat*`, `*_golden.*`, `*_UNIFYNPASS1GOLDEN_iter300*`)
+(`SELFCAL_LSQR_FLOAT32_NORMS=1`, the old norms, is refused by `make_goldens.sh`). The npass3
+gate's float64 goldens were made 2026-10-17 from 1ef83ae, when the N-pass passes stopped building the
+joint matrix (the OFFSET pass solves each frame directly from its normal equations, the SKY pass sums
+the per-pixel moments alone); its earlier goldens (`*_unify_npass3_golden.h5` etc., 2026-09-28) were
+made with the float32 norms and the per-frame polynomial refit. The earlier goldens (`*_golden_stat*`, `*_golden.*`, `*_UNIFYNPASS1GOLDEN_iter300*`)
 are kept as made, by the float32 norms. The assembly folds its per-pixel moments
 deterministically (batch-id order), so two runs of the same tree are byte-identical on any box
 load.

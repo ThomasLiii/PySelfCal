@@ -66,7 +66,10 @@ class SetupResult(NamedTuple):
     when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
     caller restores them (once) when it needs them. ``active_mask`` is None
     unless the early zero-coverage-column compaction ran (it does unless a
-    constraint row touches an otherwise-uncovered column).
+    constraint row touches an otherwise-uncovered column). ``A`` and ``b`` are
+    None when no matrix was built: ``moments_only`` (the pixel state alone) or
+    ``reduce`` (``reduced``: each subframe's reduction, in subframe order, None
+    for a subframe with no rows; ``constraint_blocks``: the constraint rows).
     """
     A: object
     b: object
@@ -76,6 +79,8 @@ class SetupResult(NamedTuple):
     active_mask: object = None
     pixel_spill: object = None
     pixel_rhs: object = None
+    reduced: object = None
+    constraint_blocks: object = None
 
 
 def _place_rows(rows_local, cols, data, num_rows, n_cols, out_indices, out_data):
@@ -244,6 +249,35 @@ def _scatter_block_worker_split(task):
             b.close()
 
 
+def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
+    """``setup_lsqr(reduce=...)``: the subframes' reductions from the workers (no matrix), the entry
+    counts per column and the observed offset columns (as Phase 1 accumulates them), then the
+    constraint rows (``constraint_blocks(pixel_counts, observed_cols)``). Returns the
+    :class:`SetupResult`, or None when no subframe has data."""
+    pixel_counts = np.zeros(total_cols, dtype=np.int64)
+    observed_cols = np.zeros(total_cols, dtype=bool)
+    reduced = [None] * num_frames
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
+            futures = [executor.submit(_prep_lsqr_batch_worker, batch) for batch in batched_tasks]
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Reducing subframes",
+                               disable=not _state.progress_enabled):
+                for index, value, (ids, counts), observed in future.result():
+                    reduced[index] = value
+                    pixel_counts[ids] += counts            # integers: exact in any order
+                    if observed.size:
+                        observed_cols[observed] = True
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
+    if all(v is None for v in reduced):
+        logger.warning("No valid data found in any subframe.")
+        return None
+    return SetupResult(A=None, b=None, pixel_counts=pixel_counts, pixel_fisher=None, pixel_cross=None,
+                       reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts, observed_cols))
+
+
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                chunk_maps: list[np.ndarray] | None = None,
                grid_valid_weight: np.ndarray | None = None,
@@ -276,8 +310,28 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                weight_function=None,
                priors: list | None = None,
                outlier_group_variable: str | None = None,
-               outlier_chunk_groups=None) -> SetupResult:
+               outlier_chunk_groups=None,
+               fixed_sky: bool = False, moments_only: bool = False,
+               reduce: Callable | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``fixed_sky``: the sky is known and already subtracted from the data (by a
+    frame hook): no sky entries and no sky damping rows are emitted, so the
+    system holds the offset terms, the per-frame scalar and their constraint
+    rows alone (the sky columns stay empty and are compacted away) -- the
+    offsets given the sky, for any offset model.
+
+    ``moments_only``: build no matrix; the result holds the pixel state alone
+    (``pixel_counts``, ``pixel_fisher``, ``pixel_cross`` and, with
+    ``sky_rhs_moments``, ``pixel_rhs``: the same arrays the matrix build
+    returns), all a closed-form sky solve reads.
+
+    ``reduce``: build no matrix; each subframe's rows (``rows, cols, data, b,
+    num_rows``, the triplets the matrix is assembled from) go to
+    ``reduce(rows, cols, data, b, num_rows)`` in the workers (a module-level
+    function: it is sent to them), and the result holds the reductions
+    (``SetupResult.reduced``), ``pixel_counts`` and the constraint rows
+    (``SetupResult.constraint_blocks``).
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
     arrays (rows/cols/data, 12 B per entry — the dominant setup-phase
@@ -473,6 +527,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise TypeError("ignore_list must be a list or array of data quality flags to ignore")
     if not (isinstance(batch_size, int) and batch_size > 0):
         raise ValueError("batch_size must be a positive integer")
+    if moments_only and reduce is not None:
+        raise ValueError("give moments_only or reduce, not both")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
@@ -703,6 +759,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                  or any(pb is not None for pb in poly_basis_list)),
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
+        'fixed_sky': bool(fixed_sky),
         'aux_keys': aux_keys,
         'outlier_group_variable': outlier_group_variable,
         'basis_list': basis_list if any(b is not None for b in basis_list) else None,
@@ -791,7 +848,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         all_individual_tasks.append(task_params)
 
     _spill_run_dir = None
-    if batch_spill_dir is not None:
+    if batch_spill_dir is not None and reduce is None:       # reduce: no entries leave the workers
         os.makedirs(batch_spill_dir, exist_ok=True)
         _spill_run_dir = tempfile.mkdtemp(prefix='batch_spill_',
                                           dir=batch_spill_dir)
@@ -802,9 +859,113 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         batch = {'sub_tasks': all_individual_tasks[i : i + batch_size],
                  'batch_id': i // batch_size,
                  'spill_dir': _spill_run_dir}
+        if reduce is not None:
+            batch['reduce'] = reduce
         batched_tasks.append(batch)
 
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
+
+    def _constraint_blocks(pixel_counts, observed_cols):
+        """The global constraint blocks (as dicts, in emission order), given Phase 1's entry counts
+        per column (``pixel_counts``) and the offset columns the data rows touch (``observed_cols``).
+        Shared by the matrix build and ``reduce``."""
+        num_sky_eff = num_sky_blocks * num_sky
+        sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
+        offset_pixel_counts = pixel_counts[num_sky_eff:]
+
+        # Global constraint blocks (see selfcal.constraint_builders). Emission order
+        # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
+        # grouped adjacency (group_adjacency_maps) -> sky damping (continuum, then
+        # line blocks) -> offset damping.
+        constraint_blocks = []
+
+        # --- Per-frame mean-offset constraints (one block per chunk map) ---
+        #TODO: Pass weight from higher level instead of hardcoding here
+        constraint_weight = 10.0
+        for m in range(K):
+            mean_off = mean_offsets_list[m]
+            if mean_off is None:
+                continue
+            if det_template_arr_list[m] is not None:
+                logger.warning(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
+                continue
+            if poly_basis_list[m] is not None:
+                logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
+                continue
+            logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
+            _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
+            # Over the chunks with data (the frame's observed chunks: a chunk outside the job's window
+            # has no data and would otherwise enter the anchor only, leaving its constant and the
+            # frame's scalar free to shift against each other, and uncompactable).
+            _blk = mean_offset_block(
+                m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
+                col_bases, weight=constraint_weight,
+                group_rows=mean_offset_group_rows, n_basis=_nb, covered=observed_cols)
+            if _blk.num_rows == 0:
+                logger.warning(f"Skipping mean-offset constraint for map {m}: no frame has an observed chunk")
+                continue
+            constraint_blocks.append(_blk.as_dict())
+
+        # --- Grouped adjacency (maps in group_adjacency_maps) ---
+        # Same conditions as the worker-side per-frame rows it replaces.
+        if offset_regularization:
+            for m in group_adjacency_maps:
+                if (reg_weights[m] <= 0 or adj_infos[m] is None
+                        or det_template_arr_list[m] is not None
+                        or poly_basis_list[m] is not None):
+                    continue
+                blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
+                                              num_chunks_list[m], frame_to_group_list[m],
+                                              col_bases)
+                logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
+                            f"(one copy per group, weight x sqrt(k))")
+                constraint_blocks.append(blk.as_dict())
+
+        # --- Coverage-weighted sky damping, one block per sky term ---
+        # Each term is damped by its own ``damp_weight`` when it sets one, else by
+        # ``damp_weight`` (first term) / ``damp_weight_line`` (the others) — the
+        # rule of SkyModel.damp_weights, shared with the closed-form sky solve.
+        if weighted_damping and not fixed_sky:          # a fixed sky has no unknowns to damp
+            for j, w_j in enumerate(sky_model.damp_weights(damp_weight, damp_weight_line)):
+                if w_j <= 0:
+                    continue
+                comp = sky_model.components[j]
+                logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
+                counts_j = sky_pixel_counts if j == 0 else pixel_counts[j * num_sky:(j + 1) * num_sky]
+                blk = sky_damping_block(j, w_j, counts_j, num_sky)
+                if blk is not None:
+                    constraint_blocks.append(blk.as_dict())
+
+        # --- Coverage-weighted offset damping ---
+        if damp_offset_maps is not None:
+            for m, w_m in enumerate(damp_offset_maps):
+                if w_m <= 0:
+                    continue
+                b0 = col_bases[m] - num_sky_eff
+                b1 = col_bases[m + 1] - num_sky_eff
+                logger.info(f"Applying Coverage-Weighted Offset Damping to map {m} "
+                            f"(weight={w_m}, {b1 - b0} columns)...")
+                blk = offset_damping_block(w_m, offset_pixel_counts[b0:b1], col_bases[m])
+                if blk is not None:
+                    constraint_blocks.append(blk.as_dict())
+
+
+        # --- User priors (any linear rows on the unknowns), after the built-ins ---
+        if priors:
+            from .constraint_builders import SystemInfo, as_constraint_block
+            info = SystemInfo(layout=layout, pixel_counts=pixel_counts, sky_names=tuple(sky_model.names))
+            for i, prior in enumerate(priors):
+                blk = as_constraint_block(prior(info), total_cols, name=getattr(prior, 'name', f'prior {i}'))
+                if blk is None:
+                    continue
+                logger.info(f"Applying prior {getattr(prior, 'name', i)}: {blk.num_rows} rows")
+                constraint_blocks.append(blk.as_dict())
+        return constraint_blocks
+
+    if reduce is not None:
+        return _setup_reduced(batched_tasks, max_workers=max_workers, total_cols=total_cols,
+                              num_frames=num_frames, shm_objects=shm_objects,
+                              constraint_blocks=_constraint_blocks)
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results
@@ -1166,6 +1327,30 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _b_cols = _b_data = _b_rows = None
     _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
+    if moments_only:
+        # The pixel state, accumulated by Phase 1, is all the caller reads: no matrix is built and
+        # the batches' entries are dropped.
+        any_kept = False
+        for r in batch_results:
+            if r is None:
+                continue
+            any_kept = True
+            for _p in r.get('files', ()):
+                try:
+                    os.remove(_p)
+                except OSError:
+                    pass
+        batch_results = None
+        if _spill_run_dir is not None:
+            shutil.rmtree(_spill_run_dir, ignore_errors=True)
+        if not any_kept:
+            logger.warning("No valid data found in any subframe.")
+            return None, None
+        if pixel_cross is not None and num_sky_blocks == 2:
+            pixel_cross = pixel_cross[(0, 1)]
+        return SetupResult(A=None, b=None, pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                           pixel_cross=pixel_cross, pixel_rhs=pixel_rhs)
+
     # ----------------------------------------------------------------
     # Phase 2: compute per-batch row offsets, total_rows_data, and the
     # data-row half of row_nnz.
@@ -1193,101 +1378,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # b). We assemble them up front so we can pre-count their per-row nnz,
     # finalize total_rows, and allocate the CSR buffers once.
     # ----------------------------------------------------------------
-    num_sky_eff = num_sky_blocks * num_sky
-    sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
-    offset_pixel_counts = pixel_counts[num_sky_eff:]
-
-    # Global constraint blocks (see selfcal.constraint_builders). Emission order
-    # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
-    # grouped adjacency (group_adjacency_maps) -> sky damping (continuum, then
-    # line blocks) -> offset damping.
-    constraint_blocks = []
-
-    # --- Per-frame mean-offset constraints (one block per chunk map) ---
-    #TODO: Pass weight from higher level instead of hardcoding here
-    constraint_weight = 10.0
-    for m in range(K):
-        mean_off = mean_offsets_list[m]
-        if mean_off is None:
-            continue
-        if det_template_arr_list[m] is not None:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
-            continue
-        if poly_basis_list[m] is not None:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
-            continue
-        logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
-        _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
-        # Over the chunks with data (the frame's observed chunks: a chunk outside the job's window
-        # has no data and would otherwise enter the anchor only, leaving its constant and the
-        # frame's scalar free to shift against each other, and uncompactable).
-        _blk = mean_offset_block(
-            m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
-            col_bases, weight=constraint_weight,
-            group_rows=mean_offset_group_rows, n_basis=_nb, covered=observed_cols)
-        if _blk.num_rows == 0:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: no frame has an observed chunk")
-            continue
-        constraint_blocks.append(_blk.as_dict())
-
-    # --- Grouped adjacency (maps in group_adjacency_maps) ---
-    # Same conditions as the worker-side per-frame rows it replaces.
-    if offset_regularization:
-        for m in group_adjacency_maps:
-            if (reg_weights[m] <= 0 or adj_infos[m] is None
-                    or det_template_arr_list[m] is not None
-                    or poly_basis_list[m] is not None):
-                continue
-            blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
-                                          num_chunks_list[m], frame_to_group_list[m],
-                                          col_bases)
-            logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
-                        f"(one copy per group, weight x sqrt(k))")
-            constraint_blocks.append(blk.as_dict())
-
-    # --- Coverage-weighted sky damping, one block per sky term ---
-    # Each term is damped by its own ``damp_weight`` when it sets one, else by
-    # ``damp_weight`` (first term) / ``damp_weight_line`` (the others) — the
-    # rule of SkyModel.damp_weights, shared with the closed-form sky solve.
-    if weighted_damping:
-        for j, w_j in enumerate(sky_model.damp_weights(damp_weight, damp_weight_line)):
-            if w_j <= 0:
-                continue
-            comp = sky_model.components[j]
-            logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
-            counts_j = sky_pixel_counts if j == 0 else pixel_counts[j * num_sky:(j + 1) * num_sky]
-            blk = sky_damping_block(j, w_j, counts_j, num_sky)
-            if blk is not None:
-                constraint_blocks.append(blk.as_dict())
-
-    # --- Coverage-weighted offset damping ---
-    if damp_offset_maps is not None:
-        for m, w_m in enumerate(damp_offset_maps):
-            if w_m <= 0:
-                continue
-            b0 = col_bases[m] - num_sky_eff
-            b1 = col_bases[m + 1] - num_sky_eff
-            logger.info(f"Applying Coverage-Weighted Offset Damping to map {m} "
-                        f"(weight={w_m}, {b1 - b0} columns)...")
-            blk = offset_damping_block(w_m, offset_pixel_counts[b0:b1], col_bases[m])
-            if blk is not None:
-                constraint_blocks.append(blk.as_dict())
-
-
-    # --- User priors (any linear rows on the unknowns), after the built-ins ---
-    if priors:
-        from .constraint_builders import SystemInfo, as_constraint_block
-        info = SystemInfo(layout=layout, pixel_counts=pixel_counts, sky_names=tuple(sky_model.names))
-        for i, prior in enumerate(priors):
-            blk = as_constraint_block(prior(info), total_cols, name=getattr(prior, 'name', f'prior {i}'))
-            if blk is None:
-                continue
-            logger.info(f"Applying prior {getattr(prior, 'name', i)}: {blk.num_rows} rows")
-            constraint_blocks.append(blk.as_dict())
-
-    # These slices are views: left alive they would pin the whole
-    # pixel_counts array through the CSR build even after it is spilled.
-    sky_pixel_counts = offset_pixel_counts = observed_cols = None
+    constraint_blocks = _constraint_blocks(pixel_counts, observed_cols)
+    observed_cols = None
 
     # ----------------------------------------------------------------
     # Phase 2c: finalize total_rows + build row_nnz over the entire row

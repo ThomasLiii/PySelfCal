@@ -31,11 +31,11 @@ The run engine reads nothing else. `RunContext` ([`run/engine.py`](run/engine.py
 a run resolves once: the instrument's detector geometry (built once per action; kept between
 actions when the instrument declares `geometry_is_pure`), the `ModelSpec` of the model, each
 sky term's damping, every product name; its methods lower the model to the solver's objects
-(offset and sky models, data variables, weight, priors, warm start, clip groups, the N-pass
-refit basis). The tasks of
+(offset and sky models, data variables, weight, priors, warm start, clip groups). The tasks of
 [`run/pipelines.py`](run/pipelines.py) (`cal`, tiled or not; `mosaic`; `npass`, scheduled by
-[`run/npass.py`](run/npass.py); `reproject`) run on its two primitives, `solve_job` and
-`mosaic_job`.
+[`run/npass.py`](run/npass.py), the passes in [`npass/`](npass/__init__.py); `reproject`) run on
+its two primitives, `solve_job` (its system set up by `setup_job`, which an N-pass OFFSET pass also
+uses) and `mosaic_job`.
 
 The engine calls the instrument only through the `sc.Instrument` contract
 ([`instruments/contract.py`](instruments/contract.py)), which the built-in instruments
@@ -827,6 +827,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`zodi_anchor.py`](zodi_anchor.py) | Post-cal zodi anchor math + anchor-file I/O + read-time consumer. |
 | [`pipeline/pipeline_wrapper.py`](pipeline/pipeline_wrapper.py) | `PipelineConfig`, `Reprojector`, `Calibrator`, `Mosaicker`. |
 | [`pipeline/tiled.py`](pipeline/tiled.py) | `TiledCalibration`, `TileSpec`, `make_tile_grid`, stitching. |
+| [`npass/`](npass/__init__.py) | The N-pass alternating solve's passes, none of which builds the matrix: `sky.py` (the SKY pass: the offsets subtracted, the per-pixel sums, `solve_pixels`), `offsets.py` (the OFFSET pass: the sky subtracted, each frame's normal equations, `solve_frames`), `passes.py` (`PassRunner`: one pass over a run's tiles); scheduled by `run/npass.py`. |
 | [`core/assembly.py`](core/assembly.py) | `_prep_lsqr` + shared-memory batch worker. |
 | [`core/system.py`](core/system.py) | `setup_lsqr` + coverage/Fisher parsers + line-mask. |
 | [`core/solve.py`](core/solve.py) | `apply_lsqr` + thread-parallel SpMV operator. |

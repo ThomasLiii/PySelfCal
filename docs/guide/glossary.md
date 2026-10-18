@@ -313,8 +313,8 @@ the solve, when the recipe has a `Coadd`, or by `field.mosaic`. See [The mosaic]
 ## N-pass solve { #n-pass }
 
 `field.calibrate(recipe, passes=sc.Passes(n, order=...))`, a solve in passes for spectral models: pass 1 (INIT) is the joint solve of a plain calibration; SKY passes then solve
-the sky terms exactly given the offsets, and OFFSET passes refit every frame's polynomial offset
-and scalar given the sky, in turn. See
+the sky terms exactly given the offsets, and OFFSET passes refit the model's offset terms (whatever
+they are) and the scalar given the sky, in turn. See
 [Scaling up](concepts.md#scaling-up) and
 [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 

@@ -37,8 +37,9 @@ _MOS = dict(apply_mask=True, apply_weight=True, max_workers=20, make_std_map=Fal
 _SPECTRAL_AXIS = {'spherex': 'subchannel'}       # the primary chunk map's spectral axis, by instrument
 # the N-pass defaults of a [passes] table (n = 4, order "sky_first", as the TOML engine had them)
 _SKY_PASS = dict(outlier_thresh=5.0, subch_clip=True)
-_OFFSET_PASS = dict(poly_degree=4, outlier_thresh=2.5, subch_clip=True, bright_cut=0.05, min_pix=5000, segments=None,
-                    ridge=0.0)
+# (the OFFSET pass now refits the model's own offset terms: a [passes.offset] poly_degree / segments / ridge has
+# no counterpart and is dropped -- the polynomial is the model's)
+_OFFSET_PASS = dict(outlier_thresh=2.5, subch_clip=True, bright_cut=0.05, min_pix=5000)
 # the modes of the TOML configs (their historical names included) by the recipe they built, and the
 # mosaic each made ("full": with the instrument's maps; "no_wav": without; "none": no mosaic)
 _MODES = {'continuum': 'continuum', 'spectral': 'spectral', 'pahfit': 'spectral', 'spectral_softpoly': 'spectral_softpoly',
@@ -722,11 +723,8 @@ def _passes(p, cal, inst_name):
                          ignore_flags=None if flags is None else tuple(flags))
     return Passes(int(p.get('n', 4)), order=p.get('order', 'sky_first'), init_clip=init_clip,
                   sky_clip=Clip(float(sky['outlier_thresh']), per=_per(sky['subch_clip'], inst_name)),
-                  offset=Refit(int(off['poly_degree']),
-                               clip=Clip(float(off['outlier_thresh']), per=_per(off['subch_clip'], inst_name)),
-                               bright_cut=off['bright_cut'], min_pixels=int(off['min_pix']),
-                               segments=None if off.get('segments') is None else tuple(map(tuple, off['segments'])),
-                               ridge=float(off.get('ridge', 0.0))),
+                  offset=Refit(clip=Clip(float(off['outlier_thresh']), per=_per(off['subch_clip'], inst_name)),
+                               bright_cut=off['bright_cut'], min_pixels=int(off['min_pix'])),
                   stop_tol=float(p.get('stop_tol', 0.0)), sky_merge=p.get('sky_merge', 'combine'),
                   keep_moments=bool(p.get('keep_moments', False)),
                   ends_on_offset=_ends_on_offset(int(p.get('n', 4)), p.get('order', 'sky_first')))

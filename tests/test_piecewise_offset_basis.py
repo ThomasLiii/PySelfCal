@@ -12,9 +12,11 @@ Contract pinned here:
     per-frame refit see identical numbers;
   * with segments the basis is block-structured (zero outside each segment),
     mean-zero per segment, n_coef = degree * n_segments;
-  * the per-frame refit recovers a known piecewise offset through the public
-    refit_offsets_per_frame path (the same synthetic frames as
-    test_npass_primitives).
+  * a fit of the offsets given the sky (the N-pass OFFSET pass's system,
+    ``setup_lsqr(fixed_sky=True)``, every frame solved directly; the same
+    synthetic frames as test_npass_primitives) follows a known piecewise offset
+    down to the noise with the piecewise basis, and not with the single global
+    polynomial.
 """
 import numpy as np
 
@@ -96,11 +98,10 @@ def test_segments_must_be_increasing_and_inside_window():
         raise AssertionError(f"segments {bad} should have been rejected")
 
 
-def test_refit_recovers_a_piecewise_offset(tmp_path):
-    """Through the public per-frame refit (same synthetic frames and chunk-map
-    construction as test_npass_primitives' refit test): a frame whose true offset
-    is an independent quadratic on each of two segments is recovered by the
-    piecewise basis, and NOT by the single global quadratic of the same degree."""
+def test_fixed_sky_fit_follows_a_piecewise_offset(tmp_path):
+    """A frame whose true offset is an independent quadratic on each of two segments is fitted down
+    to the noise by the piecewise basis, and NOT by the single global quadratic of the same degree
+    (the sky held fixed and subtracted, as in the N-pass OFFSET pass)."""
     import sys
     import types
     if "pytest" not in sys.modules:                       # the env has no pytest; the helper module imports it
@@ -109,10 +110,9 @@ def test_refit_recovers_a_piecewise_offset(tmp_path):
         except ModuleNotFoundError:
             mark = types.SimpleNamespace(parametrize=lambda *a, **k: (lambda f: f))
             sys.modules["pytest"] = types.SimpleNamespace(mark=mark)
-    import h5py, hdf5plugin  # noqa: F401
-    from tests.test_npass_primitives import _make_frames, DET, REF
+    from tests.test_npass_primitives import DET, _make_frames, fixed_sky_fit, noise_norm, sky_cal_of
     from selfcal.geometry.map_helper import chunk_to_det
-    from selfcal.pipeline import npass
+    from selfcal.npass.offsets import SkySubtractor
 
     rng = np.random.default_rng(11)
     J = 2
@@ -133,33 +133,13 @@ def test_refit_recovers_a_piecewise_offset(tmp_path):
     offsets = [chunk_to_det(cm, chunk_data=per_chunk_true[k]) for k in range(n_frames)]
     paths, bc_det, truth, sky_model = _make_frames(str(tmp_path), rng, J, n_frames=n_frames,
                                                    offsets=offsets, bc_jitter=0.0)
-    cal = str(tmp_path / "sky.h5")
-    npass.write_sky_cal(cal, ref_shape=REF, sky_names=sky_model.names,
-                        sky_maps=[t.astype(np.float32) for t in truth],
-                        sky_counts=[np.ones(REF)] * J, sky_fishers=[np.ones(REF)] * J,
-                        pixel_cross=np.zeros(REF[0] * REF[1]),
-                        pixel_fisher=np.ones(J * REF[0] * REF[1]), reproj_list=[])
-    sky = npass.SkySubtractor(cal, sky_model, export_dir=str(tmp_path / "exp"))
-    errs, oks = {}, {}
-    for label, pb in (("piecewise", pw), ("global", gl)):
-        out = str(tmp_path / f"off_{label}.h5")
-        _, mon = npass.refit_offsets_per_frame(
-            paths, sky, det_chunk_map=cm, grid_valid=np.ones(DET, dtype=np.float32),
-            det_aux=[bc_det, np.full(DET, 0.03)], poly_basis=pb, edges=None, ignore_list=[],
-            thresh=100.0, bright_cut=None, min_pix=0, out_h5=out, max_workers=2)
-        with h5py.File(out, "r") as f:
-            off = f["offsets/map_0"][:]; sc = f["frame_scalar"][:]; ok = f["fit_ok"][:]
-            model = f.attrs["model"]
-        # the tiny synthetic detector (16x16, frames overhanging the map edge) can leave a
-        # frame under the refit's 200-pixel floor; that is the frame count, not the basis
-        assert mon["n_fit"] >= n_frames - 2, mon
-        oks[label] = ok
-        errs[label] = float(np.max(np.abs((off[ok] + sc[ok, None]) - per_chunk_true[ok])))
-        if label == "piecewise":
-            assert "2 segments" in model and list(f"[{a}, {b}]" for a, b in segs)[0] in model
-    assert np.array_equal(oks["piecewise"], oks["global"])   # same frames fitted by both
-    assert errs["piecewise"] < 5e-3, errs
-    assert errs["global"] > 5 * errs["piecewise"], errs   # one quadratic cannot follow two
+    sky = SkySubtractor(sky_cal_of(str(tmp_path), truth, sky_model), sky_model,
+                        export_dir=str(tmp_path / "exp"), exclude_off_map=True)
+    noise = noise_norm(paths)
+    rnorm_pw, _ = fixed_sky_fit(paths, sky_model, bc_det, cm, pw, sky)
+    rnorm_gl, _ = fixed_sky_fit(paths, sky_model, bc_det, cm, gl, sky)
+    assert rnorm_pw < 1.1 * noise, (rnorm_pw, noise)
+    assert rnorm_gl > 3 * rnorm_pw, (rnorm_gl, rnorm_pw)   # one quadratic cannot follow two
 
 
 if __name__ == "__main__":

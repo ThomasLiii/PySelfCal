@@ -540,13 +540,13 @@ def _check_passes(ctx, recipe, passes):
     jobs = ctx.jobs()
     if len(jobs) != 1:
         raise ConfigError(f"calibrate(passes=...): the N-pass solve runs one job; got {[j.name for j in jobs]}")
-    if recipe.model.spectral_window() is None:
-        raise ConfigError("calibrate(passes=...): the OFFSET pass refits a polynomial along the spectral axis over "
-                          "the model's window: give the model a polynomial with a window (Offsets(polynomial="
-                          "sc.Poly(2, window=range(lo, hi + 1))))")
-    if any(t.times is not None or t.basis is not None for t in recipe.model.offsets):
-        raise ConfigError("calibrate(passes=...): the OFFSET pass refits a polynomial per frame; offset terms with "
-                          "times= or basis= run without passes")
+    if not recipe.model.offsets and not recipe.model.scalar:
+        raise ConfigError("calibrate(passes=...): the model has no offset terms and no frame scalar, so there is "
+                          "nothing for the OFFSET passes to solve")
+    shared = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if t.per != 'frame']
+    if shared:
+        raise ConfigError(f"calibrate(passes=...): the offset terms on {shared} are shared across frames (per=...); "
+                          f"an OFFSET pass solves every frame's offsets on their own and takes per='frame' terms only")
     for name, clip in (('init_clip', passes.init_clip), ('sky_clip', passes.sky_clip),
                        ('offset.clip', passes.offset.clip)):
         per = getattr(clip, 'per', 'frame')

@@ -364,7 +364,9 @@ frames and their pixels. The [Pipeline runbook](pipeline.md) covers the knobs; i
   half-solves. Pass 1 (INIT) is the joint solve of a plain `calibrate`, tiled or
   not. SKY passes then solve the sky terms of every pixel
   in closed form, from moments summed over all tiles (one solve for the whole field, so no seams),
-  and OFFSET passes refit every frame's polynomial offset and scalar against that one sky.
+  and OFFSET passes refit the offsets against that one sky: the model's own offset terms, whatever
+  they are (a polynomial, per-chunk values, terms times known functions), and the scalar, every frame
+  solved directly from its own rows. Neither kind of pass builds the joint matrix.
   `sc.Passes` sets the number of passes `n` and their order; `n = 1` reproduces the plain
   calibration byte for byte. See [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 
