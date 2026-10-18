@@ -29,6 +29,7 @@ rest, for solves whose slowest part is the large scales (:mod:`selfcal.core.defl
 """
 from __future__ import annotations
 
+import math
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Callable, Literal
 
@@ -480,6 +481,11 @@ class Fit(Config):
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
     :class:`Gauge`; None: the solution as solved).
+    ``seed``: the solver's starting vector: ``'scalar'`` (each frame's scalar at the mean of its data, every
+    other column at zero; without scalars each non-sky column at its own diagonal estimate) or ``'offsets'``
+    (every non-sky column at its frame's joint least-squares fit to the data, the sky at zero:
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). A warm start
+    (``calibrate(start=)``) replaces them.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -499,8 +505,12 @@ class Fit(Config):
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
+    seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
 
     def _validate(self):
+        if self.seed not in ('scalar', 'offsets', 'zero'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
+                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

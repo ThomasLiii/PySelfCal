@@ -102,6 +102,10 @@ class Plan:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if r is not None and r.fit.deflate is not None:
             lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
+        if r is not None and getattr(r.fit, 'seed', 'scalar') == 'offsets':
+            lines.append("  start       the sky at zero, every offset column at its frame's joint least-squares fit to the data")
+        if r is not None and getattr(r.fit, 'seed', 'scalar') == 'zero':
+            lines.append("  start       everything at zero (no per-frame scalar seed)")
         if r is not None and r.fit.gauge is not None:
             lines.append(f"  gauge       {describe_gauge(r.fit.gauge)}")
         if self.monitor is not None:

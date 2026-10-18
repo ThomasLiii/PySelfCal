@@ -247,6 +247,71 @@ def _accumulate_runs(acc, cols, w):
         run[1:] = w[a:z]
         acc[col] = np.cumsum(run)[-1]
 
+def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky_blocks: int = 1,
+                           active_mask: np.ndarray | None = None) -> np.ndarray:
+    """A starting vector with the sky at zero and every other column at its joint least-squares fit to
+    the data: ``x_off = argmin |b - A_off x_off|`` (the frames' scalars, chunk constants, slopes, templates
+    ... together, the anchor rows included), solved exactly on each connected block of the offsets'
+    normal matrix (a block per frame, or per group of frames that share offsets) by the pseudo-inverse,
+    as :mod:`selfcal.core.deflation` pairs its patterns. Unlike :func:`compute_x0_from_Ab`, which fits
+    each column alone (a chunk constant and the frame scalar then both take the frame's level), the
+    columns of a frame share the fit, so the start already holds each frame's own level and gradients
+    and the iterations work on what the frames do not explain by themselves.
+
+    ``A``: the system ``setup_lsqr`` builds (csr, BlockCSR or ColSplitCSR; COO is rejected); ``b`` its
+    right-hand side; the first ``num_sky_blocks * h * w`` columns of the FULL layout are the sky. With
+    ``active_mask`` ``A`` is the compacted matrix and the result is expanded to the full layout."""
+    from scipy.sparse import coo_matrix as _coo
+
+    from .blockcsr import BlockCSR, ColSplitCSR
+    from .deflation import _block_pinv_solve, _pieces
+    if not isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+        raise TypeError("compute_x0_offsets_fit needs the CSR or block system setup_lsqr builds, not the COO path")
+    ref_h, ref_w = ref_shape
+    num_sky_full = int(num_sky_blocks) * int(ref_h) * int(ref_w)
+    n = int(A.shape[1])
+    if active_mask is not None:
+        active_mask = np.asarray(active_mask, dtype=bool)
+        n_sky = int(active_mask[:num_sky_full].sum())
+        num_cols_full = int(active_mask.size)
+    else:
+        n_sky = num_sky_full
+        num_cols_full = n
+    n_off = n - n_sky
+    x0 = np.zeros(num_cols_full, dtype=np.float64)
+    if n_off <= 0:
+        return x0
+    G_parts, r = [], np.zeros(n_off)
+    for r0, r1, pieces in _pieces(A):
+        nr = r1 - r0
+        rows, cols, vals = [], [], []
+        for lip, cc, data in pieces:
+            o = cc >= n_sky
+            if not o.any():
+                continue
+            rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+            rows.append(rr[o]); cols.append(cc[o] - n_sky); vals.append(data[o].astype(np.float64))
+        if not rows:
+            continue
+        sub = _coo((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(nr, n_off)).tocsr()
+        r += sub.T @ np.asarray(b[r0:r1], dtype=np.float64)
+        g = (sub.T @ sub).tocoo()
+        G_parts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
+    if not G_parts:
+        return x0
+    G = _coo((np.concatenate([g[2] for g in G_parts]), (np.concatenate([g[0] for g in G_parts]),
+                                                        np.concatenate([g[1] for g in G_parts]))), shape=(n_off, n_off)).tocsr()
+    G.sum_duplicates()
+    X, _info = _block_pinv_solve(G, r[:, None])
+    off = X[:, 0]
+    if active_mask is not None:
+        full = np.flatnonzero(active_mask)
+        x0[full[n_sky:]] = off
+    else:
+        x0[n_sky:] = off
+    return x0
+
+
 def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
                            ref_shape: tuple[int, int], scalar_col_start: int,
                            num_sky_blocks: int = 1,

@@ -295,14 +295,26 @@ class RunContext:
         data and everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`);
         without it, the first sky term starts at zero and every later column at its own diagonal
         least-squares estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky
-        block whatever the model's number)."""
+        block whatever the model's number). With ``Fit(seed='offsets')``, the sky at zero and every other
+        column at its frame's joint least-squares fit (:func:`~selfcal.core.solution.compute_x0_offsets_fit`)."""
         if start is not None:
             return start.vector(active_mask=getattr(cc, 'active_mask', None))
-        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
+        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_offsets_fit, compute_x0_scalar_only
+        if self.seed == 'zero':
+            return None
+        if self.seed == 'offsets':
+            return compute_x0_offsets_fit(cc.A, cc.b, cc.ref_shape, num_sky_blocks=cc.num_sky_blocks,
+                                          active_mask=getattr(cc, 'active_mask', None))
         if self.model.x0_kind == 'from_Ab':
             return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, active_mask=getattr(cc, 'active_mask', None))
         return compute_x0_scalar_only(cc.A, cc.b, cc.ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
                                       num_sky_blocks=cc.num_sky_blocks, active_mask=getattr(cc, 'active_mask', None))
+
+    @property
+    def seed(self) -> str:
+        """The recipe's ``Fit(seed=)``: how the solver starts (``'scalar'`` unless the recipe says ``'offsets'``)."""
+        fit = getattr(getattr(self.spec, 'recipe', None), 'fit', None)
+        return str(getattr(fit, 'seed', 'scalar') or 'scalar')
 
     def solve_options(self):
         """The solver's ``apply_lsqr`` keywords."""
