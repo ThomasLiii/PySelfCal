@@ -226,6 +226,17 @@ def test_the_schur_path_solves_the_normal_equations_exactly(monkeypatch):
     assert np.linalg.norm(G @ X_schur - G @ X_dense) < 1e-9 * np.linalg.norm(R)
 
 
+def test_the_schur_path_stays_put_past_convergence():
+    """The shared-column system far past its convergence (~125 iterations), CGLS at a fixed count: the solution
+    stays at plain least squares' (a response with a null-space component would let it drift: the Schur
+    path returns the minimum-norm one)."""
+    A, b, npix, grid, _ = _shared_system()
+    system = (A, b, npix, grid)
+    x_plain = _converged(system)
+    x, _rec = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=1000, solver='cgls')
+    assert _rel(x, x_plain) < 1e-7
+
+
 # =================================================================== the method
 def test_the_deflated_solution_is_the_least_squares_solution_gauge_included():
     """Polynomial patterns contain both exact gauges of the chunk system (the sky's mean against the
