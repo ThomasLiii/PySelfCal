@@ -32,7 +32,7 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
-from ..config.base import Config, ConfigError, FrozenDict
+from ..config.base import Config, ConfigError, FrozenDict, added
 from ..config.functions import by_value, function_ref
 
 
@@ -423,7 +423,7 @@ class Offsets(Config):
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
     mean_zero: bool = False
-    exclude: Poly | None = None
+    exclude: Poly | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
