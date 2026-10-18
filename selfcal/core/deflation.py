@@ -19,7 +19,10 @@ offset response,
 the least squares over every non-sky column (offsets of any form, per-frame scalars, templates ...),
 solved directly: the normal matrix of those columns, ``B_off^T B_off``, is built from the system
 itself and solved exactly on each of its connected blocks (a block per frame, or per group of frames
-that share offsets), by the pseudo-inverse (the response of minimum norm). The pairs ``z = (F, g(F))``
+that share offsets), by the pseudo-inverse (the response of minimum norm). A column that many frames
+share (a detector-fixed pattern, whatever its term) would merge every block it touches into one; such
+columns, coupled to far more columns than the block's others, are eliminated first by a Schur
+complement over them, which leaves the blocks per frame (:func:`_schur_pinv_solve`). The pairs ``z = (F, g(F))``
 span the deflation space. A combination the data cannot see at all (``|B z|`` below
 :data:`GAUGE_RATIO` of ``|B F|``: a gauge, such as the sky's mean against per-frame scalars) is left
 out, and the rest is made orthogonal to it, so the solution keeps the gauge a plain solve gives
@@ -92,8 +95,17 @@ DEPENDENT = 1e-12
 POLY_ALWAYS = 2
 #: Rows of the matrix per chunk of the float64 passes.
 _ROWS = 1 << 21
-#: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES).
+#: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES, unless
+#: hub columns explain their size).
 _DENSE_BLOCK = 4096
+#: In a block larger than :data:`_DENSE_BLOCK`, a column coupled to more than this multiple of the
+#: block's median coupling count is a hub (an offset many frames share); the hubs are eliminated by a
+#: Schur complement, which leaves the per-frame blocks.
+_HUB_RATIO = 3.0
+#: Up to this many hub columns are eliminated densely (the Schur complement is a dense matrix of that size).
+_SCHUR_MAX = 1 << 14
+#: Elements of the hub-column blocks held at once in the Schur complement's passes.
+_SCHUR_BATCH = 1 << 26
 #: Elements per thread block of the projections.
 _MIN_BLOCK = 1 << 18
 
@@ -159,13 +171,23 @@ def _block_pinv_solve(G, R):
     """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
     connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
     :data:`DEPENDENT` of the block's largest count as zero: the solution of minimum norm), MINRES on
-    blocks larger than :data:`_DENSE_BLOCK`. Returns ``(X, info)``."""
+    blocks larger than :data:`_DENSE_BLOCK`, unless hub columns (coupled to :data:`_HUB_RATIO` times
+    the block's median: offsets many frames share) explain their size: those are eliminated first by
+    :func:`_schur_pinv_solve`, which leaves the per-frame blocks. Returns ``(X, info)``."""
     n = G.shape[0]
     X = np.zeros((n, R.shape[1]))
     if n == 0:
         return X, {'blocks': 0, 'largest': 0, 'zero_eigenvalues': 0}
     ncomp, labels = connected_components(G, directed=False)
     counts = np.bincount(labels, minlength=ncomp)
+    if counts.max() > _DENSE_BLOCK:
+        deg = np.diff(G.indptr)
+        big = counts[labels] > _DENSE_BLOCK
+        hub = np.flatnonzero(big & (deg > _HUB_RATIO * np.median(deg[big])))
+        if 0 < hub.size <= _SCHUR_MAX:
+            out = _schur_pinv_solve(G, R, hub)
+            if out is not None:
+                return out
     order = np.argsort(labels, kind='stable')
     starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
     pos = np.empty(n, dtype=np.int64)
@@ -196,6 +218,133 @@ def _block_pinv_solve(G, R):
         inv = np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0)
         X[cols] = U @ (inv[:, :, None] * (np.swapaxes(U, 1, 2) @ R[cols]))
     return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero}
+
+
+def _schur_pinv_solve(G, R, hub):
+    """``G X = R`` with the hub columns eliminated: for ``G = [[D, B], [B^T, C]]`` (``D`` the other
+    columns, block-diagonal once the hubs are out; ``C`` the hubs' own part), ``X_hub`` solves the
+    Schur complement ``(C - B^T D^+ B) X_hub = R_hub - B^T D^+ R_other`` by its pseudo-inverse and
+    ``X_other = D^+ (R_other - B X_hub)``; ``D^+`` block by block as :func:`_block_pinv_solve` does.
+    Then the solution of minimum norm, as the pseudo-inverse gives: the null space of ``G`` (offset
+    combinations the data cannot see: gauges) is spanned by ``(-D^+ B v, v)`` over the Schur
+    complement's null vectors ``v`` and by the blocks' null vectors that do not couple to the hubs;
+    each candidate is checked against ``G`` and the verified ones are projected out of ``X`` (a response
+    with a null component would put a gauge into the deflation space in part, and the iterate would
+    drift along it). None when the other columns still hold a block larger than :data:`_DENSE_BLOCK`
+    (the caller falls back)."""
+    n, k = G.shape[0], R.shape[1]
+    is_hub = np.zeros(n, dtype=bool)
+    is_hub[hub] = True
+    F, H = np.flatnonzero(~is_hub), np.flatnonzero(is_hub)
+    nF, nH = int(F.size), int(H.size)
+    fpos = np.full(n, -1, dtype=np.int64)
+    fpos[F] = np.arange(nF)
+    hpos = np.full(n, -1, dtype=np.int64)
+    hpos[H] = np.arange(nH)
+    Gc = G.tocoo()
+    er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
+    hr, hc = is_hub[er], is_hub[ec]
+    ff = ~hr & ~hc
+    Gff = coo_matrix((ev[ff], (fpos[er[ff]], fpos[ec[ff]])), shape=(nF, nF)).tocsr()
+    hh = hr & hc
+    C = np.zeros((nH, nH))
+    C[hpos[er[hh]], hpos[ec[hh]]] = ev[hh]
+    del Gc, er, ec, ev, hr, hc, ff, hh
+    ncomp, labels = connected_components(Gff, directed=False)
+    counts = np.bincount(labels, minlength=ncomp)
+    if counts.max() > _DENSE_BLOCK:
+        return None
+    order = np.argsort(labels, kind='stable')
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    pos = np.empty(nF, dtype=np.int64)
+    pos[order] = np.arange(nF) - np.repeat(starts, counts)
+    Gfc = Gff.tocoo()
+    er, ec, ev = Gfc.row.astype(np.int64), Gfc.col.astype(np.int64), Gfc.data
+    ecomp = labels[er]
+    zero = 0
+    groups = []                                        # (block columns (nb, s) in F, U (nb, s, s), 1/w (nb, s))
+    for s in np.unique(counts):
+        comps = np.flatnonzero(counts == s)
+        cols = order[starts[comps][:, None] + np.arange(s)[None, :]]
+        bidx = np.full(ncomp, -1, dtype=np.int64)
+        bidx[comps] = np.arange(comps.size)
+        sel = bidx[ecomp] >= 0
+        blocks = np.zeros((comps.size, s, s))
+        blocks[bidx[ecomp[sel]], pos[er[sel]], pos[ec[sel]]] = ev[sel]
+        w, U = np.linalg.eigh(blocks)
+        top = np.maximum(w.max(axis=1, keepdims=True), 1e-300)
+        ok = w > DEPENDENT * top
+        zero += int((~ok).sum())
+        groups.append((cols, U, np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0), ~ok))
+    del Gfc, er, ec, ev, ecomp, Gff
+
+    def hub_part(rows):
+        """The rows ``rows`` of G restricted to the hub columns, dense ``(len(rows), nH)``."""
+        sub = G[rows]
+        m = is_hub[sub.indices]
+        rid = np.repeat(np.arange(rows.size), np.diff(sub.indptr))
+        out = np.zeros((rows.size, nH))
+        out[rid[m], hpos[sub.indices[m]]] = sub.data[m]
+        return out
+
+    def batches():
+        for cols, U, inv, bad in groups:
+            nb, s = cols.shape
+            step = max(1, _SCHUR_BATCH // max(s * nH, 1))
+            for a in range(0, nb, step):
+                c = cols[a:a + step]
+                flat = c.ravel()
+                yield flat, c.shape[0], s, U[a:a + step], inv[a:a + step], bad[a:a + step], hub_part(F[flat]).reshape(c.shape[0], s, nH)
+
+    RF, RH = R[F], R[H]
+    S = C.copy()
+    Rh = RH.copy()
+    for flat, nb, s, U, inv, _bad, Bb in batches():
+        Ut = np.swapaxes(U, 1, 2)
+        Rb = RF[flat].reshape(nb, s, k)
+        Yb = U @ (inv[:, :, None] * (Ut @ Bb))
+        Zb = U @ (inv[:, :, None] * (Ut @ Rb))
+        S -= Bb.reshape(-1, nH).T @ Yb.reshape(-1, nH)
+        Rh -= Bb.reshape(-1, nH).T @ Zb.reshape(-1, k)
+    w, V = np.linalg.eigh(0.5 * (S + S.T))
+    ok = w > DEPENDENT * max(float(w.max()), 1e-300)
+    zero += int((~ok).sum())
+    Xh = V @ (np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0)[:, None] * (V.T @ Rh))
+    V0 = V[:, ~ok]                                      # the Schur complement's null vectors (nH x m0)
+    X = np.zeros((n, k))
+    X[H] = Xh
+    nulls = [np.concatenate((np.zeros((nF, V0.shape[1])), V0))]      # (-D^+ B v, v): the F part filled below
+    extra = []                                          # the blocks' null vectors that do not couple to the hubs
+    for flat, nb, s, U, inv, bad, Bb in batches():
+        Ut = np.swapaxes(U, 1, 2)
+        rhs = RF[flat].reshape(nb, s, k) - Bb @ Xh
+        X[F[flat]] = (U @ (inv[:, :, None] * (Ut @ rhs))).reshape(-1, k)
+        if V0.shape[1]:
+            nulls[0][flat] = -(U @ (inv[:, :, None] * (Ut @ (Bb @ V0)))).reshape(-1, V0.shape[1])
+        if bad.any() and len(extra) < 64:
+            bi, ei = np.nonzero(bad)
+            for i, e in zip(bi, ei):
+                vec = U[i][:, e]
+                if np.linalg.norm(Bb[i].T @ vec) <= 1e-10 * max(np.linalg.norm(Bb[i]), 1e-300):
+                    u = np.zeros(n)
+                    u[F[flat[i * s:(i + 1) * s]]] = vec
+                    extra.append(u)
+    cands = []
+    if V0.shape[1]:
+        full = np.zeros((n, V0.shape[1]))
+        full[F] = nulls[0][:nF]
+        full[H] = nulls[0][nF:]
+        cands.append(full)
+    if extra:
+        cands.append(np.stack(extra, axis=1))
+    if cands:
+        Nc = np.concatenate(cands, axis=1)
+        gscale = max(float(np.abs(G.diagonal()).max()), 1e-300)
+        good = np.linalg.norm(G @ Nc, axis=0) <= 1e-9 * gscale * np.maximum(np.linalg.norm(Nc, axis=0), 1e-300)
+        if good.any():
+            Q = np.linalg.qr(Nc[:, good])[0]
+            X -= Q @ (Q.T @ X)
+    return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero, 'hubs': nH}
 
 
 def _transform_in_place(M, T, cols=1 << 20):
@@ -461,7 +610,9 @@ class Deflation:
         self.op = None
         logger.info(
             f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
-            f"{info['zero_eigenvalues']} zero eigenvalues), normal-equation residual {self.pairing_residual:.1e}; "
+            f"{info['zero_eigenvalues']} zero eigenvalues"
+            + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
+            + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
             f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s + {t_pass2:.1f} s, "
             f"blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
