@@ -38,7 +38,7 @@ from ...models.offset_structure import ChunkAxes
 from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
 from ..contract import Instrument, Job
 from ..grid import upsample_chunk_map
-from .adapter import SUBCH_WINDOWS, make_readout_chunk_map
+from .adapter import SUBCH_WINDOWS, make_column_chunk_map, make_readout_chunk_map
 from .exposures import read_l2b
 from .spherex_utility import (
     _LVF_PARAMS_DIR,
@@ -137,8 +137,9 @@ class SPHEREx(Instrument):
 
     def geometry(self, oversample=1) -> DetectorGeometry:
         """The LVF parameters, the ``BC`` / ``BW`` maps, the stripped chunk map at detector and
-        grid resolution with its (subchannel, column) axes, and the readout-channel map (no
-        adjacency: that is the model's). ``calib_dir`` / ``lvf_dir`` choose the directories of the
+        grid resolution with its (subchannel, column) axes, the readout-channel map and the
+        per-detector-column map ``detector_column`` (one chunk per column; no adjacency on either:
+        that is the model's). ``calib_dir`` / ``lvf_dir`` choose the directories of the
         calibration maps and the LVF parameters (default: see
         :func:`~selfcal.instruments.spherex.spherex_utility.load_lvf_params`)."""
         det, ns, nch, ncol = self.detector, self.num_sub, self.num_ch, self.num_col
@@ -162,8 +163,12 @@ class SPHEREx(Instrument):
         det_ro, n_ro = make_readout_chunk_map(det_chunk_map.shape)
         readout = ChunkMap(name='readout', det=det_ro, grid=upsample_chunk_map(det_ro, oversample),
                            axes=ChunkAxes.row_major(('readout',), (n_ro,), ('x',)))
+        det_col, n_col = make_column_chunk_map(det_chunk_map.shape)
+        columns = ChunkMap(name='detector_column', det=det_col, grid=upsample_chunk_map(det_col, oversample),
+                           axes=ChunkAxes.row_major(('detector_column',), (n_col,), ('x',)))
         return DetectorGeometry(
-            shape=det_chunk_map.shape, chunk_maps={'subchannel': stripped, 'readout': readout},
+            shape=det_chunk_map.shape,
+            chunk_maps={'subchannel': stripped, 'readout': readout, 'detector_column': columns},
             primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
             extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
                    'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
