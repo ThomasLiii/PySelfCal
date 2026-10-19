@@ -201,6 +201,6 @@ def test_a_frozen_direction_stays_frozen_under_a_column_constraint(tmp_path):
         a = _bowl_amplitude(x[:npix], grid, bowl)
         t = np.linspace(-1, 1, 16)
         quad = np.polyfit(t, x[n - 16:], 2)[0]
-        print(f'{deflate}: bowl {a:+.3f} (free {a_free:+.3f}); the shared pattern's quadratic {quad:+.3f}')
+        print(f'{deflate}: bowl {a:+.3f} (free {a_free:+.3f}); the shared pattern quadratic {quad:+.3f}')
         assert abs(a) < 0.06 and quad > 0.05                            # the bowl is the pattern's, not the sky's
         assert abs(np.polyfit(t, x[n - 16:], 1)[0]) < 1e-6                 # the constraint still holds exactly
