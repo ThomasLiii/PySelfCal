@@ -618,6 +618,11 @@ class Deflation:
         E2 = T.T @ E @ T
         lam, U2 = np.linalg.eigh(0.5 * (E2 + E2.T))
         T = T @ U2
+        # Everything the decomposition found is kept for the record: the directions in pattern coordinates
+        # (column j of `directions` = the weights of the patterns in direction j), their eigenvalues, what the
+        # data see of each, and which were kept / frozen / exact gauges (summary()).
+        self.directions = np.array(T, copy=True)
+        self.eigenvalues = np.array(lam, copy=True)
         wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
         with np.errstate(divide='ignore', invalid='ignore'):
             rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
@@ -629,6 +634,7 @@ class Deflation:
         if below is not None:
             keep &= self.seen > float(below)                       # the user's rule: unseen directions are gauges
         frozen = exact & ~keep                                     # the rule's directions: frozen at zero amplitude
+        self.kept_mask, self.frozen_mask, self.exact_mask = keep.copy(), frozen.copy(), ~exact
         self.gauges = int((~keep).sum())
         self.gauge_below = None if below is None else float(below)
         self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
@@ -906,7 +912,17 @@ class Deflation:
                 'nullness_min': float(self.nullness.min()), 'nullness_median': float(np.median(self.nullness)),
                 'pairing_residual': float(self.pairing_residual),
                 'coarse_residual_drop': float(self.c_star @ (self.lam * self.c_star)),
-                'resolve_change': None if math.isnan(self.resolve_change) else float(self.resolve_change)}
+                'resolve_change': None if math.isnan(self.resolve_change) else float(self.resolve_change),
+                # the decomposition itself (small: patterns x patterns), for anyone reading the solve later
+                'pattern_labels': list(self.labels),
+                'nullness_by_pattern': [float(v) for v in self.nullness],
+                'eigenvalues': [float(v) for v in self.eigenvalues],
+                'seen_by_direction': [float(v) for v in self.seen],
+                'kept_directions': [bool(v) for v in self.kept_mask],
+                'frozen_directions': [bool(v) for v in self.frozen_mask],
+                'exact_gauge_directions': [bool(v) for v in self.exact_mask],
+                'eigenvectors': [[float(f'{v:.7g}') for v in col] for col in self.directions.T],   # direction j = weights over pattern_labels
+                'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
 
     def summary_json(self) -> str:
         return json.dumps(self.summary(), sort_keys=True)
