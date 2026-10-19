@@ -426,6 +426,23 @@ def _offset_csr(nr, n_off, lip, pos, d64, n_sky_S):
     np.cumsum(counts, out=indptr[1:])
     return indptr, (pos[o] - n_sky_S).astype(np.int64), d64[o]
 
+
+class _Slot:
+    """Reusable float64 buffers of one task slot: ``take(name, shape)`` returns a zeroed view of that shape, grown
+    when a request exceeds the buffer."""
+
+    def __init__(self):
+        self.bufs = {}
+
+    def take(self, name, shape):
+        rows, cols = shape
+        b = self.bufs.get(name)
+        if b is None or b.shape[0] < rows or b.shape[1] != cols:
+            b = self.bufs[name] = np.empty((max(rows, 1), cols))
+        v = b[:rows]
+        v.fill(0.0)
+        return v
+
 def _transform_in_place(M, T, cols=1 << 20):
     """``T^T M`` written over the first ``T.shape[1]`` rows of ``M`` (k x n, C order), a column block at a
     time; returns those rows (contiguous)."""
@@ -637,9 +654,9 @@ class Deflation:
             C1 = np.zeros((k, k)); C2 = np.zeros((k, k))
             acc2 = []
 
-            def images(r0, r1, pieces):
+            def images(r0, r1, pieces, buf):
                 nr = r1 - r0
-                U = np.zeros((nr, k + 1))
+                U = buf.take('U', (nr, k + 1))
                 offs = []
                 for lip, cols, data in pieces:
                     pos = cols if self._colmap is None else self._colmap[cols]
@@ -652,12 +669,11 @@ class Deflation:
                 pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
                 c1 = c2 = None
                 if offs:
-                    Ud = np.zeros((nr, k))
+                    Ud = buf.take('Ud', (nr, k))
                     for ip, ci, dd in offs:
                         _sparsetools.csr_matvecs(nr, n_off, k, ip, ci, dd, Delta, Ud)
                     c1 = U[:, :k].T @ Ud
                     c2 = Ud.T @ Ud
-                    del Ud
                 del offs
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
                 U[:, k] = bc
@@ -792,6 +808,7 @@ class Deflation:
         self.setup_s = time.perf_counter() - t0
         self.resolve_change = math.nan
         self.op = None
+        st = self.sweep_timing
         logger.info(
             f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
             f"{info['zero_eigenvalues']} zero eigenvalues"
@@ -799,7 +816,8 @@ class Deflation:
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
             f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
-            f"matrix {t_g:.1f} s of a thread's) + {t_pass2:.1f} s, blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+            f"matrix {t_g:.1f} s of a thread's) + {t_pass2:.1f} s (chunks {st['work_thread_s']:.0f} thread-s over {st['work_wall_s']:.0f} s, "
+            f"adds {st['add_thread_s']:.0f} thread-s over {st['add_wall_s']:.0f} s, {st['threads']} threads), blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
 
     # ---------------------------------------------------------------- the sweeps over the matrix (float64, threaded)
     def _over_chunks(self, descs, fn):
@@ -824,7 +842,7 @@ class Deflation:
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
         n_off = self.nS - n_sky_S
 
-        def partials(mp):
+        def partials(mp, buf):
             """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(n_off, m)``."""
             (r0, r1, pieces), (U, x) = mp
             nr = r1 - r0
@@ -852,7 +870,7 @@ class Deflation:
                 starts = np.flatnonzero(np.diff(ps, prepend=-1))
                 uniq = ps[starts]
                 ip = np.append(starts, ps.size).astype(np.int64)
-                part = np.zeros((uniq.size, m))
+                part = buf.take('part', (uniq.size, m))
                 # the sums per column as a sparse product (one row per column of the chunk): the C kernel, which
                 # runs without the GIL (numpy's take / reduceat hold it)
                 _sparsetools.csr_matvecs(uniq.size, nr, m, ip, rs, ds, U, part)
@@ -861,13 +879,27 @@ class Deflation:
                 uniq, part = np.zeros(0, dtype=np.int64), np.zeros((0, m))
             return uniq, part, off, x
 
-        def work(desc):
+        # One buffer slot per task of a batch (U, Ud, part: a gigabyte per chunk at full scale), kept for the whole
+        # pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises across threads.
+        slots = [_Slot() for _ in range(nt)]
+        t_work = [0.0] * nt
+        t_add = [0.0] * nt
+        t_wall = [0.0, 0.0]
+
+        def work(i_desc):
+            i, desc = i_desc
+            t0 = time.perf_counter()
             mp = _piece(storage, desc)
-            return partials((mp, images(*mp)))
+            buf = slots[i]
+            out_ = partials((mp, images(*mp, buf)), buf)
+            t_work[i] += time.perf_counter() - t0
+            return out_
 
         for a in range(0, len(descs), nt):
-            batch = descs[a:a + nt]
+            batch = list(enumerate(descs[a:a + nt]))
+            t0 = time.perf_counter()
             parts = [work(d) for d in batch] if self._pool is None else list(self._pool.map(work, batch))
+            t_wall[0] += time.perf_counter() - t0
             if extra is not None:
                 extra.extend(pt[3] for pt in parts)
             for uniq, part, off, _x in parts:
@@ -887,6 +919,7 @@ class Deflation:
                 lo, hi = int(cuts[j]), int(cuts[j + 1])
                 if hi <= lo:
                     return
+                t0 = time.perf_counter()
                 view = out[lo:hi]
                 for uniq, part, _off, _x in parts:
                     i0, i1 = np.searchsorted(uniq, (lo, hi))
@@ -895,9 +928,14 @@ class Deflation:
                         ip[uniq[i0:i1] - lo + 1] = 1
                         np.cumsum(ip, out=ip)
                         _sparsetools.csr_matvecs(hi - lo, i1 - i0, m, ip, np.arange(i1 - i0, dtype=np.int64), np.ones(i1 - i0), part[i0:i1], view)
+                t_add[j] += time.perf_counter() - t0
 
+            t0 = time.perf_counter()
             self._wait(self._submit(add, nt))
+            t_wall[1] += time.perf_counter() - t0
             del parts
+        self.sweep_timing = {'work_thread_s': float(sum(t_work)), 'work_wall_s': t_wall[0],
+                             'add_thread_s': float(sum(t_add)), 'add_wall_s': t_wall[1], 'threads': nt}
         return out
 
     def _forward(self, storage, v, fn):
@@ -1108,7 +1146,7 @@ class Deflation:
         ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
         xS = self._gather(x)
 
-        def residual(r0, r1, pieces):
+        def residual(r0, r1, pieces, _buf):
             nr = r1 - r0
             r = np.array(b[r0:r1], dtype=np.float64)
             acc = np.zeros(nr)
