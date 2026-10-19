@@ -554,6 +554,7 @@ class Deflation:
             self._colmap = cm
         # The column constraints (solver coordinates) on the offset columns of this space: the offsets'
         # normal matrix is projected, G -> P G P, so the response stays in the allowed subspace.
+        self._projector = projector                  # the column constraints in solver coordinates (None: none)
         self._proj_off = None
         if projector is not None:
             cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
@@ -1068,7 +1069,9 @@ class Deflation:
         if x0 is None:
             return None
         y0 = np.array(x0, copy=True)
-        self._scatter(y0, self.project(x0))
+        if self._projector is not None:
+            self._projector.apply(y0)
+        self._scatter(y0, self.project(y0))
         return y0
 
     def shifted(self, b, dtype=np.float32) -> np.ndarray:
@@ -1110,15 +1113,21 @@ class Deflation:
         dt = np.dtype(op.dtype)
         buf = np.empty(n, dtype=dt)
 
+        pc = self._projector
+
         def matvec(y):
             y = np.asarray(y).reshape(-1)
             np.copyto(buf, y, casting='unsafe')
-            self._scatter(buf, self.project(y))
-            return op.matvec(buf)
-
+            if pc is not None:
+                pc.apply(buf)                            # B P Pc: the iterate's part outside the allowed subspace
+            self._scatter(buf, self.project(buf))        # goes first, so P's orthogonality to the space holds
+            return op.matvec(buf)                        # (Pc and P do not commute; the constrained columns are
+                                                         # mixed into W = N V)
         def rmatvec(u):
             out = np.asarray(op.rmatvec(u))
             self._scatter(out, self._project_transposed(self._gather(out)))
+            if pc is not None:
+                pc.apply(out)                            # the transpose: Pc P^T Pc A^T
             return out
 
         return LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
@@ -1128,6 +1137,8 @@ class Deflation:
         vectors lie in the complement of the space in exact arithmetic; rounding, which the recurrence
         amplifies once the solve has converged, would otherwise let the iterate drift along directions the
         deflated operator cannot see."""
+        if self._projector is not None:
+            self._projector.apply(v)
         vS = self._gather(v)
         self._sub(vS, self.V, self._dot(self.V, vS))
         self._scatter(v, vS)
@@ -1135,7 +1146,9 @@ class Deflation:
     def full(self, y) -> np.ndarray:
         """The solution an iterate ``y`` of the solver stands for, ``x_c + P y``, in ``y``'s dtype."""
         x = np.array(y, copy=True)
-        vS = self.project(y)
+        if self._projector is not None:
+            self._projector.apply(x)
+        vS = self.project(x)
         vS += self.x_c
         self._scatter(x, vS)
         return x
@@ -1158,7 +1171,10 @@ class Deflation:
 
         g = self._transposed_products(self._storage, residual, 1, self.n_sky_S)[:, 0]
         dc = self._dot(self.V, g) / self.lam
-        dc[~self._free] = 0.0                                       # the frozen directions stay at zero
+        # A frozen direction: the data ask for c_data along it and the gradient says dc is missing, so the iterate
+        # holds c_data - dc; it goes back to zero (rounding, or an iterate outside the allowed subspace, may have
+        # moved it; a solved direction is re-solved the same way).
+        dc[~self._free] -= self._c_data[~self._free]
         cnorm = float(np.linalg.norm(self.c_star))
         self.resolve_change = float(np.linalg.norm(dc)) / cnorm if cnorm > 0 else 0.0
         self._sub(xS, self.V, -dc)

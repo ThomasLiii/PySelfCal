@@ -172,3 +172,35 @@ def test_the_shared_absorption_rule_finds_the_shared_offsets_in_a_small_system(t
     _, rec = _solve(system, sc.Deflate(2, absorbed_by_shared=3.0), str(tmp_path))
     d = json.loads(rec.deflation)
     assert d['shared_offsets'] == 16 and d['frozen_directions'].count(True) == 1
+
+
+def test_a_frozen_direction_stays_frozen_under_a_column_constraint(tmp_path):
+    """With a column constraint (``exclusions=``: the shared pattern without its constant and slope) the constraint's
+    projector and the deflation's do not commute; the operator applies the constraint before the deflation's
+    projection and the re-solve brings a frozen direction back to zero, so the freeze holds (before that the solve
+    returned the free solution: the bowl at its full amplitude)."""
+    from test_exclusions import _poly_basis
+    system = _shared_pattern_system(carry=0.95)
+    A, b, npix, grid, bowl = system
+    n = A.shape[1]
+    excl = [(np.arange(n - 16, n)[None, :], _poly_basis(16, 1))]
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+
+    def solve(deflate):
+        return apply_lsqr(A[:, active].tocsr(), b.copy(), ref_shape=grid, atol=0.0, btol=0.0, conlim=0.0, damp=0.0,
+                          solver='cgls', n_threads=1, iter_lim=400, active_mask=active, num_cols_full=n, return_record=True,
+                          scratch_dir=str(tmp_path), sky_names=('sky',), deflate=deflate, exclusions=excl)
+
+    x_free, _ = solve(sc.Deflate(2))
+    a_free = _bowl_amplitude(x_free[:npix], grid, bowl)
+    assert a_free == pytest.approx(0.4, abs=0.05)
+    for deflate in (sc.Deflate(2, absorbed_by_shared=3.0), sc.Deflate(2, gauge_below=0.3)):
+        x, rec = solve(deflate)
+        d = json.loads(rec.deflation)
+        assert d['frozen_directions'].count(True) == 1
+        a = _bowl_amplitude(x[:npix], grid, bowl)
+        t = np.linspace(-1, 1, 16)
+        quad = np.polyfit(t, x[n - 16:], 2)[0]
+        print(f'{deflate}: bowl {a:+.3f} (free {a_free:+.3f}); the shared pattern's quadratic {quad:+.3f}')
+        assert abs(a) < 0.06 and quad > 0.05                            # the bowl is the pattern's, not the sky's
+        assert abs(np.polyfit(t, x[n - 16:], 1)[0]) < 1e-6                 # the constraint still holds exactly
