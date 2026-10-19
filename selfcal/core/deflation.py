@@ -141,32 +141,45 @@ def storage_of(operator, fallback=None):
     return fallback
 
 
-def _pieces(storage, rows=_ROWS):
-    """The matrix in row chunks: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr
-    (int64, from 0) per piece; one piece per column range of a ColSplitCSR, one otherwise."""
+def _piece_index(storage, rows=_ROWS):
+    """The row chunks of the matrix as descriptors ``(block, lr0, lr1)`` (cheap: nothing is read), in row order."""
     if isinstance(storage, ColSplitCSR):
-        for bi in range(storage.nblocks):
-            base = int(storage.row_bounds[bi])
-            nrows = int(storage.row_bounds[bi + 1]) - base
-            for lr0 in range(0, nrows, rows):
-                lr1 = min(nrows, lr0 + rows)
-                out = []
-                for t, (d, idx, ip) in enumerate(storage.sub[bi]):
-                    s0, s1 = int(ip[lr0]), int(ip[lr1])
-                    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-                    out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
-                yield base + lr0, base + lr1, out
-        return
-    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
-    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
-    for blk, base in zip(blocks, bounds):
-        nrows = blk.shape[0]
-        ip = blk.indptr
+        sizes = [int(storage.row_bounds[bi + 1]) - int(storage.row_bounds[bi]) for bi in range(storage.nblocks)]
+    else:
+        blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+        sizes = [blk.shape[0] for blk in blocks]
+    out = []
+    for bi, nrows in enumerate(sizes):
         for lr0 in range(0, nrows, rows):
-            lr1 = min(nrows, lr0 + rows)
+            out.append((bi, lr0, min(nrows, lr0 + rows)))
+    return out
+
+
+def _piece(storage, desc):
+    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (int64, from 0) per
+    piece; one piece per column range of a ColSplitCSR, one otherwise."""
+    bi, lr0, lr1 = desc
+    if isinstance(storage, ColSplitCSR):
+        base = int(storage.row_bounds[bi])
+        out = []
+        for t, (d, idx, ip) in enumerate(storage.sub[bi]):
             s0, s1 = int(ip[lr0]), int(ip[lr1])
             lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-            yield int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+            out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
+        return base + lr0, base + lr1, out
+    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
+    blk, base = blocks[bi], bounds[bi]
+    ip = blk.indptr
+    s0, s1 = int(ip[lr0]), int(ip[lr1])
+    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
+    return int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+
+
+def _pieces(storage, rows=_ROWS):
+    """The matrix in row chunks (:func:`_piece` of every descriptor of :func:`_piece_index`)."""
+    for desc in _piece_index(storage, rows):
+        yield _piece(storage, desc)
 
 
 def _block_pinv_solve(G, R, project=None, shared=False):
@@ -521,39 +534,58 @@ class Deflation:
         self._scratch = {}
         try:
             # Pass 1 (float64, one sweep over the matrix for all the patterns at once, scipy's multi-vector kernels:
-            # the matrix is read once, not once per pattern): each pattern's sky image U = B F, the offsets' response
-            # R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product per row block).
+            # the matrix is read once, not once per pattern; the row chunks over the threads, each thread's partial
+            # sums combined in a fixed order: deterministic for a thread count): each pattern's sky image U = B F,
+            # the offsets' response R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product
+            # per row chunk).
             t = time.perf_counter()
-            t_g = 0.0
             Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
-            sky_norm2 = np.zeros(k)
-            Rt = np.zeros((n_off, k))
-            gparts = []
-            for r0, r1, pieces in _pieces(storage):
-                nr = r1 - r0
-                U = np.zeros((nr, k))
-                offs = []
-                for lip, cols, data in pieces:
-                    pos = cols if self._colmap is None else self._colmap[cols]
-                    d64 = data.astype(np.float64)
-                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
-                    o = pos >= n_sky_S
-                    if o.any():
-                        rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-                        offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
-                sky_norm2 += np.einsum('ij,ij->j', U, U)
-                if offs:
-                    rr = np.concatenate([o[0] for o in offs])
-                    cc = np.concatenate([o[1] for o in offs])
-                    dd = np.concatenate([o[2] for o in offs])
-                    sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
-                    _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, Rt)
-                    tg = time.perf_counter()
-                    g = (sub.T @ sub).tocoo()
-                    gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
-                    t_g += time.perf_counter() - tg
-                    del g, sub
-                del U, offs
+            descs = _piece_index(storage)
+
+            def pass1(my):
+                sky_norm2 = np.zeros(k)
+                Rt = np.zeros((n_off, k))
+                gparts = []
+                t_g = 0.0
+                for desc in my:
+                    r0, r1, pieces = _piece(storage, desc)
+                    nr = r1 - r0
+                    U = np.zeros((nr, k))
+                    offs = []
+                    for lip, cols, data in pieces:
+                        pos = cols if self._colmap is None else self._colmap[cols]
+                        d64 = data.astype(np.float64)
+                        _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
+                        o = pos >= n_sky_S
+                        if o.any():
+                            rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+                            offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
+                    sky_norm2 += np.einsum('ij,ij->j', U, U)
+                    if offs:
+                        rr = np.concatenate([o[0] for o in offs])
+                        cc = np.concatenate([o[1] for o in offs])
+                        dd = np.concatenate([o[2] for o in offs])
+                        sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
+                        _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, Rt)
+                        tg = time.perf_counter()
+                        g = (sub.T @ sub).tocoo()
+                        gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
+                        t_g += time.perf_counter() - tg
+                        del g, sub
+                    del U, offs
+                return sky_norm2, Rt, gparts, t_g
+
+            parts = self._over_chunks(descs, pass1)
+            sky_norm2 = parts[0][0].copy()
+            Rt = parts[0][1]
+            gparts = list(parts[0][2])
+            t_g = parts[0][3]
+            for p in parts[1:]:
+                sky_norm2 += p[0]
+                Rt += p[1]
+                gparts.extend(p[2])
+                t_g = max(t_g, p[3])
+            del parts
             R = np.ascontiguousarray(Rt.T)
             del Rt
             if gparts:
@@ -584,44 +616,56 @@ class Deflation:
             del G, R, X, res, Xf
             t_pair = time.perf_counter() - t
 
-            # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside.
+            # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside (the
+            # right-hand side rides along as one more column of U). Threaded in two stages per batch of row
+            # chunks: the images U = B Z chunk by chunk, then the transposed products over the columns, each
+            # thread owning a range of them (:meth:`_transposed_products`; the sums per column in row order, as a
+            # single sweep makes them).
             t = time.perf_counter()
-            NZt = np.zeros((nS, k))
-            ATb = np.zeros(nS)
             pair_norm2 = np.zeros(k)
             bnorm2 = 0.0
             C1 = np.zeros((k, k)); C2 = np.zeros((k, k))
-            for r0, r1, pieces in _pieces(storage):
+            acc2 = []
+
+            def images(r0, r1, pieces):
                 nr = r1 - r0
-                chunk = []
-                U = np.zeros((nr, k))
+                U = np.zeros((nr, k + 1))
                 offs = []
                 for lip, cols, data in pieces:
                     pos = cols if self._colmap is None else self._colmap[cols]
                     d64 = data.astype(np.float64)
-                    chunk.append((lip, pos, d64))
-                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
+                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
                     if Delta is not None:
                         o = pos >= n_sky_S
                         if o.any():
                             rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
                             offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
-                pair_norm2 += np.einsum('ij,ij->j', U, U)
+                pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
+                c1 = c2 = None
                 if offs:
                     sub = coo_matrix((np.concatenate([o[2] for o in offs]), (np.concatenate([o[0] for o in offs]), np.concatenate([o[1] for o in offs]))),
                                      shape=(nr, n_off)).tocsr()
                     Ud = np.zeros((nr, k))
                     _sparsetools.csr_matvecs(nr, n_off, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, Delta, Ud)
-                    C1 += U.T @ Ud
-                    C2 += Ud.T @ Ud
+                    c1 = U[:, :k].T @ Ud
+                    c2 = Ud.T @ Ud
                     del sub, Ud
                 del offs
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
-                for lip, pos, d64 in chunk:
-                    _sparsetools.csc_matvecs(nS, nr, k, lip, pos, d64, U, NZt)
-                    _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
-                bnorm2 += float(bc @ bc)
-                del chunk, bc, U
+                U[:, k] = bc
+                return U, (pn, float(bc @ bc), c1, c2)
+
+            NZb = self._transposed_products(storage, images, k + 1, acc2)
+            for pn, bn, c1, c2 in acc2:
+                pair_norm2 += pn
+                bnorm2 += bn
+                if c1 is not None:
+                    C1 += c1
+                    C2 += c2
+            del acc2
+            ATb = np.ascontiguousarray(NZb[:, k])
+            NZt = np.ascontiguousarray(NZb[:, :k])
+            del NZb
             del Zt
             NZ = np.ascontiguousarray(NZt.T)
             del NZt
@@ -746,8 +790,81 @@ class Deflation:
             + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
-            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (of which the offsets' "
-            f"normal matrix {t_g:.1f} s) + {t_pass2:.1f} s, blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
+            f"matrix {t_g:.1f} s of a thread's) + {t_pass2:.1f} s, blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+
+    # ---------------------------------------------------------------- the sweeps over the matrix (float64, threaded)
+    def _over_chunks(self, descs, fn):
+        """``fn(my)`` for each thread's share ``my`` of the row-chunk descriptors (round robin, so the share depends
+        on the thread count only); returns the threads' results in thread order (one result without a pool)."""
+        if self._pool is None:
+            return [fn(descs)]
+        nt = max(1, min(self._pool._max_workers, len(descs)))
+        shares = [descs[j::nt] for j in range(nt)]
+        return list(self._pool.map(fn, shares))
+
+    def _transposed_products(self, storage, images, m, extra=None):
+        """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
+        chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). Per batch of chunks
+        the images are made in parallel, then each thread scatters the entries of the columns it owns (disjoint
+        ranges of the output); every column's sum runs over its entries in row order, as one sweep makes it, so
+        the result does not depend on the thread count."""
+        out = np.zeros((self.nS, m))
+        descs = _piece_index(storage)
+        nt = 1 if self._pool is None else max(1, self._pool._max_workers)
+        cuts = np.linspace(0, self.nS, nt + 1, dtype=np.int64)
+        for a in range(0, len(descs), nt):
+            batch = descs[a:a + nt]
+            if self._pool is None:
+                made = [(_piece(storage, d)) for d in batch]
+            else:
+                made = list(self._pool.map(lambda d: _piece(storage, d), batch))
+            if self._pool is None:
+                imgs = [images(*mp) for mp in made]
+            else:
+                imgs = list(self._pool.map(lambda mp: images(*mp), made))
+            if extra is not None:
+                extra.extend(im[1] for im in imgs)
+
+            def scatter(j):
+                lo, hi = int(cuts[j]), int(cuts[j + 1])
+                if hi <= lo:
+                    return
+                for (r0, r1, pieces), (U, _x) in zip(made, imgs):
+                    nr = r1 - r0
+                    for lip, cols, data in pieces:
+                        pos = cols if self._colmap is None else self._colmap[cols]
+                        sel = np.flatnonzero((pos >= lo) & (pos < hi))
+                        if sel.size == 0:
+                            continue
+                        rows = np.searchsorted(lip, sel, side='right') - 1
+                        sub = coo_matrix((data[sel].astype(np.float64), (pos[sel] - lo, rows)), shape=(hi - lo, nr)).tocsr()
+                        _sparsetools.csr_matvecs(hi - lo, nr, m, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, out[lo:hi])
+                        del sub
+
+            self._wait(self._submit(scatter, nt))
+            del made, imgs
+        return out
+
+    def _forward(self, storage, v, fn):
+        """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
+        chunks, each exactly as a single sweep computes it)."""
+        descs = _piece_index(storage)
+
+        def chunk(desc):
+            r0, r1, pieces = _piece(storage, desc)
+            nr = r1 - r0
+            acc = np.zeros(nr)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), v, acc)
+            fn(r0, r1, acc)
+
+        if self._pool is None:
+            for d in descs:
+                chunk(d)
+        else:
+            list(self._pool.map(chunk, descs))
 
     # ---------------------------------------------------------------- the projections (float64, threaded)
     def _submit(self, fn, count):
@@ -851,13 +968,11 @@ class Deflation:
         ``b``'s dtype; the frozen directions' signature leaves too, :meth:`_shift_vector`) and return the
         solver's start: ``P x0`` (in ``x0``'s dtype), or None."""
         xb = self._shift_vector()
-        for r0, r1, pieces in _pieces(self._storage):
-            nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), xb, acc)
+
+        def shift(r0, r1, acc):
             b[r0:r1] = (np.asarray(b[r0:r1], dtype=np.float64) - acc).astype(b.dtype)
+
+        self._forward(self._storage, xb, shift)
         if x0 is None:
             return None
         y0 = np.array(x0, copy=True)
@@ -871,13 +986,11 @@ class Deflation:
         m = self.shape[0]
         out = np.empty(m, dtype=dtype)
         xb = self._shift_vector()
-        for r0, r1, pieces in _pieces(self._storage):
-            nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), xb, acc)
+
+        def shift(r0, r1, acc):
             out[r0:r1] = np.asarray(b[r0:r1], dtype=np.float64) - acc
+
+        self._forward(self._storage, xb, shift)
         return out
 
     def _shift_vector(self) -> np.ndarray:
@@ -940,8 +1053,8 @@ class Deflation:
         over the matrix; ``b``: the original right-hand side, an array or a parked vector), in place; returns
         ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
         xS = self._gather(x)
-        g = np.zeros(self.nS)
-        for r0, r1, pieces in _pieces(self._storage):
+
+        def residual(r0, r1, pieces):
             nr = r1 - r0
             r = np.array(b[r0:r1], dtype=np.float64)
             acc = np.zeros(nr)
@@ -949,9 +1062,9 @@ class Deflation:
                 pos = cols if self._colmap is None else self._colmap[cols]
                 _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), xS, acc)
             r -= acc
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csc_matvec(self.nS, nr, lip, pos, data.astype(np.float64), r, g)
+            return r.reshape(nr, 1), None
+
+        g = self._transposed_products(self._storage, residual, 1)[:, 0]
         dc = self._dot(self.V, g) / self.lam
         dc[~self._free] = 0.0                                       # the frozen directions stay at zero
         cnorm = float(np.linalg.norm(self.c_star))
