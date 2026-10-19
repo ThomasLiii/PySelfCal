@@ -655,6 +655,14 @@ class Deflation:
         self.lam = lam[keep].copy()
         self.kept = int(self.lam.size)
         spectrum = ', '.join(f'{v:.2g}' for v in np.sort(self.seen)[:12])
+        # the composition of the least-seen directions (below 0.1 of the best-seen): their three largest pattern weights
+        comp = []
+        for j in np.argsort(self.seen):
+            if self.seen[j] >= 0.1 or len(comp) >= 8:
+                break
+            w = self.directions[:, j]; top = np.argsort(-np.abs(w))[:3]
+            comp.append(f"{self.seen[j]:.2g} = " + ' '.join(f'{w[i]:+.2f}*{self.labels[i]}' for i in top))
+        logger.info('Deflation: the least-seen directions, by their largest pattern weights: ' + ' | '.join(comp))
         logger.info(f"Deflation: the directions' seen fractions (sqrt(lambda / lambda_max); the {min(12, self.seen.size)} "
                     f"smallest of {self.seen.size}): {spectrum}"
                     + ('' if self.gauge_below is None else f"; the rule gauge_below={self.gauge_below:g} leaves out {self.gauges}"))
