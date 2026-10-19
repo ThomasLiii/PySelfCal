@@ -624,18 +624,22 @@ class Deflation:
         lam_max = max(float(lam.max()), 1e-300)
         self.seen = np.sqrt(np.maximum(lam, 0.0) / lam_max)        # per direction: what the data see of it, relative
         below = getattr(self.settings, 'gauge_below', None)
-        keep = lam > DEPENDENT * lam_max
+        exact = lam > DEPENDENT * lam_max                          # False: an exact gauge (left as a plain solve leaves it)
+        keep = exact.copy()
         if below is not None:
             keep &= self.seen > float(below)                       # the user's rule: unseen directions are gauges
+        frozen = exact & ~keep                                     # the rule's directions: frozen at zero amplitude
         self.gauges = int((~keep).sum())
         self.gauge_below = None if below is None else float(below)
         self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
         # Under the rule the left-out directions are FROZEN at zero amplitude: the solver's iterations are kept
         # orthogonal to them (an exact gauge needs no such guard, the data never push along it; a near-null
         # direction they push weakly, and the iterations would rebuild its least-squares value).
+        # (An exact gauge is not frozen: the data never push along it, and its value stays the start's, as
+        # without the rule: the zero point of the sky against the frame scalars, for one.)
         self.D = None
-        if below is not None and (~keep).any():
-            Dm = T[:, ~keep].T @ Z                                        # (dropped, nS)
+        if below is not None and frozen.any():
+            Dm = T[:, frozen].T @ Z                                       # (frozen, nS)
             g = Dm @ Dm.T
             wd, Ud = np.linalg.eigh(g)
             okd = wd > DEPENDENT * max(float(wd.max()), 1e-300)
