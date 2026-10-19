@@ -733,7 +733,7 @@ class Deflation:
         if M.dtype == np.float64:
             yield a, c, M[:, a:c]
             return
-        key = ('sub', threading.get_ident())
+        key = ('sub', threading.get_ident(), int(M.shape[0]))        # per thread and per row count (V, W and D differ)
         buf = self._scratch.get(key)
         if buf is None:
             buf = self._scratch[key] = np.empty((M.shape[0], self._SUB), dtype=np.float64)

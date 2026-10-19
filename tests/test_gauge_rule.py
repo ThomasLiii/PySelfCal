@@ -40,12 +40,12 @@ def _partly_shared_system(frames=300, shared=16, carry=0.9, seed=3, chunks=1):
     return A2, b, npix, grid, shared, bowl
 
 
-def _solve(system, deflate, tmp, iter_lim=600):
+def _solve(system, deflate, tmp, iter_lim=600, float32=False):
     A, b, npix, grid = system[:4]
     active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
     return apply_lsqr(A[:, active].tocsr(), b.copy(), ref_shape=grid, atol=0.0, btol=0.0, conlim=0.0, damp=0.0,
                       solver='cgls', n_threads=1, iter_lim=iter_lim, active_mask=active, num_cols_full=A.shape[1],
-                      return_record=True, scratch_dir=tmp, sky_names=('sky',), deflate=deflate)
+                      return_record=True, scratch_dir=tmp, sky_names=('sky',), deflate=deflate, use_float32=float32)
 
 
 def _bowl_amplitude(sky, grid, bowl):
@@ -66,11 +66,12 @@ def test_unset_the_rule_changes_nothing_and_the_record_shows_the_spectrum(tmp_pa
     assert d['seen'][-1] == pytest.approx(1.0)
 
 
-def test_a_near_null_sky_mode_is_zeroed_by_the_rule_and_solved_without_it(tmp_path):
+@pytest.mark.parametrize('float32', [False, True])     # float32: the deflation's vectors in float32 storage (the production case)
+def test_a_near_null_sky_mode_is_zeroed_by_the_rule_and_solved_without_it(tmp_path, float32):
     system = _partly_shared_system(carry=0.9)
     A, b, npix, grid, shared, bowl = system
-    x_free, rec_free = _solve(system, sc.Deflate(2), str(tmp_path))
-    x_rule, rec_rule = _solve(system, sc.Deflate(2, gauge_below=0.3), str(tmp_path))
+    x_free, rec_free = _solve(system, sc.Deflate(2), str(tmp_path), float32=float32)
+    x_rule, rec_rule = _solve(system, sc.Deflate(2, gauge_below=0.3), str(tmp_path), float32=float32)
     a_free = _bowl_amplitude(x_free[:npix], grid, bowl)
     a_rule = _bowl_amplitude(x_rule[:npix], grid, bowl)
     import json
