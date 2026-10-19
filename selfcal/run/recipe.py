@@ -361,6 +361,22 @@ class Deflate(Config):
     such modes have no sky amplitude, whatever the footprint or the model made them. Set it at
     a gap of the spectrum (the solve's log prints it).
 
+    ``absorbed_by_shared``: the same freeze decided by what absorbs the direction rather than by a level,
+    so one run decides it: the setup also computes each direction's visibility when the frame-shared
+    offsets take no part in the absorption. Those are found in the system itself (the offset columns
+    coupled to far more columns than the others: whatever term, shape or basis made them, a constant
+    per detector column or any detector-fixed pattern alike; the solve's log says how many). A
+    direction the data would see more than this factor better without them is a sky shape that the
+    shared pattern mimics in every frame, and is attributed to the instrument: frozen at zero sky
+    amplitude. Directions the per-frame terms absorb on their own (a plane, the mean) have a ratio
+    near 1 and are left as they are; the ratio of a shape only the shared pattern absorbs is about
+    one over the square root of the fraction of the data that still sees it, so a few sits in an empty
+    gap between the two kinds (the record keeps every ratio: ``visibility_ratio_without_shared``).
+    None (the default): off. Without frame-shared offsets in the model every ratio is 1 and nothing is
+    frozen. A frozen direction stays in the deflation space with its amplitude held at zero (the data's
+    signature along it leaves the right-hand side, so the solve stays consistent); the directions kept
+    get the amplitudes they would get anyway.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -373,6 +389,7 @@ class Deflate(Config):
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
     gauge_below: float | None = added(None, since='2026-10')
+    absorbed_by_shared: float | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -384,6 +401,8 @@ class Deflate(Config):
                               f"precision)")
         if self.gauge_below is not None and not 0.0 <= float(self.gauge_below) < 1.0:
             raise ConfigError(f"Deflate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
+        if self.absorbed_by_shared is not None and not float(self.absorbed_by_shared) >= 1.0:
+            raise ConfigError(f"Deflate(absorbed_by_shared={self.absorbed_by_shared}): a ratio of visibilities, at least 1")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):

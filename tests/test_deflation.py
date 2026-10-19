@@ -59,7 +59,7 @@ def _chunk_system(h=24, w=24, frames=60, chunks=4, scalar=True, seed=1):
         for yy_ in range(8):
             for xx_ in range(16):
                 p = (y0 + yy_) * w + (x0 + xx_)
-                c = xx_ // 4
+                c = xx_ * chunks // 16                 # the frame's 16 columns in `chunks` chunks (4-px chunks by default)
                 ci = off0 + (f * chunks + c) * 2
                 rows += [r, r, r]
                 cols += [p, ci, ci + 1]

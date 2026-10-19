@@ -145,6 +145,9 @@ def describe_deflate(deflate) -> str:
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
     rule = ('' if getattr(deflate, 'gauge_below', None) is None else
             f"; directions the data see below {deflate.gauge_below:g} of the best-seen one are gauges (zero sky amplitude)")
+    if getattr(deflate, 'absorbed_by_shared', None) is not None:
+        rule += (f"; directions the frame-shared offsets absorb (visibility {deflate.absorbed_by_shared:g}x better without them) "
+                 f"are gauges (zero sky amplitude)")
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
             f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 
