@@ -508,47 +508,42 @@ class Deflation:
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
         self._scratch = {}
         try:
-            # Pass 1 (float64; the patterns in threads, one each, the offsets' normal matrix alongside): each
-            # pattern's sky image U = B F, the offsets' response R = B_off^T U and G = B_off^T B_off.
+            # Pass 1 (float64, one sweep over the matrix for all the patterns at once, scipy's multi-vector kernels:
+            # the matrix is read once, not once per pattern): each pattern's sky image U = B F, the offsets' response
+            # R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product per row block).
             t = time.perf_counter()
+            t_g = 0.0
+            Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
             sky_norm2 = np.zeros(k)
-            R = np.zeros((k, n_off))
+            Rt = np.zeros((n_off, k))
             gparts = []
             for r0, r1, pieces in _pieces(storage):
                 nr = r1 - r0
-                chunk = []
+                U = np.zeros((nr, k))
                 offs = []
                 for lip, cols, data in pieces:
                     pos = cols if self._colmap is None else self._colmap[cols]
                     d64 = data.astype(np.float64)
-                    chunk.append((lip, pos, d64))
+                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
                     o = pos >= n_sky_S
                     if o.any():
                         rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
                         offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
-                sub = None
+                sky_norm2 += np.einsum('ij,ij->j', U, U)
                 if offs:
                     rr = np.concatenate([o[0] for o in offs])
                     cc = np.concatenate([o[1] for o in offs])
                     dd = np.concatenate([o[2] for o in offs])
                     sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
-                    sub_ip, sub_ix = sub.indptr.astype(np.int64), sub.indices.astype(np.int64)
-
-                def pattern(i, chunk=chunk, nr=nr, sub=sub):
-                    u = np.zeros(nr)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
-                    sky_norm2[i] += float(u @ u)
-                    if sub is not None:
-                        _sparsetools.csc_matvec(n_off, nr, sub_ip, sub_ix, sub.data, u, R[i])
-
-                futures = self._submit(pattern, k)
-                if sub is not None:
+                    _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, Rt)
+                    tg = time.perf_counter()
                     g = (sub.T @ sub).tocoo()
                     gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
-                    del g
-                self._wait(futures)
-                del chunk, offs, sub
+                    t_g += time.perf_counter() - tg
+                    del g, sub
+                del U, offs
+            R = np.ascontiguousarray(Rt.T)
+            del Rt
             if gparts:
                 G = coo_matrix((np.concatenate([p[2] for p in gparts]),
                                 (np.concatenate([p[0] for p in gparts]), np.concatenate([p[1] for p in gparts]))),
@@ -566,39 +561,35 @@ class Deflation:
             self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
                                                  np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
             Z[:, n_sky_S:] = -X.T
+            Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
             del G, R, X, res
             t_pair = time.perf_counter() - t
 
-            # Pass 2 (float64, the patterns in threads): N Z = B^T (B Z), and B^T b alongside.
+            # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside.
             t = time.perf_counter()
-            NZ = np.zeros((k, nS))
+            NZt = np.zeros((nS, k))
             ATb = np.zeros(nS)
             pair_norm2 = np.zeros(k)
             bnorm2 = 0.0
             for r0, r1, pieces in _pieces(storage):
                 nr = r1 - r0
                 chunk = []
+                U = np.zeros((nr, k))
                 for lip, cols, data in pieces:
                     pos = cols if self._colmap is None else self._colmap[cols]
-                    chunk.append((lip, pos, data.astype(np.float64)))
+                    d64 = data.astype(np.float64)
+                    chunk.append((lip, pos, d64))
+                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
+                pair_norm2 += np.einsum('ij,ij->j', U, U)
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
-
-                def pattern(i, chunk=chunk, nr=nr):
-                    u = np.zeros(nr)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
-                    pair_norm2[i] += float(u @ u)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, u, NZ[i])
-
-                def rhs(_i, chunk=chunk, nr=nr, bc=bc):
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
-
-                futures = self._submit(pattern, k) + self._submit(rhs, 1)
+                for lip, pos, d64 in chunk:
+                    _sparsetools.csc_matvecs(nS, nr, k, lip, pos, d64, U, NZt)
+                    _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
                 bnorm2 += float(bc @ bc)
-                self._wait(futures)
-                del chunk, bc
+                del chunk, bc, U
+            del Zt
+            NZ = np.ascontiguousarray(NZt.T)
+            del NZt
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
 
@@ -705,8 +696,8 @@ class Deflation:
             + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
-            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s + {t_pass2:.1f} s, "
-            f"blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (of which the offsets' "
+            f"normal matrix {t_g:.1f} s) + {t_pass2:.1f} s, blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
 
     # ---------------------------------------------------------------- the projections (float64, threaded)
     def _submit(self, fn, count):
