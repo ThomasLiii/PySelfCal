@@ -74,6 +74,8 @@ from scipy.sparse import _sparsetools
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, minres
 
+from selfcal.core.projector import ColumnProjector
+
 from .blockcsr import BlockCSR, ColSplitCSR
 
 logger = logging.getLogger(__name__)
@@ -558,8 +560,22 @@ class Deflation:
         self._proj_off = None
         if projector is not None:
             cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+            # The patterns live in the allowed subspace: a sky shape the constraints exclude (a bowl, say) leaves
+            # the space (its projected pattern is ~0 and drops as dependent), the others lose their part along it.
+            full = np.zeros(n)
+            for i in range(k):
+                full[...] = 0.0
+                if self.S is None:
+                    full[:] = Z[i]
+                else:
+                    full[self.S] = Z[i]
+                projector.apply(full)
+                Z[i] = full if self.S is None else full[self.S]
+            del full
+            # The offsets' part of the constraints, for the block solve (the sky's groups are not its business).
             off = np.where(cm >= n_sky_S, cm - n_sky_S, -1)
-            self._proj_off = projector.mapped(off)
+            og = [(c, Q) for c, Q in projector.groups if (cm[c[c >= 0]] >= n_sky_S).all()]
+            self._proj_off = ColumnProjector(og).mapped(off) if og else None
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)")
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None

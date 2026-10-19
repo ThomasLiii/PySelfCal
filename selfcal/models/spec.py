@@ -45,6 +45,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from selfcal.config.base import import_name
+
 from .offset_model import Basis, OffsetBlock, OffsetModel
 from .offset_structure import (
     ChunkAxes,
@@ -179,11 +181,15 @@ class SkyTerm:
 
     ``name`` (the product name of the map) defaults to ``continuum`` for a
     constant term and to the catalogue entry for a catalogue coefficient.
-    ``damp_weight``: the term's Tikhonov prior (None = the solver default).
+    ``damp_weight``: the term's Tikhonov prior (None = the solver default). ``exclude``: a hard
+    constraint on the map's shape, ``"package.module:function"`` (or the function itself) returning
+    the excluded shapes ``(pixels, r)`` from the grid's pixel coordinates ``(u, v)`` (see
+    :class:`selfcal.run.recipe.Sky`); None: none.
     """
     name: str | None = None
     coefficient: object = None
     damp_weight: float | None = None
+    exclude: object = None
 
     def __post_init__(self):
         name = self.name
@@ -601,8 +607,25 @@ class ModelSpec:
         chunks along one line of the excluded axis and ``P`` ``(n, k + 1)`` an orthonormal basis of
         the polynomials of degree <= k in the chunks' coordinate along that axis. ``layout`` is the
         :class:`~selfcal.core.layout.SystemLayout` of the assembled system. Empty without ``exclude``
-        terms (the historical recipes)."""
+        terms (the historical recipes). A sky term's ``exclude`` gives one group over the term's pixel
+        columns with the shapes it returns (orthonormalised), evaluated at the grid's pixel coordinates."""
         out = []
+        H, W = (int(v) for v in layout.ref_shape)
+        for j, term in enumerate(self.sky):
+            if term.exclude is None:
+                continue
+            fn = import_name(term.exclude) if isinstance(term.exclude, str) else term.exclude
+            vv, uu = np.mgrid[0:H, 0:W]
+            u = (uu.ravel() / max(W - 1, 1)).astype(np.float64)
+            v = (vv.ravel() / max(H - 1, 1)).astype(np.float64)
+            S = np.asarray(fn(u, v), dtype=np.float64)
+            if S.ndim == 1:
+                S = S[:, None]
+            if S.shape[0] != H * W or S.ndim != 2:
+                raise ValueError(f"sky term {term.name!r}: exclude's shapes must be (pixels, r) over the {H}x{W} grid, got {S.shape}")
+            P = np.linalg.qr(S)[0]
+            cols = (j * H * W + np.arange(H * W, dtype=np.int64))[None, :]
+            out.append((cols, P))
         for m, term in enumerate(self.offset):
             if term.exclude_degree is None:
                 continue

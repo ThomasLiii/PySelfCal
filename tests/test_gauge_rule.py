@@ -204,3 +204,44 @@ def test_a_frozen_direction_stays_frozen_under_a_column_constraint(tmp_path):
         print(f'{deflate}: bowl {a:+.3f} (free {a_free:+.3f}); the shared pattern quadratic {quad:+.3f}')
         assert abs(a) < 0.06 and quad > 0.05                            # the bowl is the pattern's, not the sky's
         assert abs(np.polyfit(t, x[n - 16:], 1)[0]) < 1e-6                 # the constraint still holds exactly
+
+
+def test_a_sky_shape_excluded_in_map_space_holds_the_bowl_at_zero(tmp_path):
+    """The freeze that holds the map: a hard constraint on the sky's shape (``Sky(exclude=)``, one group over the sky
+    columns in ``exclusions=``). With the bowl's subspace excluded the sky has no bowl at all, the shared pattern
+    takes it, the fit is the constrained least squares, and the deflation (its patterns projected into the allowed
+    subspace) changes nothing in that; with or without a rule on top. (A matrix handed to apply_lsqr is scaled in
+    place: one per solve.)"""
+    from test_exclusions import _constrained_least_squares
+    system = _shared_pattern_system(carry=0.95)
+    A, b, npix, grid, bowl = system
+    n = A.shape[1]
+    h, w = grid
+    yy, xx = np.mgrid[0:h, 0:w]
+    # the bowl with the lower orders a gauge could trade against it (the toy's: the mean against the frame constants,
+    # the x-plane against the slopes; its y-plane is seen, and a constraint on a seen shape would cost the fit)
+    shapes = np.stack([np.ones(npix), (xx / w).ravel(), bowl], 1)
+    P = np.linalg.qr(shapes)[0]
+    excl = [(np.arange(npix)[None, :], P)]
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+
+    def solve(deflate):
+        return apply_lsqr(A[:, active].tocsr(), b.copy(), ref_shape=grid, atol=0.0, btol=0.0, conlim=0.0, damp=0.0,
+                          solver='cgls', n_threads=1, iter_lim=600, active_mask=active, num_cols_full=n, return_record=True,
+                          scratch_dir=str(tmp_path), sky_names=('sky',), deflate=deflate, exclusions=excl)
+
+    # the reference on the active system (an uncovered pixel would be a free variable of the constraint otherwise)
+    act_sky = active[:npix]
+    x_ref = _constrained_least_squares(A[:, active].toarray(), b, np.arange(int(act_sky.sum())), np.linalg.qr(P[act_sky])[0])
+    fit_ref = A[:, active] @ x_ref
+    for deflate in (None, sc.Deflate(2), sc.Deflate(2, absorbed_by_shared=3.0)):
+        x, rec = solve(deflate)
+        a = _bowl_amplitude(x[:npix], grid, bowl)
+        quad = np.polyfit(np.linspace(-1, 1, 16), x[n - 16:], 2)[0]
+        print(f'{deflate}: bowl {a:+.2e}, the shared pattern quadratic {quad:+.3f}, |fit - constrained LS fit| / |b| {np.linalg.norm(A @ x - fit_ref) / np.linalg.norm(b):.1e}')
+        assert np.abs(P.T @ x[:npix]).max() < 1e-6 * np.linalg.norm(x[:npix])          # exactly no component along the shapes
+        assert abs(a) < 0.02 and quad > 0.05
+        assert np.linalg.norm(A @ x - fit_ref) < 1e-4 * np.linalg.norm(b)
+        if deflate is not None:
+            d = json.loads(rec.deflation)
+            assert d['gauges'] == 0 and min(d['seen']) > 0.1                            # no near-null direction is left in the space: the degenerate shapes are excluded
