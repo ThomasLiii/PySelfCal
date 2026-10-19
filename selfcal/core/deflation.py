@@ -69,7 +69,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from numpy.polynomial import legendre as _legendre
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 from scipy.sparse import _sparsetools
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, minres
@@ -412,6 +412,20 @@ def _schur_pinv_solve(G, R, hub, project=None):
                'without_shared': Xf, 'shared_columns': H}
 
 
+
+def _offset_csr(nr, n_off, lip, pos, d64, n_sky_S):
+    """The chunk's entries on the offset columns (``pos >= n_sky_S``) as a csr (rows, n_off) triple
+    ``(indptr, indices, data)``, int64 / float64, without a sort: the entries are in row order already.
+    None when the chunk has no offset entry."""
+    o = pos >= n_sky_S
+    if not o.any():
+        return None
+    rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+    counts = np.bincount(rows[o], minlength=nr)
+    indptr = np.zeros(nr + 1, dtype=np.int64)
+    np.cumsum(counts, out=indptr[1:])
+    return indptr, (pos[o] - n_sky_S).astype(np.int64), d64[o]
+
 def _transform_in_place(M, T, cols=1 << 20):
     """``T^T M`` written over the first ``T.shape[1]`` rows of ``M`` (k x n, C order), a column block at a
     time; returns those rows (contiguous)."""
@@ -556,17 +570,13 @@ class Deflation:
                         pos = cols if self._colmap is None else self._colmap[cols]
                         d64 = data.astype(np.float64)
                         _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U)
-                        o = pos >= n_sky_S
-                        if o.any():
-                            rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-                            offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
+                        oc = _offset_csr(nr, n_off, lip, pos, d64, n_sky_S)
+                        if oc is not None:
+                            offs.append(oc)
                     sky_norm2 += np.einsum('ij,ij->j', U, U)
-                    if offs:
-                        rr = np.concatenate([o[0] for o in offs])
-                        cc = np.concatenate([o[1] for o in offs])
-                        dd = np.concatenate([o[2] for o in offs])
-                        sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
-                        _sparsetools.csc_matvecs(n_off, nr, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, Rt)
+                    for ip, ci, dd in offs:
+                        sub = csr_matrix((dd, ci, ip), shape=(nr, n_off))
+                        _sparsetools.csc_matvecs(n_off, nr, k, ip, ci, dd, U, Rt)
                         tg = time.perf_counter()
                         g = (sub.T @ sub).tocoo()
                         gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
@@ -636,26 +646,24 @@ class Deflation:
                     d64 = data.astype(np.float64)
                     _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
                     if Delta is not None:
-                        o = pos >= n_sky_S
-                        if o.any():
-                            rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-                            offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
+                        oc = _offset_csr(nr, n_off, lip, pos, d64, n_sky_S)
+                        if oc is not None:
+                            offs.append(oc)
                 pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
                 c1 = c2 = None
                 if offs:
-                    sub = coo_matrix((np.concatenate([o[2] for o in offs]), (np.concatenate([o[0] for o in offs]), np.concatenate([o[1] for o in offs]))),
-                                     shape=(nr, n_off)).tocsr()
                     Ud = np.zeros((nr, k))
-                    _sparsetools.csr_matvecs(nr, n_off, k, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, Delta, Ud)
+                    for ip, ci, dd in offs:
+                        _sparsetools.csr_matvecs(nr, n_off, k, ip, ci, dd, Delta, Ud)
                     c1 = U[:, :k].T @ Ud
                     c2 = Ud.T @ Ud
-                    del sub, Ud
+                    del Ud
                 del offs
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
                 U[:, k] = bc
                 return U, (pn, float(bc @ bc), c1, c2)
 
-            NZb = self._transposed_products(storage, images, k + 1, acc2)
+            NZb = self._transposed_products(storage, images, k + 1, n_sky_S, acc2)
             for pn, bn, c1, c2 in acc2:
                 pair_norm2 += pn
                 bnorm2 += bn
@@ -803,47 +811,93 @@ class Deflation:
         shares = [descs[j::nt] for j in range(nt)]
         return list(self._pool.map(fn, shares))
 
-    def _transposed_products(self, storage, images, m, extra=None):
+    def _transposed_products(self, storage, images, m, n_sky_S, extra=None):
         """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
         chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). Per batch of chunks
-        the images are made in parallel, then each thread scatters the entries of the columns it owns (disjoint
-        ranges of the output); every column's sum runs over its entries in row order, as one sweep makes it, so
-        the result does not depend on the thread count."""
+        the images are made in parallel; the sky columns' products (``pos < n_sky_S``) are then summed per column
+        within the chunk (the entries sorted by column, a stable sort) and added into the output by threads that
+        own disjoint column ranges; the offset columns' (few) go through the transposed kernel into a private
+        buffer per chunk, added in chunk order. Every column's total is the chunk partials added in chunk order,
+        so the result does not depend on the thread count."""
         out = np.zeros((self.nS, m))
         descs = _piece_index(storage)
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
-        cuts = np.linspace(0, self.nS, nt + 1, dtype=np.int64)
+        n_off = self.nS - n_sky_S
+
+        def partials(mp):
+            """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(n_off, m)``."""
+            (r0, r1, pieces), (U, x) = mp
+            nr = r1 - r0
+            sky = []
+            off = None
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                d64 = data.astype(np.float64)
+                rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+                o = pos >= n_sky_S
+                if o.any():
+                    if off is None:
+                        off = np.zeros((n_off, m))
+                    oc = _offset_csr(nr, n_off, lip, pos, d64, n_sky_S)
+                    _sparsetools.csc_matvecs(n_off, nr, m, oc[0], oc[1], oc[2], U, off)
+                sk = ~o
+                if sk.any():
+                    sky.append((pos[sk], rows[sk], d64[sk]))
+            if sky:
+                ps = np.concatenate([q[0] for q in sky]) if len(sky) > 1 else sky[0][0]
+                rs = np.concatenate([q[1] for q in sky]) if len(sky) > 1 else sky[0][1]
+                ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
+                order = np.argsort(ps, kind='stable')
+                ps, rs, ds = ps[order], rs[order], ds[order]
+                starts = np.flatnonzero(np.diff(ps, prepend=-1))
+                uniq = ps[starts]
+                ip = np.append(starts, ps.size).astype(np.int64)
+                part = np.zeros((uniq.size, m))
+                # the sums per column as a sparse product (one row per column of the chunk): the C kernel, which
+                # runs without the GIL (numpy's take / reduceat hold it)
+                _sparsetools.csr_matvecs(uniq.size, nr, m, ip, rs, ds, U, part)
+                del order, rs, ds, ps, ip
+            else:
+                uniq, part = np.zeros(0, dtype=np.int64), np.zeros((0, m))
+            return uniq, part, off, x
+
+        def work(desc):
+            mp = _piece(storage, desc)
+            return partials((mp, images(*mp)))
+
         for a in range(0, len(descs), nt):
             batch = descs[a:a + nt]
-            if self._pool is None:
-                made = [(_piece(storage, d)) for d in batch]
-            else:
-                made = list(self._pool.map(lambda d: _piece(storage, d), batch))
-            if self._pool is None:
-                imgs = [images(*mp) for mp in made]
-            else:
-                imgs = list(self._pool.map(lambda mp: images(*mp), made))
+            parts = [work(d) for d in batch] if self._pool is None else list(self._pool.map(work, batch))
             if extra is not None:
-                extra.extend(im[1] for im in imgs)
+                extra.extend(pt[3] for pt in parts)
+            for uniq, part, off, _x in parts:
+                if off is not None:
+                    out[n_sky_S:] += off
+            # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
+            # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
+            samp = np.concatenate([u[::997] for u, _p, _o, _x in parts if u.size] or [np.zeros(0, dtype=np.int64)])
+            samp.sort()
+            if samp.size >= nt:
+                cuts = np.concatenate(([0], samp[(np.arange(1, nt) * samp.size) // nt], [n_sky_S]))
+                cuts = np.maximum.accumulate(cuts)
+            else:
+                cuts = np.linspace(0, n_sky_S, nt + 1, dtype=np.int64)
 
-            def scatter(j):
+            def add(j):
                 lo, hi = int(cuts[j]), int(cuts[j + 1])
                 if hi <= lo:
                     return
-                for (r0, r1, pieces), (U, _x) in zip(made, imgs):
-                    nr = r1 - r0
-                    for lip, cols, data in pieces:
-                        pos = cols if self._colmap is None else self._colmap[cols]
-                        sel = np.flatnonzero((pos >= lo) & (pos < hi))
-                        if sel.size == 0:
-                            continue
-                        rows = np.searchsorted(lip, sel, side='right') - 1
-                        sub = coo_matrix((data[sel].astype(np.float64), (pos[sel] - lo, rows)), shape=(hi - lo, nr)).tocsr()
-                        _sparsetools.csr_matvecs(hi - lo, nr, m, sub.indptr.astype(np.int64), sub.indices.astype(np.int64), sub.data, U, out[lo:hi])
-                        del sub
+                view = out[lo:hi]
+                for uniq, part, _off, _x in parts:
+                    i0, i1 = np.searchsorted(uniq, (lo, hi))
+                    if i1 > i0:
+                        ip = np.zeros(hi - lo + 1, dtype=np.int64)
+                        ip[uniq[i0:i1] - lo + 1] = 1
+                        np.cumsum(ip, out=ip)
+                        _sparsetools.csr_matvecs(hi - lo, i1 - i0, m, ip, np.arange(i1 - i0, dtype=np.int64), np.ones(i1 - i0), part[i0:i1], view)
 
-            self._wait(self._submit(scatter, nt))
-            del made, imgs
+            self._wait(self._submit(add, nt))
+            del parts
         return out
 
     def _forward(self, storage, v, fn):
@@ -1064,7 +1118,7 @@ class Deflation:
             r -= acc
             return r.reshape(nr, 1), None
 
-        g = self._transposed_products(self._storage, residual, 1)[:, 0]
+        g = self._transposed_products(self._storage, residual, 1, self.n_sky_S)[:, 0]
         dc = self._dot(self.V, g) / self.lam
         dc[~self._free] = 0.0                                       # the frozen directions stay at zero
         cnorm = float(np.linalg.norm(self.c_star))
