@@ -929,12 +929,38 @@ class Deflation:
             groups = list(projector.groups) if projector is not None else []
             new = ColumnProjector.build([(full_sky_cols[None, :], P)], active_mask, scale, n)
             self._projector = projector = ColumnProjector(groups + list(new.groups))
+            # The slow modes of the constrained system: the excluded shapes' solver-space images (the shapes weighted
+            # by the column scale, their excluded part taken out) are nearly invisible too, and the solve would spend
+            # its iterations on them. They join the space as the degenerate directions projected in solver space:
+            # sky part Z_sel - Qh (Qh^T Z_sel) with Qh the group's orthonormal basis, offsets' part as paired; their
+            # images need N Qh = (Qh, B_off^T B_sky Qh) (unit sky column norms), one small sweep for the offsets' part.
+            Qh = new.groups[0][1][0]                                                       # (n_sky_S, k_sel), orthonormal
             del P, new
+            # (One sky term with unit column norms and no compaction map for now: then N Qh's sky part is Qh itself and
+            # one sweep for the offsets' part suffices; otherwise the space does without the leftovers, which costs
+            # iterations, not correctness.)
+            extra = (nsb == 1 and scale is not None and self.S is None)
+            if extra:
+                Zsel = np.ascontiguousarray(T[:, sel].T @ Z)                                   # (k_sel, nS): the degenerate directions
+                NZsel = T[:, sel].T @ NZ
+                coef = Zsel[:, :n_sky_S] @ Qh                                             # (k_sel, k_sel): Qh^T Z_sel
+                Rq = self._offset_images(storage, Qh, n_sky_S, n_off)                      # B_off^T B_sky Qh, (n_off, k_sel)
+                NQ = np.zeros((k_sel, nS))
+                NQ[:, :n_sky_S] = Qh.T
+                NQ[:, n_sky_S:] = Rq.T
+                Zx = Zsel.copy()
+                Zx[:, :n_sky_S] -= coef @ Qh.T
+                NZx = NZsel - coef @ NQ
+                del Zsel, NZsel, NQ, Rq
             # the re-basing: Z' = C Z (the offsets' parts follow), N' Z' = Pc (C N Z), E' = C E C^T, GZ' = C GZ C^T
             Z = _combine_rows_in_place(Z, C)
             NZ = _combine_rows_in_place(NZ, C)
+            if extra:
+                Z = np.concatenate([Z, Zx], axis=0)
+                NZ = np.concatenate([NZ, NZx], axis=0)
+                del Zx, NZx
             full = np.zeros(n)
-            for i in range(k):
+            for i in range(Z.shape[0]):
                 full[...] = 0.0
                 if self.S is None:
                     full[:] = NZ[i]
@@ -943,8 +969,12 @@ class Deflation:
                 projector.apply(full)
                 NZ[i] = full if self.S is None else full[self.S]
             del full
-            E = C @ E @ C.T
-            GZ = C @ GZ @ C.T
+            if extra:
+                E = self._gram(Z, NZ)
+                GZ = self._gram(Z, Z)
+            else:
+                E = C @ E @ C.T
+                GZ = C @ GZ @ C.T
             NN = self._gram(NZ, NZ)
             w1, U1 = np.linalg.eigh(GZ)
             ok1 = w1 > DEPENDENT * w1.max()
@@ -1034,6 +1064,39 @@ class Deflation:
             f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
             f"matrix {t_g:.1f} s of a thread's, with the reduction) + {t_pass2:.1f} s (chunks {st['work_thread_s']:.0f} thread-s over {st['work_wall_s']:.0f} s, "
             f"adds {st['add_thread_s']:.0f} thread-s over {st['add_wall_s']:.0f} s, {st['threads']} threads), blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+
+    def _offset_images(self, storage, Qh, n_sky_S, n_off):
+        """``B_off^T B_sky Q`` for sky vectors ``Q`` ``(n_sky_S, q)`` (a single sky term, every row with one sky entry):
+        one sweep over the matrix, the offsets' part of ``N Q`` (its sky part is ``Q`` itself for unit sky column
+        norms). The chunks over the threads, the partial sums added in thread order."""
+        q = Qh.shape[1]
+        nS = self.nS
+        Qt = np.zeros((nS, q))
+        Qt[:n_sky_S] = Qh
+        descs = _piece_index(storage)
+
+        def sweep(my):
+            Rt = np.zeros((n_off, q))
+            for desc in my:
+                r0, r1, pieces = _piece(storage, desc)
+                nr = r1 - r0
+                U = np.zeros((nr, q))
+                offs = []
+                for lip, cols, data in pieces:
+                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                    if sky is not None:
+                        _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
+                    if oc is not None:
+                        offs.append(oc)
+                for ip, ci, dd in offs:
+                    _sparsetools.csc_matvecs(n_off, nr, q, ip, ci, dd, U, Rt)
+            return Rt
+
+        parts = self._over_chunks(descs, sweep)
+        R = parts[0]
+        for p in parts[1:]:
+            R += p
+        return R
 
     @property
     def projector(self):
