@@ -312,8 +312,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                outlier_group_variable: str | None = None,
                outlier_chunk_groups=None,
                fixed_sky: bool = False, moments_only: bool = False,
-               reduce: Callable | None = None) -> SetupResult:
+               reduce: Callable | None = None,
+               sky_mask: tuple | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``sky_mask``: ``(flags, above)``: before the rows are built, the reference-grid pixels whose
+    covering frames set one of the bits ``flags`` in more than a fraction ``above`` of their valid
+    pixels there are found (:func:`selfcal.core.skymask.flagged_fraction_mask`) and dropped from
+    every frame's rows. ``None``: no such mask.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
@@ -529,6 +535,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("batch_size must be a positive integer")
     if moments_only and reduce is not None:
         raise ValueError("give moments_only or reduce, not both")
+    if sky_mask is not None and not (isinstance(sky_mask, (tuple, list)) and len(sky_mask) == 2):
+        raise ValueError("sky_mask must be (flags, above)")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
@@ -812,6 +820,23 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             shm_objects.append(shm_sv)
             sky_var_metas[vname] = (shm_sv.name, arr_f.shape, arr_f.dtype)
         common_params['sky_var_metas'] = sky_var_metas
+
+    if sky_mask is not None:
+        from .skymask import flagged_fraction_mask
+        flags, above = sky_mask
+        drop, hits, _ = flagged_fraction_mask(file_list, ref_shape, flags, float(above), ignore_list=ignore_list,
+                                              max_workers=max_workers)
+        covered = int((hits > 0).sum())
+        logger.info(f"Sky mask: {int(drop.sum())} of {covered} covered grid pixels "
+                    f"({drop.sum() / max(covered, 1) * 100:.1f} %) dropped from every frame: flagged by bits "
+                    f"{sorted(int(b) for b in flags)} in more than {float(above):g} of their covering frames")
+        drop_u8 = np.ascontiguousarray(drop, dtype=np.uint8)
+        del drop, hits
+        shm_drop = SharedMemory(create=True, size=max(drop_u8.nbytes, 1))
+        np.ndarray(drop_u8.shape, dtype=np.uint8, buffer=shm_drop.buf)[:] = drop_u8
+        shm_objects.append(shm_drop)
+        common_params['sky_drop_meta'] = (shm_drop.name, drop_u8.shape, np.uint8)
+        del drop_u8
 
     if grid_valid_weight is not None:
         shm_gvw = SharedMemory(create=True, size=grid_valid_weight.nbytes)

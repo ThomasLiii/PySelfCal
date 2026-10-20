@@ -517,6 +517,32 @@ class Gauge(Config):
 
 
 @dataclass(frozen=True)
+class SkyMask(Config):
+    """Drop, from every frame, the sky pixels the frames flag too often with the data-quality bits ``flags``.
+
+    A bit that marks a feature fixed on the sky (a source mask, say) lands slightly differently in each
+    frame, so a sky pixel near the feature is flagged by some frames and not by others, and the frames that
+    do not flag it bring the feature's flux into the solve. Before the rows are built the setup counts, per
+    pixel of the reference grid, the frames whose valid pixels cover it and how many of those set one of
+    ``flags``, and drops the pixel from every frame where that fraction is above ``above`` (0: flagged by
+    any frame). The mask is decided from the frames' own flags before the solve, the same for every
+    realization of the data; it applies to the solve only (the coadd keeps its own ``ignore_flags``).
+    Instrument-agnostic: it reads the frame files' bit masks (:mod:`selfcal.core.skymask`).
+    """
+    flags: tuple[int, ...]
+    _: KW_ONLY
+    above: float = 0.5
+
+    def _validate(self):
+        flags = tuple(int(b) for b in (self.flags if isinstance(self.flags, (tuple, list)) else (self.flags,)))
+        if not flags or any(b < 0 or b > 62 for b in flags):
+            raise ConfigError(f"SkyMask(flags={self.flags!r}): one or more bit numbers, 0..62")
+        object.__setattr__(self, 'flags', flags)
+        if not 0.0 <= float(self.above) < 1.0:
+            raise ConfigError(f"SkyMask(above={self.above}): a fraction of the covering frames, 0 <= above < 1")
+
+
+@dataclass(frozen=True)
 class Fit(Config):
     """How the model is fitted to the frames.
 
@@ -536,6 +562,8 @@ class Fit(Config):
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
+    ``sky_mask``: a :class:`SkyMask`, which drops from every frame the sky pixels the frames flag too
+    often with given bits (None: none).
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -574,11 +602,14 @@ class Fit(Config):
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
     seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
+    sky_mask: SkyMask | None = added(None, since='2026-10')
 
     def _validate(self):
         if self.seed not in ('scalar', 'offsets', 'zero'):
             raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
                               f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
+        if self.sky_mask is not None and not isinstance(self.sky_mask, SkyMask):
+            raise ConfigError(f"Fit(sky_mask={self.sky_mask!r}): an sc.SkyMask")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

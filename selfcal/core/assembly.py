@@ -19,6 +19,7 @@ from ..geometry.map_helper import check_invalid, find_outliers, find_outliers_gr
 from ..io.reproj import FrameLoadError
 from ..models.offset_basis import eval_offset_basis, n_coef
 from ..models.variables import FrameObservations, ObservationVariables
+from .skymask import grid_window
 from .subframe import _prep_subframe
 
 
@@ -92,6 +93,9 @@ def _prep_lsqr(task_params):
                 values=extras.get('raw_data'), flags=extras.get('flags'))
 
         sub_valid = sub_weight > 0
+        sky_drop = task_params.get('sky_drop')             # Fit(sky_mask=...): pixels dropped from every frame
+        if sky_drop is not None:
+            sub_valid &= ~grid_window(sky_drop, ref_coords, sub_valid.shape)
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
             masked = np.where(sub_valid, sub_data, np.nan)
             # Grouped clip: when group edges and a grouping variable are given,
@@ -474,6 +478,13 @@ def _prep_lsqr_batch_worker(batch_params):
             sky_vars[vname] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
             shm_handles.append(shm)
         shm_arrays['sky_variables'] = sky_vars
+
+    sky_drop_meta = sub_tasks[0].get('sky_drop_meta')
+    if sky_drop_meta is not None:
+        name, shape, dtype = sky_drop_meta
+        shm = SharedMemory(name=name)
+        shm_arrays['sky_drop'] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        shm_handles.append(shm)
 
     if 'gvw_shm_name' in sub_tasks[0]:
         shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])

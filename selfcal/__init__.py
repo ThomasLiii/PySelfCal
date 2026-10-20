@@ -62,7 +62,8 @@ _EXPORTS = {
                      'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     'shot_noise': 'selfcal.models.noise',
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
-                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Degenerate', 'Gauge'), 'selfcal.run.recipe'),
+                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Degenerate', 'Gauge', 'SkyMask'),
+                    'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
@@ -184,6 +185,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
         Numerics,
         Recipe,
         ResidualRule,
+        SkyMask,
         Stop,
     )
     from .run.records import rerun
