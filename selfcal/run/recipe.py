@@ -535,8 +535,8 @@ class SkyMask(Config):
 
     def _validate(self):
         flags = tuple(int(b) for b in (self.flags if isinstance(self.flags, (tuple, list)) else (self.flags,)))
-        if not flags or any(b < 0 or b > 62 for b in flags):
-            raise ConfigError(f"SkyMask(flags={self.flags!r}): one or more bit numbers, 0..62")
+        if not flags or any(b < 0 or b > 63 for b in flags):
+            raise ConfigError(f"SkyMask(flags={self.flags!r}): one or more bit numbers, 0..63")
         object.__setattr__(self, 'flags', flags)
         if not 0.0 <= float(self.above) < 1.0:
             raise ConfigError(f"SkyMask(above={self.above}): a fraction of the covering frames, 0 <= above < 1")
@@ -562,8 +562,8 @@ class Fit(Config):
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
-    ``sky_mask``: a :class:`SkyMask`, which drops from every frame the sky pixels the frames flag too
-    often with given bits (None: none).
+    ``sky_mask``: a :class:`SkyMask` or several (each its own bits and threshold; a pixel goes when any
+    of them drops it), which drop from every frame the sky pixels the frames flag too often (None: none).
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -602,14 +602,17 @@ class Fit(Config):
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
     seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
-    sky_mask: SkyMask | None = added(None, since='2026-10')
+    sky_mask: SkyMask | tuple[SkyMask, ...] | None = added(None, since='2026-10')
 
     def _validate(self):
         if self.seed not in ('scalar', 'offsets', 'zero'):
             raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
                               f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
-        if self.sky_mask is not None and not isinstance(self.sky_mask, SkyMask):
-            raise ConfigError(f"Fit(sky_mask={self.sky_mask!r}): an sc.SkyMask")
+        if self.sky_mask is not None:
+            masks = (self.sky_mask,) if isinstance(self.sky_mask, SkyMask) else self.sky_mask
+            if not (isinstance(masks, (tuple, list)) and masks and all(isinstance(m, SkyMask) for m in masks)):
+                raise ConfigError(f"Fit(sky_mask={self.sky_mask!r}): an sc.SkyMask or a sequence of them")
+            object.__setattr__(self, 'sky_mask', tuple(masks))
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

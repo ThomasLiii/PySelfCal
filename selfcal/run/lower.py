@@ -63,7 +63,7 @@ def setup_options(recipe, compute, instrument) -> dict:
                'max_workers': compute.resolved_workers}
     options.update(clip_keys(fit.clip))
     if fit.sky_mask is not None:
-        options['sky_mask'] = (list(fit.sky_mask.flags), float(fit.sky_mask.above))
+        options['sky_mask'] = [(list(m.flags), float(m.above)) for m in fit.sky_mask]
     return options
 
 

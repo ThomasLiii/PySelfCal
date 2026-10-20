@@ -761,12 +761,12 @@ class Calibrator(Reprojector):
                    variables=None, weight_function=None, priors: list | None = None,
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
                    fixed_sky: bool = False, moments_only: bool = False, reduce=None,
-                   sky_mask: tuple | None = None) -> None:
+                   sky_mask: list | None = None) -> None:
         """Build the LSQR system for K chunk maps.
 
-        ``sky_mask``: ``(flags, above)``, the sky pixels the frames flag too often
-        with the bits ``flags``, dropped from every frame (``Fit(sky_mask=)``;
-        :func:`selfcal.core.system.setup_lsqr`).
+        ``sky_mask``: rules ``[(flags, above), ...]``, the sky pixels the frames
+        flag too often with given bits, dropped from every frame
+        (``Fit(sky_mask=)``; :func:`selfcal.core.system.setup_lsqr`).
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms (and the
