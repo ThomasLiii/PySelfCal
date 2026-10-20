@@ -406,6 +406,7 @@ sequential transpose product whose result does not depend on the thread count.
 
 The maintainers check every change to the pipeline against this: the
 [regression gates](../developer/gates.md) rerun fixed calibrations (a continuum and a spectral
-SPHEREx solve, an end-to-end cal and mosaic, an N-pass probe, a Euclid recipe) and compare every
+SPHEREx solve, an end-to-end cal and mosaic, an N-pass probe, a Euclid recipe, the production
+recipe, a tiled solve) and compare every
 dataset with reference products, the *goldens*, byte for byte. The gates need the maintainers'
 data; the [test suite](../developer/testing.md) runs anywhere.

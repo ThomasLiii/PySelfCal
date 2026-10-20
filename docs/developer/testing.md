@@ -93,7 +93,9 @@ run real-data calibrations, written with the Python API, and compare every datas
 calibration and every extension of the mosaic with stored references, exactly.
 
 Run them for any change that can alter numbers in the solve or the mosaic: the system build, the
-constraint rows, the solver, the model lowering, the coadd, or the engine's handling of frames.
+constraint rows, the solver, the model lowering, the coadd, or the engine's handling of frames. A
+change to code that no gate covers adds a short gate for it: a small subset of an existing fixture,
+the fewest iterations that exercise the code, and goldens made from the committed tree.
 [Regression gates](gates.md) lists the gates and their references, and the engine views that check
 a change to the engine without a solve. The gates read data that only exist on the processing
 host, so CI does not run them.

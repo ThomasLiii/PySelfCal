@@ -2,10 +2,11 @@
 # Byte-equality gates: pytest, then the gates of python_gates.py (runs of the Python API), each product compared
 # with its float64-norm golden (*golden_f64*, made by make_goldens.sh from a committed tree; a missing golden fails
 # the gate). Usage: run_gates.sh <tag> [gate ...]   -> $GATES_LOGDIR/gates_<tag>.log
-# Gates: pytest continuum spectral e2e npass3 euclid rerun (default: all; rerun runs the continuum gate's record
-# again, `selfcal rerun --overwrite`, so it follows continuum).
+# Gates: pytest continuum spectral e2e npass3 euclid rerun production tiles (default: all; rerun runs the continuum
+# gate's record again, `selfcal rerun --overwrite`, so it follows continuum).
 # 1. pytest; 2. continuum + spectral cal gates; 3. the e2e cal + mosaic gate (D3 Ch17, 300 frames, full mosaic incl.
-# wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors).
+# wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors);
+# 6. the production recipe (D3 Ch9, 100 frames, cal + mosaic); 7. a tiled multi-line solve (two tiles, stitched).
 # SELFCAL_REPO picks the tree (default: the one this script is in), SELFCAL_PYTHON the interpreter (default: python
 # on PATH), SELFCAL_GATE_FIXTURES the frame fixtures.
 set -u
@@ -14,7 +15,7 @@ PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active
 G=$R/selfcal_scripts/gates
 L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
-GATES=${*:-pytest continuum spectral e2e npass3 euclid rerun}
+GATES=${*:-pytest continuum spectral e2e npass3 euclid rerun production tiles}
 mkdir -p $L
 LOG=${GATES_LOG:-$L/gates_${TAG}.log}
 O=/mnt/md124/thomasli/selfcal/outputs
@@ -23,6 +24,9 @@ D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh3
 E2E_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 NP=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3
 EU=$O/EDFN_Y_1p5arcsec_unifygolden
+D3C9=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh17_NumCol1_Ch9
+D3C9_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh17_NumCol1_Ch9
+D3C9_SNAP=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/snapshots/cal_Detector3_NumSub10_NumCh17_NumCol1_Ch9
 cd $R
 FILTER="=== python gate|Setup LSQR finished|Mosaic saved|\[npass\] pass|Error|Traceback|ConfigError"
 run() { PYTHONPATH=$R PYTHONUNBUFFERED=1 $PY -m selfcal_scripts.gates.python_gates $1 2>&1 | grep -E "$FILTER" ; }
@@ -63,6 +67,19 @@ for g in $GATES; do
     echo "=== python gate rerun: $REC"
     PYTHONPATH=$R PYTHONUNBUFFERED=1 $PY -m selfcal rerun --overwrite "$REC" 2>&1 | grep -E "$FILTER"
     echo "--- rerun of the continuum record: byte-diff vs golden_f64"; $PY $G/diff_cal_h5.py ${D3}_unify_gate_py.h5 ${D3}_gate_golden_f64.h5 2>&1 | tail -1 ;;
+  production)
+    rmp ${D3C9}_production_gate_py.h5 ${D3C9_MOS}_production_gate_py.fits; rm -f ${D3C9_SNAP}_production_gate_py_it*.h5
+    rm -rf $R/cache/production_gate
+    run production
+    echo "--- production cal: byte-diff vs production_golden_f64"; $PY $G/h5_diff.py ${D3C9}_production_gate_py.h5 ${D3C9}_production_golden_f64.h5 2>&1 | tail -1
+    echo "--- production mosaic: byte-diff vs production_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_production_gate_py.fits ${D3C9_MOS}_production_golden_f64.fits 2>&1 | tail -1 ;;
+  tiles)
+    rmp ${NP}_tiles_T1_gate_py.h5 ${NP}_tiles_T2_gate_py.h5 ${NP}_tiles_stitched_gate_py.h5
+    rm -f ${NP}_tiles_stitched_gate_py_npass_monitor.json; rm -rf $R/cache/tiles_gate
+    run tiles
+    for t in T1 T2 stitched; do
+      echo "--- tiles '$t': byte-diff vs golden_f64"; $PY $G/h5_diff.py ${NP}_tiles_${t}_gate_py.h5 ${NP}_tiles_${t}_golden_f64.h5 2>&1 | tail -1
+    done ;;
   *) echo "unknown gate $g" ;;
   esac
 done

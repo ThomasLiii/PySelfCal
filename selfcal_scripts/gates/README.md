@@ -1,9 +1,13 @@
 # Byte-equality gates
 
 Every structural change to the pipeline is gated on reproducing fixed products byte for byte.
+A change to code that no gate covers adds a short gate for it: a small subset of an existing
+fixture, the fewest iterations that exercise the code, and goldens made by `make_goldens.sh` from
+the committed tree.
+
 The gates are Python: each is a function of `python_gates.py`, a calibration written with the
 [Python API](../../docs/guide/python-api.md) on a fixed set of frames
-(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid`).
+(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | production | tiles`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
 to `/mnt/md124` and the fixtures are in `python_gates.py`), the steps named, compares each
 product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
@@ -11,24 +15,33 @@ product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
 too). The scripts name no worktree: `SELFCAL_REPO` picks the tree (default: the one the script is
 in; its `cache/` is the scratch), `SELFCAL_PYTHON` the interpreter (default: `python` on `PATH`; the
 log records it and its numpy) and `SELFCAL_GATE_FIXTURES` the frame fixtures (default
-`/home/thomasli/selfcal-project/gate_fixtures`: `qr2_d3_links400` for continuum, `qr2_d3_frames300`
-for e2e, `pahfit_sanity` for spectral and npass3). The gates read
+`/home/thomasli/selfcal-project/gate_fixtures`; the table names each gate's). The gates read
 and write nothing in `workspace/`: their inputs are the repository, the fixtures and the goldens. The
 steps are `pytest` (the test suite, first), then the gates below; the default is every step.
 
-| gate | what | golden |
-| --- | --- | --- |
-| continuum | D3 Ch17 NumCol3, 300 frames, iter 50 (51 MB cal) | `cal_..._Ch17_gate_golden_f64.h5` |
-| spectral | D4 AromaticPAHfit NumCol5, 150 frames, iter 20 (73 MB cal) | `cal_..._AromaticPAHfit_gate_golden_f64.h5` |
-| e2e | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps; a 4.8 GB mosaic) | `*_unify_e2e_golden_f64.{h5,fits}` |
-| npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame direct OFFSET solve | `*_unify_npass3_golden_f64{,_pass2sky,_pass3off}.h5` |
-| euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
-| rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
+| gate | what | fixture | golden |
+| --- | --- | --- | --- |
+| continuum | D3 Ch17 NumCol3, iter 50 (51 MB cal) | `qr2_d3_links400`, the first 300 | `cal_..._Ch17_gate_golden_f64.h5` |
+| spectral | D4 AromaticPAHfit NumCol5, iter 20 (73 MB cal) | `pahfit_sanity` (150) | `cal_..._AromaticPAHfit_gate_golden_f64.h5` |
+| e2e | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps; a 4.8 GB mosaic) | `qr2_d3_frames300` (300) | `*_unify_e2e_golden_f64.{h5,fits}` |
+| npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame direct OFFSET solve | `pahfit_sanity` (150) | `*_unify_npass3_golden_f64{,_pass2sky,_pass3off}.h5` |
+| euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | none: the field's 48 frames (`EDFN_Y_1p5arcsec_unifygolden/reprojected`) | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
+| rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | as continuum | the continuum golden |
+| production | the production recipe (`SLOPE_GAUGE`, `selfcal_scripts/recipes/spherex.py`) on D3 Ch9, NumCh17 x NumCol1: CGLS (the default solver) deflated, to the chi-squared stop; the weights `sc.shot_noise()`; the per-frame x-slope offsets; the post-solve plane gauge on the map; the weighted coadd (mean, std, 2-sigma clipped mean); the solve's monitor and snapshots | `qr2_d3_frames300`, the first 100 | `*_Ch9_production_golden_f64.{h5,fits}` |
+| tiles | the npass3 recipe in two explicit tiles (`sc.Tiles(boxes=...)`, overlapping by 50 rows), solved one after the other and Fisher-stitched, as pass 1 of `sc.Passes(1)` | `pahfit_sanity` (150) | `*_Multiline3_tiles_{T1,T2,stitched}_golden_f64.h5` |
+
+The other gates name their solver, LSQR, and none is tiled: CGLS, its deflation and the
+chi-squared stop, the `sc.shot_noise()` weights, the x-slope offsets, the post-solve gauge, the
+weighted coadd, the monitor and the snapshots are gated by `production` alone, the tiled solve and
+its stitch by `tiles`.
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
 themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly;
 `diff_cal_h5.py` compares two cal files dataset by dataset across the cal schemas (a legacy
-single-offset file against a multi-map one), for the continuum, spectral, e2e and rerun gates.
+single-offset file against a multi-map one), for the continuum, spectral, e2e and rerun gates. The
+production gate compares its cal and its mosaic; the snapshots and the solve's history
+(`records/<cal stem>_history.npz`) are not products and are not compared. The tiles gate compares
+each tile's cal (the offsets) and the stitched cal (the sky).
 
 Goldens are regenerated only when a numerical change is intended, from the committed tree, and
 the commit says so: `make_goldens.sh <tag> [gate ...]` runs the Python gates on a clean tree
@@ -40,10 +53,11 @@ the bytes of production-size solves, and every run uses those norms
 gate's float64 goldens were made 2026-10-17 from 1ef83ae, when the N-pass passes stopped building the
 joint matrix (the OFFSET pass solves each frame directly from its normal equations, the SKY pass sums
 the per-pixel moments alone); its earlier goldens (`*_unify_npass3_golden.h5` etc., 2026-09-28) were
-made with the float32 norms and the per-frame polynomial refit. The earlier goldens (`*_golden_stat*`, `*_golden.*`)
-are kept as made, by the float32 norms. The assembly folds its per-pixel moments
-deterministically (batch-id order), so two runs of the same tree are byte-identical on any box
-load.
+made with the float32 norms and the per-frame polynomial refit. The production and tiles gates'
+goldens were made 2026-10-20 from the commit that added the gates. The earlier goldens
+(`*_golden_stat*`, `*_golden.*`) are kept as made, by the float32 norms. The assembly folds its
+per-pixel moments deterministically (batch-id order), so two runs of the same tree are
+byte-identical on any box load.
 
 ## The engine views
 
@@ -66,7 +80,7 @@ their files:
 | `script__<name>.json` | the run script `selfcal_scripts/runs/<name>.py` (a campaign's views by field) |
 | `example__quickstart.json` | `examples/quickstart/quickstart.py` |
 | `tool__transfer_function.json` | `selfcal_scripts/transfer_function/transfer_function.py` with its default inputs |
-| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`), its `Field.calibrate` call captured |
+| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `production`, `tiles`), its `Field.calibrate` call captured |
 
 The views read this machine's files (frame lists, reference grids, calibration data) and its CPU
 count (the default number of workers): compare views made on one machine.

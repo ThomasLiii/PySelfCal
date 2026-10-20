@@ -57,7 +57,7 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
 #: unregularised, no clip, every observation weighted by its shot noise floored at the frame's median
 #: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve plane gauge applied on
 #: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
-#: ignored).
+#: ignored). The gate `production` runs it on 100 frames of the qr2 set.
 SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
                                  offsets=[sc.Offsets(on='subchannel', mean_zero=True), spherex.frame_slope()],
                                  weight=sc.shot_noise()),
