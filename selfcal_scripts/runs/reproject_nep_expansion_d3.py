@@ -1,7 +1,7 @@
 """Reproject the NEP Detector 3 expansion: the deep data set through 2026W29 (QR1 new gain + QR2, the new weeks
 included) and one ring of the all-sky survey around it, onto an expanded canvas of the 2026W17 Detector 3 run's
 projection (``reference``: its WCS; the canvas is fitted to these exposures, 100 px wider). The W17 run's frames are
-moved onto the new canvas first (workspace/survey-expansion/scripts/expand_field.py: ref_coords shifted by the
+moved onto the new canvas first (selfcal_scripts/runs/expand_field.py: ref_coords shifted by the
 whole-pixel CRPIX offset), so this reprojects only the frames the W17 run does not have. Drops exposures with a poor
 astrometric solution (FINAST != 0)."""
 import selfcal as sc

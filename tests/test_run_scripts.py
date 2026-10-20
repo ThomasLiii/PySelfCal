@@ -16,11 +16,16 @@ from selfcal.run.lower import lower  # noqa: E402
 
 RUNS = sorted(f[:-3] for f in os.listdir(os.path.join(_REPO, 'selfcal_scripts', 'runs'))
               if f.endswith('.py') and not f.startswith('_'))
+#: Tools over other run scripts: no settings of their own, only importable here.
+TOOLS = {'expand_field'}
 
 
 @pytest.mark.parametrize('name', RUNS)
 def test_a_run_script_builds_and_lowers(name, monkeypatch):
     module = importlib.import_module(f'selfcal_scripts.runs.{name}')
+    if name in TOOLS:
+        assert callable(getattr(module, 'main', None))
+        return
     if not hasattr(module, 'RUN'):
         assert hasattr(module, 'REPROJECT') or hasattr(module, 'PRECOMPUTE')
         return
