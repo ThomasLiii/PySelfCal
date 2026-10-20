@@ -1237,15 +1237,33 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         def _solve(op, storage):
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
-            nonlocal defl
+            nonlocal defl, proj
+            op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
+            exclusion_info, block_factor = None, None
+            if deflate is not None and getattr(deflate, 'exclude', None) is not None:
+                # Deflate(exclude=Degenerate(...)): the decomposition first, its degenerate directions' sky shapes
+                # join the column constraints, and the deflated solve runs on the constrained system.
+                t0 = time.perf_counter()
+                first = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
+                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj, decompose_only=True)
+                cols_d, P_d, exclusion_info = first.exclusion
+                block_factor = first.block_factor               # the offsets' Schur factorisation: the same in both setups
+                first.close()
+                del first
+                proj = ColumnProjector.build(list(exclusions or []) + [(cols_d, P_d)], active_mask, M if precondition else None, n_active)
+                del cols_d, P_d
+                exclusion_info['setup_s'] = time.perf_counter() - t0
+                logger.info(f"Column constraints with the degenerate directions: {proj}")
             if proj is not None:
-                op = proj.wrap(op if hasattr(op, 'matvec') else aslinearoperator(op))
+                op = proj.wrap(op0)
             _watch(op)
             kw, solver_op, setup_s = solve_kw, op, None
             if deflate is not None:
                 t0 = time.perf_counter()
+                settings_d = deflate if exclusion_info is None else deflate.replace(gauge_below=None, absorbed_by_shared=None)
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
-                                 sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj)
+                                 sky_names=sky_names, settings=settings_d, threads=n_threads, projector=proj,
+                                 exclusion_info=exclusion_info, block_factor=block_factor)
                 defl.bind(op, storage)
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0

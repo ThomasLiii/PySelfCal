@@ -148,6 +148,15 @@ def describe_deflate(deflate) -> str:
     if getattr(deflate, 'absorbed_by_shared', None) is not None:
         rule += (f"; directions the frame-shared offsets absorb (visibility {deflate.absorbed_by_shared:g}x better without them) "
                  f"are gauges (zero sky amplitude)")
+    ex = getattr(deflate, 'exclude', None)
+    if ex is not None:
+        parts = ['the exact gauges']
+        if ex.absorbed_by_shared is not None:
+            parts.append(f"the directions the frame-shared offsets absorb (visibility {ex.absorbed_by_shared:g}x better without them)")
+        if ex.gauge_below is not None:
+            parts.append(f"the directions the data see below {ex.gauge_below:g} of the best-seen one")
+        rule += ('; the degenerate directions (' + ', '.join(parts) + ') are found first and their sky shapes excluded '
+                 'from the sky (a hard constraint in map space), the solve then runs on the constrained system')
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
             f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 

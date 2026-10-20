@@ -324,6 +324,35 @@ class Stop(Config):
 
 
 @dataclass(frozen=True)
+class Degenerate(Config):
+    """Which pattern directions of a :class:`Deflate` count as degenerate, to be excluded from the sky.
+
+    The deflation's setup decomposes its pattern space (the smooth sky shapes with the offsets that absorb
+    them) into directions and measures each: how well the data see it (the seen fraction, ``sqrt(lambda /
+    lambda_max)``) and, when the model has frame-shared offsets, how much better they would see it without
+    those offsets' absorption (the visibility ratio). The degenerate directions are the exact gauges (seen
+    about 0: the data never constrain them) together with the directions a rule names: ``absorbed_by_shared``
+    (a ratio: a sky shape the frame-shared offsets mimic in nearly every frame; about ``1 / sqrt(fraction of
+    the data still seeing it)``; shapes the per-frame terms absorb sit at 1; None: off) and ``gauge_below`` (a
+    seen fraction, a level: None: off). Their sky shapes, in map space, become a hard constraint on the sky
+    (as :class:`~selfcal.models.model.Sky` ``exclude=`` does for shapes given by hand): the map has no
+    component along them, what the data place there goes to the other terms, and the solve then runs on
+    the constrained system. One run, nothing named by hand: on a survey whose geometry makes the sky's
+    radial quadratic indistinguishable from a detector pattern, that quadratic (with the mean) is what comes
+    out; elsewhere, whatever that model and footprint make degenerate within the pattern space. The record
+    keeps the selection and every direction's measures.
+    """
+    absorbed_by_shared: float | None = 3.0
+    gauge_below: float | None = None
+
+    def _validate(self):
+        if self.absorbed_by_shared is not None and not float(self.absorbed_by_shared) >= 1.0:
+            raise ConfigError(f"Degenerate(absorbed_by_shared={self.absorbed_by_shared}): a ratio of visibilities, at least 1")
+        if self.gauge_below is not None and not 0.0 <= float(self.gauge_below) < 1.0:
+            raise ConfigError(f"Degenerate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
+
+
+@dataclass(frozen=True)
 class Deflate(Config):
     """Solve the smooth sky patterns directly and iterate on the rest (deflation).
 
@@ -377,6 +406,11 @@ class Deflate(Config):
     signature along it leaves the right-hand side, so the solve stays consistent); the directions kept
     get the amplitudes they would get anyway.
 
+    ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (the exact
+    gauges and the rules' directions); their sky shapes are excluded from the sky as a hard constraint in map
+    space (the mechanism of ``Sky(exclude=)``), and the solve runs on the constrained system: the
+    decomposition is made first, then the deflated solve with the constraint. None (the default): off.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -390,6 +424,7 @@ class Deflate(Config):
     storage: Literal['float32', 'float64'] | None = None
     gauge_below: float | None = added(None, since='2026-10')
     absorbed_by_shared: float | None = added(None, since='2026-10')
+    exclude: Degenerate | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -403,6 +438,8 @@ class Deflate(Config):
             raise ConfigError(f"Deflate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
         if self.absorbed_by_shared is not None and not float(self.absorbed_by_shared) >= 1.0:
             raise ConfigError(f"Deflate(absorbed_by_shared={self.absorbed_by_shared}): a ratio of visibilities, at least 1")
+        if self.exclude is not None and not isinstance(self.exclude, Degenerate):
+            raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):
