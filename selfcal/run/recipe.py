@@ -328,28 +328,27 @@ class Degenerate(Config):
     """Which pattern directions of a :class:`Deflate` count as degenerate, to be excluded from the sky.
 
     The deflation's setup decomposes its pattern space (the smooth sky shapes with the offsets that absorb
-    them) into directions and measures each: how well the data see it (the seen fraction, ``sqrt(lambda /
-    lambda_max)``) and, when the model has frame-shared offsets, how much better they would see it without
-    those offsets' absorption (the visibility ratio). The degenerate directions are the exact gauges (seen
-    about 0: the data never constrain them) together with the directions a rule names: ``absorbed_by_shared``
-    (a ratio: a sky shape the frame-shared offsets mimic in nearly every frame; about ``1 / sqrt(fraction of
-    the data still seeing it)``; shapes the per-frame terms absorb sit at 1; None: off) and ``gauge_below`` (a
-    seen fraction, a level: None: off). Their sky shapes, in map space, become a hard constraint on the sky
-    (as :class:`~selfcal.models.model.Sky` ``exclude=`` does for shapes given by hand): the map has no
-    component along them, what the data place there goes to the other terms, and the solve then runs on
-    the constrained system. One run, nothing named by hand: on a survey whose geometry makes the sky's
-    radial quadratic indistinguishable from a detector pattern, that quadratic (with the mean) is what comes
-    out; elsewhere, whatever that model and footprint make degenerate within the pattern space. The record
-    keeps the selection and every direction's measures.
+    them) into directions and measures how well the data see each: the seen fraction, ``sqrt(lambda /
+    lambda_max)``, the direction's residual signature against the best-seen one's, once the offsets have
+    absorbed what they can. A direction seen at a fraction ``s`` is solved as what the data show divided
+    by ``s``: whatever the frames leave unmodelled along it enters the map ``1 / s`` times larger. The
+    directions seen below ``below`` are degenerate (the exact gauges, seen at nothing, among them): their
+    sky shapes, in map space, become a hard constraint on the sky (as :class:`~selfcal.models.model.Sky`
+    ``exclude=`` does for shapes given by hand): the map has no component along them, what the data place
+    there goes to the other terms, and the deflation space is re-based on the constrained patterns. One
+    run, nothing named by hand, whatever model, footprint or instrument made the direction invisible: on a
+    survey whose geometry makes the sky's radial quadratic the image of a detector pattern, that quadratic
+    comes out together with the mean and the planes; elsewhere, whatever is degenerate within the pattern
+    space. The default, 0.05, follows from a map requirement of a few 1e-3 over frames whose residual
+    pattern is a few 1e-4. The record keeps the selection and every direction's measures (the seen
+    fractions, and, with frame-shared offsets in the model, the visibility ratio without them: why a
+    direction is degenerate).
     """
-    absorbed_by_shared: float | None = 3.0
-    gauge_below: float | None = None
+    below: float = 0.05
 
     def _validate(self):
-        if self.absorbed_by_shared is not None and not float(self.absorbed_by_shared) >= 1.0:
-            raise ConfigError(f"Degenerate(absorbed_by_shared={self.absorbed_by_shared}): a ratio of visibilities, at least 1")
-        if self.gauge_below is not None and not 0.0 <= float(self.gauge_below) < 1.0:
-            raise ConfigError(f"Degenerate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
+        if not 0.0 < float(self.below) < 1.0:
+            raise ConfigError(f"Degenerate(below={self.below}): a seen fraction, 0 < below < 1")
 
 
 @dataclass(frozen=True)
@@ -406,10 +405,11 @@ class Deflate(Config):
     signature along it leaves the right-hand side, so the solve stays consistent); the directions kept
     get the amplitudes they would get anyway.
 
-    ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (the exact
-    gauges and the rules' directions); their sky shapes are excluded from the sky as a hard constraint in map
-    space (the mechanism of ``Sky(exclude=)``), and the solve runs on the constrained system: the
-    decomposition is made first, then the deflated solve with the constraint. None (the default): off.
+    ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (those the
+    data see below a fraction); their sky shapes are excluded from the sky as a hard constraint in map space
+    (the mechanism of ``Sky(exclude=)``), the deflation space is re-based on the constrained patterns from
+    the same setup, and the solve runs on the constrained system. The post-solve plane gauge (``Fit(gauge=)``)
+    then has nothing to move and is left off. None (the default): off.
 
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown

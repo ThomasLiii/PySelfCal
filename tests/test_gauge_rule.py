@@ -248,10 +248,11 @@ def test_a_sky_shape_excluded_in_map_space_holds_the_bowl_at_zero(tmp_path):
 
 
 def test_the_automatic_form_finds_the_degenerate_shapes_and_excludes_them(tmp_path):
-    """``Deflate(exclude=sc.Degenerate(...))``: nothing is named by hand. The decomposition runs first, the exact gauges
-    (here the mean and the x-plane) and the shared-absorption rule's direction (the bowl) are selected, their sky
-    shapes become a sky constraint, and the deflated solve runs on the constrained system: the bowl is gone, the
-    fit is that of the explicit constrained least squares, the record says what was excluded and why."""
+    """``Deflate(exclude=sc.Degenerate(below=))``: nothing is named by hand. The decomposition runs, the directions seen
+    below the level (here the mean, the x-plane and the bowl, at 0, 0 and 0.097 of the best-seen one) are selected,
+    their sky shapes become a sky constraint, the pattern space is re-based in the same setup, and the deflated solve
+    runs on the constrained system: the bowl is gone, the fit is that of the explicit constrained least squares, the
+    record says what was excluded and why."""
     from test_exclusions import _poly_basis, _constrained_least_squares
     system = _shared_pattern_system(carry=0.95)
     A, b, npix, grid, bowl = system
@@ -267,11 +268,11 @@ def test_the_automatic_form_finds_the_degenerate_shapes_and_excludes_them(tmp_pa
                           scratch_dir=str(tmp_path), sky_names=('sky',), deflate=deflate, exclusions=excl)
 
     x_free, _ = solve(sc.Deflate(2))
-    x, rec = solve(sc.Deflate(2, exclude=sc.Degenerate(absorbed_by_shared=3.0)))
+    x, rec = solve(sc.Deflate(2, exclude=sc.Degenerate(below=0.15)))
     d = json.loads(rec.deflation)
     ex = d['excluded_degenerate']
-    assert ex['count'] == 3 and ex['exact_gauges'] == 2 and len(ex['by_shared_rule']) == 1 and ex['by_level_rule'] is None
-    assert d['frozen_directions'].count(True) == 0 and d['gauges'] == 0 and min(d['seen']) > 0.1   # nothing near-null is left
+    assert ex['count'] == 3 and ex['below'] == 0.15 and max(ex['seen']) < 0.15
+    assert d['frozen_directions'].count(True) == 0 and d['gauges'] == 0 and min(d['seen_constrained']) > 0.1   # nothing near-null is left
     a_free, a = _bowl_amplitude(x_free[:npix], grid, bowl), _bowl_amplitude(x[:npix], grid, bowl)
     print(f'bowl free {a_free:+.3f}, automatic {a:+.3f}; selected: ' + ' | '.join(f"seen {s:.2g}: {c}" for s, c in zip(ex['seen'], ex['composition'])))
     assert a_free == pytest.approx(0.4, abs=0.05) and abs(a) < 0.03
@@ -281,6 +282,6 @@ def test_the_automatic_form_finds_the_degenerate_shapes_and_excludes_them(tmp_pa
     x_ref = _constrained_least_squares(A[:, active].toarray(), b, np.arange(int(act_sky.sum())), np.linalg.qr(P[act_sky])[0])
     assert np.linalg.norm(A @ x - A[:, active] @ x_ref) < 1e-3 * np.linalg.norm(b)
     assert np.linalg.norm(A @ x_free - A[:, active] @ x_ref) > 3e-3 * np.linalg.norm(b)
-    x4, rec4 = solve(sc.Deflate(2, exclude=sc.Degenerate(absorbed_by_shared=3.0)), nt=4)
+    x4, rec4 = solve(sc.Deflate(2, exclude=sc.Degenerate(below=0.15)), nt=4)
     assert json.loads(rec4.deflation)['excluded_degenerate']['directions'] == ex['directions']
     assert np.linalg.norm(x4 - x) < 1e-12 * np.linalg.norm(x)
