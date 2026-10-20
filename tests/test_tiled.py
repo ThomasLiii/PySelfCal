@@ -1,7 +1,6 @@
 """Tiled-calibration tests: tile geometry + frame assignment (no SPHEREx data).
 
-The Fisher stitch is verified on real data by the M13 byte-equality gate
-(selfcal_scripts/gates/run_m13_gate.sh) and end to end on synthetic exposures by
+The Fisher stitch is verified end to end on synthetic exposures by
 test_runner_e2e_toy.py. Here: make_tile_grid reproduces the NEP quadrant bboxes,
 and the frame_select helpers assign synthetic frames correctly.
 """

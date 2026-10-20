@@ -42,7 +42,7 @@ The geometry: each frame's detector axes and centre on the reference grid, from 
 through the frame's stored header (``geometry='tangent'``: its pointing, reference pixel, PC matrix
 and scale, no distortion terms) or from its full stored WCS (``'header'``). These are the
 computations of the transfer-function campaign's post-solve gauges, the plane and the quadratic,
-kept bit for bit (the ``transfer`` and ``transfer_quad`` gates of ``selfcal_scripts/gates``).
+reproduced bit for bit when they entered the library (2026-10-14).
 """
 from __future__ import annotations
 

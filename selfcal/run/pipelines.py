@@ -16,8 +16,7 @@ an exposure layout, the model into the solver's objects, and this file just sequ
 staging -> solve -> save -> mosaic -> cleanup.
 
 Edits must keep calibration output byte-identical: run the gate set
-(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``; see the
-README there).
+(``selfcal_scripts/gates/run_gates.sh``; see the README there).
 """
 import gc
 import glob as glob_module

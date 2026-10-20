@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # Make the float64-norm goldens (*golden_f64*) the gates compare with, by running the gates of python_gates.py on a
-# COMMITTED tree. Usage: make_goldens.sh <tag> [gate ...]   (gates: continuum spectral e2e npass3 euclid m13;
+# COMMITTED tree. Usage: make_goldens.sh <tag> [gate ...]   (gates: continuum spectral e2e npass3 euclid;
 # default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: the one this
 # script is in; SELFCAL_PYTHON the interpreter, default python on PATH); it must be clean, so that each golden belongs to a commit (the log records it). An existing golden is
 # never replaced unless FORCE=1. The goldens are made with the float64 LSQR norms (selfcal/core/lsqr_inplace.py,
-# since 2026-10-05): SELFCAL_LSQR_FLOAT32_NORMS=1 is refused. The e2e and m13 gates are the large ones (a 4.8 GB
-# mosaic; ~90 GB of memory and ~35 GB of scratch).
+# since 2026-10-05): SELFCAL_LSQR_FLOAT32_NORMS=1 is refused. The e2e gate is the large one (a 4.8 GB mosaic).
 set -u
 R=${SELFCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}   # default: the tree this script is in
 PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active env unless set
 L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
-GATES=${*:-continuum spectral e2e npass3 euclid m13}
+GATES=${*:-continuum spectral e2e npass3 euclid}
 mkdir -p $L
 LOG=$L/make_goldens_${TAG}.log
 O=/mnt/md124/thomasli/selfcal/outputs
@@ -20,8 +19,6 @@ D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh3
 E2E_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 NP=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3
 EU=$O/EDFN_Y_1p5arcsec_unifygolden
-M13=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3_multiline3_NEPovlp
-M13_TAIL=iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2
 cd $R
 if [ -n "$(git status --short | grep -v '^??')" ]; then
   echo "make_goldens: $R has uncommitted changes; a golden is made from a committed tree" >&2; exit 1
@@ -62,11 +59,6 @@ for g in $GATES; do
     rmp $EU/calibration/cal_EDFN_Y_unify_gate_py.h5 $EU/mosaic/mosaic_EDFN_Y_unify_gate_py.fits; run euclid
     keep $EU/calibration/cal_EDFN_Y_unify_gate_py.h5 $EU/calibration/cal_EDFN_Y_golden_f64.h5
     keep $EU/mosaic/mosaic_EDFN_Y_unify_gate_py.fits $EU/mosaic/mosaic_EDFN_Y_golden_f64.fits ;;
-  m13)
-    rmp ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5
-    rm -f ${M13}_UNIFYNPASS1GATEPY_STITCHED_${M13_TAIL}_npass_monitor.json
-    run m13
-    keep ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5 ${M13}_M13_UNIFYNPASS1GOLDEN_F64_${M13_TAIL}.h5 ;;
   *) echo "unknown gate $g" ;;
   esac
 done

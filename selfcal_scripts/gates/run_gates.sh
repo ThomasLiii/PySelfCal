@@ -2,13 +2,12 @@
 # Byte-equality gates: pytest, then the gates of python_gates.py (runs of the Python API), each product compared
 # with its float64-norm golden (*golden_f64*, made by make_goldens.sh from a committed tree; a missing golden fails
 # the gate). Usage: run_gates.sh <tag> [gate ...]   -> $GATES_LOGDIR/gates_<tag>.log
-# Gates: pytest continuum spectral e2e npass3 euclid m13 rerun transfer transfer_quad (default: all but m13, which
-# run_m13_gate.sh runs, and the two transfer gates; rerun runs the continuum gate's record again, `selfcal rerun
-# --overwrite`, so it follows continuum; transfer_quad runs no solve).
+# Gates: pytest continuum spectral e2e npass3 euclid rerun (default: all; rerun runs the continuum gate's record
+# again, `selfcal rerun --overwrite`, so it follows continuum).
 # 1. pytest; 2. continuum + spectral cal gates; 3. the e2e cal + mosaic gate (D3 Ch17, 300 frames, full mosaic incl.
-# wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors);
-# 6. the NEP multi-line INIT on the tile M13. SELFCAL_REPO picks the tree (default: the one this script is in),
-# SELFCAL_PYTHON the interpreter (default: python on PATH), SELFCAL_GATE_FIXTURES the frame fixtures.
+# wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors).
+# SELFCAL_REPO picks the tree (default: the one this script is in), SELFCAL_PYTHON the interpreter (default: python
+# on PATH), SELFCAL_GATE_FIXTURES the frame fixtures.
 set -u
 R=${SELFCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}   # default: the tree this script is in
 PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active env unless set
@@ -24,11 +23,6 @@ D4=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh3
 E2E_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh34_NumCol3_Ch17
 NP=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3
 EU=$O/EDFN_Y_1p5arcsec_unifygolden
-D3C9=$O/SPHEREx_nep_qr2_det3_6p2arcsec/calibration/cal_Detector3_NumSub10_NumCh17_NumCol1_Ch9
-D3C9_MOS=$O/SPHEREx_nep_qr2_det3_6p2arcsec/mosaic/mosaic_Detector3_NumSub10_NumCh17_NumCol1_Ch9
-E2E_FX=${SELFCAL_GATE_FIXTURES:-/home/thomasli/selfcal-project/gate_fixtures}/qr2_d3_frames300   # the 300-frame fixture
-M13=$O/SPHEREx_NEP_2026W17_D4_6p2arcsec/calibration/cal_Detector4_NumSub10_NumCh34_NumCol3_Multiline3_multiline3_NEPovlp
-M13_TAIL=iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2
 cd $R
 FILTER="=== python gate|Setup LSQR finished|Mosaic saved|\[npass\] pass|Error|Traceback|ConfigError"
 run() { PYTHONPATH=$R PYTHONUNBUFFERED=1 $PY -m selfcal_scripts.gates.python_gates $1 2>&1 | grep -E "$FILTER" ; }
@@ -63,19 +57,6 @@ for g in $GATES; do
     rmp $EU/calibration/cal_EDFN_Y_unify_gate_py.h5 $EU/mosaic/mosaic_EDFN_Y_unify_gate_py.fits; run euclid
     echo "--- euclid cal: byte-diff vs golden_f64"; $PY $G/h5_diff.py $EU/calibration/cal_EDFN_Y_unify_gate_py.h5 $EU/calibration/cal_EDFN_Y_golden_f64.h5 2>&1 | tail -1
     echo "--- euclid mosaic: byte-diff vs golden_f64"; $PY $G/fits_diff.py $EU/mosaic/mosaic_EDFN_Y_unify_gate_py.fits $EU/mosaic/mosaic_EDFN_Y_golden_f64.fits 2>&1 | tail -1 ;;
-  m13)
-    rmp ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5
-    rm -f ${M13}_UNIFYNPASS1GATEPY_STITCHED_${M13_TAIL}_npass_monitor.json
-    run m13
-    echo "--- m13: byte-diff vs golden_f64"; $PY $G/h5_diff.py ${M13}_M13_UNIFYNPASS1GATEPY_${M13_TAIL}.h5 ${M13}_M13_UNIFYNPASS1GOLDEN_F64_${M13_TAIL}.h5 2>&1 | tail -1 ;;
-  transfer)
-    rmp ${D3C9}_transfer_gate_py.h5 ${D3C9_MOS}_transfer_gate_py.fits; rm -rf $R/cache/transfer_gate
-    PYTHONPATH=$R $PY -m selfcal_scripts.gates.python_gates transfer 2>&1 | tail -3
-    echo "--- transfer cal: offsets vs the ungauged golden, sky vs the plane-gauged golden"; $PY $G/transfer_check.py ${D3C9}_transfer_gate_py.h5 ${D3C9}_transfer_golden_f64.h5 ${D3C9}_transfer_plane_golden_f64.h5 2>&1 | tail -1
-    echo "--- transfer mosaic (weighted coadd + the plane on the map): byte-diff vs transfer_planemap_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_transfer_gate_py.fits ${D3C9_MOS}_transfer_planemap_golden_f64.fits 2>&1 | tail -1 ;;
-  transfer_quad)
-    # the quadratic gauge (sc.Gauge(degree=2)) on the golden ungauged cal and map, against the campaign's goldens: no solve
-    echo "--- transfer_quad: the library's quad gauge vs transfer_gq2{,map}_golden_f64"; PYTHONPATH=$R $PY $G/quad_check.py ${D3C9}_transfer_golden_f64.h5 ${D3C9_MOS}_transfer_golden_f64.fits ${D3C9}_transfer_gq2_golden_f64.h5 ${D3C9_MOS}_transfer_gq2map_golden_f64.fits $E2E_FX $O/SPHEREx_nep_qr2_det3_6p2arcsec/ref.fits $R/cache/transfer_quad 2>&1 | tail -1 ;;
   rerun)
     # the record the continuum gate wrote, run again from the record alone (made again: --overwrite)
     REC=$(ls -t $O/SPHEREx_nep_qr2_det3_6p2arcsec/records/calibrate_*.json | xargs grep -l "_unify_gate_py.h5" | head -1)

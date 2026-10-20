@@ -859,8 +859,7 @@ goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 Aro
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
 solve), the Euclid EDFN recipe and the rerun of the continuum gate's record,
 each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
-`gates/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
-NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
+`gates/diff_cal_h5.py`). `config_equivalence.py views` / `compare-views` checks what
 the engine does with every run script without a solve. The older harnesses
 (`run_cal_baseline_test.py`, `regress_cal*.py`, the `benchmark_d3_ch17_*` timing scripts) are
 archived under the gitignored `archive/scripts/benchmarks/`.

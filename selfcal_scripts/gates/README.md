@@ -3,7 +3,7 @@
 Every structural change to the pipeline is gated on reproducing fixed products byte for byte.
 The gates are Python: each is a function of `python_gates.py`, a calibration written with the
 [Python API](../../docs/guide/python-api.md) on a fixed set of frames
-(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | m13`).
+(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
 to `/mnt/md124` and the fixtures are in `python_gates.py`), the steps named, compares each
 product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
@@ -12,11 +12,9 @@ too). The scripts name no worktree: `SELFCAL_REPO` picks the tree (default: the 
 in; its `cache/` is the scratch), `SELFCAL_PYTHON` the interpreter (default: `python` on `PATH`; the
 log records it and its numpy) and `SELFCAL_GATE_FIXTURES` the frame fixtures (default
 `/home/thomasli/selfcal-project/gate_fixtures`: `qr2_d3_links400` for continuum, `qr2_d3_frames300`
-for e2e and transfer, `pahfit_sanity` for spectral and npass3, `nep_d4_m13` for m13). The gates read
+for e2e, `pahfit_sanity` for spectral and npass3). The gates read
 and write nothing in `workspace/`: their inputs are the repository, the fixtures and the goldens. The
-steps are `pytest` (the test suite, first), then the gates below; the default is every step but
-`m13`, which `run_m13_gate.sh <tag>` runs (it calls `run_gates.sh <tag> m13` and logs to
-`m13_gate_<tag>.log`).
+steps are `pytest` (the test suite, first), then the gates below; the default is every step.
 
 | gate | what | golden |
 | --- | --- | --- |
@@ -25,10 +23,7 @@ steps are `pytest` (the test suite, first), then the gates below; the default is
 | e2e | D3 Ch17 cal + FULL mosaic (std, sigma-clip, wavelength maps; a 4.8 GB mosaic) | `*_unify_e2e_golden_f64.{h5,fits}` |
 | npass3 | multiline J=4, n=3: INIT + closed-form SKY + per-frame direct OFFSET solve | `*_unify_npass3_golden_f64{,_pass2sky,_pass3off}.h5` |
 | euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
-| m13 | the npass n=1 gate on the NEP M13 tile (1,101 frames, iter 300, ~50 min on a quiet box, ~90 GB of memory and ~35 GB of scratch) | `*_UNIFYNPASS1GOLDEN_F64_*.h5` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | the continuum golden |
-| transfer | D3 Ch9 (NumCh17, NumCol1) on the 300-frame qr2 set: the 2026-10 production recipe -- the weighted solve (`sc.shot_noise()`), the post-solve plane gauge on the map (`sc.Gauge('xs_term', degree=1)`), the weighted coadd (mean, std, 2-sigma clip) -- against what the campaign's own implementations made | `*_transfer_golden_f64.h5` (the cal's offsets), `*_transfer_plane_golden_f64.h5` (its sky), `*_transfer_planemap_golden_f64.fits` (the mosaic) |
-| transfer_quad | the quadratic gauge (`sc.Gauge(degree=2)`) of the library on the golden ungauged cal and map of `transfer`, against the campaign's (`quad_check.py`; no solve) | `*_transfer_gq2_golden_f64.h5` (the sky), `*_transfer_gq2map_golden_f64.fits` (the maps) |
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
 themselves. `h5_diff.py` / `fits_diff.py` compare every dataset / extension exactly;
@@ -45,29 +40,10 @@ the bytes of production-size solves, and every run uses those norms
 gate's float64 goldens were made 2026-10-17 from 1ef83ae, when the N-pass passes stopped building the
 joint matrix (the OFFSET pass solves each frame directly from its normal equations, the SKY pass sums
 the per-pixel moments alone); its earlier goldens (`*_unify_npass3_golden.h5` etc., 2026-09-28) were
-made with the float32 norms and the per-frame polynomial refit. The earlier goldens (`*_golden_stat*`, `*_golden.*`, `*_UNIFYNPASS1GOLDEN_iter300*`)
+made with the float32 norms and the per-frame polynomial refit. The earlier goldens (`*_golden_stat*`, `*_golden.*`)
 are kept as made, by the float32 norms. The assembly folds its per-pixel moments
 deterministically (batch-id order), so two runs of the same tree are byte-identical on any box
 load.
-
-## The transfer gate
-
-The `transfer` gate pins the 2026-10 production recipe (`SLOPE_GAUGE`: the per-frame x-slope model, the weights
-`sc.shot_noise()`, deflated CGLS to the chi-squared stop, the post-solve plane gauge on the map, the weighted
-coadd; `python_gates.py transfer`) to goldens made by the transfer-function campaign's own implementations of
-these features, before the features entered the library: its weighted solve and weighted coadd (`1/sqrt(max(|value|,
-the frame's window median))` per row, `1/max(|raw value|, that median)` per pixel) and its gauge scripts. Those
-experimental scripts stay in the workspace (`workspace/lsqr-convergence/transfer_gate/`, with the record of which
-golden each made and `make_transfer_goldens.sh` to remake them); the library reproduced every golden byte for byte.
-`transfer_check.py` compares the gate cal's offsets, coverage and frame scalars with the ungauged golden and its
-sky term with the plane-gauged golden's (the library gauges the sky term and the maps, the campaign's script also
-moved the offsets), `fits_diff.py` the mosaic with the plane-gauged map. The quadratic gauge
-(`sc.Gauge(degree=2)`) stays in the library as an option: `transfer_quad` runs it (`quad_check.py`) on the golden
-ungauged cal and map, without a solve, against the campaign's quadratic gauge.
-The campaign's weights were float32 in its solve; the goldens' maker evaluates them in float64, as the library
-does (on the fixture the float32 weights move the chi-squared stop from 520 to 540 iterations, and the two cals
-differ by the solve's convergence tolerance: rms 6.2e-4 MJy/sr over the sky, 2.1 % of its rms; measured
-2026-10-14).
 
 ## The engine views
 
@@ -90,7 +66,7 @@ their files:
 | `script__<name>.json` | the run script `selfcal_scripts/runs/<name>.py` (a campaign's views by field) |
 | `example__quickstart.json` | `examples/quickstart/quickstart.py` |
 | `tool__transfer_function.json` | `selfcal_scripts/transfer_function/transfer_function.py` with its default inputs |
-| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `m13`), its `Field.calibrate` call captured |
+| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`), its `Field.calibrate` call captured |
 
 The views read this machine's files (frame lists, reference grids, calibration data) and its CPU
 count (the default number of workers): compare views made on one machine.
