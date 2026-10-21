@@ -340,9 +340,8 @@ class Degenerate(Config):
     survey whose geometry makes the sky's radial quadratic the image of a detector pattern, that quadratic
     comes out together with the mean and the planes; elsewhere, whatever is degenerate within the pattern
     space. The default, 0.05, follows from a map requirement of a few 1e-3 over frames whose residual
-    pattern is a few 1e-4. The record keeps the selection and every direction's measures (the seen
-    fractions, and, with frame-shared offsets in the model, the visibility ratio without them: why a
-    direction is degenerate).
+    pattern is a few 1e-4. The record keeps the selection and every direction's measures (its seen
+    fraction and composition).
     """
     below: float = 0.05
 
@@ -380,30 +379,10 @@ class Deflate(Config):
     of that degree) would make the solve drift along it once converged: deflate it whole
     (``basis="polynomial"`` of at least its degree).
 
-    ``gauge_below``: treat as a gauge every direction of the pattern space the data see below this
-    fraction of the best-seen one (``sqrt(lambda / lambda_max)``, the record's ``seen`` spectrum):
-    not solved, zero sky amplitude, the offsets take it, as the exact gauges are treated. None (the
-    default): exact gauges only. A near-null direction's least-squares value is what little the
-    data say about it, noise and systematics included, and it can be large (a shared detector
-    pattern that a smooth sky mode mimics in every frame); this rule states the convention that
-    such modes have no sky amplitude, whatever the footprint or the model made them. Set it at
-    a gap of the spectrum (the solve's log prints it).
-
-    ``absorbed_by_shared``: the same freeze decided by what absorbs the direction rather than by a level,
-    so one run decides it: the setup also computes each direction's visibility when the frame-shared
-    offsets take no part in the absorption. Those are found in the system itself (the offset columns
-    coupled to far more columns than the others: whatever term, shape or basis made them, a constant
-    per detector column or any detector-fixed pattern alike; the solve's log says how many). A
-    direction the data would see more than this factor better without them is a sky shape that the
-    shared pattern mimics in every frame, and is attributed to the instrument: frozen at zero sky
-    amplitude. Directions the per-frame terms absorb on their own (a plane, the mean) have a ratio
-    near 1 and are left as they are; the ratio of a shape only the shared pattern absorbs is about
-    one over the square root of the fraction of the data that still sees it, so a few sits in an empty
-    gap between the two kinds (the record keeps every ratio: ``visibility_ratio_without_shared``).
-    None (the default): off. Without frame-shared offsets in the model every ratio is 1 and nothing is
-    frozen. A frozen direction stays in the deflation space with its amplitude held at zero (the data's
-    signature along it leaves the right-hand side, so the solve stays consistent); the directions kept
-    get the amplitudes they would get anyway.
+    The setup's record keeps the decomposition of the pattern space (each direction's pattern weights,
+    eigenvalue and seen fraction, ``sqrt(lambda / lambda_max)``), and the log prints the least-seen
+    directions: a near-null direction's least-squares value is what little the data say about it,
+    noise and systematics included, and it can be large.
 
     ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (those the
     data see below a fraction); their sky shapes are excluded from the sky as a hard constraint in map space
@@ -422,8 +401,6 @@ class Deflate(Config):
     basis: Literal['cosine', 'polynomial'] = 'cosine'
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
-    gauge_below: float | None = added(None, since='2026-10')
-    absorbed_by_shared: float | None = added(None, since='2026-10')
     exclude: Degenerate | None = added(None, since='2026-10')
 
     def _validate(self):
@@ -434,10 +411,6 @@ class Deflate(Config):
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
-        if self.gauge_below is not None and not 0.0 <= float(self.gauge_below) < 1.0:
-            raise ConfigError(f"Deflate(gauge_below={self.gauge_below}): a fraction, 0 <= gauge_below < 1")
-        if self.absorbed_by_shared is not None and not float(self.absorbed_by_shared) >= 1.0:
-            raise ConfigError(f"Deflate(absorbed_by_shared={self.absorbed_by_shared}): a ratio of visibilities, at least 1")
         if self.exclude is not None and not isinstance(self.exclude, Degenerate):
             raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:

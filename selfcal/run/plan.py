@@ -143,11 +143,7 @@ def describe_gauge(gauge) -> str:
 def describe_deflate(deflate) -> str:
     """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
-    rule = ('' if getattr(deflate, 'gauge_below', None) is None else
-            f"; directions the data see below {deflate.gauge_below:g} of the best-seen one are gauges (zero sky amplitude)")
-    if getattr(deflate, 'absorbed_by_shared', None) is not None:
-        rule += (f"; directions the frame-shared offsets absorb (visibility {deflate.absorbed_by_shared:g}x better without them) "
-                 f"are gauges (zero sky amplitude)")
+    rule = ''
     ex = getattr(deflate, 'exclude', None)
     if ex is not None:
         rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '

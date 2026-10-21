@@ -26,9 +26,7 @@ complement over them, which leaves the blocks per frame (:func:`_schur_pinv_solv
 span the deflation space. A combination the data cannot see at all (``|B z|`` below
 :data:`GAUGE_RATIO` of ``|B F|``: a gauge, such as the sky's mean against per-frame scalars) is left
 out, and the rest is made orthogonal to it, so the solution keeps the gauge a plain solve gives
-(the minimum-norm one). The rules (``Deflate(gauge_below=)``, ``Deflate(absorbed_by_shared=)``) may
-*freeze* further directions: a frozen direction stays in the space, so the iterations never move along
-it, with its coarse amplitude held at zero instead of solved.
+(the minimum-norm one).
 
 **The solve.** With ``V`` an orthonormal basis of the space and ``N = B^T B`` (``B`` the column-scaled
 system the solver sees), ``E = V^T N V`` and ``W = N V``:
@@ -184,7 +182,7 @@ def _pieces(storage, rows=_ROWS):
         yield _piece(storage, desc)
 
 
-def _block_pinv_solve(G, R, project=None, shared=False, pool=None):
+def _block_pinv_solve(G, R, project=None, pool=None):
     """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
     connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
     :data:`DEPENDENT` of the block's largest count as zero: the solution of minimum norm), MINRES on
@@ -193,10 +191,7 @@ def _block_pinv_solve(G, R, project=None, shared=False, pool=None):
     :func:`_schur_pinv_solve`, which leaves the per-frame blocks. ``project`` (a
     :class:`~selfcal.core.projector.ColumnProjector` over these columns, or None): the solution of the
     projected system ``P G P X = P R`` (columns the constraints join become hubs; a dense block or a MINRES
-    block holding constrained columns is projected in place). ``shared``: look for the frame-shared columns
-    (the hubs) whatever the blocks' size, for the rule that needs the response without them
-    (``info['without_shared']``, ``info['shared_columns']``: absent when there are none; ValueError when the
-    Schur path cannot serve). Returns ``(X, info)``."""
+    block holding constrained columns is projected in place). Returns ``(X, info)``."""
     n = G.shape[0]
     X = np.zeros((n, R.shape[1]))
     if n == 0:
@@ -207,9 +202,9 @@ def _block_pinv_solve(G, R, project=None, shared=False, pool=None):
         R = project.apply(np.array(R, dtype=np.float64, copy=True))
     ncomp, labels = connected_components(G, directed=False)
     counts = np.bincount(labels, minlength=ncomp)
-    if counts.max() > _DENSE_BLOCK or shared:
+    if counts.max() > _DENSE_BLOCK:
         deg = np.diff(G.indptr)
-        big = counts[labels] > (1 if shared else _DENSE_BLOCK)
+        big = counts[labels] > _DENSE_BLOCK
         hub = np.flatnonzero(big & (deg > _HUB_RATIO * np.median(deg[big]))) if big.any() else np.zeros(0, dtype=np.int64)
         if project is not None:
             hub = np.union1d(hub, project.columns[big[project.columns]])      # constrained columns of big blocks
@@ -217,10 +212,6 @@ def _block_pinv_solve(G, R, project=None, shared=False, pool=None):
             out = _schur_pinv_solve(G, R, hub, project=project, pool=pool)
             if out is not None:
                 return out
-        if shared and hub.size:
-            raise ValueError(f"Deflate(absorbed_by_shared=): the {hub.size} frame-shared offset columns cannot be "
-                             f"eliminated by the Schur complement (at most {_SCHUR_MAX}, and the other columns must "
-                             f"fall into blocks of at most {_DENSE_BLOCK}), so the response without them is not available")
     order = np.argsort(labels, kind='stable')
     starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
     pos = np.empty(n, dtype=np.int64)
@@ -451,14 +442,12 @@ class _SchurFactor:
             return list(pool.map(fn, items))
         RF, RH = R[F], R[H]
         Rh = RH.copy()
-        Xf = np.zeros((n, k))                               # the response of the per-frame columns alone (D^+ R_F)
 
         def first(batch):
             flat, nb, s, U, inv, _bad, Bb = batch
             Ut = np.swapaxes(U, 1, 2)
             Rb = RF[flat].reshape(nb, s, k)
             Zb = U @ (inv[:, :, None] * (Ut @ Rb))
-            Xf[F[flat]] = Zb.reshape(-1, k)
             return Bb.reshape(-1, nH).T @ Zb.reshape(-1, k)
 
         for dR in run(first, bl):
@@ -480,7 +469,6 @@ class _SchurFactor:
         if self.Q is not None:
             X -= self.Q @ (self.Q.T @ X)
         info = dict(self.info)
-        info['without_shared'] = Xf
         info['factor'] = self
         return X, info
 
@@ -757,8 +745,7 @@ class Deflation:
             t_pass1 = time.perf_counter() - t
             t = time.perf_counter()
             ex = getattr(self.settings, 'exclude', None)
-            want_shared = getattr(self.settings, 'absorbed_by_shared', None) is not None
-            X, info = _block_pinv_solve(G, R.T, project=self._proj_off, shared=want_shared, pool=self._pool)
+            X, info = _block_pinv_solve(G, R.T, project=self._proj_off, pool=self._pool)
             res = G @ (-X) + R.T
             if self._proj_off is not None:
                 self._proj_off.apply(res)                 # the projected normal equations' residual
@@ -767,13 +754,7 @@ class Deflation:
             del res
             Z[:, n_sky_S:] = -X.T
             Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
-            # The frame-shared offsets' share of the absorption: Delta = the response with them minus the
-            # response of the per-frame columns alone (nonzero on offset columns only). Pass 2 accumulates
-            # what the data see of each pattern with that share removed (E_f below), a by-product of its sweep.
-            Xf = info.get('without_shared')
-            Delta = None if Xf is None else np.ascontiguousarray(X - Xf)          # (n_off, k)
-            self.shared_offsets = 0 if Xf is None else int(np.asarray(info.get('shared_columns')).size)
-            del G, R, X, Xf
+            del G, R, X
             t_pair = time.perf_counter() - t
 
             # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside (the
@@ -784,37 +765,22 @@ class Deflation:
             t = time.perf_counter()
             pair_norm2 = np.zeros(k)
             bnorm2 = 0.0
-            C1 = np.zeros((k, k)); C2 = np.zeros((k, k))
             acc2 = []
 
             def images(r0, r1, prepared, buf):
                 nr = r1 - r0
                 U = buf.take('U', (nr, k + 1))
-                offs = []
-                for lip, pos, d64, _sky, oc in prepared:
+                for lip, pos, d64, _sky, _off in prepared:
                     _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
-                    if Delta is not None and oc is not None:
-                        offs.append(oc)
                 pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
-                c1 = c2 = None
-                if offs:
-                    Ud = buf.take('Ud', (nr, k))
-                    for ip, ci, dd in offs:
-                        _sparsetools.csr_matvecs(nr, n_off, k, ip, ci, dd, Delta, Ud)
-                    c1 = U[:, :k].T @ Ud
-                    c2 = Ud.T @ Ud
-                del offs
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
                 U[:, k] = bc
-                return U, (pn, float(bc @ bc), c1, c2)
+                return U, (pn, float(bc @ bc))
 
             NZb = self._transposed_products(storage, images, k + 1, n_sky_S, acc2)
-            for pn, bn, c1, c2 in acc2:
+            for pn, bn in acc2:
                 pair_norm2 += pn
                 bnorm2 += bn
-                if c1 is not None:
-                    C1 += c1
-                    C2 += c2
             del acc2
             ATb = np.ascontiguousarray(NZb[:, k])
             NZt = np.ascontiguousarray(NZb[:, :k])
@@ -831,9 +797,6 @@ class Deflation:
             E = self._gram(Z, NZ)
             GZ = self._gram(Z, Z)
             NN = self._gram(NZ, NZ)
-            # The same patterns with the frame-shared offsets' absorption removed (E itself when there are none)
-            E_f = E + C1 + C1.T + C2 if Delta is not None else (E if want_shared else None)
-            del Delta
         except BaseException:
             self.close()
             raise
@@ -845,7 +808,7 @@ class Deflation:
         T = T @ U2
         # Everything the decomposition found is kept for the record: the directions in pattern coordinates
         # (column j of `directions` = the weights of the patterns in direction j), their eigenvalues, what the
-        # data see of each, and which were kept / frozen / exact gauges (summary()).
+        # data see of each, and which are exact gauges (summary()).
         self.directions = np.array(T, copy=True)
         self.eigenvalues = np.array(lam, copy=True)
         wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
@@ -853,33 +816,13 @@ class Deflation:
             rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
         lam_max = max(float(lam.max()), 1e-300)
         self.seen = np.sqrt(np.maximum(lam, 0.0) / lam_max)        # per direction: what the data see of it, relative
-        below = getattr(self.settings, 'gauge_below', None)
-        exact = lam > DEPENDENT * lam_max                          # False: an exact gauge (left as a plain solve leaves it)
-        keep = exact.copy()
-        if below is not None:
-            keep &= self.seen > float(below)                       # the user's rule: unseen directions are gauges
-        # The frame-shared offsets' rule: a direction the data would see `ratio` times better if the shared
-        # offsets could not absorb it is a sky shape the shared detector pattern mimics in every frame:
-        # attributed to the instrument (frozen at zero sky amplitude) when ratio > absorbed_by_shared.
-        by_shared = getattr(self.settings, 'absorbed_by_shared', None)
-        self.visibility_ratio = None
-        if E_f is not None:
-            lam_f = np.einsum('ij,jk,ki->i', T.T, E_f, T)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                self.visibility_ratio = np.sqrt(np.maximum(lam_f, 0.0) / np.where(lam > 0, lam, np.inf))
-            if by_shared is not None:
-                keep &= ~(exact & (self.visibility_ratio > float(by_shared)))
-        self.absorbed_by_shared = None if by_shared is None else float(by_shared)
-        frozen = exact & ~keep                                     # the rules' directions: frozen at zero amplitude
-        self.kept_mask, self.frozen_mask, self.exact_mask = keep.copy(), frozen.copy(), ~exact
-        self.gauges = int((~keep).sum())
-        self.gauge_below = None if below is None else float(below)
-        self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
-        # A frozen direction stays in the space (the solver's iterations are kept orthogonal to it in the data's
-        # metric, like the kept ones) with its coarse amplitude held at zero instead of solved: the solution has
-        # no part along it as the data measure it. (An exact gauge is left out of the space: the data never push
-        # along it, and its value stays the start's, as without the rules: the zero point of the sky against the
-        # frame scalars, for one.)
+        # An exact gauge (eigenvalue at the rounding level) is left out of the space: the data never push along it,
+        # and its value stays the start's, as a plain solve leaves it (the zero point of the sky against the frame
+        # scalars, for one).
+        exact = lam > DEPENDENT * lam_max                          # False: an exact gauge
+        self.kept_mask, self.exact_mask = exact.copy(), ~exact
+        self.gauges = int((~exact).sum())
+        self.rho_max = float(rho[exact].max()) if exact.any() else math.nan
         if ex is not None:
             # Deflate(exclude=Degenerate(below)): the directions seen below the level are degenerate. Their sky
             # shapes (physical units, over the covered sky columns) join the column constraints as a sky group, and
@@ -917,10 +860,8 @@ class Deflation:
             self.exclusion_info = {
                 'below': float(ex.below), 'directions': [int(j) for j in np.flatnonzero(sel)], 'count': k_sel,
                 'seen': [float(self.seen[j]) for j in np.flatnonzero(sel)],
-                'visibility_ratio_without_shared': None if self.visibility_ratio is None else [float(self.visibility_ratio[j]) for j in np.flatnonzero(sel)],
                 'composition': comp, 'pattern_labels': list(self.labels),
                 'seen_by_direction': [float(v) for v in self.seen],
-                'visibility_ratio_by_direction': None if self.visibility_ratio is None else [float(v) for v in self.visibility_ratio],
                 'eigenvectors': [[float(f'{v:.7g}') for v in col] for col in self.directions.T],
                 'pairing_residual': float(self.pairing_residual)}
             logger.info(f"Deflation: {k_sel} degenerate direction(s) (seen below {ex.below:g}) excluded from the sky: "
@@ -990,18 +931,15 @@ class Deflation:
             lam_max = max(float(lam.max()), 1e-300)
             seen_c = np.sqrt(np.maximum(lam, 0.0) / lam_max)
             exact = lam > DEPENDENT * lam_max
-            keep = exact.copy()
-            frozen = exact & ~keep
-            self.kept_mask, self.frozen_mask, self.exact_mask = keep.copy(), frozen.copy(), ~exact
-            self.gauges = int((~keep).sum())
-            self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
+            self.kept_mask, self.exact_mask = exact.copy(), ~exact
+            self.gauges = int((~exact).sum())
+            self.rho_max = float(rho[exact].max()) if exact.any() else math.nan
             self.seen_constrained = seen_c
             logger.info(f"Deflation: the constrained space's {int(exact.sum())} directions, seen fractions (the 8 smallest): "
                         + ', '.join(f'{v:.2g}' for v in np.sort(seen_c)[:8]))
         T = T[:, exact]
         self.lam = lam[exact].copy()
-        self._free = keep[exact]                                   # the space's directions whose amplitude is solved
-        self.kept = int(self._free.sum())
+        self.kept = int(exact.sum())
         spectrum = ', '.join(f'{v:.2g}' for v in np.sort(self.seen)[:12])
         # the composition of the least-seen directions (below 0.1 of the best-seen): their three largest pattern weights,
         # relative to the direction's largest (the pattern coordinates are not normalised)
@@ -1012,14 +950,8 @@ class Deflation:
             w = self.directions[:, j]; w = w / max(float(np.abs(w).max()), 1e-300); top = np.argsort(-np.abs(w))[:3]
             comp.append(f"{self.seen[j]:.2g} = " + ' '.join(f'{w[i]:+.2f}*{self.labels[i]}' for i in top))
         logger.info('Deflation: the least-seen directions, by their largest pattern weights: ' + ' | '.join(comp))
-        if self.visibility_ratio is not None:
-            top = np.argsort(-np.nan_to_num(self.visibility_ratio))[:6]
-            logger.info('Deflation: visibility without / with the frame-shared offsets, the 6 largest ratios: '
-                        + ', '.join(f'{self.visibility_ratio[j]:.3g} (seen {self.seen[j]:.2g})' for j in top)
-                        + ('' if self.absorbed_by_shared is None else f"; frozen above {self.absorbed_by_shared:g}: {int((self.frozen_mask).sum())}"))
         logger.info(f"Deflation: the directions' seen fractions (sqrt(lambda / lambda_max); the {min(12, self.seen.size)} "
-                    f"smallest of {self.seen.size}): {spectrum}"
-                    + ('' if self.gauge_below is None else f"; the rule gauge_below={self.gauge_below:g} leaves out {self.gauges}"))
+                    f"smallest of {self.seen.size}): {spectrum}")
         if self.kept == 0:
             self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
@@ -1040,10 +972,8 @@ class Deflation:
         self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
         if self.store == np.float32:
             self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
-        # The space's least-squares amplitudes. A frozen direction's amplitude is what the data ask for along it
-        # (kept for the record and to take its signature out of the right-hand side) but the solution gets zero.
-        self._c_data = (self.V @ ATb) / self.lam
-        self.c_star = np.where(self._free, self._c_data, 0.0)
+        # The space's least-squares amplitudes.
+        self.c_star = (self.V @ ATb) / self.lam
         del ATb
         self._bnorm2 = bnorm2
         nb = 1 if self._pool is None else max(1, min(int(threads), nS // _MIN_BLOCK))
@@ -1338,9 +1268,8 @@ class Deflation:
     # ---------------------------------------------------------------- the solve
     def start(self, b, x0=None):
         """Subtract the part in the space from ``b`` in place (``b - B x_c``, computed in float64, stored in
-        ``b``'s dtype; the frozen directions' signature leaves too, :meth:`_shift_vector`) and return the
-        solver's start: ``P x0`` (in ``x0``'s dtype), or None."""
-        xb = self._shift_vector()
+        ``b``'s dtype) and return the solver's start: ``P x0`` (in ``x0``'s dtype), or None."""
+        xb = self.x_c
 
         def shift(r0, r1, acc):
             b[r0:r1] = (np.asarray(b[r0:r1], dtype=np.float64) - acc).astype(b.dtype)
@@ -1360,25 +1289,13 @@ class Deflation:
         solver's residual is measured against (CGLS's refresh)."""
         m = self.shape[0]
         out = np.empty(m, dtype=dtype)
-        xb = self._shift_vector()
+        xb = self.x_c
 
         def shift(r0, r1, acc):
             out[r0:r1] = np.asarray(b[r0:r1], dtype=np.float64) - acc
 
         self._forward(self._storage, xb, shift)
         return out
-
-    def _shift_vector(self) -> np.ndarray:
-        """The part of the solution the solver's right-hand side is shifted by: ``x_c`` (the frozen directions at
-        zero) plus, when directions are frozen, those directions at the amplitudes the data ask for: their
-        signature leaves the right-hand side, so the shifted system is consistent (its least-squares gradient
-        vanishes at the solution; a gradient that only the projection cancelled would be rounding the solver
-        amplifies along the system's gauges) and the solution has zero amplitude along them all the same."""
-        if self._free.all():
-            return self.x_c
-        xb = self.x_c.copy()
-        self._sub(xb, self.V, -np.where(self._free, 0.0, self._c_data))
-        return xb
 
     def bind(self, op, storage):
         """The solver's operator ``op`` (the column-scaled system) and the matrix it reads (for the float64
@@ -1450,10 +1367,6 @@ class Deflation:
 
         g = self._transposed_products(self._storage, residual, 1, self.n_sky_S)[:, 0]
         dc = self._dot(self.V, g) / self.lam
-        # A frozen direction: the data ask for c_data along it and the gradient says dc is missing, so the iterate
-        # holds c_data - dc; it goes back to zero (rounding, or an iterate outside the allowed subspace, may have
-        # moved it; a solved direction is re-solved the same way).
-        dc[~self._free] -= self._c_data[~self._free]
         cnorm = float(np.linalg.norm(self.c_star))
         self.resolve_change = float(np.linalg.norm(dc)) / cnorm if cnorm > 0 else 0.0
         self._sub(xS, self.V, -dc)
@@ -1465,7 +1378,7 @@ class Deflation:
         st = self.settings
         return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
-                'kept': self.kept, 'gauges': self.gauges, 'gauge_below': self.gauge_below,
+                'kept': self.kept, 'gauges': self.gauges,
                 'seen': [float(v) for v in np.sort(self.seen)],
                 'obliqueness_max': None if math.isnan(self.rho_max) else float(self.rho_max), 'columns': int(self.nS),
                 'nullness_min': float(self.nullness.min()), 'nullness_median': float(np.median(self.nullness)),
@@ -1476,17 +1389,13 @@ class Deflation:
                 'pattern_labels': list(self.labels),
                 'nullness_by_pattern': [float(v) for v in self.nullness],
                 'eigenvalues': [float(v) for v in self.eigenvalues],
-                'absorbed_by_shared': self.absorbed_by_shared, 'shared_offsets': self.shared_offsets,
-                'visibility_ratio_without_shared': None if self.visibility_ratio is None else [float(v) for v in self.visibility_ratio],
                 'seen_by_direction': [float(v) for v in self.seen],
                 'kept_directions': [bool(v) for v in self.kept_mask],
-                'frozen_directions': [bool(v) for v in self.frozen_mask],
                 'exact_gauge_directions': [bool(v) for v in self.exact_mask],
                 'eigenvectors': [[float(f'{v:.7g}') for v in col] for col in self.directions.T],   # direction j = weights over pattern_labels
                 'excluded_degenerate': self.exclusion_info,                                        # Deflate(exclude=): the selection, or None
                 'seen_constrained': None if self.exclusion_info is None else [float(v) for v in np.sort(self.seen_constrained)],
-                'coefficients': [float(v) for v in self.c_star[self._free]],                       # the kept directions' solved amplitudes, in kept order
-                'frozen_amplitudes': [float(v) for v in self._c_data[~self._free]]}                # what the data asked for along the frozen directions (held at zero), in frozen order
+                'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
 
     def summary_json(self) -> str:
         return json.dumps(self.summary(), sort_keys=True)
