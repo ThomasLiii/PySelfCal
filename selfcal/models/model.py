@@ -32,7 +32,7 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
-from ..config.base import Config, ConfigError, FrozenDict
+from ..config.base import Config, ConfigError, FrozenDict, added
 from ..config.functions import by_value, function_ref
 
 
@@ -400,6 +400,11 @@ class Offsets(Config):
     mean over the chunks it observed at zero (the chunks with data in the job: an unobserved chunk's
     offset is then not an unknown of the solve); ``damping`` pulls every offset toward zero (coverage
     weighted).
+    ``exclude=Poly(k, along=axis)`` is a hard constraint: the term carries no polynomial of degree
+    <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
+    the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
+    map with one axis. The excluded part goes where the data can place it: other terms or the
+    sky.
     ``exact_group_rows`` (shared terms): the anchor and smoothness rows once per group, not per
     frame (the same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.
@@ -418,6 +423,7 @@ class Offsets(Config):
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
     mean_zero: bool = False
+    exclude: Poly | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -447,6 +453,15 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
             if self.per != 'frame':
                 raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
+        if self.exclude is not None:
+            e = self.exclude
+            if not isinstance(e, Poly) or int(e.degree) < 0:
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis)")
+            bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
+            if bad:
+                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
         for p in self.poly_prior:
             p.lower_soft(label)
         if self.exact_group_rows and self.per == 'frame':
@@ -473,6 +488,9 @@ class Offsets(Config):
             out.update(kind=kind, reg_weight=float(self.smooth), mean_zero=bool(self.mean_zero),
                        exact_group_rows=bool(self.exact_group_rows),
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
+            if self.exclude is not None:
+                out['exclude_degree'] = int(self.exclude.degree)
+                out['exclude_axis'] = self.exclude.along
             if self.smooth_along is not None:
                 out['adjacency'] = list(self.smooth_along)
             if self.smooth_step is not None:

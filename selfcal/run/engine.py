@@ -542,7 +542,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     watch = {} if spec.monitor is None else {'monitor': spec.monitor}
     if snapshots is not None:
         watch['snapshots'] = snapshots
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch())
+    exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout)      # the terms' hard constraints, if any
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
+                  exclusions=exclusions or None)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record

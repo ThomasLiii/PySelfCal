@@ -48,6 +48,7 @@ from threadpoolctl import threadpool_limits
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
 from .cgls import cgls
 from .deflation import Deflation, storage_of
+from .projector import ColumnProjector
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
 from .monitor import Watch
@@ -832,7 +833,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 a_owned: bool = False, conlim: float = 1e8,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
-                sky_names=None, scratch_dir=None, deflate=None,
+                sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
                 vectors=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
@@ -932,6 +933,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         run's scratch directory). None, or a directory it cannot be written
         to: no copy, and those residuals are recorded as NaN (a warning says
         why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
+    exclusions : list, optional
+        Hard constraints on the unknowns, ``[(cols, P), ...]`` in the full column layout: the
+        solution has no component along the directions ``P`` (``(n, r)``) over each row of
+        ``cols`` (``(G, n)``), by reparametrisation (:class:`~selfcal.core.projector.ColumnProjector`:
+        the solver runs on ``A P``); no constraint row, no weight. Applied after compaction and
+        scaling; the deflation's offset response honours it.
 
     Returns
     -------
@@ -1145,6 +1152,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             x0_solver = x0_compressed
             x0_compressed = None
 
+        proj = None
+        if exclusions:
+            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
+            if x0_solver is not None:
+                proj.apply(x0_solver)
+            logger.info(f"Column constraints: {proj} (the solver runs on A P: no row, no weight)")
         logger.info(f"Solving least squares for {n_active} unknowns with {A_shape[0]} equations (solver={solver}).")
         A_csr = A
         del A
@@ -1225,12 +1238,14 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
             nonlocal defl
+            if proj is not None:
+                op = proj.wrap(op if hasattr(op, 'matvec') else aslinearoperator(op))
             _watch(op)
             kw, solver_op, setup_s = solve_kw, op, None
             if deflate is not None:
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
-                                 sky_names=sky_names, settings=deflate, threads=n_threads)
+                                 sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj)
                 defl.bind(op, storage)
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0
@@ -1299,6 +1314,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         del _b_owned
         x_solver = result[0]
         del result, A_csr
+        if proj is not None:
+            proj.apply(x_solver)
         if use_float32 and x_solver.dtype != np.float32:
             # The solution in the products' precision, whatever the solver's vectors (the cal's dtype).
             x_solver = x_solver.astype(np.float32)
@@ -1312,6 +1329,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         return (x, record) if return_record else x
 
     # ---- Legacy path: A is a COO. apply_lsqr does the compaction itself.
+    if exclusions:
+        raise NotImplementedError('column constraints (exclusions) need the CSR or block system setup_lsqr builds, not the COO path')
     num_cols = A.shape[1]
 
     # --- Fused preprocessing: column elimination + float32 + preconditioning + CSR ---
