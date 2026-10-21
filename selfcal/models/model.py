@@ -361,22 +361,40 @@ class Sky(Config):
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
     coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
     0.3 for the others; 0 for none).
+
+    ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
+    coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
+    at the first pixel to 1 at the last, flat arrays over the grid's pixels) returning the excluded
+    shapes, ``(pixels, r)`` or one shape ``(pixels,)``: the map has no component along them, exactly,
+    by reparametrisation in the solve (as ``Offsets(exclude=)`` does for an offset term); what the
+    data place along them goes to the other terms. The subspace the shapes span is what is
+    excluded, so include the lower orders a gauge of the model could trade against the shape
+    (for a quadratic: the constant and the plane, ``[1, u, v, r^2]``), or the constraint binds only
+    their combination. A module-level function (it is named in the product's record and the workers
+    import it). None: no constraint.
     """
     name: str = 'continuum'
     _: KW_ONLY
     times: Function | Shape | str | Callable | None = None
     damping: float | None = None
+    exclude: Callable | None = added(None, since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'times', _as_function(self.times, f"Sky({self.name!r}).times"))
         if self.damping is not None and self.damping < 0:
             raise ConfigError(f"Sky({self.name!r}, damping={self.damping}): at least 0")
+        if self.exclude is not None and not callable(self.exclude):
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a function shapes(u, v) of the grid's pixel coordinates")
+        if self.exclude is not None and getattr(self.exclude, '__name__', '<lambda>') == '<lambda>':
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a module-level function, not a lambda (it is named in the record)")
 
     def lower(self, damping) -> dict:
         out = {'name': self.name, 'damp_weight': float(damping)}
         c = _lower_function(self.times)
         if c is not None:
             out['coefficient'] = c
+        if self.exclude is not None:
+            out['exclude'] = f"{self.exclude.__module__}:{self.exclude.__qualname__}"
         return out
 
 

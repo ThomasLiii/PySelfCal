@@ -67,10 +67,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from numpy.polynomial import legendre as _legendre
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 from scipy.sparse import _sparsetools
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, minres
+
+from selfcal.core.projector import ColumnProjector
 
 from .blockcsr import BlockCSR, ColSplitCSR
 
@@ -139,35 +141,48 @@ def storage_of(operator, fallback=None):
     return fallback
 
 
-def _pieces(storage, rows=_ROWS):
-    """The matrix in row chunks: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr
-    (int64, from 0) per piece; one piece per column range of a ColSplitCSR, one otherwise."""
+def _piece_index(storage, rows=_ROWS):
+    """The row chunks of the matrix as descriptors ``(block, lr0, lr1)`` (cheap: nothing is read), in row order."""
     if isinstance(storage, ColSplitCSR):
-        for bi in range(storage.nblocks):
-            base = int(storage.row_bounds[bi])
-            nrows = int(storage.row_bounds[bi + 1]) - base
-            for lr0 in range(0, nrows, rows):
-                lr1 = min(nrows, lr0 + rows)
-                out = []
-                for t, (d, idx, ip) in enumerate(storage.sub[bi]):
-                    s0, s1 = int(ip[lr0]), int(ip[lr1])
-                    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-                    out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
-                yield base + lr0, base + lr1, out
-        return
-    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
-    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
-    for blk, base in zip(blocks, bounds):
-        nrows = blk.shape[0]
-        ip = blk.indptr
+        sizes = [int(storage.row_bounds[bi + 1]) - int(storage.row_bounds[bi]) for bi in range(storage.nblocks)]
+    else:
+        blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+        sizes = [blk.shape[0] for blk in blocks]
+    out = []
+    for bi, nrows in enumerate(sizes):
         for lr0 in range(0, nrows, rows):
-            lr1 = min(nrows, lr0 + rows)
+            out.append((bi, lr0, min(nrows, lr0 + rows)))
+    return out
+
+
+def _piece(storage, desc):
+    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (int64, from 0) per
+    piece; one piece per column range of a ColSplitCSR, one otherwise."""
+    bi, lr0, lr1 = desc
+    if isinstance(storage, ColSplitCSR):
+        base = int(storage.row_bounds[bi])
+        out = []
+        for t, (d, idx, ip) in enumerate(storage.sub[bi]):
             s0, s1 = int(ip[lr0]), int(ip[lr1])
             lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-            yield int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+            out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
+        return base + lr0, base + lr1, out
+    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
+    blk, base = blocks[bi], bounds[bi]
+    ip = blk.indptr
+    s0, s1 = int(ip[lr0]), int(ip[lr1])
+    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
+    return int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
 
 
-def _block_pinv_solve(G, R, project=None):
+def _pieces(storage, rows=_ROWS):
+    """The matrix in row chunks (:func:`_piece` of every descriptor of :func:`_piece_index`)."""
+    for desc in _piece_index(storage, rows):
+        yield _piece(storage, desc)
+
+
+def _block_pinv_solve(G, R, project=None, pool=None):
     """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
     connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
     :data:`DEPENDENT` of the block's largest count as zero: the solution of minimum norm), MINRES on
@@ -190,11 +205,11 @@ def _block_pinv_solve(G, R, project=None):
     if counts.max() > _DENSE_BLOCK:
         deg = np.diff(G.indptr)
         big = counts[labels] > _DENSE_BLOCK
-        hub = np.flatnonzero(big & (deg > _HUB_RATIO * np.median(deg[big])))
+        hub = np.flatnonzero(big & (deg > _HUB_RATIO * np.median(deg[big]))) if big.any() else np.zeros(0, dtype=np.int64)
         if project is not None:
             hub = np.union1d(hub, project.columns[big[project.columns]])      # constrained columns of big blocks
         if 0 < hub.size <= _SCHUR_MAX:
-            out = _schur_pinv_solve(G, R, hub, project=project)
+            out = _schur_pinv_solve(G, R, hub, project=project, pool=pool)
             if out is not None:
                 return out
     order = np.argsort(labels, kind='stable')
@@ -247,8 +262,8 @@ def _block_pinv_solve(G, R, project=None):
     return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero}
 
 
-def _schur_pinv_solve(G, R, hub, project=None):
-    """``G X = R`` with the hub columns eliminated: for ``G = [[D, B], [B^T, C]]`` (``D`` the other
+def _schur_factor(G, hub, project=None, pool=None):
+    """The factorisation behind ``G X = R`` with the hub columns eliminated: for ``G = [[D, B], [B^T, C]]`` (``D`` the other
     columns, block-diagonal once the hubs are out; ``C`` the hubs' own part), ``X_hub`` solves the
     Schur complement ``(C - B^T D^+ B) X_hub = R_hub - B^T D^+ R_other`` by its pseudo-inverse and
     ``X_other = D^+ (R_other - B X_hub)``; ``D^+`` block by block as :func:`_block_pinv_solve` does.
@@ -257,11 +272,12 @@ def _schur_pinv_solve(G, R, hub, project=None):
     complement's null vectors ``v`` and by the blocks' null vectors that do not couple to the hubs;
     each candidate is checked against ``G`` and the verified ones are projected out of ``X`` (a response
     with a null component would put a gauge into the deflation space in part, and the iterate would
-    drift along it). None when the other columns still hold a block larger than :data:`_DENSE_BLOCK`
-    (the caller falls back). ``project`` (every constrained column a hub): the Schur complement is
-    projected, ``P S P X_hub = P rhs``, so the hubs' response and the null vectors live in the allowed
-    subspace."""
-    n, k = G.shape[0], R.shape[1]
+    drift along it). Returns a :class:`_SchurFactor`, or None when the other columns still hold a block larger
+    than :data:`_DENSE_BLOCK` (the caller falls back). ``project`` (every constrained column a hub): the Schur
+    complement is projected, ``P S P X_hub = P rhs``, so the hubs' response and the null vectors live in the
+    allowed subspace. ``pool``: a thread pool for the batches of blocks (each batch's products are the same calls
+    as in sequence and the sums over batches keep their order: the result does not depend on the threads)."""
+    n = G.shape[0]
     is_hub = np.zeros(n, dtype=bool)
     is_hub[hub] = True
     F, H = np.flatnonzero(~is_hub), np.flatnonzero(is_hub)
@@ -312,6 +328,12 @@ def _schur_pinv_solve(G, R, hub, project=None):
         groups.append((cols, U, np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0), ~ok))
     del Gfc, er, ec, ev, ecomp, Gff
 
+    def run(fn, items):
+        """``fn`` over the items, in the pool when there is one; the results in item order."""
+        if pool is None:
+            return [fn(it) for it in items]
+        return list(pool.map(fn, items))
+
     def hub_part(rows):
         """The rows ``rows`` of G restricted to the hub columns, dense ``(len(rows), nH)``."""
         sub = G[rows]
@@ -322,58 +344,71 @@ def _schur_pinv_solve(G, R, hub, project=None):
         return out
 
     def batches():
+        """The batches of blocks: (flat columns in F, blocks, block size, U, 1/w, null flags, the hub part
+        (blocks, s, nH)); the hub parts extracted in the pool (independent sparse row slices)."""
+        descs = []
         for cols, U, inv, bad in groups:
             nb, s = cols.shape
             step = max(1, _SCHUR_BATCH // max(s * nH, 1))
             for a in range(0, nb, step):
                 c = cols[a:a + step]
-                flat = c.ravel()
-                yield flat, c.shape[0], s, U[a:a + step], inv[a:a + step], bad[a:a + step], hub_part(F[flat]).reshape(c.shape[0], s, nH)
+                descs.append((c.ravel(), c.shape[0], s, U[a:a + step], inv[a:a + step], bad[a:a + step]))
 
-    RF, RH = R[F], R[H]
+        def with_hub(d):
+            flat, nb, s = d[0], d[1], d[2]
+            return d + (hub_part(F[flat]).reshape(nb, s, nH),)
+
+        return run(with_hub, descs)
+
     S = C.copy()
-    Rh = RH.copy()
-    for flat, nb, s, U, inv, _bad, Bb in batches():
+    bl = batches()
+
+    def first(batch):
+        flat, nb, s, U, inv, _bad, Bb = batch
         Ut = np.swapaxes(U, 1, 2)
-        Rb = RF[flat].reshape(nb, s, k)
         Yb = U @ (inv[:, :, None] * (Ut @ Bb))
-        Zb = U @ (inv[:, :, None] * (Ut @ Rb))
-        S -= Bb.reshape(-1, nH).T @ Yb.reshape(-1, nH)
-        Rh -= Bb.reshape(-1, nH).T @ Zb.reshape(-1, k)
+        return Bb.reshape(-1, nH).T @ Yb.reshape(-1, nH)
+
+    for dS in run(first, bl):
+        S -= dS
     if ph is not None:
         ph.apply_symmetric(S)
-        ph.apply(Rh)
     w, V = np.linalg.eigh(0.5 * (S + S.T))
     ok = w > DEPENDENT * max(float(w.max()), 1e-300)
     zero += int((~ok).sum())
-    Xh = V @ (np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0)[:, None] * (V.T @ Rh))
     V0 = V[:, ~ok]                                      # the Schur complement's null vectors (nH x m0)
-    X = np.zeros((n, k))
-    X[H] = Xh
-    nulls = [np.concatenate((np.zeros((nF, V0.shape[1])), V0))]      # (-D^+ B v, v): the F part filled below
+    nulls = np.concatenate((np.zeros((nF, V0.shape[1])), V0))         # (-D^+ B v, v): the F part filled below
     extra = []                                          # the blocks' null vectors that do not couple to the hubs
-    for flat, nb, s, U, inv, bad, Bb in batches():
+
+    def second(batch):
+        flat, nb, s, U, inv, bad, Bb = batch
         Ut = np.swapaxes(U, 1, 2)
-        rhs = RF[flat].reshape(nb, s, k) - Bb @ Xh
-        X[F[flat]] = (U @ (inv[:, :, None] * (Ut @ rhs))).reshape(-1, k)
         if V0.shape[1]:
-            nulls[0][flat] = -(U @ (inv[:, :, None] * (Ut @ (Bb @ V0)))).reshape(-1, V0.shape[1])
-        if bad.any() and len(extra) < 64:
+            nulls[flat] = -(U @ (inv[:, :, None] * (Ut @ (Bb @ V0)))).reshape(-1, V0.shape[1])
+        found = []
+        if bad.any():
             bi, ei = np.nonzero(bad)
             for i, e in zip(bi, ei):
                 vec = U[i][:, e]
                 if np.linalg.norm(Bb[i].T @ vec) <= 1e-10 * max(np.linalg.norm(Bb[i]), 1e-300):
                     u = np.zeros(n)
                     u[F[flat[i * s:(i + 1) * s]]] = vec
-                    extra.append(u)
+                    found.append(u)
+        return found
+
+    for found in run(second, bl):
+        for u in found:
+            if len(extra) < 64:
+                extra.append(u)
     cands = []
     if V0.shape[1]:
         full = np.zeros((n, V0.shape[1]))
-        full[F] = nulls[0][:nF]
-        full[H] = nulls[0][nF:]
+        full[F] = nulls[:nF]
+        full[H] = nulls[nF:]
         cands.append(full)
     if extra:
         cands.append(np.stack(extra, axis=1))
+    Q = None
     if cands:
         Nc = np.concatenate(cands, axis=1)
         gscale = max(float(np.abs(G.diagonal()).max()), 1e-300)
@@ -383,8 +418,115 @@ def _schur_pinv_solve(G, R, hub, project=None):
         good = np.linalg.norm(GN, axis=0) <= 1e-9 * gscale * np.maximum(np.linalg.norm(Nc, axis=0), 1e-300)
         if good.any():
             Q = np.linalg.qr(Nc[:, good])[0]
-            X -= Q @ (Q.T @ X)
-    return X, {'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero, 'hubs': nH}
+    return _SchurFactor(n=n, F=F, H=H, nF=nF, nH=nH, ph=ph, bl=bl, V=V, inv_w=np.where(ok, 1.0 / np.where(ok, w, 1.0), 0.0),
+                        Q=Q, info={'blocks': int(ncomp), 'largest': int(counts.max()), 'zero_eigenvalues': zero,
+                                   'hubs': nH, 'shared_columns': H})
+
+
+class _SchurFactor:
+    """The R-independent part of :func:`_schur_pinv_solve` (the blocks' eigendecompositions with their hub parts, the
+    Schur complement's eigendecomposition, the null-space projector), reused by :meth:`solve` for any right-hand
+    side: a second setup on the same offsets (the automatic exclusion's) costs no block work."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def solve(self, R, pool=None):
+        """``G^+ R`` as :func:`_schur_pinv_solve` returns it, ``(X, info)``, the same operations in the same order;
+        the batches in ``pool`` when given."""
+        n, k, F, H, nF, nH, bl = self.n, R.shape[1], self.F, self.H, self.nF, self.nH, self.bl
+
+        def run(fn, items):
+            if pool is None:
+                return [fn(it) for it in items]
+            return list(pool.map(fn, items))
+        RF, RH = R[F], R[H]
+        Rh = RH.copy()
+
+        def first(batch):
+            flat, nb, s, U, inv, _bad, Bb = batch
+            Ut = np.swapaxes(U, 1, 2)
+            Rb = RF[flat].reshape(nb, s, k)
+            Zb = U @ (inv[:, :, None] * (Ut @ Rb))
+            return Bb.reshape(-1, nH).T @ Zb.reshape(-1, k)
+
+        for dR in run(first, bl):
+            Rh -= dR
+        if self.ph is not None:
+            self.ph.apply(Rh)
+        V = self.V
+        Xh = V @ (self.inv_w[:, None] * (V.T @ Rh))
+        X = np.zeros((n, k))
+        X[H] = Xh
+
+        def second(batch):
+            flat, nb, s, U, inv, _bad, Bb = batch
+            Ut = np.swapaxes(U, 1, 2)
+            rhs = RF[flat].reshape(nb, s, k) - Bb @ Xh
+            X[F[flat]] = (U @ (inv[:, :, None] * (Ut @ rhs))).reshape(-1, k)
+
+        run(second, bl)
+        if self.Q is not None:
+            X -= self.Q @ (self.Q.T @ X)
+        info = dict(self.info)
+        info['factor'] = self
+        return X, info
+
+
+def _schur_pinv_solve(G, R, hub, project=None, pool=None):
+    """``G X = R`` with the hub columns eliminated (see :func:`_schur_factor`): the factorisation, then its
+    solve. None when the factorisation cannot serve."""
+    fac = _schur_factor(G, hub, project=project, pool=pool)
+    return None if fac is None else fac.solve(R, pool=pool)
+
+
+
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S):
+    """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off)`` with ``pos``
+    the solver columns, ``d64`` the values, ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over
+    the chunk's rows (None: none) and ``off = (indptr, offset columns, values)`` the offset entries likewise (None:
+    none), all int64 / float64 and in storage order."""
+    pos = cols if colmap is None else colmap[cols]
+    d64 = data.astype(np.float64)
+    rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
+    o = pos >= n_sky_S
+    off = sky = None
+    oi = np.flatnonzero(o)
+    if oi.size:
+        ip = np.zeros(nr + 1, dtype=np.int64)
+        np.cumsum(np.bincount(rows[oi], minlength=nr), out=ip[1:])
+        off = (ip, (pos[oi] - n_sky_S).astype(np.int64), d64[oi])
+    si = np.flatnonzero(~o)
+    if si.size:
+        ips = np.zeros(nr + 1, dtype=np.int64)
+        np.cumsum(np.bincount(rows[si], minlength=nr), out=ips[1:])
+        sky = (ips, pos[si], d64[si], rows[si])
+    return lip, pos, d64, sky, off
+
+
+class _Slot:
+    """Reusable float64 buffers of one task slot: ``take(name, shape)`` returns a zeroed view of that shape, grown
+    when a request exceeds the buffer."""
+
+    def __init__(self):
+        self.bufs = {}
+
+    def take(self, name, shape):
+        rows, cols = shape
+        b = self.bufs.get(name)
+        if b is None or b.shape[0] < rows or b.shape[1] != cols:
+            b = self.bufs[name] = np.empty((max(rows, 1), cols))
+        v = b[:rows]
+        v.fill(0.0)
+        return v
+
+
+def _combine_rows_in_place(M, C, cols=1 << 20):
+    """``C M`` written over ``M`` (``C`` square, k x k; ``M`` k x n, C order), a column block at a time; returns ``M``."""
+    for a in range(0, M.shape[1], cols):
+        c = min(M.shape[1], a + cols)
+        M[:, a:c] = C @ M[:, a:c]
+    return M
 
 
 def _transform_in_place(M, T, cols=1 << 20):
@@ -419,6 +561,7 @@ class Deflation:
                  projector=None):
         t0 = time.perf_counter()
         self.settings = settings
+        self.exclusion_info = None                    # Deflate(exclude=): the degenerate directions excluded (record)
         m, n = int(storage.shape[0]), int(storage.shape[1])
         self.shape = (m, n)
         h, w = int(ref_shape[0]), int(ref_shape[1])
@@ -429,11 +572,23 @@ class Deflation:
         if unknown:
             raise ValueError(f"Deflate(terms={settings.terms!r}): no sky term {unknown} (the model's: {list(names)})")
         nsb = len(names)
-        # The columns the space lives on: those with entries (all of a compacted system's).
+        self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
+        self._scratch = {}
+        # The columns the space lives on: those with entries (all of a compacted system's); the chunks over the
+        # threads (marking a column covered commutes).
         covered = np.zeros(n, dtype=bool)
-        for _r0, _r1, pieces in _pieces(storage):
-            for _lip, cols, _data in pieces:
+
+        def mark(desc):
+            for _lip, cols, _data in _piece(storage, desc)[2]:
                 covered[cols] = True
+
+        descs0 = _piece_index(storage)
+        if self._pool is None:
+            for d in descs0:
+                mark(d)
+        else:
+            list(self._pool.map(mark, descs0))
+        del descs0
         self.S = None if covered.all() else np.flatnonzero(covered)
         del covered
         nS = n if self.S is None else int(self.S.size)
@@ -451,6 +606,7 @@ class Deflation:
         term_of = fs // npix
         pix = fs - term_of * npix
         iy, ix = np.divmod(pix, w)
+        full_sky_cols = fs if getattr(settings, 'exclude', None) is not None else None
         del fs, pix
         col_norm = (np.ones(nS) if scale is None
                     else 1.0 / np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64))
@@ -498,107 +654,139 @@ class Deflation:
             self._colmap = cm
         # The column constraints (solver coordinates) on the offset columns of this space: the offsets'
         # normal matrix is projected, G -> P G P, so the response stays in the allowed subspace.
+        self._projector = projector                  # the column constraints in solver coordinates (None: none)
         self._proj_off = None
         if projector is not None:
             cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+            # The patterns live in the allowed subspace: a sky shape the constraints exclude (a bowl, say) leaves
+            # the space (its projected pattern is ~0 and drops as dependent), the others lose their part along it.
+            full = np.zeros(n)
+            for i in range(k):
+                full[...] = 0.0
+                if self.S is None:
+                    full[:] = Z[i]
+                else:
+                    full[self.S] = Z[i]
+                projector.apply(full)
+                Z[i] = full if self.S is None else full[self.S]
+            del full
+            # The offsets' part of the constraints, for the block solve (the sky's groups are not its business).
             off = np.where(cm >= n_sky_S, cm - n_sky_S, -1)
-            self._proj_off = projector.mapped(off)
+            og = [(c, Q) for c, Q in projector.groups if (cm[c[c >= 0]] >= n_sky_S).all()]
+            self._proj_off = ColumnProjector(og).mapped(off) if og else None
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)")
-        self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
-        self._scratch = {}
         try:
-            # Pass 1 (float64; the patterns in threads, one each, the offsets' normal matrix alongside): each
-            # pattern's sky image U = B F, the offsets' response R = B_off^T U and G = B_off^T B_off.
+            # Pass 1 (float64, one sweep over the matrix for all the patterns at once, scipy's multi-vector kernels:
+            # the matrix is read once, not once per pattern; the row chunks over the threads, each thread's partial
+            # sums combined in a fixed order: deterministic for a thread count): each pattern's sky image U = B F,
+            # the offsets' response R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product
+            # per row chunk).
             t = time.perf_counter()
-            sky_norm2 = np.zeros(k)
-            R = np.zeros((k, n_off))
-            gparts = []
-            for r0, r1, pieces in _pieces(storage):
-                nr = r1 - r0
-                chunk = []
-                offs = []
-                for lip, cols, data in pieces:
-                    pos = cols if self._colmap is None else self._colmap[cols]
-                    d64 = data.astype(np.float64)
-                    chunk.append((lip, pos, d64))
-                    o = pos >= n_sky_S
-                    if o.any():
-                        rr = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-                        offs.append((rr[o], pos[o] - n_sky_S, d64[o]))
-                sub = None
-                if offs:
-                    rr = np.concatenate([o[0] for o in offs])
-                    cc = np.concatenate([o[1] for o in offs])
-                    dd = np.concatenate([o[2] for o in offs])
-                    sub = coo_matrix((dd, (rr, cc)), shape=(nr, n_off)).tocsr()
-                    sub_ip, sub_ix = sub.indptr.astype(np.int64), sub.indices.astype(np.int64)
+            Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
+            descs = _piece_index(storage)
 
-                def pattern(i, chunk=chunk, nr=nr, sub=sub):
-                    u = np.zeros(nr)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
-                    sky_norm2[i] += float(u @ u)
-                    if sub is not None:
-                        _sparsetools.csc_matvec(n_off, nr, sub_ip, sub_ix, sub.data, u, R[i])
+            def pass1(my):
+                sky_norm2 = np.zeros(k)
+                Rt = np.zeros((n_off, k))
+                Gt = None
+                t_g = 0.0
+                for desc in my:
+                    r0, r1, pieces = _piece(storage, desc)
+                    nr = r1 - r0
+                    U = np.zeros((nr, k))
+                    offs = []
+                    for lip, cols, data in pieces:
+                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                        if sky is not None:
+                            # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
+                            # keep their order, so the sums are those of the whole piece
+                            _sparsetools.csr_matvecs(nr, nS, k, sky[0], sky[1], sky[2], Zt, U)
+                        if oc is not None:
+                            offs.append(oc)
+                    sky_norm2 += np.einsum('ij,ij->j', U, U)
+                    for ip, ci, dd in offs:
+                        _sparsetools.csc_matvecs(n_off, nr, k, ip, ci, dd, U, Rt)
+                        sub = csr_matrix((dd, ci, ip), shape=(nr, n_off))
+                        tg = time.perf_counter()
+                        g = (sub.T @ sub).tocsr()                # the chunk's share of the offsets' normal matrix
+                        g.sum_duplicates()
+                        Gt = g if Gt is None else Gt + g         # the thread's running sum, in chunk order
+                        t_g += time.perf_counter() - tg
+                        del g, sub
+                    del U, offs
+                return sky_norm2, Rt, Gt, t_g
 
-                futures = self._submit(pattern, k)
-                if sub is not None:
-                    g = (sub.T @ sub).tocoo()
-                    gparts.append((g.row.astype(np.int64), g.col.astype(np.int64), g.data))
-                    del g
-                self._wait(futures)
-                del chunk, offs, sub
-            if gparts:
-                G = coo_matrix((np.concatenate([p[2] for p in gparts]),
-                                (np.concatenate([p[0] for p in gparts]), np.concatenate([p[1] for p in gparts]))),
-                               shape=(n_off, n_off)).tocsr()
-            else:
-                G = coo_matrix((n_off, n_off)).tocsr()
-            del gparts
+            parts = self._over_chunks(descs, pass1)
+            sky_norm2 = parts[0][0].copy()
+            Rt = parts[0][1]
+            gthreads = [p[2] for p in parts if p[2] is not None]
+            t_g = parts[0][3]
+            for p in parts[1:]:
+                sky_norm2 += p[0]
+                Rt += p[1]
+                t_g = max(t_g, p[3])
+            del parts
+            R = np.ascontiguousarray(Rt.T)
+            del Rt
+            # The threads' sums added pairwise (a fixed tree, the pairs in the pool): the result depends on the thread
+            # count through the association of the floating-point sums only.
+            tg = time.perf_counter()
+            while len(gthreads) > 1:
+                pairs = [(gthreads[i], gthreads[i + 1]) for i in range(0, len(gthreads) - 1, 2)]
+                summed = [a + b_ for a, b_ in pairs] if self._pool is None else list(self._pool.map(lambda ab: ab[0] + ab[1], pairs))
+                if len(gthreads) % 2:
+                    summed.append(gthreads[-1])
+                gthreads = summed
+            G = gthreads[0].tocsr() if gthreads else coo_matrix((n_off, n_off)).tocsr()
             G.sum_duplicates()
+            del gthreads
+            t_g += time.perf_counter() - tg
             t_pass1 = time.perf_counter() - t
             t = time.perf_counter()
-            X, info = _block_pinv_solve(G, R.T, project=self._proj_off)
+            ex = getattr(self.settings, 'exclude', None)
+            X, info = _block_pinv_solve(G, R.T, project=self._proj_off, pool=self._pool)
             res = G @ (-X) + R.T
             if self._proj_off is not None:
                 self._proj_off.apply(res)                 # the projected normal equations' residual
             self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
                                                  np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
+            del res
             Z[:, n_sky_S:] = -X.T
-            del G, R, X, res
+            Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
+            del G, R, X
             t_pair = time.perf_counter() - t
 
-            # Pass 2 (float64, the patterns in threads): N Z = B^T (B Z), and B^T b alongside.
+            # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside (the
+            # right-hand side rides along as one more column of U). Threaded in two stages per batch of row
+            # chunks: the images U = B Z chunk by chunk, then the transposed products over the columns, each
+            # thread owning a range of them (:meth:`_transposed_products`; the sums per column in row order, as a
+            # single sweep makes them).
             t = time.perf_counter()
-            NZ = np.zeros((k, nS))
-            ATb = np.zeros(nS)
             pair_norm2 = np.zeros(k)
             bnorm2 = 0.0
-            for r0, r1, pieces in _pieces(storage):
+            acc2 = []
+
+            def images(r0, r1, prepared, buf):
                 nr = r1 - r0
-                chunk = []
-                for lip, cols, data in pieces:
-                    pos = cols if self._colmap is None else self._colmap[cols]
-                    chunk.append((lip, pos, data.astype(np.float64)))
+                U = buf.take('U', (nr, k + 1))
+                for lip, pos, d64, _sky, _off in prepared:
+                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
+                pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
+                U[:, k] = bc
+                return U, (pn, float(bc @ bc))
 
-                def pattern(i, chunk=chunk, nr=nr):
-                    u = np.zeros(nr)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csr_matvec(nr, nS, lip, pos, d64, Z[i], u)
-                    pair_norm2[i] += float(u @ u)
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, u, NZ[i])
-
-                def rhs(_i, chunk=chunk, nr=nr, bc=bc):
-                    for lip, pos, d64 in chunk:
-                        _sparsetools.csc_matvec(nS, nr, lip, pos, d64, bc, ATb)
-
-                futures = self._submit(pattern, k) + self._submit(rhs, 1)
-                bnorm2 += float(bc @ bc)
-                self._wait(futures)
-                del chunk, bc
+            NZb = self._transposed_products(storage, images, k + 1, n_sky_S, acc2)
+            for pn, bn in acc2:
+                pair_norm2 += pn
+                bnorm2 += bn
+            del acc2
+            ATb = np.ascontiguousarray(NZb[:, k])
+            NZt = np.ascontiguousarray(NZb[:, :k])
+            del NZb, Zt
+            NZ = np.ascontiguousarray(NZt.T)
+            del NZt
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
 
@@ -618,15 +806,152 @@ class Deflation:
         E2 = T.T @ E @ T
         lam, U2 = np.linalg.eigh(0.5 * (E2 + E2.T))
         T = T @ U2
+        # Everything the decomposition found is kept for the record: the directions in pattern coordinates
+        # (column j of `directions` = the weights of the patterns in direction j), their eigenvalues, what the
+        # data see of each, and which are exact gauges (summary()).
+        self.directions = np.array(T, copy=True)
+        self.eigenvalues = np.array(lam, copy=True)
         wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
         with np.errstate(divide='ignore', invalid='ignore'):
             rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
-        keep = lam > DEPENDENT * max(float(lam.max()), 1e-300)
-        self.gauges = int((~keep).sum())
-        self.rho_max = float(rho[keep].max()) if keep.any() else math.nan
-        T = T[:, keep]
-        self.lam = lam[keep].copy()
-        self.kept = int(self.lam.size)
+        lam_max = max(float(lam.max()), 1e-300)
+        self.seen = np.sqrt(np.maximum(lam, 0.0) / lam_max)        # per direction: what the data see of it, relative
+        # An exact gauge (eigenvalue at the rounding level) is left out of the space: the data never push along it,
+        # and its value stays the start's, as a plain solve leaves it (the zero point of the sky against the frame
+        # scalars, for one).
+        exact = lam > DEPENDENT * lam_max                          # False: an exact gauge
+        self.kept_mask, self.exact_mask = exact.copy(), ~exact
+        self.gauges = int((~exact).sum())
+        self.rho_max = float(rho[exact].max()) if exact.any() else math.nan
+        if ex is not None:
+            # Deflate(exclude=Degenerate(below)): the directions seen below the level are degenerate. Their sky
+            # shapes (physical units, over the covered sky columns) join the column constraints as a sky group, and
+            # the pattern space is re-based on the constrained patterns from this same setup: the projected
+            # shapes are combinations of the original ones (the projection is in map space, where the shapes
+            # live), so the pairings, E and the Gram matrices follow by a k x k combination; the images of the
+            # re-based patterns under the constrained operator are the projected images.
+            sel = self.seen < float(ex.below)
+            k_sel = int(sel.sum())
+            if k_sel == 0:
+                raise ValueError(f"Deflate(exclude=Degenerate(below={ex.below:g})): no direction of the pattern space is seen "
+                                 f"below the level (the least-seen: {float(self.seen.min()):.3g})")
+            if k_sel == k:
+                raise ValueError(f"Deflate(exclude=Degenerate(below={ex.below:g})): every direction of the pattern space is seen "
+                                 f"below the level")
+            Ts = np.ascontiguousarray(T[:, sel])                                           # (k, k_sel)
+            M_sky = 1.0 / col_norm[:n_sky_S]
+            P = np.empty((n_sky_S, k_sel))
+            for a_ in range(0, n_sky_S, 1 << 20):
+                c_ = min(n_sky_S, a_ + (1 << 20))
+                P[a_:c_] = (Z[:, a_:c_].T @ Ts) * M_sky[a_:c_, None]                          # physical: x = y * M
+            # the physical Gram of the patterns (S = F F^T) and the combination C: F' = C F has P^T F' = 0
+            Sg = np.zeros((k, k))
+            for a_ in range(0, n_sky_S, 1 << 20):                                              # S = F F^T, by column blocks
+                c_ = min(n_sky_S, a_ + (1 << 20))
+                Fb = Z[:, a_:c_] * M_sky[None, a_:c_]
+                Sg += Fb @ Fb.T
+            Sg = 0.5 * (Sg + Sg.T)
+            Gs = Ts.T @ Sg @ Ts
+            C = np.eye(k) - Sg @ Ts @ np.linalg.solve(Gs, Ts.T)
+            comp = []
+            for j in np.flatnonzero(sel):
+                wv = self.directions[:, j]; wv = wv / max(float(np.abs(wv).max()), 1e-300); top = np.argsort(-np.abs(wv))[:4]
+                comp.append(' '.join(f'{wv[i]:+.2f}*{self.labels[i]}' for i in top))
+            self.exclusion_info = {
+                'below': float(ex.below), 'directions': [int(j) for j in np.flatnonzero(sel)], 'count': k_sel,
+                'seen': [float(self.seen[j]) for j in np.flatnonzero(sel)],
+                'composition': comp, 'pattern_labels': list(self.labels),
+                'seen_by_direction': [float(v) for v in self.seen],
+                'eigenvectors': [[float(f'{v:.7g}') for v in col] for col in self.directions.T],
+                'pairing_residual': float(self.pairing_residual)}
+            logger.info(f"Deflation: {k_sel} degenerate direction(s) (seen below {ex.below:g}) excluded from the sky: "
+                        + ' | '.join(f"seen {sv:.2g}: {cc}" for sv, cc in zip(self.exclusion_info['seen'], comp)))
+            # the sky constraint joins the column constraints; the solver's operator and the solution take it
+            groups = list(projector.groups) if projector is not None else []
+            new = ColumnProjector.build([(full_sky_cols[None, :], P)], active_mask, scale, n)
+            self._projector = projector = ColumnProjector(groups + list(new.groups))
+            # The slow modes of the constrained system: the excluded shapes' solver-space images (the shapes weighted
+            # by the column scale, their excluded part taken out) are nearly invisible too, and the solve would spend
+            # its iterations on them. They join the space as the degenerate directions projected in solver space:
+            # sky part Z_sel - Qh (Qh^T Z_sel) with Qh the group's orthonormal basis, offsets' part as paired; their
+            # images need N Qh = (Qh, B_off^T B_sky Qh) (unit sky column norms), one small sweep for the offsets' part.
+            Qh = new.groups[0][1][0]                                                       # (n_sky_S, k_sel), orthonormal
+            del P, new
+            # (One sky term with unit column norms and no compaction map for now: then N Qh's sky part is Qh itself and
+            # one sweep for the offsets' part suffices; otherwise the space does without the leftovers, which costs
+            # iterations, not correctness.)
+            extra = (nsb == 1 and scale is not None and self.S is None)
+            if extra:
+                Zsel = np.ascontiguousarray(T[:, sel].T @ Z)                                   # (k_sel, nS): the degenerate directions
+                NZsel = T[:, sel].T @ NZ
+                coef = Zsel[:, :n_sky_S] @ Qh                                             # (k_sel, k_sel): Qh^T Z_sel
+                Rq = self._offset_images(storage, Qh, n_sky_S, n_off)                      # B_off^T B_sky Qh, (n_off, k_sel)
+                NQ = np.zeros((k_sel, nS))
+                NQ[:, :n_sky_S] = Qh.T
+                NQ[:, n_sky_S:] = Rq.T
+                Zx = Zsel.copy()
+                Zx[:, :n_sky_S] -= coef @ Qh.T
+                NZx = NZsel - coef @ NQ
+                del Zsel, NZsel, NQ, Rq
+            # the re-basing: Z' = C Z (the offsets' parts follow), N' Z' = Pc (C N Z), E' = C E C^T, GZ' = C GZ C^T
+            Z = _combine_rows_in_place(Z, C)
+            NZ = _combine_rows_in_place(NZ, C)
+            if extra:
+                Z = np.concatenate([Z, Zx], axis=0)
+                NZ = np.concatenate([NZ, NZx], axis=0)
+                del Zx, NZx
+            full = np.zeros(n)
+            for i in range(Z.shape[0]):
+                full[...] = 0.0
+                if self.S is None:
+                    full[:] = NZ[i]
+                else:
+                    full[self.S] = NZ[i]
+                projector.apply(full)
+                NZ[i] = full if self.S is None else full[self.S]
+            del full
+            if extra:
+                E = self._gram(Z, NZ)
+                GZ = self._gram(Z, Z)
+            else:
+                E = C @ E @ C.T
+                GZ = C @ GZ @ C.T
+            NN = self._gram(NZ, NZ)
+            w1, U1 = np.linalg.eigh(GZ)
+            ok1 = w1 > DEPENDENT * w1.max()
+            T = U1[:, ok1] / np.sqrt(w1[ok1])
+            E2 = T.T @ E @ T
+            lam, U2 = np.linalg.eigh(0.5 * (E2 + E2.T))
+            T = T @ U2
+            self.directions_constrained = np.array(T, copy=True)
+            self.eigenvalues_constrained = np.array(lam, copy=True)
+            wn = np.sqrt(np.maximum(np.einsum('ij,ij->j', T, NN @ T), 0.0))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                rho = np.where(lam > 0, wn / np.where(lam > 0, lam, 1.0), np.inf)
+            lam_max = max(float(lam.max()), 1e-300)
+            seen_c = np.sqrt(np.maximum(lam, 0.0) / lam_max)
+            exact = lam > DEPENDENT * lam_max
+            self.kept_mask, self.exact_mask = exact.copy(), ~exact
+            self.gauges = int((~exact).sum())
+            self.rho_max = float(rho[exact].max()) if exact.any() else math.nan
+            self.seen_constrained = seen_c
+            logger.info(f"Deflation: the constrained space's {int(exact.sum())} directions, seen fractions (the 8 smallest): "
+                        + ', '.join(f'{v:.2g}' for v in np.sort(seen_c)[:8]))
+        T = T[:, exact]
+        self.lam = lam[exact].copy()
+        self.kept = int(exact.sum())
+        spectrum = ', '.join(f'{v:.2g}' for v in np.sort(self.seen)[:12])
+        # the composition of the least-seen directions (below 0.1 of the best-seen): their three largest pattern weights,
+        # relative to the direction's largest (the pattern coordinates are not normalised)
+        comp = []
+        for j in np.argsort(self.seen):
+            if self.seen[j] >= 0.1 or len(comp) >= 8:
+                break
+            w = self.directions[:, j]; w = w / max(float(np.abs(w).max()), 1e-300); top = np.argsort(-np.abs(w))[:3]
+            comp.append(f"{self.seen[j]:.2g} = " + ' '.join(f'{w[i]:+.2f}*{self.labels[i]}' for i in top))
+        logger.info('Deflation: the least-seen directions, by their largest pattern weights: ' + ' | '.join(comp))
+        logger.info(f"Deflation: the directions' seen fractions (sqrt(lambda / lambda_max); the {min(12, self.seen.size)} "
+                    f"smallest of {self.seen.size}): {spectrum}")
         if self.kept == 0:
             self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
@@ -647,6 +972,7 @@ class Deflation:
         self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
         if self.store == np.float32:
             self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
+        # The space's least-squares amplitudes.
         self.c_star = (self.V @ ATb) / self.lam
         del ATb
         self._bnorm2 = bnorm2
@@ -658,14 +984,190 @@ class Deflation:
         self.setup_s = time.perf_counter() - t0
         self.resolve_change = math.nan
         self.op = None
+        st = self.sweep_timing
         logger.info(
             f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
             f"{info['zero_eigenvalues']} zero eigenvalues"
             + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
-            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s + {t_pass2:.1f} s, "
-            f"blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+            f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
+            f"matrix {t_g:.1f} s of a thread's, with the reduction) + {t_pass2:.1f} s (chunks {st['work_thread_s']:.0f} thread-s over {st['work_wall_s']:.0f} s, "
+            f"adds {st['add_thread_s']:.0f} thread-s over {st['add_wall_s']:.0f} s, {st['threads']} threads), blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+
+    def _offset_images(self, storage, Qh, n_sky_S, n_off):
+        """``B_off^T B_sky Q`` for sky vectors ``Q`` ``(n_sky_S, q)`` (a single sky term, every row with one sky entry):
+        one sweep over the matrix, the offsets' part of ``N Q`` (its sky part is ``Q`` itself for unit sky column
+        norms). The chunks over the threads, the partial sums added in thread order."""
+        q = Qh.shape[1]
+        nS = self.nS
+        Qt = np.zeros((nS, q))
+        Qt[:n_sky_S] = Qh
+        descs = _piece_index(storage)
+
+        def sweep(my):
+            Rt = np.zeros((n_off, q))
+            for desc in my:
+                r0, r1, pieces = _piece(storage, desc)
+                nr = r1 - r0
+                U = np.zeros((nr, q))
+                offs = []
+                for lip, cols, data in pieces:
+                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                    if sky is not None:
+                        _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
+                    if oc is not None:
+                        offs.append(oc)
+                for ip, ci, dd in offs:
+                    _sparsetools.csc_matvecs(n_off, nr, q, ip, ci, dd, U, Rt)
+            return Rt
+
+        parts = self._over_chunks(descs, sweep)
+        R = parts[0]
+        for p in parts[1:]:
+            R += p
+        return R
+
+    @property
+    def projector(self):
+        """The column constraints the solve runs with: the model's, and the degenerate directions' sky shapes when
+        ``Deflate(exclude=)`` added them (the solver's operator and the solution must apply this one)."""
+        return self._projector
+
+    # ---------------------------------------------------------------- the sweeps over the matrix (float64, threaded)
+    def _over_chunks(self, descs, fn):
+        """``fn(my)`` for each thread's share ``my`` of the row-chunk descriptors (round robin, so the share depends
+        on the thread count only); returns the threads' results in thread order (one result without a pool)."""
+        if self._pool is None:
+            return [fn(descs)]
+        nt = max(1, min(self._pool._max_workers, len(descs)))
+        shares = [descs[j::nt] for j in range(nt)]
+        return list(self._pool.map(fn, shares))
+
+    def _transposed_products(self, storage, images, m, n_sky_S, extra=None):
+        """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
+        chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). Per batch of chunks
+        the images are made in parallel; the sky columns' products (``pos < n_sky_S``) are then summed per column
+        within the chunk (the entries sorted by column, a stable sort) and added into the output by threads that
+        own disjoint column ranges; the offset columns' (few) go through the transposed kernel into a private
+        buffer per chunk, added in chunk order. Every column's total is the chunk partials added in chunk order,
+        so the result does not depend on the thread count."""
+        out = np.zeros((self.nS, m))
+        descs = _piece_index(storage)
+        nt = 1 if self._pool is None else max(1, self._pool._max_workers)
+        n_off = self.nS - n_sky_S
+
+        def partials(mp, buf):
+            """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(n_off, m)``."""
+            (r0, r1, prepared), (U, x) = mp
+            nr = r1 - r0
+            sky = []
+            off = None
+            for _lip, _pos, _d64, sk, oc in prepared:
+                if oc is not None:
+                    if off is None:
+                        off = np.zeros((n_off, m))
+                    _sparsetools.csc_matvecs(n_off, nr, m, oc[0], oc[1], oc[2], U, off)
+                if sk is not None:
+                    sky.append((sk[1], sk[3], sk[2]))
+            if sky:
+                ps = np.concatenate([q[0] for q in sky]) if len(sky) > 1 else sky[0][0]
+                rs = np.concatenate([q[1] for q in sky]) if len(sky) > 1 else sky[0][1]
+                ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
+                order = np.argsort(ps, kind='stable')
+                ps, rs, ds = ps[order], rs[order], ds[order]
+                starts = np.flatnonzero(np.diff(ps, prepend=-1))
+                uniq = ps[starts]
+                ip = np.append(starts, ps.size).astype(np.int64)
+                part = buf.take('part', (uniq.size, m))
+                # the sums per column as a sparse product (one row per column of the chunk): the C kernel, which
+                # runs without the GIL (numpy's take / reduceat hold it)
+                _sparsetools.csr_matvecs(uniq.size, nr, m, ip, rs, ds, U, part)
+                del order, rs, ds, ps, ip
+            else:
+                uniq, part = np.zeros(0, dtype=np.int64), np.zeros((0, m))
+            return uniq, part, off, x
+
+        # One buffer slot per task of a batch (U, Ud, part: a gigabyte per chunk at full scale), kept for the whole
+        # pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises across threads.
+        slots = [_Slot() for _ in range(nt)]
+        t_work = [0.0] * nt
+        t_add = [0.0] * nt
+        t_wall = [0.0, 0.0]
+
+        def work(i_desc):
+            i, desc = i_desc
+            t0 = time.perf_counter()
+            r0, r1, pieces = _piece(storage, desc)
+            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S) for lip, cols, data in pieces]
+            del pieces
+            buf = slots[i]
+            out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
+            t_work[i] += time.perf_counter() - t0
+            return out_
+
+        for a in range(0, len(descs), nt):
+            batch = list(enumerate(descs[a:a + nt]))
+            t0 = time.perf_counter()
+            parts = [work(d) for d in batch] if self._pool is None else list(self._pool.map(work, batch))
+            t_wall[0] += time.perf_counter() - t0
+            if extra is not None:
+                extra.extend(pt[3] for pt in parts)
+            for uniq, part, off, _x in parts:
+                if off is not None:
+                    out[n_sky_S:] += off
+            # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
+            # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
+            samp = np.concatenate([u[::997] for u, _p, _o, _x in parts if u.size] or [np.zeros(0, dtype=np.int64)])
+            samp.sort()
+            if samp.size >= nt:
+                cuts = np.concatenate(([0], samp[(np.arange(1, nt) * samp.size) // nt], [n_sky_S]))
+                cuts = np.maximum.accumulate(cuts)
+            else:
+                cuts = np.linspace(0, n_sky_S, nt + 1, dtype=np.int64)
+
+            def add(j):
+                lo, hi = int(cuts[j]), int(cuts[j + 1])
+                if hi <= lo:
+                    return
+                t0 = time.perf_counter()
+                view = out[lo:hi]
+                for uniq, part, _off, _x in parts:
+                    i0, i1 = np.searchsorted(uniq, (lo, hi))
+                    if i1 > i0:
+                        ip = np.zeros(hi - lo + 1, dtype=np.int64)
+                        ip[uniq[i0:i1] - lo + 1] = 1
+                        np.cumsum(ip, out=ip)
+                        _sparsetools.csr_matvecs(hi - lo, i1 - i0, m, ip, np.arange(i1 - i0, dtype=np.int64), np.ones(i1 - i0), part[i0:i1], view)
+                t_add[j] += time.perf_counter() - t0
+
+            t0 = time.perf_counter()
+            self._wait(self._submit(add, nt))
+            t_wall[1] += time.perf_counter() - t0
+            del parts
+        self.sweep_timing = {'work_thread_s': float(sum(t_work)), 'work_wall_s': t_wall[0],
+                             'add_thread_s': float(sum(t_add)), 'add_wall_s': t_wall[1], 'threads': nt}
+        return out
+
+    def _forward(self, storage, v, fn):
+        """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
+        chunks, each exactly as a single sweep computes it)."""
+        descs = _piece_index(storage)
+
+        def chunk(desc):
+            r0, r1, pieces = _piece(storage, desc)
+            nr = r1 - r0
+            acc = np.zeros(nr)
+            for lip, cols, data in pieces:
+                pos = cols if self._colmap is None else self._colmap[cols]
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), v, acc)
+            fn(r0, r1, acc)
+
+        if self._pool is None:
+            for d in descs:
+                chunk(d)
+        else:
+            list(self._pool.map(chunk, descs))
 
     # ---------------------------------------------------------------- the projections (float64, threaded)
     def _submit(self, fn, count):
@@ -710,7 +1212,7 @@ class Deflation:
         if M.dtype == np.float64:
             yield a, c, M[:, a:c]
             return
-        key = ('sub', threading.get_ident())
+        key = ('sub', threading.get_ident(), int(M.shape[0]))        # per thread and per row count
         buf = self._scratch.get(key)
         if buf is None:
             buf = self._scratch[key] = np.empty((M.shape[0], self._SUB), dtype=np.float64)
@@ -767,17 +1269,18 @@ class Deflation:
     def start(self, b, x0=None):
         """Subtract the part in the space from ``b`` in place (``b - B x_c``, computed in float64, stored in
         ``b``'s dtype) and return the solver's start: ``P x0`` (in ``x0``'s dtype), or None."""
-        for r0, r1, pieces in _pieces(self._storage):
-            nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), self.x_c, acc)
+        xb = self.x_c
+
+        def shift(r0, r1, acc):
             b[r0:r1] = (np.asarray(b[r0:r1], dtype=np.float64) - acc).astype(b.dtype)
+
+        self._forward(self._storage, xb, shift)
         if x0 is None:
             return None
         y0 = np.array(x0, copy=True)
-        self._scatter(y0, self.project(x0))
+        if self._projector is not None:
+            self._projector.apply(y0)
+        self._scatter(y0, self.project(y0))
         return y0
 
     def shifted(self, b, dtype=np.float32) -> np.ndarray:
@@ -786,13 +1289,12 @@ class Deflation:
         solver's residual is measured against (CGLS's refresh)."""
         m = self.shape[0]
         out = np.empty(m, dtype=dtype)
-        for r0, r1, pieces in _pieces(self._storage):
-            nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), self.x_c, acc)
+        xb = self.x_c
+
+        def shift(r0, r1, acc):
             out[r0:r1] = np.asarray(b[r0:r1], dtype=np.float64) - acc
+
+        self._forward(self._storage, xb, shift)
         return out
 
     def bind(self, op, storage):
@@ -808,15 +1310,21 @@ class Deflation:
         dt = np.dtype(op.dtype)
         buf = np.empty(n, dtype=dt)
 
+        pc = self._projector
+
         def matvec(y):
             y = np.asarray(y).reshape(-1)
             np.copyto(buf, y, casting='unsafe')
-            self._scatter(buf, self.project(y))
-            return op.matvec(buf)
-
+            if pc is not None:
+                pc.apply(buf)                            # B P Pc: the iterate's part outside the allowed subspace
+            self._scatter(buf, self.project(buf))        # goes first, so P's orthogonality to the space holds
+            return op.matvec(buf)                        # (Pc and P do not commute; the constrained columns are
+                                                         # mixed into W = N V)
         def rmatvec(u):
             out = np.asarray(op.rmatvec(u))
             self._scatter(out, self._project_transposed(self._gather(out)))
+            if pc is not None:
+                pc.apply(out)                            # the transpose: Pc P^T Pc A^T
             return out
 
         return LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
@@ -826,6 +1334,8 @@ class Deflation:
         vectors lie in the complement of the space in exact arithmetic; rounding, which the recurrence
         amplifies once the solve has converged, would otherwise let the iterate drift along directions the
         deflated operator cannot see."""
+        if self._projector is not None:
+            self._projector.apply(v)
         vS = self._gather(v)
         self._sub(vS, self.V, self._dot(self.V, vS))
         self._scatter(v, vS)
@@ -833,7 +1343,9 @@ class Deflation:
     def full(self, y) -> np.ndarray:
         """The solution an iterate ``y`` of the solver stands for, ``x_c + P y``, in ``y``'s dtype."""
         x = np.array(y, copy=True)
-        vS = self.project(y)
+        if self._projector is not None:
+            self._projector.apply(x)
+        vS = self.project(x)
         vS += self.x_c
         self._scatter(x, vS)
         return x
@@ -843,18 +1355,17 @@ class Deflation:
         over the matrix; ``b``: the original right-hand side, an array or a parked vector), in place; returns
         ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
         xS = self._gather(x)
-        g = np.zeros(self.nS)
-        for r0, r1, pieces in _pieces(self._storage):
+
+        def residual(r0, r1, prepared, _buf):
             nr = r1 - r0
             r = np.array(b[r0:r1], dtype=np.float64)
             acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), xS, acc)
+            for lip, pos, d64, _sky, _off in prepared:
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, xS, acc)
             r -= acc
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csc_matvec(self.nS, nr, lip, pos, data.astype(np.float64), r, g)
+            return r.reshape(nr, 1), None
+
+        g = self._transposed_products(self._storage, residual, 1, self.n_sky_S)[:, 0]
         dc = self._dot(self.V, g) / self.lam
         cnorm = float(np.linalg.norm(self.c_star))
         self.resolve_change = float(np.linalg.norm(dc)) / cnorm if cnorm > 0 else 0.0
@@ -868,11 +1379,23 @@ class Deflation:
         return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
                 'kept': self.kept, 'gauges': self.gauges,
+                'seen': [float(v) for v in np.sort(self.seen)],
                 'obliqueness_max': None if math.isnan(self.rho_max) else float(self.rho_max), 'columns': int(self.nS),
                 'nullness_min': float(self.nullness.min()), 'nullness_median': float(np.median(self.nullness)),
                 'pairing_residual': float(self.pairing_residual),
                 'coarse_residual_drop': float(self.c_star @ (self.lam * self.c_star)),
-                'resolve_change': None if math.isnan(self.resolve_change) else float(self.resolve_change)}
+                'resolve_change': None if math.isnan(self.resolve_change) else float(self.resolve_change),
+                # the decomposition itself (small: patterns x patterns), for anyone reading the solve later
+                'pattern_labels': list(self.labels),
+                'nullness_by_pattern': [float(v) for v in self.nullness],
+                'eigenvalues': [float(v) for v in self.eigenvalues],
+                'seen_by_direction': [float(v) for v in self.seen],
+                'kept_directions': [bool(v) for v in self.kept_mask],
+                'exact_gauge_directions': [bool(v) for v in self.exact_mask],
+                'eigenvectors': [[float(f'{v:.7g}') for v in col] for col in self.directions.T],   # direction j = weights over pattern_labels
+                'excluded_degenerate': self.exclusion_info,                                        # Deflate(exclude=): the selection, or None
+                'seen_constrained': None if self.exclusion_info is None else [float(v) for v in np.sort(self.seen_constrained)],
+                'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
 
     def summary_json(self) -> str:
         return json.dumps(self.summary(), sort_keys=True)

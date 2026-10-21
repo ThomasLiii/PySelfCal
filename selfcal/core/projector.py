@@ -36,6 +36,7 @@ class ColumnProjector:
 
     def __init__(self, groups):
         self.groups = []
+        self._spans = []           # per group: (lo, hi, Q2) when its real columns are one contiguous range (a sky term), else None
         for cols, Q in groups:
             cols = np.asarray(cols, dtype=np.int64)
             Q = np.asarray(Q, dtype=np.float64)
@@ -43,6 +44,20 @@ class ColumnProjector:
                 raise ValueError(f"ColumnProjector: cols {cols.shape} and Q {Q.shape} disagree")
             if Q.shape[2]:
                 self.groups.append((cols, Q))
+                self._spans.append(self._span(cols, Q))
+
+    @staticmethod
+    def _span(cols, Q):
+        """``(lo, hi, Q2)`` when the group is one line whose real columns are exactly ``lo:hi`` in order (the
+        rows of ``Q`` at them), so that applying is a slice and two small products; None otherwise."""
+        if cols.shape[0] != 1:
+            return None
+        flat = cols[0]
+        real = flat >= 0
+        r = flat[real]
+        if r.size == 0 or not np.array_equal(r, np.arange(r[0], r[0] + r.size)):
+            return None
+        return int(r[0]), int(r[0] + r.size), np.ascontiguousarray(Q[0][real])
 
     # ---------------------------------------------------------------------------------------- building
     @classmethod
@@ -89,7 +104,17 @@ class ColumnProjector:
         returns ``y``. The arithmetic is float64 whatever ``y``'s dtype."""
         y = np.asarray(y)
         two = y.ndim == 2
-        for cols, Q in self.groups:
+        for (cols, Q), span in zip(self.groups, self._spans):
+            if span is not None:
+                lo, hi, Q2 = span
+                v = y[lo:hi]
+                if v.dtype == np.float64:
+                    v -= Q2 @ (Q2.T @ v)
+                else:
+                    v64 = np.asarray(v, dtype=np.float64)
+                    v64 -= Q2 @ (Q2.T @ v64)
+                    v[...] = v64.astype(y.dtype, copy=False)
+                continue
             flat = cols.ravel()
             real = flat >= 0
             idx = np.where(real, flat, 0)

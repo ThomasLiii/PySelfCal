@@ -143,8 +143,13 @@ def describe_gauge(gauge) -> str:
 def describe_deflate(deflate) -> str:
     """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
+    rule = ''
+    ex = getattr(deflate, 'exclude', None)
+    if ex is not None:
+        rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '
+                 'excluded from the sky (a hard constraint in map space), the space re-based, the solve on the constrained system')
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
-            f"offsets that absorb them, solved directly; the iterations run on the rest")
+            f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 
 
 def describe_stop(stop, fit=None) -> str:

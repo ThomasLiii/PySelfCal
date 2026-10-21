@@ -1237,15 +1237,22 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         def _solve(op, storage):
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
-            nonlocal defl
-            if proj is not None:
-                op = proj.wrap(op if hasattr(op, 'matvec') else aslinearoperator(op))
-            _watch(op)
-            kw, solver_op, setup_s = solve_kw, op, None
+            nonlocal defl, proj
+            op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
             if deflate is not None:
+                # The deflation first: with Deflate(exclude=) its setup adds the degenerate directions' sky shapes to
+                # the column constraints, which the operator and the solution must then apply.
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj)
+                if defl.projector is not proj:
+                    proj = defl.projector
+                    logger.info(f"Column constraints with the degenerate directions: {proj}")
+            if proj is not None:
+                op = proj.wrap(op0)
+            _watch(op)
+            kw, solver_op, setup_s = solve_kw, op, None
+            if deflate is not None:
                 defl.bind(op, storage)
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0
