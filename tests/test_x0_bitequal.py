@@ -1,6 +1,7 @@
-"""Bit-equality property test: new compute_x0_scalar_only (CSR-direct) vs the
-legacy algorithm (compute_x0_from_Ab + chunk-block zeroing, unchanged in
-solution.py).
+"""Bit-equality property test: compute_x0_scalar_only and compute_x0_from_Ab on
+csr, BlockCSR and ColSplitCSR storages (streamed in row chunks) vs the legacy
+algorithm (compute_x0_from_Ab of the matrix as a coo_matrix: one bincount over
+its entries in row order; + chunk-block zeroing for the scalar-only start).
 
 Covers: f32/f64 data, int32/int64 indices, with/without active_mask, empty
 rows, dense/sparse scalar coverage, zero-coverage scalar columns, and forced
@@ -21,7 +22,7 @@ _SEED = 20260718
 
 def legacy_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks=1,
                        active_mask=None):
-    x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
+    x0 = compute_x0_from_Ab(A.tocoo(), b, ref_shape, num_sky_blocks=num_sky_blocks,
                             active_mask=active_mask)
     ref_h, ref_w = ref_shape
     num_sky_eff = num_sky_blocks * ref_h * ref_w
@@ -128,7 +129,7 @@ def test_x0_from_Ab_split_storages_bitequal():
                                              n_chunk_cols=45, n_scalar_cols=6, data_dtype=data_dtype,
                                              idx_dtype=np.int32, use_active_mask=use_mask, density=0.08)
                     A.sort_indices()
-                    ref = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks, active_mask=am)
+                    ref = compute_x0_from_Ab(A.tocoo(), b, ref_shape, num_sky_blocks=num_sky_blocks, active_mask=am)
                     n = A.shape[1]
 
                     def blocks():
