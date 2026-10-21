@@ -329,9 +329,10 @@ clarity:
   matvec is row-local, and a thread of the row-split product (or the whole
   sequential product, in verification mode) scatters rows in the same global
   row order whatever the block boundaries (`_sparsetools.csc_matvec`).
-  `compute_x0_scalar_only` consumes it too;
-  `compute_x0_from_Ab` (k2-style full-offset warm starts) intentionally does
-  not.
+  `compute_x0_from_Ab` and `compute_x0_scalar_only` consume it too: one
+  walk streams any of the storages in row chunks through the same kernel
+  (`_column_sums`), with the bytes of one `bincount` over the entries in row
+  order.
 
   `ColSplitCSR` in the same module is that storage cut a second way, into
   column ranges: `sub[b][t]` is storage block `b` restricted to columns

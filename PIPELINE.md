@@ -663,7 +663,7 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
   `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
   num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the
   function and its variables); `CalFile.offset_basis(m)` returns `(n, description)`. Such an
-  offset is not constant per chunk — the mosaic evaluates it per observation
+  offset is not constant per chunk — the mosaic evaluates it at each observation that carries weight
   (`selfcal.pipeline.model_eval.BasisOffsetSubtractor`).
 
 **Legacy schema (pre-multi-chunk-maps, still readable):**
