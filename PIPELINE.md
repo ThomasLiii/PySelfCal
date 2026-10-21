@@ -857,10 +857,12 @@ The byte-equality gates live in `selfcal_scripts/gates/` (see its README): `run_
 pytest, then the gates of `python_gates.py`, written with the Python API, against the float64-norm
 goldens (`*golden_f64*`): the continuum and spectral cal gates (D3 Ch17 / D4 AromaticPAHfit), the
 end-to-end D3 Ch17 cal + full mosaic, the npass n=3 probe (INIT + closed-form SKY + per-frame OFFSET
-solve), the Euclid EDFN recipe and the rerun of the continuum gate's record,
-each compared dataset by dataset with `gates/h5_diff.py` / `gates/fits_diff.py` (or
-`gates/diff_cal_h5.py`); `run_m13_gate.sh <tag>` runs the npass n=1 gate on the
-NEP M13 tile (`run_gates.sh <tag> m13`). `config_equivalence.py views` / `compare-views` checks what
+solve), the Euclid EDFN recipe, the rerun of the continuum gate's record, the production recipe
+(`SLOPE_GAUGE` on D3 Ch9, 100 frames: deflated CGLS to the chi-squared stop, the `sc.shot_noise()`
+weights, the plane gauge on the map, the weighted coadd) and a tiled multi-line solve (two tiles,
+stitched, as pass 1 of `sc.Passes(1)`), each compared dataset by dataset with `gates/h5_diff.py` /
+`gates/fits_diff.py` (or `gates/diff_cal_h5.py`). A change to code that no gate covers adds a short
+gate for it. `config_equivalence.py views` / `compare-views` checks what
 the engine does with every run script without a solve. The older harnesses
 (`run_cal_baseline_test.py`, `regress_cal*.py`, the `benchmark_d3_ch17_*` timing scripts) are
 archived under the gitignored `archive/scripts/benchmarks/`.

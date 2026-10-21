@@ -19,7 +19,7 @@ tag, the frame variables and the optional renderers, maps and catalogue) and low
 (:class:`~selfcal.models.spec.ModelSpec`) to the solver's objects; it never names a telescope.
 
 Edits here must keep calibration output byte-identical — run the gates
-(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``) before committing.
+(``selfcal_scripts/gates/run_gates.sh``) before committing.
 """
 from __future__ import annotations
 
