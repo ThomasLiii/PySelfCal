@@ -275,3 +275,32 @@ def test_refresh_mask_writes_what_the_reprojection_writes(tmp_path):
         assert refresh_mask(fa, l2b_flags(after['file_path'])) == 0
         with pytest.raises(ValueError, match='detector'):
             refresh_mask(fa, np.zeros((H + 1, W), dtype=np.int32))
+
+
+def test_refresh_mask_from_the_stored_mapping(tmp_path):
+    """mapping='stored' samples the dilated planes at the detector positions the frame stores instead of mapping the
+    box through the WCS again: the new reprojection's mask up to the pixels within the stored positions' float32
+    rounding of the threshold; only the dilated bits change, everything else stays."""
+    rng = np.random.default_rng(6)
+    _exposures(tmp_path, rng, n=5)
+    old = _reproject(tmp_path, 'undilated', read_l2b_undilated)
+    new = _reproject(tmp_path, 'dilated', read_l2b)
+    keys = ['sub_data', 'sub_foot', 'sub_mapping', 'ref_coords', 'det_header', 'sub_header', 'file_path', 'layers/variance']
+    dil = sum(1 << b for b in DILATED_BITS)
+    n_changed, n_differ = 0, 0
+    for fa, fb in zip(old.frames, new.frames):
+        before = load_reproj_file(fa, keys + ['sub_bitmask'])
+        n_changed += refresh_reader_mask(fa, read_l2b, 1, 2, bits=DILATED_BITS, mapping='stored')
+        after = load_reproj_file(fa, keys + ['sub_bitmask'])
+        fresh = load_reproj_file(fb, ['sub_bitmask'])['sub_bitmask']
+        n_differ += int((after['sub_bitmask'] != fresh).sum())
+        assert np.array_equal(after['sub_bitmask'] & ~dil, before['sub_bitmask'] & ~dil)   # only the dilated bits
+        for k in keys:                                                                       # everything else unchanged
+            if isinstance(before[k], np.ndarray):
+                assert np.array_equal(before[k], after[k], equal_nan=True), k
+            else:
+                assert before[k] == after[k], k
+    print(f'stored mapping: {n_changed} pixels changed, {n_differ} differ from the new reprojection')
+    assert n_changed > 0 and n_differ <= max(2, n_changed // 10000)
+    with pytest.raises(ValueError, match='mapping'):
+        refresh_mask(old.frames[0], l2b_flags(load_reproj_file(old.frames[0], ['file_path'])['file_path']), mapping='grid')
