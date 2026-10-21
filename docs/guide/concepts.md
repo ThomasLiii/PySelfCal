@@ -256,10 +256,14 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   sky fields, the polynomials of degree 1 to `k` on the sky grid. A sky plane appears in every frame
   as a slope along each detector direction, so a per-frame slope term absorbs it nearly whole; the
   plane's signature in the slopes follows each frame's pointing and orientation, which a slope of the
-  instrument does not. Without that part, the sky field is fitted by the sky. Whatever the true
-  per-frame slopes do hold along the signature (the gradient of a foreground fixed on the sky, say)
+  instrument does not. Without that part, the sky field is fitted by the sky. The constraint is
+  measured in the data's metric (each coefficient weighted by its information, so coefficients the
+  data barely measure cannot take it up for the rest), and what the term holds the same way in every
+  frame (a pattern fixed on the detector) stays free. Whatever the true per-frame slopes do hold
+  along the rest of the signature (the survey-mean gradient of a foreground at each position, say)
   goes into the map as that field. The signature comes from the system itself (the deflation's
-  setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`.
+  setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
+  or per group of frames.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.

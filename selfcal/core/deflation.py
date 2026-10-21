@@ -1006,7 +1006,10 @@ class Deflation:
         """``Offsets(exclude=SkySignature(k))``: each named term may not carry its response to the sky polynomials of
         degree 1 to k. ``X`` (``(n_off, patterns)``, solver coordinates) is the offsets' least-squares response to
         every pattern; the polynomial patterns' responses restricted to a term are the term's signature of those
-        fields. The term's physical coefficients are made orthogonal to them (Euclidean over its unknowns): a
+        fields. The signature first loses its detector-fixed part (``chunk``: the columns of one chunk value, one per
+        group, hold the configurations the same in every group; their projection is removed per chunk), so a
+        pattern fixed on the detector stays free; the term's coefficients are then made orthogonal to what is left in
+        the data's metric (each coefficient weighted by its information, the diagonal of ``G``): a
         :class:`~selfcal.core.projector.ColumnProjector` group joins the column constraints (the solver's operator, its
         start and the solution apply it). Every pattern's response is then solved again under the constraint, by its
         Lagrange form (the constraint spans every frame, so it is not one more block of the block solve):
@@ -1028,29 +1031,49 @@ class Deflation:
             return int(a) + int(c)
 
         degrees = [poly_degree(lbl) for lbl in self.labels]
+        gdiag = np.asarray(G.diagonal(), dtype=np.float64)
         groups, cs, recs = [], [], []
-        for cols, degree, name in signatures:
+        for cols, degree, name, chunk in signatures:
             cols = np.asarray(cols, dtype=np.int64)
             sp = cm[cols]
             ok = sp >= n_sky_S                                    # the term's unknowns in this space (with data)
-            cols, off = cols[ok], sp[ok] - n_sky_S
+            cols, off, chunk = cols[ok], sp[ok] - n_sky_S, np.asarray(chunk, dtype=np.int64)[ok]
             fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
             if off.size == 0 or not fields:
                 raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree})): "
                                  + ("the term has no unknown with data" if off.size == 0 else
                                     "the deflation has no polynomial pattern of degree 1 to that degree"))
+            # Solver coordinates y, physical x = m y. The data's metric on the term's coefficients is the diagonal of
+            # the offsets' normal matrix g (1 for unit-norm columns): <u, v> = sum g u v in solver coordinates. A
+            # detector-fixed configuration (x the same in every group, one value per chunk) is f = 1 / m on the
+            # chunk's columns; each signature S loses its projection on those (per chunk, in the data's metric), so
+            # they stay free, and the constraint on y is (g S')^T y = 0.
             m = np.ones(off.size) if scale is None else np.asarray(scale, dtype=np.float64)[cols]
-            A = (m * m)[:, None] * X[off][:, fields]              # (M C_phys) with C_phys = M X: (M C)^T y = C^T x = 0
+            g, f = gdiag[off], 1.0 / m
+            S = np.array(X[off][:, fields], dtype=np.float64)
+            norm0 = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
+            _, ch = np.unique(chunk, return_inverse=True)
+            den = np.bincount(ch, weights=g * f * f)
+            for j in range(S.shape[1]):
+                num = np.bincount(ch, weights=g * f * S[:, j], minlength=den.size)
+                S[:, j] -= f * np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)[ch]
+            A = g[:, None] * S
             U, sv, _ = np.linalg.svd(A, full_matrices=False)
+            if float(sv.max()) <= 0.0:
+                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree})): the term's signature is "
+                                 "detector-fixed throughout (one group, or every frame alike): nothing to constrain")
             keep = sv > _DROP * max(float(sv.max()), 1e-300)
             U = np.ascontiguousarray(U[:, keep])
             groups.append((cols[None, :], U[None, :, :]))
             c = np.zeros((n_off, U.shape[1]))
             c[off] = U
             cs.append(c)
+            kept = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
             recs.append({'term': str(name), 'degree': int(degree), 'fields': [self.labels[i] for i in fields],
                          'columns': int(off.size), 'directions': int(U.shape[1]),
-                         'singular_values': [float(v) for v in sv]})
+                         'singular_values': [float(v) for v in sv], 'metric': 'data (the diagonal of the normal matrix)',
+                         'detector_fixed_free': True,
+                         'share_constrained': [float(a / b) if b > 0 else 0.0 for a, b in zip(kept, norm0)]})
         C = np.concatenate(cs, axis=1)
         Cp = C if self._proj_off is None else self._proj_off.apply(np.array(C, copy=True))
         fac = info.get('factor')
@@ -1065,7 +1088,9 @@ class Deflation:
             r['constraint_held'] = held
         self.signature_info = recs
         logger.info('Deflation: sky signatures excluded from ' + '; '.join(
-            f"{r['term']} ({r['columns']} unknowns, degree <= {r['degree']}: {r['directions']} directions)" for r in recs)
+            f"{r['term']} ({r['columns']} unknowns, degree <= {r['degree']}: {r['directions']} directions; the share of each "
+            f"field's signature that is not detector-fixed: " + ', '.join(f'{v:.2f}' for v in r['share_constrained']) + ')'
+            for r in recs)
             + f"; the patterns' responses solved under the constraint (|C^T X| / |X| = {held:.1e})")
         return Xc
 

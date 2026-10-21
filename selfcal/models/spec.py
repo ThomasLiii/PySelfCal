@@ -672,15 +672,18 @@ class ModelSpec:
 
     def signature_exclusions(self, layout) -> list:
         """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
-        solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name), ...]`` with ``cols`` the term's
-        full-layout columns (every group, chunk and function) and ``k`` the largest degree of the sky polynomials
-        whose response the term may not carry. Empty without such terms."""
+        solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the
+        term's full-layout columns (every group, chunk and function), ``k`` the largest degree of the sky
+        polynomials whose response the term may not carry, and ``chunk`` each column's place within its group (the
+        columns of one ``chunk`` value, one per group, hold the term's detector-fixed configurations). Empty without
+        such terms."""
         out = []
         for m, term in enumerate(self.offset):
             if term.signature_degree is None:
                 continue
-            cols = np.arange(int(layout.col_bases[m]), int(layout.col_bases[m + 1]), dtype=np.int64)
-            out.append((cols, int(term.signature_degree), term.name or term.map or 'primary'))
+            base, nc = int(layout.col_bases[m]), int(layout.num_chunks_list[m])
+            cols = np.arange(base, int(layout.col_bases[m + 1]), dtype=np.int64)
+            out.append((cols, int(term.signature_degree), term.name or term.map or 'primary', (cols - base) % nc))
         return out
 
     def _offset_function(self, term, geom, catalog, known, log):

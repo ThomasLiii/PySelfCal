@@ -19,10 +19,13 @@ S = 8                                                     # detector side (rows 
 
 
 def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slope_per_row=True, slope_scale=0.0,
-         noise=1e-6, seed=5):
+         noise=1e-6, seed=5, rotations=(0, 1, 2, 3), fixed_slope=0.0, weak_frames=0.0, weak_weight=1e-6):
     """A sky (a plane + quad * a centred bowl + a random field), random row constants, slopes of ``slope_scale``,
-    ``noise``; ``shared``: a pattern along the detector columns shared by every frame (data and model). Returns a
-    dict: A, b, npix, grid, slope_cols, sky (the true sky)."""
+    ``noise``; ``shared``: a pattern along the detector columns shared by every frame (data and model);
+    ``rotations``: the quarter turns frames take; ``fixed_slope``: a slope the same in every frame (per row: a
+    detector-fixed pattern) added to the data; ``weak_frames``: the fraction of frames whose rows carry the weight
+    ``weak_weight`` (rows and data scaled by its square root). Returns a dict: A, b, npix, grid, slope_cols,
+    slope_chunks, sky (the true sky)."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:h, 0:w]
     u, v = (xx / (w - 1)).ravel(), (yy / (h - 1)).ravel()
@@ -32,15 +35,18 @@ def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slo
     per_frame = S + ns
     shared0 = npix + frames * per_frame
     pattern = 0.1 * np.cos(np.arange(S) * 0.8)
-    rows, cols, vals, b, slope_cols = [], [], [], [], []
+    fixed = fixed_slope * (1.0 + 0.5 * np.sin(np.arange(ns) * 1.3))
+    rows, cols, vals, b, slope_cols, slope_chunks = [], [], [], [], [], []
     r = 0
     for f in range(frames):
-        rot = rng.integers(0, 4)
+        rot = int(rng.choice(rotations))
         y0, x0 = rng.integers(0, h - S + 1), rng.integers(0, w - S + 1)
+        sw = np.sqrt(weak_weight) if rng.random() < weak_frames else 1.0
         c0 = npix + f * per_frame
         slope_cols.extend(range(c0 + S, c0 + S + ns))
+        slope_chunks.extend(range(ns))
         const = rng.normal(0.0, 0.3, S)
-        slope = rng.normal(0.0, slope_scale, ns) if slope_scale else np.zeros(ns)
+        slope = (rng.normal(0.0, slope_scale, ns) if slope_scale else np.zeros(ns)) + fixed
         for i in range(S):
             for j in range(S):
                 gy, gx = {0: (i, j), 1: (j, S - 1 - i), 2: (S - 1 - i, S - 1 - j), 3: (S - 1 - j, i)}[rot]
@@ -49,15 +55,20 @@ def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slo
                 k = i if slope_per_row else 0
                 rows += [r, r, r]
                 cols += [p, c0 + i, c0 + S + k]
-                vals += [1.0, 1.0, t]
+                vals += [sw, sw, sw * t]
                 val = sky[p] + const[i] + slope[k] * t + noise * rng.normal()
                 if shared:
-                    rows.append(r); cols.append(shared0 + j); vals.append(1.0)
+                    rows.append(r); cols.append(shared0 + j); vals.append(sw)
                     val += pattern[j]
-                b.append(val)
+                b.append(sw * val)
                 r += 1
     A = sp.csr_matrix((vals, (rows, cols)), shape=(r, shared0 + (S if shared else 0)))
-    return {'A': A, 'b': np.asarray(b), 'npix': npix, 'grid': (h, w), 'slope_cols': np.asarray(slope_cols), 'sky': sky}
+    return {'A': A, 'b': np.asarray(b), 'npix': npix, 'grid': (h, w), 'slope_cols': np.asarray(slope_cols),
+            'slope_chunks': np.asarray(slope_chunks), 'sky': sky}
+
+
+def _sig(t, k):
+    return [(t['slope_cols'], k, 'slopes', t['slope_chunks'])]
 
 
 def _solve(t, deflate, tmp, signatures=None, iter_lim=800):
@@ -83,11 +94,16 @@ def _fields(t, cov, quad=False):
     return np.stack(cols, 1)[cov]
 
 
+def _seen(rec):
+    """The deflation's seen fractions, sqrt(lambda / lambda_max), ascending."""
+    ev = np.sort(np.asarray(json.loads(rec.deflation)['eigenvalues'], dtype=np.float64))
+    return np.sqrt(np.maximum(ev, 0.0) / ev.max())
+
+
 def test_the_plane_is_an_exact_gauge_without_and_recovered_with_the_exclusion(tmp_path):
     t = _toy(slope_per_row=False)
-    sig = [(t['slope_cols'], 1, 'slopes')]
     x_free, rec_free = _solve(t, sc.Deflate(2), str(tmp_path))
-    x_sig, rec_sig = _solve(t, sc.Deflate(2), str(tmp_path), signatures=sig)
+    x_sig, rec_sig = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1))
     d_free, d_sig = json.loads(rec_free.deflation), json.loads(rec_sig.deflation)
     e_free, cov = _error(t, x_free)
     e_sig, _ = _error(t, x_sig)
@@ -105,15 +121,45 @@ def test_the_plane_is_an_exact_gauge_without_and_recovered_with_the_exclusion(tm
 
 
 def test_what_the_true_offsets_hold_along_the_signature_goes_to_the_sky_as_that_field(tmp_path):
-    """The exclusion's assumption: the term carries nothing along the signature. Slopes that do (here random ones) put
-    exactly that part into the sky, as the field: the error is a plane and nothing else."""
+    """The exclusion's assumption: the term carries nothing along the signature (beyond its detector-fixed part).
+    Slopes that do (here random ones) put exactly that part into the sky, as the field: the error is a plane and
+    nothing else."""
     t = _toy(slope_per_row=False, slope_scale=0.1)
-    x, _ = _solve(t, sc.Deflate(2), str(tmp_path), signatures=[(t['slope_cols'], 1, 'slopes')])
+    x, _ = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1))
     e, cov = _error(t, x)
     M = _fields(t, cov)
     rest = e - M @ np.linalg.lstsq(M, e, rcond=None)[0]
     print(f'|solved - true sky| rms {e.std():.2e}; after a plane {rest.std():.2e}')
     assert e.std() > 1e-3 and rest.std() < 1e-5
+
+
+def test_a_detector_fixed_slope_stays_in_the_offsets_whatever_the_orientations(tmp_path):
+    """Frames at three of the four quarter turns, so the plane's slope signature does not average out over the
+    frames, and a slope the same in every frame (fixed on the detector) in the data: the detector-fixed part of the
+    signature is left free, so that slope stays in the offsets and the true sky comes back. (One slope per frame:
+    with one per row a saddle u v is an exact gauge of this toy as well, which degree 1 leaves.)"""
+    t = _toy(rotations=(0, 1, 2), fixed_slope=0.3, slope_per_row=False, seed=9)
+    x, rec = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1))
+    [info] = json.loads(rec.deflation)['signature_exclusions']
+    e, _ = _error(t, x)
+    print(f'|solved - true sky| rms {e.std():.2e}; share of the signature not detector-fixed {info["share_constrained"]}')
+    assert min(info['share_constrained']) < 0.99                    # the unbalanced orientations: a detector-fixed part
+    assert e.std() < 1e-5
+
+
+def test_poorly_measured_frames_do_not_take_the_constraint_up(tmp_path):
+    """A tenth of the frames at a millionth of the weight: their slopes cost the fit almost nothing, so a constraint
+    counting every coefficient alike could be met by them alone while the other frames' slopes went on absorbing
+    the plane. In the data's metric they count by what the data say about them: the planes stay as well seen as
+    without those frames."""
+    seen = {}
+    for weak in (0.0, 0.1):
+        t = _toy(weak_frames=weak, slope_per_row=False, seed=13)
+        _, rec = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1), iter_lim=50)
+        seen[weak] = _seen(rec)[1]                                  # the least-seen direction after the mean gauge
+        assert json.loads(rec.deflation)['gauges'] == 1
+    print(f'least-seen direction after the mean: {seen}')
+    assert seen[0.1] > 0.5 * seen[0.0]
 
 
 def test_unset_or_with_signatures_none_nothing_changes(tmp_path):
@@ -129,8 +175,8 @@ def test_with_a_shared_pattern_the_quadratics_come_back_with_degree_2(tmp_path):
     the row constants the rest, the slopes its gradient). Degree 1 leaves the saddle; degree 2 makes all of them the
     sky's: the true sky comes back."""
     t = _toy(quad=0.8, shared=True, seed=11)
-    x1, rec1 = _solve(t, sc.Deflate(2), str(tmp_path), signatures=[(t['slope_cols'], 1, 'slopes')])
-    x2, rec2 = _solve(t, sc.Deflate(2), str(tmp_path), signatures=[(t['slope_cols'], 2, 'slopes')])
+    x1, rec1 = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1))
+    x2, rec2 = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 2))
     d2 = json.loads(rec2.deflation)
     e1, _ = _error(t, x1)
     e2, _ = _error(t, x2)
@@ -144,6 +190,8 @@ def test_the_setting_lowers_and_needs_the_deflation(tmp_path):
     assert o.lower()['signature_degree'] == 2 and 'exclude_degree' not in o.lower()
     with pytest.raises(sc.ConfigError):
         sc.SkySignature(0)
+    with pytest.raises(sc.ConfigError, match='per frame'):
+        sc.Offsets('xs', on='subchannel', per='all', exclude=sc.SkySignature(1))
     t = _toy(frames=40, seed=3)
     with pytest.raises(ValueError, match='deflate'):
-        _solve(t, None, str(tmp_path), signatures=[(t['slope_cols'], 1, 'slopes')])
+        _solve(t, None, str(tmp_path), signatures=_sig(t, 1))

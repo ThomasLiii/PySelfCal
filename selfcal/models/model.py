@@ -361,11 +361,21 @@ class SkySignature(Config):
     as a slope along each detector direction, so a per-frame slope term absorbs it almost whole and the data barely
     see the plane. The signature changes from frame to frame with the frame's pointing and orientation, which a
     term of the instrument has no reason to follow. With this exclusion the term's coefficients have no component
-    along that signature (Euclidean over the term's unknowns; a hard constraint by reparametrisation, no row and
-    no weight): the sky field must then be fitted by the sky, measured through the part of the signature the term
-    can no longer take. The signature is the term's part of the offsets' least-squares response to each field,
-    computed from the system itself by the deflation's setup (any term, basis or instrument), so the solve needs
-    ``Fit(deflate=Deflate(...))``. ``degree``: 1 (the two planes) or 2 (the planes and the three quadratics).
+    along that signature (a hard constraint by reparametrisation, no row and no weight): the sky field must then be
+    fitted by the sky, measured through the part of the signature the term can no longer take. Two choices make the
+    constraint the data's own:
+
+    - orthogonality is measured in the data's metric, each coefficient weighted by its information (the diagonal of
+      the offsets' normal matrix), so a coefficient the data barely measure cannot take the constraint up for the
+      rest;
+    - what the term holds the same way in every frame (one value per chunk, shared by every group: a pattern fixed
+      on the detector) stays free: that part of the signature is removed before it becomes a constraint, so a
+      detector-fixed slope stays in the offsets whatever orientations the frames have.
+
+    The signature is the term's part of the offsets' least-squares response to each field, computed from the system
+    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
+    and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes)
+    or 2 (the planes and the three quadratics).
     """
     degree: int = 1
 
@@ -498,6 +508,9 @@ class Offsets(Config):
         if isinstance(self.exclude, SkySignature):
             if self.polynomial is not None:
                 raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
+            if self.per == 'all':
+                raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
+                                  "a term shared by every frame holds nothing that turns with the frames")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
