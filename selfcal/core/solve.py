@@ -834,7 +834,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -939,6 +939,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         ``cols`` (``(G, n)``), by reparametrisation (:class:`~selfcal.core.projector.ColumnProjector`:
         the solver runs on ``A P``); no constraint row, no weight. Applied after compaction and
         scaling; the deflation's offset response honours it.
+    signatures : list, optional
+        Offset terms that may not carry their response to the sky polynomials of degree 1 to ``k``,
+        ``[(cols, k, name), ...]`` with ``cols`` the term's columns in the full layout
+        (``Offsets(exclude=SkySignature(k))``; :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
+        The responses come from the deflation's setup, which also adds the constraint to the column
+        constraints (:meth:`~selfcal.core.deflation.Deflation._exclude_signatures`): needs ``deflate``.
 
     Returns
     -------
@@ -1153,6 +1159,19 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             x0_compressed = None
 
         proj = None
+        sig = None
+        if signatures:
+            if deflate is None:
+                raise ValueError("Offsets(exclude=SkySignature(...)) needs Fit(deflate=Deflate(...)): the terms' responses "
+                                 "to the sky fields come from the deflation's setup")
+            if active_mask is not None:
+                cmap = np.full(len(active_mask), -1, dtype=np.int64)
+                cmap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
+            sig = []
+            for cols, k, name in signatures:
+                cols = np.asarray(cols, dtype=np.int64)
+                c = cols if active_mask is None else cmap[cols]
+                sig.append((c[c >= 0], int(k), str(name)))
         if exclusions:
             proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
             if x0_solver is not None:
@@ -1244,10 +1263,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 # the column constraints, which the operator and the solution must then apply.
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
-                                 sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj)
+                                 sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj,
+                                 signatures=sig)
                 if defl.projector is not proj:
                     proj = defl.projector
-                    logger.info(f"Column constraints with the degenerate directions: {proj}")
+                    logger.info(f"Column constraints with the deflation's additions: {proj}")
             if proj is not None:
                 op = proj.wrap(op0)
             _watch(op)
@@ -1336,8 +1356,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         return (x, record) if return_record else x
 
     # ---- Legacy path: A is a COO. apply_lsqr does the compaction itself.
-    if exclusions:
-        raise NotImplementedError('column constraints (exclusions) need the CSR or block system setup_lsqr builds, not the COO path')
+    if exclusions or signatures:
+        raise NotImplementedError('column constraints (exclusions, signatures) need the CSR or block system setup_lsqr builds, not the COO path')
     num_cols = A.shape[1]
 
     # --- Fused preprocessing: column elimination + float32 + preconditioning + CSR ---

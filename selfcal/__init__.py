@@ -58,7 +58,7 @@ _EXPORTS = {
     # the Python API
     **dict.fromkeys(('Config', 'ConfigError', 'by_value'), 'selfcal.config'),
     **dict.fromkeys(('Function', 'Variance', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
-                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
+                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'SkySignature', 'Layer', 'Derived', 'FrameFunction',
                      'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     'shot_noise': 'selfcal.models.noise',
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
@@ -137,6 +137,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
         Prior,
         Sky,
         SkyMap,
+        SkySignature,
         SolvedSky,
         catalog,
         continuum,

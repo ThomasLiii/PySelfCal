@@ -245,7 +245,10 @@ class OffsetTerm:
     ``exclude_degree`` / ``exclude_axis``: a hard constraint, the term has no
     polynomial of that degree along the axis (per line of the other axes, per
     group), imposed by reparametrisation in the solver
-    (:meth:`ModelSpec.column_exclusions`).
+    (:meth:`ModelSpec.column_exclusions`). ``signature_degree``: a hard
+    constraint, the term carries no part of its response to the sky
+    polynomials of degree 1 to that degree, computed from the system by the
+    deflation's setup (:meth:`ModelSpec.signature_exclusions`).
     ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
     the adjacency rows once per group instead of once per frame (exact; far
     fewer rows). ``render``: which of the instrument's offset renderers draws the
@@ -269,6 +272,7 @@ class OffsetTerm:
     exact_group_rows: bool = False
     exclude_degree: int | None = None
     exclude_axis: str | None = None
+    signature_degree: int | None = None
     render: str | None = None
     coefficient: object = None
     basis: object = None
@@ -296,6 +300,8 @@ class OffsetTerm:
                 raise ValueError("exclude_degree is at least 0")
             if self.kind == 'polybasis' or self.n_basis != 1:
                 raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
+        if self.signature_degree is not None and not 1 <= int(self.signature_degree) <= 2:
+            raise ValueError("signature_degree is 1 or 2 (the deflation's polynomial patterns go to degree 2)")
 
     @property
     def n_basis(self) -> int:
@@ -662,6 +668,19 @@ class ModelSpec:
                 P = np.linalg.qr(V)[0]
                 cols = base + (np.arange(n_groups, dtype=np.int64)[:, None] * n_chunks) + chunks[None, :]
                 out.append((cols, P))
+        return out
+
+    def signature_exclusions(self, layout) -> list:
+        """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
+        solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name), ...]`` with ``cols`` the term's
+        full-layout columns (every group, chunk and function) and ``k`` the largest degree of the sky polynomials
+        whose response the term may not carry. Empty without such terms."""
+        out = []
+        for m, term in enumerate(self.offset):
+            if term.signature_degree is None:
+                continue
+            cols = np.arange(int(layout.col_bases[m]), int(layout.col_bases[m + 1]), dtype=np.int64)
+            out.append((cols, int(term.signature_degree), term.name or term.map or 'primary'))
         return out
 
     def _offset_function(self, term, geom, catalog, known, log):

@@ -558,10 +558,15 @@ class Deflation:
     :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
 
     def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1,
-                 projector=None):
+                 projector=None, signatures=None):
         t0 = time.perf_counter()
         self.settings = settings
         self.exclusion_info = None                    # Deflate(exclude=): the degenerate directions excluded (record)
+        self.signature_info = None                    # Offsets(exclude=SkySignature): the terms constrained (record)
+        if signatures and getattr(settings, 'exclude', None) is not None:
+            raise ValueError("Offsets(exclude=SkySignature(...)) together with Deflate(exclude=Degenerate(...)) is not "
+                             "supported: the second re-bases the pattern space on sky constraints, the first constrains "
+                             "the offsets' response to it")
         m, n = int(storage.shape[0]), int(storage.shape[1])
         self.shape = (m, n)
         h, w = int(ref_shape[0]), int(ref_shape[1])
@@ -752,6 +757,8 @@ class Deflation:
             self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
                                                  np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
             del res
+            if signatures:
+                X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
             Z[:, n_sky_S:] = -X.T
             Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
             del G, R, X
@@ -994,6 +1001,73 @@ class Deflation:
             f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
             f"matrix {t_g:.1f} s of a thread's, with the reduction) + {t_pass2:.1f} s (chunks {st['work_thread_s']:.0f} thread-s over {st['work_wall_s']:.0f} s, "
             f"adds {st['add_thread_s']:.0f} thread-s over {st['add_wall_s']:.0f} s, {st['threads']} threads), blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
+
+    def _exclude_signatures(self, signatures, X, G, info, scale, n, n_sky_S, n_off):
+        """``Offsets(exclude=SkySignature(k))``: each named term may not carry its response to the sky polynomials of
+        degree 1 to k. ``X`` (``(n_off, patterns)``, solver coordinates) is the offsets' least-squares response to
+        every pattern; the polynomial patterns' responses restricted to a term are the term's signature of those
+        fields. The term's physical coefficients are made orthogonal to them (Euclidean over its unknowns): a
+        :class:`~selfcal.core.projector.ColumnProjector` group joins the column constraints (the solver's operator, its
+        start and the solution apply it). Every pattern's response is then solved again under the constraint, by its
+        Lagrange form (the constraint spans every frame, so it is not one more block of the block solve):
+        ``X_c = X - Y (C^T Y)^+ C^T X`` with ``Y = G^+ C`` (the same block solve, or its factorisation when the shared
+        offsets made one). Returns ``X_c``; the record keeps what was constrained (``signature_exclusions``)."""
+        from .projector import _DROP
+        cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+        basis = str(self.settings.basis)
+
+        def poly_degree(label):
+            """The total degree of a polynomial pattern ('<term>:Pa,c', or 'a,c' with the polynomial basis); None for a
+            cosine pattern."""
+            key = label.split(':', 1)[1]
+            if key.startswith('P'):
+                key = key[1:]
+            elif basis != 'polynomial':
+                return None
+            a, c = key.split(',')
+            return int(a) + int(c)
+
+        degrees = [poly_degree(lbl) for lbl in self.labels]
+        groups, cs, recs = [], [], []
+        for cols, degree, name in signatures:
+            cols = np.asarray(cols, dtype=np.int64)
+            sp = cm[cols]
+            ok = sp >= n_sky_S                                    # the term's unknowns in this space (with data)
+            cols, off = cols[ok], sp[ok] - n_sky_S
+            fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
+            if off.size == 0 or not fields:
+                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree})): "
+                                 + ("the term has no unknown with data" if off.size == 0 else
+                                    "the deflation has no polynomial pattern of degree 1 to that degree"))
+            m = np.ones(off.size) if scale is None else np.asarray(scale, dtype=np.float64)[cols]
+            A = (m * m)[:, None] * X[off][:, fields]              # (M C_phys) with C_phys = M X: (M C)^T y = C^T x = 0
+            U, sv, _ = np.linalg.svd(A, full_matrices=False)
+            keep = sv > _DROP * max(float(sv.max()), 1e-300)
+            U = np.ascontiguousarray(U[:, keep])
+            groups.append((cols[None, :], U[None, :, :]))
+            c = np.zeros((n_off, U.shape[1]))
+            c[off] = U
+            cs.append(c)
+            recs.append({'term': str(name), 'degree': int(degree), 'fields': [self.labels[i] for i in fields],
+                         'columns': int(off.size), 'directions': int(U.shape[1]),
+                         'singular_values': [float(v) for v in sv]})
+        C = np.concatenate(cs, axis=1)
+        Cp = C if self._proj_off is None else self._proj_off.apply(np.array(C, copy=True))
+        fac = info.get('factor')
+        Y = fac.solve(Cp, pool=self._pool)[0] if fac is not None else \
+            _block_pinv_solve(G, C, project=self._proj_off, pool=self._pool)[0]
+        lam = np.linalg.lstsq(C.T @ Y, C.T @ X, rcond=None)[0]
+        Xc = X - Y @ lam
+        held = float(np.abs(C.T @ Xc).max() / max(float(np.abs(Xc).max()), 1e-300))
+        groups0 = list(self._projector.groups) if self._projector is not None else []
+        self._projector = ColumnProjector(groups0 + groups)
+        for r in recs:
+            r['constraint_held'] = held
+        self.signature_info = recs
+        logger.info('Deflation: sky signatures excluded from ' + '; '.join(
+            f"{r['term']} ({r['columns']} unknowns, degree <= {r['degree']}: {r['directions']} directions)" for r in recs)
+            + f"; the patterns' responses solved under the constraint (|C^T X| / |X| = {held:.1e})")
+        return Xc
 
     def _offset_images(self, storage, Qh, n_sky_S, n_off):
         """``B_off^T B_sky Q`` for sky vectors ``Q`` ``(n_sky_S, q)`` (a single sky term, every row with one sky entry):
@@ -1376,7 +1450,7 @@ class Deflation:
     def summary(self) -> dict:
         """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
         st = self.settings
-        return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
+        out = {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
                 'kept': self.kept, 'gauges': self.gauges,
                 'seen': [float(v) for v in np.sort(self.seen)],
@@ -1396,6 +1470,9 @@ class Deflation:
                 'excluded_degenerate': self.exclusion_info,                                        # Deflate(exclude=): the selection, or None
                 'seen_constrained': None if self.exclusion_info is None else [float(v) for v in np.sort(self.seen_constrained)],
                 'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
+        if self.signature_info is not None:
+            out['signature_exclusions'] = self.signature_info                                      # Offsets(exclude=SkySignature): the terms constrained
+        return out
 
     def summary_json(self) -> str:
         return json.dumps(self.summary(), sort_keys=True)

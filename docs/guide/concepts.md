@@ -246,6 +246,24 @@ What each settles:
   moved far along weakly constrained directions, where the result then depends on the
   [warm start](glossary.md#warm-start).
 
+Hard constraints settle a direction without any row or weight, by removing it from the unknowns
+(a reparametrisation the solver applies at every iteration):
+
+- `sc.Offsets(exclude=sc.Poly(k, along=axis))`: the term carries no polynomial of degree `k` or less
+  along the chunk axis (for a pattern shared by every frame, the parts that duplicate per-frame
+  terms).
+- `sc.Offsets(exclude=sc.SkySignature(k))`: the term carries no part of its response to the smooth
+  sky fields, the polynomials of degree 1 to `k` on the sky grid. A sky plane appears in every frame
+  as a slope along each detector direction, so a per-frame slope term absorbs it nearly whole; the
+  plane's signature in the slopes follows each frame's pointing and orientation, which a slope of the
+  instrument does not. Without that part, the sky field is fitted by the sky. Whatever the true
+  per-frame slopes do hold along the signature (the gradient of a foreground fixed on the sky, say)
+  goes into the map as that field. The signature comes from the system itself (the deflation's
+  setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`.
+- `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
+  component along given (or automatically found) shapes; what the data place there goes to the
+  other terms.
+
 ### Comparing solutions
 
 Two solves that fit the data equally well can differ in their raw arrays along these directions.
