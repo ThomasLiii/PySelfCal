@@ -214,3 +214,89 @@ def test_a_frame_without_weighted_pixels_gets_zero_coadd_weight():
     assert np.all(w0 == 0)
     _, w1 = hook(ctx(np.ones((3, 3), np.float32)))
     assert np.allclose(w1, (1.0 + xx) ** 2)
+
+
+def _x_and_variance(det_x, variance):
+    """Two basis functions of a built-in variable and a layer."""
+    return [np.asarray(det_x, dtype=np.float64) - 3.0, np.sqrt(np.asarray(variance, dtype=np.float64))]
+
+
+def test_offset_hooks_evaluate_the_weighted_observations_only(tmp_path, monkeypatch):
+    """The mosaic's and the N-pass's offset hooks evaluate the offset terms at the observations that carry
+    weight: there the data come out bit for bit as from the evaluation at every pixel with a detector
+    position (each observation's value depends on itself alone), the other pixels keep their values, and
+    the hooks composed on one frame read its layers once."""
+    from selfcal.core.subframe import FrameContext
+    from selfcal.geometry.map_helper import compute_chunk_contrib
+    from selfcal.io import reproj
+    from selfcal.io.frames import standard_frame_path, write_frame
+    from selfcal.models.offset_model import Basis
+    from selfcal.models.sky_model import Coefficient
+    from selfcal.models.variables import VariableSet
+    from selfcal.npass.sky import OffsetModelSubtractor
+    from selfcal.pipeline import model_eval
+    from selfcal.pipeline.model_eval import (
+        BasisOffsetSubtractor,
+        ComposedHook,
+        ObservationWeight,
+        frame_observations,
+    )
+
+    rng = np.random.default_rng(3)
+    sh, sw, dh, dw = 9, 11, 6, 8                                             # the subframe, the detector
+    x, y = np.meshgrid(np.linspace(-0.6, dw - 0.4, sw), np.linspace(-0.7, dh - 0.3, sh))
+    mapping = np.stack([x, y]).astype(np.float32)
+    mapping[:, 0, :3] = np.nan                                               # pixels without a detector position
+    data = rng.standard_normal((sh, sw)).astype(np.float32)
+    weight = ((rng.random((sh, sw)) < 0.3) * 2.0).astype(np.float32)
+    variance = (rng.random((sh, sw)) + 0.5).astype(np.float32)
+    path = write_frame(standard_frame_path(str(tmp_path), 0, 0), data, [0, sh, 0, sw], mapping,
+                       layers={'variance': variance})
+    name = os.path.basename(path)
+    cm = np.arange(dh * dw).reshape(dh, dw) % 3                              # three chunks
+    basis = Basis(Coefficient(('det_x', 'variance'), _x_and_variance), 2)
+    a = rng.standard_normal((1, 3 * 2))                                      # one frame: 3 chunks x 2 coefficients
+    variables = VariableSet(layers=('variance',))
+
+    def ctx():
+        return FrameContext(stage='post', file=path, exp_idx=0, det_idx=0, ref_coords=[0, sh, 0, sw],
+                            sub_data=data.copy(), sub_weight=weight.copy(), sub_mapping=mapping)
+
+    def at_every_mapped_pixel(scalar):
+        # the hooks' evaluation before 2026-10-21: every pixel with a detector position
+        obs, interp = frame_observations(ctx(), 0, variables, det_shape=(dh, dw))
+        phi = np.asarray(basis.evaluate(obs), dtype=np.float64)
+        off = np.asarray(compute_chunk_contrib(cm, interp).T @ a[0].reshape(3, 2))
+        out = data.copy()
+        out[obs.pixels] -= np.nan_to_num((off * phi).sum(axis=1)).astype(np.float32)
+        if scalar is not None:
+            out[obs.pixels] -= np.float32(scalar)
+        return out
+
+    weighted = (weight > 0) & np.isfinite(mapping[0]) & np.isfinite(mapping[1])
+    assert 0 < weighted.sum() < np.isfinite(mapping[0]).sum()
+    mosaic_hook = object.__new__(BasisOffsetSubtractor)                     # the solved offsets set directly
+    mosaic_hook.terms, mosaic_hook.variables, mosaic_hook.oversample_factor = [(0, basis, cm)], variables, 1
+    mosaic_hook.rows, mosaic_hook.index, mosaic_hook.var_index = {0: a}, {name: 0}, {name: 0}
+    npass_hook = object.__new__(OffsetModelSubtractor)
+    npass_hook.terms, npass_hook.variables, npass_hook.oversample_factor = [(0, basis, cm)], variables, 1
+    npass_hook.rows, npass_hook.index, npass_hook.var_index = {0: a}, {name: 0}, {name: 0}
+    npass_hook.scalar = np.array([0.25])
+    for hook, scalar in ((mosaic_hook, None), (npass_hook, 0.25)):
+        ref = at_every_mapped_pixel(scalar)
+        out = hook(ctx())
+        assert out[weighted].tobytes() == ref[weighted].tobytes()
+        assert out[~weighted].tobytes() == data[~weighted].tobytes()
+
+    # one read of the layers for the hooks of one frame
+    calls = []
+    real = reproj.load_reproj_file
+
+    def counting(file, fields):
+        calls.append(tuple(fields))
+        return real(file, fields)
+
+    weight_hook = ObservationWeight(Coefficient('variance', np.reciprocal), variables, det_shape=(dh, dw))
+    monkeypatch.setattr(model_eval, 'load_reproj_file', counting)
+    ComposedHook([mosaic_hook, weight_hook])(ctx())
+    assert calls == [('layers/variance',)]
