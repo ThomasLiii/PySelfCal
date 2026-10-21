@@ -1,140 +1,129 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. The
+user's working rules and the index of the project's skills, for every tree under `~/selfcal-project`, are in
+`/home/thomasli/selfcal-project/CLAUDE.md` (outside the repository).
 
 ## Repo overview
 
-Two coupled efforts share this tree:
+`selfcal` is a sparse-LSQR self-calibration and mosaicking pipeline for SPHEREx (with Euclid helpers), driven by a
+Python API (`import selfcal as sc`). Read first:
 
-1. **`selfcal/` — the pipeline.** Sparse-LSQR self-calibration + mosaicking for SPHEREx (with Euclid helpers). Two reference docs:
-   - [selfcal/README.md](selfcal/README.md) — module-level **code architecture**: the data flow `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and design decisions (multi-chunk-map LSQR build, shared-memory worker hand-off, parallel SpMV `LinearOperator`, tight-bbox cache crops, zero-column elimination, etc.). Read this before touching anything in `selfcal/`.
-   - [PIPELINE.md](PIPELINE.md) — **operational runbook**: tuning knobs (`num_col`, `Offsets(smooth=)`, `Sky(damping=)`, adjacency axes, polynomial priors, by their Python names), advanced solve modes (`det_groups_list`, `det_templates`, `mean_offsets_list`, `use_per_frame_scalar`), the NVMe staging pattern, and the on-disk schemas of `cal_*.h5`, reprojected `*.h5`, and mosaic `*.fits`. Read this when running the pipeline or working with its outputs.
-2. **`analysis/analysis_script/` — diagnostics on the calibration outputs.** Loads the per-frame, per-chunk offset terms from `cal_*.h5` files via `zodi_utils.load_cal_offsets` (handles both legacy single-map and multi-chunk-map schemas) and characterizes the temporal/spatial structure (annual sine fits, residual scans, detector-fixed pattern extraction, raw-stack verification, etc.). This is where most ad-hoc plotting and analysis lives.
-
-The pipeline emits `cal_Detector{D}_NumSub10_NumCh34_NumCol{C}_Ch{ch}{suffix}.h5` files; the analysis scripts consume them.
+- [selfcal/README.md](selfcal/README.md): the module-level **code architecture**. It covers the data flow
+  `FITS → reprojected/*.h5 → cal_*.h5 → mosaic_*.fits`, what each submodule does, and the design decisions. Read it
+  before touching `selfcal/`.
+- [PIPELINE.md](PIPELINE.md): the **operational runbook**. It covers:
+  - the tuning knobs, by their Python names;
+  - the advanced solve modes;
+  - NVMe staging;
+  - the on-disk schemas of `cal_*.h5`, reprojected `*.h5`, mosaic `*.fits` and the product sidecars.
+- The documentation site, https://thomasliii.github.io/PySelfCal/ (sources in `docs/`). Its main pages are the Python
+  API guide `docs/guide/python-api.md`, `docs/bring_your_own_telescope.md` and
+  `docs/developer/{settings,testing,documentation}.md`.
 
 ## Layout
 
 | Dir | What's there |
 | --- | --- |
-| `selfcal/` | Installed library package: `pipeline/` (pipeline_wrapper, tiled, model_eval), `npass/` (the N-pass passes: sky, offsets, passes), `core/` (lsqr split into assembly/system/solve, coadd, subframe, solution, layout), `models/` (spec, variables, priors, sky_model, profiles, offset_model, offset_structure), `geometry/`, `io/` (frames = exposure-reader + frame-file contracts, reprojection, calfile), `instruments/` (the `sc.Instrument` contract, camera, spherex, euclid), `run/` (the Python API's actions and the run engine, below), `zodi_anchor`. Every function of the model (sky coefficients, offset bases, weights, groupings, priors) reads named per-observation **data variables** from pluggable sources (detector maps, per-frame values, sky maps, stored layers, functions) — a new telescope or model is high-level functions, never a core edit; see [docs/bring_your_own_telescope.md](docs/bring_your_own_telescope.md) and the worked examples in `tests/test_any_telescope.py`. See [selfcal/README.md](selfcal/README.md). |
-| `selfcal_scripts/recipes/` + `runs/` + `run.sh` + `launch/` | **Runs.** `recipes/` = the campaigns' shared Python settings (`site.py`: this box's OUTPUTS / NVME / `ORCA` Compute; `spherex.py`: fields `nep(d)`/`sep(d)`/`nep_qr2(d)`, recipes `CHANNEL_MAPS` (the fiducial channel maps since 2026-10-14 = `SLOPE_GAUGE`, the transfer-function recipe on 17 channels x 1 column, plus the wavelength maps), `SLOPE_GAUGE`, `SLOPE_GAUGE_VARWEIGHT` (= `SLOPE_GAUGE` weighted by the frames' `variance` layer, the L2b VARIANCE; 2026-10-15), `NUMCOL3` / `POLY_K1` (earlier fiducials), `multiline3(...)`, `pahfit_tiled(...)`, `MULTILINE3_PASSES`, tilings). `runs/<name>.py` = one run script per run (FIELD/RECIPE/RUN at top level; `channel_maps.py` = the fiducial channel maps, FIELDS D1-D6, all channels but Ch9 (96 maps; Ch9 = the TF campaign's delivered maps, see `workspace/DATA_LOCATIONS.md`)). `./selfcal_scripts/run.sh selfcal_scripts/runs/<name>.py` (`--dry-run` = `selfcal plan`), or a launcher: `launch/channel_maps.sh [detectors]`, `multiline_nep.sh` / `multiline_sep.sh` (the tiled multi-line PAH fits), `precompute.sh`, `reproject_d4.sh`. **TOML run configs are not run any more** (user, 2026-10-07: "I don't think we need to support toml anymore"); the shipped `configs/*.toml`, gate TOMLs, quickstart TOMLs and the transfer-function TOML launcher are in git history; `selfcal convert x.toml` writes a run script, no longer checked against a TOML engine (the checked converter is commit `d288f02`); see [docs/guide/migrating-from-toml.md](docs/guide/migrating-from-toml.md). Workspace TOMLs (user's scope): converted (checked) = transfer-function, survey-expansion and `selfcal-euclid/workspace/euclid-nep-mosaic` only; skipped = numcol3-recipe, spectral-pah-fit, pah-4comp-vs-5comp, spectral-npass (and the custom-mode folders); workspace scripts that use the TOML machinery are NOT ported (listed in the note); see `/home/thomasli/selfcal-project/workspace/TOML_TO_PYTHON.md`. |
-| `selfcal/run/` | The Python API's actions and settings (`field.py`, `recipe.py`, `schedule.py`, `compute.py`, `plan.py`, `records.py`, `products.py`, `result.py`, `convert.py`; with `selfcal/config/` (the settings base), `selfcal/models/model.py`, `selfcal/instruments/{contract,camera}.py`, `spherex/settings.py`, `euclid/settings.py`) and the run engine (instrument- and model-agnostic): `lower.py` resolves Field + Recipe + jobs + options into one `RunSpec` per job group (`runspec.py`: the library keywords written out, frames, scratch, tiling, passes — the engine reads nothing else), `engine.py` (`RunContext` = the run resolved once: the geometry (`instrument_geometry`: built once per action; the built-in instruments' (`geometry_is_pure`) kept between actions, last 2), the `ModelSpec`, the per-term `sky_damping`, ALL product names, and the methods the old CalModes provided — `offset_model`, `sky_model`, `variables`, `weight`, `priors`, `x0`, `clip_group_edges`; `RunContext.derive` for the N-pass INIT; the two primitives `solve_job` / `mosaic_job`; tiling helpers), `pipelines.py` (tasks: `cal` — per job, tiled with `tiles=`; `mosaic` — of an existing cal; `npass`; `reproject`), `npass.py` (the **N-pass alternating solve**'s schedule over the engine: INIT = the `cal` task, then exact SKY / OFFSET passes, whatever per-frame offset terms the model has; neither pass builds the matrix (SKY: `setup_lsqr(moments_only=True)`, OFFSET: each frame's normal equations via `setup_lsqr(reduce=...)`, solved directly); `n = 1` is byte-equal to `cal`; the passes in `selfcal/npass/`; see PIPELINE.md), `staging.py` (NVMe staging + RSS guardrail). The engine calls the instrument only through `sc.Instrument` (`selfcal/instruments/contract.py`), which `sc.SPHEREx`, `sc.Euclid`, `sc.Camera` implement themselves; the job type is `sc.Job` (`contract.py`); the geometry types (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`) stay in `selfcal/instruments/base.py`. No registry, no entry points, no modes. |
-| `selfcal_scripts/line_templates/` | `build_line_template.py`: builds the shipped line templates (`selfcal/instruments/spherex/data/line_templates/*.npz`: an intrinsic profile convolved with the measured LVF response; imports `lvf_response` from the `/home/thomasli/spherex/SPHEREx_Spectral_Calibration` checkout). Rerun only to regenerate or add a template. (`selfcal_scripts/drivers/` is gone: its per-variant `run_cal*.py` / `run_reproject.py` / `precompute_lvf_params.py` / `chunked_NEP/` drivers were replaced by run scripts (git history preserves them), and `diff_cal_h5.py` moved to `gates/`.) |
-| `selfcal_scripts/gates/` | The byte-equality gate set, in Python (`python_gates.py`, this box's paths): `run_gates.sh <tag> [gate ...]` runs pytest, then the gates against the float64 goldens (`*golden_f64*`: continuum + spectral cal; the e2e D3 Ch17 cal + full mosaic; the npass n=3 probe; the Euclid EDFN recipe; rerun of the continuum record; default: all but m13), `run_m13_gate.sh <tag>` (= `run_gates.sh <tag> m13`: npass n=1 on the NEP M13 tile), `make_goldens.sh` (goldens from the Python gates of a committed tree), `config_equivalence.py views|compare-views` (engine views of every run script, no solve), `h5_diff.py` / `fits_diff.py`, `diff_cal_h5.py` (schema-aware cal diff: a legacy single-offset cal against a multi-map one). See its README. |
-| `selfcal_scripts/zodi_anchor/` | Post-hoc zodi anchor. **Non-mutating**: cal/mosaic stay pristine; the fit lands in a per-detector anchor file `<run>/zodi_anchor/anchor_D{N}.h5` and is applied at read time. `build_predictions*` (zodipy → `zodi_preds/*.npz`), `build_anchor.py` (per-channel fit → anchor file; in a run script `spherex.zodi_anchor(result, predictions)` does the same after `field.calibrate`), `smooth_anchor.py`, `materialize_anchored_mosaic.py`, `revert_anchor.py` (historical undo of legacy in-place anchoring). The `diag_*` plots and prototypes are archived (gitignored `archive/scripts/zodi_anchor/`). See [`selfcal_scripts/zodi_anchor/README.md`](selfcal_scripts/zodi_anchor/README.md). Core math + anchor-file I/O + consumer in `selfcal/zodi_anchor.py` (`fit_anchor_for_channel`, `write_anchor`/`append_anchor_channel`, `Anchor`/`load_anchor`). |
-| `selfcal/instruments/spherex/data/lvf_params/` | Cached LVF params, `lvf_params_D{1..6}.npy` (shipped as package data); regenerated by `spherex.precompute_lvf(...)` (`selfcal_scripts/runs/precompute.py`). Path is resolved package-relative by `selfcal.instruments.spherex.spherex_utility.load_lvf_params` (override with `$SELFCAL_LVF_PARAMS_DIR`). |
-| `analysis/analysis_script/` | Canonical analysis: `meeting_plots.py`, `verify_stack.py` (deliverables), their cache builders `build_multichannel_cache.py` / `build_perchunk_coords.py`, the cross-channel plot helpers `plot_d5_ch3_*.py`, and the shared `zodi_utils.py`. Historical one-offs are in `archive/analysis_script/` (see below). |
-| `docs/` + `mkdocs.yml` | The documentation site (MkDocs Material + mkdocstrings): native pages in `docs/`, the API reference generated per module from the docstrings of `selfcal` and `selfcal.run`, and the guides that live next to the code (`PIPELINE.md`, the package, gates, zodi-anchor and transfer-function READMEs) imported in place by `docs/scripts/gen_pages.py`, which rewrites their relative links. `docs/scripts/griffe_rst.py` renders the docstrings' Sphinx roles as links. Docstring first sentences appear alone in summary tables. See `docs/developer/documentation.md`. |
-| `notebooks/` | `spherex_selfcal_demo.ipynb` (working demo) and `euclid_mosaic.ipynb`. Older notebooks in `archive/notebooks/`. |
-| `cache/` | Gitignored. Caches written by drivers + helpers: `cache/zodi_anchor/metadata_D{N}.h5` (zodi prediction metadata cache, path set by `DEFAULT_METADATA_CACHE_TEMPLATE` in `zodi_anchor/build_predictions.py`), `cache/reproj_nvme_*` (NVMe staging copies), plus mosaic intermediate caches. |
-| `figures/` | Gitignored. Subdirs only: `benchmark/`, `cc_figure/`, `mosaics/`, `zodi_frames/`, `zodi_anchor/`, `misc/` (catch-all for top-level renders). |
-| `archive/` | Gitignored top-level archive. Subdirs only: `analysis_top_level/` (stale `analysis/` notebooks/lists + `fit_params_with_scatter_n*.json`), `analysis_script/` (one-off analysis scripts: task1-4, plot_grad_*, plot_clean_spatial, plot_numcol_*, meeting_plots_by_lat, analyze_zodi_spatial, build_metadata, plot_chunkmap), `notebooks/` (older demos). Ignore unless asked. |
-| `workspace/` | Gitignored. Per-session subdirs (`workspace/<slug>/`) holding scripts, figures, reports, caches, and rerun logs for ongoing analysis / experiment work. Convention: `workspace/<slug>/{brief.md, report.md, scripts, figures/, cache/, logs/, ...}`. See `workspace/README.md`. **`workspace/DATA_LOCATIONS.md` tracks where every input and output data set lives** (raw exposures, calibration files, reprojected frames, every product set and the current deliverables, fixtures): read it to find data, and update it whenever products are made, delivered, moved or deleted. |
-| `TODO.md` | Gitignored. Scratch todo list / planning notes (root-level). Use for ephemeral planning; substantive design docs go in `workspace/<slug>/`. |
+| `selfcal/` | The package. `run/` holds the API's actions (`field.py`, `recipe.py`, `compute.py`, `plan.py`, `records.py`, `products.py`) and the run engine (`lower.py` → `runspec.py` → `engine.py`, plus `pipelines.py`, `npass.py`, `staging.py`). Also `npass/`, `core/` (assembly, solve, coadd, gauge, deflation), `models/`, `geometry/`, `io/` (frames, reprojection, `calfile.CalFile`), `instruments/` (the `sc.Instrument` contract, `camera`, `spherex/`, `euclid/`), `config/` (the settings base) and `zodi_anchor`. See [selfcal/README.md](selfcal/README.md). |
+| `selfcal_scripts/recipes/` | The campaigns' shared settings. `site.py` is this machine (`OUTPUTS`, `NVME`, `ORCA`). `spherex.py` holds the fields `nep(d)` / `sep(d)` / `nep_qr2(d)` and the recipes: `CHANNEL_MAPS`, `SLOPE_GAUGE`, `SLOPE_GAUGE_VARWEIGHT` (weighted by the frames' `variance` layer), `SLOPE_GAUGE_COLUMNS` / `SLOPE_GAUGE_VARWEIGHT_COLUMNS` (plus per-column constants shared by every frame), `NUMCOL3`, `POLY_K1`, `multiline3(...)`, ... |
+| `selfcal_scripts/runs/`, `launch/`, `run.sh` | One run script per run, with `FIELD`/`FIELDS`, `RECIPE` and `RUN` (or `REPROJECT`) at top level. They include the fiducial channel maps (`channel_maps.py`), the NEP/SEP multi-line fits, the reprojections, `precompute.py`, and the tool `expand_field.py`. `launch/<run>.sh` runs `run.sh` on its run script. |
+| `selfcal_scripts/gates/` | The byte-equality gates (`run_gates.sh <tag>`, `make_goldens.sh`, `python_gates.py`), the engine views (`config_equivalence.py`) and the diff tools ([README](selfcal_scripts/gates/README.md)). |
+| `selfcal_scripts/zodi_anchor/` | The post-hoc zodi anchor. It is non-mutating: anchor files are applied at read time (`selfcal/zodi_anchor.py`) ([README](selfcal_scripts/zodi_anchor/README.md)). |
+| `selfcal_scripts/transfer_function/` | The transfer-function kit for collaborators ([README](selfcal_scripts/transfer_function/README.md)). |
+| `selfcal_scripts/line_templates/` | `build_line_template.py`, which regenerates the shipped line templates. |
+| `selfcal/instruments/spherex/data/` | Shipped SPHEREx data: the LVF params `lvf_params_D{1..6}.npy` (override with `$SELFCAL_LVF_PARAMS_DIR`; regenerate with `runs/precompute.py`), the channel table, the line templates. |
+| `docs/` + `mkdocs.yml` | The documentation site (MkDocs Material + mkdocstrings). The guides that live next to the code are imported in place by `docs/scripts/gen_pages.py` (`docs/developer/documentation.md`). |
+| `tests/` | The pytest suite: self-contained (no `/mnt`), about 14 minutes. |
+| `notebooks/`, `examples/` | `spherex_selfcal_demo.ipynb`, `euclid_mosaic.ipynb`; `examples/quickstart/`. |
+| `analysis/analysis_script/` | The 2026-05 analyses of the offset terms (`meeting_plots.py`, `verify_stack.py`, `zodi_utils.py`, `multiline/`). Not active since 2026-10. `zodi_utils.CAL_FILE_TEMPLATE` points at the QR2 NumCol3 cals. Archived one-offs (`archive/analysis_script/`) run with `PYTHONPATH=analysis/analysis_script`. |
+| `cache/`, `figures/`, `archive/` | Gitignored: scratch and NVMe staging (`cache/reproj_nvme_*`), old renders, old scripts. |
+| `workspace/` | Gitignored link to the shared `/home/thomasli/selfcal-project/workspace`, one `workspace/<slug>/` per effort (`brief.md`, `report.md`, `scripts/`, `figures/`, `logs/`; `workspace/README.md`). **`workspace/DATA_LOCATIONS.md` tracks every data set.** Read it to find data, and update it whenever products are made, delivered, moved or deleted. |
+| `TODO.md` | Gitignored scratch notes. |
 
-Pipeline outputs are *not* in this repo — they live under `/mnt/md124/thomasli/selfcal/outputs/{run_name}/calibration/` (path is hard-coded in `analysis/analysis_script/zodi_utils.py:CAL_OUTPUT_BASE`).
+Pipeline outputs are not in the repository. They live in
+`/mnt/md124/thomasli/selfcal/outputs/<field>/{ref.fits, reprojected/, calibration/, mosaic/, records/, logs/}`, and
+`/data3` is a symlink to `/mnt/md124`. Never `git add` a `cal_*.h5` or any other product.
 
 ## Common commands
 
-Install editable: `pip install -e .` (uses `pyproject.toml`; package is `selfcal`); `pip install -e ".[docs]"` adds the documentation toolchain.
-
-Docs: `mkdocs serve` (live preview) or `DISABLE_MKDOCS_2_WARNING=true mkdocs build --strict` (what CI runs; fails on a broken link, a missing anchor or an unresolved cross-reference in a page or a docstring). Published to https://thomasliii.github.io/PySelfCal/ by `.github/workflows/docs.yml` on every push to `main`.
-
-**The Python API** (`import selfcal as sc`; guide `docs/guide/python-api.md`): a run is a Python script —
-`sc.Field(path, instrument, pixel_scale, compute=sc.Compute(scratch, workers=))` + `field.reproject(...)` /
-`field.plan(recipe, jobs=)` / `field.calibrate(recipe, jobs=, tiles=, passes=, frames=)` / `field.mosaic(...)`;
-`sc.Recipe(model, fit=sc.Fit(), coadd=sc.Coadd(), numerics=sc.Numerics(), name=<suffix>)`; models
-`sc.continuum()`, `sc.spectral(lines, polynomial=sc.Poly(2, window=range(lo, hi + 1)))` or `sc.Model(sky=[sc.Sky(...)],
-offsets=[sc.Offsets(...)])`; instruments `sc.SPHEREx(d)` (jobs `spherex.channel(17)`, `.channels(1, 34)`,
-`.window(name, subchannels=range(...))`), `sc.Euclid()`, `sc.Camera(shape, chunks=)`. Settings are frozen
-dataclasses checked when built (`selfcal.config.base.Config`); an action lowers them to the engine's `RunSpec`
-(`selfcal/run/lower.py`, `runspec.py`). A setting added to a fingerprinted class is declared `added(default, since=...)`
-so existing products keep their fingerprints (`tests/test_fingerprints.py`; `docs/developer/settings.md`). Work goes under
-`if __name__ == "__main__":` (forkserver workers re-import the script) and functions must be importable
-(module-level `def`; notebook cells: `sc.by_value(fn)`); every action plans first, pins the BLAS threads, and writes
-`<field>/records/*.json` + one log per script process. Every product is written atomically and gets a sidecar
-`<product>.json` (its inputs + fingerprint, `selfcal/run/products.py`): an existing product is reused only when
-current, refused when made by other inputs or unrecorded (TOML-made products: `field.adopt(recipe, jobs=)` / `selfcal adopt`), remade with
-`overwrite=True`. `sc.rerun(record)`, `sc.compare(a, b)`, `field.submit(...)` (detached), `sc.Tuning` (byte-neutral
-SELFCAL_* knobs in `Compute`), `Numerics.rmatvec_threads`. CLI: `selfcal run|plan|adopt|convert|rerun|compare`
-(`plan`/`adopt` read a run script's FIELD (or FIELDS), RECIPE, RUN). `selfcal_scripts/gates/python_gates.py` is the
-gate set in Python.
-
-Pipeline runs are Python run scripts (`selfcal_scripts/runs/`):
-
 ```bash
-./selfcal_scripts/run.sh selfcal_scripts/runs/channel_maps.py              # or any run script; launch/<run>.sh too
-./selfcal_scripts/run.sh selfcal_scripts/runs/channel_maps.py --dry-run    # the plan: products made/reused/refused
-selfcal adopt selfcal_scripts/runs/<name>.py                               # record TOML-made products (checked)
-selfcal convert old_run.toml                                               # an old TOML config -> old_run.py (unchecked)
+pip install -e ".[docs,dev]"                                        # editable install with the docs and test tools
+./selfcal_scripts/run.sh selfcal_scripts/runs/<name>.py [args]      # a run (or selfcal_scripts/launch/<name>.sh)
+./selfcal_scripts/run.sh selfcal_scripts/runs/<name>.py --dry-run   # its plan: products made / reused / refused
+selfcal plan|run|adopt|rerun|compare|convert ...                    # the CLI (plan/adopt read FIELD(S), RECIPE, RUN)
+pytest                                                              # the test suite
+selfcal_scripts/gates/run_gates.sh <tag>                            # pytest + the default gates, once before a merge
+DISABLE_MKDOCS_2_WARNING=true mkdocs build --strict -d <scratch>    # the docs build CI runs (site/ is not ignored)
 ```
 
-A run script builds an **instrument** (`sc.SPHEREx(d)`, `sc.Euclid(...)`, `sc.Camera(...)` or an `sc.Instrument` subclass; SPHEREx specifics — LVF stripped maps, the (subchannel, column) chunk axes, BC/BW wavelength maps, the arc renderer, the FINAST filter, `precompute_lvf`, `zodi_anchor` — live in `selfcal/instruments/spherex/settings.py`, nowhere in the generic engine), a **recipe** (`sc.Recipe(model, fit=, coadd=, numerics=, name=)`) and calls an **action** (`field.reproject` / `calibrate` (`tiles=`, `passes=`) / `mosaic`). `selfcal run` (and `run.sh`) pins `OMP/MKL/OPENBLAS_NUM_THREADS=1` before numpy is imported, and every action pins them too (the in-process LSQR threadpool is the only parallelism). **Adding a calibration variant = an `sc.Model` (or a function returning one, like the presets `sc.continuum` / `sc.spectral` / `sc.two_block`); adding a telescope = an `sc.Camera(...)` or one `sc.Instrument` subclass** — neither touches the engine, and nothing is registered. Removed with TOML (2026-10-07; not to be offered as available): the `mask_bright_pixels` / `postprocess` hook, `apply_lsqr(resume=, keep_state=)`, `make_mosaic(preprocess_func=)`, the `compact_zero_columns` switch, tiling `frame_glob` / `line`, the reprojection extension overrides, `inner_parallel` / `header_filter_workers`, the global `damp_offset`, the legacy outlier / `spectral_fit` aliases, `[zodi]`, `[hooks]` names, plugin instruments by name, custom modes. Tuning knobs in [PIPELINE.md](PIPELINE.md).
+Machine settings (`sc.Compute`: workers, staging) never change a product's bytes. The `sc.Numerics()` defaults
+(48 threads, batch 50) are the 2026-05 tuning, and a recipe can set its own: the fiducial uses
+`Numerics(30, batch=40)`. Tuning notes are in PIPELINE.md.
 
-**Production defaults (tuned 2026-05)**: `sc.Compute(workers=48)`, `sc.Numerics(threads=48, batch=50, mosaic_batch=50, coadd_batch=50)` (the library's `max_workers`, `n_threads`, `batch_size`, `cache_batch_size`, `coadd_batch_size`); `sc.Numerics()`'s defaults are these. On a 192-physical / 384-logical-core box, this is ~15% faster than the prior 32/20/30 defaults; the sweet spot is below the physical-core count because each `setup_lsqr` / coadd pass spawns a fresh worker pool, and at very large worker counts the per-pool spawn time eats the parallelism gain. (The 2026-09 coadd engine is cheap enough per frame that the mosaic passes scale to 96 workers; see `workspace/_archived_reports/coaddopt/report.md`.) Full sweep + analysis: `figures/benchmark/d3_ch17_tuning_sweep.md` (gitignored).
+## The Python API, in short
 
-Analysis runs, all from `analysis/analysis_script/`:
+A run is a Python script: `sc.Field(path, instrument, pixel_scale, compute=sc.Compute(scratch, workers=))` and
+its actions: `field.reproject(...)`, `field.plan(recipe, jobs=)`, `field.calibrate(recipe, jobs=, tiles=, passes=,
+frames=)`, `field.mosaic(...)` and `field.submit(...)` (detached).
+- **Recipes:** `sc.Recipe(model, fit=sc.Fit(), coadd=sc.Coadd(), numerics=sc.Numerics(), name=<suffix>)`.
+- **Models:** `sc.continuum()`, `sc.spectral(lines, polynomial=sc.Poly(...))`, or
+  `sc.Model(sky=[sc.Sky(...)], offsets=[sc.Offsets(...)])`.
+- **Instruments:** `sc.SPHEREx(d)` (jobs `spherex.channel(17)`, `.channels(1, 34)`, `.window(name, subchannels=...)`),
+  `sc.Euclid()`, `sc.Camera(shape, chunks=)`.
 
-```bash
-# One-off per detector D ∈ {1,2,3,4,5}, in dependency order:
-python build_multichannel_cache.py --detector D     # ~3 min, FITS header reads, writes cache/multichannel_det{D}.pkl
-python build_perchunk_coords.py --detector D        # ~3 min, WCS + ecliptic geometry per (exp, chunk)
-python meeting_plots.py --detector D                # ~50 s, fig1/2/3 + cache/meeting_det{D}_per_chunk_fits.npz
-python verify_stack.py --detector D --n-frames N    # ~5 min for full stack; --reuse-cache to re-render
+The guide is `docs/guide/python-api.md`. Every change keeps these contracts:
 
-# Re-running the figure with a cached stack/fits costs seconds; the heavy
-# step is only the FITS reads.
-```
+- **Work goes under `if __name__ == "__main__":`, and functions must be importable** (module-level `def`), because
+  forkserver workers re-import the script. Notebook cells use `sc.by_value(fn)`.
+- **Every action plans first and pins the BLAS threads.** `run.sh` and `selfcal run` set
+  `OMP/MKL/OPENBLAS_NUM_THREADS=1` before numpy loads. Every action writes `<field>/records/*.json` and one log per
+  process.
+- **Products are written atomically, each with a sidecar `<product>.json`** (its inputs and fingerprint,
+  `selfcal/run/products.py`). A product is reused only when current, and refused when made by other inputs or
+  unrecorded; `field.adopt` / `selfcal adopt` records TOML-made ones. `overwrite=True` remakes it.
+- **Settings are frozen dataclasses checked when built** (`selfcal.config.base.Config`). A new field on a fingerprinted
+  class is declared `added(default, since=...)`, so existing products keep their fingerprints
+  (`tests/test_fingerprints.py`, `docs/developer/settings.md`).
+- **A new calibration variant is an `sc.Model`, and a new telescope an `sc.Camera(...)` or an `sc.Instrument`
+  subclass.** A variant can also be a function returning a model, like `sc.continuum`, `sc.spectral` or
+  `sc.two_block`. Neither touches the engine, and nothing is registered.
+  - Instrument specifics live in `selfcal/instruments/<name>/` (SPHEREx: `spherex/settings.py`).
+  - The engine reaches the instrument only through `sc.Instrument` (`selfcal/instruments/contract.py`).
+- **The library, the gates and the tests never read or write `workspace/`.**
+- **TOML run configs are gone** (2026-10-07). `selfcal convert x.toml` writes a run script, unchecked. What was removed
+  with TOML is listed in `docs/guide/migrating-from-toml.md` and `workspace/TOML_TO_PYTHON.md`.
 
-Archived analysis scripts (in `archive/analysis_script/`) all do `from zodi_utils import ...`. To run one, prepend `PYTHONPATH` so Python finds the shared `zodi_utils.py` from its new directory:
-```bash
-PYTHONPATH=analysis/analysis_script python archive/analysis_script/<script>.py
-```
+## Recipes and products
 
-`tests/` is the pytest suite (self-contained, no `/mnt` dependency; run with `pytest`, a few minutes). GitHub Actions CI (`.github/workflows/ci.yml`) runs it on Python 3.11 and 3.12 together with the strict docs build; ruff and mypy run there advisory (not blocking). Regression for the pipeline is the byte-equality gate set in `selfcal_scripts/gates/` (`run_gates.sh <tag>`: pytest, then the Python gates of `python_gates.py` against the float64 goldens — continuum + spectral cal, the e2e D3 Ch17 cal + full mosaic, the npass n=3 probe, the Euclid EDFN recipe, the rerun of the continuum record; `run_m13_gate.sh` = `run_gates.sh <tag> m13`: npass n=1 on the NEP M13 tile; `config_equivalence.py views` / `compare-views`: what the engine does with every run script, no solve) + `selfcal_scripts/gates/diff_cal_h5.py` (element-wise dataset diff, schema-aware). Since the deterministic moment folds (2026-09-28) every product is byte-reproducible run to run; the coadd is deterministic since the 2026-09 engine (maps depend only on the frames and the batch sizes).
+- **Recipes:** `selfcal_scripts/recipes/spherex.py` holds every campaign's recipe. Read the current one there, because
+  it changes with the work. The fiducial channel maps are `CHANNEL_MAPS` (`SLOPE_GAUGE` plus the wavelength maps) on
+  17 channels x 1 column. Production runs 17x1 or 34x1, as the recipe says.
+- **Names:** `cal_Detector{D}_NumSub10_NumCh{17|34}_NumCol{C}_<job>_<recipe name>.h5`, and `mosaic_<same>.fits`.
+- **SPHEREx chunk ids:** `subchannel * num_col + column`, with `num_sub * num_ch + 2` subchannels. The first and the
+  last lie beyond the band's edges (`make_stripped_chunk_map`).
+- **Reproducibility:** every product is byte-reproducible run to run. The moment folds are deterministic since
+  2026-09-28, and the coadd depends only on the frames and the batch sizes.
 
-For SelfCal-pipeline tuning, advanced solve modes, the NVMe staging pattern, and the on-disk schemas of the cal / reprojected / mosaic files, see [PIPELINE.md](PIPELINE.md). For module-level code architecture, see [selfcal/README.md](selfcal/README.md).
+## Regression
 
-## How `analysis/analysis_script/` is wired
+- **The test suite:** `tests/`. CI (`.github/workflows/ci.yml`) runs it on Python 3.11 and 3.12, with the strict docs
+  build; ruff and mypy run advisory.
+- **The gates:** `run_gates.sh <tag>` runs pytest and the default byte-equality gates against the float64 goldens
+  (`selfcal_scripts/gates/README.md`).
+  - A change to code that no gate covers adds a short gate.
+  - Goldens are remade only for an intended numerical change, with `make_goldens.sh` from a committed tree.
 
-All analysis scripts share `zodi_utils.py`:
+## Trees and environments
 
-- `cal_path(detector, channel)` → the `cal_*.h5` calibration file (lives off-tree under `/mnt/md124/...`).
-- `load_cal_offsets(path_or_file)` → `{m: offset_m}` dict; handles both legacy top-level `offset` and new `offsets/map_m` schemas, folds `frame_scalar` into map 0 for legacy-compatible subtraction semantics.
-- `data_path(name)` → `analysis/analysis_script/cache/<name>` for `.pkl` / `.npz` caches.
-- `fig_path(name)` → `analysis/analysis_script/figures/<name>` for plots.
-- `sine_model`, `fit_sine` (frequency fixed at `1/SIDEREAL_YEAR_DAYS`), `compute_ecliptic_geometry`.
+- `~/selfcal-project/selfcal/`: the main worktree, branch `main`, env `selfcal` (which has pytest and the docs tools).
+  Feature branches are made here.
+- `~/selfcal-project/selfcal-stable/`: branch `stable`, env `selfcal-stable` (the analysis env). It is advanced only
+  deliberately.
+- The other worktrees (`git worktree list`) hold long-lived branches, and all share `.git`. The env `selfcal-memopt`
+  imports the `selfcal-memopt` tree.
 
-Per-detector cache files used by most scripts:
+## Quirks
 
-- `cache/multichannel_det{D}.pkl` — long-format DataFrame, one row per (exposure, channel), with MJD, ecliptic/sun geometry, per-column means.
-- `cache/perchunk_coords_det{D}.npz` — `(n_exp, n_chunks)` arrays of `helio_lon`, `elongation`, `mjd`. Optional but enables per-chunk residual scans in `meeting_plots.py` fig 2; the script falls back to per-exposure central pointing if missing.
-- `cache/detector_templates_det{D}.pkl` — per-channel `(342, 3)` mean-removed offset templates.
-- `cache/meeting_det{D}_per_chunk_fits.npz` — output of `meeting_plots.py`; `verify_stack.py` reads its `D` array to set the diverging-colour vmax in panel (b) so the two scripts use the same scale.
-
-`meeting_plots.py` and `verify_stack.py` are the canonical "deliverable" scripts for the current meeting set. Older one-off analyses (`task1`–`task4`, `plot_grad_*`, `plot_clean_spatial.py`, `plot_numcol_*`, `meeting_plots_by_lat.py`, `analyze_zodi_spatial.py`, `build_metadata.py`, `plot_chunkmap.py`) live in `archive/analysis_script/` — see the `PYTHONPATH` note above for re-running them.
-
-## Key conventions inside the analysis code
-
-- **Chunk indexing.** With `NUM_SUB=10`, `NUM_CH=34`, `NUM_COL=3`, `TOT_SUB = 10*34 + 2 = 342` (the +2 are the above-first / below-last padding subchannels). Chunk id = `subchannel * NUM_COL + column`, total `342 * 3 = 1026` chunks per detector. (Production now also runs at `NumCol=10` for higher spatial resolution — total `342 * 10 = 3420` chunks.)
-- **Padded vs unpadded subchannels.** `make_stripped_chunk_valid_mask(..., subchannel_padding=0)` returns the strict per-channel valid set; `padding=1` extends it by one subchannel each side so adjacent channels overlap (used for stitching in `meeting_plots.py`).
-- **Smooth chunk boundaries.** The chunk map is built from circular arcs `y = -sqrt(R² − (x − xc)²) + yc` with `(xc, yc)` and `R[i]` from `lvf_params` (`r_edges` returned by `make_stripped_chunk_map`). Plot scripts that overlay chunk geometry (`plot_chunkmap.py`) draw these analytic arcs rather than per-pixel jagged edges.
-- **Reverse-rendering chunk values to the detector grid.** `make_spherex_stripped_offset_map` runs a mean-preserving 2-D spline (`x_degree=3`, `y_degree=3`) over `(r_edges, x_edges)`. Both `meeting_plots.py` (Fig 3) and `verify_stack.py` (chunkbin-vs-Fig3b comparison) call it with the *same* arguments, so values rendered on the pixel grid are directly comparable.
-
-## Recent analysis state (current `meeting_plots.py` / `verify_stack.py`)
-
-These were rewritten in 2026-04 / 2026-05; old commit history will not match. Conventions to preserve when modifying:
-
-- **`meeting_plots.py` uses one global sine phase.** `find_global_phi` does a 1-D minimization of summed OLS SSR across every (channel, sub, col) chunk, then `fit_chunks_with_phi` does a per-chunk linear fit `y = A · sin(2π f t + φ_global) + C` with `A` *signed* (do not flip the sign — that would reintroduce per-chunk phase). `f` is fixed at `1/SIDEREAL_YEAR_DAYS`.
-- **`verify_stack.py` uses per-subchannel median, no smoothing.** The previous version Gaussian-smoothed the spectrum before subtraction; that was intentionally removed. The two-panel output is `(a) raw stack, (b) stack − per-subchannel-median spectrum` with vmax matched to Fig 3b. There is also a 3-panel sanity-check output `*_chunkbin_vs_fig3b.png` that bins panel (b) per chunk, re-renders through the same mean-preserving spline used for Fig 3b, and prints the RMS difference.
-- **`plot_chunkmap.py` zoom is square + uses analytic arcs.** Side-by-side layout, both panels `aspect='equal'`, dpi=300. The zoom default crosses the Left/Mid column boundary (`x_edges[1] = 680`) so subchannel-arc and column structure are both visible.
-
-## Path / environment quirks worth knowing
-
-- Calibration files live on `/mnt/md124` (RAID). They're large; never `git add` anything from `cal_*.h5`.
-- Each analysis script does `sys.path.insert(0, _SELFCAL_ROOT)` so it can import from `selfcal/` without `pip install`. If an import from `selfcal` fails, check the script's `_PKG_DIR / _SELFCAL_ROOT` two-up logic.
-- `zodi_utils.py` hard-codes the calibration directory layout in `CAL_OUTPUT_BASE / CAL_RUN_TEMPLATE / CAL_FILE_TEMPLATE`. Changing the run name or hyperparameter suffix (`damp0p1_reg0p1_outThresh5_sigma2`) requires updating this template.
-- `find_outliers` (`selfcal/geometry/map_helper.py`) emits `RuntimeWarning: All-NaN slice encountered` for fully-masked subframes. Harmless; suppress with `warnings.filterwarnings` if it's noisy.
-- The cal-file naming pattern in `analysis/analysis_script/zodi_utils.py` bakes in a specific `NumCol` value (`NumCol3` in older runs, `NumCol10` for the poly-constraint era). If you regenerate with a different `NumCol`, update `CAL_FILE_TEMPLATE` to match.
-- **Two worktrees**: `~/selfcal-project/selfcal/` (dev, env `selfcal`) tracks `main`; `~/selfcal-project/selfcal-stable/` (analysis, env `selfcal-stable`) tracks `stable`. They share `.git`; advance `stable` deliberately when you want the analysis env to pick up new features.
+- `find_outliers` (`selfcal/geometry/map_helper.py`) warns `All-NaN slice encountered` for fully masked subframes. It
+  is harmless.
