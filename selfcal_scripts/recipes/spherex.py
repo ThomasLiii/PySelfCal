@@ -104,6 +104,24 @@ SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
     model=SLOPE_GAUGE_VARWEIGHT.model.replace(offsets=tuple(SLOPE_GAUGE_VARWEIGHT.model.offsets) + (SHARED_COLUMNS,)),
     name='slope_gauge_varweight_columns')
 
+#: The base recipe of the weak-mode work (2026-10-21; workspace/weak-modes/plan.md): per frame one free constant per
+#: subchannel (no per-frame scalar and no mean-zero anchor; the default seed starts each at the inverse-variance
+#: weighted mean of its pixels) and the x-slope per subchannel; one constant per detector column shared by every
+#: frame, without its constant and slope across the columns (those two duplicate the per-frame terms exactly);
+#: weighted by the frames' L2b VARIANCE layer; no clip, damping, regularisation, degenerate-mode exclusion or
+#: post-solve gauge; deflated CGLS to the chi-squared stop; the coadd as SLOPE_GAUGE's (inverse-variance weights,
+#: VAR_MAP). The weak-mode runs add a single-observation drop (a workspace frame hook).
+SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
+    sc.Model(sky=[sc.Sky(damping=0.0)],
+             offsets=[sc.Offsets(on='subchannel'), spherex.frame_slope(),
+                      sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(1))],
+             variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance'), scalar=False),
+    fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
+               stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10))),
+    coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
+    numerics=sc.Numerics(30, batch=40),
+    name='subch_varweight_columns')
+
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
