@@ -1224,6 +1224,11 @@ class Deflation:
                 cuts = np.maximum.accumulate(cuts)
             else:
                 cuts = np.linspace(0, n_sky_S, nt + 1, dtype=np.int64)
+            # Each chunk's sums go to their own columns: the transposed kernel with one entry per summed column
+            # (``out[c] += 1.0 * part``, as before), so the work is the chunk's columns', not the thread's range's.
+            n_max = max((u.size for u, _p, _o, _x in parts), default=0)
+            steps = np.arange(n_max + 1, dtype=np.int64)
+            units = np.ones(n_max)
 
             def add(j):
                 lo, hi = int(cuts[j]), int(cuts[j + 1])
@@ -1234,10 +1239,8 @@ class Deflation:
                 for uniq, part, _off, _x in parts:
                     i0, i1 = np.searchsorted(uniq, (lo, hi))
                     if i1 > i0:
-                        ip = np.zeros(hi - lo + 1, dtype=np.int64)
-                        ip[uniq[i0:i1] - lo + 1] = 1
-                        np.cumsum(ip, out=ip)
-                        _sparsetools.csr_matvecs(hi - lo, i1 - i0, m, ip, np.arange(i1 - i0, dtype=np.int64), np.ones(i1 - i0), part[i0:i1], view)
+                        _sparsetools.csc_matvecs(hi - lo, i1 - i0, m, steps[:i1 - i0 + 1], uniq[i0:i1] - lo,
+                                                 units[:i1 - i0], part[i0:i1], view)
                 t_add[j] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
