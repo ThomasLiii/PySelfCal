@@ -59,7 +59,7 @@ def _chunk_system(h=24, w=24, frames=60, chunks=4, scalar=True, seed=1):
         for yy_ in range(8):
             for xx_ in range(16):
                 p = (y0 + yy_) * w + (x0 + xx_)
-                c = xx_ // 4
+                c = xx_ * chunks // 16                 # the frame's 16 columns in `chunks` chunks (4-px chunks by default)
                 ci = off0 + (f * chunks + c) * 2
                 rows += [r, r, r]
                 cols += [p, ci, ci + 1]
@@ -114,6 +114,31 @@ def _near_null_system(H=16, W=24, weak=0.005, noise=0.05, seed=0):
     return sp.csr_matrix((vals, (rows, cols)), shape=(r, H * W + nf)), np.asarray(b), H * W, (H, W)
 
 
+def _shared_system(frames=500, shared=16, seed=3, **kw):
+    """The chunk system plus ``shared`` offsets every frame uses: one per frame-local column ``xx_``, the
+    same unknown in all frames (a detector-fixed column pattern), with a fixed pattern added to the
+    data. Each shared unknown couples to every frame's columns: in the offsets' normal matrix it is a
+    hub. Returns (A, b, number of sky columns, grid, number of shared columns)."""
+    A, b, npix, grid = _chunk_system(frames=frames, seed=seed, **kw)
+    pattern = 0.1 * np.sin(np.arange(shared) * 0.9)
+    n = A.shape[1]
+    coo = A.tocoo()
+    rows, cols, vals = list(coo.row), list(coo.col), list(coo.data)
+    b = b.copy()
+    # the data rows come in the frame order of _chunk_system: 8 x 16 pixels then one anchor row per frame
+    r = 0
+    for _f in range(frames):
+        for yy_ in range(8):
+            for xx_ in range(16):
+                rows.append(r)
+                cols.append(n + xx_ % shared)
+                vals.append(1.0)
+                b[r] += pattern[xx_ % shared]
+                r += 1
+        r += 1
+    A2 = sp.csr_matrix((vals, (rows, cols)), shape=(A.shape[0], n + shared))
+    return A2, b, npix, grid, shared
+
 CHUNK = _chunk_system()
 NEAR_NULL = _near_null_system()
 
@@ -157,6 +182,59 @@ def _converged(system, solver='lsqr'):
 
 def _rel(a, b):
     return float(np.linalg.norm(a - b) / np.linalg.norm(b))
+
+
+# =================================================================== offsets many frames share (hub columns)
+def test_offsets_shared_by_every_frame_are_eliminated_by_a_schur_complement(caplog):
+    """A column pattern every frame shares turns the offsets' normal matrix into one connected block
+    (500 frames x 9 columns + 16 shared: above the dense limit). The shared columns are hubs: eliminated
+    by a Schur complement, the blocks stay per frame, the pairing is exact, and the deflated solve
+    reaches plain least squares' solution (gauges included)."""
+    import logging
+    A, b, npix, grid, shared = _shared_system()
+    system = (A, b, npix, grid)
+    x_plain = _converged(system)
+    with caplog.at_level(logging.INFO, logger='selfcal.core.deflation'):
+        x, rec = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=600)
+    assert _rel(x, x_plain) < 1e-7
+    d = json.loads(rec.deflation)
+    assert d['pairing_residual'] < 1e-10 and d['resolve_change'] < 1e-6
+    msg = [m for m in caplog.messages if 'offset response solved' in m]
+    assert msg and f'{shared} columns shared by many frames eliminated by a Schur complement' in msg[0]
+    assert 'on 2500 blocks (largest 5,' in msg[0]   # per frame: the 4 constants + the scalar; the 4 slopes alone (orthogonal)
+
+
+def test_the_schur_path_solves_the_normal_equations_exactly(monkeypatch):
+    """On a small shared system, forced through the Schur path by a low dense limit: G X = R to rounding,
+    and the same as the dense pseudo-inverse's G X."""
+    import selfcal.core.deflation as D
+    A, b, npix, grid, shared = _shared_system(frames=40)
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    Ac = A[:, active].tocsr()
+    off = Ac[:, npix:]
+    G = (off.T @ off).tocsr()
+    G.sum_duplicates()
+    rng = np.random.default_rng(0)
+    R = rng.normal(size=(G.shape[0], 3))
+    R = G @ R                                             # a consistent right-hand side
+    X_dense, info_dense = D._block_pinv_solve(G, R)
+    assert 'hubs' not in info_dense                       # one block of 376 columns: dense, no hub
+    monkeypatch.setattr(D, '_DENSE_BLOCK', 16)
+    X_schur, info = D._block_pinv_solve(G, R)
+    assert info['hubs'] == shared and info['largest'] <= 9 and info['blocks'] >= 40     # per frame: at most 9 columns
+    assert np.linalg.norm(G @ X_schur - R) < 1e-9 * np.linalg.norm(R)
+    assert np.linalg.norm(G @ X_schur - G @ X_dense) < 1e-9 * np.linalg.norm(R)
+
+
+def test_the_schur_path_stays_put_past_convergence():
+    """The shared-column system far past its convergence (~125 iterations), CGLS at a fixed count: the solution
+    stays at plain least squares' (a response with a null-space component would let it drift: the Schur
+    path returns the minimum-norm one)."""
+    A, b, npix, grid, _ = _shared_system()
+    system = (A, b, npix, grid)
+    x_plain = _converged(system)
+    x, _rec = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=1000, solver='cgls')
+    assert _rel(x, x_plain) < 1e-7
 
 
 # =================================================================== the method

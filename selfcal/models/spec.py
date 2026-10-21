@@ -45,6 +45,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from selfcal.config.base import import_name
+
 from .offset_model import Basis, OffsetBlock, OffsetModel
 from .offset_structure import (
     ChunkAxes,
@@ -179,11 +181,15 @@ class SkyTerm:
 
     ``name`` (the product name of the map) defaults to ``continuum`` for a
     constant term and to the catalogue entry for a catalogue coefficient.
-    ``damp_weight``: the term's Tikhonov prior (None = the solver default).
+    ``damp_weight``: the term's Tikhonov prior (None = the solver default). ``exclude``: a hard
+    constraint on the map's shape, ``"package.module:function"`` (or the function itself) returning
+    the excluded shapes ``(pixels, r)`` from the grid's pixel coordinates ``(u, v)`` (see
+    :class:`selfcal.run.recipe.Sky`); None: none.
     """
     name: str | None = None
     coefficient: object = None
     damp_weight: float | None = None
+    exclude: object = None
 
     def __post_init__(self):
         name = self.name
@@ -236,6 +242,10 @@ class OffsetTerm:
     polynomial constraints, ``mean_zero`` anchors the per-frame mean over the
     observed chunks (those with data) at zero (per basis function), ``damp`` is
     Tikhonov damping toward zero.
+    ``exclude_degree`` / ``exclude_axis``: a hard constraint, the term has no
+    polynomial of that degree along the axis (per line of the other axes, per
+    group), imposed by reparametrisation in the solver
+    (:meth:`ModelSpec.column_exclusions`).
     ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
     the adjacency rows once per group instead of once per frame (exact; far
     fewer rows). ``render``: which of the instrument's offset renderers draws the
@@ -257,6 +267,8 @@ class OffsetTerm:
     damp: float = 0.0
     groups: str | None = None
     exact_group_rows: bool = False
+    exclude_degree: int | None = None
+    exclude_axis: str | None = None
     render: str | None = None
     coefficient: object = None
     basis: object = None
@@ -279,6 +291,11 @@ class OffsetTerm:
             raise ValueError("an offset term takes `coefficient` (one function) or `basis` (several), not both")
         if self.basis is not None and self.kind == 'polybasis':
             raise ValueError("a polybasis term takes a `coefficient`, not a `basis`")
+        if self.exclude_degree is not None:
+            if int(self.exclude_degree) < 0:
+                raise ValueError("exclude_degree is at least 0")
+            if self.kind == 'polybasis' or self.n_basis != 1:
+                raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
 
     @property
     def n_basis(self) -> int:
@@ -583,6 +600,69 @@ class ModelSpec:
             kw['mean_offset_group_rows'] = True
             kw['group_adjacency_maps'] = exact
         return kw
+
+    def column_exclusions(self, geom, layout) -> list:
+        """The terms' hard constraints as the solver takes them (``apply_lsqr(exclusions=...)``):
+        ``[(cols, P), ...]`` with ``cols`` ``(G, n)`` the full-layout columns of each offset group's
+        chunks along one line of the excluded axis and ``P`` ``(n, k + 1)`` an orthonormal basis of
+        the polynomials of degree <= k in the chunks' coordinate along that axis. ``layout`` is the
+        :class:`~selfcal.core.layout.SystemLayout` of the assembled system. Empty without ``exclude``
+        terms (the historical recipes). A sky term's ``exclude`` gives one group over the term's pixel
+        columns with the shapes it returns (orthonormalised), evaluated at the grid's pixel coordinates."""
+        out = []
+        H, W = (int(v) for v in layout.ref_shape)
+        for j, term in enumerate(self.sky):
+            if term.exclude is None:
+                continue
+            fn = import_name(term.exclude) if isinstance(term.exclude, str) else term.exclude
+            vv, uu = np.mgrid[0:H, 0:W]
+            u = (uu.ravel() / max(W - 1, 1)).astype(np.float64)
+            v = (vv.ravel() / max(H - 1, 1)).astype(np.float64)
+            S = np.asarray(fn(u, v), dtype=np.float64)
+            if S.ndim == 1:
+                S = S[:, None]
+            if S.shape[0] != H * W or S.ndim != 2:
+                raise ValueError(f"sky term {term.name!r}: exclude's shapes must be (pixels, r) over the {H}x{W} grid, got {S.shape}")
+            P = np.linalg.qr(S)[0]
+            cols = (j * H * W + np.arange(H * W, dtype=np.int64))[None, :]
+            out.append((cols, P))
+        for m, term in enumerate(self.offset):
+            if term.exclude_degree is None:
+                continue
+            cm = _chunk_map(term, geom)
+            k = int(term.exclude_degree)
+            axes = cm.axes
+            if axes is None or len(axes) == 0:
+                raise ValueError(f"offset term on map {cm.name!r}: exclude needs a chunk map with axes")
+            axis = term.exclude_axis
+            if axis is None:
+                if len(axes) != 1:
+                    raise ValueError(f"offset term on map {cm.name!r}: exclude needs along= (axes: {axes.names})")
+                axis = axes.names[0]
+            if axis not in axes:
+                raise ValueError(f"offset term on map {cm.name!r}: no chunk axis {axis!r} (axes: {axes.names})")
+            if layout.det_template_arr_list[m] is not None:
+                raise ValueError(f"offset term on map {cm.name!r}: exclude does not apply to a template term")
+            coord = np.asarray(axes[axis].of_chunk, dtype=np.float64)
+            n_chunks = int(layout.num_chunks_list[m])
+            n_groups = int(layout.num_offset_groups_list[m])
+            base = int(layout.col_bases[m])
+            others = [np.asarray(a.of_chunk) for a in axes.others(axis)]
+            ids = np.arange(min(n_chunks, coord.size))
+            key = np.zeros(ids.size, dtype=np.int64)
+            for o in others:
+                key = key * (int(o.max()) + 1) + o[ids]
+            for line in np.unique(key):
+                chunks = ids[key == line]
+                if chunks.size < k + 2:
+                    continue                                    # the line would be constrained to zero: left free
+                t = coord[chunks]
+                t = (t - t.mean()) / max(float(np.ptp(t)) / 2.0, 1e-300)
+                V = np.vander(t, k + 1, increasing=True)
+                P = np.linalg.qr(V)[0]
+                cols = base + (np.arange(n_groups, dtype=np.int64)[:, None] * n_chunks) + chunks[None, :]
+                out.append((cols, P))
+        return out
 
     def _offset_function(self, term, geom, catalog, known, log):
         """The term's known functions of data variables as a Basis (None: none)."""

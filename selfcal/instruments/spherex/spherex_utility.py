@@ -925,28 +925,3 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     offset_map = spl(r_mesh, x_mesh)
     return offset_map
 
-def fast_vertical_dist(arr):
-    """Return each pixel's distance in rows to the nearest zero in its column.
-
-    Zero pixels get 0, and so do the first and last rows, which count as zeros; a nonzero
-    pixel next to a zero gets 1. Returns a float32 array of ``arr``'s shape. The SPHEREx
-    instrument divides it by its maximum to taper a job's mosaic weight toward the edges of
-    its subchannels.
-    """
-    rows, cols = arr.shape
-    # Result arrays
-    dist_up = np.zeros((rows, cols), dtype=np.int32)
-    dist_down = np.zeros((rows, cols), dtype=np.int32)
-
-    # We use a running count that resets at every 0
-    # 1. Distance to zero ABOVE
-    for r in range(1, rows):
-        # If current is 1, distance is (dist of row above) + 1
-        # If current is 0, distance is 0
-        dist_up[r] = (dist_up[r-1] + 1) * (arr[r] != 0)
-
-    # 2. Distance to zero BELOW
-    for r in range(rows - 2, -1, -1):
-        dist_down[r] = (dist_down[r+1] + 1) * (arr[r] != 0)
-
-    return np.minimum(dist_up, dist_down).astype(np.float32)

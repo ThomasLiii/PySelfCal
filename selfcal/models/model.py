@@ -32,7 +32,7 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
-from ..config.base import Config, ConfigError, FrozenDict
+from ..config.base import Config, ConfigError, FrozenDict, added
 from ..config.functions import by_value, function_ref
 
 
@@ -361,22 +361,40 @@ class Sky(Config):
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
     coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
     0.3 for the others; 0 for none).
+
+    ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
+    coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
+    at the first pixel to 1 at the last, flat arrays over the grid's pixels) returning the excluded
+    shapes, ``(pixels, r)`` or one shape ``(pixels,)``: the map has no component along them, exactly,
+    by reparametrisation in the solve (as ``Offsets(exclude=)`` does for an offset term); what the
+    data place along them goes to the other terms. The subspace the shapes span is what is
+    excluded, so include the lower orders a gauge of the model could trade against the shape
+    (for a quadratic: the constant and the plane, ``[1, u, v, r^2]``), or the constraint binds only
+    their combination. A module-level function (it is named in the product's record and the workers
+    import it). None: no constraint.
     """
     name: str = 'continuum'
     _: KW_ONLY
     times: Function | Shape | str | Callable | None = None
     damping: float | None = None
+    exclude: Callable | None = added(None, since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'times', _as_function(self.times, f"Sky({self.name!r}).times"))
         if self.damping is not None and self.damping < 0:
             raise ConfigError(f"Sky({self.name!r}, damping={self.damping}): at least 0")
+        if self.exclude is not None and not callable(self.exclude):
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a function shapes(u, v) of the grid's pixel coordinates")
+        if self.exclude is not None and getattr(self.exclude, '__name__', '<lambda>') == '<lambda>':
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a module-level function, not a lambda (it is named in the record)")
 
     def lower(self, damping) -> dict:
         out = {'name': self.name, 'damp_weight': float(damping)}
         c = _lower_function(self.times)
         if c is not None:
             out['coefficient'] = c
+        if self.exclude is not None:
+            out['exclude'] = f"{self.exclude.__module__}:{self.exclude.__qualname__}"
         return out
 
 
@@ -400,6 +418,11 @@ class Offsets(Config):
     mean over the chunks it observed at zero (the chunks with data in the job: an unobserved chunk's
     offset is then not an unknown of the solve); ``damping`` pulls every offset toward zero (coverage
     weighted).
+    ``exclude=Poly(k, along=axis)`` is a hard constraint: the term carries no polynomial of degree
+    <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
+    the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
+    map with one axis. The excluded part goes where the data can place it: other terms or the
+    sky.
     ``exact_group_rows`` (shared terms): the anchor and smoothness rows once per group, not per
     frame (the same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.
@@ -418,6 +441,7 @@ class Offsets(Config):
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
     mean_zero: bool = False
+    exclude: Poly | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -447,6 +471,15 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
             if self.per != 'frame':
                 raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
+        if self.exclude is not None:
+            e = self.exclude
+            if not isinstance(e, Poly) or int(e.degree) < 0:
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis)")
+            bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
+            if bad:
+                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
         for p in self.poly_prior:
             p.lower_soft(label)
         if self.exact_group_rows and self.per == 'frame':
@@ -473,6 +506,9 @@ class Offsets(Config):
             out.update(kind=kind, reg_weight=float(self.smooth), mean_zero=bool(self.mean_zero),
                        exact_group_rows=bool(self.exact_group_rows),
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
+            if self.exclude is not None:
+                out['exclude_degree'] = int(self.exclude.degree)
+                out['exclude_axis'] = self.exclude.along
             if self.smooth_along is not None:
                 out['adjacency'] = list(self.smooth_along)
             if self.smooth_step is not None:

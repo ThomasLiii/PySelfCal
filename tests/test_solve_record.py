@@ -259,6 +259,8 @@ def test_a_calibration_records_its_solve(tmp_path, method):
     assert solve['istop'] == 7 and solve['stop_reason'] == STOP_REASONS[7] and 'stop' not in solve
     assert (solve['atol'], solve['btol'], solve['conlim']) == (0.0, 0.0, 0.0)
     assert solve['true_residual'] > 0 and solve['bnorm'] > solve['true_residual']
+    assert solve['degrees_of_freedom'] == solve['rows'] - solve['columns'] > 0
+    assert solve['noise_variance'] == pytest.approx(solve['true_residual'] ** 2 / solve['degrees_of_freedom'])
     assert 'wall_s' not in solve                                             # the cal stays byte-reproducible
     assert not any(name.startswith('solve') for name in _datasets(cal))     # attributes only, no dataset
     stem = os.path.splitext(os.path.basename(cal))[0]

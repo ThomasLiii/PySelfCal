@@ -29,6 +29,7 @@ rest, for solves whose slowest part is the large scales (:mod:`selfcal.core.defl
 """
 from __future__ import annotations
 
+import math
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Callable, Literal
 
@@ -323,6 +324,33 @@ class Stop(Config):
 
 
 @dataclass(frozen=True)
+class Degenerate(Config):
+    """Which pattern directions of a :class:`Deflate` count as degenerate, to be excluded from the sky.
+
+    The deflation's setup decomposes its pattern space (the smooth sky shapes with the offsets that absorb
+    them) into directions and measures how well the data see each: the seen fraction, ``sqrt(lambda /
+    lambda_max)``, the direction's residual signature against the best-seen one's, once the offsets have
+    absorbed what they can. A direction seen at a fraction ``s`` is solved as what the data show divided
+    by ``s``: whatever the frames leave unmodelled along it enters the map ``1 / s`` times larger. The
+    directions seen below ``below`` are degenerate (the exact gauges, seen at nothing, among them): their
+    sky shapes, in map space, become a hard constraint on the sky (as :class:`~selfcal.models.model.Sky`
+    ``exclude=`` does for shapes given by hand): the map has no component along them, what the data place
+    there goes to the other terms, and the deflation space is re-based on the constrained patterns. One
+    run, nothing named by hand, whatever model, footprint or instrument made the direction invisible: on a
+    survey whose geometry makes the sky's radial quadratic the image of a detector pattern, that quadratic
+    comes out together with the mean and the planes; elsewhere, whatever is degenerate within the pattern
+    space. The default, 0.05, follows from a map requirement of a few 1e-3 over frames whose residual
+    pattern is a few 1e-4. The record keeps the selection and every direction's measures (its seen
+    fraction and composition).
+    """
+    below: float = 0.05
+
+    def _validate(self):
+        if not 0.0 < float(self.below) < 1.0:
+            raise ConfigError(f"Degenerate(below={self.below}): a seen fraction, 0 < below < 1")
+
+
+@dataclass(frozen=True)
 class Deflate(Config):
     """Solve the smooth sky patterns directly and iterate on the rest (deflation).
 
@@ -351,6 +379,17 @@ class Deflate(Config):
     of that degree) would make the solve drift along it once converged: deflate it whole
     (``basis="polynomial"`` of at least its degree).
 
+    The setup's record keeps the decomposition of the pattern space (each direction's pattern weights,
+    eigenvalue and seen fraction, ``sqrt(lambda / lambda_max)``), and the log prints the least-seen
+    directions: a near-null direction's least-squares value is what little the data say about it,
+    noise and systematics included, and it can be large.
+
+    ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (those the
+    data see below a fraction); their sky shapes are excluded from the sky as a hard constraint in map space
+    (the mechanism of ``Sky(exclude=)``), the deflation space is re-based on the constrained patterns from
+    the same setup, and the solve runs on the constrained system. The post-solve plane gauge (``Fit(gauge=)``)
+    then has nothing to move and is left off. None (the default): off.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -362,6 +401,7 @@ class Deflate(Config):
     basis: Literal['cosine', 'polynomial'] = 'cosine'
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
+    exclude: Degenerate | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -371,6 +411,8 @@ class Deflate(Config):
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
+        if self.exclude is not None and not isinstance(self.exclude, Degenerate):
+            raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):
@@ -480,6 +522,11 @@ class Fit(Config):
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
     :class:`Gauge`; None: the solution as solved).
+    ``seed``: the solver's starting vector: ``'scalar'`` (each frame's scalar at the mean of its data, every
+    other column at zero; without scalars each non-sky column at its own diagonal estimate) or ``'offsets'``
+    (every non-sky column at its frame's joint least-squares fit to the data, the sky at zero:
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). A warm start
+    (``calibrate(start=)``) replaces them.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -499,8 +546,12 @@ class Fit(Config):
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
+    seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
 
     def _validate(self):
+        if self.seed not in ('scalar', 'offsets', 'zero'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
+                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

@@ -38,12 +38,12 @@ from ...models.offset_structure import ChunkAxes
 from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
 from ..contract import Instrument, Job
 from ..grid import upsample_chunk_map
-from .adapter import SUBCH_WINDOWS, make_readout_chunk_map
+from .adapter import SUBCH_WINDOWS, make_column_chunk_map, make_readout_chunk_map
+from .exposures import read_l2b
 from .spherex_utility import (
     _LVF_PARAMS_DIR,
     DEFAULT_CALIBRATION_DIR,
     DEFAULT_CHANNEL_FILE,
-    fast_vertical_dist,
     load_calibration,
     load_lvf_params,
     make_spherex_stripped_offset_map,
@@ -125,18 +125,21 @@ class SPHEREx(Instrument):
 
     # ---- the contract -------------------------------------------------------------------
     def layout(self) -> ExposureLayout:
-        """L2b exposures: science in extension 1, DQ bitmask in extension 2, one detector per
-        file; only exposures with a converged astrometric solution (``FINAST == 0``) are kept."""
+        """L2b exposures (read by :func:`~selfcal.instruments.spherex.exposures.read_l2b`): science
+        in extension 1, DQ bitmask in extension 2, the file's ``VARIANCE`` stored with the frame as
+        the layer ``variance``, one detector per file; only exposures with a converged astrometric
+        solution (``FINAST == 0``) are kept."""
         return ExposureLayout(
             sci_ext=[1], dq_ext=[2], detector_ids=[0], ref_use_ext=(1,),
             header_predicate=lambda h: h.get('FINAST', 2) == 0,
             header_keys=('FINAST',), header_ext=1,
-            cache_tag=f"finast_D{self.detector}")
+            cache_tag=f"finast_D{self.detector}", reader=read_l2b)
 
     def geometry(self, oversample=1) -> DetectorGeometry:
         """The LVF parameters, the ``BC`` / ``BW`` maps, the stripped chunk map at detector and
-        grid resolution with its (subchannel, column) axes, and the readout-channel map (no
-        adjacency: that is the model's). ``calib_dir`` / ``lvf_dir`` choose the directories of the
+        grid resolution with its (subchannel, column) axes, the readout-channel map and the
+        per-detector-column map ``detector_column`` (one chunk per column; no adjacency on either:
+        that is the model's). ``calib_dir`` / ``lvf_dir`` choose the directories of the
         calibration maps and the LVF parameters (default: see
         :func:`~selfcal.instruments.spherex.spherex_utility.load_lvf_params`)."""
         det, ns, nch, ncol = self.detector, self.num_sub, self.num_ch, self.num_col
@@ -160,8 +163,12 @@ class SPHEREx(Instrument):
         det_ro, n_ro = make_readout_chunk_map(det_chunk_map.shape)
         readout = ChunkMap(name='readout', det=det_ro, grid=upsample_chunk_map(det_ro, oversample),
                            axes=ChunkAxes.row_major(('readout',), (n_ro,), ('x',)))
+        det_col, n_col = make_column_chunk_map(det_chunk_map.shape)
+        columns = ChunkMap(name='detector_column', det=det_col, grid=upsample_chunk_map(det_col, oversample),
+                           axes=ChunkAxes.row_major(('detector_column',), (n_col,), ('x',)))
         return DetectorGeometry(
-            shape=det_chunk_map.shape, chunk_maps={'subchannel': stripped, 'readout': readout},
+            shape=det_chunk_map.shape,
+            chunk_maps={'subchannel': stripped, 'readout': readout, 'detector_column': columns},
             primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
             extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
                    'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
@@ -195,12 +202,15 @@ class SPHEREx(Instrument):
 
         ``det_valid_weight``, the solve's weight, is the padded set's 0/1 mask on
         the detector grid (float64 for a channel job, boolean for a window job). The mosaic's
-        ``grid_valid_weight`` (float32, on the primary map's ``grid``) tapers the strict set
-        linearly with each pixel's distance in rows to the set's edge
-        (:func:`~selfcal.instruments.spherex.spherex_utility.fast_vertical_dist`),
-        divided by its maximum. ``chunk_valid`` / ``chunk_valid_strict`` hold the
-        padded / strict sets per chunk of the primary map, and ``det_valid_mask``
-        / ``grid_valid_mask`` the strict set on the two grids."""
+        ``grid_valid_weight`` (float32, on the primary map's ``grid``) is the strict set's 0/1
+        mask: every valid pixel weighs the same, so the mosaic's weights are the solve's and
+        its mean map is the solved sky term. (Until 2026-10-15 it tapered the strict set
+        linearly toward its edges, which narrowed each map pixel's effective bandpass from the
+        strip's top hat to a triangle and evened the effective wavelength over the map, for
+        14 % more noise rms; measured on NEP D3 Ch9, the wavelength scatter it removed was ten
+        times below the pixel noise, so it was dropped.) ``chunk_valid`` / ``chunk_valid_strict``
+        hold the padded / strict sets per chunk of the primary map, and ``det_valid_mask`` /
+        ``grid_valid_mask`` the strict set on the two grids."""
         ns, nch, ncol = self.num_sub, self.num_ch, self.num_col
         det_chunk_map = geom.chunk_map.det
         grid_chunk_map = geom.chunk_map.grid
@@ -217,12 +227,10 @@ class SPHEREx(Instrument):
         det_valid_mask = cvm[det_chunk_map]
         det_valid_mask_padded = cvm_pad[det_chunk_map]
         grid_valid_mask = cvm[grid_chunk_map]
-        grid_valid_weight = fast_vertical_dist(grid_valid_mask)
-        if np.max(grid_valid_weight) > 0:
-            grid_valid_weight /= np.max(grid_valid_weight)
+        grid_valid_weight = np.asarray(grid_valid_mask, dtype=bool).astype(np.float32)
         # The solve weights every pixel of the padded window equally (the
         # padding subchannels overlap the neighbouring jobs for stitching); the
-        # mosaic tapers with the distance to the window's arc edges.
+        # mosaic every pixel of the strict window.
         return JobGeometry(det_valid_weight=det_valid_mask_padded, grid_valid_weight=grid_valid_weight,
                            chunk_valid=cvm_pad, chunk_valid_strict=cvm,
                            det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)

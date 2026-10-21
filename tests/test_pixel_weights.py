@@ -124,6 +124,10 @@ def test_variance_is_the_squared_row_weight(tmp_path):
         assert np.allclose(ca.offsets[0], cb.offsets[0], rtol=1e-5, atol=1e-6)
     with a.mosaic() as ma, b.mosaic() as mb:
         wa, wb = np.asarray(ma.weight('MEAN_MAP'), np.float64), np.asarray(mb.weight('MEAN_MAP'), np.float64)
+        # a noise-variance weight gives the mosaic its variance map, 1 / MEAN_MAP_WEIGHT; a row weight does not
+        assert 'VAR_MAP' in ma.names and 'VAR_MAP' not in mb.names
+        var = np.asarray(ma['VAR_MAP'], np.float64)
+        assert np.allclose(var[wa > 0], 1.0 / wa[wa > 0], rtol=1e-6) and np.all(var[wa == 0] == 0)
     assert np.allclose(wa, wb, rtol=1e-5, atol=1e-6)
     expected = np.zeros((REF, REF))
     for (oy, ox), fl in zip(pointings, flags):

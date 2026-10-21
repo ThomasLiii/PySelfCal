@@ -566,8 +566,8 @@ See [Scaling up](concepts.md#scaling-up).
 The instrument's weight of each detector pixel for a job
 ([`JobGeometry`][selfcal.instruments.base.JobGeometry]): `det_valid_weight` for the solve and
 `grid_valid_weight`, on the oversampled detector grid, for the mosaic. SPHEREx: the job's
-subchannels (in the solve, one more on each side for a channel job), tapered toward their edges in
-the mosaic; Euclid: an optional taper at the detector edges. See
+subchannels (in the solve, one more on each side for a channel job) as 0/1 in both;
+Euclid: an optional taper at the detector edges. See
 [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
 
 ## Warm start { #warm-start }

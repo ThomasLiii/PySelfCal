@@ -295,14 +295,26 @@ class RunContext:
         data and everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`);
         without it, the first sky term starts at zero and every later column at its own diagonal
         least-squares estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky
-        block whatever the model's number)."""
+        block whatever the model's number). With ``Fit(seed='offsets')``, the sky at zero and every other
+        column at its frame's joint least-squares fit (:func:`~selfcal.core.solution.compute_x0_offsets_fit`)."""
         if start is not None:
             return start.vector(active_mask=getattr(cc, 'active_mask', None))
-        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
+        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_offsets_fit, compute_x0_scalar_only
+        if self.seed == 'zero':
+            return None
+        if self.seed == 'offsets':
+            return compute_x0_offsets_fit(cc.A, cc.b, cc.ref_shape, num_sky_blocks=cc.num_sky_blocks,
+                                          active_mask=getattr(cc, 'active_mask', None))
         if self.model.x0_kind == 'from_Ab':
             return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, active_mask=getattr(cc, 'active_mask', None))
         return compute_x0_scalar_only(cc.A, cc.b, cc.ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
                                       num_sky_blocks=cc.num_sky_blocks, active_mask=getattr(cc, 'active_mask', None))
+
+    @property
+    def seed(self) -> str:
+        """The recipe's ``Fit(seed=)``: how the solver starts (``'scalar'`` unless the recipe says ``'offsets'``)."""
+        fit = getattr(getattr(self.spec, 'recipe', None), 'fit', None)
+        return str(getattr(fit, 'seed', 'scalar') or 'scalar')
 
     def solve_options(self):
         """The solver's ``apply_lsqr`` keywords."""
@@ -530,7 +542,9 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     watch = {} if spec.monitor is None else {'monitor': spec.monitor}
     if snapshots is not None:
         watch['snapshots'] = snapshots
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch())
+    exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout)      # the terms' hard constraints, if any
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
+                  exclusions=exclusions or None)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record
@@ -686,14 +700,16 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     # A cal gauged on the map (Fit(gauge=sc.Gauge(..., apply='map'))): its polynomial, which the cal's sky
     # term carries, is added to the mean maps here, so the mosaic matches that sky term. The cal decides,
     # not the recipe: a mosaic of an existing cal (field.mosaic) adds the gauge that cal recorded.
-    from selfcal.core.gauge import apply_to_maps
+    from selfcal.core.gauge import apply_to_maps, gauge_cards
     from selfcal.io.calfile import CalFile
     with CalFile(cal_path) as cal_:
         recorded = cal_.gauge
-    apply_to_maps(maps, recorded, log=print)
+    for name in apply_to_maps(maps, recorded, log=print):
+        maps[name]['header'] = list(maps[name].get('header') or ()) + gauge_cards(recorded)
     if spec.gauge is not None and recorded is None:
         print(f"[gauge] the recipe's fit has a gauge, but {os.path.basename(cal_path)} records none: the maps "
               f"are as solved")
+    variance_map(maps, ctx.weight(), ctx.unit)
     if want_wav:
         inst.finalize_mosaic(geom, mm, maps, spec.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
@@ -746,6 +762,34 @@ def gauge_terms(ctx, gauge):
         raise ConfigError(f"Gauge(slope={gauge.slope!r}): the term's basis is not (det_x - {centre[0]}) / {half} "
                           f"(give Gauge(centre=, half=) for another linear basis)")
     return {'slope_map': m_s, 'constant_map': m_c, 'centre': (float(centre[0]), float(centre[1])), 'half': half}
+
+
+def variance_map(maps, weight, unit):
+    """Add ``var_map`` to a mosaic's ``maps`` when the model's weight is a noise variance
+    (``sc.Variance``: the coadd weights are the inverse variances): ``1 / MEAN_MAP_WEIGHT``, the
+    variance of the mean map's white noise, 0 where the map has no weight. It is the noise level at
+    scales above a few map pixels: a single pixel of frames reprojected exactly has less (its noise is
+    shared with its neighbours, about 0.44 of the input variance for a near 1:1 grid), and the
+    correlated noise of the estimated offsets, the sky plane and the zero point (which the solve
+    leaves free) is not in it. Returns the entry, or None for any other weight (``1 / W`` has no
+    unit then)."""
+    from selfcal.models.sky_model import NoiseVariance
+    if not isinstance(weight, NoiseVariance):
+        return None
+    entry = maps.get('mean_map')
+    if entry is None or entry.get('weight') is None:
+        return None
+    w = np.asarray(entry['weight'], dtype=np.float64)
+    with np.errstate(divide='ignore'):
+        var = np.where(w > 0, 1.0 / w, 0.0).astype(np.float32)
+    maps['var_map'] = {
+        'data': var, 'weight': None, 'aux': None, 'unit': f'({unit})^2' if unit else '',
+        'header': [('COMMENT', 'VAR_MAP = 1 / MEAN_MAP_WEIGHT: the variance of MEAN_MAP from the inverse-variance'),
+                   ('COMMENT', 'weights (the model weight is a noise variance). It is the white noise at scales'),
+                   ('COMMENT', 'above a few map pixels; one pixel of exactly reprojected frames has less (its noise'),
+                   ('COMMENT', 'is shared with its neighbours). The correlated noise of the estimated offsets and'),
+                   ('COMMENT', 'the free sky plane and zero point are not included.')]}
+    return maps['var_map']
 
 
 def _basis_offset_hook(ctx, mm, cal_path):

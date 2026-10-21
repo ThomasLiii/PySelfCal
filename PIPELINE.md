@@ -718,7 +718,13 @@ Datasets:
 - `sub_foot` `(sub_w, sub_w)` float16 — fractional footprint from the
   `reproject` library.
 - `sub_bitmask` `(sub_w, sub_w)` int32 — DQ bitmask after reprojection
-  (per-bit reprojected as float, thresholded at 0.01, then re-packed).
+  (per-bit reprojected as float, thresholded at 0.01, then re-packed:
+  `selfcal.io.reprojection.pack_mask`). The data's exact reprojection spreads a
+  flagged pixel's value further than this bilinear footprint, so a reader may
+  dilate the bits whose values are garbage (`selfcal.io.frames.dilate_bits`;
+  the SPHEREx reader dilates SUR_ERROR and NONFUNC by one pixel since 2026-10-15); frames
+  made before get the current mask from `selfcal.io.reprojection.refresh_mask`
+  / `refresh_reader_mask` (the other datasets byte for byte).
 - `sub_mapping` `(2, sub_w, sub_w)` float32 — for each subframe pixel,
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
@@ -729,6 +735,11 @@ Datasets:
 - `layers/<name>` `(sub_w, sub_w)` float32 — optional per-observation planes
   (a variance, a per-frame wavelength map, ...) from the reader, reprojected
   bilinearly; the source of *layer* data variables (`sc.Layer("name")`).
+  SPHEREx frames made since 2026-10-15 carry `layers/variance`, the L2b
+  `VARIANCE` (`selfcal.instruments.spherex.exposures`, bad pixels filled
+  before the interpolation); frames made before get it from
+  `selfcal.io.reprojection.add_layers` / `add_reader_layers`, a pass that
+  leaves the other datasets byte for byte.
 
 Attributes:
 - `sub_header` (bytes) / `det_header` (bytes) — FITS headers as strings;
@@ -765,6 +776,18 @@ header. `EXTNAME` is one of:
 - `MEAN_MAP`, `MEAN_MAP_WEIGHT` — weighted mean and `sum(weight)`.
 - `STD_MAP`, `STD_MAP_WEIGHT` — weighted std and weight.
 - `SC_MEAN_MAP`, `SC_MEAN_MAP_WEIGHT` — sigma-clipped mean and weight.
+- `VAR_MAP` (since 2026-10-15, when the model's weight is an `sc.Variance`) —
+  `1 / MEAN_MAP_WEIGHT`, the variance of `MEAN_MAP`'s white noise: the noise
+  level at scales above a few map pixels (one pixel of exactly reprojected
+  frames has less, its noise being shared with its neighbours); the correlated
+  noise of the estimated offsets and the free sky plane and zero point are not
+  in it. The mean maps of a cal gauged on the map carry the gauge in their
+  headers: `GAUGEDEG`, `GAUGEG1/2` (the plane per grid pixel), `GAUGESG1/2`
+  and `GAUGERHO` (its uncertainties and correlation), `GAUGEX0/Y0`, `GAUGEMU`,
+  `GAUGEGEO`, `GAUGEAMP` (the polynomial's peak-to-peak over the map) and
+  `GAUGEASG` (the plane's uncertainty of it). Every cal's `solve` record has
+  `noise_variance` (`|b - A x|^2 / degrees_of_freedom`, the reduced
+  chi-squared with inverse-sigma rows) and `degrees_of_freedom`.
 - `WAV_MEAN_MAP`, `WAV_STD_MAP` — LVF wavelength maps (BUNIT=`um`),
   coadded inside the sigma-clip pass (`make_mosaic(wav_maps=...)`) or, when
   sigma clipping is off, by the standalone `wav_coadd` over the cache.

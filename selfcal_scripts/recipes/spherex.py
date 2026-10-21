@@ -16,10 +16,12 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal.models.variables import identity
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT', 'SLOPE_GAUGE_COLUMNS',
+           'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
            'pahfit_tiled']
 
@@ -73,6 +75,34 @@ SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
 #: wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same name and the same cal; the mosaic's other maps
 #: are SLOPE_GAUGE's.
 CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_maps=True))
+
+#: SLOPE_GAUGE weighted by the L2b ``VARIANCE`` instead of the shot-noise proxy (2026-10-15, the covariance
+#: work): the frame layer ``variance`` (the SPHEREx reader stores it; frames made before 2026-10-15 get it
+#: from ``selfcal.io.reprojection.add_layers``) weights the solve's rows by 1/sigma and the coadd by
+#: 1/variance. The same model, fit, gauge and coadd.
+SLOPE_GAUGE_VARWEIGHT = SLOPE_GAUGE.replace(
+    model=SLOPE_GAUGE.model.replace(variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
+    name='slope_gauge_varweight')
+
+#: The shared-column term (the quadrant-bowl work, 2026-10-17): one constant per detector column
+#: (2,040) shared by EVERY frame, on the SPHEREx ``detector_column`` chunk map. It holds the
+#: survey-mean detector-fixed pattern along x that the per-frame subchannel constants + x-slope do
+#: not represent and that one-sided coverage amplifies into a footprint's outskirts (the D2 bulge,
+#: the quadrant rims). The deflation eliminates the shared columns by a Schur complement.
+SHARED_COLUMNS = sc.Offsets('columns', on='detector_column', per='all')
+
+#: SLOPE_GAUGE plus the shared columns: the recipe of the Ch9 W17 maps `*_slope_gauge_colonly_defl`
+#: (D1-D6, 2026-10-18; made from the workspace driver with the same term, then under the name
+#: ``readout`` patched to one chunk per column). Footprint-invariant to 0.16e-3 MJy/sr on D2 and
+#: the Gaussian-sky transfer function of the production recipe or better on the D3 / D6 scenes.
+SLOPE_GAUGE_COLUMNS = SLOPE_GAUGE.replace(
+    model=SLOPE_GAUGE.model.replace(offsets=tuple(SLOPE_GAUGE.model.offsets) + (SHARED_COLUMNS,)),
+    name='slope_gauge_columns')
+
+#: SLOPE_GAUGE_VARWEIGHT plus the shared columns (the covariance work's recipe from 2026-10-18).
+SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
+    model=SLOPE_GAUGE_VARWEIGHT.model.replace(offsets=tuple(SLOPE_GAUGE_VARWEIGHT.model.offsets) + (SHARED_COLUMNS,)),
+    name='slope_gauge_varweight_columns')
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),

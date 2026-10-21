@@ -183,7 +183,7 @@ its *group axis* (one polynomial per value in a `polybasis` term).
 | instrument | chunk maps | axes |
 | --- | --- | --- |
 | `sc.Camera` | `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both; group axis `row` |
-| `sc.SPHEREx` | `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `readout`: one chunk per read-out channel of the detector | `subchannel` (spectral axis), `column` (group axis and default adjacency); `readout` |
+| `sc.SPHEREx` | `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `readout`: one chunk per read-out channel of the detector; `detector_column`: one chunk per detector column (a term on it shared by every frame, `per='all'`, is a detector-fixed column pattern) | `subchannel` (spectral axis), `column` (group axis and default adjacency); `readout`; `detector_column` |
 | `sc.Euclid` | `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes on which a degree-1 `polybasis` term is one linear ramp per frame | `row`, `col`; `strip`, `all` |
 
 Chunk size trades flexibility against noise: smaller chunks absorb finer offset structure, but
@@ -320,7 +320,7 @@ SC_MEAN_MAP  = Σ w·d / Σ w  over the d with |d − MEAN_MAP| ≤ sigma · STD
 ```
 
 Here `w` is the mosaic's weight: the data-quality mask, the job's valid weight for the mosaic
-(SPHEREx tapers it linearly toward the edges of the job's subchannels), the factor
+(SPHEREx: the job's subchannels as 0/1, so the mosaic's weights are the solve's), the factor
 `1 / sqrt(|data| + 1e-4)` with `sc.Coadd(shot_noise_weights=True)` (off by default), and the
 square of the model's `weight`. Each map is written with its summed weight (`MEAN_MAP_WEIGHT`, ...). For SPHEREx
 the mosaic also coadds the band-centre and band-width maps over the same clipped observations into

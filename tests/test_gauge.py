@@ -157,6 +157,14 @@ def test_the_plane_from_the_frames_mean_slopes():
     assert np.allclose(g_fit, g, rtol=1e-9, atol=0) and np.all(H_fit == 0), g_fit
     assert abs(stats['detector_slope'] - c) < 1e-9 * c and stats['residual_rms'] < 1e-9 * stats['slope_rms']
     assert stats['n_frames'] == K - 1 and stats['n_slopes'] == (K - 1) * S - 1 and stats['n_parameters'] == 3
+    # the fit's covariance: nothing left over here, so no uncertainty; with noise on the slopes, the
+    # recovered plane is within its error bars, and the covariance is the residual variance x (A^T A)^-1
+    assert np.shape(stats['g_cov']) == (2, 2) and max(stats['g_sigma']) < 1e-9 * np.abs(g).max()
+    noisy = b + rng.normal(0, 2e-4 * half, b.shape)
+    g_n, _, st = fit_gauge(noisy, ocov, J, None, None, half)
+    assert all(abs(g_n[i] - g[i]) < 5 * st['g_sigma'][i] for i in range(2)), (g_n, st['g_sigma'])
+    assert abs(st['g_corr']) <= 1 and st['g_cov'][0][1] == st['g_cov'][1][0]
+    assert st['g_sigma'][0] > 0 and st['detector_slope_sigma'] > 0
 
 
 def test_frame_geometry_from_the_header(tmp_path):
@@ -314,6 +322,21 @@ def test_a_mosaic_of_a_gauged_cal(tmp_path):
         for name in ('MEAN_MAP', 'STD_MAP'):
             a0 = np.asarray(m0[name])
             assert np.array_equal(a0, np.asarray(m1[name])) and np.array_equal(a0, np.asarray(m2[name])), name
+    from astropy.io import fits
+    with made.cal() as cal:
+        recorded = cal.gauge
+    with fits.open(made.mosaic_paths[0]) as hdul:
+        gauged = [x.name for x in hdul if x.name in ('MEAN_MAP', 'SC_MEAN_MAP')]
+    assert 'MEAN_MAP' in gauged
+    for ext in gauged:                                                     # the gauge and its uncertainties in the header
+        h = fits.getheader(made.mosaic_paths[0], ext)
+        assert h['GAUGEDEG'] == 1                                             # FITS cards keep ~15 digits
+        assert h['GAUGEG1'] == pytest.approx(float(recorded['g'][0]), rel=1e-12)
+        assert h['GAUGEG2'] == pytest.approx(float(recorded['g'][1]), rel=1e-12)
+        assert h['GAUGESG1'] == pytest.approx(float(recorded['g_sigma'][0]), rel=1e-12) and h['GAUGESG1'] > 0
+        assert abs(h['GAUGERHO']) <= 1
+        assert h['GAUGEAMP'] > 0 and h['GAUGEASG'] >= 0 and h['GAUGEGEO'] == recorded['geometry']
+    assert 'GAUGEG1' not in fits.getheader(made.mosaic_paths[0], 'STD_MAP')
     for kw in (dict(tiles=sc.Tiles(grid=(2, 1))), dict(passes=sc.Passes(3))):
         with pytest.raises(sc.ConfigError, match='post-solve gauge'):
             lower(field, recipe, **kw)
