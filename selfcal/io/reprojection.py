@@ -64,6 +64,29 @@ def reproject_mask(det_bitmask, det_wcs, sub_wcs, shape_out, bits=None) -> np.nd
     return bool_to_bit(full)
 
 
+def reproject_mask_at(det_bitmask, coords, bits=None) -> np.ndarray:
+    """A detector bit mask on a frame's box, sampled at the detector positions the frame stores
+    (``coords``: its ``sub_mapping``, ``(2, H, W)`` detector x and y, NaN where none) instead of
+    mapping the box through the WCS again: every bit plane interpolated bilinearly at those
+    positions with the interpolation :func:`reproject_mask` uses, then packed by the same rule.
+    The stored positions are the detector pixel grid interpolated like the planes, kept in
+    float32: a pixel whose interpolated plane lies within that rounding of
+    :data:`MASK_THRESHOLD` can come out the other way (12 of 9.8 M pixels on a SPHEREx frame).
+    Valid only for frames whose ``sub_mapping`` is the detector pixel grid (a reader without its
+    own detector coordinates). ``bits``: only these bit planes (the result has no other bit set)."""
+    from reproject.array_utils import map_coordinates
+    det = np.asarray(det_bitmask).astype(np.int64) & 0xFFFFFFFF
+    shape = tuple(np.shape(coords)[1:])
+    pts = np.array([np.asarray(coords[1], dtype=np.float64).ravel(), np.asarray(coords[0], dtype=np.float64).ravel()])
+    out = np.zeros(shape, dtype=np.uint32)        # bool_to_bit's packing, one plane at a time
+    for b in (range(32) if bits is None else sorted({int(b) for b in bits})):
+        plane = ((det >> b) & 1).astype(np.float64)
+        if plane.any():                           # an empty plane interpolates to 0 or NaN: no bit
+            v = np.asarray(map_coordinates(plane, pts, order=1, cval=np.nan, mode='constant')).reshape(shape)
+            out |= (v > MASK_THRESHOLD).astype(np.uint32) << np.uint32(b)
+    return out
+
+
 def reproject_layers(layers, det_wcs, sub_wcs, shape_out) -> dict:
     """The per-pixel planes of an exposure (a reader's ``layers``, ``{name: (H, W)}``) on a frame's
     box: each interpolated bilinearly from the detector grid (``det_wcs``) onto the box's grid
@@ -444,25 +467,35 @@ def add_reader_layers(frame_path, reader, sci_ext, dq_ext=None, *, names=None, r
     return add_layers(frame_path, layers, replace=replace)
 
 
-def refresh_mask(frame_path, det_bitmask, bits=None) -> int:
+def refresh_mask(frame_path, det_bitmask, bits=None, mapping='wcs') -> int:
     """Recompute an existing frame's ``sub_bitmask`` from the detector bit mask ``det_bitmask``
     (the exposure's mask as its reader returns it now, e.g. with bits dilated:
     :func:`refresh_reader_mask` reads it), reprojected as the reprojection would
     (:func:`reproject_mask`, with the WCS and the box the frame stores). ``bits``: recompute only
     these bit planes and keep the stored mask's other bits, which is right when only those bits
-    changed since the frame was made and 32 times cheaper than every plane. The frame is rewritten
-    atomically, its other datasets and attributes byte for byte (copied object by object), when the
-    mask changes. Returns the number of pixels whose mask changed."""
+    changed since the frame was made and 32 times cheaper than every plane. ``mapping``: ``'wcs'``
+    maps the box through the frame's WCS again, exactly as the reprojection did; ``'stored'``
+    samples the planes at the detector positions the frame stores (:func:`reproject_mask_at`:
+    without the WCS mapping, most of the cost; equal up to the stored positions' float32 rounding
+    at the threshold; frames whose ``sub_mapping`` is the detector pixel grid only). The frame is
+    rewritten atomically, its other datasets and attributes byte for byte (copied object by
+    object), when the mask changes. Returns the number of pixels whose mask changed."""
+    if mapping not in ('wcs', 'stored'):
+        raise ValueError(f"mapping={mapping!r}: 'wcs' or 'stored'")
     with h5py.File(frame_path, 'r') as hf:
         det_header = fits.Header.fromstring(_attr_str(hf, 'det_header'))
         sub_header = fits.Header.fromstring(_attr_str(hf, 'sub_header'))
         old = hf['sub_bitmask'][...]
+        coords = hf['sub_mapping'][...] if mapping == 'stored' else None
     shape = tuple(old.shape)
     if 'NAXIS1' in det_header and 'NAXIS2' in det_header:
         det_shape = (int(det_header['NAXIS2']), int(det_header['NAXIS1']))
         if np.shape(det_bitmask) != det_shape:
             raise ValueError(f"the mask is {np.shape(det_bitmask)}, the frame's detector {det_shape}")
-    new = reproject_mask(det_bitmask, WCS(det_header), WCS(sub_header), shape, bits=bits).astype(old.dtype)
+    if mapping == 'stored':
+        new = reproject_mask_at(det_bitmask, coords, bits=bits).astype(old.dtype)
+    else:
+        new = reproject_mask(det_bitmask, WCS(det_header), WCS(sub_header), shape, bits=bits).astype(old.dtype)
     if bits is not None:
         others = ~sum(old.dtype.type(1 << int(b)) for b in bits)
         new = (old & others) | new
@@ -485,15 +518,16 @@ def refresh_mask(frame_path, det_bitmask, bits=None) -> int:
     return changed
 
 
-def refresh_reader_mask(frame_path, reader, sci_ext, dq_ext, bits=None) -> int:
+def refresh_reader_mask(frame_path, reader, sci_ext, dq_ext, bits=None, mapping='wcs') -> int:
     """Refresh an existing frame's ``sub_bitmask`` with the mask its reader returns now (a reader
     that dilates or edits bits since the frame was made): the source exposure (the frame's
     ``file_path``) is read again with ``reader`` (None: the default FITS reader) and ``sci_ext`` /
-    ``dq_ext``, and its mask goes through :func:`refresh_mask` (``bits``: only those planes).
-    Returns the number of pixels whose mask changed."""
+    ``dq_ext``, and its mask goes through :func:`refresh_mask` (``bits``: only those planes;
+    ``mapping``: how the planes reach the frame's box). Returns the number of pixels whose mask
+    changed."""
     with h5py.File(frame_path, 'r') as hf:
         source = _attr_str(hf, 'file_path')
     exp = read_exposure(reader, source, sci_ext, dq_ext)
     if exp.mask is None:
         raise ValueError(f"the reader of {source} returns no mask")
-    return refresh_mask(frame_path, exp.mask, bits=bits)
+    return refresh_mask(frame_path, exp.mask, bits=bits, mapping=mapping)
