@@ -536,6 +536,10 @@ class Fit(Config):
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
+    ``min_observations``: leave out of the solve the sky pixels observed fewer times than this (2: those a
+    single observation covers, whose one row the pixel's own value fits exactly, informing nothing else);
+    counted over the observations the solve uses (after the masks, the clip if any and the weights), and dropped
+    from every frame's rows; the coadd still covers them (None: every pixel).
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -574,11 +578,16 @@ class Fit(Config):
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
     seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
+    min_observations: int | None = added(None, since='2026-10')
 
     def _validate(self):
         if self.seed not in ('scalar', 'offsets', 'zero'):
             raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
                               f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
+        if self.min_observations is not None and (isinstance(self.min_observations, bool)
+                                                  or not isinstance(self.min_observations, int)
+                                                  or self.min_observations < 2):
+            raise ConfigError(f"Fit(min_observations={self.min_observations!r}): an integer >= 2 (None: every pixel)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

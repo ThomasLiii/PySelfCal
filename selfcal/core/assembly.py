@@ -22,6 +22,18 @@ from ..models.variables import FrameObservations, ObservationVariables
 from .subframe import _prep_subframe
 
 
+def _grid_window(mask, ref_coords, shape):
+    """``mask`` (reference grid) on a subframe's box ``ref_coords = [y0, y1, x0, x1]`` of shape ``shape``;
+    False where the box runs past the grid."""
+    H, W = mask.shape
+    y0, x0 = int(ref_coords[0]), int(ref_coords[2])
+    out = np.zeros(shape, dtype=bool)
+    gy0, gy1, gx0, gx1 = max(y0, 0), min(y0 + shape[0], H), max(x0, 0), min(x0 + shape[1], W)
+    if gy1 > gy0 and gx1 > gx0:
+        out[gy0 - y0:gy1 - y0, gx0 - x0:gx1 - x0] = mask[gy0:gy1, gx0:gx1]
+    return out
+
+
 def _prep_lsqr(task_params):
     '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
     # 1. Unpack task specific
@@ -92,6 +104,9 @@ def _prep_lsqr(task_params):
                 values=extras.get('raw_data'), flags=extras.get('flags'))
 
         sub_valid = sub_weight > 0
+        sky_drop = task_params.get('sky_drop')             # setup_lsqr(min_observations=): pixels dropped from every frame
+        if sky_drop is not None:
+            sub_valid &= ~_grid_window(sky_drop, ref_coords, sub_valid.shape)
         if isinstance(outlier_thresh, (int, float)) and outlier_thresh > 0:
             masked = np.where(sub_valid, sub_data, np.nan)
             # Grouped clip: when group edges and a grouping variable are given,
@@ -177,6 +192,8 @@ def _prep_lsqr(task_params):
                           for b in basis_vals]
         if weight_function is not None:
             valid_weight = (valid_weight * wf).astype(valid_weight.dtype)
+        if task_params.get('count_only'):                  # setup_lsqr(min_observations=): the counting pass
+            return ref_pix_indices[valid_weight != 0]      # a row of weight 0 leaves the matrix (below)
 
         # --- Sky rows: one nnz per sky term per data row ---
         # The sky block is J sub-blocks of num_sky columns each, one per
@@ -475,6 +492,13 @@ def _prep_lsqr_batch_worker(batch_params):
             shm_handles.append(shm)
         shm_arrays['sky_variables'] = sky_vars
 
+    sky_drop_meta = sub_tasks[0].get('sky_drop_meta')
+    if sky_drop_meta is not None:
+        name, shape, dtype = sky_drop_meta
+        shm = SharedMemory(name=name)
+        shm_arrays['sky_drop'] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        shm_handles.append(shm)
+
     if 'gvw_shm_name' in sub_tasks[0]:
         shm_gvw = SharedMemory(name=sub_tasks[0]['gvw_shm_name'])
         shm_arrays['grid_valid_weight'] = np.ndarray(sub_tasks[0]['gvw_shape'], dtype=sub_tasks[0]['gvw_dtype'], buffer=shm_gvw.buf)
@@ -500,6 +524,17 @@ def _prep_lsqr_batch_worker(batch_params):
     spill_paths = None
     spill_fhs = None
     try:
+        if batch_params.get('count'):
+            # setup_lsqr(min_observations=): the grid pixels of each subframe's rows (each once per subframe),
+            # counted over the batch
+            ids = []
+            for task_params in sub_tasks:
+                task_params.update(shm_arrays)
+                task_params['count_only'] = True
+                result = _prep_lsqr(task_params)
+                if isinstance(result, np.ndarray) and result.size:   # (a subframe with no rows returns its empty tuple)
+                    ids.append(result)
+            return np.unique(np.concatenate(ids), return_counts=True) if ids else None
         reduce = batch_params.get('reduce')
         if reduce is not None:
             # setup_lsqr(reduce=...): each subframe's rows go to `reduce` instead of into the

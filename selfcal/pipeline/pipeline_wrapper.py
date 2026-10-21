@@ -760,8 +760,13 @@ class Calibrator(Reprojector):
                    batch_spill_dir: str | None = None,
                    variables=None, weight_function=None, priors: list | None = None,
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
-                   fixed_sky: bool = False, moments_only: bool = False, reduce=None) -> None:
+                   fixed_sky: bool = False, moments_only: bool = False, reduce=None,
+                   min_observations: int | None = None) -> None:
         """Build the LSQR system for K chunk maps.
+
+        ``min_observations``: the sky pixels observed fewer times than this are
+        dropped from every frame's rows (``Fit(min_observations=)``;
+        :func:`selfcal.core.system.setup_lsqr`).
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms (and the
@@ -994,7 +999,8 @@ class Calibrator(Reprojector):
                 weight_function=weight_function, priors=priors,
                 outlier_group_variable=outlier_group_variable,
                 outlier_chunk_groups=outlier_chunk_groups,
-                fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce)
+                fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
+                min_observations=min_observations)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come

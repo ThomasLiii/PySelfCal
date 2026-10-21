@@ -278,6 +278,21 @@ def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_ob
                        reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts, observed_cols))
 
 
+def _count_observations(batched_tasks, *, max_workers, num_sky):
+    """``setup_lsqr(min_observations=)``: the observations of every reference-grid pixel (flat, ``num_sky``),
+    counted by the row builders on the batches the matrix is built from."""
+    hits = np.zeros(num_sky, dtype=np.int64)
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
+        futures = [executor.submit(_prep_lsqr_batch_worker, {**batch, 'count': True}) for batch in batched_tasks]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Counting observations",
+                           disable=not _state.progress_enabled):
+            result = future.result()
+            if result is not None:
+                ids, counts = result
+                hits[ids] += counts                            # unique ids per batch; integers: any order
+    return hits
+
+
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                chunk_maps: list[np.ndarray] | None = None,
                grid_valid_weight: np.ndarray | None = None,
@@ -312,8 +327,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                outlier_group_variable: str | None = None,
                outlier_chunk_groups=None,
                fixed_sky: bool = False, moments_only: bool = False,
-               reduce: Callable | None = None) -> SetupResult:
+               reduce: Callable | None = None,
+               min_observations: int | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``min_observations``: the reference-grid pixels observed fewer times than
+    this (and at least once) are dropped from every frame's rows. The workers
+    first count each pixel's observations as the rows would have them (the
+    frames' valid pixels after the masks, the detector region, the outlier clip
+    when there is one, and the weights: the sky coverage of the solve), then
+    build the rows without those pixels. 2 drops the pixels a single observation covers: an
+    unknown that only one row informs fits that row exactly and constrains
+    nothing else.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
@@ -529,6 +554,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("batch_size must be a positive integer")
     if moments_only and reduce is not None:
         raise ValueError("give moments_only or reduce, not both")
+    if min_observations is not None and not (isinstance(min_observations, int) and min_observations >= 2):
+        raise ValueError("min_observations must be an integer >= 2")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
@@ -862,6 +889,27 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if reduce is not None:
             batch['reduce'] = reduce
         batched_tasks.append(batch)
+
+    if min_observations is not None:
+        try:
+            hits = _count_observations(batched_tasks, max_workers=max_workers, num_sky=num_sky)
+            drop = np.ascontiguousarray(((hits > 0) & (hits < min_observations)).reshape(ref_shape), dtype=np.uint8)
+            n_drop, n_seen = int(drop.sum()), int((hits > 0).sum())
+            logger.info(f"Coverage floor: {n_drop} of the {n_seen} grid pixels with data "
+                        f"({n_drop / max(n_seen, 1) * 100:.2f} %) observed fewer than {min_observations} "
+                        f"times, dropped from every frame")
+            del hits
+            shm_drop = SharedMemory(create=True, size=max(drop.nbytes, 1))
+            np.ndarray(drop.shape, dtype=np.uint8, buffer=shm_drop.buf)[:] = drop
+            shm_objects.append(shm_drop)
+            for task_params in all_individual_tasks:
+                task_params['sky_drop_meta'] = (shm_drop.name, drop.shape, np.uint8)
+            del drop
+        except BaseException:
+            for shm in shm_objects:
+                shm.close()
+                shm.unlink()
+            raise
 
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
