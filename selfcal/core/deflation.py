@@ -110,6 +110,12 @@ _SCHUR_MAX = 1 << 14
 _SCHUR_BATCH = 1 << 26
 #: Elements per thread block of the projections.
 _MIN_BLOCK = 1 << 18
+#: Entries of the offsets' normal matrix read at once when the hub columns' blocks are taken out of it.
+_EXTRACT_ENTRIES = 1 << 24
+#: Threads (and items in flight) for the deflation's work in many small BLAS calls (the projections' sub-block
+#: products, the Schur complement's batches): OpenBLAS serialises concurrent calls on its buffer lock, so more threads
+#: run slower, and each batch in flight holds its own buffers.
+_BLAS_THREADS = 6
 
 
 def axis_functions(basis, order, n) -> np.ndarray:
@@ -182,6 +188,35 @@ def _pieces(storage, rows=_ROWS):
         yield _piece(storage, desc)
 
 
+def _components(G):
+    """The connected components of a symmetric sparse matrix's graph, ``(count, labels)``, numbered in the order of
+    their smallest column, as scipy's undirected search numbers them: its strongly connected components (those of
+    a symmetric graph), which it finds without the transposed copy of the matrix the undirected search makes."""
+    n = G.shape[0]
+    count, labels = connected_components(G, directed=True, connection='strong')
+    first = np.full(count, n, dtype=np.int64)
+    np.minimum.at(first, labels, np.arange(n, dtype=np.int64))
+    rank = np.empty(count, dtype=labels.dtype)
+    rank[np.argsort(first, kind='stable')] = np.arange(count, dtype=labels.dtype)
+    return count, rank[labels]
+
+
+def _bounded_map(pool, fn, items, width=_BLAS_THREADS):
+    """``[fn(item) for item in items]``, in ``pool`` with at most ``width`` items in flight (each holds its
+    buffers until it returns); the results in item order, so a sum over them keeps its order."""
+    if pool is None:
+        return [fn(it) for it in items]
+    from collections import deque
+    out, q = [], deque()
+    for it in items:
+        if len(q) >= width:
+            out.append(q.popleft().result())
+        q.append(pool.submit(fn, it))
+    while q:
+        out.append(q.popleft().result())
+    return out
+
+
 def _block_pinv_solve(G, R, project=None, pool=None):
     """``G^+ R`` for a symmetric positive semi-definite csr ``G`` and ``R`` (n x k), exact on each
     connected block of ``G``: batched dense eigen-decompositions (eigenvalues below
@@ -200,7 +235,7 @@ def _block_pinv_solve(G, R, project=None, pool=None):
         project = None
     if project is not None:
         R = project.apply(np.array(R, dtype=np.float64, copy=True))
-    ncomp, labels = connected_components(G, directed=False)
+    ncomp, labels = _components(G)
     counts = np.bincount(labels, minlength=ncomp)
     if counts.max() > _DENSE_BLOCK:
         deg = np.diff(G.indptr)
@@ -291,16 +326,30 @@ def _schur_factor(G, hub, project=None, pool=None):
         if (hpos[project.columns] < 0).any():
             raise ValueError('the Schur path needs every constrained column among the hubs')
         ph = project.mapped(hpos)
-    Gc = G.tocoo()
-    er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
-    hr, hc = is_hub[er], is_hub[ec]
-    ff = ~hr & ~hc
-    Gff = coo_matrix((ev[ff], (fpos[er[ff]], fpos[ec[ff]])), shape=(nF, nF)).tocsr()
-    hh = hr & hc
+    # The other columns' block and the hubs' own part, read off G's rows a chunk at a time in G's entry order
+    # (the order of G.tocoo(), so Gff is the same matrix), without a copy of G with int64 indices and masks.
+    ff_r, ff_c, ff_v = [], [], []
     C = np.zeros((nH, nH))
-    C[hpos[er[hh]], hpos[ec[hh]]] = ev[hh]
-    del Gc, er, ec, ev, hr, hc, ff, hh
-    ncomp, labels = connected_components(Gff, directed=False)
+    r0 = 0
+    while r0 < n:
+        r1 = max(r0 + 1, int(np.searchsorted(G.indptr, int(G.indptr[r0]) + _EXTRACT_ENTRIES, side='right')) - 1)
+        r1 = min(n, r1)
+        s0, s1 = int(G.indptr[r0]), int(G.indptr[r1])
+        er = np.repeat(np.arange(r0, r1, dtype=np.int64), np.diff(G.indptr[r0:r1 + 1]))
+        ec = G.indices[s0:s1].astype(np.int64)
+        ev = G.data[s0:s1]
+        hr, hc = is_hub[er], is_hub[ec]
+        ff = ~hr & ~hc
+        ff_r.append(fpos[er[ff]])
+        ff_c.append(fpos[ec[ff]])
+        ff_v.append(ev[ff])
+        hh = hr & hc
+        C[hpos[er[hh]], hpos[ec[hh]]] = ev[hh]
+        r0 = r1
+    del er, ec, ev, hr, hc, ff, hh
+    Gff = coo_matrix((np.concatenate(ff_v), (np.concatenate(ff_r), np.concatenate(ff_c))), shape=(nF, nF)).tocsr()
+    del ff_r, ff_c, ff_v
+    ncomp, labels = _components(Gff)
     counts = np.bincount(labels, minlength=ncomp)
     if counts.max() > _DENSE_BLOCK:
         return None
@@ -329,10 +378,8 @@ def _schur_factor(G, hub, project=None, pool=None):
     del Gfc, er, ec, ev, ecomp, Gff
 
     def run(fn, items):
-        """``fn`` over the items, in the pool when there is one; the results in item order."""
-        if pool is None:
-            return [fn(it) for it in items]
-        return list(pool.map(fn, items))
+        """``fn`` over the items, in the pool when there is one (a few in flight); the results in item order."""
+        return _bounded_map(pool, fn, items)
 
     def hub_part(rows):
         """The rows ``rows`` of G restricted to the hub columns, dense ``(len(rows), nH)``."""
@@ -437,9 +484,7 @@ class _SchurFactor:
         n, k, F, H, nF, nH, bl = self.n, R.shape[1], self.F, self.H, self.nF, self.nH, self.bl
 
         def run(fn, items):
-            if pool is None:
-                return [fn(it) for it in items]
-            return list(pool.map(fn, items))
+            return _bounded_map(pool, fn, items)
         RF, RH = R[F], R[H]
         Rh = RH.copy()
 
@@ -617,6 +662,8 @@ class Deflation:
                     else 1.0 / np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64))
         # The patterns: (order + 1)^2 per deflated term, on the term's covered bounding box.
         order, basis = int(settings.order), str(settings.basis)
+        # (sel, x function, y function, box corner) per pattern; the values are made row by row into the pattern
+        # array below, one pattern's temporaries at a time
         labels, rows_of = [], []
         for name in terms:
             j = names.index(name)
@@ -629,7 +676,7 @@ class Deflation:
             for a in range(order + 1):
                 for c in range(order + 1):
                     labels.append(f"{name}:{a},{c}")
-                    rows_of.append((sel, fx[a][ix[sel] - x0] * fy[c][iy[sel] - y0]))
+                    rows_of.append((sel, fx[a], fy[c], x0, y0))
             if basis != 'polynomial' or order < POLY_ALWAYS:
                 px = axis_functions('polynomial', POLY_ALWAYS, x1 - x0 + 1)
                 py = axis_functions('polynomial', POLY_ALWAYS, y1 - y0 + 1)
@@ -638,7 +685,7 @@ class Deflation:
                         if a + c == 0 or (basis == 'polynomial' and a <= order and c <= order):
                             continue
                         labels.append(f"{name}:P{a},{c}")
-                        rows_of.append((sel, px[a][ix[sel] - x0] * py[c][iy[sel] - y0]))
+                        rows_of.append((sel, px[a], py[c], x0, y0))
         self._term_slices = []
         for j, name in enumerate(names):
             a_, b_ = int(np.searchsorted(term_of, j, 'left')), int(np.searchsorted(term_of, j, 'right'))
@@ -649,8 +696,8 @@ class Deflation:
             raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
         self.labels = labels
         Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
-        for i, (sel, vals) in enumerate(rows_of):
-            Z[i, sel] = vals * col_norm[sel]
+        for i, (sel, gx, gy, x0, y0) in enumerate(rows_of):
+            Z[i, sel] = (gx[ix[sel] - x0] * gy[iy[sel] - y0]) * col_norm[sel]
         del rows_of, term_of, iy, ix
         self._colmap = None
         if self.S is not None:
@@ -689,6 +736,7 @@ class Deflation:
             # per row chunk).
             t = time.perf_counter()
             Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
+            del Z                                                 # the one layout until pass 2 has read it
             descs = _piece_index(storage)
 
             def pass1(my):
@@ -759,8 +807,7 @@ class Deflation:
             del res
             if signatures:
                 X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
-            Z[:, n_sky_S:] = -X.T
-            Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
+            Zt[n_sky_S:, :] = -X                                  # the paired patterns (pass 2 reads them)
             del G, R, X
             t_pair = time.perf_counter() - t
 
@@ -790,10 +837,10 @@ class Deflation:
                 bnorm2 += bn
             del acc2
             ATb = np.ascontiguousarray(NZb[:, k])
-            NZt = np.ascontiguousarray(NZb[:, :k])
-            del NZb, Zt
-            NZ = np.ascontiguousarray(NZt.T)
-            del NZt
+            NZ = np.ascontiguousarray(NZb[:, :k].T)               # one copy, into the layout the grams read
+            del NZb
+            Z = np.ascontiguousarray(Zt.T)                        # the patterns, one per row again
+            del Zt
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
 
