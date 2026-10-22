@@ -3,7 +3,7 @@
 Pure (no SPHEREx data); runnable as ``python tests/test_sky_model.py`` or under
 pytest. The load-bearing tests assert the new GaussianProfile / QuadratureSigma
 reproduce the legacy inline ``G(λ)`` expression from lsqr._prep_lsqr *bitwise*,
-so the Phase 3b row-assembly rewire stays byte-identical.
+so the row assembly, rewired onto SkyModel, stays byte-identical.
 """
 import numpy as np
 

@@ -1,4 +1,4 @@
-"""Phase 3c unit tests: global constraint builders reproduce the legacy blocks.
+"""Unit tests: global constraint builders reproduce the legacy blocks.
 
 The cal gates exercise mean-offset + continuum damping on real data, but NOT
 line damping (production runs damp_weight_line=0) or offset damping (no
