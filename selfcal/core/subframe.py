@@ -278,7 +278,11 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                 "to infer the detector-grid shape from.")
         H, W = sub_data.shape
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
-        sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
+        # a factor of 1 that keeps the dtype leaves the coordinates as stored (no full-frame copy)
+        if oversample_factor == 1 and np.result_type(sub_mapping_flat, oversample_factor) == sub_mapping_flat.dtype:
+            sub_mapping_flat_scaled = sub_mapping_flat
+        else:
+            sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         coords_yx = sub_mapping_flat_scaled[::-1]
         # Pre-filter zero-weight rows before building the interp matrix:
         # when grid_valid_weight is available, drop rows whose bilinear
