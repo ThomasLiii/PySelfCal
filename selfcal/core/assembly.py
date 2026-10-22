@@ -401,15 +401,15 @@ def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
     Template / hard-poly-basis offsets emit one entry per chunk-contrib into
     the same per-frame column, so ~1/4 of a template-mode row's entries are
     duplicates. Left in, they inflate every downstream buffer (batch spill
-    files, the CSR buffers of Phase 3/4a) by the same fraction until the
-    Phase-5 merge. Merging here instead is bit-identical to merging there:
+    files, the CSR buffers setup_lsqr allocates and fills) by the same fraction until
+    the final matrix's duplicate merge. Merging here instead is bit-identical to merging there:
     scipy's ``coo -> csr`` conversion is a stable row bucket (``coo_tocsr``
     keeps each row's entries in emission order) followed by the very kernels
-    Phase 5 runs on the very same per-row sequences (``csr_sort_indices`` then
+    that final merge runs on the very same per-row sequences (``csr_sort_indices`` then
     ``csr_sum_duplicates``, float32 arithmetic), and the global scatter is
-    stable too, so each row reaches Phase 5 with the same entry sequence
-    either way. The stream returned is row-grouped and column-sorted; Phase 5
-    then finds nothing to merge.
+    stable too, so each row reaches that merge with the same entry sequence
+    either way. The stream returned is row-grouped and column-sorted; the final
+    merge then finds nothing to merge.
 
     ``pixel_counts`` is defined on the PRE-merge stream (its offset-column
     part feeds ``offset_damping_block``), so the pre-merge counts of every
