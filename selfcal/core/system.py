@@ -225,7 +225,7 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
         s0, s1 = int(seg[0]), int(seg[-1])
         if s1 - s0 != int(expected[t]):
             raise RuntimeError(f"column range {t}: {s1 - s0} entries placed, "
-                               f"{int(expected[t])} expected from Phase 1")
+                               f"{int(expected[t])} expected from the collated counts")
         o = t * (num_rows + 1)
         np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
         _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
@@ -1673,15 +1673,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 int(_blk_nnz[_b]), int(_ip_off[_b]), _blk_rnnz[_b])
 
     if _partitioned:
-        logger.info(f"Phase 4a: parallel placement into partitioned storage "
+        logger.info(f"Data-row placement: parallel, into partitioned storage "
                     f"({_nb} storage blocks x {_split_T} column ranges), "
                     f"{len(_file_batches)} batches over {_scatter_workers} "
                     "workers (forkserver).")
     elif _par_scatter:
-        logger.info(f"Phase 4a: parallel placement, {len(_file_batches)} batches "
+        logger.info(f"Data-row placement: parallel, {len(_file_batches)} batches "
                     f"over {_scatter_workers} workers (forkserver).")
     else:
-        logger.info("Phase 4a: serial placement.")
+        logger.info("Data-row placement: serial.")
     if _par_scatter:
         if _partitioned:
             _bufs = {'csr_data': _shared['csr_data'],
@@ -1708,9 +1708,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
         except (_FutTimeout, BrokenProcessPool) as _e:
-            logger.warning(f"Phase 4a: parallel placement aborted ({type(_e).__name__}: "
-                           f"{_e}); {len(_futs) - len(_done_par)} batch(es) will be "
-                           "placed serially.")
+            logger.warning(f"Data-row placement: the parallel placement aborted "
+                           f"({type(_e).__name__}: {_e}); {len(_futs) - len(_done_par)} batch(es) "
+                           "will be placed serially.")
             for _p in list(getattr(_ex, '_processes', {}).values()):
                 try:
                     _p.kill()
@@ -1834,7 +1834,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         del _pieces, _canon
         full_A = ColSplitCSR(_sub, _row_bounds, _cuts_c, (total_rows, n_active))
         del _sub, _ip_all, csr_data, csr_indices
-        logger.info(f"Phase 5: ColSplitCSR with {_nb} int32 storage blocks x "
+        logger.info(f"Matrix hand-over: ColSplitCSR with {_nb} int32 storage blocks x "
                     f"{_split_T} column ranges (nnz={total_nnz}).")
     elif total_nnz >= _block_thr:
         from .blockcsr import build_block_csr
@@ -1843,7 +1843,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                  (total_rows, n_active), target)
         _blk_starts = [int(indptr[r0]) for r0 in full_A.row_bounds[:-1]]
         del indptr
-        logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+        logger.info(f"Matrix hand-over: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
                     f"(nnz={total_nnz}).")
         _blocks = full_A.blocks
     else:
@@ -1874,7 +1874,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
         del _buf, _blocks, _blk_starts
         if _nnz_post != _nnz_pre:
-            logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+            logger.info(f"Matrix hand-over: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
                         f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it
