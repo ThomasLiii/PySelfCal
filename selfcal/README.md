@@ -859,7 +859,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as the engine takes it (variables, sky terms, offset terms, weight, priors), built from an `sc.Model`, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
 | [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
 | [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
-| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `fill_missing` (a reader's layer without NaN), `dilate_bits` (a reader's mask grown by a pixel), `write_frame` (the frame-file contract), `frame_compression`, `frame_header_values`. |
+| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `fill_missing` (a reader's layer without NaN), `dilate_bits` (a reader's mask grown by a pixel, in the bits themselves or in another bit), `write_frame` (the frame-file contract), `frame_compression`, `frame_header_values`. |
 | [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
 | [`instruments/base.py`](instruments/base.py) | The typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | Rectangular chunk-grid helpers (`rect_grid_chunk_map`, `upsample_chunk_map`). |
@@ -867,7 +867,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`StarMask`, `ResidualMask`). |
 | [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid helpers: the strip and grid chunk maps, their offset renderers, the edge taper. |
 | [`instruments/spherex/settings.py`](instruments/spherex/settings.py) | `sc.SPHEREx` (chunk maps and axes, wavelength maps, renderer, layout), its jobs, `line`, `precompute_lvf`, `zodi_anchor`. |
-| [`instruments/spherex/exposures.py`](instruments/spherex/exposures.py) | The L2b exposure reader `read_l2b` (`IMAGE`, `FLAGS` with SUR_ERROR and NONFUNC dilated by one pixel, and `VARIANCE` as the frame layer `variance`), `l2b_variance`, `l2b_flags`. |
+| [`instruments/spherex/exposures.py`](instruments/spherex/exposures.py) | The L2b exposure reader `read_l2b` (`IMAGE`, `FLAGS` as read plus bit 30 on the one-pixel dilation of SUR_ERROR and NONFUNC, and `VARIANCE` as the frame layer `variance`), `l2b_variance`, `l2b_flags`. |
 | [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx helpers: the readout-channel chunk map (`make_readout_chunk_map`) and the named subchannel windows (`SUBCH_WINDOWS`). |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |

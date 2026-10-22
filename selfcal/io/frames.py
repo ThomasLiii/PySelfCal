@@ -122,19 +122,32 @@ def fill_missing(plane, missing) -> np.ndarray:
     return a
 
 
-def dilate_bits(mask, bits, size=3) -> np.ndarray:
+def dilate_bits(mask, bits, size=3, into=None) -> np.ndarray:
     """A copy of the integer bit mask ``mask`` in which each of ``bits`` is also set on every pixel
     within the ``size`` x ``size`` neighbourhood of a pixel that has it (the binary dilation of that
-    bit's plane). For a reader: an exact (area-conserving) reprojection spreads a flagged pixel's
-    value into every output pixel its area touches, further than the bilinear footprint the
-    reprojected mask gives it, so a dead pixel's garbage value can land in unflagged output pixels;
-    dilating by one pixel the bits whose values are garbage makes the mask cover that spread."""
+    bit's plane). With ``into`` (a bit number), the bits stay as they are and the bit ``into`` is set
+    instead on the dilation of their union, so the mask keeps the original flags beside the grown
+    ones. For a reader: an exact (area-conserving) reprojection spreads a flagged pixel's value into
+    every output pixel its area touches, further than the bilinear footprint the reprojected mask
+    gives it, so a dead pixel's garbage value can land in unflagged output pixels; dilating by one
+    pixel the bits whose values are garbage makes the mask cover that spread."""
     out = np.array(mask, copy=True)
     structure = np.ones((int(size), int(size)), dtype=bool)
-    for b in bits:
-        plane = ((out >> int(b)) & 1).astype(bool)
-        grown = binary_dilation(plane, structure=structure)
-        out[grown] |= out.dtype.type(1 << int(b))
+    if into is None:
+        for b in bits:
+            plane = ((out >> int(b)) & 1).astype(bool)
+            grown = binary_dilation(plane, structure=structure)
+            out[grown] |= out.dtype.type(1 << int(b))
+        return out
+    into = int(into)
+    if into in {int(b) for b in bits}:
+        raise ValueError(f"dilate_bits: into={into} is one of the dilated bits {tuple(bits)}")
+    if not (0 <= into < out.dtype.itemsize * 8 - (1 if np.issubdtype(out.dtype, np.signedinteger) else 0)):
+        raise ValueError(f"dilate_bits: bit {into} does not fit the mask's {out.dtype} as a positive flag")
+    if not bits:
+        return out
+    union = (out & out.dtype.type(sum(1 << int(b) for b in bits))) != 0
+    out[binary_dilation(union, structure=structure)] |= out.dtype.type(1 << into)
     return out
 
 
