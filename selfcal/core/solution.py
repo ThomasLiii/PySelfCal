@@ -9,7 +9,7 @@ from scipy.sparse import csr_matrix
 if TYPE_CHECKING:
     from scipy.sparse import coo_matrix
 
-    from .blockcsr import BlockCSR
+    from .blockcsr import BlockCSR, ColSplitCSR
 
 __all__ = [
     "parse_x_sky",
@@ -105,9 +105,10 @@ def encode_x(skymap: np.ndarray, offsets: np.ndarray | list[np.ndarray]) -> np.n
     return np.concatenate(parts)
 
 
-def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
+def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: np.ndarray,
                        ref_shape: tuple[int, int], num_sky_blocks: int = 1,
-                       active_mask: np.ndarray | None = None) -> np.ndarray:
+                       active_mask: np.ndarray | None = None,
+                       _chunk_target_entries: int = 64_000_000) -> np.ndarray:
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
@@ -120,9 +121,11 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
 
     Parameters
     ----------
-    A : csr_matrix or coo_matrix
-        The assembled design matrix from ``setup_lsqr``. ``BlockCSR`` is
-        rejected (use ``compute_x0_scalar_only``).
+    A : csr_matrix, coo_matrix, BlockCSR or ColSplitCSR
+        The assembled design matrix from ``setup_lsqr``. The large systems'
+        storages (``BlockCSR``, ``ColSplitCSR``) are walked chunk by chunk
+        (:func:`_offset_column_sums`) with the csr path's arithmetic: the
+        same matrix gives the same bytes in every storage.
     b : np.ndarray
         The right-hand-side vector from ``setup_lsqr`` (upcast to float64
         internally so the products accumulate identically to an f64 ``b``).
@@ -147,13 +150,11 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
         When ``active_mask is None`` (default): the returned ``x0`` has
         length ``A.shape[1]`` and the sky/offset boundary is
         ``num_sky_eff`` on the supplied ``A``.
+    _chunk_target_entries : int
+        Entries per chunk of the split storages' walk (exposed so tests can
+        force many chunks; the result does not depend on it).
     """
-    from .blockcsr import BlockCSR
-    if isinstance(A, BlockCSR):
-        raise TypeError(
-            "compute_x0_from_Ab does not support BlockCSR input (emitted by "
-            "setup_lsqr once total nnz >= SELFCAL_BLOCK_NNZ); use "
-            "compute_x0_scalar_only, or raise the threshold for this run")
+    from .blockcsr import BlockCSR, ColSplitCSR
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -164,17 +165,6 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     # system.setup_lsqr). Upcast so the off_data * b products accumulate in
     # f64, identical to an f64 b. No-op for f64 b.
     b = b.astype(np.float64, copy=False)
-
-    # setup_lsqr returns a csr_matrix; the COO branch below is kept for
-    # callers that pass a coo_matrix directly. We need row/col/data triples
-    # to do the per-column diag-LS below, so convert CSR to COO here.
-    # tocoo(copy=False) shares data/indices but does allocate a transient
-    # nnz-sized row array via np.repeat — acceptable since this is a
-    # one-time setup call (not in the LSQR hot loop).
-    if isinstance(A, csr_matrix):
-        A_coo = A.tocoo(copy=False)
-    else:
-        A_coo = A
 
     # Boundary between sky and offset blocks IN THE COMPACT COLUMN SPACE.
     # When active_mask is supplied, A is already compacted (zero-column
@@ -195,17 +185,29 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     else:
         boundary = num_sky_eff
 
-    # Extract offset portion of A (columns boundary onwards)
-    offset_mask = A_coo.col >= boundary
-    off_row = A_coo.row[offset_mask]
-    off_col = A_coo.col[offset_mask] - boundary
-    off_data = A_coo.data[offset_mask]
-
     num_offset_cols = num_cols - boundary
 
     # offset_j = (A_off[:, j]^T @ b) / (A_off[:, j]^T @ A_off[:, j])
-    AtA_diag = np.bincount(off_col, weights=off_data ** 2, minlength=num_offset_cols)
-    Atb = np.bincount(off_col, weights=off_data * b[off_row], minlength=num_offset_cols)
+    if isinstance(A, (BlockCSR, ColSplitCSR)):
+        AtA_diag, Atb = _offset_column_sums(A, b, boundary, num_offset_cols,
+                                            chunk_target_entries=_chunk_target_entries)
+    else:
+        # setup_lsqr returns a csr_matrix; the COO branch below is kept for
+        # callers that pass a coo_matrix directly. We need row/col/data triples
+        # to do the per-column diag-LS below, so convert CSR to COO here.
+        # tocoo(copy=False) shares data/indices but does allocate a transient
+        # nnz-sized row array via np.repeat — acceptable since this is a
+        # one-time setup call (not in the LSQR hot loop).
+        A_coo = A.tocoo(copy=False) if isinstance(A, csr_matrix) else A
+
+        # Extract offset portion of A (columns boundary onwards)
+        offset_mask = A_coo.col >= boundary
+        off_row = A_coo.row[offset_mask]
+        off_col = A_coo.col[offset_mask] - boundary
+        off_data = A_coo.data[offset_mask]
+
+        AtA_diag = np.bincount(off_col, weights=off_data ** 2, minlength=num_offset_cols)
+        Atb = np.bincount(off_col, weights=off_data * b[off_row], minlength=num_offset_cols)
 
     offsets = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
 
@@ -223,6 +225,77 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix, b: np.ndarray,
     x0_full[active_mask] = x0_compact
     return x0_full
 
+
+def _offset_column_sums(A, b, boundary, num_offset_cols, chunk_target_entries=64_000_000):
+    """``sum_i A[i, j]^2`` and ``sum_i A[i, j] b[i]`` of every column ``j >= boundary`` of a ``BlockCSR`` or
+    ``ColSplitCSR``, with the arithmetic of :func:`compute_x0_from_Ab`'s csr path (one ``np.bincount`` over the
+    row-major entry stream): each column's entries are folded in row order, left to right from 0.0, whatever the
+    storage. The walk goes chunk by chunk (row-blocks in order; for a ``ColSplitCSR`` one column range after
+    another, each holding all of its columns' entries), and each chunk's ``bincount`` starts from the sums so far
+    through one leading entry per column (0.0 + s is exactly s, then the chunk's entries in order): the fold
+    continues exactly, with no entry held beyond one chunk. The squares are taken in the data's dtype before the
+    cast, as the csr path's ``off_data ** 2``. The products of a chunk are prepared in a small thread window; the
+    folds run strictly in chunk order."""
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .blockcsr import ColSplitCSR, _csr_shell
+    pieces = []                                   # (rows as csr, first row, column offset of its ids)
+    if isinstance(A, ColSplitCSR):
+        for t in range(A.nranges):
+            c0, c1 = int(A.cuts[t]), int(A.cuts[t + 1])
+            if c1 <= boundary:
+                continue
+            for bi in range(A.nblocks):
+                d, i, ip = A.sub[bi][t]
+                nrows = int(A.row_bounds[bi + 1] - A.row_bounds[bi])
+                pieces.append((_csr_shell(d, i, ip, (nrows, c1 - c0)), int(A.row_bounds[bi]), c0))
+    else:                                         # BlockCSR: row-blocks in row order
+        pieces = [(blk, int(A.row_bounds[k]), 0) for k, blk in enumerate(A.blocks)]
+    chunks = []
+    for blk, row_off, c0 in pieces:
+        step = max(1, int(chunk_target_entries) // max(1, int(blk.nnz // max(1, blk.shape[0]))))
+        chunks.extend((blk, row_off, c0, r0, min(r0 + step, blk.shape[0])) for r0 in range(0, blk.shape[0], step))
+
+    def prep(ch):
+        blk, row_off, c0, r0, r1 = ch
+        s0, s1 = int(blk.indptr[r0]), int(blk.indptr[r1])
+        if s0 == s1:
+            return None
+        cols = blk.indices[s0:s1].astype(np.int64) + c0
+        keep = cols >= boundary
+        if not keep.any():
+            return None
+        d = blk.data[s0:s1][keep]
+        bv = np.repeat(b[row_off + r0:row_off + r1], np.diff(blk.indptr[r0:r1 + 1]))[keep]
+        return cols[keep] - boundary, (d * d).astype(np.float64, copy=False), d * bv
+
+    lead = np.arange(num_offset_cols, dtype=np.int64)
+    AtA = np.zeros(num_offset_cols)
+    Atb = np.zeros(num_offset_cols)
+
+    def fold(res):
+        nonlocal AtA, Atb
+        if res is None:
+            return
+        o, w2, wb = res
+        idx = np.concatenate([lead, o])
+        AtA = np.bincount(idx, weights=np.concatenate([AtA, w2]), minlength=num_offset_cols)
+        Atb = np.bincount(idx, weights=np.concatenate([Atb, wb]), minlength=num_offset_cols)
+
+    if len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            q = deque()
+            for ch in chunks:
+                q.append(ex.submit(prep, ch))
+                if len(q) >= 3:
+                    fold(q.popleft().result())
+            while q:
+                fold(q.popleft().result())
+    else:
+        for ch in chunks:
+            fold(prep(ch))
+    return AtA, Atb
 
 
 def _accumulate_runs(acc, cols, w):
