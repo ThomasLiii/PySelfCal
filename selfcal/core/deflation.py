@@ -97,6 +97,8 @@ DEPENDENT = 1e-12
 POLY_ALWAYS = 2
 #: Rows of the matrix per chunk of the float64 passes.
 _ROWS = 1 << 21
+#: Index dtype of the passes' chunk buffers (the storages index with int32: every column and chunk entry fits).
+_IDX = np.int32
 #: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES, unless
 #: hub columns explain their size).
 _DENSE_BLOCK = 4096
@@ -165,17 +167,18 @@ def _piece_index(storage, rows=_ROWS):
 
 
 def _piece(storage, desc, buf=None):
-    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (int64, from 0) per
-    piece; one piece per column range of a ColSplitCSR, one otherwise. ``buf`` (a :class:`_Slot`): the indptr
-    and the column ids are written into its buffers (the same values; nothing allocated per chunk)."""
+    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (from 0) per piece; one
+    piece per column range of a ColSplitCSR, one otherwise; int64 indices. ``buf`` (a :class:`_Slot`): the indptr
+    and the column ids are written into its buffers, in :data:`_IDX` (the same values; nothing allocated per
+    chunk)."""
     bi, lr0, lr1 = desc
 
     def local(ip, s0, idx, s1, cut, t):
         if buf is None:
             return ip[lr0:lr1 + 1].astype(np.int64) - s0, idx[s0:s1].astype(np.int64) + cut
-        lip = buf.get(f'lip{t}', lr1 - lr0 + 1, np.int64)
+        lip = buf.get(f'lip{t}', lr1 - lr0 + 1, _IDX)
         np.subtract(ip[lr0:lr1 + 1], s0, out=lip, casting='unsafe')
-        cols = buf.get(f'cols{t}', s1 - s0, np.int64)
+        cols = buf.get(f'cols{t}', s1 - s0, _IDX)
         np.add(idx[s0:s1], cut, out=cols, casting='unsafe')
         return lip, cols
 
@@ -540,52 +543,28 @@ def _schur_pinv_solve(G, R, hub, project=None, pool=None):
 
 
 
-def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf=None, tag=0):
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0):
     """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off)`` with ``pos``
     the solver columns, ``d64`` the values, ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over
     the chunk's rows (None: none) and ``off = (indptr, offset columns, values)`` the offset entries likewise (None:
-    none), all int64 / float64 and in storage order. ``buf`` (a :class:`_Slot`; ``tag`` tells a chunk's pieces
-    apart): the arrays are written into its buffers, the same values without the allocations; each row's sky
-    entries and offset entries are told apart by a running count of the offsets (a row's offset entries are those
-    at or past ``n_sky_S``, in storage order)."""
-    if buf is not None:
-        return _prepare_piece_into(nr, lip, cols, data, colmap, n_sky_S, buf, tag)
-    pos = cols if colmap is None else colmap[cols]
-    d64 = data.astype(np.float64)
-    rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-    o = pos >= n_sky_S
-    off = sky = None
-    oi = np.flatnonzero(o)
-    if oi.size:
-        ip = np.zeros(nr + 1, dtype=np.int64)
-        np.cumsum(np.bincount(rows[oi], minlength=nr), out=ip[1:])
-        off = (ip, (pos[oi] - n_sky_S).astype(np.int64), d64[oi])
-    si = np.flatnonzero(~o)
-    if si.size:
-        ips = np.zeros(nr + 1, dtype=np.int64)
-        np.cumsum(np.bincount(rows[si], minlength=nr), out=ips[1:])
-        sky = (ips, pos[si], d64[si], rows[si])
-    return lip, pos, d64, sky, off
-
-
-def _prepare_piece_into(nr, lip, cols, data, colmap, n_sky_S, buf, tag):
-    """:func:`_prepare_piece` into the buffers of ``buf``: the same arrays (offset counts by a cumulative sum of
-    the offset mask instead of a bincount over the rows; the entries selected by ``np.compress``, in storage order)."""
+    none), :data:`_IDX` / float64 and in storage order, written into the buffers of ``buf`` (a :class:`_Slot`;
+    ``tag`` tells a chunk's pieces apart). A row's offset entries are those at or past ``n_sky_S``: they are
+    counted by a running sum of the offset mask and selected by ``np.compress``."""
     n = int(cols.size)
-    pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, np.int64))
+    pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
     d64 = buf.get(f'{tag}d64', n, np.float64)
     np.copyto(d64, data)
     o = buf.get(f'{tag}o', n, np.bool_)
     np.greater_equal(pos, n_sky_S, out=o)
-    c = buf.get(f'{tag}c', n + 1, np.int64)              # c[j]: offset entries among the first j
+    c = buf.get(f'{tag}c', n + 1, _IDX)                  # c[j]: offset entries among the first j
     c[0] = 0
-    np.cumsum(o, out=c[1:])
-    ip = buf.get(f'{tag}ip', nr + 1, np.int64)
+    np.cumsum(o, dtype=_IDX, out=c[1:])
+    ip = buf.get(f'{tag}ip', nr + 1, _IDX)
     np.take(c, lip, out=ip)                               # the offset entries before each row
     n_off = int(c[n])
     off = sky = None
     if n_off:
-        oc = buf.get(f'{tag}offcols', n_off, np.int64)
+        oc = buf.get(f'{tag}offcols', n_off, _IDX)
         np.compress(o, pos, out=oc)
         oc -= n_sky_S
         ov = buf.get(f'{tag}offvals', n_off, np.float64)
@@ -594,13 +573,13 @@ def _prepare_piece_into(nr, lip, cols, data, colmap, n_sky_S, buf, tag):
     if n - n_off:
         no = buf.get(f'{tag}no', n, np.bool_)
         np.logical_not(o, out=no)
-        ips = buf.get(f'{tag}ips', nr + 1, np.int64)
+        ips = buf.get(f'{tag}ips', nr + 1, _IDX)
         np.subtract(lip, ip, out=ips)                     # the sky entries before each row
-        sc = buf.get(f'{tag}skycols', n - n_off, np.int64)
+        sc = buf.get(f'{tag}skycols', n - n_off, _IDX)
         np.compress(no, pos, out=sc)
         sv = buf.get(f'{tag}skyvals', n - n_off, np.float64)
         np.compress(no, d64, out=sv)
-        sky = (ips, sc, sv, np.repeat(np.arange(nr, dtype=np.int64), np.diff(ips)))
+        sky = (ips, sc, sv, np.repeat(np.arange(nr, dtype=_IDX), np.diff(ips)))
     return lip, pos, d64, sky, off
 
 
@@ -771,7 +750,7 @@ class Deflation:
         del rows_of, term_of, iy, ix
         self._colmap = None
         if self.S is not None:
-            cm = np.full(n, -1, dtype=np.int64)
+            cm = np.full(n, -1, dtype=_IDX)
             cm[self.S] = np.arange(nS)
             self._colmap = cm
         # The column constraints (solver coordinates) on the offset columns of this space: the offsets'
@@ -1296,11 +1275,11 @@ class Deflation:
                     mark[ci] = True
                 touched = np.flatnonzero(mark)
                 mark[touched] = False
-                cmap = buf.get('offmap', n_off, np.int64)
-                cmap[touched] = np.arange(touched.size, dtype=np.int64)
+                cmap = buf.get('offmap', n_off, _IDX)
+                cmap[touched] = np.arange(touched.size)
                 sums = buf.take('offsums', (touched.size, m))
                 for ti, (ip, ci, dd) in enumerate(ocs):
-                    local = buf.get(f'{ti}offlocal', ci.size, np.int64)
+                    local = buf.get(f'{ti}offlocal', ci.size, _IDX)
                     np.take(cmap, ci, out=local)
                     _sparsetools.csc_matvecs(touched.size, nr, m, ip, local, dd, U, sums)
                 off = (touched, sums)
@@ -1314,13 +1293,13 @@ class Deflation:
                 ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
                 order = np.argsort(ps, kind='stable')
                 ne = int(ps.size)
-                ps = np.take(ps, order, out=buf.get('sortcols', ne, np.int64))
-                rs = np.take(rs, order, out=buf.get('sortrows', ne, np.int64))
+                ps = np.take(ps, order, out=buf.get('sortcols', ne, _IDX))
+                rs = np.take(rs, order, out=buf.get('sortrows', ne, _IDX))
                 ds = np.take(ds, order, out=buf.get('sortvals', ne, np.float64))
                 del order
                 starts = np.flatnonzero(np.diff(ps, prepend=-1))
-                uniq = np.take(ps, starts, out=buf.get('uniq', starts.size, np.int64))
-                ip = buf.get('sortip', starts.size + 1, np.int64)
+                uniq = np.take(ps, starts, out=buf.get('uniq', starts.size, _IDX))
+                ip = buf.get('sortip', starts.size + 1, _IDX)
                 ip[:-1] = starts
                 ip[-1] = ne
                 grouped = (uniq, ip, rs, ds)
@@ -1373,7 +1352,7 @@ class Deflation:
             # which runs without the GIL), then added at their own columns by the transposed kernel with one entry
             # per summed column (``out[c] += 1.0 * part``), so the work is the chunk's columns', not the range's.
             n_max = min(max((g[0].size for g, _U, _o, _x in parts if g is not None), default=0), _ADD_COLUMNS)
-            steps = np.arange(n_max + 1, dtype=np.int64)
+            steps = np.arange(n_max + 1, dtype=_IDX)
             units = np.ones(n_max)
 
             def add(j):
@@ -1391,7 +1370,7 @@ class Deflation:
                     for a0 in range(i0, i1, _ADD_COLUMNS):
                         a1 = min(i1, a0 + _ADD_COLUMNS)
                         e0, e1 = int(ip[a0]), int(ip[a1])
-                        lip = np.subtract(ip[a0:a1 + 1], e0, out=pb.get('ip', a1 - a0 + 1, np.int64))
+                        lip = np.subtract(ip[a0:a1 + 1], e0, out=pb.get('ip', a1 - a0 + 1, _IDX))
                         part = pb.take('part', (a1 - a0, m))
                         _sparsetools.csr_matvecs(a1 - a0, U.shape[0], m, lip, rs[e0:e1], ds[e0:e1], U, part)
                         _sparsetools.csc_matvecs(hi - lo, a1 - a0, m, steps[:a1 - a0 + 1], uniq[a0:a1] - lo,
