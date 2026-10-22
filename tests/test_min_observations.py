@@ -137,13 +137,23 @@ def test_the_rows_are_the_unfloored_rows_with_the_dropped_ones_zeroed(tmp_path, 
     assert np.asarray(floored.active_mask)[dropped_cols].all()                       # in the layout
 
 
-def test_the_deflated_solve_is_the_solve_without_those_rows(tmp_path):
+@pytest.mark.parametrize('storage', ['unified', 'partitioned'])
+def test_the_deflated_solve_is_the_solve_without_those_rows(tmp_path, monkeypatch, storage):
     """The floored system, solved with the deflation through the solver's own path (its columns without data kept in
     the layout), gives every other unknown the solution of the system with those rows removed, and leaves the dropped
-    pixels at zero: the deflation's patterns do not reach them."""
+    pixels at zero: the deflation's patterns do not reach them. Both storages (the column-partitioned one is the full
+    fields')."""
+    extra = {}
+    if storage == 'partitioned':
+        for k, v in (('SELFCAL_SCATTER_WORKERS', '2'), ('SELFCAL_BLOCK_NNZ', '1'), ('SELFCAL_RMATVEC_SPLIT', '2')):
+            monkeypatch.setenv(k, v)
+        extra = {'batch_spill_dir': str(tmp_path / 'spill')}
     paths = _frames(tmp_path)
     plain = _setup(paths, outlier_thresh=None)
-    floored = _setup(paths, outlier_thresh=None, min_observations=2)
+    floored = _setup(paths, outlier_thresh=None, min_observations=2, **extra)
+    if storage == 'partitioned':
+        from selfcal.core.blockcsr import ColSplitCSR
+        assert isinstance(floored.A, ColSplitCSR)
     A = _full_width(plain)
     sky_col = np.array([row.indices[row.indices < N_SKY][0] for row in A])
     keep = np.asarray(plain.pixel_counts)[sky_col] >= 2
@@ -160,8 +170,26 @@ def test_the_deflated_solve_is_the_solve_without_those_rows(tmp_path):
     xr = solve(Ar[:, act].tocsr(), np.asarray(plain.b)[keep], act, A.shape[1])
     assert (xf[dropped] == 0).all()
     kept_sky = np.setdiff1d(np.unique(sky_col[keep]), dropped)
-    np.testing.assert_allclose(xf[kept_sky], xr[kept_sky], rtol=0, atol=1e-6)
-    np.testing.assert_allclose(xf[N_SKY:], xr[N_SKY:], rtol=0, atol=1e-6)
+    tol = 1e-6 if storage == 'unified' else 2e-5      # the partitioned operator's products in the stored float32
+    np.testing.assert_allclose(xf[kept_sky], xr[kept_sky], rtol=0, atol=tol)
+    np.testing.assert_allclose(xf[N_SKY:], xr[N_SKY:], rtol=0, atol=tol)
+
+
+def test_the_deflation_reads_no_column_outside_its_space():
+    """A floor's columns keep their zero entries but leave the deflation's space (column map -1): the passes send those
+    entries to a valid column, whose zero value keeps every product exact, instead of handing -1 to the compiled
+    kernels (an out-of-bounds read; a segmentation fault on the full D1 field, 2026-10-22)."""
+    from selfcal.core.deflation import _IDX, _prepare_piece, _Slot
+    colmap = np.array([0, -1, 1, 2, 3], dtype=_IDX)      # full column 1 is outside the space; 2 sky columns in it
+    lip = np.array([0, 2, 4], dtype=_IDX)
+    cols = np.array([1, 3, 0, 4], dtype=np.int32)        # row 0: the outside column (value 0) and an offset; row 1: sky, offset
+    data = np.array([0.0, 2.0, 1.5, 3.0], dtype=np.float32)
+    _lip, pos, d64, sky, off = _prepare_piece(2, lip, cols, data, colmap, 2, buf=_Slot())
+    assert (pos >= 0).all() and list(pos) == [0, 2, 0, 3]
+    ips, sc, sv, rows = sky
+    assert list(sc) == [0, 0] and list(sv) == [0.0, 1.5] and list(rows) == [0, 1]
+    oip, oc, ov = off
+    assert list(oc) == [0, 1] and list(ov) == [2.0, 3.0]
 
 
 def test_a_pixel_observed_once_informs_nothing_else(tmp_path):
