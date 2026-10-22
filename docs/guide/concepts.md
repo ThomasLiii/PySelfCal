@@ -310,6 +310,14 @@ Compare quantities that a change of gauge leaves alone:
   variable, by default the instrument's wavelength map). The N-pass passes clip the same way
   (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
   basis value is not finite are dropped as well.
+- **Coverage floor.** `sc.Fit(min_observations=2)` leaves out of the solve the sky pixels that fewer
+  than 2 observations cover, counted after the masks, the clip if any and the weights. A sky pixel
+  with a single observation fits that observation exactly and informs no other unknown, so it adds
+  an unknown and nothing else. The matrix build counts the observations as it collates the rows and
+  zeroes those pixels' rows as it places them (values and right-hand side), with no extra pass over
+  the frames; the pixels' columns stay without data (coverage 0, value 0, outside the deflation's
+  patterns), so every other unknown gets the solution without those rows. The mosaic still covers
+  them. Off by default.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
   the same in the mosaic; for example Euclid's star mask
