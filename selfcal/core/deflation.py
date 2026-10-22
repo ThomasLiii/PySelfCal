@@ -161,25 +161,36 @@ def _piece_index(storage, rows=_ROWS):
     return out
 
 
-def _piece(storage, desc):
+def _piece(storage, desc, buf=None):
     """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (int64, from 0) per
-    piece; one piece per column range of a ColSplitCSR, one otherwise."""
+    piece; one piece per column range of a ColSplitCSR, one otherwise. ``buf`` (a :class:`_Slot`): the indptr
+    and the column ids are written into its buffers (the same values; nothing allocated per chunk)."""
     bi, lr0, lr1 = desc
+
+    def local(ip, s0, idx, s1, cut, t):
+        if buf is None:
+            return ip[lr0:lr1 + 1].astype(np.int64) - s0, idx[s0:s1].astype(np.int64) + cut
+        lip = buf.get(f'lip{t}', lr1 - lr0 + 1, np.int64)
+        np.subtract(ip[lr0:lr1 + 1], s0, out=lip, casting='unsafe')
+        cols = buf.get(f'cols{t}', s1 - s0, np.int64)
+        np.add(idx[s0:s1], cut, out=cols, casting='unsafe')
+        return lip, cols
+
     if isinstance(storage, ColSplitCSR):
         base = int(storage.row_bounds[bi])
         out = []
         for t, (d, idx, ip) in enumerate(storage.sub[bi]):
             s0, s1 = int(ip[lr0]), int(ip[lr1])
-            lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-            out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
+            lip, cols = local(ip, s0, idx, s1, int(storage.cuts[t]), t)
+            out.append((lip, cols, d[s0:s1]))
         return base + lr0, base + lr1, out
     blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
     bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
     blk, base = blocks[bi], bounds[bi]
     ip = blk.indptr
     s0, s1 = int(ip[lr0]), int(ip[lr1])
-    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-    return int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+    lip, cols = local(ip, s0, blk.indices, s1, 0, 0)
+    return int(base) + lr0, int(base) + lr1, [(lip, cols, blk.data[s0:s1])]
 
 
 def _pieces(storage, rows=_ROWS):
@@ -526,11 +537,16 @@ def _schur_pinv_solve(G, R, hub, project=None, pool=None):
 
 
 
-def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S):
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf=None, tag=0):
     """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off)`` with ``pos``
     the solver columns, ``d64`` the values, ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over
     the chunk's rows (None: none) and ``off = (indptr, offset columns, values)`` the offset entries likewise (None:
-    none), all int64 / float64 and in storage order."""
+    none), all int64 / float64 and in storage order. ``buf`` (a :class:`_Slot`; ``tag`` tells a chunk's pieces
+    apart): the arrays are written into its buffers, the same values without the allocations; each row's sky
+    entries and offset entries are told apart by a running count of the offsets (a row's offset entries are those
+    at or past ``n_sky_S``, in storage order)."""
+    if buf is not None:
+        return _prepare_piece_into(nr, lip, cols, data, colmap, n_sky_S, buf, tag)
     pos = cols if colmap is None else colmap[cols]
     d64 = data.astype(np.float64)
     rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
@@ -549,9 +565,45 @@ def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S):
     return lip, pos, d64, sky, off
 
 
+def _prepare_piece_into(nr, lip, cols, data, colmap, n_sky_S, buf, tag):
+    """:func:`_prepare_piece` into the buffers of ``buf``: the same arrays (offset counts by a cumulative sum of
+    the offset mask instead of a bincount over the rows; the entries selected by ``np.compress``, in storage order)."""
+    n = int(cols.size)
+    pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, np.int64))
+    d64 = buf.get(f'{tag}d64', n, np.float64)
+    np.copyto(d64, data)
+    o = buf.get(f'{tag}o', n, np.bool_)
+    np.greater_equal(pos, n_sky_S, out=o)
+    c = buf.get(f'{tag}c', n + 1, np.int64)              # c[j]: offset entries among the first j
+    c[0] = 0
+    np.cumsum(o, out=c[1:])
+    ip = buf.get(f'{tag}ip', nr + 1, np.int64)
+    np.take(c, lip, out=ip)                               # the offset entries before each row
+    n_off = int(c[n])
+    off = sky = None
+    if n_off:
+        oc = buf.get(f'{tag}offcols', n_off, np.int64)
+        np.compress(o, pos, out=oc)
+        oc -= n_sky_S
+        ov = buf.get(f'{tag}offvals', n_off, np.float64)
+        np.compress(o, d64, out=ov)
+        off = (ip, oc, ov)
+    if n - n_off:
+        no = buf.get(f'{tag}no', n, np.bool_)
+        np.logical_not(o, out=no)
+        ips = buf.get(f'{tag}ips', nr + 1, np.int64)
+        np.subtract(lip, ip, out=ips)                     # the sky entries before each row
+        sc = buf.get(f'{tag}skycols', n - n_off, np.int64)
+        np.compress(no, pos, out=sc)
+        sv = buf.get(f'{tag}skyvals', n - n_off, np.float64)
+        np.compress(no, d64, out=sv)
+        sky = (ips, sc, sv, np.repeat(np.arange(nr, dtype=np.int64), np.diff(ips)))
+    return lip, pos, d64, sky, off
+
+
 class _Slot:
-    """Reusable float64 buffers of one task slot: ``take(name, shape)`` returns a zeroed view of that shape, grown
-    when a request exceeds the buffer."""
+    """Reusable buffers of one task slot: ``take(name, shape)`` returns a zeroed float64 view of that shape,
+    ``get(name, size, dtype)`` an uninitialised 1-D view; each grown when a request exceeds the buffer."""
 
     def __init__(self):
         self.bufs = {}
@@ -564,6 +616,13 @@ class _Slot:
         v = b[:rows]
         v.fill(0.0)
         return v
+
+    def get(self, name, size, dtype):
+        dtype = np.dtype(dtype)
+        b = self.bufs.get(name)
+        if b is None or b.size < size or b.dtype != dtype:
+            b = self.bufs[name] = np.empty(max(int(size), 1), dtype=dtype)
+        return b[:size]
 
 
 def _combine_rows_in_place(M, C, cols=1 << 20):
@@ -631,9 +690,13 @@ class Deflation:
         # The columns the space lives on: those with entries (all of a compacted system's); the chunks over the
         # threads (marking a column covered commutes).
         covered = np.zeros(n, dtype=bool)
+        mark_slots = {}                                           # one per thread, for this sweep
 
         def mark(desc):
-            for _lip, cols, _data in _piece(storage, desc)[2]:
+            buf = mark_slots.get(threading.get_ident())
+            if buf is None:
+                buf = mark_slots[threading.get_ident()] = _Slot()
+            for _lip, cols, _data in _piece(storage, desc, buf=buf)[2]:
                 covered[cols] = True
 
         descs0 = _piece_index(storage)
@@ -642,7 +705,7 @@ class Deflation:
                 mark(d)
         else:
             list(self._pool.map(mark, descs0))
-        del descs0
+        del descs0, mark_slots
         self.S = None if covered.all() else np.flatnonzero(covered)
         del covered
         nS = n if self.S is None else int(self.S.size)
@@ -748,13 +811,15 @@ class Deflation:
                 Rt = np.zeros((n_off, k))
                 Gt = None
                 t_g = 0.0
+                slot = _Slot()                                    # this share's chunk buffers, reused chunk to chunk
                 for desc in my:
-                    r0, r1, pieces = _piece(storage, desc)
+                    r0, r1, pieces = _piece(storage, desc, buf=slot)
                     nr = r1 - r0
-                    U = np.zeros((nr, k))
+                    U = slot.take('U', (nr, k))
                     offs = []
-                    for lip, cols, data in pieces:
-                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                    for ti, (lip, cols, data) in enumerate(pieces):
+                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                                   buf=slot, tag=ti)
                         if sky is not None:
                             # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
                             # keep their order, so the sums are those of the whole piece
@@ -1157,13 +1222,15 @@ class Deflation:
 
         def sweep(my):
             Rt = np.zeros((n_off, q))
+            slot = _Slot()
             for desc in my:
-                r0, r1, pieces = _piece(storage, desc)
+                r0, r1, pieces = _piece(storage, desc, buf=slot)
                 nr = r1 - r0
-                U = np.zeros((nr, q))
+                U = slot.take('U', (nr, q))
                 offs = []
-                for lip, cols, data in pieces:
-                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                for ti, (lip, cols, data) in enumerate(pieces):
+                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                               buf=slot, tag=ti)
                     if sky is not None:
                         _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
                     if oc is not None:
@@ -1208,16 +1275,32 @@ class Deflation:
         n_off = self.nS - n_sky_S
 
         def partials(mp, buf):
-            """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(n_off, m)``."""
+            """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(columns, sums)``,
+            the chunk's own offset columns only (None: none)."""
             (r0, r1, prepared), (U, x) = mp
             nr = r1 - r0
             sky = []
             off = None
+            ocs = [oc for _lip, _pos, _d64, _sk, oc in prepared if oc is not None]
+            if ocs:
+                # The chunk's offset columns numbered compactly, their sums in a buffer of that size: each the same
+                # sum, in the same order; a column the chunk does not touch gets no addition (its zero changed nothing).
+                mark = buf.bufs.get('offmark')
+                if mark is None or mark.size != n_off:
+                    mark = buf.bufs['offmark'] = np.zeros(n_off, dtype=bool)
+                for _ip, ci, _dd in ocs:
+                    mark[ci] = True
+                touched = np.flatnonzero(mark)
+                mark[touched] = False
+                cmap = buf.get('offmap', n_off, np.int64)
+                cmap[touched] = np.arange(touched.size, dtype=np.int64)
+                sums = buf.take('offsums', (touched.size, m))
+                for ti, (ip, ci, dd) in enumerate(ocs):
+                    local = buf.get(f'{ti}offlocal', ci.size, np.int64)
+                    np.take(cmap, ci, out=local)
+                    _sparsetools.csc_matvecs(touched.size, nr, m, ip, local, dd, U, sums)
+                off = (touched, sums)
             for _lip, _pos, _d64, sk, oc in prepared:
-                if oc is not None:
-                    if off is None:
-                        off = np.zeros((n_off, m))
-                    _sparsetools.csc_matvecs(n_off, nr, m, oc[0], oc[1], oc[2], U, off)
                 if sk is not None:
                     sky.append((sk[1], sk[3], sk[2]))
             if sky:
@@ -1248,10 +1331,11 @@ class Deflation:
         def work(i_desc):
             i, desc = i_desc
             t0 = time.perf_counter()
-            r0, r1, pieces = _piece(storage, desc)
-            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S) for lip, cols, data in pieces]
-            del pieces
             buf = slots[i]
+            r0, r1, pieces = _piece(storage, desc, buf=buf)
+            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti)
+                        for ti, (lip, cols, data) in enumerate(pieces)]
+            del pieces
             out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
             t_work[i] += time.perf_counter() - t0
             return out_
@@ -1265,7 +1349,8 @@ class Deflation:
                 extra.extend(pt[3] for pt in parts)
             for uniq, part, off, _x in parts:
                 if off is not None:
-                    out[n_sky_S:] += off
+                    touched, sums = off
+                    out[n_sky_S + touched] += sums
             # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
             # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
             samp = np.concatenate([u[::997] for u, _p, _o, _x in parts if u.size] or [np.zeros(0, dtype=np.int64)])
@@ -1306,15 +1391,22 @@ class Deflation:
         """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
         chunks, each exactly as a single sweep computes it)."""
         descs = _piece_index(storage)
+        slots = {}                                                # one per thread, for this sweep
 
         def chunk(desc):
-            r0, r1, pieces = _piece(storage, desc)
+            buf = slots.get(threading.get_ident())
+            if buf is None:
+                buf = slots[threading.get_ident()] = _Slot()
+            r0, r1, pieces = _piece(storage, desc, buf=buf)
             nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
+            acc = buf.get('acc', nr, np.float64)
+            acc.fill(0.0)
+            for ti, (lip, cols, data) in enumerate(pieces):
                 pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), v, acc)
-            fn(r0, r1, acc)
+                d64 = buf.get(f'{ti}d64', data.size, np.float64)
+                np.copyto(d64, data)
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, v, acc)
+            fn(r0, r1, acc)                                       # consumed here (the buffer is the thread's next chunk's)
 
         if self._pool is None:
             for d in descs:
