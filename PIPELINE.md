@@ -409,8 +409,8 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   spills `pixel_counts`/`pixel_fisher`/`pixel_cross` to scratch for the
   duration of the solve when they exceed the threshold (exact byte
   round-trip; ~1 min I/O against a multi-hour production solve).
-- **Process pools & the parallel scatter.** The assembly and Phase-4a CSR
-  scatter pools (and the frame check of `field.reproject(verify=True)`) run on the
+- **Process pools & the parallel scatter.** The assembly and the data-row placement
+  pools (and the frame check of `field.reproject(verify=True)`) run on the
   **forkserver** start method (`selfcal.core.shmbuf.worker_pool_context`;
   `sc.Tuning(start_method=)`, `SELFCAL_MP_START_METHOD`, default `forkserver`; `fork` is a debugging
   escape hatch only); the other pools (coadd, reprojection, the standalone

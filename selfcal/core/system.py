@@ -202,7 +202,7 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
 
     ``layout`` = (T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off,
     expected_range_nnz); the placed per-range entry counts must match the
-    Phase-1 totals the layout was built from, else this raises.
+    per-range totals counted while collating the workers' results, else this raises.
     """
     T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off, expected = layout
     n = int(rows_local.shape[0])
@@ -225,7 +225,7 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
         s0, s1 = int(seg[0]), int(seg[-1])
         if s1 - s0 != int(expected[t]):
             raise RuntimeError(f"column range {t}: {s1 - s0} entries placed, "
-                               f"{int(expected[t])} expected from Phase 1")
+                               f"{int(expected[t])} expected from the collated counts")
         o = t * (num_rows + 1)
         np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
         _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
@@ -251,7 +251,8 @@ def _scatter_block_worker_split(task):
 
 def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
     """``setup_lsqr(reduce=...)``: the subframes' reductions from the workers (no matrix), the entry
-    counts per column and the observed offset columns (as Phase 1 accumulates them), then the
+    counts per column and the observed offset columns (as the matrix build's collation accumulates
+    them), then the
     constraint rows (``constraint_blocks(pixel_counts, observed_cols)``). Returns the
     :class:`SetupResult`, or None when no subframe has data."""
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
@@ -753,7 +754,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'det_template_list': det_template_arr_list,
         # Template / hard-poly-basis offsets emit duplicate (row, col)
         # entries; merge them per subframe in the worker (bit-identical to
-        # the Phase-5 merge, see assembly._merge_subframe_duplicates) so no
+        # the final matrix's duplicate merge, see assembly._merge_subframe_duplicates) so no
         # downstream buffer is sized on the pre-merge stream.
         'merge_duplicates': bool(any(t is not None for t in det_template_arr_list)
                                  or any(pb is not None for pb in poly_basis_list)),
@@ -866,9 +867,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
     def _constraint_blocks(pixel_counts, observed_cols):
-        """The global constraint blocks (as dicts, in emission order), given Phase 1's entry counts
-        per column (``pixel_counts``) and the offset columns the data rows touch (``observed_cols``).
-        Shared by the matrix build and ``reduce``."""
+        """The global constraint blocks (as dicts, in emission order), given the collated entry
+        counts per column (``pixel_counts``) and the offset columns the data rows touch
+        (``observed_cols``). Shared by the matrix build and ``reduce``."""
         num_sky_eff = num_sky_blocks * num_sky
         sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
         offset_pixel_counts = pixel_counts[num_sky_eff:]
@@ -1005,9 +1006,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return arr
 
     # ----------------------------------------------------------------
-    # Phase 1: collate worker results.
+    # Collation: the workers' results, batch by batch.
     #
-    # We retain each batch's (rows, cols, data, b) so Phase 4 can scatter
+    # We retain each batch's (rows, cols, data, b) so the data-row placement can scatter
     # them directly into the final CSR buffers in batch-id order. Per-batch
     # we also accumulate row_nnz_per_batch[batch_id] = bincount(local_rows)
     # so the CSR indptr can be built without re-touching every batch's row
@@ -1025,11 +1026,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # (one range: block-major storage with one int32 indptr per block, the
     # same bytes per row as a BlockCSR); more ranges only serve the
     # byte-exact verification kernel. Ranges are cut in the FULL column
-    # space here (compaction is decided only after Phase 1); the compaction
+    # space here (compaction is decided only after the collation); the compaction
     # map is monotone, so each full-space range maps onto one contiguous
-    # compact range. Phase 1 counts each batch's entries PER RANGE (T
+    # compact range. The collation counts each batch's entries PER RANGE (T
     # integers per batch, order-free) — the per-row layout comes out of the
-    # placement kernel itself. Phase 2e may lower T (memory gate) by merging
+    # placement kernel itself. The row layout may lower T (memory gate) by merging
     # adjacent ranges, whose cuts are a subset of these.
     try:
         _split_T_req = max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '1')))
@@ -1088,8 +1089,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             _cnt[num_sky_blocks * num_sky:] = 0
             _cnt[_oc[0]] = _oc[1]
         # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
-        # add the global row offset in Phase 3 (cumulative across
-        # batches). Keeping this batch-local is what lets Phase 4
+        # add the global row offsets later (batch_row_starts, cumulative across
+        # batches). Keeping this batch-local is what lets the placement
         # stream-scatter without revisiting all batches twice.
         row_nnz_per_batch[batch_id] = np.bincount(
             _b_rows, minlength=result['num_rows']
@@ -1328,8 +1329,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
     if moments_only:
-        # The pixel state, accumulated by Phase 1, is all the caller reads: no matrix is built and
-        # the batches' entries are dropped.
+        # The pixel state, accumulated by the collation, is all the caller reads: no matrix is
+        # built and the batches' entries are dropped.
         any_kept = False
         for r in batch_results:
             if r is None:
@@ -1352,7 +1353,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                            pixel_cross=pixel_cross, pixel_rhs=pixel_rhs)
 
     # ----------------------------------------------------------------
-    # Phase 2: compute per-batch row offsets, total_rows_data, and the
+    # Row offsets: per-batch row offsets, total_rows_data, and the
     # data-row half of row_nnz.
     # ----------------------------------------------------------------
     batch_row_starts = [0] * len(batched_tasks)
@@ -1374,7 +1375,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     total_rows_data = int(total_rows_data)
 
     # ----------------------------------------------------------------
-    # Phase 2b: build constraint blocks (rows-local-to-block, cols, data,
+    # Constraint blocks: build them (rows-local-to-block, cols, data,
     # b). We assemble them up front so we can pre-count their per-row nnz,
     # finalize total_rows, and allocate the CSR buffers once.
     # ----------------------------------------------------------------
@@ -1382,7 +1383,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     observed_cols = None
 
     # ----------------------------------------------------------------
-    # Phase 2c: finalize total_rows + build row_nnz over the entire row
+    # Row totals: finalize total_rows + build row_nnz over the entire row
     # space (data rows first, then each constraint block).
     # ----------------------------------------------------------------
     constraint_row_total = sum(blk['num_rows'] for blk in constraint_blocks)
@@ -1409,7 +1410,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # Per-range entry totals of the constraint blocks (partitioned storage
     # only), from their full-space column ids — same shape as the per-batch
-    # totals Phase 1 accumulated.
+    # totals the collation accumulated.
     range_nnz_per_cblock = None
     if _want_split:
         range_nnz_per_cblock = [
@@ -1418,7 +1419,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             for blk in constraint_blocks]
 
     # ----------------------------------------------------------------
-    # Phase 2d: build full_b (vector of right-hand-sides). Concatenated in
+    # Right-hand side: build full_b (vector of right-hand-sides). Concatenated in
     # the same order as the row scatter: per-batch b in batch-id order,
     # then each constraint block's b.
     # ----------------------------------------------------------------
@@ -1460,7 +1461,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         blk['b'] = None
 
     # ----------------------------------------------------------------
-    # Parallel-placement decision (Phase 4a): spill batches are placed by
+    # Parallel-placement decision (data-row placement): spill batches are placed by
     # worker processes into disjoint entry spans; the arrays they need
     # (csr_data/csr_indices and, for partitioned storage, ip_all to write;
     # indptr/col_map to read) live in memfd-backed SharedBuffers handed to
@@ -1483,7 +1484,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return np.zeros(n, dtype=dtype) if zero else np.empty(n, dtype=dtype)
 
     # ----------------------------------------------------------------
-    # Phase 2e: total_nnz, then the CSR row layout. The unified path builds
+    # Row layout: total_nnz, then the CSR row layout. The unified path builds
     # the int64 global indptr; the partitioned path builds a storage-block
     # table instead (one block per spill batch, then one per constraint
     # block) and never materialises a global indptr at all.
@@ -1597,7 +1598,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         assert n_active < 2**31, (
             f"n_active={n_active} overflows int32 column ids")
         # int32 halves both the map itself (total_cols entries) and every
-        # per-batch col_map[cols_b] gather output in Phase 4. Values are
+        # per-batch col_map[cols_b] gather output of the placement. Values are
         # exact (cumsum <= n_active < 2^31).
         col_map = _shared_alloc('col_map', int(active_mask.size), np.int32)
         np.cumsum(active_mask, dtype=np.int32, out=col_map)
@@ -1619,12 +1620,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # ----------------------------------------------------------------
     # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
-    # last read by the Phase-2 constraint builders and the column compaction
+    # last read by the constraint builders and the column compaction
     # just above; nothing between here and the return touches them, yet they
     # are large — 16 B per column (counts + fisher) plus 8 B x num_sky per
     # cross pair, e.g. ~17 GB for a 4-sky-block model on a ~1.5e8-pixel
     # grid — and they would otherwise sit on top of the process-lifetime
-    # memory peak (the Phase-5 CSR/BlockCSR build below). A round trip
+    # memory peak (the matrix hand-over's CSR/BlockCSR build below). A round trip
     # through scratch disk removes them from that peak; the arrays come
     # back bit-identical (np.save/np.load of int64/float64), and
     # Calibrator.apply_lsqr spills them again for the solve.
@@ -1636,7 +1637,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
-    # Phase 3: allocate the entry buffers (plus, for partitioned storage,
+    # Buffer allocation: the entry buffers (plus, for partitioned storage,
     # the back-to-back per-(block, range) indptrs). With the spill path
     # active they are memfd-backed shared mappings the worker processes
     # write into; otherwise plain arrays written in this process —
@@ -1648,7 +1649,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                if _partitioned else None)
 
     # ----------------------------------------------------------------
-    # Phase 4a: place the data rows. Every spill batch owns a contiguous row
+    # Data-row placement. Every spill batch owns a contiguous row
     # range — hence a contiguous entry span of the CSR buffers (unified), or
     # one whole storage block (partitioned) — so worker processes can place
     # batches in any order without a byte of overlap, and a batch that has
@@ -1656,7 +1657,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # (scipy's coo_tocsr, see _place_rows) reproduces the stable
     # sort-by-row / within-row-cumcount placement the previous Python kernel
     # produced, in one C pass; the layout it derives is checked against the
-    # Phase-1 counts, so a disagreement raises rather than corrupts.
+    # collated counts, so a disagreement raises rather than corrupts.
     #
     # Safety net: a batch that does not finish within
     # SELFCAL_SCATTER_TIMEOUT_S (or a broken pool) is redone serially below,
@@ -1672,15 +1673,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 int(_blk_nnz[_b]), int(_ip_off[_b]), _blk_rnnz[_b])
 
     if _partitioned:
-        logger.info(f"Phase 4a: parallel placement into partitioned storage "
+        logger.info(f"Data-row placement: parallel, into partitioned storage "
                     f"({_nb} storage blocks x {_split_T} column ranges), "
                     f"{len(_file_batches)} batches over {_scatter_workers} "
                     "workers (forkserver).")
     elif _par_scatter:
-        logger.info(f"Phase 4a: parallel placement, {len(_file_batches)} batches "
+        logger.info(f"Data-row placement: parallel, {len(_file_batches)} batches "
                     f"over {_scatter_workers} workers (forkserver).")
     else:
-        logger.info("Phase 4a: serial placement.")
+        logger.info("Data-row placement: serial.")
     if _par_scatter:
         if _partitioned:
             _bufs = {'csr_data': _shared['csr_data'],
@@ -1707,9 +1708,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
         except (_FutTimeout, BrokenProcessPool) as _e:
-            logger.warning(f"Phase 4a: parallel placement aborted ({type(_e).__name__}: "
-                           f"{_e}); {len(_futs) - len(_done_par)} batch(es) will be "
-                           "placed serially.")
+            logger.warning(f"Data-row placement: the parallel placement aborted "
+                           f"({type(_e).__name__}: {_e}); {len(_futs) - len(_done_par)} batch(es) "
+                           "will be placed serially.")
             for _p in list(getattr(_ex, '_processes', {}).values()):
                 try:
                     _p.kill()
@@ -1748,7 +1749,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         shutil.rmtree(_spill_run_dir, ignore_errors=True)
 
     # ----------------------------------------------------------------
-    # Phase 4b: scatter constraint blocks at their reserved row ranges.
+    # Constraint placement: scatter the constraint blocks at their reserved row ranges.
     #
     # Each constraint block is a contiguous row range as well (unified: its
     # own entry span; partitioned: its own storage block), so the same
@@ -1772,7 +1773,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _shared.clear()          # fds closed; the arrays keep their mappings
 
     # ----------------------------------------------------------------
-    # Phase 5: hand the placed entries over as a matrix.
+    # Matrix hand-over: the placed entries become the matrix.
     #
     # Partitioned storage is already in its final layout: each
     # (block, range) piece is a contiguous CSR, so all that remains is the
@@ -1833,7 +1834,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         del _pieces, _canon
         full_A = ColSplitCSR(_sub, _row_bounds, _cuts_c, (total_rows, n_active))
         del _sub, _ip_all, csr_data, csr_indices
-        logger.info(f"Phase 5: ColSplitCSR with {_nb} int32 storage blocks x "
+        logger.info(f"Matrix hand-over: ColSplitCSR with {_nb} int32 storage blocks x "
                     f"{_split_T} column ranges (nnz={total_nnz}).")
     elif total_nnz >= _block_thr:
         from .blockcsr import build_block_csr
@@ -1842,7 +1843,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                  (total_rows, n_active), target)
         _blk_starts = [int(indptr[r0]) for r0 in full_A.row_bounds[:-1]]
         del indptr
-        logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+        logger.info(f"Matrix hand-over: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
                     f"(nnz={total_nnz}).")
         _blocks = full_A.blocks
     else:
@@ -1873,7 +1874,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
         del _buf, _blocks, _blk_starts
         if _nnz_post != _nnz_pre:
-            logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+            logger.info(f"Matrix hand-over: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
                         f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it

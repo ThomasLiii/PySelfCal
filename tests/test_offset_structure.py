@@ -63,7 +63,7 @@ def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     monkeypatch.setattr(su, 'load_calibration', lambda band, calibration_dir=None: (blank, blank))
 
     def legacy_poly_basis(det_chunk_map, num_columns, degree, lo, hi, segments=None):
-        # the pre-S2 SPHERExInstrument.subchannel_poly_basis, verbatim
+        # SPHERExInstrument.subchannel_poly_basis before the instrument-agnostic engine, verbatim
         n_chunks = int(det_chunk_map.max()) + 1
         chunk_ids = np.arange(n_chunks)
         pb = {'degree': int(degree), 'num_groups': int(num_columns), 'coord_lo': int(lo), 'coord_hi': int(hi),
@@ -73,7 +73,7 @@ def test_reproduces_spherex_builders(det, ncol, monkeypatch):
         return pb
 
     def legacy_edges(det_bc, det_chunk_map, num_columns):
-        # the pre-S2 SPHERExInstrument.subchannel_bc_edges, verbatim
+        # SPHERExInstrument.subchannel_bc_edges before the instrument-agnostic engine, verbatim
         n_chunks = int(det_chunk_map.max()) + 1
         return group_wavelength_edges(det_bc, det_chunk_map, np.arange(n_chunks) // int(num_columns))
     lvf = su.load_lvf_params(f'lvf_params_D{det}.npy')

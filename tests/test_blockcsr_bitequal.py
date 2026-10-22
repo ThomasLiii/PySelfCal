@@ -39,7 +39,7 @@ def make_system(rng, m, n, density, data_dtype=np.float32, sorted_idx=True):
 
 
 def to_blocks(A, target_nnz):
-    # same arrays as the unified matrix, indices as int32 like Phase 6 emits
+    # same arrays as the unified matrix, indices as int32 as the matrix hand-over emits them
     return build_block_csr(A.data.copy(), A.indices.astype(np.int32),
                            A.indptr.astype(np.int64), A.shape, target_nnz)
 
