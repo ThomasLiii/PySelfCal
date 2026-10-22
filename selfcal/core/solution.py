@@ -222,78 +222,6 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     return x0_full
 
 
-def _offset_column_sums(A, b, boundary, num_offset_cols, chunk_target_entries=64_000_000):
-    """``sum_i A[i, j]^2`` and ``sum_i A[i, j] b[i]`` of every column ``j >= boundary`` of a ``BlockCSR`` or
-    ``ColSplitCSR``, with the arithmetic of :func:`compute_x0_from_Ab`'s csr path (one ``np.bincount`` over the
-    row-major entry stream): each column's entries are folded in row order, left to right from 0.0, whatever the
-    storage. The walk goes chunk by chunk (row-blocks in order; for a ``ColSplitCSR`` one column range after
-    another, each holding all of its columns' entries), and each chunk's ``bincount`` starts from the sums so far
-    through one leading entry per column (0.0 + s is exactly s, then the chunk's entries in order): the fold
-    continues exactly, with no entry held beyond one chunk. The squares are taken in the data's dtype before the
-    cast, as the csr path's ``off_data ** 2``. The products of a chunk are prepared in a small thread window; the
-    folds run strictly in chunk order."""
-    from collections import deque
-    from concurrent.futures import ThreadPoolExecutor
-
-    from .blockcsr import ColSplitCSR, _csr_shell
-    pieces = []                                   # (rows as csr, first row, column offset of its ids)
-    if isinstance(A, ColSplitCSR):
-        for t in range(A.nranges):
-            c0, c1 = int(A.cuts[t]), int(A.cuts[t + 1])
-            if c1 <= boundary:
-                continue
-            for bi in range(A.nblocks):
-                d, i, ip = A.sub[bi][t]
-                nrows = int(A.row_bounds[bi + 1] - A.row_bounds[bi])
-                pieces.append((_csr_shell(d, i, ip, (nrows, c1 - c0)), int(A.row_bounds[bi]), c0))
-    else:                                         # BlockCSR: row-blocks in row order
-        pieces = [(blk, int(A.row_bounds[k]), 0) for k, blk in enumerate(A.blocks)]
-    chunks = []
-    for blk, row_off, c0 in pieces:
-        step = max(1, int(chunk_target_entries) // max(1, int(blk.nnz // max(1, blk.shape[0]))))
-        chunks.extend((blk, row_off, c0, r0, min(r0 + step, blk.shape[0])) for r0 in range(0, blk.shape[0], step))
-
-    def prep(ch):
-        blk, row_off, c0, r0, r1 = ch
-        s0, s1 = int(blk.indptr[r0]), int(blk.indptr[r1])
-        if s0 == s1:
-            return None
-        cols = blk.indices[s0:s1].astype(np.int64) + c0
-        keep = cols >= boundary
-        if not keep.any():
-            return None
-        d = blk.data[s0:s1][keep]
-        bv = np.repeat(b[row_off + r0:row_off + r1], np.diff(blk.indptr[r0:r1 + 1]))[keep]
-        return cols[keep] - boundary, (d * d).astype(np.float64, copy=False), d * bv
-
-    lead = np.arange(num_offset_cols, dtype=np.int64)
-    AtA = np.zeros(num_offset_cols)
-    Atb = np.zeros(num_offset_cols)
-
-    def fold(res):
-        nonlocal AtA, Atb
-        if res is None:
-            return
-        o, w2, wb = res
-        idx = np.concatenate([lead, o])
-        AtA = np.bincount(idx, weights=np.concatenate([AtA, w2]), minlength=num_offset_cols)
-        Atb = np.bincount(idx, weights=np.concatenate([Atb, wb]), minlength=num_offset_cols)
-
-    if len(chunks) > 1:
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            q = deque()
-            for ch in chunks:
-                q.append(ex.submit(prep, ch))
-                if len(q) >= 3:
-                    fold(q.popleft().result())
-            while q:
-                fold(q.popleft().result())
-    else:
-        for ch in chunks:
-            fold(prep(ch))
-    return AtA, Atb
-
-
 def _column_sums(A, b, boundary, chunk_target_entries=16_000_000, window=4):
     """``sum_i A[i, j]^2`` and ``sum_i A[i, j] b[i]`` of every column ``j >= boundary`` of a csr matrix, a
     ``BlockCSR`` or a ``ColSplitCSR``, with the arithmetic of one ``np.bincount`` over the row-major entry stream
@@ -377,28 +305,6 @@ def _column_sums(A, b, boundary, chunk_target_entries=16_000_000, window=4):
                 fold(q.popleft().result())
     return AtA[boundary - lo:], Atb[boundary - lo:]
 
-
-def _accumulate_runs(acc, cols, w):
-    """``acc[c] += w`` with np.bincount's exact arithmetic, run by run.
-
-    ``w`` is float64 in entry order; equal consecutive ``cols`` form runs.
-    For each run the sum is a sequential left fold seeded with the current
-    accumulator — computed as ``np.cumsum([acc[c], w_run...])[-1]`` — which
-    is bit-for-bit what ``np.bincount(cols, weights=w)`` produces when the
-    same entries are fed to it in one call (it too adds each weight to a
-    float64 slot in entry order, starting from 0.0).
-    """
-    if cols.size == 0:
-        return
-    starts = np.flatnonzero(np.diff(cols)) + 1
-    bounds = np.concatenate(([0], starts, [cols.size]))
-    for i in range(bounds.size - 1):
-        a, z = int(bounds[i]), int(bounds[i + 1])
-        col = int(cols[a])
-        run = np.empty(z - a + 1, dtype=np.float64)
-        run[0] = acc[col]
-        run[1:] = w[a:z]
-        acc[col] = np.cumsum(run)[-1]
 
 def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky_blocks: int = 1,
                            active_mask: np.ndarray | None = None) -> np.ndarray:
