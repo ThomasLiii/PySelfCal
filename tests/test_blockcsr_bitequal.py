@@ -70,7 +70,8 @@ def test_iter_global_entry_chunks_matches_unified_slicing():
 
 
 def test_x0_scalar_only_blockcsr_bitequal():
-    """Section 2: compute_x0_scalar_only(BlockCSR) == legacy csr path."""
+    """Section 2: compute_x0_scalar_only(BlockCSR) == the legacy path (one bincount over the matrix as a
+    coo_matrix, then zeroing the chunk-offset block)."""
     rng = np.random.default_rng(_SEED)
     n_cases = 0
     for target in (10**9, 400, 37):
@@ -90,7 +91,7 @@ def test_x0_scalar_only_blockcsr_bitequal():
                                 A_full.indptr), shape=(500, keep.size))
             else:
                 am, A = None, A_full
-            ref = compute_x0_from_Ab(A, b, (7, 9), num_sky_blocks=1,
+            ref = compute_x0_from_Ab(A.tocoo(), b, (7, 9), num_sky_blocks=1,
                                      active_mask=am)
             ref[63:scs] = 0.0
             bc = to_blocks(A, target)

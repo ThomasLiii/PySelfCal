@@ -108,7 +108,7 @@ def encode_x(skymap: np.ndarray, offsets: np.ndarray | list[np.ndarray]) -> np.n
 def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: np.ndarray,
                        ref_shape: tuple[int, int], num_sky_blocks: int = 1,
                        active_mask: np.ndarray | None = None,
-                       _chunk_target_entries: int = 64_000_000) -> np.ndarray:
+                       _chunk_target_entries: int = 16_000_000) -> np.ndarray:
     """Compute initial guess x0 assuming sky=0, solving offset = A_off^T b / A_off^T A_off diag.
 
     This avoids re-reading all FITS files to estimate offsets — the information
@@ -122,13 +122,15 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     Parameters
     ----------
     A : csr_matrix, coo_matrix, BlockCSR or ColSplitCSR
-        The assembled design matrix from ``setup_lsqr``. The large systems'
-        storages (``BlockCSR``, ``ColSplitCSR``) are walked chunk by chunk
-        (:func:`_offset_column_sums`) with the csr path's arithmetic: the
-        same matrix gives the same bytes in every storage.
+        The assembled design matrix from ``setup_lsqr``. A csr matrix and the
+        large systems' storages (``BlockCSR``, ``ColSplitCSR``) are streamed in
+        row chunks (:func:`_column_sums`) with the arithmetic of one
+        ``np.bincount`` over the entries in row order, the path a
+        ``coo_matrix`` takes over its own entry order: the same matrix gives
+        the same bytes in every storage.
     b : np.ndarray
-        The right-hand-side vector from ``setup_lsqr`` (upcast to float64
-        internally so the products accumulate identically to an f64 ``b``).
+        The right-hand-side vector from ``setup_lsqr`` (cast to float64,
+        per chunk, so the products accumulate identically to an f64 ``b``).
     ref_shape : tuple of int
         (height, width) of the reference frame.
     num_sky_blocks : int, optional
@@ -151,8 +153,8 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
         length ``A.shape[1]`` and the sky/offset boundary is
         ``num_sky_eff`` on the supplied ``A``.
     _chunk_target_entries : int
-        Entries per chunk of the split storages' walk (exposed so tests can
-        force many chunks; the result does not depend on it).
+        Entries per chunk of the streamed walk (exposed so tests can force
+        many chunks; the result does not depend on it).
     """
     from .blockcsr import BlockCSR, ColSplitCSR
 
@@ -160,11 +162,6 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     num_sky = ref_h * ref_w
     num_sky_eff = num_sky_blocks * num_sky
     num_cols = A.shape[1]
-    # b may arrive as float32: setup_lsqr can emit an f32 right-hand side
-    # whose values are exactly representable in f32 (see the full_b build in
-    # system.setup_lsqr). Upcast so the off_data * b products accumulate in
-    # f64, identical to an f64 b. No-op for f64 b.
-    b = b.astype(np.float64, copy=False)
 
     # Boundary between sky and offset blocks IN THE COMPACT COLUMN SPACE.
     # When active_mask is supplied, A is already compacted (zero-column
@@ -188,17 +185,16 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     num_offset_cols = num_cols - boundary
 
     # offset_j = (A_off[:, j]^T @ b) / (A_off[:, j]^T @ A_off[:, j])
-    if isinstance(A, (BlockCSR, ColSplitCSR)):
-        AtA_diag, Atb = _offset_column_sums(A, b, boundary, num_offset_cols,
-                                            chunk_target_entries=_chunk_target_entries)
+    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+        AtA_diag, Atb = _column_sums(A, b, boundary, chunk_target_entries=_chunk_target_entries)
     else:
-        # setup_lsqr returns a csr_matrix; the COO branch below is kept for
-        # callers that pass a coo_matrix directly. We need row/col/data triples
-        # to do the per-column diag-LS below, so convert CSR to COO here.
-        # tocoo(copy=False) shares data/indices but does allocate a transient
-        # nnz-sized row array via np.repeat — acceptable since this is a
-        # one-time setup call (not in the LSQR hot loop).
-        A_coo = A.tocoo(copy=False) if isinstance(A, csr_matrix) else A
+        # A coo_matrix (callers that pass one directly): one bincount over its
+        # own entry order. b may arrive as float32 (setup_lsqr emits an f32
+        # right-hand side whose values are exactly representable in f32: see
+        # the full_b build in system.setup_lsqr); upcast so the off_data * b
+        # products are f64, identical to an f64 b.
+        b = b.astype(np.float64, copy=False)
+        A_coo = A
 
         # Extract offset portion of A (columns boundary onwards)
         offset_mask = A_coo.col >= boundary
@@ -226,99 +222,89 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     return x0_full
 
 
-def _offset_column_sums(A, b, boundary, num_offset_cols, chunk_target_entries=64_000_000):
-    """``sum_i A[i, j]^2`` and ``sum_i A[i, j] b[i]`` of every column ``j >= boundary`` of a ``BlockCSR`` or
-    ``ColSplitCSR``, with the arithmetic of :func:`compute_x0_from_Ab`'s csr path (one ``np.bincount`` over the
-    row-major entry stream): each column's entries are folded in row order, left to right from 0.0, whatever the
-    storage. The walk goes chunk by chunk (row-blocks in order; for a ``ColSplitCSR`` one column range after
-    another, each holding all of its columns' entries), and each chunk's ``bincount`` starts from the sums so far
-    through one leading entry per column (0.0 + s is exactly s, then the chunk's entries in order): the fold
-    continues exactly, with no entry held beyond one chunk. The squares are taken in the data's dtype before the
-    cast, as the csr path's ``off_data ** 2``. The products of a chunk are prepared in a small thread window; the
-    folds run strictly in chunk order."""
+def _column_sums(A, b, boundary, chunk_target_entries=16_000_000, window=4):
+    """``sum_i A[i, j]^2`` and ``sum_i A[i, j] b[i]`` of every column ``j >= boundary`` of a csr matrix, a
+    ``BlockCSR`` or a ``ColSplitCSR``, with the arithmetic of one ``np.bincount`` over the row-major entry stream
+    (the reference: :func:`compute_x0_from_Ab` of the matrix as a ``coo_matrix``): each column's entries folded in
+    row order, left to right from 0.0, the square taken in the data's dtype, the product in float64 (``b`` cast to
+    it). The rows go in chunks through scipy's transposed kernel, ``y[col] += value * 1.0`` (exact, fused or not),
+    one accumulator per column range, in row order (a ``ColSplitCSR``'s ranges one after another; those entirely
+    below ``boundary`` are not read). A few thread slots write each chunk's squares and products ``A[i, j] b[i]``
+    into buffers they reuse while the folds run strictly in chunk order: nothing is allocated per chunk and ``b``
+    is never copied whole. Returns the two sums over the columns ``boundary..n-1``."""
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
 
-    from .blockcsr import ColSplitCSR, _csr_shell
-    pieces = []                                   # (rows as csr, first row, column offset of its ids)
+    from scipy.sparse import _sparsetools
+
+    from .blockcsr import BlockCSR, ColSplitCSR
+    n = int(A.shape[1])
+    pieces = []                       # (data, indices, indptr, first row, first column, width), in fold order
     if isinstance(A, ColSplitCSR):
         for t in range(A.nranges):
             c0, c1 = int(A.cuts[t]), int(A.cuts[t + 1])
-            if c1 <= boundary:
-                continue
-            for bi in range(A.nblocks):
-                d, i, ip = A.sub[bi][t]
-                nrows = int(A.row_bounds[bi + 1] - A.row_bounds[bi])
-                pieces.append((_csr_shell(d, i, ip, (nrows, c1 - c0)), int(A.row_bounds[bi]), c0))
-    else:                                         # BlockCSR: row-blocks in row order
-        pieces = [(blk, int(A.row_bounds[k]), 0) for k, blk in enumerate(A.blocks)]
+            if c1 > boundary:
+                pieces.extend((*A.sub[bi][t], int(A.row_bounds[bi]), c0, c1 - c0) for bi in range(A.nblocks))
+    elif isinstance(A, BlockCSR):
+        pieces = [(blk.data, blk.indices, blk.indptr, int(A.row_bounds[k]), 0, n) for k, blk in enumerate(A.blocks)]
+    else:
+        pieces = [(A.data, A.indices, A.indptr, 0, 0, n)]
+    lo = min((p[4] for p in pieces), default=boundary)
+    AtA = np.zeros(n - lo)
+    Atb = np.zeros(n - lo)
     chunks = []
-    for blk, row_off, c0 in pieces:
-        step = max(1, int(chunk_target_entries) // max(1, int(blk.nnz // max(1, blk.shape[0]))))
-        chunks.extend((blk, row_off, c0, r0, min(r0 + step, blk.shape[0])) for r0 in range(0, blk.shape[0], step))
+    for d, i, ip, row0, c0, width in pieces:
+        nrows = int(ip.shape[0]) - 1
+        step = max(1, int(chunk_target_entries) // max(1, int(ip[-1] - ip[0]) // max(1, nrows)))
+        chunks.extend((d, i, ip, row0, c0, width, r0, min(nrows, r0 + step)) for r0 in range(0, nrows, step))
+    if not chunks:
+        return AtA[boundary - lo:], Atb[boundary - lo:]
+    ones = np.ones(max(ch[7] - ch[6] for ch in chunks))
+    slots = [{} for _ in range(window)]
 
-    def prep(ch):
-        blk, row_off, c0, r0, r1 = ch
-        s0, s1 = int(blk.indptr[r0]), int(blk.indptr[r1])
-        if s0 == s1:
-            return None
-        cols = blk.indices[s0:s1].astype(np.int64) + c0
-        keep = cols >= boundary
-        if not keep.any():
-            return None
-        d = blk.data[s0:s1][keep]
-        bv = np.repeat(b[row_off + r0:row_off + r1], np.diff(blk.indptr[r0:r1 + 1]))[keep]
-        return cols[keep] - boundary, (d * d).astype(np.float64, copy=False), d * bv
+    def take(slot, name, size, dtype):
+        a = slot.get(name)
+        if a is None or a.size < size or a.dtype != dtype:
+            a = slot[name] = np.empty(max(int(size), 1), dtype=dtype)
+        return a[:size]
 
-    lead = np.arange(num_offset_cols, dtype=np.int64)
-    AtA = np.zeros(num_offset_cols)
-    Atb = np.zeros(num_offset_cols)
+    def prep(ch, slot):
+        d, i, ip, row0, c0, width, r0, r1 = ch
+        s0, s1 = int(ip[r0]), int(ip[r1])
+        if s1 == s0:
+            return None
+        nr = r1 - r0
+        ipl = take(slot, 'indptr', nr + 1, i.dtype)
+        np.subtract(ip[r0:r1 + 1], s0, out=ipl, casting='unsafe')
+        dv, iv = d[s0:s1], i[s0:s1]
+        sq = take(slot, 'squares', s1 - s0, np.float64)
+        np.multiply(dv, dv, out=sq)                  # in the data's dtype, then exactly float64
+        wb = take(slot, 'products', s1 - s0, np.float64)
+        np.copyto(wb, dv)
+        bb = take(slot, 'b', nr, np.float64)
+        np.copyto(bb, b[row0 + r0:row0 + r1])
+        _sparsetools.csr_scale_rows(nr, width, ipl, iv, wb, bb)          # A[i, j] * b[i], one rounding
+        return ipl, iv, sq, wb, nr, c0, width
 
     def fold(res):
-        nonlocal AtA, Atb
-        if res is None:
-            return
-        o, w2, wb = res
-        idx = np.concatenate([lead, o])
-        AtA = np.bincount(idx, weights=np.concatenate([AtA, w2]), minlength=num_offset_cols)
-        Atb = np.bincount(idx, weights=np.concatenate([Atb, wb]), minlength=num_offset_cols)
+        if res is not None:
+            ipl, iv, sq, wb, nr, c0, width = res
+            _sparsetools.csc_matvec(width, nr, ipl, iv, sq, ones[:nr], AtA[c0 - lo:c0 - lo + width])
+            _sparsetools.csc_matvec(width, nr, ipl, iv, wb, ones[:nr], Atb[c0 - lo:c0 - lo + width])
 
-    if len(chunks) > 1:
-        with ThreadPoolExecutor(max_workers=3) as ex:
+    if len(chunks) == 1:
+        fold(prep(chunks[0], slots[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=window - 1) as ex:
             q = deque()
-            for ch in chunks:
-                q.append(ex.submit(prep, ch))
-                if len(q) >= 3:
+            for k, ch in enumerate(chunks):
+                if len(q) >= window - 1:
                     fold(q.popleft().result())
+                q.append(ex.submit(prep, ch, slots[k % window]))       # a slot is free once its chunk folded
             while q:
                 fold(q.popleft().result())
-    else:
-        for ch in chunks:
-            fold(prep(ch))
-    return AtA, Atb
+    return AtA[boundary - lo:], Atb[boundary - lo:]
 
-
-def _accumulate_runs(acc, cols, w):
-    """``acc[c] += w`` with np.bincount's exact arithmetic, run by run.
-
-    ``w`` is float64 in entry order; equal consecutive ``cols`` form runs.
-    For each run the sum is a sequential left fold seeded with the current
-    accumulator — computed as ``np.cumsum([acc[c], w_run...])[-1]`` — which
-    is bit-for-bit what ``np.bincount(cols, weights=w)`` produces when the
-    same entries are fed to it in one call (it too adds each weight to a
-    float64 slot in entry order, starting from 0.0).
-    """
-    if cols.size == 0:
-        return
-    starts = np.flatnonzero(np.diff(cols)) + 1
-    bounds = np.concatenate(([0], starts, [cols.size]))
-    for i in range(bounds.size - 1):
-        a, z = int(bounds[i]), int(bounds[i + 1])
-        col = int(cols[a])
-        run = np.empty(z - a + 1, dtype=np.float64)
-        run[0] = acc[col]
-        run[1:] = w[a:z]
-        acc[col] = np.cumsum(run)[-1]
 
 def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky_blocks: int = 1,
                            active_mask: np.ndarray | None = None) -> np.ndarray:
@@ -389,7 +375,7 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
                            ref_shape: tuple[int, int], scalar_col_start: int,
                            num_sky_blocks: int = 1,
                            active_mask: np.ndarray | None = None,
-                           _chunk_target_entries: int = 64_000_000) -> np.ndarray:
+                           _chunk_target_entries: int = 16_000_000) -> np.ndarray:
     """x0 for the ``use_per_frame_scalar`` setup: scalar gets diag-LS, chunks
     start at 0, sky starts at 0.
 
@@ -399,28 +385,23 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
     init at 0, all per-frame DC is concentrated in the scalar at iter 0, and
     LSQR's first few iterations refine the chunk offsets around it.
 
-    For CSR input this walks the matrix directly and touches ONLY the scalar
-    columns. Going through ``compute_x0_from_Ab`` instead would materialize
-    ``A.tocoo()`` (an nnz-sized row array) plus offset-block extraction
-    copies (~25 B per stored nonzero of transients — e.g. ~500 GB at
-    production nnz ~2e10), only to zero every column except the scalars.
-    Bit-equality with that COO-based computation is preserved
-    because ``np.bincount`` accumulates strictly in element order and
-    restricting the selection to ``col >= scalar_boundary`` keeps each scalar
-    column's entries in the same (row-major) order, so every per-column sum
-    sees the same addends in the same sequence. The selected entries are
-    gathered chunk-by-chunk but CONCATENATED before a single global bincount —
-    per-chunk partial sums would change the addition tree and break bitwise
-    equality.
+    A csr matrix, a ``BlockCSR`` or a ``ColSplitCSR`` is streamed in row chunks
+    (:func:`_column_sums`, as :func:`compute_x0_from_Ab` streams it) with the
+    arithmetic of the legacy computation, ``compute_x0_from_Ab`` of the matrix
+    as a ``coo_matrix`` (one ``np.bincount``) followed by zeroing the
+    chunk-offset block: every scalar column's entries are folded in row order,
+    left to right from 0.0, whatever the storage and the chunking. A
+    ``ColSplitCSR``'s column ranges entirely below the scalar block are not
+    read.
 
     Parameters
     ----------
-    A : csr_matrix, BlockCSR, or coo_matrix
-        The assembled design matrix from ``setup_lsqr``. CSR/BlockCSR use the
-        direct scalar-only walk; COO falls back to ``compute_x0_from_Ab``.
+    A : csr_matrix, BlockCSR, ColSplitCSR or coo_matrix
+        The assembled design matrix from ``setup_lsqr``. COO falls back to
+        ``compute_x0_from_Ab`` and zeroes the chunk-offset block.
     b : np.ndarray
-        The right-hand-side vector from ``setup_lsqr`` (upcast to float64
-        internally).
+        The right-hand-side vector from ``setup_lsqr`` (cast to float64 per
+        chunk).
     ref_shape : tuple of int
         (height, width) of the reference frame.
     scalar_col_start : int
@@ -437,9 +418,8 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
         expanded back to the FULL (uncompacted) layout — same convention as
         ``compute_x0_from_Ab``.
     """
-    from .blockcsr import BlockCSR
-    from .blockcsr import ColSplitCSR as _CS
-    if not isinstance(A, (csr_matrix, BlockCSR, _CS)):
+    from .blockcsr import BlockCSR, ColSplitCSR
+    if not isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
         # COO input: fall back to the generic diag-LS (memory-heavy — it
         # materializes offset-block copies of every column), then zero the
         # chunk-offset block.
@@ -466,113 +446,7 @@ def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
             "active_mask does not match A")
     num_scalar_cols = num_cols - scalar_boundary
 
-    # ~64M entries per chunk keeps per-chunk transients at a few hundred MB.
-    # (_chunk_target_entries is exposed only so tests can force many chunks on
-    # small matrices; the result is bit-independent of the chunking — chunks
-    # and blocks are concatenated in global row order before the single
-    # bincount, so the addition tree never changes.)
-    target_entries = _chunk_target_entries
-    n_rows_total = A.shape[0]
-    entries_per_row = max(1, int(A.nnz // max(1, n_rows_total)))
-    chunk_rows = max(1, target_entries // entries_per_row)
-
-    from .blockcsr import ColSplitCSR, _csr_shell
-    walk_boundary = scalar_boundary   # boundary in the WALKED arrays' column ids
-    if isinstance(A, csr_matrix):
-        block_iter = [(A, 0)]
-    elif isinstance(A, ColSplitCSR):
-        # The scalar block is the highest column range: every scalar column
-        # lives in the LAST range, whose per-row segments hold exactly the
-        # scalar entries of the row in row order — the same selected sequence
-        # the full-row walk produces. Walk that range's arrays only, with the
-        # boundary expressed in its local ids.
-        last = A.nranges - 1
-        c_last = int(A.cuts[last])
-        if scalar_boundary < c_last:
-            raise ValueError("scalar block straddles a column-range cut; "
-                             "cannot restrict the x0 walk to the last range")
-        block_iter = []
-        for _bi in range(A.nblocks):
-            d, i, ip = A.sub[_bi][last]
-            nrows = int(A.row_bounds[_bi + 1] - A.row_bounds[_bi])
-            block_iter.append((_csr_shell(d, i, ip, (nrows, int(A.shape[1]) - c_last)),
-                               int(A.row_bounds[_bi])))
-        walk_boundary = scalar_boundary - c_last
-    else:  # BlockCSR: blocks in global row order
-        block_iter = [(blk, int(A.row_bounds[i]))
-                      for i, blk in enumerate(A.blocks)]
-
-    # Streaming, bit-identical to ONE global np.bincount over all selected
-    # entries: bincount's per-column value is a sequential float64 left fold
-    # in entry order starting from 0.0 (0.0 + w0 is exactly w0), and so is
-    # np.cumsum. Every scalar column's entries come in consecutive runs (a
-    # frame's data rows are contiguous), so per chunk we cumsum each run
-    # with the column's carried accumulator prepended as the first element —
-    # ((acc + w_k) + w_k+1) + ... — which continues the exact same fold
-    # across chunk and block boundaries. No entry is ever materialised
-    # beyond one chunk (the concatenate-then-bincount form held ~20 B per
-    # selected entry plus concatenation copies: +43 GB at 1.8e9 rows).
-    AtA_diag = np.zeros(num_scalar_cols)
-    Atb = np.zeros(num_scalar_cols)
-
-    def _prep(args):
-        """Selection + products for one chunk — pure per chunk; the fold
-        below stays strictly in chunk order, so where this runs cannot
-        change a byte."""
-        blk, row_off, r0, r1 = args
-        indptr = blk.indptr
-        s0, s1 = int(indptr[r0]), int(indptr[r1])
-        if s0 == s1:
-            return None
-        cols_c = blk.indices[s0:s1]
-        keep = cols_c >= walk_boundary
-        if not keep.any():
-            return None
-        d = blk.data[s0:s1][keep]
-        c = cols_c[keep] - walk_boundary
-        # Square in the data's own dtype (f32 in production) to match
-        # the reference computation in compute_x0_from_Ab, which squares
-        # BEFORE bincount casts to f64 — the f32 rounding of d*d is part
-        # of the bit-equality contract.
-        w2 = (d * d).astype(np.float64, copy=False)
-        counts = np.diff(indptr[r0:r1 + 1])
-        # Upcast b to f64 BEFORE the product: setup_lsqr can emit an f32
-        # b (exactly-representable values only), and f32-value * f64 ->
-        # f64 gives the same result an f64 b would. No-op (view) when b
-        # is f64.
-        bvals = np.repeat(
-            b[row_off + r0:row_off + r1].astype(np.float64, copy=False),
-            counts)[keep]
-        wb = d * bvals
-        return c, w2, wb
-
-    chunks = [(blk, row_off, r0, min(r0 + chunk_rows, blk.shape[0]))
-              for blk, row_off in block_iter
-              for r0 in range(0, blk.shape[0], chunk_rows)]
-    from collections import deque
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _fold(res):
-        if res is None:
-            return
-        c, w2, wb = res
-        _accumulate_runs(AtA_diag, c, w2)
-        _accumulate_runs(Atb, c, wb)
-
-    if len(chunks) > 1:
-        # Prep in a small thread window (the gathers/products release the
-        # GIL); folds applied strictly in chunk order.
-        with ThreadPoolExecutor(max_workers=3) as _ex:
-            q = deque()
-            for ch in chunks:
-                q.append(_ex.submit(_prep, ch))
-                if len(q) >= 3:
-                    _fold(q.popleft().result())
-            while q:
-                _fold(q.popleft().result())
-    else:
-        for ch in chunks:
-            _fold(_prep(ch))
+    AtA_diag, Atb = _column_sums(A, b, scalar_boundary, chunk_target_entries=_chunk_target_entries)
     scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
 
     if active_mask is None:

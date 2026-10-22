@@ -328,8 +328,10 @@ The mosaic coadds the corrected frames on the reference grid
 ([`Mosaicker.make_mosaic`][selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic]). From each
 frame it subtracts the chunk offsets of every offset term, drawn on the detector by the
 instrument's offset renderer, and the frame's scalar (added to the first map's offsets); offset
-terms with a `coefficient` or a `basis` are evaluated and subtracted at every observation
-([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]). The offset of a
+terms with a `coefficient` or a `basis` are evaluated and subtracted at every observation that carries
+weight, as in the solve
+([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]; the frame's other pixels never reach
+the coadd). The offset of a
 frame and chunk that the solve barely saw (covered fraction below
 `sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first; the SPHEREx and Euclid spline renderers fill it in from the
 neighbouring chunks.

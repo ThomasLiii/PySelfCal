@@ -237,7 +237,10 @@ clarity:
   both the LSQR builder and the co-adder. It decodes the bitmask, builds
   *one* bilinear-interpolation sparse matrix from `sub_mapping` (the
   detector-frame interp matrix is shared across all maps; only
-  `compute_chunk_contrib(chunk_map[m], interp_matrix)` is called per map),
+  `compute_chunk_contrib(chunk_map[m], interp_matrix)` is called per map;
+  with a validity weight, both paths build it and everything after it over
+  the bounding box of the rows that can carry weight, and the LSQR path's
+  chunk contributions are mapped back onto every subframe pixel),
   optionally subtracts the **sum of per-map per-chunk offsets** via
   `chunk_offsets` + `det_offset_funcs` lists for the mosaic path, applies
   a validity weight, and stamps NaNs to zero. Returns `chunk_contribs` as
@@ -329,9 +332,10 @@ clarity:
   matvec is row-local, and a thread of the row-split product (or the whole
   sequential product, in verification mode) scatters rows in the same global
   row order whatever the block boundaries (`_sparsetools.csc_matvec`).
-  `compute_x0_scalar_only` consumes it too;
-  `compute_x0_from_Ab` (k2-style full-offset warm starts) intentionally does
-  not.
+  `compute_x0_from_Ab` and `compute_x0_scalar_only` consume it too: one
+  walk streams any of the storages in row chunks through the same kernel
+  (`_column_sums`), with the bytes of one `bincount` over the entries in row
+  order.
 
   `ColSplitCSR` in the same module is that storage cut a second way, into
   column ranges: `sub[b][t]` is storage block `b` restricted to columns
