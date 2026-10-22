@@ -1,8 +1,21 @@
 """The SPHEREx per-detector-column chunk map: one chunk per column, id = the column, every row
 (the reference columns included), at detector and grid resolution; a frame-shared term on it builds."""
 import numpy as np
+import pytest
 
 import selfcal as sc
+
+
+@pytest.fixture(autouse=True)
+def _blank_calibration_maps(monkeypatch):
+    # The geometry builds every chunk map, and the subchannel map reads the detector's band-centre
+    # map from the calibration files, which exist only on the processing host. With the shipped LVF
+    # fit given, that map only sets the shape, so a blank one stands in (as in
+    # test_offset_structure.py). The per-column map does not depend on it.
+    from selfcal.instruments.spherex import settings, spherex_utility
+    blank = np.zeros((2040, 2040), dtype=np.float32)
+    for module in (settings, spherex_utility):
+        monkeypatch.setattr(module, 'load_calibration', lambda *args, **kwargs: (blank, blank))
 
 
 def test_detector_column_map_is_one_chunk_per_column():

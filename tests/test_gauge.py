@@ -163,7 +163,10 @@ def test_the_plane_from_the_frames_mean_slopes():
     noisy = b + rng.normal(0, 2e-4 * half, b.shape)
     g_n, _, st = fit_gauge(noisy, ocov, J, None, None, half)
     assert all(abs(g_n[i] - g[i]) < 5 * st['g_sigma'][i] for i in range(2)), (g_n, st['g_sigma'])
-    assert abs(st['g_corr']) <= 1 and st['g_cov'][0][1] == st['g_cov'][1][0]
+    # the off-diagonal pair is equal to rounding: some BLAS kernels (OpenBLAS's Zen, on CI's AMD
+    # runners) give the two products different last digits
+    assert abs(st['g_corr']) <= 1
+    assert np.isclose(st['g_cov'][0][1], st['g_cov'][1][0], rtol=1e-12, atol=0.0)
     assert st['g_sigma'][0] > 0 and st['detector_slope_sigma'] > 0
 
 
