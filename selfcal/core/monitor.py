@@ -94,6 +94,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from functools import partial
 from math import sqrt
 
 import numpy as np
@@ -119,6 +120,29 @@ DEFAULT_STEP = 4
 
 # The pieces of b a true residual is accumulated over (float64 temporaries of 64 MB).
 _BLOCK = 1 << 23
+
+
+def _spans(n):
+    """The ``(start, stop)`` blocks of :data:`_BLOCK` elements over ``0..n``."""
+    return [(s, min(n, s + _BLOCK)) for s in range(0, n, _BLOCK)]
+
+
+def _residual_part(b, ax, keep, _key, s, e):
+    """``|b - A x|^2`` over the elements ``s:e``, in float64 (``b``: an array or a parked vector, read, never
+    written); with ``keep``, the residual is written over ``ax`` there."""
+    piece = np.array(b[s:e], dtype=np.float64)
+    piece -= ax[s:e]
+    if keep:
+        ax[s:e] = piece
+    return float(np.dot(piece, piece))
+
+
+def _gradient_part(g, x, d2, _key, s, e):
+    """``|A^T r - damp^2 x|^2`` over the elements ``s:e``, in float64."""
+    piece = np.array(g[s:e], dtype=np.float64)
+    if d2 > 0:
+        piece -= d2 * np.asarray(x[s:e], dtype=np.float64)
+    return float(np.dot(piece, piece))
 
 _RULE_TITLES = {'residual': 'the residual rule', 'gradient': 'the gradient rule',
                 'large_scale': 'the large-scale rule', 'chi2': 'the chi-squared rule',
@@ -674,30 +698,20 @@ class Watch:
                 logger.warning("monitor: the right-hand side could not be kept (see above), so the true residual "
                                "and gradient are not computed (NaN in the history); a stop rule on them never holds")
             return math.nan, math.nan
+        from .cgls import _run
         ax = self._op.matvec(x)
+        # the blocks in the vector threads, their sums added in block order (the same sum as one loop)
         rr = 0.0
-        for s in range(0, ax.shape[0], _BLOCK):
-            e = min(ax.shape[0], s + _BLOCK)
-            piece = np.array(b[s:e], dtype=np.float64)        # a copy: b is read, never written
-            piece -= ax[s:e]
-            rr += float(np.dot(piece, piece))
-            if gradient:
-                ax[s:e] = piece
-            del piece
+        for v in _run(partial(_residual_part, b, ax, gradient), _spans(ax.shape[0])):
+            rr += v
         del b
         if not gradient:
             return sqrt(rr), math.nan
         g = self._op.rmatvec(ax)
         del ax
         gg = 0.0
-        d2 = self.damp * self.damp
-        for s in range(0, g.shape[0], _BLOCK):
-            e = min(g.shape[0], s + _BLOCK)
-            piece = np.array(g[s:e], dtype=np.float64)
-            if d2 > 0:
-                piece -= d2 * np.asarray(x[s:e], dtype=np.float64)
-            gg += float(np.dot(piece, piece))
-            del piece
+        for v in _run(partial(_gradient_part, g, x, self.damp * self.damp), _spans(g.shape[0])):
+            gg += v
         del g
         return sqrt(rr), sqrt(gg)
 

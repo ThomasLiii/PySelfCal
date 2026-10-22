@@ -1398,14 +1398,31 @@ class Deflation:
         self._map(part)
 
     def _gather(self, y):
+        """``y`` on the covered columns, float64 (nS,), written block by block in the threads into a buffer the
+        deflation keeps: one gathered vector is live at a time (every caller consumes it before the next)."""
         y = np.asarray(y)
-        return y.astype(np.float64) if self.S is None else y[self.S].astype(np.float64)
+        buf = self._scratch.get('gathered')
+        if buf is None:
+            buf = self._scratch['gathered'] = np.empty(self.nS)
+        S = self.S
+
+        def part(j):
+            a, c = self._blocks[j]
+            np.copyto(buf[a:c], y[a:c] if S is None else y[S[a:c]], casting='unsafe')
+        self._wait(self._submit(part, len(self._blocks)))
+        return buf
 
     def _scatter(self, out, vS):
-        if self.S is None:
-            out[...] = vS
-        else:
-            out[self.S] = vS
+        """``vS`` written back to its columns of ``out`` (in ``out``'s dtype), block by block in the threads."""
+        S = self.S
+
+        def part(j):
+            a, c = self._blocks[j]
+            if S is None:
+                np.copyto(out[a:c], vS[a:c], casting='unsafe')
+            else:
+                out[S[a:c]] = vS[a:c]
+        self._wait(self._submit(part, len(self._blocks)))
 
     def project(self, y) -> np.ndarray:
         """``P y`` on the covered columns, float64 (nS,)."""

@@ -25,6 +25,7 @@ import mmap as _mmap
 import os
 import threading
 import time
+from functools import partial
 from math import sqrt
 
 import numpy as np
@@ -592,7 +593,6 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges, promote=False):
     def _matvec(x):
         od = np.promote_types(dtype, x.dtype) if promote else dtype      # n_threads>1 regime: output in A dtype
         out = _out_buffer(_outs, m, od)
-        out.fill(0)
         xs = x if x.dtype == od else np.ascontiguousarray(x, dtype=od)
         for t in range(nranges):        # ordered continuation passes
             c0, c1 = int(cuts[t]), int(cuts[t + 1])
@@ -600,6 +600,8 @@ def _make_parallel_operator_colsplit(bcsr, n_threads, nranges, promote=False):
 
             def _work(p, t=t, x_t=x_t, c1c0=c1 - c0):
                 r0, r1, per_range = p
+                if t == 0:
+                    out[r0:r1].fill(0)     # each piece zeroes its own rows (the pieces cover them all)
                 data_t, idx_t, ip_t = per_range[t]
                 if data_t.dtype == od:
                     _sparsetools.csr_matvec(r1 - r0, c1c0, ip_t, idx_t, data_t,
@@ -811,17 +813,24 @@ def _true_residual(matvec, x, b):
     NaN)`` when ``b`` is None (it could not be kept)."""
     if b is None:
         return math.nan, math.nan
+    from .cgls import _run
     ax = matvec(x)
+    # the blocks in the vector threads, their sums added in block order (the same sums as one loop)
     rr = bb = 0.0
-    for start in range(0, b.shape[0], _RESIDUAL_BLOCK):
-        stop = min(b.shape[0], start + _RESIDUAL_BLOCK)
-        piece = np.array(b[start:stop], dtype=np.float64)     # a copy: b is read, never written
-        bb += float(np.dot(piece, piece))
-        piece -= ax[start:stop]
-        rr += float(np.dot(piece, piece))
-        del piece
+    spans = [(s, min(b.shape[0], s + _RESIDUAL_BLOCK)) for s in range(0, b.shape[0], _RESIDUAL_BLOCK)]
+    for b2, r2 in _run(partial(_residual_part, b, ax), spans):
+        bb += b2
+        rr += r2
     del ax
     return sqrt(rr), sqrt(bb)
+
+
+def _residual_part(b, ax, _key, start, stop):
+    """``(|b|^2, |b - A x|^2)`` over the elements ``start:stop``, in float64 (``b`` read, never written)."""
+    piece = np.array(b[start:stop], dtype=np.float64)
+    b2 = float(np.dot(piece, piece))
+    piece -= ax[start:stop]
+    return b2, float(np.dot(piece, piece))
 
 
 def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter_lim, shape, wall_s):
