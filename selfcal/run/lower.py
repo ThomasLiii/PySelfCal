@@ -62,6 +62,8 @@ def setup_options(recipe, compute, instrument) -> dict:
                'damp_weight': float(damp[0]), 'batch_size': recipe.numerics.batch,
                'max_workers': compute.resolved_workers}
     options.update(clip_keys(fit.clip))
+    if fit.min_observations is not None:
+        options['min_observations'] = fit.min_observations
     return options
 
 

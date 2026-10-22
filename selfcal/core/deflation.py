@@ -669,8 +669,9 @@ class Deflation:
         self._blas_pool = (ThreadPoolExecutor(max_workers=min(int(threads), _BLAS_THREADS)) if threads > 1
                            else None)
         self._scratch = {}
-        # The columns the space lives on: those with entries (all of a compacted system's); the chunks over the
-        # threads (marking a column covered commutes).
+        # The columns the space lives on: those with a nonzero entry (all of a compacted system's, but the columns a
+        # coverage floor left without data: Fit(min_observations=)); the chunks over the threads (marking a column
+        # covered commutes).
         covered = np.zeros(n, dtype=bool)
         mark_slots = {}                                           # one per thread, for this sweep
 
@@ -678,8 +679,8 @@ class Deflation:
             buf = mark_slots.get(threading.get_ident())
             if buf is None:
                 buf = mark_slots[threading.get_ident()] = _Slot()
-            for _lip, cols, _data in _piece(storage, desc, buf=buf)[2]:
-                covered[cols] = True
+            for _lip, cols, data in _piece(storage, desc, buf=buf)[2]:
+                covered[cols[data != 0]] = True
 
         descs0 = _piece_index(storage)
         if self._pool is None:
