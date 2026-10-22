@@ -9,9 +9,11 @@ Contracts checked:
 3. the per-pixel arithmetic equals a plain dense reference (mean / std /
    sigma-clipped mean, with a det_aux map) up to summation order — the
    reference is float64, so agreement is at float32 rounding;
-4. the mosaic-path _prep_subframe (bbox-local build) matches the full-frame
-   build (the LSQR path) bit for bit, and the subset offset render equals the
-   full render at the sampled pixels.
+4. the mosaic-path _prep_subframe (bbox-local build) matches the LSQR path bit
+   for bit, and the subset offset render equals the full render at the sampled
+   pixels;
+5. the LSQR-path _prep_subframe (bbox-local build) matches the full-frame build
+   from the primitives bit for bit, the chunk contributions array for array.
 
 Runnable as ``python tests/test_coadd_engine.py`` or under pytest.
 """
@@ -24,8 +26,9 @@ import numpy as np
 from astropy.wcs import WCS
 
 from selfcal.core import coadd
-from selfcal.core.subframe import _prep_subframe
-from selfcal.geometry.map_helper import chunk_to_det, det_to_sub, make_linear_interp_matrix
+from selfcal.core.subframe import _prep_subframe, _valid_row_mask
+from selfcal.geometry.map_helper import (bit_to_bool, chunk_to_det, compute_chunk_contrib, det_to_sub,
+                                         make_linear_interp_matrix, make_weight)
 
 H = W = 24            # frame size
 G = 20                # detector grid
@@ -229,7 +232,7 @@ def test_prep_bbox_path_matches_full_frame_build():
         files, _ = _make_frames(tmp, rng)
         chunk_map, gvw, offsets, det_aux = _geometry(rng)
         for k in (0, 5, 9):
-            # mosaic path (bbox-local) vs LSQR path (full-frame matrix), no offsets
+            # mosaic path vs LSQR path (both bbox-local; the LSQR path against the full-frame build: test 5), no offsets
             base = dict(file=files[k], chunk_maps=[chunk_map], apply_weight=True, apply_mask=True,
                         ignore_list=[21], grid_valid_weight=gvw, oversample_factor=1, det_aux=det_aux)
             rc_m, d_m, w_m, _, a_m = _prep_subframe(for_lsqr=False, **base)
@@ -254,6 +257,57 @@ def test_prep_bbox_path_matches_full_frame_build():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _lsqr_full_frame(file, chunk_map, gvw, det_aux, apply_mask):
+    """The LSQR path's outputs built over the whole frame from the primitives (the full-frame computation)."""
+    with h5py.File(file, 'r') as hf:
+        data = hf['sub_data'][()]
+        mapping = hf['sub_mapping'][()]
+        bitmask = hf['sub_bitmask'][()]
+    coords = (mapping.reshape(2, -1) * 1)[::-1]
+    full = make_linear_interp_matrix(coords, input_shape=(G, G), valid_row_mask=_valid_row_mask(coords, gvw))
+    weight = np.ones_like(data, dtype=np.float32)
+    if apply_mask:
+        weight *= bit_to_bool(bitmask, [21], invert=True)
+    weight *= det_to_sub(gvw, interp_matrix=full, sub_shape=data.shape)
+    aux = np.array([det_to_sub(a, interp_matrix=full, sub_shape=data.shape) for a in det_aux])
+    weight *= make_weight(data)
+    contribs = [compute_chunk_contrib(chunk_map, full)]
+    nan = np.isnan(data)
+    data[nan] = 0.0
+    weight[nan] = 0.0
+    return data, weight, contribs, aux
+
+
+def test_lsqr_bbox_build_matches_full_frame_build():
+    rng = np.random.default_rng(SEED + 3)
+    tmp = tempfile.mkdtemp(prefix='selfcal_coadd_')
+    try:
+        files, _ = _make_frames(tmp, rng)
+        chunk_map, gvw, _, det_aux = _geometry(rng)
+        empty = np.zeros_like(gvw)              # no row can carry weight
+        for gv in (gvw, empty):
+            for apply_mask, keep_raw in ((True, False), (False, True)):
+                for f in files:
+                    _rc, d, w, cc, a = _prep_subframe(file=f, chunk_maps=[chunk_map], apply_weight=True,
+                                                      apply_mask=apply_mask, ignore_list=[21], grid_valid_weight=gv,
+                                                      oversample_factor=1, det_aux=det_aux, for_lsqr=True,
+                                                      keep_raw=keep_raw)
+                    d_r, w_r, cc_r, a_r = _lsqr_full_frame(f, chunk_map, gv, det_aux, apply_mask)
+                    assert _bytes_equal(d, d_r) and _bytes_equal(w, w_r) and _bytes_equal(a, a_r)
+                    assert len(cc) == len(cc_r) == 1
+                    m, m_r = cc[0], cc_r[0]
+                    assert type(m) is type(m_r) and m.shape == m_r.shape == (int(chunk_map.max()) + 1, H * W)
+                    for k in ('indptr', 'indices', 'data'):
+                        assert _bytes_equal(getattr(m, k), getattr(m_r, k)), k
+                    # what the assembly reads: the contributions at the valid pixels, in their order
+                    pix = np.flatnonzero(w.ravel() > 0)
+                    s, s_r = m[:, pix].tocoo(), m_r[:, pix].tocoo()
+                    for k in ('row', 'col', 'data'):
+                        assert _bytes_equal(getattr(s, k), getattr(s_r, k)), k
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == '__main__':
     test_schedule_deterministic_and_matches_reference()
     print("OK schedule: deterministic across worker counts, cache==no-cache, matches dense reference")
@@ -261,3 +315,5 @@ if __name__ == '__main__':
     print("OK sparse cache round-trip + legacy dense format")
     test_prep_bbox_path_matches_full_frame_build()
     print("OK _prep_subframe bbox path == full-frame build")
+    test_lsqr_bbox_build_matches_full_frame_build()
+    print("OK _prep_subframe LSQR bbox path == full-frame build from the primitives")
