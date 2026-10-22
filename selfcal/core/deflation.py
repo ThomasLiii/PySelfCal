@@ -623,6 +623,10 @@ class Deflation:
             raise ValueError(f"Deflate(terms={settings.terms!r}): no sky term {unknown} (the model's: {list(names)})")
         nsb = len(names)
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
+        # The projections' blocks (as many as the threads: their partial sums set the arithmetic) are run by a few
+        # threads: each block is many small BLAS calls, which OpenBLAS serialises across threads (_BLAS_THREADS).
+        self._blas_pool = (ThreadPoolExecutor(max_workers=min(int(threads), _BLAS_THREADS)) if threads > 1
+                           else None)
         self._scratch = {}
         # The columns the space lives on: those with entries (all of a compacted system's); the chunks over the
         # threads (marking a column covered commutes).
@@ -1349,9 +1353,9 @@ class Deflation:
         return 0.5 * (out + out.T) if A is B else out
 
     def _map(self, fn):
-        if self._pool is None or len(self._blocks) == 1:
+        if self._blas_pool is None or len(self._blocks) == 1:
             return [fn(a, c) for a, c in self._blocks]
-        return list(self._pool.map(lambda ac: fn(*ac), self._blocks))
+        return list(self._blas_pool.map(lambda ac: fn(*ac), self._blocks))
 
     _SUB = 32768          # columns per sub-block: a float64 copy of k' x _SUB stays in cache
 
@@ -1556,3 +1560,6 @@ class Deflation:
         if self._pool is not None:
             self._pool.shutdown(wait=False)
             self._pool = None
+        if getattr(self, '_blas_pool', None) is not None:
+            self._blas_pool.shutdown(wait=False)
+            self._blas_pool = None
