@@ -13,7 +13,9 @@ Contracts checked:
    for bit, and the subset offset render equals the full render at the sampled
    pixels;
 5. the LSQR-path _prep_subframe (bbox-local build) matches the full-frame build
-   from the primitives bit for bit, the chunk contributions array for array.
+   from the primitives bit for bit, the chunk contributions array for array;
+6. both paths apply the bit mask with apply_mask only (keep_raw reads the bit
+   mask for the data variables, it does not mask).
 
 Runnable as ``python tests/test_coadd_engine.py`` or under pytest.
 """
@@ -308,6 +310,27 @@ def test_lsqr_bbox_build_matches_full_frame_build():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_bit_mask_follows_apply_mask_on_both_paths():
+    rng = np.random.default_rng(SEED + 4)
+    tmp = tempfile.mkdtemp(prefix='selfcal_coadd_')
+    try:
+        files, _ = _make_frames(tmp, rng)
+        chunk_map, gvw, _, det_aux = _geometry(rng)
+        for apply_mask in (True, False):
+            for keep_raw in (False, True):
+                for f in files[:6]:
+                    d_r, w_r, _cc, a_r = _lsqr_full_frame(f, chunk_map, gvw, det_aux, apply_mask)
+                    for for_lsqr in (False, True):
+                        _rc, d, w, _c, a = _prep_subframe(file=f, chunk_maps=[chunk_map], apply_weight=True,
+                                                          apply_mask=apply_mask, ignore_list=[21], grid_valid_weight=gvw,
+                                                          oversample_factor=1, det_aux=det_aux, for_lsqr=for_lsqr,
+                                                          keep_raw=keep_raw)
+                        assert _bytes_equal(d, d_r) and _bytes_equal(w, w_r) and _bytes_equal(a, a_r), \
+                            (apply_mask, keep_raw, for_lsqr)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == '__main__':
     test_schedule_deterministic_and_matches_reference()
     print("OK schedule: deterministic across worker counts, cache==no-cache, matches dense reference")
@@ -317,3 +340,5 @@ if __name__ == '__main__':
     print("OK _prep_subframe bbox path == full-frame build")
     test_lsqr_bbox_build_matches_full_frame_build()
     print("OK _prep_subframe LSQR bbox path == full-frame build from the primitives")
+    test_bit_mask_follows_apply_mask_on_both_paths()
+    print("OK the bit mask follows apply_mask on both paths")

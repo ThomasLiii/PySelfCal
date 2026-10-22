@@ -323,9 +323,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         r0, r1, c0, c1 = box
         bh, bw = r1 - r0, c1 - c0
         w_box = np.ones((bh, bw), dtype=np.float32)
-        # (the LSQR path masks with apply_mask, as its full-frame build does; the mosaic path whenever the bit mask
-        # was read)
-        if 'sub_bitmask' in result and (apply_mask or not for_lsqr):
+        if apply_mask and 'sub_bitmask' in result:
             # invert=True: 1 = Good pixel, 0 = Bad pixel
             w_box *= bit_to_bool(result['sub_bitmask'][r0:r1, c0:c1], ignore_list, invert=True)
         if chunk_offsets is not None:
