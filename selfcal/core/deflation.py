@@ -552,6 +552,10 @@ def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0):
     counted by a running sum of the offset mask and selected by ``np.compress``."""
     n = int(cols.size)
     pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
+    if colmap is not None:
+        # A column outside the space (-1) holds only zero entries (the columns a coverage floor left without data):
+        # sent to column 0, the products read a valid column and the zero value keeps every one of them exact.
+        np.maximum(pos, 0, out=pos)
     d64 = buf.get(f'{tag}d64', n, np.float64)
     np.copyto(d64, data)
     o = buf.get(f'{tag}o', n, np.bool_)
@@ -1417,7 +1421,7 @@ class Deflation:
             acc = buf.get('acc', nr, np.float64)
             acc.fill(0.0)
             for ti, (lip, cols, data) in enumerate(pieces):
-                pos = cols if self._colmap is None else self._colmap[cols]
+                pos = cols if self._colmap is None else np.maximum(self._colmap[cols], 0)   # -1: zero entries
                 d64 = buf.get(f'{ti}d64', data.size, np.float64)
                 np.copyto(d64, data)
                 _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, v, acc)
