@@ -19,13 +19,13 @@ S = 8                                                     # detector side (rows 
 
 
 def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slope_per_row=True, slope_scale=0.0,
-         noise=1e-6, seed=5, rotations=(0, 1, 2, 3), fixed_slope=0.0, weak_frames=0.0, weak_weight=1e-6):
+         noise=1e-6, seed=5, rotations=(0, 1, 2, 3), fixed_slope=0.0, weak_frames=0.0, weak_weight=1e-6, const_scale=0.3):
     """A sky (a plane + quad * a centred bowl + a random field), random row constants, slopes of ``slope_scale``,
     ``noise``; ``shared``: a pattern along the detector columns shared by every frame (data and model);
     ``rotations``: the quarter turns frames take; ``fixed_slope``: a slope the same in every frame (per row: a
     detector-fixed pattern) added to the data; ``weak_frames``: the fraction of frames whose rows carry the weight
-    ``weak_weight`` (rows and data scaled by its square root). Returns a dict: A, b, npix, grid, slope_cols,
-    slope_chunks, sky (the true sky)."""
+    ``weak_weight`` (rows and data scaled by its square root); ``const_scale``: the row constants' spread. Returns a
+    dict: A, b, npix, grid, slope_cols, slope_chunks, const_cols, const_chunks, shared_cols, shared_chunks, sky."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:h, 0:w]
     u, v = (xx / (w - 1)).ravel(), (yy / (h - 1)).ravel()
@@ -36,7 +36,7 @@ def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slo
     shared0 = npix + frames * per_frame
     pattern = 0.1 * np.cos(np.arange(S) * 0.8)
     fixed = fixed_slope * (1.0 + 0.5 * np.sin(np.arange(ns) * 1.3))
-    rows, cols, vals, b, slope_cols, slope_chunks = [], [], [], [], [], []
+    rows, cols, vals, b, slope_cols, slope_chunks, const_cols, const_chunks = [], [], [], [], [], [], [], []
     r = 0
     for f in range(frames):
         rot = int(rng.choice(rotations))
@@ -45,7 +45,9 @@ def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slo
         c0 = npix + f * per_frame
         slope_cols.extend(range(c0 + S, c0 + S + ns))
         slope_chunks.extend(range(ns))
-        const = rng.normal(0.0, 0.3, S)
+        const_cols.extend(range(c0, c0 + S))
+        const_chunks.extend(range(S))
+        const = rng.normal(0.0, const_scale, S) if const_scale else np.zeros(S)
         slope = (rng.normal(0.0, slope_scale, ns) if slope_scale else np.zeros(ns)) + fixed
         for i in range(S):
             for j in range(S):
@@ -64,7 +66,9 @@ def _toy(h=28, w=28, frames=600, plane=(0.6, -0.35), quad=0.0, shared=False, slo
                 r += 1
     A = sp.csr_matrix((vals, (rows, cols)), shape=(r, shared0 + (S if shared else 0)))
     return {'A': A, 'b': np.asarray(b), 'npix': npix, 'grid': (h, w), 'slope_cols': np.asarray(slope_cols),
-            'slope_chunks': np.asarray(slope_chunks), 'sky': sky}
+            'slope_chunks': np.asarray(slope_chunks), 'const_cols': np.asarray(const_cols),
+            'const_chunks': np.asarray(const_chunks), 'shared_cols': np.arange(shared0, shared0 + (S if shared else 0)),
+            'shared_chunks': np.arange(S if shared else 0), 'sky': sky}
 
 
 def _sig(t, k):
@@ -198,6 +202,47 @@ def test_every_pattern_but_the_constant(tmp_path):
     assert info['degree'] == 'all' and len(info['fields']) == len(d['eigenvalues']) - 1
     assert not any(f.split(':', 1)[1] in ('0,0', 'P0,0') for f in info['fields'])
     assert d['gauges'] == 1 and e.std() < 1e-5 and info['constraint_held'] < 1e-10
+
+
+def test_every_offset_term_follows_the_rule(tmp_path):
+    """The model-wide rule over every offset term of the toy: the row constants, the slopes and the column pattern
+    shared by every frame. The shared term is the same in every frame, so it is skipped and recorded; the
+    mean stays the one exact gauge (the constant pattern is not excluded); with true constants and slopes that hold
+    nothing along the signatures, the true sky comes back."""
+    t = _toy(quad=0.8, shared=True, seed=11, const_scale=0.0)
+    sig = [(t['const_cols'], 'all', 'rows', t['const_chunks']), (t['slope_cols'], 'all', 'slopes', t['slope_chunks']),
+           (t['shared_cols'], 'all', 'columns', t['shared_chunks'])]
+    x, rec = _solve(t, sc.Deflate(2), str(tmp_path), signatures=sig)
+    d = json.loads(rec.deflation)
+    by = {r['term']: r for r in d['signature_exclusions']}
+    e, _ = _error(t, x)
+    print(f"every term: rows {by['rows'].get('directions')}, slopes {by['slopes'].get('directions')} directions, "
+          f"columns {by['columns'].get('skipped')}; |solved - true sky| rms {e.std():.2e}")
+    assert 'skipped' in by['columns'] and 'skipped' not in by['rows'] and 'skipped' not in by['slopes']
+    assert d['gauges'] == 1 and e.std() < 1e-5 and by['rows']['constraint_held'] < 1e-10
+
+
+def test_the_model_wide_setting():
+    from selfcal.models.spec import ModelSpec
+    m = sc.Model(offsets=[sc.Offsets('c', on='subchannel'), sc.Offsets('xs', on='subchannel'),
+                          sc.Offsets('cols', on='detector_column', per='all')], sky_signature=sc.SkySignature('all'))
+    table = m.lower()
+    assert table['sky_signature'] == 'all' and ModelSpec.from_config(table).sky_signature == 'all'
+    assert 'sky_signature' not in sc.Model(offsets=[sc.Offsets(on='subchannel')]).lower()
+
+    class _Layout:                                        # three terms of 2 groups x 3 chunks, 1 x 4, and a scalar
+        col_bases = [10, 16, 22, 26]
+        num_chunks_list = [3, 3, 4]
+        num_scalar_cols = 2
+        scalar_col_start = 26
+    out = ModelSpec.from_config(table).signature_exclusions(_Layout())
+    assert [(o[2], o[1]) for o in out] == [('c', 'all'), ('xs', 'all'), ('cols', 'all'), ('scalar', 'all')]
+    assert list(out[0][3]) == [0, 1, 2, 0, 1, 2] and list(out[3][0]) == [26, 27] and list(out[3][3]) == [0, 0]
+    with pytest.raises(sc.ConfigError, match='one or the other'):
+        sc.Model(offsets=[sc.Offsets('xs', on='subchannel', exclude=sc.SkySignature(1))],
+                 sky_signature=sc.SkySignature('all'))
+    with pytest.raises(sc.ConfigError):
+        sc.Model(sky_signature='all')
 
 
 def test_the_setting_lowers_and_needs_the_deflation(tmp_path):

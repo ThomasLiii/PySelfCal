@@ -514,7 +514,7 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
             if self.per == 'all':
                 raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
-                                  "a term shared by every frame holds nothing that turns with the frames")
+                                  "a term shared by every frame is the same in every frame: nothing to constrain")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
@@ -865,8 +865,13 @@ class Model(Config):
     :class:`Derived`, :class:`FrameFunction`). ``weight``: a function of data variables that
     multiplies every observation's weight (the coadd uses its square), or a :class:`Variance` (the
     observation's noise variance: the weight is ``1/sqrt`` of it, the coadd's ``1/`` it). ``priors``:
-    :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block`
-    build the standard models.
+    :class:`Prior` rows. ``sky_signature``: a :class:`SkySignature` every offset term of the model
+    follows (and the per-frame scalar): none may carry its response to the deflation's sky fields
+    beyond the part that is the same in every frame (a pattern fixed on the detector); a term shared
+    by every frame consists of that part only and is skipped (the deflation's record says so). It
+    names no term, so it needs no prior knowledge of which offset term can absorb a data set's
+    large-scale sky; per-term ``Offsets(exclude=SkySignature(...))`` is refused alongside it. The
+    presets :func:`continuum`, :func:`spectral` and :func:`two_block` build the standard models.
     """
     _: KW_ONLY
     sky: tuple[Sky, ...] = (Sky(),)
@@ -875,9 +880,17 @@ class Model(Config):
     variables: dict[str, _Source] = field(default_factory=FrozenDict)
     weight: Function | Shape | str | Callable | None = None
     priors: tuple[Prior, ...] = ()
+    sky_signature: SkySignature | None = added(None, since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'weight', _as_function(self.weight, 'Model(weight=...)'))
+        if self.sky_signature is not None:
+            if not isinstance(self.sky_signature, SkySignature):
+                raise ConfigError("Model(sky_signature=...): a SkySignature(degree)")
+            own = [t.term_name for t in self.offsets if isinstance(t.exclude, SkySignature)]
+            if own:
+                raise ConfigError(f"Model(sky_signature=...) applies to every offset term; {own} set their own "
+                                  "exclude=SkySignature(...): one or the other")
         if not self.sky:
             raise ConfigError("Model(sky=...): at least one sky term")
         names = [t.name for t in self.sky]
@@ -913,6 +926,9 @@ class Model(Config):
             table['weight'] = _lower_function(self.weight)
         if self.priors:
             table['prior'] = [p.lower() for p in self.priors]
+        if self.sky_signature is not None:
+            d = self.sky_signature.degree
+            table['sky_signature'] = 'all' if d == 'all' else int(d)
         return table
 
     def spec(self, mosaic='full'):

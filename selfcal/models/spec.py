@@ -407,6 +407,7 @@ class ModelSpec:
     variables: tuple = ()
     weight: object = None
     priors: tuple = ()
+    sky_signature: object = None         # Model(sky_signature=): 1, 2 or 'all', for every offset term
 
     def __post_init__(self):
         object.__setattr__(self, 'sky', tuple(
@@ -440,14 +441,15 @@ class ModelSpec:
         variables = t.pop('variables', None) or {}
         weight = t.pop('weight', None)
         priors = t.pop('prior', None) or t.pop('priors', None) or []
+        sky_signature = t.pop('sky_signature', None)
         if t:
             raise ValueError(f"unknown [model] keys {sorted(t)}; expected sky / offset / variables / "
-                             f"weight / prior / scalar / mosaic")
+                             f"weight / prior / scalar / mosaic / sky_signature")
         return cls(sky=tuple(_sky_term(dict(s)) for s in sky),
                    offset=tuple(OffsetTerm(**dict(o)) for o in offset), scalar=scalar, mosaic=mosaic,
                    variables=tuple(VariableSpec.from_config(k, v) for k, v in dict(variables).items()),
                    weight=None if weight is None else dict(weight),
-                   priors=tuple(PriorSpec.from_config(p) for p in priors))
+                   priors=tuple(PriorSpec.from_config(p) for p in priors), sky_signature=sky_signature)
 
     # ---- properties ------------------------------------------------------------------------
     @property
@@ -676,17 +678,25 @@ class ModelSpec:
         """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
         solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the
         term's full-layout columns (every group, chunk and function), ``k`` the largest degree of the sky
-        polynomials whose response the term may not carry (``'all'``: every pattern but the constant), and ``chunk`` each column's place within its group (the
+        polynomials whose response the term may not carry (``'all'``: every pattern but the constant;
+        ``Model(sky_signature=)``: every offset term and the per-frame scalar, the scalar as one chunk), and ``chunk`` each column's place within its group (the
         columns of one ``chunk`` value, one per group, hold the term's detector-fixed configurations). Empty without
         such terms."""
+        def deg(k):
+            return k if k == 'all' else int(k)
+
         out = []
         for m, term in enumerate(self.offset):
-            if term.signature_degree is None:
+            k = self.sky_signature if self.sky_signature is not None else term.signature_degree
+            if k is None:
                 continue
             base, nc = int(layout.col_bases[m]), int(layout.num_chunks_list[m])
             cols = np.arange(base, int(layout.col_bases[m + 1]), dtype=np.int64)
-            k = term.signature_degree if term.signature_degree == 'all' else int(term.signature_degree)
-            out.append((cols, k, term.name or term.map or 'primary', (cols - base) % nc))
+            out.append((cols, deg(k), term.name or term.map or 'primary', (cols - base) % nc))
+        if self.sky_signature is not None and int(layout.num_scalar_cols) > 0:     # the per-frame scalar: one chunk
+            s0 = int(layout.scalar_col_start)
+            cols = np.arange(s0, s0 + int(layout.num_scalar_cols), dtype=np.int64)
+            out.append((cols, deg(self.sky_signature), 'scalar', np.zeros(cols.size, dtype=np.int64)))
         return out
 
     def _offset_function(self, term, geom, catalog, known, log):

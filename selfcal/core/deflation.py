@@ -1140,10 +1140,12 @@ class Deflation:
                 fields = [i for i, lbl in enumerate(self.labels) if lbl.split(':', 1)[1] not in ('0,0', 'P0,0')]
             else:
                 fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
-            if off.size == 0 or not fields:
-                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree!r})): "
-                                 + ("the term has no unknown with data" if off.size == 0 else
-                                    "the deflation has no pattern to exclude (degree 1 to that degree, or any)"))
+            if not fields:
+                raise ValueError(f"SkySignature({degree!r}) on {name!r}: the deflation has no pattern to exclude "
+                                 "(degree 1 to that degree, or any)")
+            if off.size == 0:                                     # no unknown of the term has data in this job
+                recs.append({'term': str(name), 'skipped': 'no unknown with data'})
+                continue
             # Solver coordinates y, physical x = m y. The data's metric on the term's coefficients is the diagonal of
             # the offsets' normal matrix g (1 for unit-norm columns): <u, v> = sum g u v in solver coordinates. A
             # detector-fixed configuration (x the same in every group, one value per chunk) is f = 1 / m on the
@@ -1158,23 +1160,32 @@ class Deflation:
             for j in range(S.shape[1]):
                 num = np.bincount(ch, weights=g * f * S[:, j], minlength=den.size)
                 S[:, j] -= f * np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)[ch]
+            kept = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
+            if float(kept.max()) <= _DROP * max(float(norm0.max()), 1e-300):
+                # Nothing of the term's response changes from frame to frame (a term shared by every frame, or one group):
+                # its whole response is what the rule leaves free. Zero up to rounding, so measured against the
+                # response before the detector-fixed part was removed.
+                recs.append({'term': str(name), 'skipped': 'the same in every frame (a pattern fixed on the detector): nothing to constrain'})
+                continue
             A = g[:, None] * S
             U, sv, _ = np.linalg.svd(A, full_matrices=False)
-            if float(sv.max()) <= 0.0:
-                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree})): the term's signature is "
-                                 "detector-fixed throughout (one group, or every frame alike): nothing to constrain")
             keep = sv > _DROP * max(float(sv.max()), 1e-300)
             U = np.ascontiguousarray(U[:, keep])
             groups.append((cols[None, :], U[None, :, :]))
             c = np.zeros((n_off, U.shape[1]))
             c[off] = U
             cs.append(c)
-            kept = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
             recs.append({'term': str(name), 'degree': degree if degree == 'all' else int(degree), 'fields': [self.labels[i] for i in fields],
                          'columns': int(off.size), 'directions': int(U.shape[1]),
                          'singular_values': [float(v) for v in sv], 'metric': 'data (the diagonal of the normal matrix)',
                          'detector_fixed_free': True,
                          'share_constrained': [float(a / b) if b > 0 else 0.0 for a, b in zip(kept, norm0)]})
+        done = [r for r in recs if 'skipped' not in r]
+        skipped = '; '.join(f"{r['term']} skipped ({r['skipped']})" for r in recs if 'skipped' in r)
+        if not cs:
+            self.signature_info = recs
+            logger.info('Deflation: sky signatures: nothing to constrain' + (f' ({skipped})' if skipped else ''))
+            return X
         C = np.concatenate(cs, axis=1)
         Cp = C if self._proj_off is None else self._proj_off.apply(np.array(C, copy=True))
         fac = info.get('factor')
@@ -1185,14 +1196,15 @@ class Deflation:
         held = float(np.abs(C.T @ Xc).max() / max(float(np.abs(Xc).max()), 1e-300))
         groups0 = list(self._projector.groups) if self._projector is not None else []
         self._projector = ColumnProjector(groups0 + groups)
-        for r in recs:
+        for r in done:
             r['constraint_held'] = held
         self.signature_info = recs
         logger.info('Deflation: sky signatures excluded from ' + '; '.join(
             f"{r['term']} ({r['columns']} unknowns, " + ('every pattern but the constant' if r['degree'] == 'all' else f"degree <= {r['degree']}")
             + f": {r['directions']} directions; the share of each "
             f"field's signature that is not detector-fixed: " + ', '.join(f'{v:.2f}' for v in r['share_constrained']) + ')'
-            for r in recs)
+            for r in done)
+            + (f"; {skipped}" if skipped else '')
             + f"; the patterns' responses solved under the constraint (|C^T X| / |X| = {held:.1e})")
         return Xc
 
