@@ -721,10 +721,15 @@ Datasets:
   (per-bit reprojected as float, thresholded at 0.01, then re-packed:
   `selfcal.io.reprojection.pack_mask`). The data's exact reprojection spreads a
   flagged pixel's value further than this bilinear footprint, so a reader may
-  dilate the bits whose values are garbage (`selfcal.io.frames.dilate_bits`;
-  the SPHEREx reader dilates SUR_ERROR and NONFUNC by one pixel since 2026-10-15); frames
-  made before get the current mask from `selfcal.io.reprojection.refresh_mask`
-  / `refresh_reader_mask` (the other datasets byte for byte).
+  flag the one-pixel dilation of the bits whose values are garbage
+  (`selfcal.io.frames.dilate_bits`): the SPHEREx reader sets bit 30
+  (`DILATED_DEAD_BIT`) on every pixel within one pixel of a SUR_ERROR or NONFUNC
+  pixel and keeps those two bits as read (since 2026-10-22; from 2026-10-15 it
+  dilated the two bits themselves). Every set bit drops a pixel unless a recipe's
+  `ignore_flags` names it, so the new bit is masked in the solve and the coadd.
+  Frames made before get the current mask from
+  `selfcal.io.reprojection.refresh_mask` / `refresh_reader_mask` with
+  `bits=(30,)` (the other bits and datasets byte for byte).
 - `sub_mapping` `(2, sub_w, sub_w)` float32 — for each subframe pixel,
   the (x, y) sample location in the original *detector* frame. Used by
   every consumer to (a) build the bilinear-interp sparse matrix back to
