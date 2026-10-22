@@ -185,11 +185,28 @@ def test_with_a_shared_pattern_the_quadratics_come_back_with_degree_2(tmp_path):
     assert e1.std() > 1e-3 and e2.std() < 1e-5
 
 
+def test_every_pattern_but_the_constant(tmp_path):
+    """SkySignature('all'): the term may not carry its response to any pattern of the deflation (cosines included) but
+    the constant. The toy's true slopes are zero, so the constraint holds for the truth: the true sky comes back as
+    with degree 2, the constant stays the one exact gauge, and the record names every other pattern."""
+    t = _toy(quad=0.8, shared=True, seed=11)
+    x, rec = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 'all'))
+    d = json.loads(rec.deflation)
+    [info] = d['signature_exclusions']
+    e, _ = _error(t, x)
+    print(f"'all': {len(info['fields'])} fields, {info['directions']} directions; |solved - true sky| rms {e.std():.2e}")
+    assert info['degree'] == 'all' and len(info['fields']) == len(d['eigenvalues']) - 1
+    assert not any(f.split(':', 1)[1] in ('0,0', 'P0,0') for f in info['fields'])
+    assert d['gauges'] == 1 and e.std() < 1e-5 and info['constraint_held'] < 1e-10
+
+
 def test_the_setting_lowers_and_needs_the_deflation(tmp_path):
     o = sc.Offsets('xs', on='subchannel', exclude=sc.SkySignature(2))
     assert o.lower()['signature_degree'] == 2 and 'exclude_degree' not in o.lower()
-    with pytest.raises(sc.ConfigError):
-        sc.SkySignature(0)
+    assert sc.Offsets('xs', on='subchannel', exclude=sc.SkySignature('all')).lower()['signature_degree'] == 'all'
+    for bad in (0, 3, 'any', 1.5):
+        with pytest.raises(sc.ConfigError):
+            sc.SkySignature(bad)
     with pytest.raises(sc.ConfigError, match='per frame'):
         sc.Offsets('xs', on='subchannel', per='all', exclude=sc.SkySignature(1))
     t = _toy(frames=40, seed=3)

@@ -263,7 +263,8 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   along the rest of the signature (the survey-mean gradient of a foreground at each position, say)
   goes into the map as that field. The signature comes from the system itself (the deflation's
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
-  or per group of frames.
+  or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
+  too) but the constant, instead of the polynomials up to a degree.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.

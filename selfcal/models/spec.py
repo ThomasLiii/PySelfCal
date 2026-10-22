@@ -247,8 +247,9 @@ class OffsetTerm:
     group), imposed by reparametrisation in the solver
     (:meth:`ModelSpec.column_exclusions`). ``signature_degree``: a hard
     constraint, the term carries no part of its response to the sky
-    polynomials of degree 1 to that degree, computed from the system by the
-    deflation's setup (:meth:`ModelSpec.signature_exclusions`).
+    polynomials of degree 1 to that degree (``'all'``: to every pattern of the
+    deflation but the constant), computed from the system by the deflation's
+    setup (:meth:`ModelSpec.signature_exclusions`).
     ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
     the adjacency rows once per group instead of once per frame (exact; far
     fewer rows). ``render``: which of the instrument's offset renderers draws the
@@ -272,7 +273,7 @@ class OffsetTerm:
     exact_group_rows: bool = False
     exclude_degree: int | None = None
     exclude_axis: str | None = None
-    signature_degree: int | None = None
+    signature_degree: int | str | None = None
     render: str | None = None
     coefficient: object = None
     basis: object = None
@@ -300,8 +301,9 @@ class OffsetTerm:
                 raise ValueError("exclude_degree is at least 0")
             if self.kind == 'polybasis' or self.n_basis != 1:
                 raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
-        if self.signature_degree is not None and not 1 <= int(self.signature_degree) <= 2:
-            raise ValueError("signature_degree is 1 or 2 (the deflation's polynomial patterns go to degree 2)")
+        if self.signature_degree is not None and self.signature_degree != 'all' \
+                and not 1 <= int(self.signature_degree) <= 2:
+            raise ValueError("signature_degree is 1, 2 (the deflation's polynomial patterns go to degree 2) or 'all'")
 
     @property
     def n_basis(self) -> int:
@@ -674,7 +676,7 @@ class ModelSpec:
         """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
         solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the
         term's full-layout columns (every group, chunk and function), ``k`` the largest degree of the sky
-        polynomials whose response the term may not carry, and ``chunk`` each column's place within its group (the
+        polynomials whose response the term may not carry (``'all'``: every pattern but the constant), and ``chunk`` each column's place within its group (the
         columns of one ``chunk`` value, one per group, hold the term's detector-fixed configurations). Empty without
         such terms."""
         out = []
@@ -683,7 +685,8 @@ class ModelSpec:
                 continue
             base, nc = int(layout.col_bases[m]), int(layout.num_chunks_list[m])
             cols = np.arange(base, int(layout.col_bases[m + 1]), dtype=np.int64)
-            out.append((cols, int(term.signature_degree), term.name or term.map or 'primary', (cols - base) % nc))
+            k = term.signature_degree if term.signature_degree == 'all' else int(term.signature_degree)
+            out.append((cols, k, term.name or term.map or 'primary', (cols - base) % nc))
         return out
 
     def _offset_function(self, term, geom, catalog, known, log):

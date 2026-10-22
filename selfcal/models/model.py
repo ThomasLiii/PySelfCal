@@ -355,7 +355,8 @@ class Poly(Config):
 @dataclass(frozen=True)
 class SkySignature(Config):
     """What an offset term may not carry (``Offsets(exclude=SkySignature(degree))``): its response to the smooth sky
-    fields, the polynomials of degree 1 to ``degree`` on the sky grid.
+    fields, the polynomials of degree 1 to ``degree`` on the sky grid, or with ``degree='all'`` every pattern of the
+    deflation but the constant.
 
     A sky field leaves a signature in every frame that offset terms can partly take: a sky plane appears in a frame
     as a slope along each detector direction, so a per-frame slope term absorbs it almost whole and the data barely
@@ -374,14 +375,17 @@ class SkySignature(Config):
 
     The signature is the term's part of the offsets' least-squares response to each field, computed from the system
     itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
-    and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes)
-    or 2 (the planes and the three quadratics).
+    and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes),
+    2 (the planes and the three quadratics) or ``'all'`` (every pattern of ``Deflate(order)``, the cosines included,
+    except the constant: the mean is a gauge of the sky and the per-frame constants, not of a slope-like term, and
+    excluding it would anchor the zero point).
     """
-    degree: int = 1
+    degree: int | str = 1
 
     def _validate(self):
-        if not 1 <= int(self.degree) <= 2:
-            raise ConfigError(f"SkySignature(degree={self.degree}): 1 (the planes) or 2 (the planes and the quadratics)")
+        if self.degree != 'all' and not (isinstance(self.degree, int) and 1 <= self.degree <= 2):
+            raise ConfigError(f"SkySignature(degree={self.degree!r}): 1 (the planes), 2 (the planes and the quadratics) "
+                              "or 'all' (every pattern of the deflation but the constant)")
 
 
 @dataclass(frozen=True)
@@ -547,7 +551,7 @@ class Offsets(Config):
                        exact_group_rows=bool(self.exact_group_rows),
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
             if isinstance(self.exclude, SkySignature):
-                out['signature_degree'] = int(self.exclude.degree)
+                out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
             elif self.exclude is not None:
                 out['exclude_degree'] = int(self.exclude.degree)
                 out['exclude_axis'] = self.exclude.along

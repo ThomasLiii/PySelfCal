@@ -940,7 +940,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         the solver runs on ``A P``); no constraint row, no weight. Applied after compaction and
         scaling; the deflation's offset response honours it.
     signatures : list, optional
-        Offset terms that may not carry their response to the sky polynomials of degree 1 to ``k``,
+        Offset terms that may not carry their response to the sky polynomials of degree 1 to ``k``
+        (``'all'``: to every pattern of the deflation but the constant),
         ``[(cols, k, name, chunk), ...]`` with ``cols`` the term's columns in the full layout and
         ``chunk`` each column's place within its group (``Offsets(exclude=SkySignature(k))``;
         :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
@@ -1172,7 +1173,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             for cols, k, name, chunk in signatures:
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
-                sig.append((c[c >= 0], int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
+                sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
         if exclusions:
             proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
             if x0_solver is not None:

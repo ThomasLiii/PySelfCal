@@ -1004,7 +1004,7 @@ class Deflation:
 
     def _exclude_signatures(self, signatures, X, G, info, scale, n, n_sky_S, n_off):
         """``Offsets(exclude=SkySignature(k))``: each named term may not carry its response to the sky polynomials of
-        degree 1 to k. ``X`` (``(n_off, patterns)``, solver coordinates) is the offsets' least-squares response to
+        degree 1 to k (``k='all'``: to every pattern but the constant). ``X`` (``(n_off, patterns)``, solver coordinates) is the offsets' least-squares response to
         every pattern; the polynomial patterns' responses restricted to a term are the term's signature of those
         fields. The signature first loses its detector-fixed part (``chunk``: the columns of one chunk value, one per
         group, hold the configurations the same in every group; their projection is removed per chunk), so a
@@ -1038,11 +1038,14 @@ class Deflation:
             sp = cm[cols]
             ok = sp >= n_sky_S                                    # the term's unknowns in this space (with data)
             cols, off, chunk = cols[ok], sp[ok] - n_sky_S, np.asarray(chunk, dtype=np.int64)[ok]
-            fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
+            if degree == 'all':                                   # every pattern but the constant (a gauge)
+                fields = [i for i, lbl in enumerate(self.labels) if lbl.split(':', 1)[1] not in ('0,0', 'P0,0')]
+            else:
+                fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
             if off.size == 0 or not fields:
-                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree})): "
+                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree!r})): "
                                  + ("the term has no unknown with data" if off.size == 0 else
-                                    "the deflation has no polynomial pattern of degree 1 to that degree"))
+                                    "the deflation has no pattern to exclude (degree 1 to that degree, or any)"))
             # Solver coordinates y, physical x = m y. The data's metric on the term's coefficients is the diagonal of
             # the offsets' normal matrix g (1 for unit-norm columns): <u, v> = sum g u v in solver coordinates. A
             # detector-fixed configuration (x the same in every group, one value per chunk) is f = 1 / m on the
@@ -1069,7 +1072,7 @@ class Deflation:
             c[off] = U
             cs.append(c)
             kept = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
-            recs.append({'term': str(name), 'degree': int(degree), 'fields': [self.labels[i] for i in fields],
+            recs.append({'term': str(name), 'degree': degree if degree == 'all' else int(degree), 'fields': [self.labels[i] for i in fields],
                          'columns': int(off.size), 'directions': int(U.shape[1]),
                          'singular_values': [float(v) for v in sv], 'metric': 'data (the diagonal of the normal matrix)',
                          'detector_fixed_free': True,
@@ -1088,7 +1091,8 @@ class Deflation:
             r['constraint_held'] = held
         self.signature_info = recs
         logger.info('Deflation: sky signatures excluded from ' + '; '.join(
-            f"{r['term']} ({r['columns']} unknowns, degree <= {r['degree']}: {r['directions']} directions; the share of each "
+            f"{r['term']} ({r['columns']} unknowns, " + ('every pattern but the constant' if r['degree'] == 'all' else f"degree <= {r['degree']}")
+            + f": {r['directions']} directions; the share of each "
             f"field's signature that is not detector-fixed: " + ', '.join(f'{v:.2f}' for v in r['share_constrained']) + ')'
             for r in recs)
             + f"; the patterns' responses solved under the constraint (|C^T X| / |X| = {held:.1e})")
