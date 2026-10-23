@@ -55,13 +55,15 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
 
 #: The channel recipe of 2026-10 (the transfer-function and zodi-leak work on Ch9, NumCol 1 with 17
-#: channels): subchannel constants plus a free gradient per frame along detector x, undamped and
-#: unregularised, no clip, every observation weighted by its shot noise floored at the frame's median
+#: channels): subchannel constants with no constant over a frame's subchannels, a free gradient per frame along
+#: detector x and a per-frame scalar (the frame's level), undamped and unregularised, no clip, every observation
+#: weighted by its shot noise floored at the frame's median
 #: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve plane gauge applied on
 #: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
 #: ignored). The gate `production` runs it on 100 frames of the qr2 set.
 SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
-                                 offsets=[sc.Offsets(on='subchannel', mean_zero=True), spherex.frame_slope()],
+                                 offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), spherex.frame_slope(),
+                                          sc.Offsets('scalar', on='detector')],
                                  weight=sc.shot_noise()),
                         fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
                                    stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)),
@@ -105,8 +107,9 @@ SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
     name='slope_gauge_varweight_columns')
 
 #: The base recipe of the weak-mode work (2026-10-21; workspace/weak-modes/plan.md): per frame one free constant per
-#: subchannel (no per-frame scalar and no mean-zero anchor; the default seed starts each at the inverse-variance
-#: weighted mean of its pixels) and the x-slope per subchannel; one constant per detector column shared by every
+#: subchannel (they hold the frame's level: no per-frame scalar term and no constraint on their mean; the default
+#: seed starts each at the inverse-variance weighted mean of its pixels) and the x-slope per subchannel; one
+#: constant per detector column shared by every
 #: frame, without its constant and slope across the columns (those two duplicate the per-frame terms exactly);
 #: weighted by the frames' L2b VARIANCE layer; no clip, damping, regularisation, degenerate-mode exclusion or
 #: post-solve gauge; deflated CGLS to the chi-squared stop; the coadd as SLOPE_GAUGE's (inverse-variance weights,
@@ -115,7 +118,7 @@ SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
     sc.Model(sky=[sc.Sky(damping=0.0)],
              offsets=[sc.Offsets(on='subchannel'), spherex.frame_slope(),
                       sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(1))],
-             variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance'), scalar=False),
+             variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
     fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
                stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10))),
     coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),

@@ -2,7 +2,7 @@
 
 Given the sky, each frame's offsets are an independent least-squares problem: a frame's rows touch
 only its own offset columns -- whatever the model's terms are (per-chunk values, a polynomial along a
-chunk axis, coefficients of known functions of data variables) and its scalar -- up to constraint rows,
+chunk axis, coefficients of known functions of data variables) -- up to constraint rows,
 which may tie a few frames together. An OFFSET pass subtracts the sky from every frame
 (:class:`SkySubtractor`, a frame hook that also drops the observations off the sky map or too bright),
 reduces each frame's rows, in the workers, to the frame's normal equations
@@ -23,9 +23,10 @@ from dataclasses import dataclass
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix, csr_matrix, vstack
 from scipy.sparse.csgraph import connected_components
 
+from ..core.projector import _DROP as _PROJECTOR_DROP
 from ..io.atomic import atomic_path
 from ..models.offset_structure import group_aux_edges
 
@@ -271,34 +272,77 @@ def _components(frames, C):
     return cols, connected_components(graph, directed=False)[1]
 
 
-def _start(G, h, cols, kind, scalar_cols):
-    """The engine's starting vector on one block (:meth:`~selfcal.run.engine.RunContext.x0`): each
-    column of ``kind`` at its own diagonal least-squares estimate ``h_c / G_cc`` (0 where ``G_cc`` is
-    0), every other at 0. ``kind``: ``'scalar_only'``, the per-frame scalars (the columns in
-    ``scalar_cols``); ``'from_Ab'``, every column; None, none."""
-    x0 = np.zeros(cols.size)
-    if kind is None:
-        return x0
+def _start(G, h, kind):
+    """The engine's starting vector on one block (:meth:`~selfcal.run.engine.RunContext.x0`):
+    ``kind`` ``'separate'``, each column at its own diagonal least-squares estimate ``h_c / G_cc`` (0
+    where ``G_cc`` is 0); anything else, zero (the direct solve then gives the minimum-norm joint fit,
+    the ``'offsets'`` start)."""
+    if kind != 'separate':
+        return np.zeros(h.size)
     d = np.diagonal(G)
-    est = np.divide(h, d, out=np.zeros_like(h), where=d > 0)
-    if kind == 'from_Ab':
-        return est
-    sel = (cols >= scalar_cols[0]) & (cols < scalar_cols[1])
-    x0[sel] = est[sel]
-    return x0
+    return np.divide(h, d, out=np.zeros_like(h), where=d > 0)
 
 
-def _solve_stack(G, h, x0, *, precondition, damp, rcond):
+def _exclusion_rows(exclusions, num_cols):
+    """The terms' hard constraints (:meth:`~selfcal.models.spec.ModelSpec.column_exclusions`: groups of
+    columns and the directions excluded on each) as one CSR matrix of rows over the full column layout,
+    one row per excluded direction of each group, or None."""
+    if not exclusions:
+        return None
+    r, c, d, n = [], [], [], 0
+    for cols, P in exclusions:
+        cols = np.asarray(cols, dtype=np.int64)
+        P = np.asarray(P, dtype=np.float64)
+        for g in range(cols.shape[0]):
+            real = cols[g] >= 0
+            for j in range(P.shape[1]):
+                r.append(np.full(int(real.sum()), n, dtype=np.int64))
+                c.append(cols[g][real])
+                d.append(P[real, j])
+                n += 1
+    if not n:
+        return None
+    return coo_matrix((np.concatenate(d), (np.concatenate(r), np.concatenate(c))), shape=(n, int(num_cols))).tocsr()
+
+
+def _solve_stack(G, h, x0, *, precondition, damp, rcond, E=None):
     """Solve a stack of blocks of one size, ``G`` (n, k, k), ``h`` and ``x0`` (n, k): the column-scaled
-    minimum-norm correction from ``x0``. Returns ``x`` (n, k), the number of directions left out and
-    the largest condition number kept."""
+    minimum-norm correction from ``x0``. ``E``: per block, the rows of its hard constraints ``E x = 0``
+    (``(r, k)``, or None): the start is moved onto them and the correction kept in them, in the scaled
+    unknowns, as the engine's solver does (:class:`~selfcal.core.projector.ColumnProjector`). Returns
+    ``x`` (n, k), the number of directions left out (the constrained ones not counted) and the largest
+    condition number kept."""
     d = np.sqrt(np.clip(np.diagonal(G, axis1=1, axis2=2), 0.0, None))
     live = d > 0                                       # a column no row touches keeps its start
     s = np.where(live, 1.0 / np.where(live, d, 1.0), 0.0) if precondition else live.astype(np.float64)
+    n_con = 0
+    Q = None
+    if E is not None and any(e is not None and e.size for e in E):
+        n, k = h.shape
+        bases = []
+        for i, e in enumerate(E):
+            if e is None or not e.size:
+                bases.append(np.zeros((k, 0)))
+                continue
+            u, sv, _ = np.linalg.svd((e * s[i][None, :]).T, full_matrices=False)   # the rows in the scaled unknowns
+            bases.append(u[:, sv > _PROJECTOR_DROP * sv.max()] if sv.size and sv.max() > 0 else np.zeros((k, 0)))
+        rmax = max(b.shape[1] for b in bases)
+        Q = np.zeros((n, k, rmax))
+        for i, b in enumerate(bases):
+            Q[i, :, :b.shape[1]] = b
+        n_con = int(sum(b.shape[1] for b in bases))
+        y0 = np.where(live, x0 / np.where(live, s, 1.0), 0.0)
+        y0 = y0 - np.einsum('nkr,nr->nk', Q, np.einsum('nkr,nk->nr', Q, y0))
+        x0 = np.where(live, s * y0, x0)
     S = G * s[:, :, None] * s[:, None, :]
     if damp:
         S = S + (damp ** 2) * (live[:, :, None] & np.eye(S.shape[1], dtype=bool)[None])
     r = s * (h - np.einsum('nij,nj->ni', G, x0))
+    if Q is not None:                                  # P S P and P r, P = I - Q Q^T
+        SQ = np.einsum('nij,njr->nir', S, Q)
+        S = (S - np.einsum('nir,njr->nij', SQ, Q) - np.einsum('nir,njr->nij', Q, SQ)
+             + np.einsum('nir,nrs,njs->nij', Q, np.einsum('nkr,nks->nrs', Q, SQ), Q))
+        r = r - np.einsum('nkr,nr->nk', Q, np.einsum('nkr,nk->nr', Q, r))
     w, V = np.linalg.eigh(S)                           # ascending eigenvalues
     top = w[:, -1:]
     keep = (w > rcond * top) & (top > 0)
@@ -306,10 +350,11 @@ def _solve_stack(G, h, x0, *, precondition, damp, rcond):
     y = np.einsum('nik,nk->ni', V, inv * np.einsum('nik,ni->nk', V, r))
     weakest = np.where(keep, w, np.inf).min(axis=1)
     cond = np.where(np.isfinite(weakest) & (weakest > 0), top[:, 0] / np.where(weakest > 0, weakest, 1.0), 1.0)
-    return x0 + s * y, int((live.sum(axis=1) - keep.sum(axis=1)).sum()), float(cond.max()) if cond.size else 1.0
+    left_out = int((live.sum(axis=1) - keep.sum(axis=1)).sum()) - n_con
+    return x0 + s * y, left_out, float(cond.max()) if cond.size else 1.0
 
 
-def solve_frames(frames, constraint_blocks, num_cols, *, start=None, scalar_cols=(0, 0), precondition=True,
+def solve_frames(frames, constraint_blocks, num_cols, *, start=None, exclusions=None, precondition=True,
                  damp=0.0, rcond=1e-12, dtype=np.float64, chunk=2048):
     """Solve an OFFSET pass's system from the frames' normal equations (``frames``: a
     :class:`FrameNormal` per frame, None for a frame with no row) and the constraint rows
@@ -318,22 +363,26 @@ def solve_frames(frames, constraint_blocks, num_cols, *, start=None, scalar_cols
     The columns fall into the sets that the frames' rows and the constraint rows tie together -- a
     frame's own columns, unless a constraint row ties frames -- and each set is solved from its dense
     normal equations: the minimum-norm least-squares correction from the engine's starting vector
-    (``start``: its kind, :func:`_start`; ``scalar_cols``: the per-frame scalars' columns ``[lo, hi)``)
-    in column-scaled unknowns (``precondition``), damped by ``damp`` -- the solution the engine's
-    iterative solve converges to, so the directions the data leave undetermined (a frame's scalar
-    beside free chunk offsets) keep the start the joint solve gives them. ``rcond``: a block's
-    eigen-directions weaker than ``rcond`` times its strongest are left out.
+    (``start``: its kind, :func:`_start`) in column-scaled unknowns (``precondition``), damped by
+    ``damp``, under the terms' hard constraints (``exclusions``,
+    :meth:`~selfcal.models.spec.ModelSpec.column_exclusions`) -- the solution the engine's iterative
+    solve converges to, so the directions the data leave undetermined (two terms that duplicate each
+    other) keep the start the joint solve gives them. ``rcond``: a block's eigen-directions weaker
+    than ``rcond`` times its strongest are left out.
 
     Returns ``(x, summary)``: the solution in the full column layout (``dtype``; zero on the columns no
     row touches) and a dict -- ``method`` ``'direct'``, ``blocks``, ``columns``, ``rows``, ``joined`` (the
-    blocks of several frames or constraint rows), ``largest_block``, ``left_out`` (directions left out),
+    blocks of several frames or constraint rows), ``largest_block``, ``left_out`` (directions left out,
+    beyond the constrained ones),
     ``largest_condition`` (of a block's scaled normal matrix, over the directions kept),
     ``true_residual`` ``|b - A x|`` and ``bnorm`` ``|b|`` over every row, data and constraint, in float64,
     and ``wall_s``. Raises ``ValueError`` when a set has more than :data:`MAX_BLOCK_COLUMNS` columns."""
     t0 = time.perf_counter()
     frames = [f for f in frames if f is not None and f.cols.size]
     C, cb = _constraint_rows(constraint_blocks, num_cols)
-    cols, label = _components(frames, C)
+    X = _exclusion_rows(exclusions, num_cols)
+    links = C if X is None else (X if C is None else vstack([C, X]).tocsr())
+    cols, label = _components(frames, links)
     n_comp = int(label.max()) + 1 if label.size else 0
     sizes = np.bincount(label, minlength=n_comp)
     if sizes.size and sizes.max() > MAX_BLOCK_COLUMNS:
@@ -352,7 +401,14 @@ def solve_frames(frames, constraint_blocks, num_cols, *, start=None, scalar_cols
     n_rows_in = np.bincount(row_comp[row_comp >= 0], minlength=n_comp)
     alone = n_frames_in[frame_comp] == 1
     alone &= n_rows_in[frame_comp] == 0
-    blocks = [(f.cols, f.G, f.h, f.bb) for f, a in zip(frames, alone) if a]
+    # The hard constraints' rows of each set (a group of a term lies in one frame's set, or a joined one).
+    x_rows_of = {}
+    if X is not None and X.nnz:
+        has_x = np.diff(X.indptr) > 0
+        for i, k in zip(np.flatnonzero(has_x),
+                        label[np.searchsorted(cols, X.indices[X.indptr[:-1][has_x]].astype(np.int64))]):
+            x_rows_of.setdefault(int(k), []).append(int(i))
+    blocks = [(f.cols, f.G, f.h, f.bb, int(k)) for f, a, k in zip(frames, alone, frame_comp) if a]
     joined = sorted(set(frame_comp[~alone].tolist()) | set(row_comp[row_comp >= 0].tolist()))
     if joined:
         members = {k: [] for k in joined}
@@ -379,7 +435,7 @@ def solve_frames(frames, constraint_blocks, num_cols, *, start=None, scalar_cols
                 G += Ck.T @ Ck
                 h += Ck.T @ dk
                 bb += float(dk @ dk)
-            blocks.append((kc, G, h, bb))
+            blocks.append((kc, G, h, bb, int(k)))
     extra_bb = 0.0
     if C is not None:                                  # constraint rows with no entry still count in |b|
         empty = np.diff(C.indptr) == 0
@@ -387,16 +443,18 @@ def solve_frames(frames, constraint_blocks, num_cols, *, start=None, scalar_cols
 
     x = np.zeros(int(num_cols), dtype=dtype)
     by_size = {}
-    for i, (c, _, _, _) in enumerate(blocks):
-        by_size.setdefault(c.size, []).append(i)
+    for i, b in enumerate(blocks):
+        by_size.setdefault(b[0].size, []).append(i)
     res2, bb_tot, left_out, worst = extra_bb, extra_bb + float(sum(b[3] for b in blocks)), 0, 1.0
     for _, idx in sorted(by_size.items()):
         for s in range(0, len(idx), chunk):
             part = [blocks[i] for i in idx[s:s + chunk]]
             G = np.stack([p[1] for p in part])
             h = np.stack([p[2] for p in part])
-            x0 = np.stack([_start(p[1], p[2], p[0], start, scalar_cols) for p in part])
-            xs, lo, cond = _solve_stack(G, h, x0, precondition=precondition, damp=damp, rcond=rcond)
+            x0 = np.stack([_start(p[1], p[2], start) for p in part])
+            E = ([X[x_rows_of[p[4]]][:, p[0]].toarray() if p[4] in x_rows_of else None for p in part]
+                 if x_rows_of else None)
+            xs, lo, cond = _solve_stack(G, h, x0, precondition=precondition, damp=damp, rcond=rcond, E=E)
             left_out += lo
             worst = max(worst, cond)
             Gx = np.einsum('nij,nj->ni', G, xs)
@@ -419,13 +477,12 @@ def merge_offset_cals(pieces, out, *, attrs=None):
     """Join offset solutions over disjoint frame sets (the tiles of an OFFSET pass, each a cal of a
     fixed-sky solve) into one file in the cal layout: ``offsets/map_<m>`` (with each map's
     ``n_basis`` / ``basis`` attributes), ``offset_coverage`` / ``offset_coverage_frac``,
-    ``chunk_maps``, ``frame_scalar`` and ``reproj_list``, the pieces' rows in piece order. The
+    ``chunk_maps`` and ``reproj_list``, the pieces' rows in piece order. The
     pieces must hold the same offset maps (chunk maps and functions) and no frame twice."""
     maps = None
     joined = {}
     names = []
     first_attrs = {}
-    scalars = []
     for path in pieces:
         with h5py.File(path, "r") as f:
             K = int(f.attrs.get("num_maps", 0))
@@ -445,13 +502,13 @@ def merge_offset_cals(pieces, out, *, attrs=None):
                 for group in ("offsets", "offset_coverage", "offset_coverage_frac"):
                     if group in f:
                         joined.setdefault((group, m), []).append(f[group][f"map_{m}"][()])
-            scalars.append(f["frame_scalar"][()] if "frame_scalar" in f else None)
+            if "frame_scalar" in f:
+                raise ValueError(f"merge_offset_cals: {os.path.basename(path)} holds a separate per-frame scalar "
+                                 f"(frame_scalar), an older layout that is not read")
             names += [r.decode() if isinstance(r, bytes) else str(r) for r in f["reproj_list"][()]]
     bases = [os.path.basename(n) for n in names]
     if len(set(bases)) != len(bases):
         raise ValueError("merge_offset_cals: a frame is in more than one piece")
-    if any(sc is None for sc in scalars) and not all(sc is None for sc in scalars):
-        raise ValueError("merge_offset_cals: some pieces have a frame scalar and some none")
     with atomic_path(out) as tmp, h5py.File(tmp, "w") as f:
         f.attrs["num_maps"] = len(maps or ())
         f.attrs["fixed_sky"] = True
@@ -467,8 +524,6 @@ def merge_offset_cals(pieces, out, *, attrs=None):
                     f.create_dataset(f"{group}/map_{m}", data=np.concatenate(joined[(group, m)]),
                                      compression="gzip")
             f.create_dataset(f"chunk_maps/map_{m}", data=cm, compression="gzip")
-        if scalars and scalars[0] is not None:
-            f.create_dataset("frame_scalar", data=np.concatenate(scalars), compression="gzip")
         for k, v in (attrs or {}).items():
             f.attrs[k] = v
     print(f"[npass] OFFSET: {len(pieces)} piece(s), {len(names)} frames -> {out}", flush=True)
@@ -479,9 +534,8 @@ def merge_offset_cals(pieces, out, *, attrs=None):
 # monitors
 # --------------------------------------------------------------------------- #
 def _offset_values(path):
-    """``(frame names, per-frame values of every offset map and the scalar, scalar or None)`` of a
-    cal or an offsets file: each frame's row is its maps' stored values side by side, then its
-    scalar."""
+    """``(frame names, per-frame values of every offset map)`` of a cal or an offsets file: each
+    frame's row is its maps' stored values side by side."""
     with h5py.File(path, "r") as f:
         names = [_basename(r) for r in f["reproj_list"][()]]
         if "offsets" in f:
@@ -489,28 +543,20 @@ def _offset_values(path):
             parts = [f["offsets"][f"map_{m}"][()] for m in range(K)]
         else:
             parts = [f["offset"][()]] if "offset" in f else []
-        sc = f["frame_scalar"][()] if "frame_scalar" in f else None
     cols = [np.asarray(p, dtype=np.float64).reshape(len(names), -1) for p in parts]
-    if sc is not None:
-        cols.append(np.asarray(sc, dtype=np.float64)[:, None])
     vals = np.concatenate(cols, axis=1) if cols else np.zeros((len(names), 0))
-    return names, vals, sc
+    return names, vals
 
 
 def offset_monitors(off_path, prev_off_path=None):
     """The solved offsets of an OFFSET pass, whatever the model's offset terms: the frames solved
-    (every value finite), the per-frame scalar's median and spread when there is one and, given the
-    previous offsets (any cal or offsets file of the same terms), the RMS step over the frames both
-    hold (every stored value of every map, and the scalar)."""
-    names, vals, sc = _offset_values(off_path)
+    (every value finite) and, given the previous offsets (any cal or offsets file of the same terms),
+    the RMS step over the frames both hold (every stored value of every map)."""
+    names, vals = _offset_values(off_path)
     ok = np.all(np.isfinite(vals), axis=1)
     out = {"n_frames": len(names), "n_fit": int(ok.sum())}
-    if sc is not None and ok.any():
-        s_ok = np.asarray(sc, dtype=np.float64)[ok]
-        out["scalar_median"] = float(np.median(s_ok))
-        out["scalar_p16_p84"] = [float(v) for v in np.percentile(s_ok, [16, 84])]
     if prev_off_path:
-        pnames, pvals, _ = _offset_values(prev_off_path)
+        pnames, pvals = _offset_values(prev_off_path)
         idx = {n: i for i, n in enumerate(pnames)}
         pairs = [(i, idx[n]) for i, n in enumerate(names) if n in idx and ok[i]]
         if pairs and pvals.shape[1] == vals.shape[1]:

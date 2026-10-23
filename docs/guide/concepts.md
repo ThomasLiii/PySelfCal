@@ -30,7 +30,7 @@ data[k, P] = S[P] + O[k, c] + s[k] + noise        c: the chunk of the detector o
 
 `S` is the sky map, shared by all frames. `O` holds one unknown per frame and *chunk*, a region of
 the detector such as one cell of an 8 x 8 grid. `s` holds one constant per frame, the *per-frame
-scalar*. An offset in this sense is
+scalar*: itself an offset term, whose one chunk is the whole detector. An offset in this sense is
 
 - additive: it never multiplies the data (multiplicative effects such as gains are linearised
   around a previously solved sky; see the [limits](../bring_your_own_telescope.md#6-limits));
@@ -50,7 +50,7 @@ ref.fits                     the reference grid: a celestial WCS and a shape
 reprojected/*.h5             one frame file per detector of each exposure
    │   field.calibrate       Calibrator.setup_lsqr, apply_lsqr, save_calibration
    ▼
-calibration/cal_<stem>.h5    sky maps, offsets, per-frame scalars, coverage
+calibration/cal_<stem>.h5    sky maps, offsets, coverage
    │   field.calibrate       Mosaicker.load_calibration, make_mosaic, save_mosaic
    │   or field.mosaic
    ▼
@@ -105,7 +105,7 @@ For every *observation* `i`, one value of one frame on one pixel `P` of the refe
 recorded at a known position on the detector, the solver fits
 
 ```text
-data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)  +  s(frame)  +  noise_i
+data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)  +  noise_i
 ```
 
 - **Sky terms** `S_j` (`sc.Sky(name, times=c)`, [`SkyTerm`][selfcal.models.spec.SkyTerm]): a map
@@ -123,7 +123,10 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   offset by a known function of data variables (a pattern times the detector temperature);
   `basis=` with `n=` functions gives `n` unknowns per chunk (a gradient across the detector in every
   frame). With neither, `φ = 1`: the plain chunk offset.
-- **Per-frame scalar** `s` (`sc.Model(scalar=True)`, the default): one additive constant per frame.
+- **Per-frame scalar**: one additive constant per frame, the offset term
+  `sc.Offsets("scalar", on="detector")` (the map `"detector"` is the whole detector as one chunk).
+  A model has one only if it lists it: `sc.continuum` and `sc.spectral` end with it, `sc.two_block`
+  has none.
 - **Data variables** `v`: named quantities with one value per observation, which every function of
   the model reads by name ([`selfcal.models.variables`](../reference/selfcal/models/variables.md)):
   the built-ins `det_x`, `det_y` (detector position), `sky_x`, `sky_y` (reference pixel),
@@ -132,7 +135,7 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   model's own `variables={...}` (header keywords, maps, stored planes, functions; see
   [Data variables](../bring_your_own_telescope.md#data-variables)).
 
-The solve seeks the unknowns (the pixels of every sky map, the offsets, the scalars) that minimise
+The solve seeks the unknowns (the pixels of every sky map and the offsets) that minimise
 
 ```text
 Σ_i  w_i² · (data_i − model_i)²   +   Σ_r  (prior row r)²
@@ -140,9 +143,10 @@ The solve seeks the unknowns (the pixels of every sky map, the offsets, the scal
 
 where `w_i` is the observation's weight (see [Masks, outliers and weights](#masks-outliers-and-weights))
 and the prior rows are linear equations on the unknowns that settle what the data leave free (see
-[What the data cannot tell apart](#what-the-data-cannot-tell-apart)).
+[What the data cannot tell apart](#what-the-data-cannot-tell-apart)). An offset term's hard
+constraints (`exclude=`) restrict its unknowns exactly instead of adding rows.
 [`SystemLayout`][selfcal.core.layout.SystemLayout] orders the unknowns: the sky maps, then the
-offset terms, then the scalars.
+offset terms.
 
 Every run builds one [`ModelSpec`][selfcal.models.spec.ModelSpec]. The presets (`sc.continuum`,
 `sc.spectral`, `sc.two_block`) build common models from a few settings, and `sc.Model` spells any
@@ -150,11 +154,12 @@ model out term by term; a preset prints as what it is:
 
 ```pycon
 >>> sc.continuum(smooth=0.1)
-Model(offsets=(Offsets(smooth=0.1, mean_zero=True),))
+Model(offsets=(Offsets(smooth=0.1, exclude=Poly(0)), Offsets('scalar', on='detector')))
 >>> sc.continuum(smooth=0.1) == sc.Model(
 ...     sky=[sc.Sky()],                                   # no coefficient: c = 1
-...     offsets=[sc.Offsets(smooth=0.1, mean_zero=True)],  # per frame and chunk of the primary map;
-...     scalar=True)                                      #   smooth, each frame's mean pulled to 0
+...     offsets=[sc.Offsets(smooth=0.1,                   # per frame and chunk of the primary map,
+...                         exclude=sc.Poly(0)),          #   smooth, no constant in any frame
+...              sc.Offsets("scalar", on="detector")])    # the per-frame scalar
 True
 ```
 
@@ -220,19 +225,28 @@ The priors, and the rows each adds to the system:
 
 | prior | setting | rows |
 | --- | --- | --- |
-| mean-zero anchor | `sc.Offsets(mean_zero=True)` (set in the presets' offset term) | per frame (and basis function): `10 · Σ_c O[c] = 0`, over every chunk `c` of the map |
 | adjacency smoothing | `sc.Offsets(smooth=w, smooth_along=axes)` (0 by default; the presets' `smooth`, default 0.1) | per frame and pair of neighbouring chunks `a`, `b`: `w · (O[a] − O[b]) = 0` |
 | polynomial constraint | `sc.Offsets(poly_prior=sc.Poly(degree, along=, window=, weight=))` | per frame and run of `degree + 2` consecutive chunks along the axis: `weight · Σ stencil · O = 0`, a finite difference that vanishes on polynomials of degree `degree` or less |
 | sky damping | `sc.Sky(damping=d)` (default 0.1 for the first sky term, 0.3 for the others) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
 
+An offset term may also carry a **hard constraint**, which adds no row:
+`sc.Offsets(exclude=sc.Poly(k, along=axis))` removes from the term every polynomial of degree `k`
+or less along the chunk axis, per line of the other axes and per group of frames (`along` may be
+omitted on a map with one axis). The solver imposes it exactly, by reparametrisation: it solves
+only for unknowns that satisfy it
+([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), so there is no weight to choose,
+and what the term cannot carry goes where the data place it, to other terms or the sky.
+`exclude=sc.Poly(0)` needs no `along` on a map with several axes either: the term carries no
+constant over all of a group's chunks. In the chunk term of `sc.continuum` (and of `sc.spectral`
+without `polynomial=`) it moves each frame's mean offset into the frame's per-frame scalar, so the
+chunk offsets carry only structure within the frame. The constraint acts on the unknowns of the
+solve: a chunk that a frame never observed drops out of it, unless a prior row, such as a
+smoothness row, makes that chunk an unknown.
+
 What each settles:
 
-- The **mean-zero anchor** moves each frame's mean offset into its scalar, so the chunk offsets
-  carry only structure within the frame. The mean runs over every chunk of the map, observed or
-  not; for a term whose groups observe different parts of the map (detectors on one focal plane),
-  anchor with `damp` instead.
 - The **sky damping** pulls the maps toward zero: of all the levels the data allow, it prefers the
   one that makes the maps smallest, a level with no physical meaning. Like any Tikhonov term it also
   shrinks real structure toward zero, by an amount that grows with the weight.
@@ -251,9 +265,8 @@ What each settles:
 Two solves that fit the data equally well can differ in their raw arrays along these directions.
 Compare quantities that a change of gauge leaves alone:
 
-- the total offset of each frame and chunk, the offset plus the frame's scalar
-  ([`CalFile.total_offsets`][selfcal.io.calfile.CalFile.total_offsets] folds the scalar into the
-  first map), rather than either part;
+- the total offset of each frame and chunk, the sum of the offset terms there (a chunk offset plus
+  the frame's scalar), rather than either part;
 - offsets with each frame's mean over chunks and each chunk's mean over frames removed, which also
   removes a pattern common to every frame, such as the detector ramp of a sky gradient; the
   quickstart compares recovered and injected offsets this way (`remove_gauge` in
@@ -303,13 +316,14 @@ Compare quantities that a change of gauge leaves alone:
 
 The mosaic coadds the corrected frames on the reference grid
 ([`Mosaicker.make_mosaic`][selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic]). From each
-frame it subtracts the chunk offsets of every offset term, drawn on the detector by the
-instrument's offset renderer, and the frame's scalar (added to the first map's offsets); offset
-terms with a `coefficient` or a `basis` are evaluated and subtracted at every observation
+frame it subtracts the chunk offsets of every offset term (the per-frame scalar among them), drawn
+on the detector by the instrument's offset renderer; offset terms with a `coefficient` or a `basis`
+are evaluated and subtracted at every observation
 ([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]). The offset of a
-frame and chunk that the solve barely saw (covered fraction below
-`sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first; the SPHEREx and Euclid spline renderers fill it in from the
-neighbouring chunks.
+frame and chunk that the solve saw only in part (its covered fraction, counted over the chunk's
+pixels that the job can observe, below `sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first.
+The SPHEREx subchannel renderer and the Euclid grid spline fill such a chunk in from the frame's
+other chunks; where nothing fills it, its pixels in that frame are left out of the coadd.
 
 It then accumulates, at every reference pixel, the values `d` of the frames that cover it:
 
@@ -365,15 +379,16 @@ frames and their pixels. The [Pipeline runbook](pipeline.md) covers the knobs; i
   not. SKY passes then solve the sky terms of every pixel
   in closed form, from moments summed over all tiles (one solve for the whole field, so no seams),
   and OFFSET passes refit the offsets against that one sky: the model's own offset terms, whatever
-  they are (a polynomial, per-chunk values, terms times known functions), and the scalar, every frame
-  solved directly from its own rows. Neither kind of pass builds the joint matrix.
+  they are (a polynomial, per-chunk values, terms times known functions, a per-frame scalar), under
+  their hard constraints, every frame solved directly from its own rows. Neither kind of pass
+  builds the joint matrix.
   `sc.Passes` sets the number of passes `n` and their order; `n = 1` reproduces the plain
   calibration byte for byte. See [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 
 ## The absolute level
 
 The solve cannot set the absolute sky level: a constant moves freely between the sky and the
-per-frame scalars. For SPHEREx, the zodiacal-light anchor sets it from outside, channel by
+frames' levels. For SPHEREx, the zodiacal-light anchor sets it from outside, channel by
 channel. It fits every frame's mean level (its scalar plus the pixel-weighted mean of its chunk
 offsets, [`compute_full_dc`][selfcal.zodi_anchor.compute_full_dc]) against a prediction of the
 zodiacal light made with zodipy:

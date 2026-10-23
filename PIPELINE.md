@@ -29,7 +29,7 @@ and, where it helps, by the keyword of the library call they reach (`Calibrator.
 The selfcal model is per observation (one value of frame `k` on reference pixel `p_i`):
 
 ```
-observed[i] = Σ_j sky_j(p_i)·c_j(v_i) + Σ_m Σ_n offset^(m)[g_m(k), c_m(i), n]·φ_mn(v_i) + scalar[k] + noise
+observed[i] = Σ_j sky_j(p_i)·c_j(v_i) + Σ_m Σ_n offset^(m)[g_m(k), c_m(i), n]·φ_mn(v_i) + noise
 ```
 
 where:
@@ -41,9 +41,9 @@ where:
 - `m = 0..K-1` indexes **chunk maps**. Each map contributes one additive offset block (K=1 is the legacy single-map case); `φ = 1` (one function) is the classic chunk offset.
 - `g_m(k)` is the frame→group mapping for map `m` (defaults to identity; `sc.Offsets(per=...)` locks several frames to one offset vector: `per="all"`, or any per-frame value; the library's `det_groups_list[m]`).
 - `c_m(i)` is the chunk ID of pixel `i` under map `m`.
-- `scalar[k]` is an optional **per-frame DC scalar** (`sc.Model(scalar=True)`, the default, and in `sc.continuum` / `sc.spectral`; the library's `use_per_frame_scalar=True`). It absorbs per-frame brightness shifts so the chunk offsets only carry within-frame structure.
+- A **per-frame scalar** is the offset term of one chunk, `sc.Offsets("scalar", on="detector")` (the built-in map `"detector"`, the whole detector as one chunk): one value per frame, an offset map like the others, with nothing special in the solver. A model has one only if it lists it; `sc.continuum` / `sc.spectral` list it as their last offset term. Beside chunk offsets with no constant (`sc.Offsets(exclude=sc.Poly(0))`) it absorbs per-frame brightness shifts, so the chunk offsets only carry within-frame structure.
 
-For the K=1 default case the model collapses to `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see [Bring your own telescope](docs/bring_your_own_telescope.md).
+For `sc.continuum` (K=2: the primary chunk map, then `"detector"`) the model is `sky + offset[frame, chunk] + scalar[frame]`. Zodi removal quality is dominated by the offset model's spatial resolution. User priors (any linear rows on the unknowns) and an observation weight (a function of data variables) complete the model; see [Bring your own telescope](docs/bring_your_own_telescope.md).
 
 ## Calibration pipeline tuning
 
@@ -106,7 +106,8 @@ subchannels against the frame's x axis on the grid, with a slope fixed on the de
 the frames' axes on the grid from a tangent plane through each stored header) and moved into the sky:
 the cal's sky term gains it, the cal records it (`gauge/`) and every mosaic of the cal adds it to its
 mean maps (`apply="map"`, the 2026-10 Ch9 recipe: exact) -- or it is removed from the offsets instead
-(`apply="offsets"`: exact only up to the band discretisation). `degree=2` moves a sky quadratic too
+(`apply="offsets"`: exact only up to the band discretisation; the constant term takes each frame's
+change of level, so it must have no `exclude=`). `degree=2` moves a sky quadratic too
 (fitted with the plane to every slope, with a detector-fixed slope per subchannel and a
 degree-`position_degree` polynomial in the frame's position as the nuisance); a quadratic is not a
 freedom of the model -- its curvature along x within a frame pins it, weakly -- so moving it can take
@@ -115,17 +116,16 @@ real sky curvature out of the map. `selfcal.core.gauge` has the computation.
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
 (the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
 lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
-`mean_offsets_list=` / `det_groups_list=` / `det_templates=`, deprecated — they remain the native
+`det_groups_list=` / `det_templates=`, deprecated — they remain the native
 arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
 
 ```python
 cc.setup_lsqr(
     offset_model=OffsetModel(
-        blocks=(OffsetBlock(chunk_map=det_chunk_map,           # chunk_maps[m]
-                            adj_info=adj_info, reg_weight=0.1,  # adj_infos[m], reg_weights[m]
-                            poly_constraints=None,              # poly_constraints_list[m]
-                            mean_offset=np.zeros(num_frames)),),  # mean_offsets_list[m]
-        use_per_frame_scalar=True),                             # per-frame DC scalar column
+        blocks=(OffsetBlock(chunk_map=det_chunk_map,           # chunk_maps[0]
+                            adj_info=adj_info, reg_weight=0.1,  # adj_infos[0], reg_weights[0]
+                            poly_constraints=None),             # poly_constraints_list[0]
+                OffsetBlock(chunk_map=np.zeros_like(det_chunk_map)))),  # one chunk: the per-frame scalar
     sky_model=SkyModel.continuum_only(),
     **calibration_kwargs,
 )
@@ -139,16 +139,15 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 
 - **`poly_constraints_list[m]`** (`poly_constraints`; `sc.Offsets(poly_prior=sc.Poly(...))`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
-- **`mean_offsets_list[m]`** (`mean_offset`; `sc.Offsets(mean_zero=True)`) — per-frame mean-offset soft constraint with weight 10.0 (hardcoded in `selfcal/core/system.py`). When using `use_per_frame_scalar=True`, anchor every map to mean-zero so all per-frame DC ends up in the scalar column.
+- **`exclusions`** (not a block field: `apply_lsqr(exclusions=)`; `sc.Offsets(exclude=sc.Poly(k, along=))`, turned into them by `ModelSpec.column_exclusions(geom, layout)`) — hard constraints: a term carries no polynomial of degree ≤ k along a chunk axis, per line of the other axes and per group of frames (`exclude=sc.Poly(0)` with no `along`: no constant over all of a group's chunks). Each is `(cols, P)`, `cols` `(G, n)` the full-layout columns of each group's chunks along one line and `P` `(n, r)` the excluded directions. The solver imposes them exactly by reparametrisation (`selfcal.core.projector.ColumnProjector`: it iterates only on unknowns that satisfy them), with no row and no weight, and imposes them on the start too; a column the compaction dropped (no entry in any row: an unobserved chunk with no prior row on it) drops out of its constraint. The N-pass OFFSET pass applies them in its direct solve (`solve_frames(exclusions=)`).
 
-- **`use_per_frame_scalar=True`** (`sc.Model(scalar=True)`) — adds an explicit `num_frames` block to `x` (one scalar per frame) decoupled from `det_groups_list`. Combined with mean-zero anchors on all maps, this pushes per-frame DC entirely into the scalar so chunk offsets only carry within-frame structure. **Required for narrow channels** (D3 Ch17 etc.) where sparse chunk coverage was previously letting per-frame DC leak into scan-stripe residuals.
+- **A per-frame scalar** (`sc.Offsets("scalar", on="detector")`) — an `OffsetBlock` on a chunk map of one chunk (the whole detector), solved and stored like any other block (`offsets/map_<m>`). Beside a map with no constant (`exclude=sc.Poly(0)`), it takes each frame's level, so the chunk offsets carry only within-frame structure.
 
 - **`weighted_damping=True`** + **`damp_weight`** (`sc.Sky(damping=)`, per term) damps **sky pixels** (not offsets) toward zero, weighted by `sqrt(damp_weight * coverage)`. Offsets are damped per term with `sc.Offsets(damping=)`.
 
 `lsqr_kwargs`:
 
-- Use **`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)], num_sky_blocks=cc.num_sky_blocks, active_mask=cc.active_mask)`** for the warm start when `use_per_frame_scalar=True`. It seeds *only* the scalar block from the diagonal-LS estimate (≈ weighted mean of valid `b` per frame), leaving chunks and sky at 0. Critical to avoid scan-stripe regressions on narrow channels. `active_mask` is required because `setup_lsqr` compacts the zero columns by default; `x0` comes back in the full column layout `apply_lsqr` expects.
-- For runs without the per-frame scalar, use the older `compute_x0_from_Ab(A, b, ref_shape, active_mask=cc.active_mask)` — diagonal-LS over the full offset region.
+- **The start**, `sc.Fit(seed=)`. `'separate'` (the default) is **`compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=cc.num_sky_blocks, active_mask=cc.active_mask)`**: every offset column at its own diagonal least-squares estimate (each column alone, as if every other unknown were zero: a constant at the weighted mean of its pixels), the sky at zero. `'offsets'` is `compute_x0_offsets_fit(...)` (the same arguments): every offset column at its frame's joint least-squares fit, the sky at zero. `'zero'` passes no `x0`. `active_mask` is required because `setup_lsqr` compacts the zero columns by default; `x0` comes back in the full column layout `apply_lsqr` expects, which imposes the hard constraints on it.
 - `iter_lim=50` (`sc.Fit(50)`) is typical with the warm start. Watch the `show=True` residual prints (`arnorm` should drop to ~1 or below) to confirm convergence.
 - **Stopping, and a fixed iteration count.** `sc.Fit(iterations=N, tolerance=t)` reaches the
   solver as `iter_lim = N`, `atol = btol = t` (`tolerance=(atol, btol)` sets them apart), and
@@ -196,14 +195,16 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   in the model's order (pixels the source did not solve start at 0), each offset term's
   `offsets/map_<m>` frame-major (a `times=` / `basis=` term: one coefficient per chunk and
   function; a term shared by groups of frames: its group's row, checked to be the same on every
-  frame of the group), then `frame_scalar`; in physical units and the full column layout, which
+  frame of the group); in physical units and the full column layout, which
   `apply_lsqr` compacts and scales as it does the default `x0` (no extra copy of `A`, one `x0`).
   Columns active now that the source left at zero start at 0; source values of columns with no
   data now are dropped; the log gives both counts. **The source must be a solution of the same
   system**, else the action is refused with what differs: the same frames in the same order, the
   same model (sky terms and their coefficients, offset terms on the same chunk maps, shared over
   the same groups of frames, with the same basis functions), the same reference grid (its shape
-  and WCS) and the same job. Every cal records the identity of its system in its `solve` group
+  and WCS) and the same job. A cal of an older layout that holds the per-frame scalar apart, in a
+  top-level `frame_scalar` (its offsets miss each frame's level), is refused. Every cal records
+  the identity of its system in its `solve` group
   (`system`, `system_identity`); a cal solved before 2026-10-08 has none and is checked by its
   contents only (frames, sky terms, chunk maps, column counts, grid shape), with a warning. The
   plan checks the frames, sky terms, grid shape, chunk maps and job before the solve is set up,
@@ -234,9 +235,9 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   snapshot (the cal is written then), nor does any iteration of a solve whose cal is current and
   reused (`overwrite=True` solves again). Each snapshot is a **complete cal file** in the final
   cal's schema ([below](#cal_h5-schema-multi-chunk-map)): the sky terms with their coverage,
-  Fisher information and separability, the offsets with their coverage, `frame_scalar`, the
+  Fisher information and separability, the offsets with their coverage, the
   chunk maps, `reproj_list` (the frames' permanent paths), the root attributes, and a `solve`
-  group marked `snapshot = True` ([its attributes](#the-solve-group)). Its sky, offset and scalar
+  group marked `snapshot = True` ([its attributes](#the-solve-group)). Its sky and offset
   datasets are **bit for bit those of a solve of exactly that many iterations**
   (`sc.Fit(iterations=it, tolerance=0)`): the solvers' iterates do not depend on the iteration
   limit, and the iterate is converted exactly as the end of the solve converts it. So every cal
@@ -263,7 +264,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   before the solve, to a template beside the snapshots (`.<cal stem>_static-<pid>.h5`, removed
   when the solve ends; the pixel state is read memory-mapped where the setup parked it); each
   snapshot is a copy of the template plus the sky maps (written a band of chunk rows at a time,
-  the same stored chunks as the cal's), the offsets and `frame_scalar`, written atomically from the
+  the same stored chunks as the cal's) and the offsets, written atomically from the
   solver's thread (no process is started). **Size**: a snapshot is about the size of the cal: a
   12k x 12k float32 sky map is ~600 MB before compression, so budget the disk for `keep` (or
   every) snapshots; the write holds one band of HDF5 chunk rows of a sky map at a time (~10 MB for
@@ -436,7 +437,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   elements). Each element depends only on its own inputs, so the split is
   bit-identical; the reductions (norms) stay one ordered pass.
 
-`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from the instrument's `offset_renderer` (`sc.Offsets(render=)` chooses among them).
+`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from the instrument's `offset_renderer` (`sc.Offsets(render=)` chooses among them). A frame's chunk whose coverage fraction (`offset_coverage_frac`, over the chunk's pixels inside the solve's window) is below `valid_chunk_thresh` (`sc.Coadd(min_chunk_coverage=)`) has its offset zeroed. A renderer with a true attribute `fills_invalid` (the SPHEREx primary renderer, `make_spherex_stripped_offset_map`, and the Euclid grid spline) fills it from the frame's other chunks of that map; a zeroed chunk with a fraction above 0 that nothing fills (another renderer, or a frame with no chunk of the map above the threshold) is left out of the coadd: its pixels in that frame get no weight. A chunk of fraction 0 (no pixel inside the solve's window) keeps its zero offset.
 
 **Channel / window selection** is the action's `jobs=`: `spherex.channel(17)` (one
 channel), `spherex.channels(1, 34)` (one job per channel), `spherex.group(17, 18)` (one
@@ -470,18 +471,19 @@ parentheses):
   previously-solved `(num_groups, num_chunks_m)` template and solves only
   one scalar amplitude `alpha` per frame. Spatial regularization rows are
   skipped automatically for this map.
-- **Mean-offset constraint via `mean_offsets_list[m]`** (`mean_offset`). Length-`num_frames`
-  array of target mean values; `setup_lsqr` appends soft constraint rows
-  pulling each frame's chunk-offset mean toward the target. Constraint
-  weight is hardcoded at 10.0 in `selfcal/core/system.py`. For K≥2 the
-  mean-anchor on maps 1..K-1 is how you break the K-1 shift degeneracy.
+- **Hard constraints via `apply_lsqr(exclusions=)`** (not a block field;
+  `sc.Offsets(exclude=...)` in a model). Each excludes the polynomials
+  of a degree from a map's offsets along a chunk axis, per group, exactly
+  and with no row (see `exclusions` above). When K≥2 maps can each carry a
+  frame's level, `exclude=sc.Poly(0)` on all but one removes the shift
+  degeneracy between them.
 
-`compute_x0_scalar_only(A, b, ref_shape, scalar_col_start, num_sky_blocks, active_mask)` (in
-`selfcal/core/solution.py`) returns a warm-start `x0` with sky+offsets=0 and
-the per-frame scalar block seeded from the diagonal-LS estimate. Use
-this whenever `use_per_frame_scalar=True`. For runs without the scalar,
-`compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks, active_mask)` is the older full-offset warm
-start. Pass `active_mask` whenever `setup_lsqr` compacted the zero columns (the default).
+`compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks, active_mask)` (in
+`selfcal/core/solution.py`) returns the default start `x0` (`sc.Fit(seed='separate')`): the sky
+at zero and every offset column at its own diagonal least-squares estimate.
+`compute_x0_offsets_fit(A, b, ref_shape, num_sky_blocks, active_mask)` returns the joint
+per-frame fit (`seed='offsets'`). Pass `active_mask` whenever `setup_lsqr` compacted the zero
+columns (the default).
 
 ## N-pass alternating solve
 
@@ -498,7 +500,7 @@ J sky blocks `S_j` (continuum + line amplitudes; `c_j` = e.g. the line template 
 observation's wavelength) and the frame's offset `O_k`: **whatever offset terms the recipe's
 model has** -- per-chunk values, a polynomial along a chunk axis (`sc.Poly`, segmented or not),
 templates, coefficients of known functions of data variables (`times=` / `basis=`, e.g. the
-x-slope of `spherex.frame_slope`), with their constraints and priors -- plus the per-frame scalar.
+x-slope of `spherex.frame_slope`, a per-frame scalar), with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
 of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script
 and nowhere else: the passes take them from the model. Given the offsets the sky is **block-diagonal** (one J×J normal
@@ -509,18 +511,18 @@ is therefore solved by alternating least squares with each half exact:
 | --- | --- | --- | --- | --- |
 | 1 | INIT | `S, O` jointly | the joint solve of a plain `calibrate` (tiled with `tiles=`) | yes (memory) |
 | SKY | SKY | `S` given `O` | the data minus every offset term of the model (`OffsetModelSubtractor`: the solve's chunk weights and functions) streamed into per-tile moment dumps (Σw², Σw²c_j, Σw²c_ic_j, Σw²v, Σw²c_jv; `setup_lsqr(moments_only=True)`, no matrix), summed, one per-pixel closed-form solve (`solve_pixels`) | no — exact full-field |
-| OFFSET | OFFSET | `O` given `S` | the model's rows (`setup_job`, as the INIT sets them up) on the data minus the one global sky (`SkySubtractor`), with no sky columns (`setup_lsqr(fixed_sky=True)`), reduced in the workers to each frame's normal equations (`setup_lsqr(reduce=normal_equations)`, no matrix) and every frame solved directly (`solve_frames`): the same rows, constraints and anchors as the INIT's offset part; the tiles' solutions joined (`merge_offset_cals`) | no — exact full-field (the frames are independent) |
+| OFFSET | OFFSET | `O` given `S` | the model's rows (`setup_job`, as the INIT sets them up) on the data minus the one global sky (`SkySubtractor`), with no sky columns (`setup_lsqr(fixed_sky=True)`), reduced in the workers to each frame's normal equations (`setup_lsqr(reduce=normal_equations)`, no matrix) and every frame solved directly (`solve_frames`): the same rows and priors as the INIT's offset part, under the same hard constraints (`solve_frames(exclusions=)`); the tiles' solutions joined (`merge_offset_cals`) | no — exact full-field (the frames are independent) |
 
 `n = 1` **is** the single solve (byte-equal; regression gate on a NEP production tile). Why not
 just the joint solve: it *semi-converges* — the offsets converge fast, the low-wavelength-diversity
 pixels' continuum↔line split does not, and past that point the iterate drifts along the exact
-null spaces (uniform line floor ↔ static detector pattern; uniform sky ↔ scalars). Each SKY and
+null spaces (uniform line floor ↔ static detector pattern; uniform sky ↔ the frames' levels). Each SKY and
 OFFSET pass is an exact block minimisation (`sc.Refit`: the OFFSET pass's clip and an optional
 `bright_cut` with `min_pixels` — nothing about the offsets' form), so the objective is non-increasing in `n`
 (`tests/test_npass_any_offset.py` checks it for three different offset models), but drift along
 the null spaces is not excluded — the scheduler records per-pass monitors in
 `<stem>_npass_monitor.json` (per-block median / % positive / step RMS; per OFFSET pass each
-tile's solve — blocks, columns, directions left out, residual — the scalar's median and spread and
+tile's solve — blocks, columns, directions left out beyond the constrained ones, residual — and
 the step of every offset value) and `sc.Passes(stop_tol=)` can stop early; pick `n` from those, not by
 assumption. The remaining zero points (line floor, continuum DC) are unobservable from the data in
 any `n` and need the post-hoc anchors (`selfcal/line_floor.py`, `selfcal/zodi_anchor.py`).
@@ -531,9 +533,10 @@ singular to machine precision; solving it directly returns rounding noise that *
 objective. `solve_pixels` drops each pixel's eigen-directions weaker than `rcond = 1e-12` of its
 strongest — the solution an iterative solve started at zero converges to there — and solves every
 well-determined pixel exactly. The OFFSET pass solves each frame the same way, from the engine's
-starting vector in column-scaled unknowns: the solution the fit's iterative solver converges to,
-so a direction the data leave undetermined (a frame's scalar beside free chunk offsets) keeps the
-INIT's convention.
+starting vector (`sc.Fit(seed=)`) in column-scaled unknowns, under the terms' hard constraints:
+the solution the fit's iterative solver converges to, so a direction the data leave undetermined
+(two terms that duplicate each other, such as a per-frame scalar beside free chunk constants)
+keeps the INIT's convention.
 
 Why the SKY passes need no tiles: a pixel's normal equations are sums over its observations, so
 per-tile dumps over **disjoint** frame sets are additive and summing them is identical to a single
@@ -582,7 +585,7 @@ Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
 coverage, `sky_separability/<name>`; written by the same
 `selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
 `<stem>_pass{i}off.h5` (the offsets alone, in the cal layout: `offsets/map_<m>` of every offset
-term with each map's `n_basis` / `basis`, `offset_coverage`, `chunk_maps`, `frame_scalar`,
+term with each map's `n_basis` / `basis`, `offset_coverage`, `chunk_maps`,
 `reproj_list`, attribute `fixed_sky`; consumable by `OffsetModelSubtractor` like any cal). An OFFSET
 pass also keeps each tile's solve, `<stem>_pass{i}off_<tile>.h5` (a cal of the offsets alone, its
 direct solve's summary in the attribute `solve`), which a resumed pass reuses (stale ones are deleted, by fingerprint). Running
@@ -635,9 +638,8 @@ without it, so their reads are not throttled.
 ## `cal_*.h5` schema (multi-chunk-map)
 
 Written by `Calibrator.save_calibration`. Read it with
-`selfcal.io.calfile.CalFile` (`sky(name)`, `offsets`, `frame_scalar`,
-`total_offsets()`, `reproj_list`, ...), which resolves every layout below (and
-the stitched / N-pass products); `Mosaicker.load_calibration` and the analysis
+`selfcal.io.calfile.CalFile` (`sky(name)`, `offsets`, `reproj_list`, ...), which resolves
+every layout below (and the stitched / N-pass products); `Mosaicker.load_calibration` and the analysis
 scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 `num_maps`:
 
@@ -650,21 +652,27 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 - `skymap_coverage` — `(ref_h, ref_w)` int64 — frames touching each pixel
 - `reproj_list` — list of HDD paths to the reprojected files (dataset of bytes)
 - `num_maps` (attr) — number of chunk maps `K`
-- `frame_scalar` — `(num_frames,)` float32 — per-frame DC scalar (only when the solve has one: `sc.Model(scalar=True)`, or a map with `det_groups`)
 - `solve` — a group with attributes only (no dataset): the record of the solve that made the file
   (cals solved since 2026-10-08; see [The `solve` group](#the-solve-group) below)
 
 **Groups (one dataset per map):**
 - `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
 - `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map)
-- `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of chunk pixels actually covered per frame (float32 ones for a template or polynomial-basis map)
+- `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of the chunk's pixels covered per frame, counted over the chunk's pixels inside the solve's window (the detector pixels the job can observe; 0 for a chunk with no pixel inside it; `sc.Coadd(min_chunk_coverage=)` compares it) (float32 ones for a template or polynomial-basis map)
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
+- a per-frame scalar (`sc.Offsets("scalar", on="detector")`) is an offset map like the others: `offsets/map_{m}` is `(num_frames, 1)`, its chunk map all zeros
 - a map whose offset term carries known functions of data variables (a `coefficient` or a
   `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
   num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the
   function and its variables); `CalFile.offset_basis(m)` returns `(n, description)`. Such an
   offset is not constant per chunk — the mosaic evaluates it per observation
   (`selfcal.pipeline.model_eval.BasisOffsetSubtractor`).
+
+**Older layout with a separate per-frame scalar:** a cal of this layout holds each frame's level
+apart from the offset maps, in a top-level `frame_scalar` `(num_frames,)`, so its
+`offsets/map_{m}` miss that level. The readers that apply offsets refuse such a file (`CalFile.check_offsets_complete()`): the mosaic
+(`Mosaicker.load_calibration`), `Calibrator.load_calibration`, the warm start (`calibrate(start=)`)
+and the N-pass readers. Its sky maps still read through `CalFile`.
 
 **Legacy schema (pre-multi-chunk-maps, still readable):**
 Top-level `offset`, `offset_coverage`, `offset_coverage_frac` (no `offsets/` group, no `num_maps` attr, no `frame_scalar`). Both `Mosaicker.load_calibration` and `zodi_utils.load_cal_offsets` detect the schema and adapt; the latter folds `frame_scalar` into map-0 offsets for analysis-side compatibility with the legacy single-map subtraction semantics.
@@ -688,7 +696,7 @@ The attributes of a cal file's `solve` group (`selfcal.core.solve_record`, read 
 | `atol`, `btol`, `conlim`, `damp` | what the solver ran with (`conlim = 0`: `sc.Fit(tolerance=0)`) |
 | `rows`, `columns` | the system's shape (the active columns) |
 | `history_file` | the NPZ of the solver's state at every iteration, `<field>/records/<cal stem>_history.npz` |
-| `system`, `system_identity` | the identity of the system solved (`selfcal.core.warm_start.System`): the JSON of its frames (in order), reference grid (shape and WCS), sky terms, offset terms (chunk maps, groups of frames, basis functions, columns), per-frame scalar columns, total columns and job, and its sha256; what a later solve's start is checked against (cals solved since 2026-10-08) |
+| `system`, `system_identity` | the identity of the system solved (`selfcal.core.warm_start.System`): the JSON of its frames (in order), reference grid (shape and WCS), sky terms, offset terms (chunk maps, groups of frames, basis functions, columns), total columns and job, and its sha256; what a later solve's start is checked against (cals solved since 2026-10-08) |
 | `start_from`, `start_identity` | a continued solve only: the cal it started from (its path) and that cal's identity, `fingerprint:<sha256>` (its sidecar's) or `sha256:<sha256>` (its bytes) |
 | `stop_rule`, `stop_iteration`, `stop_values`, `stop_policy`, `solver_tests` | a solve with [stop rules](#calibration-pipeline-tuning) only: the rules that ended it (`"gradient"`, `"residual, large_scale"`; `"none"` when it ended otherwise), the iteration they were judged at last (where they ended it, or the last), the JSON of every rule's state there (its value, threshold, window, where it was measured), the JSON of the rules (`sc.Stop`), and which of the solver's own tests could stop the solve (the tests the Stop keeps, or `"off: atol, btol and conlim unused ..."`: then `atol`, `btol` and `conlim` above were not used) |
 | `snapshot`, `iteration` | a [snapshot](#calibration-pipeline-tuning) only: `True`, and the cumulative iteration it holds (the start's `iterations_total` plus `iterations`; -1 when unknown). A snapshot has `iterations` (this solve's, at the snapshot), `iterations_total`, `iteration_limit`, the solver's estimates at that iteration (`r1norm` ... `xnorm`, `test1`, `test2`), the tolerances, the shape, the system and the start as above, and no `istop`, `stop_reason`, `true_residual`, `bnorm` or `history_file` |

@@ -156,7 +156,7 @@ A mode was a named model with its knobs in `[params]`. Each is a preset or a mod
 | `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, poly_prior=[..., sc.Poly(spectral_poly_degree, along="subchannel", window=range(lo, hi + 1), weight=spectral_poly_weight)])` |
 | `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | `sc.spectral(lines, polynomial=sc.Poly(spectral_poly_degree, window=range(lo, hi + 1), segments=...))` |
 | `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, smooth=reg_weight, second_smooth=second_reg_weight)` |
-| `model` | `sc.Model(sky=[...], offsets=[...], scalar=, variables={...}, weight=, priors=[...])` |
+| `model` | `sc.Model(sky=[...], offsets=[...], variables={...}, weight=, priors=[...])` |
 
 The lines of the spectral modes (`[[params.lines]]`) are sky terms: `spherex.line(name, damping=)`
 for a shipped template, else `sc.Sky(name, times=sc.template(file))` or
@@ -170,10 +170,12 @@ A `[model]` table maps term by term:
 | `[[model.sky]]` `name`, `coefficient`, `damp_weight` | `sc.Sky(name, times=, damping=)` |
 | `[[model.offset]]` `map`, `kind = "free"` / `"fixed"` / `"grouped"` + `groups` | `sc.Offsets(on=map, per="frame")` / `per="all"` / `per=groups` |
 | `kind = "polybasis"`: `axis`, `group_axis`, `degree`, `lo`, `hi`, `segments` | `sc.Offsets(polynomial=sc.Poly(degree, along=, each=, window=range(lo, hi + 1), segments=))` |
-| `reg_weight`, `adjacency`, `poly`, `mean_zero`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `poly_prior=sc.Poly(...)`, `mean_zero=`, `damping=`, `exact_group_rows=`, `render=` |
+| `reg_weight`, `adjacency`, `poly`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `poly_prior=sc.Poly(...)`, `damping=`, `exact_group_rows=`, `render=` |
+| `mean_zero = true`; `exclude_degree`, `exclude_axis` | `exclude=sc.Poly(0)`, the hard constraint "no constant over the term's chunks"; `exclude=sc.Poly(exclude_degree, along=exclude_axis)` |
 | a `coefficient` or a `basis`: `{ variable, function = "pkg.mod:fn", params }` | `times=fn` or `basis=fn, n=` (the function itself), or `sc.Function(fn, of=variable, **params)` |
 | `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = name }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `sc.catalog(name)` |
 | `[model.variables]` `header`, `per_frame`, `detector`, `sky`, `sky_cal`, `layer`, `function`, `frame_function` | `sc.Header`, `sc.PerFrame`, `sc.DetectorMap`, `sc.SkyMap`, `sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction` |
+| `scalar = true` (the default) / `false` | the offset term `sc.Offsets("scalar", on="detector")` after the others (one chunk, the whole detector) / none |
 | `weight` | `sc.Model(weight=)` |
 | `[[model.prior]]` `frame_smoothness`, `sky_smoothness`, `toward_variable`, `"pkg.mod:fn"` | `sc.priors.frame_smoothness(...)`, `sc.priors.sky_smoothness(...)`, `sc.priors.toward(...)`, `sc.Prior(fn, terms, weight=, **params)` |
 | `mosaic = "full"` / `"no_wav"` / `"none"` | `sc.Coadd(instrument_maps=True)` / `sc.Coadd(instrument_maps=False)` / `coadd=None` |

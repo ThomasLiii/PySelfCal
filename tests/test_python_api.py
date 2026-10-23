@@ -137,7 +137,7 @@ def test_functions_that_workers_cannot_import_are_refused():
 
 def test_model_lowers_to_the_model_table():
     model = sc.Model(sky=[sc.Sky(damping=1e-4), sc.Sky('line', times=sc.gaussian(3.3, sigma=0.01))],
-                     offsets=[sc.Offsets('thermal', per='all', times=above_80, mean_zero=True),
+                     offsets=[sc.Offsets('thermal', per='all', times=above_80, exclude=sc.Poly(0)),
                               sc.Offsets('gradient', on='detector', basis=gradient, n=2),
                               sc.Offsets('nights', per='night', smooth=0.1, smooth_along=())],
                      variables={'temperature': sc.Header('TEMP'), 'night': sc.PerFrame(per_frame_index)},
@@ -373,9 +373,10 @@ def _degauge(a):
 
 
 def _recovered(cal_path, off_true, sc_true=None):
-    """The cal's offsets (and scalars) follow the injected ones (exposure k is the cal's frame k)."""
+    """The cal's offsets (and scalars: the last term, of one chunk) follow the injected ones (exposure k is
+    the cal's frame k)."""
     with CalFile(cal_path) as cal:
-        off, scalar = cal.offsets[0], cal.frame_scalar
+        off, scalar = cal.offsets[0], cal.offsets[-1][:, 0]
         assert np.isfinite(cal.sky(0)).any()
     assert off.shape == off_true.shape
     r_off = np.corrcoef(_degauge(off).ravel(), _degauge(off_true).ravel())[0, 1]
@@ -448,7 +449,7 @@ def test_a_nonsquare_camera_without_a_mask_runs(tmp_path):
                                        numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))
     assert len(result.cal_paths) == 1 and len(result.mosaic_paths) == 1
     with CalFile(result.cal_paths[0]) as cal:
-        assert cal.schema_version == 3 and cal.sky_names == ['continuum'] and cal.num_maps == 1
+        assert cal.schema_version == 3 and cal.sky_names == ['continuum'] and cal.num_maps == 2   # + the scalar term
         assert cal.n_frames == n and cal.offsets[0].shape == (n, chunks[0] * chunks[1])
         assert cal.chunk_maps[0].shape == shape and cal.sky(0).shape == cal.ref_shape
     _recovered(result.cal_paths[0], off_true)
@@ -599,9 +600,9 @@ def test_a_model_grouped_by_its_own_frame_variable_is_mosaicked(tmp_path):
     field = sc.Field(tmp_path / 'out' / 'amps', AmpCamera(), REF_ARCSEC,
                      compute=sc.Compute(str(tmp_path / 'cache'), workers=2))
     field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
-    model = sc.Model(offsets=[sc.Offsets('chunks', smooth=0.05, mean_zero=True),
+    model = sc.Model(offsets=[sc.Offsets('chunks', smooth=0.05, exclude=sc.Poly(0)),
                               sc.Offsets('amps', on='amps', per='fortnight', smooth_along=()),
-                              sc.Offsets('gradient', on='detector', basis=plane, n=2)],
+                              sc.Offsets('gradient', on='detector', basis=plane, n=2), sc.Offsets('scalar', on='detector')],
                      variables={'fortnight': sc.PerFrame(fortnight, of='exposure', length=8)})
     result = field.calibrate(sc.Recipe(model, fit=sc.Fit(30), coadd=sc.Coadd(clip=3.0),
                                        numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))

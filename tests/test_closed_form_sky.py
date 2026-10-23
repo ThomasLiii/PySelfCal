@@ -60,8 +60,7 @@ def test_closed_form_matches_converged_lsqr(tmp_path):
     r = setup_lsqr(paths, REF, sky_rhs_moments=True,
                    chunk_maps=[], sky_model=sky_model, det_aux=[bc_det],
                    max_workers=2, batch_size=20, outlier_thresh=100.0,
-                   weighted_damping=True, damp_weight=1e-3, damp_weight_line=1e-3,
-                   use_per_frame_scalar=False)
+                   weighted_damping=True, damp_weight=1e-3, damp_weight_line=1e-3)
     num_sky = REF[0] * REF[1]
     x_cf = solve_sky_closed_form(r.pixel_fisher, r.pixel_cross, r.pixel_rhs, r.pixel_counts,
                                  num_sky, 2, damp_weights=[1e-3, 1e-3])

@@ -124,7 +124,8 @@ def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
     field.reproject(tmp_path / 'exposures' / 'toy_exp_*.fits', method='interp', padding=8)
     model = sc.Model(sky=[sc.Sky(damping=1e-4)],
                      offsets=[sc.Offsets('thermal', per='all', times=centred, exclude=sc.Poly(1, along=along)),
-                              sc.Offsets('gradient', on='detector', basis=plane, n=2)],
+                              sc.Offsets('gradient', on='detector', basis=plane, n=2),
+                              sc.Offsets('scalar', on='detector')],
                      variables={'temperature': sc.Header('TEMP')})
     result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
     with result.cal() as cal:

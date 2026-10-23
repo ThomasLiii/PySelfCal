@@ -34,9 +34,9 @@ pointing); a coverage-weighted least squares over every (frame, chunk).
 The polynomial ``P(p) = g . (p - p0) + (p - p0)^T H (p - p0) / 2`` (``H = 0`` for the plane), minus its
 mean over the covered pixels, is then added to the sky term and recorded on the cal (``gauge/``);
 with ``apply='map'`` every mosaic made from the cal adds it to its maps (the offsets stay as solved),
-with ``apply='offsets'`` its image is removed from the offsets instead (the slopes, the chunk
-constants, the per-frame scalar), which is exact only up to the band discretisation (and, for a
-quadratic, its curvature within a frame).
+with ``apply='offsets'`` its image is removed from the offsets instead (the slopes and the chunk
+constants, which take each frame's change of level), which is exact only up to the band
+discretisation (and, for a quadratic, its curvature within a frame).
 
 The geometry: each frame's detector axes and centre on the reference grid, from a tangent plane
 through the frame's stored header (``geometry='tangent'``: its pointing, reference pixel, PC matrix
@@ -216,20 +216,17 @@ def _fit_covariance(A, res, n_parameters):
             'g_sigma': [float(sig[0]), float(sig[1])], 'g_corr': corr, '_cov_diag': sig ** 2}
 
 
-def move_into_offsets(c, b, scalar, good, J, D, dy, g, H, half):
-    """The image of the polynomial removed from the offsets (``apply='offsets'``): the slopes ``b``,
-    the chunk constants ``c`` (per frame, mean-zero over its covered chunks) and the per-frame
-    ``scalar``; returns the three new arrays."""
-    K = b.shape[0]
+def move_into_offsets(c, b, J, D, dy, g, H, half):
+    """The image of the polynomial removed from the offsets (``apply='offsets'``): the slopes ``b``
+    and the chunk constants ``c``, which take each frame's change of level too; returns the two new
+    arrays."""
     HJ = np.einsum('kai,ab,kbj->kij', J, H, J)                             # J^T H J (per det px^2)
     lin = np.einsum('kai,ka->ki', J, (D @ H.T) + g[None, :])               # J^T (H D_k + g) (per det px)
     b_new = b - half * (lin[:, 0][:, None] + HJ[:, 0, 1][:, None] * dy[None, :])
     adj = lin[:, 1][:, None] * dy[None, :] + 0.5 * HJ[:, 1, 1][:, None] * dy[None, :] ** 2
-    gm = good.any(axis=1)
-    adj_mean = np.array([adj[k, good[k]].mean() if gm[k] else 0.0 for k in range(K)])
-    c_new = c - (adj - adj_mean[:, None])
-    scalar_new = scalar - adj_mean - (D @ g) - 0.5 * np.einsum('ka,ab,kb->k', D, H, D)
-    return c_new, b_new, scalar_new
+    level = (D @ g) + 0.5 * np.einsum('ka,ab,kb->k', D, H, D)
+    c_new = c - adj - level[:, None]
+    return c_new, b_new
 
 
 def polynomial(shape, g, H, p0, mean=0.0):
@@ -272,7 +269,6 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
         c = f[f'offsets/map_{constant_map}'][:].astype(np.float64)
         b = f[f'offsets/map_{slope_map}'][:].astype(np.float64)
         ocov = f[f'offset_coverage/map_{slope_map}'][:].astype(np.float64)
-        scalar = f['frame_scalar'][:].astype(np.float64) if 'frame_scalar' in f else None
         cmap = f[f'chunk_maps/map_{constant_map}'][:]
         n_frames = len(f['reproj_list'])
     if len(frames) != n_frames:
@@ -281,8 +277,6 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     if c.shape != (K, S):
         raise ValueError(f"the gauge's constant map {constant_map} has {c.shape[1]} chunks, the slope map {slope_map} "
                          f"{S}: the two terms must share their chunk map")
-    if apply == 'offsets' and scalar is None:
-        raise ValueError("apply='offsets' moves part of the polynomial into the per-frame scalar, which this cal has none of")
     if geometry == 'tangent':
         headers = frame_header_values(frames, GAUGE_KEYS, max_workers=max_workers)
     else:
@@ -321,11 +315,9 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     with h5py.File(cal_path, 'r+') as f:
         f[f'sky/{sky_name}'][...] = sky.astype(np.float32)
         if apply == 'offsets':
-            good = (ocov > 0) & np.isfinite(b)
-            c_new, b_new, scalar_new = move_into_offsets(c, b, scalar, good, J, D, dy, g, H, half)
+            c_new, b_new = move_into_offsets(c, b, J, D, dy, g, H, half)
             f[f'offsets/map_{constant_map}'][...] = c_new.astype(f[f'offsets/map_{constant_map}'].dtype)
             f[f'offsets/map_{slope_map}'][...] = b_new.astype(f[f'offsets/map_{slope_map}'].dtype)
-            f['frame_scalar'][...] = scalar_new.astype(f['frame_scalar'].dtype)
         if 'gauge' in f:
             del f['gauge']
         grp = f.create_group('gauge')

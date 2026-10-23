@@ -305,7 +305,9 @@ def _offsets_from_term(term, notes):
                         window=None if p.lo is None else range(int(p.lo), int(p.hi) + 1)) for p in term.poly)
     return M.Offsets(per=per, basis=basis, n=n, smooth=float(term.reg_weight),
                      smooth_along=None if term.adjacency is None else tuple(term.adjacency),
-                     smooth_step=term.adjacency_step, poly_prior=poly, mean_zero=bool(term.mean_zero),
+                     smooth_step=term.adjacency_step, poly_prior=poly,
+                     exclude=None if term.exclude_degree is None else M.Poly(int(term.exclude_degree),
+                                                                              along=term.exclude_axis),
                      exact_group_rows=bool(term.exact_group_rows), **common)
 
 
@@ -330,15 +332,33 @@ def _source(v):
     return M.FrameFunction(load_callable(v.value), **p)
 
 
+def _model_table(table):
+    """A TOML ``[model]`` table in the current form: its ``scalar`` (default true) becomes an offset term
+    of one chunk, ``{map = 'detector', name = 'scalar'}``, after the others, and an offset term's
+    ``mean_zero = true`` its hard constraint ``exclude_degree = 0`` (no constant over its chunks)."""
+    t = dict(table)
+    scalar = bool(t.pop('scalar', True))
+    offsets = []
+    for o in t.get('offset') or []:
+        o = dict(o)
+        if o.pop('mean_zero', False) and o.get('exclude_degree') is None:
+            o['exclude_degree'] = 0
+        offsets.append(o)
+    if scalar:
+        offsets.append({'map': 'detector', 'name': 'scalar'})
+    t['offset'] = offsets
+    return t
+
+
 def _model_from_table(table, dampings, notes):
     from ..models.spec import ModelSpec
-    spec = ModelSpec.from_config(table)
+    spec = ModelSpec.from_config(_model_table(table))
     sky = tuple(M.Sky(t.name, times=_coefficient(t.coefficient)[0], damping=d) for t, d in zip(spec.sky, dampings))
     weight = _coefficient(spec.weight)[0] if spec.weight is not None else None
     priors = tuple(M.Prior(p.function if isinstance(p.function, str) and ':' not in p.function
                            else load_callable(p.function), p.terms, weight=p.weight, name=p.name, **dict(p.params))
                    for p in spec.priors)
-    return M.Model(sky=sky, offsets=tuple(_offsets_from_term(t, notes) for t in spec.offset), scalar=spec.scalar,
+    return M.Model(sky=sky, offsets=tuple(_offsets_from_term(t, notes) for t in spec.offset),
                    variables={v.name: _source(v) for v in spec.variables}, weight=weight, priors=priors), spec.mosaic
 
 
@@ -373,7 +393,7 @@ def _preset_model(cfg, inst_name, notes):
             take('poly_degree', 'poly_axis')
         poly.extend(extra_poly)
         return M.Offsets(smooth=float(take('reg_weight', default=0.1)),
-                         smooth_along=None if adj is None else tuple(adj), poly_prior=tuple(poly), mean_zero=True)
+                         smooth_along=None if adj is None else tuple(adj), poly_prior=tuple(poly), exclude=M.Poly(0))
 
     def window():
         lo, hi = take('spectral_poly_lo', 'subch_poly_lo'), take('spectral_poly_hi', 'subch_poly_hi')
@@ -440,7 +460,7 @@ def _preset_model(cfg, inst_name, notes):
                              smooth_step=1),
                    M.Offsets(on=take('second_map', default='readout'), per='all',
                              smooth=float(take('second_reg_weight', 'readout_reg_weight', default=0.0)),
-                             smooth_along=(), mean_zero=True))
+                             smooth_along=(), exclude=M.Poly(0)))
         scalar = False
     unused = sorted(set(p) - used)
     if unused:
@@ -562,7 +582,7 @@ def from_toml(path) -> Converted:
     sky_passes = cfg.task == 'npass' and 'sky' in _schedule(cfg.passes)
     if cfg.mode == 'model':
         from ..models.spec import ModelSpec
-        spec = ModelSpec.from_config(cfg.model)
+        spec = ModelSpec.from_config(_model_table(cfg.model))
         own = [t.damp_weight for t in spec.sky]
         dampings = _sky_dampings(cal, len(spec.sky), own, sky_passes, cfg.calibration)
         model, mosaic_mode = _model_from_table(cfg.model, dampings, notes)
@@ -577,7 +597,7 @@ def from_toml(path) -> Converted:
         dampings = _sky_dampings(cal, len(names), own, sky_passes, cfg.calibration)
         terms = (M.Sky(damping=dampings[0]),) + tuple(M.Sky(n, times=t, damping=d)
                                                       for (n, t, _), d in zip(sky, dampings[1:]))
-        model = M.Model(sky=terms, offsets=offsets, scalar=scalar)
+        model = M.Model(sky=terms, offsets=tuple(offsets) + ((M.Offsets('scalar', on='detector'),) if scalar else ()))
     if not cal['weighted_damping']:
         notes.append("weighted_damping = false: no sky damping rows (every sky term damping=0.0)")
     if not cal['offset_regularization']:

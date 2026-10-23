@@ -5,20 +5,21 @@
 detector position — it fits
 
 ```
-data = Σ_j S_j[P] · c_j(v)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m, k] · φ_mk(v)  +  s(frame)
+data = Σ_j S_j[P] · c_j(v)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m, k] · φ_mk(v)
 ```
 
 * `S_j` — **sky maps** (one or more), each times a known **coefficient** `c_j`;
 * `O_m` — **offsets** on a chunk partition of the detector, shared by the frames of a group
   `g_m` (every frame its own, all frames one, or frames with equal values of any per-frame
-  quantity), optionally times known functions `φ_mk`;
-* `s` — a per-frame **scalar**;
+  quantity), optionally times known functions `φ_mk`; on the map `"detector"`, whose one chunk is
+  the whole detector, a per-frame **scalar**;
 * `v` — **data variables**: named per-observation quantities (the detector position, the time,
   the wavelength, a polariser angle, a variance, a previous sky, anything) that every function of
   the model reads by name.
 
-Priors (damping, smoothness, polynomial shape, anchors, or any linear rows you write) regularise
-the solve; the corrected frames are then coadded into a mosaic. Nothing in the solver knows a
+Priors (damping, smoothness, polynomial shape, or any linear rows you write) regularise the solve,
+and hard constraints remove what an offset term must not carry (a constant, a polynomial along a
+chunk axis); the corrected frames are then coadded into a mosaic. Nothing in the solver knows a
 telescope. A telescope enters through an **instrument** (how raw exposures are read, how the
 detector is chunked, which detector maps and per-frame values it defines) and the calibration is a
 **model** (`sc.Model`). A new telescope, sky coefficient, offset set-up or prior is a function you
@@ -74,12 +75,14 @@ MODEL = sc.Model(
     sky=[sc.Sky("continuum"),                                  # no coefficient: a constant sky
          sc.Sky("annual", times=sc.Function(season, of="time", period=365.25),   # a map times ANY
                 damping=1e-3)],                                                  # function of variables
-    offsets=[sc.Offsets("chunks", smooth=0.1, mean_zero=True,  # free per-frame offsets on the chunk grid
+    offsets=[sc.Offsets("chunks", smooth=0.1,                 # free per-frame offsets on the chunk grid,
+                        exclude=sc.Poly(0),                    #   with no constant in any frame
                         poly_prior=sc.Poly(1, along="col", weight=0.5)),
              sc.Offsets("thermal", per="all",                  # a detector-fixed pattern times the temperature
                         times=sc.Function(above, of="temperature", t0=80.0)),
              sc.Offsets("gradient", on="detector",            # a free 2-D gradient per frame
-                        basis=plane, n=2)],                    # plane(det_x, det_y) returns 2 arrays
+                        basis=plane, n=2),                     # plane(det_x, det_y) returns 2 arrays
+             sc.Offsets("scalar", on="detector")],             # the per-frame scalar: each frame's level
     variables={"time": sc.Header("MJD-AVG"),                   # a keyword of each frame's header
                "temperature": sc.Header("TEMP"),
                "variance": sc.Layer("variance"),               # a plane stored with each frame
@@ -126,8 +129,12 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
   (frames with equal values); `times=φ` (one known function multiplying the offset at every
   observation) or `basis=fns, n=n` (`n` functions: the unknowns are one coefficient per group ×
   chunk × function), or `polynomial=sc.Poly(degree, along=, window=)` (an exact polynomial along a
-  chunk axis); and the built-in priors `smooth` + `smooth_along`, `poly_prior`, `mean_zero` (per
-  function for a basis), `damping`, `exact_group_rows`.
+  chunk axis); the built-in priors `smooth` + `smooth_along`, `poly_prior`, `damping`,
+  `exact_group_rows`; and a hard constraint, `exclude=sc.Poly(k, along=)`: no polynomial of degree
+  ≤ `k` along the axis (per line of the other axes, per group), imposed exactly by the solver with
+  no row and no weight, for a term of one unknown per chunk (not `basis=` or `polynomial=`);
+  `exclude=sc.Poly(0)` needs no `along` (no constant over all of a group's chunks). The term
+  `sc.Offsets("scalar", on="detector")` is a per-frame scalar.
 * **weight**, `sc.Model(weight=fn)`: a function of data variables multiplying every observation's
   row weight (`1/σ` for an inverse-variance fit); the mosaic coadds with its square, like the solve.
   `sc.Variance(fn, of=...)` gives the noise variance instead: the row weight is `1/sqrt` of it, the
@@ -135,9 +142,10 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
   per-frame statistics of the stored values (`value`) and flag bits (`flags`): `sc.shot_noise()` is
   the shot-noise variance `max(|value|, m)` floored at the frame's median `m`.
 * **prior**, `sc.Prior(fn, terms, weight=, **params)`: `terms` names the terms the rows act on
-  (sky-term names, offset-term names, `"scalar"`). A prior function receives one `TermInfo` per
-  term (the unknowns' shape, their coverage, the frame → group map, the solve's variables, the
-  chunk axes, `index(...)` for the global unknown ids) and returns `(rows, cols, vals, rhs)`.
+  (sky-term names and offset-term names, such as `"scalar"` for a per-frame scalar term). A prior
+  function receives one `TermInfo` per term (the unknowns' shape, their coverage, the frame → group
+  map, the solve's variables, the chunk axes, `index(...)` for the global unknown ids) and returns
+  `(rows, cols, vals, rhs)`.
   Ready-made (`sc.priors`): `frame_smoothness` (offsets of neighbouring frames in a frame
   variable), `sky_smoothness` (neighbouring sky pixels), `toward` (unknowns toward a known map or
   per-frame value).
@@ -145,9 +153,11 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
   observation against its own group's distribution; `per="chunk"` or
   `per=sc.ChunkGroups.along("<axis>")` groups by chunks instead.
 
-Anchors need care when a term's groups observe different parts of its map (detectors on one
-focal plane): `mean_zero` sums over every chunk of the map, observed or not, so anchor such a
-term with `damping` (it acts on observed unknowns only) or a prior.
+Hard constraints need care when a term's groups observe different parts of its map (detectors on
+one focal plane): `exclude=` acts on a group's chunks that are unknowns of the solve, those with an
+observation or a prior row. A chunk that the group never observes drops out of it, unless a
+smoothness row (`smooth`) makes that chunk an unknown; such a term can be settled with `damping` or
+a prior instead.
 
 A calibration variant is such a model, or a function that returns one, as the presets
 `sc.continuum`, `sc.spectral` and `sc.two_block` are (`selfcal/models/model.py`). A recipe takes
@@ -267,7 +277,10 @@ or to an instrument's layout. The reprojection, the reference-frame definition a
 downstream use the reader; nothing else changes.
 
 Optional hooks, with defaults: `offset_renderer(geom, jobgeom, map_name=None, render=None)`
-(a smooth chunk-to-pixel rendering for the mosaic), `aux_coadds(geom)` and
+(a smooth chunk-to-pixel rendering for the mosaic; a renderer that fills the chunks the mosaic
+zeroed, those below `sc.Coadd(min_chunk_coverage=)`, from the frame's other chunks says so with a
+true attribute `fills_invalid`; the pixels of a zeroed chunk that the frame observed and that
+nothing fills are left out of the coadd), `aux_coadds(geom)` and
 `finalize_mosaic(geom, mosaicker, maps, sigma)` (extra per-pixel maps to coadd), and
 `coefficient_catalog()` (named coefficients, for `sc.catalog(name)`). A chunk map other than
 rectangles is `sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...),

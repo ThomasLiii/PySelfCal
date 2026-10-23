@@ -74,7 +74,7 @@ def toy_field(tmp_path, n_exp=12, seed=7):
 
 
 def model(weight):
-    return sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets(mean_zero=True)], weight=weight)
+    return sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets(exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')], weight=weight)
 
 
 # ---- functions of the data variables (importable by the worker processes) --------------------------

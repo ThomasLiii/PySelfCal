@@ -16,7 +16,7 @@ offset response,
 
     g(F) = argmin_g | B_sky F + B_off g |,
 
-the least squares over every non-sky column (offsets of any form, per-frame scalars, templates ...),
+the least squares over every non-sky column (offsets of any form, templates ...),
 solved directly: the normal matrix of those columns, ``B_off^T B_off``, is built from the system
 itself and solved exactly on each of its connected blocks (a block per frame, or per group of frames
 that share offsets), by the pseudo-inverse (the response of minimum norm). A column that many frames
@@ -24,7 +24,7 @@ share (a detector-fixed pattern, whatever its term) would merge every block it t
 columns, coupled to far more columns than the block's others, are eliminated first by a Schur
 complement over them, which leaves the blocks per frame (:func:`_schur_pinv_solve`). The pairs ``z = (F, g(F))``
 span the deflation space. A combination the data cannot see at all (``|B z|`` below
-:data:`GAUGE_RATIO` of ``|B F|``: a gauge, such as the sky's mean against per-frame scalars) is left
+:data:`GAUGE_RATIO` of ``|B F|``: a gauge, such as the sky's mean against the frames' levels) is left
 out, and the rest is made orthogonal to it, so the solution keeps the gauge a plain solve gives
 (the minimum-norm one).
 
@@ -817,8 +817,8 @@ class Deflation:
         lam_max = max(float(lam.max()), 1e-300)
         self.seen = np.sqrt(np.maximum(lam, 0.0) / lam_max)        # per direction: what the data see of it, relative
         # An exact gauge (eigenvalue at the rounding level) is left out of the space: the data never push along it,
-        # and its value stays the start's, as a plain solve leaves it (the zero point of the sky against the frame
-        # scalars, for one).
+        # and its value stays the start's, as a plain solve leaves it (the zero point of the sky against the frames'
+        # levels, for one).
         exact = lam > DEPENDENT * lam_max                          # False: an exact gauge
         self.kept_mask, self.exact_mask = exact.copy(), ~exact
         self.gauges = int((~exact).sum())

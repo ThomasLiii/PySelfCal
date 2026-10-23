@@ -9,7 +9,8 @@ sky a continuum plus a line times a Gaussian of the wavelength. Two offset model
 it can represent exactly:
 
 =========== =======================================================================================
-plain       a free offset per chunk (mean zero over a frame's chunks) and the per-frame scalar
+plain       a free offset per chunk with no constant over a frame's chunks (``exclude=Poly(0)``) and
+            the per-frame scalar (the term of one chunk)
 poly_slope  a quadratic along the bands per column, a free x-slope per band (``times`` a function of
             the detector column, as SPHEREx's ``frame_slope``) and the scalar
 =========== =======================================================================================
@@ -139,13 +140,13 @@ def write_field(field_dir, kind, rng):
 def model_of(kind):
     sky = [sc.Sky(damping=0.0), sc.Sky('line', times=sc.gaussian(LINE_CENTER, sigma=LINE_SIGMA), damping=0.0)]
     if kind == 'plain':
-        offsets = [sc.Offsets(mean_zero=True)]
+        offsets = [sc.Offsets(exclude=sc.Poly(0))]
     elif kind == 'poly_slope':
         offsets = [sc.Offsets(polynomial=sc.Poly(2, window=range(0, N_BAND))),
                    sc.Offsets('slope', on='band', times=sc.Function(tilt, of='det_x', centre=CENTRE, half=HALF))]
     else:
-        offsets = [sc.Offsets(per='all', mean_zero=True)]
-    return sc.Model(sky=sky, offsets=offsets)
+        offsets = [sc.Offsets(per='all', exclude=sc.Poly(0))]
+    return sc.Model(sky=sky, offsets=offsets + [sc.Offsets('scalar', on='detector')])
 
 
 NO_CLIP = sc.Clip(1e6)          # noise-free data: nothing is an outlier
@@ -180,18 +181,17 @@ def sky_of(path):
 def offsets_on_detector(path):
     """``{frame name: detector offset}`` of a cal or an OFFSET product, rendered here (the toy's frames
     map detector pixels one to one): each map's stored values on its chunk map (the bands' map for 16
-    values per frame, the band x column map for 32), times ``tilt(det_x)`` for a map of known
-    functions, plus the frame scalar."""
+    values per frame, the band x column map for 32, the one-chunk map of the scalar for 1), times
+    ``tilt(det_x)`` for a map of known functions."""
     det_x = np.mgrid[0:DET, 0:DET][1].astype(np.float64)
-    maps = {N_BAND: band_ids(), N_BAND * N_COL: chunk_ids()}
+    maps = {N_BAND: band_ids(), N_BAND * N_COL: chunk_ids(), 1: np.zeros((DET, DET), dtype=np.int64)}
     out = {}
     with h5py.File(path, 'r') as f:
         names = [os.path.basename(r.decode() if isinstance(r, bytes) else r) for r in f['reproj_list'][()]]
         rows = [(f['offsets'][f'map_{m}'][()].astype(np.float64), 'n_basis' in f['offsets'][f'map_{m}'].attrs)
                 for m in range(int(f.attrs['num_maps']))]
-        scalar = f['frame_scalar'][()].astype(np.float64)
     for i, name in enumerate(names):
-        total = np.full((DET, DET), scalar[i])
+        total = np.zeros((DET, DET))
         for values, with_function in rows:
             term = values[i][maps[values.shape[1]]]
             total += term * tilt(det_x, CENTRE, HALF) if with_function else term
@@ -260,15 +260,15 @@ def root(tmp_path_factory):
 def test_passes_never_increase_the_objective(root, kind):
     """From a long first solve, no pass raises the joint objective (beyond the float32 rounding of
     the data), whatever the offset terms: the subtraction and the fixed-sky solve are the joint
-    solve's own rows. The OFFSET product holds every term of the model and the scalar, for every
-    frame, and no sky."""
+    solve's own rows. The OFFSET product holds every term of the model (the scalar among them), for
+    every frame, and no sky."""
     products = solve(root, kind, init_iterations=400, n=5)
     field_dir = os.path.dirname(os.path.dirname(products[0]))
     obj = objectives(products)
     assert non_increasing(obj, field_dir), (obj, rounding_floor(field_dir))
     with h5py.File(products[1], 'r') as f:
         assert f.attrs['num_maps'] == len(model_of(kind).offsets)
-        assert f['reproj_list'].shape[0] == N_FRAMES and 'frame_scalar' in f and 'sky' not in f
+        assert f['reproj_list'].shape[0] == N_FRAMES and 'frame_scalar' not in f and 'sky' not in f
     with h5py.File(products[1].replace('_pass2off.h5', '_pass2off_all.h5'), 'r') as f:
         solved = json.loads(f.attrs['solve'])
     assert solved['method'] == 'direct' and solved['blocks'] == N_FRAMES and solved['left_out'] == 0, solved

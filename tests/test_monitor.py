@@ -550,7 +550,7 @@ def test_snapshots_monitors_and_a_stop_together(field):
     assert list(h['check_itn']) == list(range(0, n + 1, 4)) and h['stop_holds'][n]
     exact = field.calibrate(_recipe(n, name='together_exact')).cal_paths[0]
     with h5py.File(cal, 'r') as a, h5py.File(exact, 'r') as b:
-        for name in ('sky/continuum', 'offsets/map_0', 'frame_scalar'):
+        for name in ('sky/continuum', 'offsets/map_0', 'offsets/map_1'):
             assert _same(a[name][()], b[name][()]), name
 
 

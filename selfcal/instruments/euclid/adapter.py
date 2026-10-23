@@ -1,16 +1,18 @@
 """Helpers of the Euclid NISP instrument: its strip chunk maps, mosaic renderers and edge taper.
 
 NISP exposures hold 16 detectors per FITS file (science at extension 3k+1, the
-data-quality mask at 3k+3), in ELECTRONS. The self-calibration model the EDFN
-mosaics were made with (the frozen Y/J/H recipe of 2026-08) is::
+data-quality mask at 3k+3), in ELECTRONS. A self-calibration model of the EDFN
+mosaics (the Y/J/H recipe of 2026-08) is::
 
     sc.Model(offsets=[
-        # a detector-fixed pattern: one N x N grid per detector
-        sc.Offsets(on="grid", per="detector", smooth=0.1, smooth_along=("row", "col"), mean_zero=True,
+        # a detector-fixed pattern: one N x N grid per detector, with no constant
+        sc.Offsets(on="grid", per="detector", smooth=0.1, smooth_along=("row", "col"), exclude=sc.Poly(0),
                    exact_group_rows=True),
         # per-frame readout stripes, damped toward 0
         sc.Offsets(on="col_strips", smooth_along=(), damping=0.3),
-        sc.Offsets(on="row_strips", smooth_along=(), damping=0.3)])      # and the per-frame scalar
+        sc.Offsets(on="row_strips", smooth_along=(), damping=0.3),
+        # each frame's level
+        sc.Offsets("scalar", on="detector")])
 
 with, optionally, a per-frame linear tilt (``col_tilt`` / ``row_tilt`` maps, a degree-1
 polynomial offset). The instrument contract of :class:`~selfcal.instruments.euclid.settings.Euclid`

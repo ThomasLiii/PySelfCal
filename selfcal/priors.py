@@ -27,7 +27,7 @@ def sky_smoothness(term, *, covered_only=True, weight=1.0, name=None) -> Prior:
 
 def toward(term, variable, *, covered_only=True, weight=1.0, name=None) -> Prior:
     """Pull a term's unknowns toward known values: a sky term toward the sky variable
-    ``variable`` (a reference-grid map); the per-frame scalar, or every chunk of an offset term,
+    ``variable`` (a reference-grid map); every chunk of an offset term (one for a per-frame scalar)
     toward the frame variable ``variable``."""
     return Prior('toward_variable', (term,), weight=weight, name=name, variable=variable,
                  covered_only=covered_only)

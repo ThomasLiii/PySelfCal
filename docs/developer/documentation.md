@@ -98,7 +98,7 @@ every docstring of the project once its package is loaded:
 
 - Start with one complete sentence that summarises the object. The summary tables show it alone.
 - Refer to other objects with roles (`` :class:`~selfcal.models.spec.ModelSpec` ``,
-  `` :func:`setup_lsqr` ``, `` :meth:`total_offsets` ``); on the site they become links. Use
+  `` :func:`setup_lsqr` ``, `` :meth:`check_offsets_complete` ``); on the site they become links. Use
   ``` ``double backticks`` ``` for literal code.
 - Use NumPy sections (`Parameters`, `Returns`, ... with dashed underlines) where the parameters need
   explaining; prose is fine otherwise.

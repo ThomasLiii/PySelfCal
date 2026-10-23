@@ -1,7 +1,7 @@
 """Priors — any linear equations on a model's unknowns, written as functions.
 
 The built-in priors of the terms (Tikhonov ``damp``, ``reg_weight`` adjacency,
-``poly`` shape, ``mean_zero``) cover the common cases. Everything else is a
+``poly`` shape) cover the common cases. Everything else is a
 *prior function*: it receives one :class:`TermInfo` per term it names and
 returns the rows it adds::
 
@@ -17,8 +17,8 @@ cross-term relation) names them all and receives them in order.
 
 ``TermInfo`` describes the term's unknowns: a sky term is a map (``shape =
 ref_shape``), an offset term an array ``(n_groups, n_chunks, n_basis)`` (one
-group per frame unless the term shares offsets), the per-frame scalar a vector
-``(n_frames,)``. ``coverage`` counts the observations touching each unknown;
+group per frame unless the term shares offsets; a per-frame scalar is the
+offset term of one chunk). ``coverage`` counts the observations touching each unknown;
 ``frame_group`` maps every frame to its group; ``variables`` are the solve's
 data variables (frame values, sky maps, ...), ``axes`` the chunk axes of an
 offset term's map. Priors run after the data rows are built (coverage is known).
@@ -39,7 +39,7 @@ __all__ = ['TermInfo', 'ModelPrior', 'frame_smoothness', 'sky_smoothness', 'towa
 class TermInfo:
     """The unknowns of one model term, as a prior sees them."""
     name: str
-    kind: str                      # 'sky' | 'offset' | 'scalar'
+    kind: str                      # 'sky' | 'offset'
     shape: tuple
     col_base: int
     coverage: np.ndarray
@@ -56,8 +56,7 @@ class TermInfo:
 
     def index(self, *idx) -> np.ndarray:
         """Global unknown indices of the term's own indices (``(y, x)`` for a sky
-        term, ``(group, chunk, function)`` for an offset term, ``(frame,)`` for
-        the scalar); arrays broadcast."""
+        term, ``(group, chunk, function)`` for an offset term); arrays broadcast."""
         if len(idx) == 1 and len(self.shape) == 1:
             flat = np.asarray(idx[0], dtype=np.int64)
         else:
@@ -177,8 +176,8 @@ def sky_smoothness(term, covered_only=True):
 
 def toward_variable(term, variable, covered_only=True):
     """Pull a term's unknowns toward known values: a sky term toward the sky
-    variable ``variable`` (a reference-grid map); the per-frame scalar, or an
-    offset term's every chunk, toward the frame variable ``variable`` (a
+    variable ``variable`` (a reference-grid map); an offset term's every chunk
+    (one for a per-frame scalar) toward the frame variable ``variable`` (a
     group's frames averaged). One row ``x = target`` per unknown."""
     cov = term.coverage.reshape(-1) > 0
     if term.kind == 'sky':
@@ -186,8 +185,6 @@ def toward_variable(term, variable, covered_only=True):
         if variable not in sky:
             raise KeyError(f"toward_variable on sky term {term.name!r}: {variable!r} is not a sky variable")
         target = np.asarray(sky[variable], dtype=np.float64).reshape(-1)
-    elif term.kind == 'scalar':
-        target = term.frame_values(variable).astype(np.float64)
     else:
         per_group = term.group_values(variable)
         inner = int(np.prod(term.shape[1:]))
