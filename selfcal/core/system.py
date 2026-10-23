@@ -1854,7 +1854,9 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
     pixels the solve can observe. A chunk's coverage fraction is then its count
     over the chunk's pixels inside the window (None: all its pixels), so a chunk
     larger than the window, such as the one chunk of a per-frame scalar, is
-    measured against what the job could see of it.
+    measured against what the job could see of it; a chunk with no pixel inside
+    the window has the fraction 0 (its count holds only the rows that touch
+    every chunk, such as smoothness rows).
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -1875,7 +1877,7 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
                     raise ValueError(f"the window {np.shape(window)} and chunk map {m} {np.shape(cm)} differ in shape")
                 inside &= np.asarray(window, dtype=bool)
             chunk_sizes = np.bincount(cm[inside].ravel(), minlength=real_chunks)
-            offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+            offset_valid_frac = np.where(chunk_sizes > 0, offset_coverage / np.maximum(chunk_sizes, 1), 0.0)
         else:
             # Layout columns are not one-per-chunk (template alpha / poly-basis
             # coeffs); the caller overrides this map's coverage, so a shape-correct

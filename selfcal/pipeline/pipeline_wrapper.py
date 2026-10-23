@@ -1713,10 +1713,12 @@ class Mosaicker(Reprojector):
         coverage fraction falls below ``valid_chunk_thresh``. A renderer whose
         ``fills_invalid`` is true fills a frame's zeroed chunks from its other
         chunks of that map (:meth:`~selfcal.instruments.contract.Instrument.offset_renderer`);
-        a zeroed chunk nothing fills (another renderer, or a frame with no chunk
-        of the map above the threshold) leaves the coadd: its pixels in that
-        frame are not coadded (their offset is NaN), so no pixel enters with an
-        offset left out. ``mean_offset`` is reported on map 0 only and embedded
+        a chunk the frame observed (a fraction above 0) but below the threshold,
+        which nothing fills (another renderer, or a frame with no chunk of the
+        map above the threshold), leaves the coadd: its pixels in that frame are
+        not coadded (their offset is NaN), so no pixel enters with an offset
+        left out. A chunk of fraction 0 (outside the solve's window) keeps its
+        zero. ``mean_offset`` is reported on map 0 only and embedded
         in the FITS header by ``save_mosaic`` for legacy compatibility.
 
         Parameters
@@ -1815,14 +1817,11 @@ class Mosaicker(Reprojector):
                         if normalize_offset:
                             off[valid] = off[valid] - self.mean_offset
                     off[~valid] = 0.0
-                    # A zeroed chunk nothing refills leaves the coadd (NaN: its pixels get no weight); a chunk
-                    # the solve saw nothing of (outside the job's window) keeps its zero.
-                    drop = ~valid
+                    # A chunk the frame observed too little that nothing refills leaves the coadd (NaN: its
+                    # pixels get no weight); a chunk of fraction 0 (outside the solve's window) keeps its zero.
+                    drop = ~valid & (np.asarray(self.offset_coverage_fracs[m]) > 0)
                     if det_offset_funcs is not None and getattr(det_offset_funcs[m], 'fills_invalid', False):
                         drop &= ~valid.any(axis=1, keepdims=True)
-                    cov_m = np.asarray(self.offset_coverages[m]) if getattr(self, 'offset_coverages', None) else None
-                    if cov_m is not None and cov_m.shape == drop.shape:
-                        drop &= cov_m > 0
                     if drop.any():
                         off = off.astype(np.float64)
                         off[drop] = np.nan

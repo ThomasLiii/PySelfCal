@@ -117,6 +117,10 @@ def test_a_chunks_coverage_fraction_is_over_its_pixels_in_the_window():
     _, _, frac_w = parse_pixel_counts_sky(counts, (2, 2), [1], [cm], window=window)
     assert np.array_equal(cov[0], [[2, 4]]) and np.allclose(frac[0], [[2 / 8, 4 / 8]])
     assert np.allclose(frac_w[0], [[2 / 4, 4 / 4]])
+    left = np.zeros((4, 4), dtype=bool)
+    left[:, :2] = True                                     # the job sees chunk 0 only: chunk 1's fraction is 0
+    _, _, frac_l = parse_pixel_counts_sky(counts, (2, 2), [1], [cm], window=left)
+    assert np.allclose(frac_l[0], [[2 / 8, 0.0]])
     with pytest.raises(ValueError, match='differ in shape'):
         parse_pixel_counts_sky(counts, (2, 2), [1], [cm], window=np.ones((3, 3), dtype=bool))
 
