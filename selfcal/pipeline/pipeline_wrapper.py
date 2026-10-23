@@ -724,6 +724,9 @@ class Calibrator(Reprojector):
         self.det_templates = []
         self.col_bases = None  # length K+1; col_bases[K] == the total column count
         self.layout = None  # selfcal.core.layout.SystemLayout, set in setup_lsqr
+        # The detector pixels the solve can observe (grid_valid_weight > 0), set in setup_lsqr:
+        # the offsets' coverage fractions are taken over a chunk's pixels inside it.
+        self.window = None
         self.sky_model = None  # selfcal.models.sky_model.SkyModel, set in setup_lsqr
         self.sky_component_names = None  # set in load_calibration (v3)
         # How the last apply_lsqr ran and stopped (selfcal.core.solve_record.SolveRecord);
@@ -1009,6 +1012,7 @@ class Calibrator(Reprojector):
         self.num_chunks_list = self.layout.num_chunks_list
         self.det_templates = self.layout.det_template_arr_list
         self.col_bases = self.layout.col_bases
+        self.window = None if grid_valid_weight is None else np.asarray(grid_valid_weight) > 0
 
     def solve_sky_closed_form(self, damp_weights) -> np.ndarray:
         """Solve a K=0 SKY-ONLY system in closed form per pixel (no LSQR).
@@ -1422,7 +1426,8 @@ class Calibrator(Reprojector):
                 num_offset_groups_list=self.num_offset_groups_list,
                 chunk_maps=self.chunk_maps,
                 num_sky_blocks=self.num_sky_blocks,
-                num_chunks_list=self.num_chunks_list))
+                num_chunks_list=self.num_chunks_list,
+                window=getattr(self, 'window', None)))
 
         if pixel_fisher is not None:
             sky_fishers = parse_pixel_fisher_sky(
@@ -1705,9 +1710,14 @@ class Mosaicker(Reprojector):
         ``(chunk_map, chunk_offset) -> grid_offset`` callables. The
         per-frame offsets loaded by ``load_calibration`` (one ``(num_frames,
         num_chunks_m)`` array per map) are zeroed where the per-map
-        coverage fraction falls below ``valid_chunk_thresh``; ``mean_offset``
-        is reported on map 0 only and embedded in the FITS header by
-        ``save_mosaic`` for legacy compatibility.
+        coverage fraction falls below ``valid_chunk_thresh``. A renderer whose
+        ``fills_invalid`` is true fills a frame's zeroed chunks from its other
+        chunks of that map (:meth:`~selfcal.instruments.contract.Instrument.offset_renderer`);
+        a zeroed chunk nothing fills (another renderer, or a frame with no chunk
+        of the map above the threshold) leaves the coadd: its pixels in that
+        frame are not coadded (their offset is NaN), so no pixel enters with an
+        offset left out. ``mean_offset`` is reported on map 0 only and embedded
+        in the FITS header by ``save_mosaic`` for legacy compatibility.
 
         Parameters
         ----------
@@ -1753,7 +1763,7 @@ class Mosaicker(Reprojector):
             Callable applied to each subframe's ``locals()`` after coadding.
         valid_chunk_thresh : float, optional
             Minimum per-map coverage fraction below which a chunk's offset is
-            zeroed out.
+            zeroed out (and refilled, or its pixels left out).
         wav_maps : (np.ndarray, np.ndarray) or None, optional
             ``(band centre, band width)`` detector-grid maps. When given
             (requires ``make_std_map`` and ``apply_sigma_clipping``), the
@@ -1805,6 +1815,20 @@ class Mosaicker(Reprojector):
                         if normalize_offset:
                             off[valid] = off[valid] - self.mean_offset
                     off[~valid] = 0.0
+                    # A zeroed chunk nothing refills leaves the coadd (NaN: its pixels get no weight); a chunk
+                    # the solve saw nothing of (outside the job's window) keeps its zero.
+                    drop = ~valid
+                    if det_offset_funcs is not None and getattr(det_offset_funcs[m], 'fills_invalid', False):
+                        drop &= ~valid.any(axis=1, keepdims=True)
+                    cov_m = np.asarray(self.offset_coverages[m]) if getattr(self, 'offset_coverages', None) else None
+                    if cov_m is not None and cov_m.shape == drop.shape:
+                        drop &= cov_m > 0
+                    if drop.any():
+                        off = off.astype(np.float64)
+                        off[drop] = np.nan
+                        logger.info(f"Offset map {m}: {int(drop.sum())} chunk(s) of {int(drop.any(axis=1).sum())} "
+                                    f"frame(s) below the coverage fraction {valid_chunk_thresh} with nothing to fill "
+                                    f"them: their pixels are left out of the coadd")
                     offset_lists_param.append(off)
             else:
                 logger.warning("Warning: Calibration offsets not available. No offsets will be applied.")

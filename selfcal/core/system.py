@@ -1831,7 +1831,8 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
                            num_offset_groups_list: list[int],
                            chunk_maps: list[np.ndarray],
                            num_sky_blocks: int = 1,
-                           num_chunks_list: list[int] | None = None
+                           num_chunks_list: list[int] | None = None,
+                           window: np.ndarray | None = None
                            ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
     """Generic coverage slicing for any number of sky blocks.
 
@@ -1848,6 +1849,12 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
     layout count must be used to slice + advance the cursor correctly; the caller
     (``save_calibration``) overrides the coverage for those maps, so a
     shape-correct placeholder frac is returned rather than a per-chunk division.
+
+    ``window`` (a boolean map on the chunk maps' grid, or None): the detector
+    pixels the solve can observe. A chunk's coverage fraction is then its count
+    over the chunk's pixels inside the window (None: all its pixels), so a chunk
+    larger than the window, such as the one chunk of a per-frame scalar, is
+    measured against what the job could see of it.
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -1862,7 +1869,12 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
         block = ng * nchk
         offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, nchk)
         if nchk == real_chunks:
-            chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=real_chunks)
+            inside = cm >= 0
+            if window is not None:
+                if np.shape(window) != np.shape(cm):
+                    raise ValueError(f"the window {np.shape(window)} and chunk map {m} {np.shape(cm)} differ in shape")
+                inside &= np.asarray(window, dtype=bool)
+            chunk_sizes = np.bincount(cm[inside].ravel(), minlength=real_chunks)
             offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
         else:
             # Layout columns are not one-per-chunk (template alpha / poly-basis

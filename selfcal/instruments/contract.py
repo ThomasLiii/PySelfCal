@@ -148,7 +148,10 @@ class Instrument(Config):
     def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
         """The ``(chunk_map, offsets) -> grid`` function the mosaic draws the offsets of chunk map
         ``map_name`` (None: the primary map) with, for one job; ``render`` names one of the
-        instrument's renderers when the model asks for one. Default None: constant over each chunk."""
+        instrument's renderers when the model asks for one. Default None: constant over each chunk.
+        A renderer that fills the offsets the mosaic zeroed (a chunk below
+        ``Coadd(min_chunk_coverage)``) from the frame's other chunks says so with a true attribute
+        ``fills_invalid``; the mosaic leaves out the pixels of a zeroed chunk nothing fills."""
         return None
 
     def aux_coadds(self, geom):

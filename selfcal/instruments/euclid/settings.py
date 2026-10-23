@@ -191,7 +191,9 @@ class Euclid(Instrument):
         render = render or {'grid': 'spline', 'col_strips': 'strip', 'row_strips': 'strip',
                             'col_tilt': 'ramp', 'row_tilt': 'ramp'}.get(name)
         if render == 'spline':
-            return partial(make_grid_offset_map, n_side=geom.extra['n_side'], det_shape=det_shape)
+            renderer = partial(make_grid_offset_map, n_side=geom.extra['n_side'], det_shape=det_shape)
+            renderer.fills_invalid = True                 # zeroed grid cells filled from their neighbours
+            return renderer
         if render == 'strip':
             return partial(make_free_strip_offset_map, det_shape=det_shape)
         if render == 'ramp':

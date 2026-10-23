@@ -605,7 +605,9 @@ class Coadd(Config):
     :class:`Fit`. ``oversample``: each detector pixel sampled ``oversample`` times per axis on the
     way (the final mosaic stays on the reference grid). ``instrument_maps``: coadd the
     instrument's per-pixel maps too (SPHEREx: the wavelength maps). ``min_chunk_coverage``: a
-    chunk observed in a smaller fraction of a frame takes no offset. ``subtract_offsets``:
+    chunk a frame observed in a smaller fraction of its pixels the job can see takes no offset of
+    its own: the instrument's renderer fills it from the frame's other chunks where it can
+    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``subtract_offsets``:
     subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: remove each
     frame's mean offset first. ``frame_hook``: called on each corrected frame.
     """
