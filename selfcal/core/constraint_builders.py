@@ -121,7 +121,7 @@ def grouped_adjacency_block(m, adj_info, reg_weight, num_chunks_m, ftg_m, col_ba
 class SystemInfo:
     """What a user prior sees when it builds its rows: the column layout of the
     unknowns (:class:`~selfcal.core.layout.SystemLayout`: the sky blocks, each
-    offset map's ``col_bases`` / groups / chunks, the per-frame scalars) and the
+    offset map's ``col_bases`` / groups / chunks) and the
     number of observations that touch each column (``pixel_counts``, the full
     column space) — known only after the data rows are built, which is when the
     priors run. ``sky_names`` names the sky blocks in order."""

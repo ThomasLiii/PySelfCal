@@ -608,8 +608,9 @@ class Coadd(Config):
     chunk a frame observed in a smaller fraction of its pixels the job can see takes no offset of
     its own: the instrument's renderer fills it from the frame's other chunks where it can
     (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``subtract_offsets``:
-    subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: remove each
-    frame's mean offset first. ``frame_hook``: called on each corrected frame.
+    subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: first subtract
+    from the first offset map its mean over every frame's valid chunks (one number, recorded as the
+    mosaic's ``MEANOFF``). ``frame_hook``: called on each corrected frame.
     """
     clip: float | None = 2.0
     _: KW_ONLY

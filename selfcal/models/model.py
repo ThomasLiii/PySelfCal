@@ -420,8 +420,9 @@ class Offsets(Config):
     <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
     the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
     map with one axis. ``exclude=Poly(0)`` without ``along`` takes any map: the term carries no
-    constant, i.e. each group's chunk offsets average to zero over the chunks it observed. The
-    excluded part goes where the data can place it: other terms or the sky.
+    constant, i.e. each group's chunk offsets average to zero over the chunks the solve carries
+    (those the group observed, and any that a prior's rows tie in). The excluded part goes where
+    the data can place it: other terms or the sky.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.

@@ -3,10 +3,11 @@
 For every observation — one value of one frame on one reference-grid pixel —
 the solver fits::
 
-    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk_m, k] · φ_mk(v)  +  s(frame)
+    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk_m, k] · φ_mk(v)
 
 ``S_j`` are sky maps, ``O_m`` offsets on chunk maps of the detector (shared by
-groups of frames), ``s`` a per-frame scalar; ``c_j`` and ``φ_mk`` are ANY
+groups of frames; a per-frame scalar is the offset term of one chunk); ``c_j``
+and ``φ_mk`` are ANY
 functions of *data variables* ``v``: detector maps (SPHEREx: its wavelength
 map), per-frame values (time, filter, a half-wave-plate angle, a temperature),
 reference-grid maps, planes stored with each frame, the built-in coordinates,

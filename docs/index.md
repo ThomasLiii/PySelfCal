@@ -14,7 +14,7 @@ An observation `i` is one value of one frame (one detector of one exposure) on o
 common reference grid, seen at some position on the detector. For every observation the solver fits
 
 ```text
-data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)  +  s(frame)
+data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)
 ```
 
 - **Sky terms** `S_j`: a map on the reference grid, shared by all frames, times a known coefficient
@@ -27,7 +27,8 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   values of a per-frame quantity (`grouped`). With known functions `φ_mk(v)` the unknowns become
   their coefficients, for example a per-frame gradient in detector coordinates; the classic chunk
   offset has a single `φ = 1`.
-- **Per-frame scalar** `s`: one additive constant per frame.
+- **Per-frame scalar**: one additive constant per frame, the offset term of a chunk map with one
+  chunk, the whole detector (`sc.Offsets("scalar", on="detector")`).
 - **Data variables** `v`: named per-observation quantities that every coefficient and function
   reads by name: the detector position (`det_x`, `det_y`), the reference pixel (`sky_x`, `sky_y`), the stored value and flag bits (`value`, `flags`),
   the instrument's detector maps (SPHEREx: the wavelength), header keywords such as the time,
@@ -35,8 +36,9 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
 
 The data alone do not fix every unknown: adding a constant to the sky and subtracting it from every
 per-frame scalar leaves every observation unchanged. Priors settle what the data leave free:
-damping, smoothness between neighbouring chunks, a polynomial shape along a chunk axis, a mean-zero
-anchor, or any linear rows you write. A model is a preset (`sc.continuum()`, `sc.spectral(lines)`)
+damping, smoothness between neighbouring chunks, a polynomial shape along a chunk axis, or any
+linear rows you write; hard constraints remove what an offset term must not carry, such as a
+constant over a frame's chunks. A model is a preset (`sc.continuum()`, `sc.spectral(lines)`)
 or spelled out term by term (`sc.Model(sky=[...], offsets=[...], priors=[...])`); the run engine
 receives it as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 [How selfcal works](guide/concepts.md) for the terms and priors, and
@@ -45,8 +47,8 @@ receives it as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 ## What a run looks like
 
 A run is a short Python script. This one calibrates a 2048 x 2048 camera with the continuum model:
-one sky value per pixel, free offsets on an 8 x 8 grid of chunks with a mean-zero anchor per frame,
-and a per-frame scalar.
+one sky value per pixel, free offsets on an 8 x 8 grid of chunks with zero mean in each frame, and
+a per-frame scalar.
 
 ```python
 import selfcal as sc
@@ -78,7 +80,7 @@ script at the line that made it. The field's actions:
 A job is one unit of the instrument's loop (a SPHEREx channel or window; a camera has one, `All`).
 Paths are relative to the field's directory. The run above writes
 `calibration/cal_MyCam_Chunks8x8_All.h5` (the sky map, the offsets of every frame and chunk, the
-per-frame scalars and the coverage; read it with `result.cal()` or
+per-frame scalars among them, and the coverage; read it with `result.cal()` or
 [`CalFile`][selfcal.io.calfile.CalFile]) and `mosaic/mosaic_MyCam_Chunks8x8_All.fits` (mean,
 standard-deviation and sigma-clipped mean maps, each with a weight map; SPHEREx mosaics add
 wavelength maps). A recipe's `name` ends the product names. Each action also writes a log to
