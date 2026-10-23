@@ -57,8 +57,10 @@ pytestmark = pytest.mark.filterwarnings('ignore:overflow encountered in cast:Run
 
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
 MODELS = {
-    'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, mean_zero=True), sc.Offsets('xslope', times=xtilde)]),
-    'spectral': sc.Model(sky=[sc.Sky(), sc.Sky('ramp', times=x_ramp)], offsets=[sc.Offsets(smooth=0.1, mean_zero=True)]),
+    'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('xslope', times=xtilde),
+                               sc.Offsets('scalar', on='detector')]),
+    'spectral': sc.Model(sky=[sc.Sky(), sc.Sky('ramp', times=x_ramp)],
+                         offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),
 }
 
 

@@ -102,10 +102,10 @@ class Plan:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if r is not None and r.fit.deflate is not None:
             lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
-        if r is not None and getattr(r.fit, 'seed', 'scalar') == 'offsets':
+        if r is not None and getattr(r.fit, 'seed', 'separate') == 'offsets':
             lines.append("  start       the sky at zero, every offset column at its frame's joint least-squares fit to the data")
-        if r is not None and getattr(r.fit, 'seed', 'scalar') == 'zero':
-            lines.append("  start       everything at zero (no per-frame scalar seed)")
+        if r is not None and getattr(r.fit, 'seed', 'separate') == 'zero':
+            lines.append("  start       everything at zero")
         if r is not None and r.fit.gauge is not None:
             lines.append(f"  gauge       {describe_gauge(r.fit.gauge)}")
         if self.monitor is not None:
@@ -545,9 +545,9 @@ def _check_passes(ctx, recipe, passes):
     jobs = ctx.jobs()
     if len(jobs) != 1:
         raise ConfigError(f"calibrate(passes=...): the N-pass solve runs one job; got {[j.name for j in jobs]}")
-    if not recipe.model.offsets and not recipe.model.scalar:
-        raise ConfigError("calibrate(passes=...): the model has no offset terms and no frame scalar, so there is "
-                          "nothing for the OFFSET passes to solve")
+    if not recipe.model.offsets:
+        raise ConfigError("calibrate(passes=...): the model has no offset terms, so there is nothing for the OFFSET "
+                          "passes to solve")
     shared = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if t.per != 'frame']
     if shared:
         raise ConfigError(f"calibrate(passes=...): the offset terms on {shared} are shared across frames (per=...); "

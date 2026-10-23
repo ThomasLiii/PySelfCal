@@ -15,8 +15,10 @@ The starting vector is in the solver's full (uncompacted) column layout and in p
 * each offset term's block ``offsets/map_<m>``, frame-major. A term shared by groups of frames
   (``per="all"`` or a frame variable) stores its group's offsets on every frame of the group: they
   are read from the group's first frame, after checking that every frame of the group holds them.
-  A term with ``n`` basis functions holds ``n`` coefficients per chunk, as stored;
-* the per-frame scalar ``frame_scalar``.
+  A term with ``n`` basis functions holds ``n`` coefficients per chunk, as stored.
+
+A cal file that holds a separate per-frame scalar (``frame_scalar``, an older layout; a per-frame scalar
+is an offset term, stored as one) is refused.
 
 Columns the solve has now but the source left at zero (it did not solve them) start at 0; source
 values of columns this solve does not have (no data now) are dropped by the compaction;
@@ -53,7 +55,7 @@ __all__ = ['System', 'WarmStart', 'IDENTITY_VERSION', 'contents_problems']
 logger = logging.getLogger(__name__)
 
 #: The layout of :meth:`System.identity` (its ``version``).
-IDENTITY_VERSION = 1
+IDENTITY_VERSION = 2
 
 # The pieces the active-column counts are taken over (bool temporaries of 50 MB).
 _COUNT_BLOCK = 50_000_000
@@ -173,8 +175,7 @@ class System:
     def identity(self) -> dict:
         """The identity as plain data: the frames (in order), the grid, the sky terms, each offset
         term (its chunk map, chunks and columns, its groups of frames, its basis, template or
-        polynomial basis), the per-frame scalar columns, the total column count, and ``extra``
-        (computed once)."""
+        polynomial basis), the total column count, and ``extra`` (computed once)."""
         if self._identity is not None:
             return self._identity
         L = self.layout
@@ -194,7 +195,7 @@ class System:
         out = {'version': IDENTITY_VERSION, 'frames': frames_identity(self.frames),
                'grid': grid_identity(L.ref_shape, self.wcs),
                'sky': [{'name': name, 'coefficient': coeff} for name, coeff in self.sky],
-               'offsets': offsets, 'scalar': int(L.num_scalar_cols), 'columns': int(L.total_cols)}
+               'offsets': offsets, 'columns': int(L.total_cols)}
         out.update(self.extra)
         self._identity = out
         return out
@@ -245,8 +246,8 @@ class WarmStart:
     # ---- the checks ------------------------------------------------------------------------
     def problems(self, system: System) -> list[str]:
         """What makes the source not a solution of ``system`` (empty: nothing): its contents
-        (frames, sky terms and grid shape, offset maps, chunk maps, basis functions, column counts,
-        the per-frame scalar) and, when the source records the identity of its system, that
+        (frames, sky terms and grid shape, offset maps, chunk maps, basis functions, column counts;
+        a separate per-frame scalar) and, when the source records the identity of its system, that
         identity."""
         from ..io.calfile import CalFile
         L = system.layout
@@ -266,12 +267,9 @@ class WarmStart:
                     want_basis = system.basis[m]
                     if (basis is None) != (want_basis is None) or (basis is not None and tuple(basis) != tuple(want_basis)):
                         out.append(f"offset map {m}: basis functions {basis} in the source, {want_basis} here")
-            scalar = 'frame_scalar' in f
-            if scalar != bool(L.num_scalar_cols):
-                out.append(f"the per-frame scalar: {'present' if scalar else 'absent'} in the source, "
-                           f"{'present' if L.num_scalar_cols else 'absent'} in this solve")
-            elif scalar and frames and f['frame_scalar'].shape != (system.n_frames,):
-                out.append(f"the per-frame scalar: {f['frame_scalar'].shape} values, {system.n_frames} frames")
+            if 'frame_scalar' in f:
+                out.append("the source holds a separate per-frame scalar (frame_scalar), an older layout that "
+                           "is not read; remake it")
         if self.recorded is not None:
             out += _diff(_normalised(self.recorded), _normalised(system.identity()))
         return out
@@ -336,8 +334,6 @@ class WarmStart:
                     raise ConfigError(f"start={self.path}: offset map {m} of the source does not share its "
                                       f"offsets over this solve's groups of frames (another grouping)")
                 block[...] = rows
-            if L.num_scalar_cols:
-                f['frame_scalar'].read_direct(x0[L.scalar_slice()])
         # Unsolved (NaN) values read as 0, and the counts, piece by piece (no full-size temporary).
         unsolved = started_zero = dropped = 0
         active_mask = None if active_mask is None else np.asarray(active_mask, dtype=bool)

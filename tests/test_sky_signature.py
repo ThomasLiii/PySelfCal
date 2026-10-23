@@ -225,16 +225,15 @@ def test_every_offset_term_follows_the_rule(tmp_path):
 def test_the_model_wide_setting():
     from selfcal.models.spec import ModelSpec
     m = sc.Model(offsets=[sc.Offsets('c', on='subchannel'), sc.Offsets('xs', on='subchannel'),
-                          sc.Offsets('cols', on='detector_column', per='all')], sky_signature=sc.SkySignature('all'))
+                          sc.Offsets('cols', on='detector_column', per='all'), sc.Offsets('scalar', on='detector')],
+                 sky_signature=sc.SkySignature('all'))
     table = m.lower()
     assert table['sky_signature'] == 'all' and ModelSpec.from_config(table).sky_signature == 'all'
     assert 'sky_signature' not in sc.Model(offsets=[sc.Offsets(on='subchannel')]).lower()
 
-    class _Layout:                                        # three terms of 2 groups x 3 chunks, 1 x 4, and a scalar
-        col_bases = [10, 16, 22, 26]
-        num_chunks_list = [3, 3, 4]
-        num_scalar_cols = 2
-        scalar_col_start = 26
+    class _Layout:                                        # terms of 2 groups x 3 chunks (twice), 1 x 4, and 2 x 1 (a scalar)
+        col_bases = [10, 16, 22, 26, 28]
+        num_chunks_list = [3, 3, 4, 1]
     out = ModelSpec.from_config(table).signature_exclusions(_Layout())
     assert [(o[2], o[1]) for o in out] == [('c', 'all'), ('xs', 'all'), ('cols', 'all'), ('scalar', 'all')]
     assert list(out[0][3]) == [0, 1, 2, 0, 1, 2] and list(out[3][0]) == [26, 27] and list(out[3][3]) == [0, 0]

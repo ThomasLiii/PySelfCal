@@ -74,7 +74,7 @@ def toy_field(tmp_path, n_exp=12, seed=7):
 
 
 def model(weight):
-    return sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets(mean_zero=True)], weight=weight)
+    return sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets(exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')], weight=weight)
 
 
 # ---- functions of the data variables (importable by the worker processes) --------------------------
@@ -262,15 +262,16 @@ def test_offset_hooks_evaluate_the_weighted_observations_only(tmp_path, monkeypa
         return FrameContext(stage='post', file=path, exp_idx=0, det_idx=0, ref_coords=[0, sh, 0, sw],
                             sub_data=data.copy(), sub_weight=weight.copy(), sub_mapping=mapping)
 
-    def at_every_mapped_pixel(scalar):
+    def at_every_mapped_pixel(terms, rows):
         # the hooks' evaluation before 2026-10-21: every pixel with a detector position
         obs, interp = frame_observations(ctx(), 0, variables, det_shape=(dh, dw))
-        phi = np.asarray(basis.evaluate(obs), dtype=np.float64)
-        off = np.asarray(compute_chunk_contrib(cm, interp).T @ a[0].reshape(3, 2))
+        total = np.zeros(obs.n)
+        for m, b, cmap in terms:
+            phi = np.ones((obs.n, 1)) if b is None else np.asarray(b.evaluate(obs), dtype=np.float64)
+            off = np.asarray(compute_chunk_contrib(cmap, interp).T @ rows[m][0].reshape(int(cmap.max()) + 1, -1))
+            total += np.nan_to_num((off * phi).sum(axis=1))
         out = data.copy()
-        out[obs.pixels] -= np.nan_to_num((off * phi).sum(axis=1)).astype(np.float32)
-        if scalar is not None:
-            out[obs.pixels] -= np.float32(scalar)
+        out[obs.pixels] -= total.astype(np.float32)
         return out
 
     weighted = (weight > 0) & np.isfinite(mapping[0]) & np.isfinite(mapping[1])
@@ -278,12 +279,12 @@ def test_offset_hooks_evaluate_the_weighted_observations_only(tmp_path, monkeypa
     mosaic_hook = object.__new__(BasisOffsetSubtractor)                     # the solved offsets set directly
     mosaic_hook.terms, mosaic_hook.variables, mosaic_hook.oversample_factor = [(0, basis, cm)], variables, 1
     mosaic_hook.rows, mosaic_hook.index, mosaic_hook.var_index = {0: a}, {name: 0}, {name: 0}
-    npass_hook = object.__new__(OffsetModelSubtractor)
-    npass_hook.terms, npass_hook.variables, npass_hook.oversample_factor = [(0, basis, cm)], variables, 1
-    npass_hook.rows, npass_hook.index, npass_hook.var_index = {0: a}, {name: 0}, {name: 0}
-    npass_hook.scalar = np.array([0.25])
-    for hook, scalar in ((mosaic_hook, None), (npass_hook, 0.25)):
-        ref = at_every_mapped_pixel(scalar)
+    npass_hook = object.__new__(OffsetModelSubtractor)                      # with a per-frame scalar: one chunk
+    npass_terms, npass_rows = [(0, basis, cm), (1, None, np.zeros_like(cm))], {0: a, 1: np.array([[0.25]])}
+    npass_hook.terms, npass_hook.variables, npass_hook.oversample_factor = npass_terms, variables, 1
+    npass_hook.rows, npass_hook.index, npass_hook.var_index = npass_rows, {name: 0}, {name: 0}
+    for hook, terms, rows in ((mosaic_hook, [(0, basis, cm)], {0: a}), (npass_hook, npass_terms, npass_rows)):
+        ref = at_every_mapped_pixel(terms, rows)
         out = hook(ctx())
         assert out[weighted].tobytes() == ref[weighted].tobytes()
         assert out[~weighted].tobytes() == data[~weighted].tobytes()

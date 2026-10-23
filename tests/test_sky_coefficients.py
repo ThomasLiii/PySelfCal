@@ -179,7 +179,7 @@ def test_arbitrary_coefficient_end_to_end():
         # the second term (its coefficient is positive everywhere)
         model = sc.Model(sky=[sc.Sky(damping=1e-4),
                               sc.Sky('shaped', times=sc.Function(shape, of='u', power=2.0, offset=0.2), damping=1e-4)],
-                         offsets=[sc.Offsets(smooth=0.1, mean_zero=True)])
+                         offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])
         res = field.calibrate(sc.Recipe(model, fit=sc.Fit(400, clip=8.0, tolerance=1e-12), coadd=None,
                                         numerics=sc.Numerics(2, batch=4)))
         with CalFile(res.cal_paths[0]) as cal:

@@ -2,8 +2,7 @@
 
 1. _iter_global_entry_chunks: chunk cuts over a block list == unified-array
    slicing at the same chunk_size (contents AND boundaries).
-2. compute_x0_scalar_only(BlockCSR) == legacy compute_x0_from_Ab+zeroing.
-3. apply_lsqr end-to-end: unified csr vs BlockCSR of the SAME system --
+2. apply_lsqr end-to-end: unified csr vs BlockCSR of the SAME system --
    solver x bit-equal across {lsqr, lsmr} x {n_threads 1, 4} x
    {precondition on/off} x {use_float32 on/off} x {active_mask on/off}.
 
@@ -21,7 +20,6 @@ from scipy.sparse import csr_matrix, random as sprandom
 
 from selfcal.core.blockcsr import BlockCSR, build_block_csr
 from selfcal.core.solve import apply_lsqr, _iter_global_entry_chunks
-from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
 
 # Seed preserved verbatim from the source script.
 _SEED = 31
@@ -69,43 +67,8 @@ def test_iter_global_entry_chunks_matches_unified_slicing():
     assert n_cases == 4
 
 
-def test_x0_scalar_only_blockcsr_bitequal():
-    """Section 2: compute_x0_scalar_only(BlockCSR) == the legacy path (one bincount over the matrix as a
-    coo_matrix, then zeroing the chunk-offset block)."""
-    rng = np.random.default_rng(_SEED)
-    n_cases = 0
-    for target in (10**9, 400, 37):
-        for use_mask in (False, True):
-            n_cases += 1
-            n_sky, n_chunkcols, n_scalar = 7 * 9, 30, 25
-            n_cols_full = n_sky + n_chunkcols + n_scalar
-            A_full, b = make_system(rng, 500, n_cols_full, 0.05)
-            scs = n_sky + n_chunkcols
-            if use_mask:
-                col_nnz = np.bincount(A_full.indices, minlength=n_cols_full)
-                am = col_nnz > 0
-                keep = np.flatnonzero(am)
-                remap = np.full(n_cols_full, -1)
-                remap[keep] = np.arange(keep.size)
-                A = csr_matrix((A_full.data, remap[A_full.indices],
-                                A_full.indptr), shape=(500, keep.size))
-            else:
-                am, A = None, A_full
-            ref = compute_x0_from_Ab(A.tocoo(), b, (7, 9), num_sky_blocks=1,
-                                     active_mask=am)
-            ref[63:scs] = 0.0
-            bc = to_blocks(A, target)
-            new = compute_x0_scalar_only(bc, b, (7, 9), scs,
-                                         num_sky_blocks=1, active_mask=am,
-                                         _chunk_target_entries=53)
-            assert ref.tobytes() == new.tobytes(), (
-                f"x0 not bit-equal target={target} mask={use_mask}: "
-                f"{int((ref != new).sum())} of {ref.size} differ")
-    assert n_cases == 6
-
-
 def test_apply_lsqr_unified_vs_blockcsr_bitequal():
-    """Section 3: apply_lsqr on unified csr vs BlockCSR of the same system,
+    """Section 2: apply_lsqr on unified csr vs BlockCSR of the same system,
     across solver x n_threads x precondition x float32 x active_mask, each with
     three BlockCSR target_nnz cuts. 2*2*2*2*2*3 = 96 asserted cases."""
     rng = np.random.default_rng(_SEED)

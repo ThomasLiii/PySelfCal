@@ -129,8 +129,26 @@ def _accepts_needed(func):
     return ok
 
 
+def _left_out(chunk_map, chunk_offset, ids):
+    """Where the chunk ids ``ids`` (of ``chunk_map``'s pixels) name a chunk whose offset is NaN (left
+    out of the coadd), or None when none is."""
+    nan = np.isnan(np.asarray(chunk_offset, dtype=np.float64))
+    if not nan.any():
+        return None
+    return (ids >= 0) & nan[np.clip(ids, 0, nan.size - 1)]
+
+
 def _render_offset(func, chunk_map, chunk_offset, needed):
-    """Per-frame grid offset of one map at the flat grid indices ``needed`` (1-D)."""
+    """Per-frame grid offset of one map at the flat grid indices ``needed`` (1-D). A chunk whose offset is
+    NaN (the mosaic leaves it out) is drawn with the others at zero and its pixels then set to NaN, so
+    a renderer that draws across chunks never sees one."""
+    out = (_left_out(chunk_map, chunk_offset, np.asarray(chunk_map).ravel()[needed])
+           if np.isnan(np.asarray(chunk_offset, dtype=np.float64)).any() else None)
+    if out is not None:
+        vals = np.array(_render_offset(func, chunk_map, np.nan_to_num(chunk_offset, nan=0.0), needed),
+                        dtype=np.float64)
+        vals[out] = np.nan
+        return vals
     if func is None:
         return chunk_to_det(chunk_map, chunk_data=chunk_offset, needed=needed)
     if _accepts_needed(func):
@@ -379,10 +397,14 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                     continue
                 cm = chunk_maps[m]
                 func_m = det_offset_funcs[m] if det_offset_funcs is not None else None
+                out = _left_out(cm, off_m, np.asarray(cm))
+                off_draw = off_m if out is None else np.nan_to_num(off_m, nan=0.0)
                 if func_m is not None:
-                    grid_offset_m = func_m(cm, off_m)
+                    grid_offset_m = func_m(cm, off_draw)
                 else:
-                    grid_offset_m = chunk_to_det(cm, chunk_data=off_m)
+                    grid_offset_m = chunk_to_det(cm, chunk_data=off_draw)
+                if out is not None:                       # a chunk left out of the coadd: its pixels NaN
+                    grid_offset_m = np.where(out, np.nan, grid_offset_m)
                 if total_grid_offset is None:
                     total_grid_offset = grid_offset_m
                 else:

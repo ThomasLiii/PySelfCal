@@ -15,14 +15,12 @@ __all__ = [
     "parse_x_sky",
     "encode_x",
     "compute_x0_from_Ab",
-    "compute_x0_scalar_only",
 ]
 
 
 def parse_x_sky(x: np.ndarray, ref_shape: tuple[int, int],
                 num_offset_groups_list: list[int], num_chunks_list: list[int],
-                num_frames: int | None = None, num_sky_blocks: int = 1
-                ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
+                num_sky_blocks: int = 1) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Generic parse of the LSQR solution vector for any number of sky blocks.
 
     Parameters
@@ -35,9 +33,6 @@ def parse_x_sky(x: np.ndarray, ref_shape: tuple[int, int],
         Per-map offset-group count (block m has ``num_offset_groups[m]`` rows).
     num_chunks_list : list of int
         Per-map chunk (column) count (block m has ``num_chunks[m]`` columns).
-    num_frames : int or None, optional
-        Number of frames; when set, the trailing per-frame scalars are sliced
-        off, otherwise ``frame_scalar`` comes back empty.
     num_sky_blocks : int, optional
         Number of sky blocks (1 continuum, +1 per spectral component).
 
@@ -48,8 +43,6 @@ def parse_x_sky(x: np.ndarray, ref_shape: tuple[int, int],
         continuum, blocks 1.. are line-amplitude maps).
     det_offsets : list of np.ndarray
         One ``(num_offset_groups[m], num_chunks[m])`` array per chunk map.
-    frame_scalar : np.ndarray
-        Per-frame scalars (empty when num_frames is None/0).
 
     This is the N-component generalization; :func:`parse_x` is the back-compat
     fixed-tuple wrapper for the 1- and 2-block cases.
@@ -68,25 +61,21 @@ def parse_x_sky(x: np.ndarray, ref_shape: tuple[int, int],
         block = ng * nc
         det_offsets.append(x[cursor:cursor + block].reshape(ng, nc))
         cursor += block
-
-    frame_scalar = x[cursor:cursor + num_frames] if num_frames else np.array([])
-    return sky_maps, det_offsets, frame_scalar
+    return sky_maps, det_offsets
 
 
-def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None,
-            num_sky_blocks=1):
+def parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_sky_blocks=1):
     """Back-compat fixed-tuple parse for <=2 sky blocks (use parse_x_sky for N>2).
 
-    Returns ``(skymap, det_offsets, frame_scalar)`` for ``num_sky_blocks==1`` and
-    ``(skymap, skymap_line, det_offsets, frame_scalar)`` for ``num_sky_blocks==2``.
+    Returns ``(skymap, det_offsets)`` for ``num_sky_blocks==1`` and
+    ``(skymap, skymap_line, det_offsets)`` for ``num_sky_blocks==2``.
     """
-    sky_maps, det_offsets, frame_scalar = parse_x_sky(
-        x, ref_shape, num_offset_groups_list, num_chunks_list,
-        num_frames=num_frames, num_sky_blocks=num_sky_blocks)
+    sky_maps, det_offsets = parse_x_sky(
+        x, ref_shape, num_offset_groups_list, num_chunks_list, num_sky_blocks=num_sky_blocks)
     if num_sky_blocks == 1:
-        return sky_maps[0], det_offsets, frame_scalar
+        return sky_maps[0], det_offsets
     if num_sky_blocks == 2:
-        return sky_maps[0], sky_maps[1], det_offsets, frame_scalar
+        return sky_maps[0], sky_maps[1], det_offsets
     raise ValueError(
         f"parse_x returns fixed tuples for <=2 sky blocks (got {num_sky_blocks}); "
         "use parse_x_sky for the N-component list form")
@@ -205,7 +194,7 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
         AtA_diag = np.bincount(off_col, weights=off_data ** 2, minlength=num_offset_cols)
         Atb = np.bincount(off_col, weights=off_data * b[off_row], minlength=num_offset_cols)
 
-    offsets = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
+    offsets = np.divide(Atb, AtA_diag, out=np.zeros_like(Atb), where=AtA_diag > 0)
 
     # Build the compact x0 first.
     x0_compact = np.zeros(num_cols)
@@ -309,12 +298,12 @@ def _column_sums(A, b, boundary, chunk_target_entries=16_000_000, window=4):
 def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky_blocks: int = 1,
                            active_mask: np.ndarray | None = None) -> np.ndarray:
     """A starting vector with the sky at zero and every other column at its joint least-squares fit to
-    the data: ``x_off = argmin |b - A_off x_off|`` (the frames' scalars, chunk constants, slopes, templates
-    ... together, the anchor rows included), solved exactly on each connected block of the offsets'
+    the data: ``x_off = argmin |b - A_off x_off|`` (the frames' chunk constants, slopes, templates
+    ... together, the constraint rows included), solved exactly on each connected block of the offsets'
     normal matrix (a block per frame, or per group of frames that share offsets) by the pseudo-inverse,
     as :mod:`selfcal.core.deflation` pairs its patterns. Unlike :func:`compute_x0_from_Ab`, which fits
-    each column alone (a chunk constant and the frame scalar then both take the frame's level), the
-    columns of a frame share the fit, so the start already holds each frame's own level and gradients
+    each column alone (two terms that overlap, a frame's chunk constants and its one-chunk term, then both
+    take the frame's level), the columns of a frame share the fit, so the start already holds each frame's own level and gradients
     and the iterations work on what the frames do not explain by themselves.
 
     ``A``: the system ``setup_lsqr`` builds (csr, BlockCSR or ColSplitCSR; COO is rejected); ``b`` its
@@ -369,102 +358,6 @@ def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky
     else:
         x0[n_sky:] = off
     return x0
-
-
-def compute_x0_scalar_only(A: csr_matrix | BlockCSR | coo_matrix, b: np.ndarray,
-                           ref_shape: tuple[int, int], scalar_col_start: int,
-                           num_sky_blocks: int = 1,
-                           active_mask: np.ndarray | None = None,
-                           _chunk_target_entries: int = 16_000_000) -> np.ndarray:
-    """x0 for the ``use_per_frame_scalar`` setup: scalar gets diag-LS, chunks
-    start at 0, sky starts at 0.
-
-    The diag-LS for a scalar column degenerates to the weighted mean of valid
-    pixel values in that frame's data (since the scalar column has constant
-    ``valid_weight`` for every valid pixel in the frame). With chunk and sky
-    init at 0, all per-frame DC is concentrated in the scalar at iter 0, and
-    LSQR's first few iterations refine the chunk offsets around it.
-
-    A csr matrix, a ``BlockCSR`` or a ``ColSplitCSR`` is streamed in row chunks
-    (:func:`_column_sums`, as :func:`compute_x0_from_Ab` streams it) with the
-    arithmetic of the legacy computation, ``compute_x0_from_Ab`` of the matrix
-    as a ``coo_matrix`` (one ``np.bincount``) followed by zeroing the
-    chunk-offset block: every scalar column's entries are folded in row order,
-    left to right from 0.0, whatever the storage and the chunking. A
-    ``ColSplitCSR``'s column ranges entirely below the scalar block are not
-    read.
-
-    Parameters
-    ----------
-    A : csr_matrix, BlockCSR, ColSplitCSR or coo_matrix
-        The assembled design matrix from ``setup_lsqr``. COO falls back to
-        ``compute_x0_from_Ab`` and zeroes the chunk-offset block.
-    b : np.ndarray
-        The right-hand-side vector from ``setup_lsqr`` (cast to float64 per
-        chunk).
-    ref_shape : tuple of int
-        (height, width) of the reference frame.
-    scalar_col_start : int
-        Column index where the per-frame scalar block begins, in the ORIGINAL
-        (uncompacted) column space. For K maps, this is the value Calibrator
-        stores as ``col_bases[K]``. When ``active_mask`` is supplied, this is
-        still the original-layout value; the function internally derives the
-        compact equivalent.
-    num_sky_blocks : int
-        Number of sky blocks (one per sky term); 1 for the continuum alone.
-    active_mask : np.ndarray of bool, optional
-        When supplied, ``A`` is the COMPACT matrix produced by the early
-        zero-column compaction in ``setup_lsqr``. The returned ``x0`` is
-        expanded back to the FULL (uncompacted) layout — same convention as
-        ``compute_x0_from_Ab``.
-    """
-    from .blockcsr import BlockCSR, ColSplitCSR
-    if not isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
-        # COO input: fall back to the generic diag-LS (memory-heavy — it
-        # materializes offset-block copies of every column), then zero the
-        # chunk-offset block.
-        x0 = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks,
-                                active_mask=active_mask)
-        ref_h, ref_w = ref_shape
-        num_sky_eff = num_sky_blocks * ref_h * ref_w
-        x0[num_sky_eff:scalar_col_start] = 0.0
-        return x0
-
-    num_cols = A.shape[1]
-    if active_mask is not None:
-        if active_mask.size < scalar_col_start:
-            raise ValueError(
-                f"active_mask.size={active_mask.size} smaller than "
-                f"scalar_col_start={scalar_col_start}")
-        # Compact-space index where the scalar block begins.
-        scalar_boundary = int(active_mask[:scalar_col_start].sum())
-    else:
-        scalar_boundary = int(scalar_col_start)
-    if num_cols < scalar_boundary:
-        raise ValueError(
-            f"A.shape[1]={num_cols} < scalar boundary={scalar_boundary}; "
-            "active_mask does not match A")
-    num_scalar_cols = num_cols - scalar_boundary
-
-    AtA_diag, Atb = _column_sums(A, b, scalar_boundary, chunk_target_entries=_chunk_target_entries)
-    scalars = np.where(AtA_diag > 0, Atb / AtA_diag, 0.0)
-
-    if active_mask is None:
-        x0 = np.zeros(num_cols)
-        x0[scalar_boundary:] = scalars
-        return x0
-
-    # Expand to the FULL layout: active scalar columns, in order, correspond
-    # to compact columns scalar_boundary..num_cols-1.
-    x0_full = np.zeros(int(active_mask.size))
-    scalar_full_idx = np.flatnonzero(active_mask[scalar_col_start:])
-    if scalar_full_idx.size != num_scalar_cols:
-        raise ValueError(
-            f"active scalar columns ({scalar_full_idx.size}) != compact scalar "
-            f"block width ({num_scalar_cols}); active_mask/scalar_col_start "
-            "inconsistent with A")
-    x0_full[scalar_full_idx + scalar_col_start] = scalars
-    return x0_full
 
 
 def solve_sky_closed_form(pixel_fisher, pixel_cross, pixel_rhs, pixel_counts,

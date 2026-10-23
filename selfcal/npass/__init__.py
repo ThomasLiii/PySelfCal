@@ -7,7 +7,7 @@ Model, per frame *k* and observation *i* (reference pixel *p(i)*)::
 
 with J sky terms ``S_j``, each a per-pixel map times its coefficient ``c_j`` of the observation's data
 variables ``v`` (``c ≡ 1`` for a constant term; see :mod:`selfcal.models.sky_model`), and ``O_k`` the
-frame's offset: whatever the model's offset terms are, plus a per-frame scalar. Nothing here knows
+frame's offset: whatever the model's offset terms are. Nothing here knows
 their form: the passes take the model's rows from the engine's row assembly and subtract with the
 solve's own chunk weights and functions.
 

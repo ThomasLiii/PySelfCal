@@ -82,10 +82,11 @@ def npass3():
 def euclid():
     """The EDFN stripe recipe on 3 exposures x 16 detectors."""
     model = sc.Model(offsets=[
-        sc.Offsets(on='grid', per='detector', smooth=0.1, smooth_along=('row', 'col'), mean_zero=True,
+        sc.Offsets(on='grid', per='detector', smooth=0.1, smooth_along=('row', 'col'), exclude=sc.Poly(0),
                    exact_group_rows=True),
         sc.Offsets(on='col_strips', smooth_along=(), damping=0.3),
-        sc.Offsets(on='row_strips', smooth_along=(), damping=0.3)])
+        sc.Offsets(on='row_strips', smooth_along=(), damping=0.3),
+        sc.Offsets('scalar', on='detector')])
     recipe = sc.Recipe(model, fit=sc.Fit(30, clip=5.0, float32=False, method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, instrument_maps=False, min_chunk_coverage=0.0),
                        numerics=sc.Numerics(8, batch=8, mosaic_batch=8, coadd_batch=8), name='unify_gate_py')

@@ -237,16 +237,19 @@ class SPHEREx(Instrument):
 
     def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
         """The smooth subchannel-arc offset renderer of the primary (stripped) map, for one job's
-        mosaic, whatever ``render`` asks for; ``None`` (block-constant) for the readout map."""
+        mosaic, whatever ``render`` asks for (it fills a frame's zeroed chunks from its others:
+        ``fills_invalid``); ``None`` (block-constant) for the other maps."""
         if map_name not in (None, geom.primary):
             return None
         ns, nch, ncol = self.num_sub, self.num_ch, self.num_col
         x = geom.extra
-        return partial(
+        renderer = partial(
             make_spherex_stripped_offset_map,
             chunk_valid_mask=jobgeom.chunk_valid_strict,
             lvf_params=x['lvf_params'], r_edges=x['r_edges'], x_edges=x['x_edges'],
             tot_subchannels=ns * nch + 2, num_columns=ncol, fill_invalid=True)
+        renderer.fills_invalid = True
+        return renderer
 
     @staticmethod
     def aux_coadds(geom):

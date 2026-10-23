@@ -65,7 +65,7 @@ class Tiles(Config):
 @dataclass(frozen=True)
 class Refit(Config):
     """The N-pass OFFSET pass: the offsets refitted against the fixed sky -- the recipe's own offset
-    terms (whatever the model has, with its constraints and priors) and frame scalar, every frame
+    terms (whatever the model has, with its constraints and priors), every frame
     solved directly from its normal equations. Nothing about the offsets is chosen here.
     ``clip``: of the residual (per frame unless chunk groups are given). ``bright_cut``: only the
     observations whose modelled sky is below it (all of a frame's when fewer than ``min_pixels``

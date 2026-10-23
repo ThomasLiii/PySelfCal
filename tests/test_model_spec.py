@@ -25,9 +25,6 @@ def _same_kwargs(a, b):
     assert set(ka) == set(kb)
     for k in ka:
         x, y = ka[k], kb[k]
-        if k == 'use_per_frame_scalar':
-            assert x == y
-            continue
         assert len(x) == len(y)
         for u, v in zip(x, y):
             _same_value(u, v, k)
@@ -51,27 +48,33 @@ def _same_value(u, v, where):
 def test_model_table_equals_presets():
     geom = CAMERA.geometry(1)
     n = 9
-    # the continuum preset == a [model] table with a continuum term and one free offset term
+    # the continuum preset == a [model] table with a continuum term, one free offset term with no constant
+    # and the per-frame scalar (the term of one chunk)
     preset = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, along='row', weight=0.5)).spec()
     spec = ModelSpec.from_config({
         'sky': [{'name': 'continuum'}],
-        'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'mean_zero': True,
-                    'poly': [{'axis': 'row', 'degree': 1, 'weight': 0.5}]}],
-        'scalar': True})
+        'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'exclude_degree': 0,
+                    'poly': [{'axis': 'row', 'degree': 1, 'weight': 0.5}]},
+                   {'map': 'detector', 'name': 'scalar'}]})
     _same_kwargs(preset.build_offset_model(geom, n), spec.build_offset_model(geom, n))
     assert [c.name for c in preset.build_sky_model(geom).components] == \
         [c.name for c in spec.build_sky_model(geom).components]
-    assert spec.x0_kind == 'scalar_only' and not spec.has_coefficients
+    assert not spec.has_coefficients and spec.offset_names(geom) == ['grid', 'scalar']
     spec.check(geom)
-    # a detector-fixed second term lowers to a shared (det_groups = 0) mean-zero block
+    # a detector-fixed second term lowers to a shared (det_groups = 0) block; no scalar unless listed
     spec2 = ModelSpec(sky=(SkyTerm('continuum'),),
-                      offset=(OffsetTerm(kind='free', reg_weight=0.1, mean_zero=True),
-                              OffsetTerm(kind='fixed', reg_weight=0.0, adjacency=(), mean_zero=True)),
-                      scalar=False)
+                      offset=(OffsetTerm(kind='free', reg_weight=0.1, exclude_degree=0),
+                              OffsetTerm(kind='fixed', reg_weight=0.0, adjacency=(), exclude_degree=0)))
     om = spec2.build_offset_model(geom, n)
-    assert om.num_maps == 2 and not om.use_per_frame_scalar and spec2.x0_kind == 'from_Ab'
+    assert om.num_maps == 2
     b = om.blocks[1]
-    assert b.adj_info is None and np.array_equal(b.det_groups, np.zeros(n, dtype=int)) and b.mean_offset.shape == (n,)
+    assert b.adj_info is None and np.array_equal(b.det_groups, np.zeros(n, dtype=int))
+    # the old [model] key is refused, with the spelling to use
+    try:
+        ModelSpec.from_config({'sky': [{'name': 'continuum'}], 'scalar': True})
+        raise AssertionError('expected a ValueError')
+    except ValueError as e:
+        assert "map = 'detector'" in str(e)
     # a coefficient reads a data variable the instrument must provide: the camera has none
     spec3 = ModelSpec(sky=(SkyTerm(), SkyTerm('l', coefficient={'variable': 'wavelength', 'function': 'gaussian',
                                                                   'center': 1.0, 'sigma': 0.1})))
@@ -89,7 +92,8 @@ def test_a_model_with_a_soft_polynomial_runs(tmp_path):
     write_exposures(str(tmp_path / 'exposures'), 10, np.random.default_rng(5), det_shape=(40, 60), chunks=(4, 6))
     field = sc.Field(tmp_path / 'out' / 'model', CAMERA, 20.0, compute=sc.Compute(str(tmp_path / 'cache'), workers=2))
     field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
-    model = sc.Model(offsets=[sc.Offsets(smooth=0.1, mean_zero=True, poly_prior=sc.Poly(1, along='col', weight=0.5))])
+    model = sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0), poly_prior=sc.Poly(1, along='col', weight=0.5)),
+                              sc.Offsets('scalar', on='detector')])
     result = field.calibrate(sc.Recipe(model, fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0,
                                                                                           instrument_maps=False),
                                        numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))

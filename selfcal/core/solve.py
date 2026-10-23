@@ -1265,7 +1265,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                              columns=int(A_shape[1]))
 
             def _on_iteration(itn, x_iter):
-                snapshot(Iterate(itn, _as_solution(x_iter, exact=True), scale=M, active=_active, num_cols=num_cols,
+                x_sol = _as_solution(x_iter, exact=True)
+                if proj is not None:                     # the column constraints imposed again, as the end does
+                    x_sol = np.array(x_sol, copy=True)
+                    proj.apply(x_sol)
+                snapshot(Iterate(itn, x_sol, scale=M, active=_active, num_cols=num_cols,
                                  estimates=history.last(), settings=_settings,
                                  cast=np.float32 if use_float32 else None))
             solve_kw.update(callback=_on_iteration, callback_every=int(snapshot_every))

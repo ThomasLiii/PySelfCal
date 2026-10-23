@@ -52,13 +52,17 @@ def plane(det_x, det_y):
 
 
 #: The models of the round trip: two offset terms (constants and a ``times=`` term); a shared term
-#: (``per="all"``) and a two-function basis; a spectral model with two sky blocks.
+#: (``per="all"``) and a two-function basis; a spectral model with two sky blocks; each with a per-frame
+#: scalar (the term of one chunk).
 MODELS = {
-    'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, mean_zero=True), sc.Offsets('xslope', times=xtilde)]),
-    'shared': sc.Model(offsets=[sc.Offsets(smooth=0.1, mean_zero=True),
-                                sc.Offsets('pattern', per='all', mean_zero=True),
-                                sc.Offsets('gradient', on='detector', basis=plane, n=2)]),
-    'spectral': sc.Model(sky=[sc.Sky(), sc.Sky('ramp', times=x_ramp)], offsets=[sc.Offsets(smooth=0.1, mean_zero=True)]),
+    'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('xslope', times=xtilde),
+                               sc.Offsets('scalar', on='detector')]),
+    'shared': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)),
+                                sc.Offsets('pattern', per='all', exclude=sc.Poly(0)),
+                                sc.Offsets('gradient', on='detector', basis=plane, n=2),
+                                sc.Offsets('scalar', on='detector')]),
+    'spectral': sc.Model(sky=[sc.Sky(), sc.Sky('ramp', times=x_ramp)],
+                         offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),
 }
 
 
@@ -136,7 +140,7 @@ def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
     assert any(name.startswith('offsets/') for name in a) and any(name.startswith('sky/') for name in a)
     with CalFile(source) as cal:
         assert len(cal.sky_names) == (2 if model == 'spectral' else 1)
-        assert cal.num_maps == {'times': 2, 'shared': 3, 'spectral': 1}[model]
+        assert cal.num_maps == {'times': 3, 'shared': 4, 'spectral': 2}[model]           # the scalar term last
 
 
 # =================================================================== a start at the solution stays there
@@ -148,7 +152,7 @@ def test_a_warm_start_from_the_least_squares_solution_stays_there(toy, method):
     if method == 'lsqr':
         # the least-squares solution: |A^T r| / (|A| |r|) far below float32 precision (LSQR's estimates; CGLS's
         # anorm is a lower bound of |A| and its gradient the true one, at the float32 products' floor)
-        assert np.load(first['history_file'])['test2'][-1] < 1e-8
+        assert np.load(first['history_file'])['test2'][-1] < 0.2 * np.finfo(np.float32).eps
     more = field.calibrate(_recipe(MODELS['times'], 20, name=f'exact_more_{method}', method=method), start=exact)
     then = _solve(more.cal_paths[0])
     h = np.load(then['history_file'])
@@ -197,12 +201,13 @@ def test_a_cal_of_another_system_is_refused(toy):
         field.calibrate(_recipe(MODELS['spectral'].replace(offsets=model.offsets), 5, name='r_sky'), start=source)
     # another model (the same number of terms, the slope term on another chunk map), another grid,
     # other column counts: when the solve is set up
-    other_map = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', on='detector', times=xtilde)))
+    other_map = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', on='detector', times=xtilde),
+                                       model.offsets[2]))
     with pytest.raises(ConfigError, match='offset map 1: another chunk map'):
         field.calibrate(_recipe(other_map, 5, name='r_model'), start=source)
     with pytest.raises(ConfigError, match='the grid: sky'):
         wide.calibrate(_recipe(model, 5, name='r_grid'), start=source)
-    two = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', basis=plane, n=2)))
+    two = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', basis=plane, n=2), model.offsets[2]))
     with pytest.raises(ConfigError, match=r'offset map 1: \(12, 16\) values in the source, \(12, 32\) in this solve'):
         field.calibrate(_recipe(two, 5, name='r_columns'), start=source)
     # none of them left a cal behind
@@ -221,7 +226,7 @@ def test_a_cal_of_another_system_is_refused(toy):
     ok = field.calibrate(_recipe(model, 5, name='from_legacy'), start=legacy)
     assert _solve(ok.cal_paths[0])['start_from'] == legacy
     # its contents cannot show how frames share offsets: the starting vector checks it
-    shared = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', per='all', times=xtilde)))
+    shared = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', per='all', times=xtilde), model.offsets[2]))
     with pytest.raises(ConfigError, match='offset map 1 of the source does not share its offsets'):
         field.calibrate(_recipe(shared, 5, name='r_grouping_legacy'), start=legacy)
     with pytest.raises(ConfigError, match=r'offsets\[1\]\.groups: 12 \(the source\) vs 1 \(this solve\)'):

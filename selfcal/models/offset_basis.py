@@ -20,10 +20,11 @@ without touching this module (a chunk-sequence coordinate, not a 2-D pixel
 direction).
 
 Design:
-  * offset[frame, chunk] = scalar[frame] + Σ_{d=1..D} a[frame, group, d] · B_d(coord)
+  * offset[frame, chunk] = Σ_{d=1..D} a[frame, group, d] · B_d(coord)
   * B_d = Chebyshev T_d on x = 2·(coord−lo)/(hi−lo) − 1 ∈ [−1,1], **mean-subtracted
-    over the window grid** so each B_d is orthogonal to the constant → the per-frame
-    scalar owns the DC and the polynomial is shape-only (d starts at 1, no constant).
+    over the window grid** so each B_d is orthogonal to the constant → the polynomial
+    is shape-only (d starts at 1, no constant): a frame's level belongs to another
+    offset term, such as a per-frame scalar on the one-chunk ``"detector"`` map.
   * independent polynomial per group (a[frame, group, d] free in group).
   * Chebyshev (not raw x^d) for conditioning at D ≥ 3.
 
@@ -46,7 +47,7 @@ def cheb_shape_basis(subch, degree, lo, hi):
         Subchannel indices to evaluate at (any shape; flattened result rows).
     degree : int
         Polynomial degree D (>= 1). Returns D basis columns (d = 1..D; the
-        constant d=0 is intentionally omitted — the per-frame scalar owns the DC).
+        constant d=0 is intentionally omitted — another term holds the frame's level).
     lo, hi : int
         Inclusive subchannel window the polynomial is defined over (maps to
         x ∈ [-1, 1]); the mean is taken over the integer grid ``lo..hi``.
@@ -58,7 +59,7 @@ def cheb_shape_basis(subch, degree, lo, hi):
         constant by construction (each column sums ~0 over the window grid).
     """
     if degree < 1:
-        raise ValueError(f"degree must be >= 1 (d=0 is the scalar), got {degree}")
+        raise ValueError(f"degree must be >= 1 (no constant, d=0), got {degree}")
     if hi <= lo:
         raise ValueError(f"need hi > lo, got lo={lo} hi={hi}")
     subch = np.asarray(subch, dtype=np.float64).ravel()
@@ -88,7 +89,7 @@ def piecewise_cheb_shape_basis(subch, degree, segments):
     polynomial restricted to the window, so its least-squares residual can never
     be larger. (Without them, the SEP J=4 refit's residual ROSE from 0.0222 to
     0.0298 and the sky absorbed a step at the segment boundary.) Segment 0 has
-    no level column because the per-frame scalar owns the overall DC.
+    no level column because another term holds the frame's overall level.
 
     Why segments at all: a single polynomial over a wide coordinate window is fit
     to ALL of the window's data, so residual structure at one end pulls the

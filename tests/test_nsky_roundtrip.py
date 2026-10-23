@@ -33,7 +33,6 @@ def _make_stub(x, ref_shape, num_frames, num_chunks, sky_model, pixel_counts, pi
     cc.pixel_fisher = pixel_fisher
     cc.det_templates = [None]
     cc.frame_to_groups = [np.arange(num_frames)]
-    cc.num_scalar_cols = num_frames
     cc.sky_model = sky_model
     cc.line_fisher_threshold = None
     return cc
@@ -52,8 +51,7 @@ def test_nsky3_save_load_roundtrip():
     rng = np.random.default_rng(7)
     sky_vals = rng.standard_normal(J * num_sky)
     off_vals = rng.standard_normal(num_frames * num_chunks)
-    sc_vals = rng.standard_normal(num_frames)
-    x = np.concatenate([sky_vals, off_vals, sc_vals]).astype(np.float64)
+    x = np.concatenate([sky_vals, off_vals]).astype(np.float64)
     pixel_counts = (rng.random(len(x)) * 12).astype(np.int64)
     pixel_fisher = rng.random(len(x)).astype(np.float64)
 
@@ -104,7 +102,7 @@ def test_single_line_keeps_legacy_skymap_line_alias():
     sky_model = SkyModel((ContinuumComponent(),
                           SkyComponent('pah_3p29', Coefficient('BC', GaussianProfile(3.29, 0.04)))))
     rng = np.random.default_rng(1)
-    x = rng.standard_normal(2 * num_sky + num_frames * num_chunks + num_frames)
+    x = rng.standard_normal(2 * num_sky + num_frames * num_chunks)
     pc = (rng.random(len(x)) * 5).astype(np.int64)
     cc = _make_stub(x, ref_shape, num_frames, num_chunks, sky_model, pc, rng.random(len(x)))
     tmp = tempfile.mkdtemp()

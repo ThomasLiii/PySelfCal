@@ -32,7 +32,6 @@ from ..models.sky_model import SkyModel
 from .assembly import _prep_lsqr_batch_worker
 from .constraint_builders import (
     grouped_adjacency_block,
-    mean_offset_block,
     offset_damping_block,
     sky_damping_block,
 )
@@ -292,23 +291,19 @@ def _scatter_block_worker_split(task):
 
 def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
     """``setup_lsqr(reduce=...)``: the subframes' reductions from the workers (no matrix), the entry
-    counts per column and the observed offset columns (as the matrix build's collation accumulates
-    them), then the
-    constraint rows (``constraint_blocks(pixel_counts, observed_cols)``). Returns the
-    :class:`SetupResult`, or None when no subframe has data."""
+    counts per column (as the matrix build's collation accumulates them), then the constraint rows
+    (``constraint_blocks(pixel_counts)``). Returns the :class:`SetupResult`, or None when no
+    subframe has data."""
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
-    observed_cols = np.zeros(total_cols, dtype=bool)
     reduced = [None] * num_frames
     try:
         with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
             futures = [executor.submit(_prep_lsqr_batch_worker, batch) for batch in batched_tasks]
             for future in tqdm(as_completed(futures), total=len(futures), desc="Reducing subframes",
                                disable=not _state.progress_enabled):
-                for index, value, (ids, counts), observed in future.result():
+                for index, value, (ids, counts) in future.result():
                     reduced[index] = value
                     pixel_counts[ids] += counts            # integers: exact in any order
-                    if observed.size:
-                        observed_cols[observed] = True
     finally:
         for shm in shm_objects:
             shm.close()
@@ -317,7 +312,7 @@ def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_ob
         logger.warning("No valid data found in any subframe.")
         return None
     return SetupResult(A=None, b=None, pixel_counts=pixel_counts, pixel_fisher=None, pixel_cross=None,
-                       reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts, observed_cols))
+                       reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts))
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -331,15 +326,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                batch_size: int = 10, offset_regularization: bool = False,
                reg_weights: list[float] | None = None, adj_infos: list | None = None,
                poly_constraints_list: list | None = None,
-               mean_offsets_list: list | None = None, det_groups_list: list | None = None,
+               det_groups_list: list | None = None,
                det_templates: list | None = None,
                poly_basis_list: list | None = None,
-               use_per_frame_scalar: bool = False,
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.1,
                damp_offset_maps: list[float] | None = None,
-               mean_offset_group_rows: bool = False,
                group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
                aux_keys: list[str] | None = None,
@@ -360,8 +353,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
-    system holds the offset terms, the per-frame scalar and their constraint
-    rows alone (the sky columns stay empty and are compacted away) -- the
+    system holds the offset terms and their constraint rows alone (the sky columns stay empty and are compacted away) -- the
     offsets given the sky, for any offset model.
 
     ``moments_only``: build no matrix; the result holds the pixel state alone
@@ -399,9 +391,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     SharedMemory path (its dtype varies per batch and it is ~25x smaller).
     Default None keeps the pure-SharedMemory behavior.
 
-    The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
-    additive offset blocks, each with its own chunk map, frame-to-group mapping,
-    template, regularization, and mean-offset constraint. With K=1 the
+    The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε`` (``s`` the sky): K
+    independent additive offset blocks, each with its own chunk map, frame-to-group
+    mapping, template and regularization. With K=1 the
     multi-map machinery reduces exactly to a plain single-chunk-map solve
     with no extra terms.
 
@@ -435,20 +427,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` per chain r per frame.
         Generalizes the constant-prior ``adj_infos`` (stencil=[1,-1]) to
         arbitrary finite-difference operators. Skipped in template mode.
-    mean_offsets_list : list or None
-        Per-map mean-offset constraint targets (length K). Each entry is a
-        length-num_frames array or ``None`` to disable for that map.
     det_groups_list : list or None
         Per-map frame→group labels (length K). Each entry is ``None`` (one
-        group per frame) or an array of length num_frames. A single per-frame
-        scalar bias column is added if any map uses det_groups (or if
-        ``use_per_frame_scalar`` is True).
-    use_per_frame_scalar : bool, optional
-        When True, add a per-frame scalar column (one per frame) even when
-        no map uses ``det_groups`` — useful for absorbing per-frame DC into
-        an explicit column so the per-frame chunk offsets only carry
-        within-frame structure. Pair with ``mean_offsets_list=[zeros]`` and
-        a zero-chunk x0 init to push DC into the scalar.
+        group per frame) or an array of length num_frames.
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
@@ -483,8 +464,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Enable the per-map adjacency/offset regularization rows.
     poly_basis_list : list or None, optional
         Per-map hard polynomial basis (length K). When set for map m, that map
-        solves for polynomial coefficients (shape-only; DC absorbed by the
-        per-frame scalar) rather than per-chunk offsets.
+        solves for polynomial coefficients (shape-only: no constant; a frame's
+        level belongs to another map) rather than per-chunk offsets.
     postprocess_func : callable or None, optional
         Optional per-subframe postprocessing hook run inside the worker.
     preprocess_func : callable or None, optional
@@ -496,14 +477,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     damp_offset_maps : list of float or None, optional
         Coverage-weighted damping of the offset columns, per map (length K):
         map ``m`` is damped with weight ``damp_offset_maps[m]`` and maps with
-        weight 0 stay free; the per-frame scalar is never damped. Use it to
+        weight 0 stay free. Use it to
         gauge a per-frame map that should absorb only frame-unique artifacts
         while a detector-fixed map stays undamped.
-    mean_offset_group_rows : bool, optional
-        Emit each det-grouped map's mean-offset anchor once per group with
-        weight ``w·√k`` instead of once per frame (k frames per group). The
-        normal equations are identical; nnz drops from frames×chunks to
-        groups×chunks. Default False keeps the per-frame rows.
     group_adjacency_maps : list of int or None, optional
         Maps whose adjacency regularization is emitted once per group with
         weight ``reg_weight·√k`` instead of once per frame by the workers.
@@ -609,7 +585,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     basis_list = _default(basis_list, None)
     adj_infos = _default(adj_infos, None)
     poly_constraints_list = _default(poly_constraints_list, None)
-    mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
     poly_basis_list = _default(poly_basis_list, None)
@@ -652,7 +627,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     ]
     for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
                       ('poly_constraints_list', poly_constraints_list),
-                      ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates),
                       ('poly_basis_list', poly_basis_list),
@@ -678,7 +652,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # J sky terms: the sky block is J * num_sky columns, one map per term. The
     # data row of observation i of reference pixel P carries one nnz per term,
     #
-    #   data_i = w_i * Σ_j c_j(v_i) * S_j[P] + offsets + scalar,
+    #   data_i = w_i * Σ_j c_j(v_i) * S_j[P] + offsets,
     #
     # with c_j any function of the observation's data variables v_i (detector
     # maps, frame values, sky maps, stored layers, functions of those — see
@@ -756,7 +730,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
-    # col_bases, the per-frame scalar block, and the total column count. The
+    # col_bases, and the total column count. The
     # Calibrator builds the same layout from the same inputs (see
     # pipeline_wrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
     # column arithmetic can never drift.
@@ -764,20 +738,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list,
-        basis_list=basis_list)
+        poly_basis_list=poly_basis_list, basis_list=basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
     det_template_arr_list = layout.det_template_arr_list
-    num_scalar_cols = layout.num_scalar_cols
     col_bases = layout.col_bases
-    scalar_col_start = layout.scalar_col_start
     total_cols = layout.total_cols
 
-    if any_det_groups or use_per_frame_scalar:
-        logger.info(f"Locking detector offsets: {num_frames} frames -> "
-                    f"groups {num_offset_groups_list} + {num_frames} frame scalars")
+    if any_det_groups:
+        logger.info(f"Grouped offsets: {num_frames} frames -> groups {num_offset_groups_list}")
     if any(t is not None for t in det_template_arr_list):
         tmpl_indices = [m for m, t in enumerate(det_template_arr_list) if t is not None]
         logger.info(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
@@ -810,8 +780,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
         'col_bases': col_bases,
-        'scalar_col_start': scalar_col_start,
-        'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
         # Template / hard-poly-basis offsets emit duplicate (row, col)
         # entries; merge them per subframe in the worker (bit-identical to
@@ -927,46 +895,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
 
-    def _constraint_blocks(pixel_counts, observed_cols):
+    def _constraint_blocks(pixel_counts):
         """The global constraint blocks (as dicts, in emission order), given the collated entry
-        counts per column (``pixel_counts``) and the offset columns the data rows touch
-        (``observed_cols``). Shared by the matrix build and ``reduce``."""
+        counts per column (``pixel_counts``). Shared by the matrix build and ``reduce``."""
         num_sky_eff = num_sky_blocks * num_sky
         sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
         offset_pixel_counts = pixel_counts[num_sky_eff:]
 
         # Global constraint blocks (see selfcal.constraint_builders). Emission order
-        # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
-        # grouped adjacency (group_adjacency_maps) -> sky damping (continuum, then
-        # line blocks) -> offset damping.
+        # is load-bearing for the CSR scatter: grouped adjacency (group_adjacency_maps)
+        # -> sky damping (continuum, then line blocks) -> offset damping.
         constraint_blocks = []
-
-        # --- Per-frame mean-offset constraints (one block per chunk map) ---
-        #TODO: Pass weight from higher level instead of hardcoding here
-        constraint_weight = 10.0
-        for m in range(K):
-            mean_off = mean_offsets_list[m]
-            if mean_off is None:
-                continue
-            if det_template_arr_list[m] is not None:
-                logger.warning(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
-                continue
-            if poly_basis_list[m] is not None:
-                logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
-                continue
-            logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
-            _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
-            # Over the chunks with data (the frame's observed chunks: a chunk outside the job's window
-            # has no data and would otherwise enter the anchor only, leaving its constant and the
-            # frame's scalar free to shift against each other, and uncompactable).
-            _blk = mean_offset_block(
-                m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
-                col_bases, weight=constraint_weight,
-                group_rows=mean_offset_group_rows, n_basis=_nb, covered=observed_cols)
-            if _blk.num_rows == 0:
-                logger.warning(f"Skipping mean-offset constraint for map {m}: no frame has an observed chunk")
-                continue
-            constraint_blocks.append(_blk.as_dict())
 
         # --- Grouped adjacency (maps in group_adjacency_maps) ---
         # Same conditions as the worker-side per-frame rows it replaces.
@@ -1035,9 +974,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # bincount would need a full-nnz float64 squared-data temp — 8 B per
     # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
-    # The offset columns the data rows touch (the observed chunks; the regularisation rows do not count):
-    # the mean-offset anchor runs over them.
-    observed_cols = np.zeros(total_cols, dtype=bool)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
     pixel_rhs = (np.zeros(num_sky_blocks * num_sky, dtype=np.float64)
                  if sky_rhs_moments else None)
@@ -1139,14 +1075,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             # each range.
             range_nnz_per_batch[batch_id] = np.add.reduceat(
                 _cnt, _full_cuts[:-1]).astype(np.int64)
-        _obs = result.get('offset_observed')
-        if _obs is not None and _obs.size:
-            observed_cols[_obs] = True            # a boolean OR: the same in any batch order
         _oc = result.get('offset_counts')
         if _oc is not None:
             # The worker merged duplicate offset entries; pixel_counts
-            # keeps the pre-merge contract for the offset + scalar
-            # columns from the counts it shipped (integers -> exact).
+            # keeps the pre-merge contract for the offset columns from the
+            # counts it shipped (integers -> exact).
             _cnt[num_sky_blocks * num_sky:] = 0
             _cnt[_oc[0]] = _oc[1]
         # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
@@ -1465,8 +1398,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # b). We assemble them up front so we can pre-count their per-row nnz,
     # finalize total_rows, and allocate the CSR buffers once.
     # ----------------------------------------------------------------
-    constraint_blocks = _constraint_blocks(pixel_counts, observed_cols)
-    observed_cols = None
+    constraint_blocks = _constraint_blocks(pixel_counts)
 
     # ----------------------------------------------------------------
     # Row totals: finalize total_rows + build row_nnz over the entire row
@@ -1664,13 +1596,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ~5e-6 relative in the maps), which is why it used to be excluded for
     # template modes under the byte-equality rule.
     # ----------------------------------------------------------------
-    # Some runs still need the uncompacted path — e.g. when the caller passes
-    # mean_offsets_list (per-frame chunk constraint rows write into specific
-    # column indices that must not be dropped). mean_offsets / damping rows
-    # already register coverage via the data rows, so columns they touch will
-    # have pixel_counts > 0. Constraint rows pointing at otherwise-uncovered
-    # cols would still need those slots: when one does, the compaction is left
-    # to apply_lsqr.
+    # Some runs still need the uncompacted path: constraint rows (damping,
+    # priors) register coverage via the data rows, so columns they touch
+    # normally have pixel_counts > 0, but a constraint row pointing at an
+    # otherwise-uncovered column would still need its slot: when one does,
+    # the compaction is left to apply_lsqr.
     active_mask = pixel_counts > 0
     if drop_sky is not None:        # the floor's columns keep their slots: their zeroed entries need one
         active_mask[:drop_sky.size] |= drop_sky
@@ -2012,7 +1942,8 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
                            num_offset_groups_list: list[int],
                            chunk_maps: list[np.ndarray],
                            num_sky_blocks: int = 1,
-                           num_chunks_list: list[int] | None = None
+                           num_chunks_list: list[int] | None = None,
+                           window: np.ndarray | None = None
                            ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
     """Generic coverage slicing for any number of sky blocks.
 
@@ -2029,6 +1960,14 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
     layout count must be used to slice + advance the cursor correctly; the caller
     (``save_calibration``) overrides the coverage for those maps, so a
     shape-correct placeholder frac is returned rather than a per-chunk division.
+
+    ``window`` (a boolean map on the chunk maps' grid, or None): the detector
+    pixels the solve can observe. A chunk's coverage fraction is then its count
+    over the chunk's pixels inside the window (None: all its pixels), so a chunk
+    larger than the window, such as the one chunk of a per-frame scalar, is
+    measured against what the job could see of it; a chunk with no pixel inside
+    the window has the fraction 0 (its count holds only the rows that touch
+    every chunk, such as smoothness rows).
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -2043,8 +1982,13 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
         block = ng * nchk
         offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, nchk)
         if nchk == real_chunks:
-            chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=real_chunks)
-            offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+            inside = cm >= 0
+            if window is not None:
+                if np.shape(window) != np.shape(cm):
+                    raise ValueError(f"the window {np.shape(window)} and chunk map {m} {np.shape(cm)} differ in shape")
+                inside &= np.asarray(window, dtype=bool)
+            chunk_sizes = np.bincount(cm[inside].ravel(), minlength=real_chunks)
+            offset_valid_frac = np.where(chunk_sizes > 0, offset_coverage / np.maximum(chunk_sizes, 1), 0.0)
         else:
             # Layout columns are not one-per-chunk (template alpha / poly-basis
             # coeffs); the caller overrides this map's coverage, so a shape-correct
