@@ -158,4 +158,4 @@ def test_the_automatic_form_finds_the_degenerate_shapes_and_excludes_them(tmp_pa
     assert np.linalg.norm(A @ x_free - A[:, active] @ x_ref) > 3e-3 * np.linalg.norm(b)
     x4, rec4 = solve(sc.Deflate(2, exclude=sc.Degenerate(below=0.15)), nt=4)
     assert json.loads(rec4.deflation)['excluded_degenerate']['directions'] == ex['directions']
-    assert np.linalg.norm(x4 - x) < 1e-12 * np.linalg.norm(x)
+    assert np.linalg.norm(x4 - x) < 1e-10 * np.linalg.norm(x)    # 4 threads' block sums round differently in float64
