@@ -3,7 +3,7 @@
 Every sky term is a map times a multiplicative coefficient. The data row for
 one observation ``i`` of reference pixel ``P`` is::
 
-    data_i = w_i * Σ_j c_j(v_i) * S_j[P]  +  offsets  +  scalar
+    data_i = w_i * Σ_j c_j(v_i) * S_j[P]  +  offsets
 
 ``S_j`` (one value per reference pixel) is solved; ``c_j`` is a KNOWN function
 of *data variables* ``v_i`` — named per-observation quantities from any source

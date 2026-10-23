@@ -64,7 +64,7 @@ observation `i` (one value of frame `k` on reference pixel `p_i`, seen at a
 detector position) is modelled as
 
 ```
-d_i = Σ_c coeff_c(v_i) * s_c(p_i) + Σ_m Σ_j o^(m)_{g_m(k)}(c_m(i), j) * φ_mj(v_i) + σ_k + eps_i
+d_i = Σ_c coeff_c(v_i) * s_c(p_i) + Σ_m Σ_j o^(m)_{g_m(k)}(c_m(i), j) * φ_mj(v_i) + eps_i
 ```
 
 where:
@@ -83,14 +83,15 @@ where:
   `K` chunk maps.
 - `g_m(k)` is the frame→group mapping for map `m` (identity by default; any
   per-frame value groups frames — the detector, the exposure, the night).
-- `σ_k` is an optional per-frame DC scalar (added when
-  `use_per_frame_scalar=True`).
+- A per-frame DC scalar is the offset block of a chunk map with one chunk
+  (the whole detector; `sc.Offsets("scalar", on="detector")` in a model):
+  one value per frame, solved and stored like any other map.
 - `eps_i` is noise.
 
 The calibrator flattens all valid pixels from all reprojected frames into a
 single sparse matrix equation `A x = b` where `x` stacks the per-component
-sky pixels, then K offset blocks (one per map), then optionally a per-frame
-scalar block. LSQR / LSMR returns the offsets that best explain the data
+sky pixels, then K offset blocks (one per map). LSQR / LSMR returns the
+offsets that best explain the data
 assuming a common underlying sky, which is also recovered as part of `x`.
 The exact column layout of `x` is owned by
 [`core/layout.py`](core/layout.py)'s `SystemLayout`.
@@ -139,21 +140,25 @@ the real homes below.
   - `Calibrator(Reprojector)` — Builds the sparse LSQR system
     (`setup_lsqr`), runs the solve (`apply_lsqr`), saves a calibration HDF5
     (`save_calibration`) with the per-component skymap(s), K per-map offset
-    arrays, optional per-frame scalar, and coverage information. Always-list
+    arrays and coverage information. Always-list
     API for K maps: `chunk_maps=[…]`, `reg_weights=[…]`, `adj_infos=[…]`,
-    `det_groups_list`, `det_templates`, `mean_offsets_list`, plus
+    `det_groups_list`, `det_templates`, plus
     `poly_constraints_list` for polynomial-degree constraints along
-    user-supplied chunk chains and `use_per_frame_scalar=True` to add an
-    explicit per-frame DC scalar block (decoupled from `det_groups_list`).
+    user-supplied chunk chains; hard constraints on a map's offsets go to
+    `apply_lsqr(exclusions=)`.
     The forward-looking spelling bundles these into a single `offset_model=`
     (`OffsetModel`) and `sky_model=` (`SkyModel`); both lower to the exact
     same parallel-list kwargs and are byte-equal. `load_calibration` handles
     the legacy single-map, the multi-map, and the multi-sky-component
-    schemas.
+    schemas, and refuses a cal of the older layout that holds the per-frame
+    scalar apart (`frame_scalar`).
   - `Mosaicker(Reprojector)` — Loads a calibration file (multi-schema
     reader), applies the K per-map offsets (each via its own
     `det_offset_funcs[m]`, summed into a single grid offset before
-    `det_to_sub`), and produces `mean`, `std`, and sigma-clipped mean maps
+    `det_to_sub`; a chunk below the coverage threshold is zeroed, and when the
+    frame observed it, its pixels leave the coadd unless the renderer fills it,
+    `fills_invalid`), and
+    produces `mean`, `std`, and sigma-clipped mean maps
     via parallel co-addition. Writes a multi-extension FITS with WCS
     headers via `save_mosaic`, and can append auxiliary maps (e.g.
     wavelength maps) with `append_maps`.
@@ -262,12 +267,12 @@ clarity:
   scratch) which the main process places into one CSR matrix (a `BlockCSR` /
   `ColSplitCSR` above `SELFCAL_BLOCK_NNZ`) **in batch-id order**
   (deterministic across runs). `col_bases` (length `K+1` array) marks
-  the column boundary between maps and the optional scalar block; the
+  the column boundaries of the maps (`col_bases[K]` is the column count); the
   full column layout is computed once by `SystemLayout`. Supported features:
   - **Multi-chunk-map offsets**: K independent offset blocks, summed
     additively in the model. Each map can independently set its own
-    adjacency reg, poly constraints, mean anchor, grouping, or
-    template.
+    adjacency reg, poly constraints, grouping, or
+    template. A per-frame scalar is a map of one chunk, like any other.
   - **Grouped offsets** (`det_groups_list[m]`): frames in the same
     group share one offset vector for map `m`. Reduces unknowns from
     `num_frames * num_chunks_m` to `num_groups_m * num_chunks_m`.
@@ -285,28 +290,18 @@ clarity:
     polynomial-of-degree-(L-2) annihilator. SPHEREx column-linearity
     helper: `compute_column_polynomial_chains(chunk_map, num_columns,
     degree=1)`.
-  - **Per-frame DC scalar** (`use_per_frame_scalar=True`): adds a
-    length-`num_frames` block to `x` decoupled from the
-    `det_groups_list` path. Combined with mean-zero anchors on each
-    map, this pushes per-frame DC entirely into the scalar so chunk
-    offsets only carry within-frame structure. Required for narrow
-    channels where sparse chunk coverage was previously letting
-    per-frame DC leak into scan-stripe residuals.
   - **Spectral / multi-component sky** (`sky_model=`, `det_aux=`):
     one sky block per `SkyModel` component (continuum + arbitrary
     spectral templates), with per-pixel line damping and a Fisher
     coverage map for masking the line at read time
     (`apply_line_fisher_mask`).
   - **Outlier rejection**: nMAD-based per-subframe z-score clip.
-  - **Mean-offset constraints** (`mean_offsets_list[m]`): soft
-    constraint forcing each frame's map-`m` chunk-offset mean to a
-    prescribed value. Weight hardcoded at 10.0.
   - **Coverage-weighted damping**: extra rows that damp sky pixels
     proportionally to `sqrt(coverage)`, suppressing poorly-covered
     regions without over-damping well-covered ones.
-  - Constraint rows (mean-offset, sky/offset damping) are assembled by
+  - Constraint rows (grouped adjacency, sky/offset damping) are assembled by
     the small builders in [`core/constraint_builders.py`](core/constraint_builders.py)
-    (`mean_offset_block`, `sky_damping_block`, `offset_damping_block`).
+    (`grouped_adjacency_block`, `sky_damping_block`, `offset_damping_block`).
 
 - **`apply_lsqr` (in [`core/solve.py`](core/solve.py))** — Handles
   zero-column elimination, optional float32 downcast, column-norm
@@ -319,9 +314,14 @@ clarity:
   (a float32 reassociation of ~1e-7 per product, ~1e-6 in the converged
   maps); `SELFCAL_PARALLEL_RMATVEC=1` selects the sequential kernel, the
   byte-exact verification mode. Both `lsmr` and `lsqr` solvers are
-  supported. Column-layout-agnostic (works for any K
-  and any scalar/no-scalar configuration). Also accepts a
+  supported. Column-layout-agnostic (works for any K). Also accepts a
   [`core/blockcsr.py`](core/blockcsr.py) `BlockCSR` (see below).
+  `exclusions=` imposes hard constraints on columns (an offset term with
+  no polynomial of a degree along a chunk axis, `sc.Offsets(exclude=)`)
+  exactly, by reparametrisation: the solver iterates only on unknowns
+  that satisfy them ([`core/projector.py`](core/projector.py)
+  `ColumnProjector`), with no constraint row and no weight, and imposes
+  them on the start vector too.
 
 - **[`core/blockcsr.py`](core/blockcsr.py)** — `BlockCSR`: row-block list
   representation that `setup_lsqr` emits instead of one giant CSR once total
@@ -332,10 +332,10 @@ clarity:
   matvec is row-local, and a thread of the row-split product (or the whole
   sequential product, in verification mode) scatters rows in the same global
   row order whatever the block boundaries (`_sparsetools.csc_matvec`).
-  `compute_x0_from_Ab` and `compute_x0_scalar_only` consume it too: one
-  walk streams any of the storages in row chunks through the same kernel
-  (`_column_sums`), with the bytes of one `bincount` over the entries in row
-  order.
+  The starts of [`core/solution.py`](core/solution.py) (`compute_x0_from_Ab`,
+  `compute_x0_offsets_fit`) consume it too: `compute_x0_from_Ab` streams any
+  of the storages in row chunks through one kernel (`_column_sums`), with the
+  bytes of one `bincount` over the entries in row order.
 
   `ColSplitCSR` in the same module is that storage cut a second way, into
   column ranges: `sub[b][t]` is storage block `b` restricted to columns
@@ -379,23 +379,23 @@ clarity:
 
 - **[`core/solution.py`](core/solution.py)** — Small utilities for the `x`
   vector:
-  - `parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list, num_frames=None)`
-    splits `x` into `(skymap, [det_offset_0, …, det_offset_{K-1}], frame_scalar)`.
+  - `parse_x(x, ref_shape, num_offset_groups_list, num_chunks_list)`
+    splits `x` into `(skymap, [det_offset_0, …, det_offset_{K-1}])`.
     Returns offsets as a list of K ndarrays. `parse_x_sky` exposes the
     per-component sky blocks for multi-component `SkyModel`s.
   - `encode_x(skymap, offsets)` concatenates sky + per-map offsets back
     into a single vector.
-  - `compute_x0_from_Ab(A, b, ref_shape)` derives an initial guess
-    (sky=0, full offset region from the diagonal least-squares estimate
-    `A_off^T b / diag(A_off^T A_off)`) without re-reading any files.
-  - `compute_x0_scalar_only(A, b, ref_shape, scalar_col_start)` seeds
-    *only* the per-frame scalar block (≈ weighted mean of valid b per
-    frame), leaving chunks and sky at 0. Use this when
-    `use_per_frame_scalar=True`.
+  - `compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks)` derives the
+    default start (`sc.Fit(seed='separate')`: sky=0, every offset column at
+    its diagonal least-squares estimate `A_off^T b / diag(A_off^T A_off)`)
+    without re-reading any files.
+  - `compute_x0_offsets_fit(A, b, ref_shape, num_sky_blocks)` starts every
+    offset column at its frame's joint least-squares fit, the sky at 0
+    (`seed='offsets'`).
 
 - **[`core/layout.py`](core/layout.py)** — `SystemLayout`: the single source
   of truth for the column layout of `x`
-  (`[sky blocks | offset block 0 … K-1 | per-frame scalars]`). Built once and
+  (`[sky blocks | offset block 0 … K-1]`). Built once and
   shared between `setup_lsqr` (to tell workers their per-map column bases) and
   `Calibrator` (to parse the solved `x` back into maps). Bit-identical to the
   historical inline computation.
@@ -449,7 +449,8 @@ clarity:
   calibration product (v3 named sky blocks, v2, the legacy v1 layout, stitched
   cals, N-pass sky and offset products): `sky(name)`, `sky_coverage`,
   `sky_fisher`, `sky_separability`, `offsets` (per map, per frame),
-  `frame_scalar`, `total_offsets()`, `reproj_list`, `chunk_maps`, `fit_ok`.
+  `reproj_list`, `chunk_maps`, `fit_ok`, and `check_offsets_complete()`, which
+  refuses an older cal that holds the per-frame scalar apart (`frame_scalar`).
   The mosaicker and the N-pass readers go through it.
 
 - **[`io/reprojection.py`](io/reprojection.py)** — `batch_reproject(...)`
@@ -654,9 +655,9 @@ A (sparse), b, per-map pixel_counts, col_bases
    |
    |  Calibrator.apply_lsqr      -> core.solve.apply_lsqr
    v
-x -> (skymap(s), [det_offset_0, ..., det_offset_{K-1}], frame_scalar)
+x -> (skymap(s), [det_offset_0, ..., det_offset_{K-1}])
    |
-   |  Calibrator.save_calibration  (schema: sky/<component> + offsets/map_m groups + frame_scalar)
+   |  Calibrator.save_calibration  (schema: sky/<component> + offsets/map_m groups)
    v
 calibration/cal_*.h5
    |
@@ -743,7 +744,7 @@ for one job:
 import numpy as np
 from selfcal import PipelineConfig, Reprojector, Calibrator, Mosaicker
 from selfcal import OffsetModel, OffsetBlock, SkyModel, set_hdd_io_limit
-from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.core.solution import compute_x0_from_Ab
 
 cfg = PipelineConfig(
     output_dir='/path/to/outputs',
@@ -756,15 +757,13 @@ rr = Reprojector(cfg, exposure_list=fits_paths)
 rr.define_reference(padding_pixels=100, use_ext=[1])
 rr.run_reproject(max_workers=50, sci_ext_list=[1], dq_ext_list=[2])
 
-# Calibration: one offset map, smooth between neighbouring chunks, the per-frame
-# mean anchored at 0, plus an explicit per-frame scalar (the offset's DC)
+# Calibration: one offset map, smooth between neighbouring chunks, with no constant
+# in any frame, plus a map of one chunk (the whole detector): the per-frame scalar
 cc = Calibrator(cfg)
-num_frames_run = len(cc.reproj_list)
 cc.setup_lsqr(
-    offset_model=OffsetModel(
-        blocks=(OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info, reg_weight=0.1,
-                            mean_offset=np.zeros(num_frames_run)),),
-        use_per_frame_scalar=True),
+    offset_model=OffsetModel(blocks=(
+        OffsetBlock(chunk_map=det_chunk_map, adj_info=adj_info, reg_weight=0.1),
+        OffsetBlock(chunk_map=np.zeros_like(det_chunk_map)))),
     sky_model=SkyModel.continuum_only(),
     grid_valid_weight=weight,
     offset_regularization=True,
@@ -772,14 +771,18 @@ cc.setup_lsqr(
     outlier_thresh=5.0,
     batch_size=50, max_workers=48,
 )
-x0 = compute_x0_scalar_only(
+# The hard constraint: no constant over each frame's chunks of map 0 (the columns of
+# each frame's chunks, and the direction excluded on them)
+n_frames, n_chunks = len(cc.reproj_list), cc.num_chunks_list[0]
+no_constant = [(cc.col_bases[0] + n_chunks * np.arange(n_frames)[:, None] + np.arange(n_chunks),
+                np.ones((n_chunks, 1)))]
+x0 = compute_x0_from_Ab(           # the default start: each offset column alone
     cc.A, cc.b, cc.ref_shape,
-    scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
     num_sky_blocks=cc.num_sky_blocks,
     active_mask=cc.active_mask,       # setup_lsqr compacted the zero columns
 )
 cc.apply_lsqr(x0=x0, iter_lim=50, solver='lsqr', damp=0,
-              use_float32=True, n_threads=48)
+              use_float32=True, n_threads=48, exclusions=no_constant)
 cal_path = cc.save_calibration(cal_file='cal.h5')
 
 # Mosaic
@@ -801,7 +804,8 @@ mm.save_mosaic(mos_file='mosaic.fits', overwrite=True)
 
 Sky terms with coefficients, offset bases, data variables beyond the detector
 maps and user priors are further `setup_lsqr` arguments (`sky_model`, a block's
-`basis`, `variables`, `priors`); see
+`basis`, `variables`, `priors`); a model's hard constraints are built by
+`ModelSpec.column_exclusions(geom, layout)`; see
 [`../docs/bring_your_own_telescope.md`](../docs/bring_your_own_telescope.md). The
 flat per-map keyword lists (`chunk_maps=`, `adj_infos=`, ...) are still accepted
 but deprecated. For a K=2 example (LVF chunks + detector-fixed readout-channel
@@ -846,9 +850,10 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`core/lsqr.py`](core/lsqr.py) | Back-compat re-export shim over assembly/system/solve. |
 | [`core/subframe.py`](core/subframe.py) | Unified `_prep_subframe` used by coadd & LSQR. |
 | [`core/coadd.py`](core/coadd.py) | Parallel mean / std / sigma-clip (+ wavelength) coaddition, sparse caching, deterministic flush order. |
-| [`core/solution.py`](core/solution.py) | `parse_x`, `encode_x`, `compute_x0_from_Ab`, `compute_x0_scalar_only`. |
+| [`core/solution.py`](core/solution.py) | `parse_x`, `encode_x`, the starts `compute_x0_from_Ab` and `compute_x0_offsets_fit`. |
 | [`core/layout.py`](core/layout.py) | `SystemLayout` — column layout of `x`. |
-| [`core/constraint_builders.py`](core/constraint_builders.py) | Mean-offset / sky / offset damping constraint rows. |
+| [`core/projector.py`](core/projector.py) | `ColumnProjector`: hard constraints on columns by reparametrisation (`apply_lsqr(exclusions=)`, `sc.Offsets(exclude=)`). |
+| [`core/constraint_builders.py`](core/constraint_builders.py) | Grouped-adjacency / sky / offset damping constraint rows. |
 | [`models/sky_model.py`](models/sky_model.py) | `SkyModel`, `SkyComponent` (a map times an optional `Coefficient`: any function of data variables), `ImportedFunction`. |
 | [`models/profiles.py`](models/profiles.py) | Ready-made coefficient functions: `GaussianProfile`, `TemplateProfile`, `LinearProfile`, `QuadratureSigma`. |
 | [`models/offset_model.py`](models/offset_model.py) | `OffsetModel` / `OffsetBlock` per-map offset bundling. |

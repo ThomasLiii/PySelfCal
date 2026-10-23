@@ -82,8 +82,8 @@ The script defines three objects, then acts on them:
 - **`sc.Recipe`** is what to solve and how. `sc.continuum(...)` is the model: a sky map, an offset
   for every frame and chunk with a smoothness prior between neighbouring chunks and a zero mean in
   each frame, a scalar for every frame, and a damping that pulls the sky toward zero. `sc.Fit` is
-  the solve (at most 200 LSQR iterations, to a tolerance of 1e-8), `sc.Coadd` the mosaic (a
-  sigma-clipped mean at 3 sigma; `coadd=None` makes none) and `sc.Numerics` the summation layout
+  the solve (at most 200 iterations of the default solver, CGLS, to a tolerance of 1e-8),
+  `sc.Coadd` the mosaic (a sigma-clipped mean at 3 sigma; `coadd=None` makes none) and `sc.Numerics` the summation layout
   (threads and batch sizes, which change only the last bits of the products). The `name` ends the
   product names.
 
@@ -107,7 +107,7 @@ python examples/quickstart/quickstart.py
 ```
 
 ```text
-[selfcal] reproject quickstart: record quickstart_output/quickstart/records/reproject_20261002-152431_3042735.json
+[selfcal] reproject quickstart: record quickstart_output/quickstart/records/reproject_20261022-164709_609510.json
 Globbed 24 candidate exposures
 Reference WCS not found at quickstart_output/quickstart/ref.fits. Creating a new reference frame.
 ...
@@ -118,24 +118,24 @@ Batch reprojection completed. 24 frames successfully processed out of 24 (0 fail
 ...
 Plan: calibrate quickstart  (quickstart_output/quickstart)
   instrument  Camera((64, 64), dq_ext=2, tag='Sim')
-  recipe      Recipe(Model(sky=(Sky(damping=0.001),), offsets=(Offsets(smooth=0.1, mean_zero=True),)), ...)
+  recipe      Recipe(Model(sky=(Sky(damping=0.001),), offsets=(Offsets(smooth=0.1, exclude=Poly(0)), Offsets('scalar', on='detector'))), ...)
   sky term    continuum: damping 0.001
-  offsets     Offsets(smooth=0.1, mean_zero=True)
+  offsets     Offsets(smooth=0.1, exclude=Poly(0))
+  offsets     Offsets('scalar', on='detector')
   frames      24 in quickstart_output/quickstart/reprojected (staged (copy) to quickstart_output/cache/reproj_nvme_quickstart)
   cal All                cal_Sim_Chunks4x4_All_quickstart.h5  (made)
   mosaic All             mosaic_Sim_Chunks4x4_All_quickstart.fits  (made)
-[selfcal] calibrate quickstart: record quickstart_output/quickstart/records/calibrate_20261002-152434_3042735.json
+[selfcal] calibrate quickstart: record quickstart_output/quickstart/records/calibrate_20261022-164712_609510.json
 Copying 24 reproj files to NVMe (quickstart_output/cache/reproj_nvme_quickstart)...
 Processing All (Sim_Chunks4x4)...
 ...
-Applying target mean offset constraints for map 0 (24 frames)...
 Applying Coverage-Weighted Damping (continuum, damp=0.001)...
 Compacting zero-coverage columns inline (11769/16158 active).
 ...
-Solving least squares for 11769 unknowns with 105803 equations (solver=lsqr).
+Column constraints: ColumnProjector(24 groups, 1 directions per group, 384 columns) (the solver runs on A P: no row, no weight)
+Solving least squares for 11769 unknowns with 105779 equations (solver=cgls).
 ...
-istop =       2   r1norm = 1.1e+01   anorm = 1.8e+01   arnorm = 1.2e-06
-itn   =     137   r2norm = 1.1e+01   acond = 9.3e+02   xnorm  = 1.6e+02
+CGLS finished: istop = 7, itn = 200, r1norm = 1.1e+01, arnorm = 9.6e-05
 ...
 Calibration saved to quickstart_output/quickstart/calibration/cal_Sim_Chunks4x4_All_quickstart.h5
 ...
@@ -145,7 +145,7 @@ NVMe reproj cache cleaned up.
 Result of quickstart: 1 job(s)
   All: cal quickstart_output/quickstart/calibration/cal_Sim_Chunks4x4_All_quickstart.h5
        mosaic quickstart_output/quickstart/mosaic/mosaic_Sim_Chunks4x4_All_quickstart.fits
-  record: quickstart_output/quickstart/records/calibrate_20261002-152434_3042735.json
+  record: quickstart_output/quickstart/records/calibrate_20261022-164712_609510.json
 ```
 
 **The reprojection.** `FIELD.reproject` finds the exposures that match the glob, then defines the
@@ -168,8 +168,9 @@ so a run that cannot finish stops before it starts. From the shell,
 **The solve.** An observation is the value of one frame on one pixel of the reference grid. The
 model of `sc.continuum` is the sky at that pixel, plus the offset of the chunk the pixel fell on,
 plus the frame's scalar; `calibrate` writes one equation per valid observation, adds the priors
-(smoothness between neighbouring chunks, a zero mean for each frame's offsets, the damping of the
-sky) and solves for all the unknowns at once with LSQR, an iterative sparse least-squares solver.
+(smoothness between neighbouring chunks, the damping of the sky), keeps each frame's chunk offsets
+at zero mean (a hard constraint, which adds no equation: the `Column constraints` line of the log)
+and solves for all the unknowns at once with CGLS, an iterative sparse least-squares solver.
 It then subtracts the solved offsets and scalars from every frame and coadds the frames into the
 mosaic.
 
@@ -178,17 +179,18 @@ mosaic.
 - The 11,769 unknowns are the 11,361 pixels of the sky map that at least one frame observes, 384
   offsets (24 frames x 16 chunks) and 24 scalars. The other 4,389 pixels of the 125 x 126 grid have
   no data and are left out of the solve.
-- `istop = 2` means that LSQR stopped because the solution met the tolerance, here after 137
-  iterations; `istop = 7` would mean it ran out of iterations.
+- `istop = 7` means that the solver ran to its iteration limit, the 200 of `sc.Fit(200, ...)`;
+  `istop = 2` would mean that the solution met the tolerance first. The residual (`r1norm`, printed
+  every tenth iteration) has its final value, 10.65, from iteration 30 on.
 
 **The products** are named after the stem `<tag>_Chunks<rows>x<cols>_<job>_<recipe name>`. A job is
 one solve of the instrument's loop (SPHEREx runs one per channel or subchannel window); a camera has
 a single job, `All`:
 
 - `calibration/cal_Sim_Chunks4x4_All_quickstart.h5`, the solution: the sky map on the reference grid
-  with its coverage, the offset of every frame and chunk, the scalar of every frame and the list of
-  frames. Read it with [`CalFile`][selfcal.io.calfile.CalFile], or with `result.cal()` from the
-  result `calibrate` returns ([format](../guide/pipeline.md#cal_h5-schema-multi-chunk-map)).
+  with its coverage, the offset of every frame and chunk, the scalar of every frame (a second offset
+  map, of one chunk) and the list of frames. Read it with [`CalFile`][selfcal.io.calfile.CalFile],
+  or with `result.cal()` from the result `calibrate` returns ([format](../guide/pipeline.md#cal_h5-schema-multi-chunk-map)).
 - `mosaic/mosaic_Sim_Chunks4x4_All_quickstart.fits`, the coadd of the calibrated frames: the mean
   (`MEAN_MAP`), the standard deviation (`STD_MAP`) and the sigma-clipped mean (`SC_MEAN_MAP`), each
   followed by its summed weight (with unit pixel weights, the number of frames that contribute to
@@ -217,8 +219,9 @@ python examples/quickstart/inspect_results.py
 ```text
 cal_Sim_Chunks4x4_All_quickstart.h5: schema v3
   sky blocks: ['continuum'] on (125, 126)
-  offset maps: 1, frames: 24, frame scalar: yes
-  attrs: num_maps=1, num_sky_blocks=1, schema_version=3
+  offset maps: 2, frames: 24
+  attrs: num_maps=2, num_sky_blocks=1, schema_version=3
+  solve: cgls, 200 iterations (istop 7: the iteration limit was reached), |b - A x| = 10.653607674252902
   offsets (24, 16), scalars (24,); the sky map is observed on 11361 pixels, up to 24 times
 mosaic_Sim_Chunks4x4_All_quickstart.fits:
   MEAN_MAP            125 x 126
