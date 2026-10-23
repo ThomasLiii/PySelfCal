@@ -50,6 +50,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
+| `sc.Fit(min_observations=2)` | leave out of the solve the sky pixels a single observation covers |
 | `sc.Result` | the products, with readers |
 
 ### Instruments and jobs
@@ -98,7 +99,10 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   polynomial of degree ≤ `k` along the axis (per group of frames), imposed exactly in the solver,
   with no row and no weight; `exclude=sc.Poly(0)` needs no `along` (no constant over all of a
   group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
-  value per frame.
+  value per frame. `exclude=sc.SkySignature(k)` keeps a per-frame term from taking up the smooth sky
+  fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
+  constant); it needs `sc.Fit(deflate=...)`
+  ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds
   parameters (`sc.Function(above_80, t0=70.0)`). Built-in shapes: `sc.template(file)`,
