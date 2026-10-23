@@ -204,44 +204,12 @@ def test_every_pattern_but_the_constant(tmp_path):
     assert d['gauges'] == 1 and e.std() < 1e-5 and info['constraint_held'] < 1e-10
 
 
-def test_every_offset_term_follows_the_rule(tmp_path):
-    """The model-wide rule over every offset term of the toy: the row constants, the slopes and the column pattern
-    shared by every frame. The shared term is the same in every frame, so it is skipped and recorded; the
-    mean stays the one exact gauge (the constant pattern is not excluded); with true constants and slopes that hold
-    nothing along the signatures, the true sky comes back."""
-    t = _toy(quad=0.8, shared=True, seed=11, const_scale=0.0)
-    sig = [(t['const_cols'], 'all', 'rows', t['const_chunks']), (t['slope_cols'], 'all', 'slopes', t['slope_chunks']),
-           (t['shared_cols'], 'all', 'columns', t['shared_chunks'])]
-    x, rec = _solve(t, sc.Deflate(2), str(tmp_path), signatures=sig)
-    d = json.loads(rec.deflation)
-    by = {r['term']: r for r in d['signature_exclusions']}
-    e, _ = _error(t, x)
-    print(f"every term: rows {by['rows'].get('directions')}, slopes {by['slopes'].get('directions')} directions, "
-          f"columns {by['columns'].get('skipped')}; |solved - true sky| rms {e.std():.2e}")
-    assert 'skipped' in by['columns'] and 'skipped' not in by['rows'] and 'skipped' not in by['slopes']
-    assert d['gauges'] == 1 and e.std() < 1e-5 and by['rows']['constraint_held'] < 1e-10
-
-
-def test_the_model_wide_setting():
-    from selfcal.models.spec import ModelSpec
-    m = sc.Model(offsets=[sc.Offsets('c', on='subchannel'), sc.Offsets('xs', on='subchannel'),
-                          sc.Offsets('cols', on='detector_column', per='all'), sc.Offsets('scalar', on='detector')],
-                 sky_signature=sc.SkySignature('all'))
-    table = m.lower()
-    assert table['sky_signature'] == 'all' and ModelSpec.from_config(table).sky_signature == 'all'
-    assert 'sky_signature' not in sc.Model(offsets=[sc.Offsets(on='subchannel')]).lower()
-
-    class _Layout:                                        # terms of 2 groups x 3 chunks (twice), 1 x 4, and 2 x 1 (a scalar)
-        col_bases = [10, 16, 22, 26, 28]
-        num_chunks_list = [3, 3, 4, 1]
-    out = ModelSpec.from_config(table).signature_exclusions(_Layout())
-    assert [(o[2], o[1]) for o in out] == [('c', 'all'), ('xs', 'all'), ('cols', 'all'), ('scalar', 'all')]
-    assert list(out[0][3]) == [0, 1, 2, 0, 1, 2] and list(out[3][0]) == [26, 27] and list(out[3][3]) == [0, 0]
-    with pytest.raises(sc.ConfigError, match='one or the other'):
-        sc.Model(offsets=[sc.Offsets('xs', on='subchannel', exclude=sc.SkySignature(1))],
-                 sky_signature=sc.SkySignature('all'))
-    with pytest.raises(sc.ConfigError):
-        sc.Model(sky_signature='all')
+def test_a_term_the_same_in_every_frame_is_refused(tmp_path):
+    """A term with nothing that changes from frame to frame (the toy's column pattern shared by every frame) has no
+    response to the sky fields beyond its detector-fixed part: the constraint asked on it is refused."""
+    t = _toy(quad=0.8, shared=True, seed=11)
+    with pytest.raises(ValueError, match='nothing to constrain'):
+        _solve(t, sc.Deflate(2), str(tmp_path), signatures=[(t['shared_cols'], 'all', 'columns', t['shared_chunks'])])
 
 
 def test_the_setting_lowers_and_needs_the_deflation(tmp_path):

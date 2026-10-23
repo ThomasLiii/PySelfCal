@@ -279,11 +279,6 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
   too) but the constant, instead of the polynomials up to a degree.
-- `sc.Model(..., sky_signature=sc.SkySignature('all'))`: the same rule for every offset term of the
-  model at once, so no term is named: no term may carry its response to
-  the deflation's sky fields beyond the part that is the same in every frame (a pattern fixed on the
-  detector). A term shared by every frame consists of that part only, so it is skipped (the
-  deflation's record says so); the constant is never excluded, so the zero point stays free.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.

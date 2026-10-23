@@ -404,7 +404,6 @@ class ModelSpec:
     variables: tuple = ()
     weight: object = None
     priors: tuple = ()
-    sky_signature: object = None         # Model(sky_signature=): 1, 2 or 'all', for every offset term
 
     def __post_init__(self):
         object.__setattr__(self, 'sky', tuple(
@@ -440,15 +439,14 @@ class ModelSpec:
         variables = t.pop('variables', None) or {}
         weight = t.pop('weight', None)
         priors = t.pop('prior', None) or t.pop('priors', None) or []
-        sky_signature = t.pop('sky_signature', None)
         if t:
             raise ValueError(f"unknown [model] keys {sorted(t)}; expected sky / offset / variables / "
-                             f"weight / prior / mosaic / sky_signature")
+                             f"weight / prior / mosaic")
         return cls(sky=tuple(_sky_term(dict(s)) for s in sky),
                    offset=tuple(OffsetTerm(**dict(o)) for o in offset), mosaic=mosaic,
                    variables=tuple(VariableSpec.from_config(k, v) for k, v in dict(variables).items()),
                    weight=None if weight is None else dict(weight),
-                   priors=tuple(PriorSpec.from_config(p) for p in priors), sky_signature=sky_signature)
+                   priors=tuple(PriorSpec.from_config(p) for p in priors))
 
     # ---- properties ------------------------------------------------------------------------
     @property
@@ -677,16 +675,15 @@ class ModelSpec:
         """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
         solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the
         term's full-layout columns (every group, chunk and function), ``k`` the largest degree of the sky
-        polynomials whose response the term may not carry (``'all'``: every pattern but the constant;
-        ``Model(sky_signature=)``: every offset term), and ``chunk`` each column's place within its group (the columns
-        of one ``chunk`` value, one per group, hold the term's detector-fixed configurations). Empty without such
-        terms."""
+        polynomials whose response the term may not carry (``'all'``: every pattern but the constant), and ``chunk``
+        each column's place within its group (the columns of one ``chunk`` value, one per group, hold the term's
+        detector-fixed configurations). Empty without such terms."""
         def deg(k):
             return k if k == 'all' else int(k)
 
         out = []
         for m, term in enumerate(self.offset):
-            k = self.sky_signature if self.sky_signature is not None else term.signature_degree
+            k = term.signature_degree
             if k is None:
                 continue
             base, nc = int(layout.col_bases[m]), int(layout.num_chunks_list[m])
