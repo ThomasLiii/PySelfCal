@@ -37,5 +37,5 @@ def test_detector_column_map_follows_the_oversampling():
 
 def test_a_shared_column_term_builds_on_the_map():
     term = sc.Offsets('columns', on='detector_column', per='all')
-    model = sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(on='subchannel', mean_zero=True), term])
-    assert model.offsets[-1].on == 'detector_column' and model.offsets[-1].per == 'all'
+    model = sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), term, sc.Offsets('scalar', on='detector')])
+    assert model.offsets[1].on == 'detector_column' and model.offsets[1].per == 'all'

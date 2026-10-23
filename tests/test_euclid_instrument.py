@@ -71,17 +71,17 @@ def test_grouped_damped_terms():
     geom = inst.geometry(1)
     spec = ModelSpec(sky=(SkyTerm('continuum'),), offset=(
         OffsetTerm(map='grid', kind='grouped', groups='detector', reg_weight=0.1, adjacency=('row', 'col'),
-                   mean_zero=True, exact_group_rows=True),
+                   exclude_degree=0, exact_group_rows=True),
         OffsetTerm(map='col_strips', kind='free', adjacency=(), damp=0.3),
-        OffsetTerm(map='row_strips', kind='free', adjacency=(), damp=0.3)), scalar=True)
+        OffsetTerm(map='row_strips', kind='free', adjacency=(), damp=0.3),
+        OffsetTerm(map='detector', name='scalar')))
     frames = [f'/a/exp_{i:04d}_det_{i % 3:02d}.h5' for i in range(7)]
     om = spec.build_offset_model(geom, 7, frame_groups=inst.frame_groups(frames))
-    assert om.num_maps == 3 and om.use_per_frame_scalar
-    assert om.blocks[0].det_groups.tolist() == [0, 1, 2, 0, 1, 2, 0] and om.blocks[0].mean_offset.shape == (7,)
+    assert om.num_maps == 4 and om.blocks[3].chunk_map.max() == 0
+    assert om.blocks[0].det_groups.tolist() == [0, 1, 2, 0, 1, 2, 0]
     assert om.blocks[1].adj_info is None and om.blocks[1].det_groups is None
-    assert spec.setup_kwargs() == {'damp_offset_maps': [0.0, 0.3, 0.3], 'mean_offset_group_rows': True,
-                                   'group_adjacency_maps': [0]}
-    plain = ModelSpec(offset=(OffsetTerm(kind='free', reg_weight=0.1, mean_zero=True),))
+    assert spec.setup_kwargs() == {'damp_offset_maps': [0.0, 0.3, 0.3, 0.0], 'group_adjacency_maps': [0]}
+    plain = ModelSpec(offset=(OffsetTerm(kind='free', reg_weight=0.1, exclude_degree=0),))
     assert plain.setup_kwargs() == {}
     try:
         spec.build_offset_model(geom, 7, frame_groups={})

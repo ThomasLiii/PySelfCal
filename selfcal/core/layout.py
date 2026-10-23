@@ -4,8 +4,7 @@ The solution vector ``x`` produced by :func:`selfcal.core.system.setup_lsqr` is
 a flat concatenation of blocks::
 
     x = [ sky block            (num_sky_blocks * num_sky cols)
-        | offset block 0 | offset block 1 | ... | offset block K-1
-        | per-frame scalars    (num_scalar_cols cols) ]
+        | offset block 0 | offset block 1 | ... | offset block K-1 ]
 
 where ``num_sky = ref_h * ref_w``. Each offset block ``m`` spans
 ``num_offset_groups[m] * num_chunks[m]`` columns, except in *template* mode
@@ -46,21 +45,18 @@ class SystemLayout:
     num_chunks_list: list
     det_template_arr_list: list
     frame_to_group_list: list
-    num_scalar_cols: int
-    col_bases: list  # length K+1; col_bases[K] == scalar_col_start
+    col_bases: list  # length K+1; col_bases[K] == total_cols
     poly_basis_list: list = None  # per-map hard-poly spec or None
 
     # Derived (filled in __post_init__).
     num_sky: int = field(init=False)
     num_sky_eff: int = field(init=False)
-    scalar_col_start: int = field(init=False)
     total_cols: int = field(init=False)
 
     def __post_init__(self):
         self.num_sky = int(self.ref_shape[0]) * int(self.ref_shape[1])
         self.num_sky_eff = self.num_sky_blocks * self.num_sky
-        self.scalar_col_start = self.col_bases[-1]
-        self.total_cols = self.scalar_col_start + self.num_scalar_cols
+        self.total_cols = self.col_bases[-1]
 
     @property
     def num_maps(self) -> int:
@@ -72,7 +68,6 @@ class SystemLayout:
               num_sky_blocks: int, num_frames: int,
               det_groups_list: list[np.ndarray | None] | None = None,
               det_templates: list[np.ndarray | None] | None = None,
-              use_per_frame_scalar: bool = False,
               poly_basis_list: list[dict | None] | None = None,
               basis_list: list | None = None) -> SystemLayout:
         """Compute the column layout from the setup inputs.
@@ -100,14 +95,10 @@ class SystemLayout:
             Number of exposure frames.
         det_groups_list : list[np.ndarray | None] | None, optional
             Per-map arrays mapping each frame to a detector-group id, or ``None``
-            for one group per frame. Enabling grouping on any map also allocates
-            the per-frame scalar block.
+            for one group per frame.
         det_templates : list[np.ndarray | None] | None, optional
             Per-map fixed detector templates; a set template collapses map ``m``
             to one per-frame amplitude column and requires ``det_groups_list[m]``.
-        use_per_frame_scalar : bool, optional
-            Force allocation of the ``num_frames``-wide per-frame scalar block
-            even when no map uses detector groups.
         poly_basis_list : list[dict | None] | None, optional
             Per-map hard polynomial-basis spec (with keys such as
             ``'num_groups'``) or ``None``; incompatible with ``det_groups_list``
@@ -132,8 +123,6 @@ class SystemLayout:
             poly_basis_list = [None] * K
         if basis_list is None:
             basis_list = [None] * K
-
-        any_det_groups = any(g is not None for g in det_groups_list)
 
         frame_to_group_list = []
         num_offset_groups_list = []
@@ -188,8 +177,6 @@ class SystemLayout:
             num_chunks_list.append(num_chunks_m)
             det_template_arr_list.append(tmpl)
 
-        num_scalar_cols = num_frames if (any_det_groups or use_per_frame_scalar) else 0
-
         num_sky = int(ref_shape[0]) * int(ref_shape[1])
         col_bases = [num_sky_blocks * num_sky]
         for m in range(K):
@@ -207,7 +194,6 @@ class SystemLayout:
             num_chunks_list=num_chunks_list,
             det_template_arr_list=det_template_arr_list,
             frame_to_group_list=frame_to_group_list,
-            num_scalar_cols=num_scalar_cols,
             col_bases=col_bases,
             poly_basis_list=list(poly_basis_list),
         )
@@ -242,14 +228,3 @@ class SystemLayout:
             Column slice spanning offset block ``m``.
         """
         return slice(self.col_bases[m], self.col_bases[m + 1])
-
-    def scalar_slice(self) -> slice:
-        """Columns of the per-frame scalar block (empty slice if none).
-
-        Returns
-        -------
-        slice
-            Column slice spanning the per-frame scalar block; empty when
-            ``num_scalar_cols == 0``.
-        """
-        return slice(self.scalar_col_start, self.total_cols)

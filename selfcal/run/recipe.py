@@ -373,7 +373,7 @@ class Deflate(Config):
     The solution includes the patterns' least-squares values at once: where the data barely constrain
     a pattern (the record's ``nullness``), that value is what the data say, however large, while an
     unconverged plain solve would still be near its start. Directions the data cannot see at all
-    (gauges: the sky's mean against per-frame scalars; a plane or quadratic the offsets absorb
+    (gauges: the sky's mean against the frames' levels; a plane or quadratic the offsets absorb
     exactly) are recognised and left as a plain solve leaves them. A gauge the patterns contain only in
     part (a higher-degree pattern the offsets absorb exactly, which needs a flat geometry and offsets
     of that degree) would make the solve drift along it once converged: deflate it whole
@@ -447,7 +447,8 @@ class Gauge(Config):
     against the frame's x axis on the grid, with a slope fixed on the detector as the nuisance -- and
     moved into the sky: added to the cal's sky term and, ``apply="map"``, to the maps of every mosaic
     made from the cal (the offsets stay as solved; exact), or, ``apply="offsets"``, removed from the
-    offsets instead (exact only up to the band discretisation). ``degree=2`` moves a sky quadratic
+    offsets instead (exact only up to the band discretisation; the constant term takes each frame's
+    change of level, so it has no ``exclude=``). ``degree=2`` moves a sky quadratic
     too, fitted with the plane to every (frame, chunk) slope, with a detector-fixed slope per chunk
     and a polynomial of degree ``position_degree`` (default 2) in the frame's position as the
     nuisance. A quadratic is not a freedom of the model: its curvature along x within a frame has no
@@ -522,11 +523,13 @@ class Fit(Config):
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
     :class:`Gauge`; None: the solution as solved).
-    ``seed``: the solver's starting vector: ``'scalar'`` (each frame's scalar at the mean of its data, every
-    other column at zero; without scalars each non-sky column at its own diagonal estimate) or ``'offsets'``
-    (every non-sky column at its frame's joint least-squares fit to the data, the sky at zero:
-    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). A warm start
-    (``calibrate(start=)``) replaces them.
+    ``seed``: the solver's starting vector: ``'separate'`` (every offset column at its own least-squares fit
+    to the data, as if every other unknown were zero: a constant at the weighted mean of its pixels; the sky
+    terms at zero: :func:`~selfcal.core.solution.compute_x0_from_Ab`) or ``'offsets'`` (every offset column
+    at its frame's joint least-squares fit to the data, the sky at zero:
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). The terms'
+    hard constraints (``exclude=``) are then imposed on the start. A warm start (``calibrate(start=)``)
+    replaces them.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -546,12 +549,13 @@ class Fit(Config):
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
-    seed: Literal['scalar', 'offsets', 'zero'] = added('scalar', since='2026-10')
+    seed: Literal['separate', 'offsets', 'zero'] = added('separate', since='2026-10')
 
     def _validate(self):
-        if self.seed not in ('scalar', 'offsets', 'zero'):
-            raise ConfigError(f"Fit(seed={self.seed!r}): 'scalar' (each frame's scalar at its data's mean, the rest at zero), "
-                              f"'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) or 'zero' (everything at zero)")
+        if self.seed not in ('separate', 'offsets', 'zero'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'separate' (every offset column at its own least-squares fit, the sky "
+                              f"at zero), 'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) "
+                              f"or 'zero' (everything at zero)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

@@ -84,7 +84,7 @@ def _setup(paths, sky_model, bc_det, postprocess=None):
                       det_aux=[bc_det, np.full(DET, 0.03)], max_workers=2, batch_size=20,
                       apply_mask=True, apply_weight=True,
                       outlier_thresh=100.0, weighted_damping=True, damp_weight=1e-3,
-                      damp_weight_line=1e-3, use_per_frame_scalar=False,
+                      damp_weight_line=1e-3,
                       postprocess_func=postprocess)
 
 
@@ -179,11 +179,12 @@ def noise_norm(paths, sigma=2e-3):
 
 
 def fixed_sky_fit(paths, sky_model, bc_det, det_chunk_map, poly_basis, hook):
-    """The OFFSET pass's system over ``paths`` -- a polynomial-basis offset per group plus a frame
-    scalar, the sky held fixed (``hook`` subtracts it, or None) -- each frame's rows reduced to its
-    normal equations and solved directly. Returns ``(the true residual norm, the columns solved)``."""
-    r = setup_lsqr(paths, REF, chunk_maps=[det_chunk_map], poly_basis_list=[poly_basis],
-                   use_per_frame_scalar=True, sky_model=sky_model, det_aux=[bc_det, np.full(DET, 0.03)],
+    """The OFFSET pass's system over ``paths`` -- a polynomial-basis offset per group plus a per-frame
+    scalar (an offset of one chunk), the sky held fixed (``hook`` subtracts it, or None) -- each frame's
+    rows reduced to its normal equations and solved directly. Returns ``(the true residual norm, the
+    columns solved)``."""
+    r = setup_lsqr(paths, REF, chunk_maps=[det_chunk_map, np.zeros_like(det_chunk_map)],
+                   poly_basis_list=[poly_basis, None], sky_model=sky_model, det_aux=[bc_det, np.full(DET, 0.03)],
                    max_workers=2, batch_size=20, apply_mask=True, apply_weight=True, outlier_thresh=100.0,
                    postprocess_func=hook, fixed_sky=True, reduce=normal_equations)
     assert r.A is None                                                        # no matrix

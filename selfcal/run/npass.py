@@ -1,7 +1,7 @@
 """N-pass alternating solve (task ``npass``) — a scheduler over the engine.
 
 The joint problem -- the model's sky terms ``S`` (one map per term) and its offsets ``a`` (whatever
-offset terms the model has, and the per-frame scalar) -- is solved by **alternating least squares**,
+offset terms the model has) -- is solved by **alternating least squares**,
 each half solved exactly, in a schedule of three pass types::
 
     INIT    pass 1      S, a jointly   — the joint solve (a plain or tiled ``cal`` run)
@@ -28,7 +28,7 @@ The schedule is INIT, then SKY and OFFSET passes alternately, ``order`` saying w
 Every SKY/OFFSET pass is an exact block minimization of the joint objective, so the objective is
 non-increasing in N. More passes are not automatically
 better: along the exact null spaces (uniform line floor <-> static detector pattern; uniform sky
-<-> per-frame scalars) the objective is flat and the iterate can drift, so the scheduler records
+<-> the frames' levels) the objective is flat and the iterate can drift, so the scheduler records
 per-pass monitors (residual RMS, step norms, gauge indicators) in ``<stem>_npass_monitor.json`` and
 ``stop_tol`` can stop early. Each pass writes a product (``<stem>_pass{i}sky.h5`` /
 ``_pass{i}off.h5``); a re-run skips passes whose product exists. An OFFSET pass also keeps its
@@ -133,7 +133,7 @@ def run_npass(spec, ctx=None, *, run_calibration):
     # ---- passes >= 2 ----------------------------------------------------------
     run.resolve_frames(res)
     products = {1: init_cals}
-    prev_offsets = init_cals          # list of cals holding offsets/map_0 + frame_scalar
+    prev_offsets = init_cals          # list of cals holding offsets/map_<m>
     prev_sky = init_sky
     prev_sky_product = None           # last SKY-pass product (for step norms)
     prev_off_product = None

@@ -134,7 +134,7 @@ def test_by_value_runs_and_cannot_be_submitted(toy_field):
     field = toy_field
     ramp = sc.by_value(lambda det_x: (det_x - 32.0) / 64.0)
     recipe = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.001), sc.Sky('ramp', times=sc.Function(ramp, of='det_x'))],
-                                offsets=[sc.Offsets(smooth=0.1, mean_zero=True)]),
+                                offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),
                        fit=sc.Fit(20), coadd=None, numerics=sc.Numerics(2, batch=4), name='byvalue')
     result = field.calibrate(recipe)
     with result.cal() as cal:
@@ -301,8 +301,8 @@ _RULES = {
     # no smoothness or polynomial rows (the switch) -> every offset term smooth=0 and no poly_prior
     'noreg': dict(mode='continuum', cal='offset_regularization = false\nweighted_damping = true\ndamp_weight = 0.001',
                   rest='[params]\nreg_weight = 0.1\npoly_weight = 0.5\npoly_degree = 1\n',
-                  python='offsets=(Offsets(mean_zero=True),)',
-                  model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(mean_zero=True)])),
+                  python="offsets=(Offsets(exclude=Poly(0)), Offsets('scalar', on='detector'))",
+                  model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])),
     # no sky damping rows (the switch, despite damp_weight, damp_weight_line and a term's own) -> damping=0.0
     'nodamp': dict(mode='model', cal='offset_regularization = true\nweighted_damping = false\ndamp_weight = 0.01\n'
                                      'damp_weight_line = 0.02',
@@ -313,7 +313,7 @@ _RULES = {
                    python="sky=(Sky(damping=0.0), Sky('ramp', times=Function(x_ramp, of='det_x'), damping=0.0))",
                    model=sc.Model(sky=[sc.Sky(damping=0.0), sc.Sky('ramp', times=sc.Function(x_ramp, of='det_x'),
                                                                    damping=0.0)],
-                                  offsets=[sc.Offsets(smooth=0.1, mean_zero=True)])),
+                                  offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])),
     # a basis of one function -> times= (the cal labels the map 'basis' alike); with the mosaic, which
     # subtracts the term through the same basis
     'basis1': dict(mode='model', cal='offset_regularization = true\nweighted_damping = true\ndamp_weight = 0.001',
@@ -323,14 +323,14 @@ _RULES = {
                         'basis = { variable = "det_x", function = "tests.synthetic_exposures:xtilde", n = 1 }\n',
                    mosaic=_CLIPPED, python="Offsets('xslope', times=Function(xtilde, of='det_x'))",
                    model=sc.Model(sky=[sc.Sky(damping=0.001)],
-                                  offsets=[sc.Offsets(smooth=0.1, mean_zero=True),
-                                           sc.Offsets('xslope', times=sc.Function(xtilde, of='det_x'))])),
+                                  offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)),
+                                           sc.Offsets('xslope', times=sc.Function(xtilde, of='det_x')), sc.Offsets('scalar', on='detector')])),
     # the mosaic's sigma without a sigma-clip pass (nor instrument maps) is read by nothing -> the Coadd's
     # default
     'nosigma': dict(mode='continuum', cal='weighted_damping = true\ndamp_weight = 0.001', rest='',
                     mosaic='make_std_map = false\napply_sigma_clipping = false\nsigma = 1.0',
                     python='coadd=Coadd(None, std=False, ignore_flags=())',
-                    model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(mean_zero=True)]),
+                    model=sc.Model(sky=[sc.Sky(damping=0.001)], offsets=[sc.Offsets(exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),
                     coadd=sc.Coadd(None, std=False, ignore_flags=())),
 }
 

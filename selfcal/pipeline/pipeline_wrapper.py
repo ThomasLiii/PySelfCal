@@ -662,8 +662,8 @@ class Calibrator(Reprojector):
     ``config.ref_path``, which must exist. :meth:`setup_lsqr` assembles the
     sparse system ``A x = b`` from the frames in ``reproj_list``; the unknowns
     ``x`` are, in order, the sky maps (one block of reference-grid pixels per
-    sky component), the offsets of each chunk map and an optional per-frame
-    scalar. :meth:`apply_lsqr` solves the system iteratively (LSMR by
+    sky component) and the offsets of each chunk map (a per-frame scalar is the
+    map of one chunk). :meth:`apply_lsqr` solves the system iteratively (LSMR by
     default), or :meth:`solve_sky_closed_form` solves a sky-only system pixel
     by pixel, and :meth:`save_calibration` writes the calibration file.
     :meth:`load_calibration` reads a saved one back into ``x``; the ``get_*``
@@ -722,8 +722,7 @@ class Calibrator(Reprojector):
         self.num_offset_groups_list = []
         self.num_chunks_list = []
         self.det_templates = []
-        self.col_bases = None  # length K+1; col_bases[K] == scalar_col_start
-        self.num_scalar_cols = 0
+        self.col_bases = None  # length K+1; col_bases[K] == the total column count
         self.layout = None  # selfcal.core.layout.SystemLayout, set in setup_lsqr
         self.sky_model = None  # selfcal.models.sky_model.SkyModel, set in setup_lsqr
         self.sky_component_names = None  # set in load_calibration (v3)
@@ -741,15 +740,12 @@ class Calibrator(Reprojector):
                    batch_size: int = 10,
                    offset_regularization: bool = False,
                    reg_weights: list[float] | None = None, adj_infos: list | None = None,
-                   poly_constraints_list: list | None = None,
-                   mean_offsets_list: list | None = None, poly_basis_list: list | None = None,
+                   poly_constraints_list: list | None = None, poly_basis_list: list | None = None,
                    det_groups_list: list | None = None, det_templates: list | None = None,
-                   use_per_frame_scalar: bool = False,
                    postprocess_func: Callable | None = None,
                    preprocess_func: Callable | None = None,
                    weighted_damping: bool = False, damp_weight: float = 0.1,
                    damp_offset_maps: list[float] | None = None,
-                   mean_offset_group_rows: bool = False,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
                    aux_keys: list[str] | None = None,
@@ -764,8 +760,7 @@ class Calibrator(Reprojector):
         """Build the LSQR system for K chunk maps.
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
-        hook (``postprocess_func``): the system fits the offset terms (and the
-        per-frame scalar) alone, and :meth:`save_calibration` writes the solved
+        hook (``postprocess_func``): the system fits the offset terms alone, and :meth:`save_calibration` writes the solved
         offsets without sky maps (:func:`selfcal.core.system.setup_lsqr`).
         ``moments_only`` and ``reduce`` build no matrix (see
         :func:`selfcal.core.system.setup_lsqr`): the pixel state alone, or each
@@ -783,8 +778,8 @@ class Calibrator(Reprojector):
 
         ``chunk_maps`` must be a list of K ndarrays sharing one shape. Per-map
         configuration arguments (``reg_weights``, ``adj_infos``,
-        ``poly_constraints_list``, ``mean_offsets_list``, ``det_groups_list``,
-        ``det_templates``) are each either ``None`` (default for every map) or
+        ``poly_constraints_list``, ``det_groups_list``, ``det_templates``) are
+        each either ``None`` (default for every map) or
         length-K lists. A ``ValueError`` is raised on length mismatch.
 
         ``poly_constraints_list[m]`` is ``None`` (no polynomial-order
@@ -796,22 +791,13 @@ class Calibrator(Reprojector):
         finite-difference operators. See ``spherex_utility.compute_column_polynomial_chains``
         for the SPHEREx column-linearity helper.
 
-        Set ``use_per_frame_scalar=True`` to add an explicit per-frame scalar
-        bias column. Combined with ``mean_offsets_list=[zeros]`` and a zero
-        chunk-block x0 init (see ``solution.compute_x0_scalar_only``), this
-        pushes per-frame DC into the scalar so the chunk offsets only carry
-        within-frame structure. This is the recommended setup for narrow
-        channel-mask calibrations on H2RG detectors where ``compute_x0_from_Ab``
-        alone leaves low-coverage chunks under-constrained.
-
         Parameters
         ----------
         offset_model : OffsetModel or None, optional
             Recommended way to specify the offset configuration. Bundles the
             per-map ``chunk_maps``/``det_groups_list``/``det_templates``/
             ``reg_weights``/``adj_infos``/``poly_constraints_list``/
-            ``mean_offsets_list``/``poly_basis_list``/``use_per_frame_scalar``;
-            when given it overrides all of those flat kwargs.
+            ``poly_basis_list``; when given it overrides all of those flat kwargs.
         sky_model : SkyModel or None, optional
             The sky model (continuum-only, or continuum plus spectral
             components). Defaults to ``SkyModel.continuum_only()``.
@@ -847,10 +833,6 @@ class Calibrator(Reprojector):
             Deprecated flat kwarg (prefer ``offset_model``). Per-map
             polynomial-order constraint groups (length K); each entry is
             ``None`` or a list of dicts ``{'chains', 'stencil', 'weight'}``.
-        mean_offsets_list : list or None, optional
-            Deprecated flat kwarg (prefer ``offset_model``). Per-map
-            mean-offset constraint targets (length K); each entry is a
-            length-num_frames array or ``None``.
         poly_basis_list : list or None, optional
             Deprecated flat kwarg (prefer ``offset_model``). Per-map hard
             polynomial-basis specs (length K); each entry is ``None`` or a
@@ -863,9 +845,6 @@ class Calibrator(Reprojector):
             Deprecated flat kwarg (prefer ``offset_model``). Per-map fixed
             spatial templates (length K); when set for map m, that map solves
             only a per-frame amplitude.
-        use_per_frame_scalar : bool, optional
-            Add an explicit per-frame scalar bias column even when no map uses
-            ``det_groups``.
         postprocess_func : Callable or None, optional
             Callable applied to each subframe's ``locals()`` after assembly,
             returning the modified ``sub_data``.
@@ -878,11 +857,7 @@ class Calibrator(Reprojector):
             Base damping weight applied to the offset columns.
         damp_offset_maps : list of float or None, optional
             Per-map coverage-weighted offset damping (length K); maps with
-            weight 0 stay free, the per-frame scalar is never damped.
-        mean_offset_group_rows : bool, optional
-            Emit a det-grouped map's mean-offset anchor once per group
-            (weight ``w·√k``) instead of once per frame. Same normal
-            equations, far fewer nonzeros.
+            weight 0 stay free.
         group_adjacency_maps : list of int or None, optional
             Maps whose adjacency regularization is emitted once per group
             (weight ``reg_weight·√k``) instead of once per frame. Same normal
@@ -921,18 +896,15 @@ class Calibrator(Reprojector):
             reg_weights = om['reg_weights']
             adj_infos = om['adj_infos']
             poly_constraints_list = om['poly_constraints_list']
-            mean_offsets_list = om['mean_offsets_list']
             poly_basis_list = om['poly_basis_list']
             basis_list = om['basis_list']
-            use_per_frame_scalar = om['use_per_frame_scalar']
         else:
             basis_list = None
         if offset_model is None and chunk_maps is not None:
             warnings.warn(
                 "Passing the offset configuration as flat kwargs (chunk_maps, "
                 "det_groups_list, adj_infos, poly_constraints_list, "
-                "mean_offsets_list, det_templates, poly_basis_list, "
-                "use_per_frame_scalar) is deprecated. Bundle it into an "
+                "det_templates, poly_basis_list) is deprecated. Bundle it into an "
                 "OffsetModel and pass offset_model= instead, e.g. "
                 "offset_model=OffsetModel([OffsetBlock(chunk_map=cm, "
                 "adj_info=adj, ...)]). The flat kwargs still work but will be "
@@ -957,7 +929,6 @@ class Calibrator(Reprojector):
         _check_len('reg_weights', reg_weights)
         _check_len('adj_infos', adj_infos)
         _check_len('poly_constraints_list', poly_constraints_list)
-        _check_len('mean_offsets_list', mean_offsets_list)
         _check_len('det_groups_list', det_groups_list)
         _check_len('det_templates', det_templates)
 
@@ -976,15 +947,12 @@ class Calibrator(Reprojector):
                 batch_size=batch_size, offset_regularization=offset_regularization,
                 reg_weights=reg_weights, adj_infos=adj_infos,
                 poly_constraints_list=poly_constraints_list,
-                mean_offsets_list=mean_offsets_list,
                 poly_basis_list=poly_basis_list,
                 det_groups_list=det_groups_list,
                 det_templates=det_templates,
-                use_per_frame_scalar=use_per_frame_scalar,
                 postprocess_func=postprocess_func, preprocess_func=preprocess_func,
                 weighted_damping=weighted_damping, damp_weight=damp_weight,
                 damp_offset_maps=damp_offset_maps,
-                mean_offset_group_rows=mean_offset_group_rows,
                 group_adjacency_maps=group_adjacency_maps, det_aux=det_aux,
                 aux_keys=aux_keys, damp_weight_line=damp_weight_line,
                 sky_model=self.sky_model,
@@ -1028,20 +996,18 @@ class Calibrator(Reprojector):
 
         # Mirror the column layout setup_lsqr computed via the SAME SystemLayout
         # so parse_x / save_calibration don't recompute (and can't drift from)
-        # frame_to_group, col_bases, the scalar block, etc.
+        # frame_to_group, col_bases, etc.
         num_frames = len(self.reproj_list)
         self.layout = SystemLayout.build(
             self.ref_shape, chunk_maps, num_sky_blocks=self.num_sky_blocks,
             num_frames=num_frames, det_groups_list=det_groups_list,
-            det_templates=det_templates, use_per_frame_scalar=use_per_frame_scalar,
-            poly_basis_list=poly_basis_list, basis_list=basis_list)
+            det_templates=det_templates, poly_basis_list=poly_basis_list, basis_list=basis_list)
         self.chunk_maps = chunk_maps
         self.basis_list = list(basis_list) if basis_list is not None else [None] * len(chunk_maps)
         self.frame_to_groups = self.layout.frame_to_group_list
         self.num_offset_groups_list = self.layout.num_offset_groups_list
         self.num_chunks_list = self.layout.num_chunks_list
         self.det_templates = self.layout.det_template_arr_list
-        self.num_scalar_cols = self.layout.num_scalar_cols
         self.col_bases = self.layout.col_bases
 
     def solve_sky_closed_form(self, damp_weights) -> np.ndarray:
@@ -1049,7 +1015,7 @@ class Calibrator(Reprojector):
 
         Requires ``setup_lsqr(chunk_maps=[], sky_model=..., sky_rhs_moments=True)``
         so the per-pixel normal equations are complete. Sets ``self.x`` in the
-        full column layout (sky blocks only — there are no offset/scalar columns
+        full column layout (sky blocks only — there are no offset columns
         in a K=0 solve) so ``save_calibration`` works unchanged.
 
         ``damp_weights``: each sky term's damping (coverage-weighted Tikhonov per
@@ -1285,16 +1251,15 @@ class Calibrator(Reprojector):
                 offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
                 chunk_maps = ([f['chunk_maps'][f'map_{m}'][:] for m in range(K)]
                               if 'chunk_maps' in f else [])
-                frame_scalar = f['frame_scalar'][:] if 'frame_scalar' in f else None
             else:
                 offsets = [f['offset'][:]]
                 chunk_maps = []
-                frame_scalar = None
+            if 'frame_scalar' in f:
+                raise ValueError(f"{cal_path} holds a separate per-frame scalar (frame_scalar), an older layout "
+                                 f"whose offsets miss each frame's level: it is not read; remake it")
         # Rebuild self.x assuming saved offsets are already per-frame expanded
         # (which is what save_calibration writes for all schemas).
         parts = [m.flatten() for m in sky_maps] + [o.flatten() for o in offsets]
-        if frame_scalar is not None:
-            parts.append(frame_scalar.flatten())
         self.x = np.concatenate(parts)
         self.solve_record = None          # this x was read, not solved here
 
@@ -1304,14 +1269,9 @@ class Calibrator(Reprojector):
         self.num_offset_groups_list = [num_frames for _ in range(K)]
         self.num_chunks_list = [int(o.shape[1]) for o in offsets]
         self.det_templates = [None] * K
-        self.num_scalar_cols = num_frames if frame_scalar is not None else 0
         self.col_bases = [self.num_sky_blocks * num_sky]
         for nc in self.num_chunks_list:
             self.col_bases.append(self.col_bases[-1] + num_frames * nc)
-
-    def _has_scalars(self):
-        """Whether the solution vector includes a per-frame scalar bias block."""
-        return self.num_scalar_cols > 0
 
     def _poly_basis_for(self, m):
         """Return the hard-poly-basis spec for map ``m`` if this solve used one
@@ -1321,11 +1281,9 @@ class Calibrator(Reprojector):
         pbl = getattr(L, 'poly_basis_list', None) if L is not None else None
         return pbl[m] if pbl is not None else None
 
-    def _expand_offset(self, m, det_offset_m, frame_scalar=None):
+    def _expand_offset(self, m, det_offset_m):
         """Expand map ``m``'s grouped/template offsets to per-frame
-        ``(num_frames, num_chunks_m)``. ``frame_scalar`` is added when
-        provided (legacy K=1 in-memory consumers); otherwise it is left out
-        and saved separately at the top of the cal file.
+        ``(num_frames, num_chunks_m)``.
 
         Hard poly-basis maps: ``det_offset_m`` holds the per-frame Chebyshev
         coefficients ``a[frame, col*D + d]`` — reconstruct the per-chunk offset
@@ -1341,10 +1299,7 @@ class Calibrator(Reprojector):
             B = eval_offset_basis(np.asarray(pb['chunk_coord']), pb)       # (num_chunks, ncf)
             # offset[frame, chunk] = Σ_k coeffs[frame, group(chunk), k] · B[chunk, k]
             sel = coeffs[:, chunk_group, :]                                # (nf, num_chunks, ncf)
-            offset = np.einsum('fck,ck->fc', sel, B)                       # (nf, num_chunks)
-            if frame_scalar is not None and len(frame_scalar) > 0:
-                offset = offset + frame_scalar[:, np.newaxis]
-            return offset
+            return np.einsum('fck,ck->fc', sel, B)                         # (nf, num_chunks)
         ftg = self.frame_to_groups[m]
         if self.det_templates[m] is not None:
             alpha = det_offset_m.squeeze()  # (num_frames,)
@@ -1352,18 +1307,13 @@ class Calibrator(Reprojector):
             offset = alpha[:, np.newaxis] * template[ftg]
         else:
             offset = det_offset_m[ftg]
-        if frame_scalar is not None and len(frame_scalar) > 0:
-            offset = offset + frame_scalar[:, np.newaxis]
         return offset
 
     def save_calibration(self, cal_dir: str | None = None, cal_file: str = 'cal.h5') -> str:
         """Write the calibration in the new ``offsets/map_m`` group schema.
 
         Each map's per-frame offset is stored under ``offsets/map_m`` after
-        expansion through that map's frame_to_group / template (no per-frame
-        scalar baked in). When any map uses ``det_groups``, the shared
-        per-frame scalar bias is stored at the top level as ``frame_scalar``.
-        Per-map ``chunk_maps/map_m`` arrays are also stored so analysis can
+        expansion through that map's frame_to_group / template. Per-map ``chunk_maps/map_m`` arrays are also stored so analysis can
         recover the chunk indexing without round-tripping config. The record
         of the solve (``self.solve_record``, set by :meth:`apply_lsqr`) is
         written as the attributes of the ``solve`` group.
@@ -1387,15 +1337,13 @@ class Calibrator(Reprojector):
         # its first and only read: it stayed on disk across the CSR build and
         # the whole solve, so it never coexisted with either.
         self._materialize_pixel_state()
-        num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
 
         # Generic per-component parse (N sky blocks; block 0 = continuum).
-        sky_maps, det_offsets, frame_scalar = parse_x_sky(
+        sky_maps, det_offsets = parse_x_sky(
             self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None,
             num_sky_blocks=self.num_sky_blocks)
 
         sky_names, sky_coverages, sky_fishers, map_coverages, map_coverage_fracs = self._cal_static(
@@ -1443,8 +1391,6 @@ class Calibrator(Reprojector):
                 cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
                 frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
-            if self._has_scalars() and frame_scalar is not None and len(frame_scalar) > 0:
-                f.create_dataset('frame_scalar', data=frame_scalar, compression='gzip')
             if getattr(self, 'solve_record', None) is not None:
                 # The record of the solve: attributes of a group (no dataset), so every
                 # dataset of the file is what it was before records existed.
@@ -1542,10 +1488,9 @@ class Calibrator(Reprojector):
         of a cal file that depend on the solution, read from ``iterate`` (a
         :class:`~selfcal.core.snapshots.Iterate`, the solution in its full column layout): the sky
         maps ``sky/<name>`` (a band of rows at a time) with their aliases, each offset term's
-        ``offsets/map_<m>`` (expanded per frame, with its basis attributes) and ``frame_scalar``.
-        Every dataset is the one :meth:`save_calibration` writes for that solution."""
+        ``offsets/map_<m>`` (expanded per frame, with its basis attributes). Every dataset is the
+        one :meth:`save_calibration` writes for that solution."""
         L = self.layout
-        num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
         ref_h, ref_w = self.ref_shape
         num_sky = ref_h * ref_w
@@ -1564,10 +1509,6 @@ class Calibrator(Reprojector):
             if basis_list[m] is not None:
                 ds_m.attrs['n_basis'] = int(basis_list[m].n)
                 ds_m.attrs['basis'] = basis_list[m].coefficient.describe()
-        if self._has_scalars():
-            frame_scalar = iterate.read(cursor, cursor + num_frames)
-            if len(frame_scalar) > 0:
-                f.create_dataset('frame_scalar', data=frame_scalar, compression='gzip')
 
     def _sky_names(self):
         """Ordered sky-component names (block 0 = continuum)."""
@@ -1578,20 +1519,18 @@ class Calibrator(Reprojector):
         return ['continuum'] + [f'line_{j}' for j in range(1, self.num_sky_blocks)]
 
     def _parse_x_helper(self):
-        """Parse self.x into ``(sky_maps, det_offsets, frame_scalar)``.
+        """Parse self.x into ``(sky_maps, det_offsets)``.
 
         ``sky_maps`` is a length-``num_sky_blocks`` list (block 0 = continuum).
         """
-        num_frames = len(self.reproj_list)
         return parse_x_sky(self.x, ref_shape=self.ref_shape,
             num_offset_groups_list=self.num_offset_groups_list,
             num_chunks_list=self.num_chunks_list,
-            num_frames=num_frames if self._has_scalars() else None,
             num_sky_blocks=self.num_sky_blocks)
 
     def get_skymap(self) -> np.ndarray:
         """Continuum sky map (block 0)."""
-        sky_maps, _o, _s = self._parse_x_helper()
+        sky_maps, _o = self._parse_x_helper()
         return sky_maps[0]
 
     def get_skymap_line(self) -> np.ndarray | None:
@@ -1599,7 +1538,7 @@ class Calibrator(Reprojector):
 
         For N>2 components, prefer ``get_sky(name)``.
         """
-        sky_maps, _o, _s = self._parse_x_helper()
+        sky_maps, _o = self._parse_x_helper()
         return sky_maps[1] if len(sky_maps) > 1 else None
 
     def get_sky(self, name: str) -> np.ndarray:
@@ -1618,27 +1557,18 @@ class Calibrator(Reprojector):
         names = self._sky_names()
         if name not in names:
             raise KeyError(f"sky component {name!r} not in {names}")
-        sky_maps, _o, _s = self._parse_x_helper()
+        sky_maps, _o = self._parse_x_helper()
         return sky_maps[names.index(name)]
 
     def get_skymaps(self) -> dict[str, np.ndarray]:
         """All sky-component maps as a name -> ndarray dict."""
-        sky_maps, _o, _s = self._parse_x_helper()
+        sky_maps, _o = self._parse_x_helper()
         return dict(zip(self._sky_names(), sky_maps))
 
     def get_offsets(self) -> list[np.ndarray]:
-        """Return per-frame expanded offsets, one ndarray per chunk map.
-
-        The shared per-frame scalar bias (when present) is added to map 0 only,
-        matching the legacy K=1 behavior — analysis code that subtracts a
-        single ``offset`` array against the data sees the same total bias.
-        """
-        _sky, det_offsets, frame_scalar = self._parse_x_helper()
-        out = []
-        for m in range(len(self.chunk_maps)):
-            scalar = frame_scalar if m == 0 else None
-            out.append(self._expand_offset(m, det_offsets[m], frame_scalar=scalar))
-        return out
+        """Return per-frame expanded offsets, one ndarray per chunk map."""
+        _sky, det_offsets = self._parse_x_helper()
+        return [self._expand_offset(m, det_offsets[m]) for m in range(len(self.chunk_maps))]
 
     def get_offset(self) -> np.ndarray:
         """K=1 convenience: return ``get_offsets()[0]``."""
@@ -1662,7 +1592,7 @@ class Calibrator(Reprojector):
         if self.det_templates[m] is not None:
             raise ValueError("get_det_offset() not available in template mode. "
                              "Run in locked-offset mode (det_groups only) first.")
-        _sky, det_offsets, _s = self._parse_x_helper()
+        _sky, det_offsets = self._parse_x_helper()
         return det_offsets[m]  # shape (num_groups, num_chunks)
 
 class Mosaicker(Reprojector):
@@ -1721,10 +1651,9 @@ class Mosaicker(Reprojector):
 
         Populates ``self.offsets`` / ``self.offset_coverages`` /
         ``self.offset_coverage_fracs`` as length-K lists. For the legacy
-        single-map schema, K=1 and ``self.cal_chunk_maps`` stays empty. The
-        top-level ``frame_scalar`` (when present) is folded into map 0 so a
-        single-map subtractor sees the same total bias the legacy schema
-        baked in.
+        single-map schema, K=1 and ``self.cal_chunk_maps`` stays empty. A cal
+        of the older layout with a separate per-frame scalar is refused
+        (:meth:`~selfcal.io.calfile.CalFile.check_offsets_complete`).
 
         Parameters
         ----------
@@ -1745,9 +1674,8 @@ class Mosaicker(Reprojector):
             self.skymap_fisher = cal.sky_fisher(0)
             names = cal.sky_names
             self.skymap_line_fisher = cal.sky_fisher(names[-1]) if len(names) > 1 else None
-            # The per-frame scalar is folded into map 0: a single-map subtractor
-            # then sees the same total bias the legacy schema baked in.
-            self.offsets = cal.total_offsets()
+            cal.check_offsets_complete()
+            self.offsets = cal.offsets
             self.offset_coverages = cal.offset_coverage
             self.offset_coverage_fracs = cal.offset_coverage_frac
             self.cal_chunk_maps = cal.chunk_maps

@@ -74,7 +74,7 @@ def test_quickstart_example(tmp_path):
 
     truth = np.load(out / "truth.npz")
     with CalFile(cal_path) as cal:
-        offsets, scalars = cal.offsets[0], cal.frame_scalar
+        offsets, scalars = cal.offsets[0], cal.offsets[1][:, 0]         # the per-frame scalar: map 1, one chunk
         exposure = [parse_reproj_basename(p)[0] for p in cal.reproj_list]
     assert offsets.shape == (24, 16) and scalars.shape == (24,)
     r_off = np.corrcoef(_remove_gauge(offsets).ravel(),

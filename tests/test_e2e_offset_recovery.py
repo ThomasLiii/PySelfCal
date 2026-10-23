@@ -195,11 +195,11 @@ def _build_and_solve():
                            if res.active_mask is not None else None),
         )
 
-    sky_maps, det_offsets, frame_scalar = parse_x_sky(
+    sky_maps, det_offsets = parse_x_sky(
         x, ref_shape,
         num_offset_groups_list=layout.num_offset_groups_list,
         num_chunks_list=layout.num_chunks_list,
-        num_frames=None, num_sky_blocks=1,
+        num_sky_blocks=1,
     )
     sky_rec = sky_maps[0]
     # Single chunk map, one group per frame -> (F, 1); flatten to per-frame value.
@@ -210,7 +210,8 @@ def _build_and_solve():
         'offsets_true': offsets_true,
         'sky_rec': sky_rec,
         'offsets_rec': offsets_rec,
-        'frame_scalar': frame_scalar,
+        'n_cols': int(x.size), 'layout_cols': int(layout.total_cols),
+        'sky_and_offsets': int(layout.num_sky_eff + sum(np.asarray(o).size for o in det_offsets)),
         'max_off_err': float(np.max(np.abs(offsets_rec - offsets_true))),
         'max_sky_err': float(np.max(np.abs(sky_rec - sky_true))),
     }
@@ -243,11 +244,11 @@ def test_recovered_offsets_are_mean_zero():
     assert abs(float(np.mean(r['offsets_rec']))) < 1e-6
 
 
-def test_no_spurious_scalar_block():
-    """No per-frame scalar / det-groups were requested, so the parse yields an
-    empty frame-scalar block -- the offsets carry the full per-frame DC."""
+def test_the_solution_is_the_sky_and_the_offsets():
+    """The unknowns are the sky and the offset map, nothing else: the offsets carry the full
+    per-frame level."""
     r = _build_and_solve()
-    assert r['frame_scalar'].size == 0
+    assert r['n_cols'] == r['layout_cols'] == r['sky_and_offsets']
 
 
 def _run_all():

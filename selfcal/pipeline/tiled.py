@@ -120,7 +120,7 @@ def stitch(input_paths: list[str], output_path: str,
 
     Each output sky pixel is ``sum_t F_t * sky_t / sum_t F_t`` over tiles with
     Fisher ``F_t > 0``; ``skymap_fisher`` is ``sum_t F_t`` and ``skymap_coverage``
-    the summed pixel counts. Per-frame quantities (offsets, frame_scalar,
+    the summed pixel counts. Per-frame quantities (offsets,
     reproj_list) are dropped (not composable across disjoint frame subsets) and
     ``num_maps`` is written 0; re-mosaic against the stitched cal if needed.
 

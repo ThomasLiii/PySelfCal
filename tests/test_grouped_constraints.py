@@ -1,8 +1,7 @@
 """Grouped constraint rows and per-map offset damping (no data).
 
-``mean_offset_group_rows`` / ``group_adjacency_maps`` replace the k identical
-per-frame copies of a det-grouped map's anchor / adjacency rows with one row
-of weight ``w·√k``. That is exact in the normal equations (AᵀA, Aᵀb), which
+``group_adjacency_maps`` replaces the k identical per-frame copies of a
+det-grouped map's adjacency rows with one row of weight ``w·√k``. That is exact in the normal equations (AᵀA, Aᵀb), which
 is what these tests check: at the builder level against the per-frame form,
 and end to end through ``setup_lsqr`` on a tiny synthetic problem.
 ``damp_offset_maps`` damps each map with its own weight and leaves weight-0 maps
@@ -20,7 +19,7 @@ import scipy.sparse as sp
 from astropy.wcs import WCS
 
 from selfcal.core.blockcsr import ColSplitCSR
-from selfcal.core.constraint_builders import grouped_adjacency_block, mean_offset_block
+from selfcal.core.constraint_builders import grouped_adjacency_block
 from selfcal.core.system import setup_lsqr
 
 H = W = 8
@@ -42,36 +41,6 @@ def _normal_equations(A, b):
 
 
 # ---------------------------------------------------------------- builders
-
-def test_mean_offset_group_rows_same_normal_equations():
-    rng = np.random.default_rng(7)
-    for trial in range(20):
-        nf, nc, ng = int(rng.integers(4, 40)), int(rng.integers(2, 12)), int(rng.integers(1, 5))
-        ftg = rng.integers(0, ng, nf)
-        col_bases = [int(rng.integers(0, 50)), 0]
-        n_cols = col_bases[0] + ng * nc
-        # agreeing targets per group, except (on odd trials) one group that disagrees
-        targets = (rng.integers(-4, 5, ng) / 4.0)[ftg]
-        if trial % 2 and nf > 1:
-            targets[0] += 0.5
-        pf = mean_offset_block(0, targets, nf, nc, ftg, col_bases, weight=10.0)
-        gr = mean_offset_block(0, targets, nf, nc, ftg, col_bases, weight=10.0, group_rows=True)
-        ata_pf, atb_pf = _normal_equations(_block_matrix(pf, n_cols), pf.b)
-        ata_gr, atb_gr = _normal_equations(_block_matrix(gr, n_cols), gr.b)
-        np.testing.assert_allclose(ata_gr, ata_pf, rtol=1e-6, atol=1e-9)
-        np.testing.assert_allclose(atb_gr, atb_pf, rtol=1e-6, atol=1e-9)
-        assert gr.num_rows <= pf.num_rows
-
-
-def test_mean_offset_group_rows_row_count():
-    ftg = np.array([0, 0, 0, 1, 1, 2])
-    col_bases = [0, 0]
-    agree = np.zeros(6)
-    assert mean_offset_block(0, agree, 6, 4, ftg, col_bases, group_rows=True).num_rows == 3
-    # group 1's frames disagree -> its two frames keep their own rows
-    disagree = np.array([0.0, 0.0, 0.0, 0.25, 0.5, 0.0])
-    assert mean_offset_block(0, disagree, 6, 4, ftg, col_bases, group_rows=True).num_rows == 4
-
 
 def test_grouped_adjacency_same_normal_equations():
     rng = np.random.default_rng(11)
@@ -132,8 +101,8 @@ def _to_csr(A):
 
 
 def _setup(**extra):
-    """Two maps: a det-grouped quadrant map with adjacency + mean anchor, and a
-    per-frame two-column map; per-frame scalar on; sky damping on."""
+    """Two maps: a det-grouped quadrant map with adjacency, and a per-frame
+    two-column map; sky damping on."""
     rng = np.random.default_rng(3)
     with tempfile.TemporaryDirectory() as tmp:
         files = []
@@ -145,8 +114,7 @@ def _setup(**extra):
                   outlier_thresh=None, max_workers=1, batch_size=F,
                   offset_regularization=True, reg_weights=[0.1, 0.0],
                   adj_infos=[QUAD_ADJ, None],
-                  mean_offsets_list=[np.full(F, 0.25), None],
-                  det_groups_list=[GROUPS, None], use_per_frame_scalar=True,
+                  det_groups_list=[GROUPS, None],
                   weighted_damping=True, damp_weight=0.1)
         kw.update(extra)
         res = setup_lsqr(files, (H, W), **kw)
@@ -155,7 +123,7 @@ def _setup(**extra):
 
 def test_setup_lsqr_grouped_rows_same_normal_equations():
     A_pf, b_pf, act_pf = _setup()
-    A_gr, b_gr, act_gr = _setup(mean_offset_group_rows=True, group_adjacency_maps=[0])
+    A_gr, b_gr, act_gr = _setup(group_adjacency_maps=[0])
     assert (act_pf is None and act_gr is None) or np.array_equal(act_pf, act_gr)
     ata_pf, atb_pf = _normal_equations(A_pf, b_pf)
     ata_gr, atb_gr = _normal_equations(A_gr, b_gr)

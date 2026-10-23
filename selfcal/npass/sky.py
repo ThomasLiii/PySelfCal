@@ -39,7 +39,7 @@ def _basename(p):
 # --------------------------------------------------------------------------- #
 class OffsetModelSubtractor:
     """A frame hook subtracting a solved offset model at every observation of each frame: every
-    offset term of the model and, with ``scalar``, the per-frame scalar.
+    offset term of the model.
 
     ``cal_paths``: one calibration or several (disjoint frame sets, e.g. the tiles of a run) whose
     ``offsets/map_<m>`` hold, per frame, each term's solved values: one per chunk, or ``n_chunks * n``
@@ -48,22 +48,23 @@ class OffsetModelSubtractor:
     without functions, ``φ ≡ 1``); ``variables``: the data variables, their frame values aligned
     with ``frame_names`` (default: the cals' frame list). The offset at observation ``i`` of chunk
     weights ``w_c(i)`` (the solve's bilinear weights) is ``Σ_m Σ_c w_c(i) Σ_k a_m[c, k] φ_{m,k}(v_i)``
-    (+ the frame's scalar) -- exactly the offset rows of the solve's design matrix times the solved
-    values, whatever the terms are. Frames in none of the cals pass through unchanged.
+    -- exactly the offset rows of the solve's design matrix times the solved values, whatever the
+    terms are. Frames in none of the cals pass through unchanged. A cal of the older layout with a
+    separate per-frame scalar is refused (:meth:`~selfcal.io.calfile.CalFile.check_offsets_complete`).
     """
 
-    def __init__(self, cal_paths, terms, variables=None, oversample_factor=1, frame_names=None, scalar=True):
+    def __init__(self, cal_paths, terms, variables=None, oversample_factor=1, frame_names=None):
         if isinstance(cal_paths, (str, bytes, os.PathLike)):
             cal_paths = [cal_paths]
         self.terms = [(int(m), b, np.asarray(cm)) for m, b, cm in terms]
         self.variables = variables
         self.oversample_factor = oversample_factor
         self.rows, self.index = {}, {}
-        names, scalars = [], []
+        names = []
         for path in cal_paths:
             with CalFile(path) as cal:
+                cal.check_offsets_complete()
                 offs = cal.offsets
-                sc = cal.frame_scalar if scalar else None
                 cal_names = [os.path.basename(p) for p in cal.reproj_list]
             for m, _, _ in self.terms:
                 if m >= len(offs):
@@ -71,16 +72,9 @@ class OffsetModelSubtractor:
                                      f"term {m} has none there")
                 block = np.asarray(offs[m])
                 self.rows[m] = block if m not in self.rows else np.concatenate([self.rows[m], block])
-            if sc is not None:
-                scalars.append((len(names), np.asarray(sc, dtype=np.float64)))
             for i, n in enumerate(cal_names):
                 self.index[n] = len(names) + i
             names += cal_names
-        self.scalar = None
-        if scalars:
-            self.scalar = np.zeros(len(names), dtype=np.float64)
-            for base, sc in scalars:
-                self.scalar[base:base + len(sc)] = sc
         fn = names if frame_names is None else [os.path.basename(p) for p in frame_names]
         self.var_index = {n: i for i, n in enumerate(fn)}
 
@@ -110,10 +104,6 @@ class OffsetModelSubtractor:
                 total += np.nan_to_num((off * phi).sum(axis=1))
             rows, cols = obs.pixels
             sub_data[rows, cols] -= total.astype(sub_data.dtype)
-        if self.scalar is not None:
-            sm = np.asarray(ctx.sub_mapping, dtype=np.float64)
-            on = np.isfinite(sm[0]) & np.isfinite(sm[1])
-            sub_data[on] -= sub_data.dtype.type(self.scalar[i])
         return sub_data
 
 

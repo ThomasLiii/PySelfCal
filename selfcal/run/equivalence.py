@@ -195,7 +195,7 @@ def engine_view(spec):
         t.pop('damp_weight', None)
     view['sky'] = _canon(sky)
     view['offsets'] = _canon(_built_offset_rows(om.to_setup_kwargs(), regularize))
-    view['x0'] = model.x0_kind
+    view['x0'] = ctx.seed
     det_aux, _ = ctx.aux_maps()
     view['aux'] = None if det_aux is None else _canon(det_aux)
     view['line_fisher_threshold'] = spec.line_fisher_threshold if model.has_coefficients else None

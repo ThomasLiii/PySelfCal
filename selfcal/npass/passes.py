@@ -189,7 +189,7 @@ class PassRunner:
             variables = self.variables_for(frame_list)
             if variables is not None:
                 calk['variables'] = variables
-            # The offsets of every term of the model (and the frame scalar), as the solve's rows define them.
+            # The offsets of every term of the model, as the solve's rows define them.
             subtract = self.frame_hook(OffsetModelSubtractor(
                 offsets_cals, self.offset_terms(frame_list, variables), variables=variables,
                 frame_names=frame_list))
@@ -265,10 +265,10 @@ class PassRunner:
                       f"{os.path.basename(sky_cal)}", flush=True)
                 cc = setup_job(off_ctx, self.jobgeom, frame_dir=frame_dir, frames=frame_list,
                                reduce=normal_equations)
-                lo = int(cc.col_bases[len(cc.chunk_maps)])
                 cc.x, summary = solve_frames(
-                    cc.reduced, cc.constraint_blocks, cc.layout.total_cols, start=ctx.model.x0_kind,
-                    scalar_cols=(lo, lo + int(cc.num_scalar_cols)), precondition=opts.get("precondition", True),
+                    cc.reduced, cc.constraint_blocks, cc.layout.total_cols, start=ctx.seed,
+                    exclusions=ctx.model.column_exclusions(ctx.geom, cc.layout) or None,
+                    precondition=opts.get("precondition", True),
                     damp=opts.get("damp", 0.0), dtype=np.float32 if opts.get("use_float32") else np.float64)
                 cc.reduced = cc.constraint_blocks = None
                 print(f"[npass] pass {i} OFFSET [{name}]: {summary['blocks']} blocks of {summary['columns']} columns "
