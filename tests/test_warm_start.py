@@ -150,9 +150,10 @@ def test_a_warm_start_from_the_least_squares_solution_stays_there(toy, method):
     exact = field.calibrate(_recipe(MODELS['times'], 400, name=f'exact_{method}', method=method))
     first = _solve(exact.cal_paths[0])
     if method == 'lsqr':
-        # the least-squares solution: |A^T r| / (|A| |r|) far below float32 precision (LSQR's estimates; CGLS's
-        # anorm is a lower bound of |A| and its gradient the true one, at the float32 products' floor)
-        assert np.load(first['history_file'])['test2'][-1] < 0.2 * np.finfo(np.float32).eps
+        # the least-squares solution: |A^T r| / (|A| |r|) below float32's epsilon, the floor the float32 products set
+        # (LSQR's estimates; the floor depends on the BLAS kernel; CGLS's anorm is a lower bound of |A| and its
+        # gradient the true one, at the same floor)
+        assert np.load(first['history_file'])['test2'][-1] < np.finfo(np.float32).eps
     more = field.calibrate(_recipe(MODELS['times'], 20, name=f'exact_more_{method}', method=method), start=exact)
     then = _solve(more.cal_paths[0])
     h = np.load(then['history_file'])

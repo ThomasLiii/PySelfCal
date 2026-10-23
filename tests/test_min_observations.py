@@ -170,9 +170,11 @@ def test_the_deflated_solve_is_the_solve_without_those_rows(tmp_path, monkeypatc
     xr = solve(Ar[:, act].tocsr(), np.asarray(plain.b)[keep], act, A.shape[1])
     assert (xf[dropped] == 0).all()
     kept_sky = np.setdiff1d(np.unique(sky_col[keep]), dropped)
-    tol = 1e-6 if storage == 'unified' else 2e-5      # the partitioned operator's products in the stored float32
-    np.testing.assert_allclose(xf[kept_sky], xr[kept_sky], rtol=0, atol=tol)
-    np.testing.assert_allclose(xf[N_SKY:], xr[N_SKY:], rtol=0, atol=tol)
+    for sel in (kept_sky, slice(N_SKY, None)):
+        # the partitioned operator's products in the stored float32: 2e-5, or a few float32 roundings of the largest
+        # value where the values are large (the sky's, ~500)
+        tol = 1e-6 if storage == 'unified' else max(2e-5, 2e-7 * float(np.abs(xr[sel]).max()))
+        np.testing.assert_allclose(xf[sel], xr[sel], rtol=0, atol=tol)
 
 
 def test_the_deflation_reads_no_column_outside_its_space():
