@@ -114,6 +114,44 @@ def _sub_scaled(r, alpha, q):
     _run(part, _blocks(r.shape[0]))
 
 
+def _add_scaled(x, alpha, p):
+    """``x += alpha * p`` in place (the product rounded, then the sum), in blocks in threads."""
+    a = x.dtype.type(alpha)
+
+    def part(k, s, e):
+        t = _buffer(k, x.dtype)[:e - s]
+        np.multiply(p[s:e], a, out=t, casting='unsafe')
+        np.add(x[s:e], t, out=x[s:e])
+    _run(part, _blocks(x.shape[0]))
+
+
+def _scale_add(p, beta, s_):
+    """``p = beta * p + s_`` in place (``p *= beta; p += s_``: the same two roundings), in blocks in threads."""
+    b = p.dtype.type(beta)
+
+    def part(k, s, e):
+        np.multiply(p[s:e], b, out=p[s:e])
+        np.add(p[s:e], s_[s:e], out=p[s:e])
+    _run(part, _blocks(p.shape[0]))
+
+
+def _as_dtype(v, dtype, held, key):
+    """``v`` in ``dtype``: ``v`` itself when it is, else ``v.astype(dtype)``'s values written block by block
+    in the threads into a buffer ``held[key]`` that the caller keeps between iterations (no fresh vector
+    faulted in per iteration)."""
+    dtype = np.dtype(dtype)
+    if v.dtype == dtype:
+        return v
+    buf = held.get(key)
+    if buf is None or buf.shape != v.shape or buf.dtype != dtype:
+        buf = held[key] = np.empty(v.shape, dtype=dtype)
+
+    def part(k, s, e):
+        np.copyto(buf[s:e], v[s:e], casting='unsafe')
+    _run(part, _blocks(v.shape[0]))
+    return buf
+
+
 def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=False, calc_var=False,
          x0=None, x0_owned=False, history=None, callback=None, callback_every=1, watch=None, constrain=None,
          refresh=None, vectors=np.float64):
@@ -153,9 +191,11 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
         np.subtract(r, A.matvec(x.astype(pdt, copy=False)), out=r, casting='unsafe')
     del b
 
+    held = {}                                          # this solve's cast buffers (the direction, the gradient)
+
     def gradient():
         g = np.asarray(A.rmatvec(r))
-        g = g.astype(vdt, copy=False) if g.dtype == vdt else g.astype(vdt)
+        g = _as_dtype(g, vdt, held, 'gradient')
         if d2 > 0:
             g -= d2 * x
         if constrain is not None:
@@ -188,7 +228,7 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
 
     while itn < iter_lim:
         itn += 1
-        q = np.asarray(A.matvec(p.astype(pdt, copy=False)))
+        q = np.asarray(A.matvec(_as_dtype(p, pdt, held, 'direction')))
         qq = _dot(q, q) + (d2 * _dot(p, p) if d2 > 0 else 0.0)
         if qq <= 0:
             istop = 5
@@ -197,7 +237,7 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
         if pp > 0:
             anorm = max(anorm, sqrt((qq - d2 * pp) / pp)) if qq > d2 * pp else anorm
         alpha = gamma / qq
-        x += vdt.type(alpha) * p
+        _add_scaled(x, alpha, p)
         _sub_scaled(r, alpha, q)
         del q
         if refresh is not None and itn % REFRESH == 0:
@@ -234,8 +274,7 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
             break
         beta = gamma_new / gamma
         gamma = gamma_new
-        p *= vdt.type(beta)
-        p += s
+        _scale_add(p, beta, s)
         del s
     if show:
         print(f'CGLS finished: istop = {istop}, itn = {itn}, r1norm = {rnorm:.1e}, arnorm = {arnorm:.1e}')

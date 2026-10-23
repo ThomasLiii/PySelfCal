@@ -97,6 +97,8 @@ DEPENDENT = 1e-12
 POLY_ALWAYS = 2
 #: Rows of the matrix per chunk of the float64 passes.
 _ROWS = 1 << 21
+#: Index dtype of the passes' chunk buffers (the storages index with int32: every column and chunk entry fits).
+_IDX = np.int32
 #: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES, unless
 #: hub columns explain their size).
 _DENSE_BLOCK = 4096
@@ -110,6 +112,15 @@ _SCHUR_MAX = 1 << 14
 _SCHUR_BATCH = 1 << 26
 #: Elements per thread block of the projections.
 _MIN_BLOCK = 1 << 18
+#: Sky columns per call when a chunk's column sums are made and added in the second pass (each adding thread's
+#: buffer holds this many columns of the products).
+_ADD_COLUMNS = 1 << 16
+#: Entries of the offsets' normal matrix read at once when the hub columns' blocks are taken out of it.
+_EXTRACT_ENTRIES = 1 << 24
+#: Threads (and items in flight) for the deflation's work in many small BLAS calls (the projections' sub-block
+#: products, the Schur complement's batches): OpenBLAS serialises concurrent calls on its buffer lock, so more threads
+#: run slower, and each batch in flight holds its own buffers.
+_BLAS_THREADS = 6
 
 
 def axis_functions(basis, order, n) -> np.ndarray:
@@ -155,31 +166,72 @@ def _piece_index(storage, rows=_ROWS):
     return out
 
 
-def _piece(storage, desc):
-    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (int64, from 0) per
-    piece; one piece per column range of a ColSplitCSR, one otherwise."""
+def _piece(storage, desc, buf=None):
+    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (from 0) per piece; one
+    piece per column range of a ColSplitCSR, one otherwise; int64 indices. ``buf`` (a :class:`_Slot`): the indptr
+    and the column ids are written into its buffers, in :data:`_IDX` (the same values; nothing allocated per
+    chunk)."""
     bi, lr0, lr1 = desc
+
+    def local(ip, s0, idx, s1, cut, t):
+        if buf is None:
+            return ip[lr0:lr1 + 1].astype(np.int64) - s0, idx[s0:s1].astype(np.int64) + cut
+        lip = buf.get(f'lip{t}', lr1 - lr0 + 1, _IDX)
+        np.subtract(ip[lr0:lr1 + 1], s0, out=lip, casting='unsafe')
+        cols = buf.get(f'cols{t}', s1 - s0, _IDX)
+        np.add(idx[s0:s1], cut, out=cols, casting='unsafe')
+        return lip, cols
+
     if isinstance(storage, ColSplitCSR):
         base = int(storage.row_bounds[bi])
         out = []
         for t, (d, idx, ip) in enumerate(storage.sub[bi]):
             s0, s1 = int(ip[lr0]), int(ip[lr1])
-            lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-            out.append((lip, idx[s0:s1].astype(np.int64) + int(storage.cuts[t]), d[s0:s1]))
+            lip, cols = local(ip, s0, idx, s1, int(storage.cuts[t]), t)
+            out.append((lip, cols, d[s0:s1]))
         return base + lr0, base + lr1, out
     blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
     bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
     blk, base = blocks[bi], bounds[bi]
     ip = blk.indptr
     s0, s1 = int(ip[lr0]), int(ip[lr1])
-    lip = ip[lr0:lr1 + 1].astype(np.int64) - s0
-    return int(base) + lr0, int(base) + lr1, [(lip, blk.indices[s0:s1].astype(np.int64), blk.data[s0:s1])]
+    lip, cols = local(ip, s0, blk.indices, s1, 0, 0)
+    return int(base) + lr0, int(base) + lr1, [(lip, cols, blk.data[s0:s1])]
 
 
 def _pieces(storage, rows=_ROWS):
     """The matrix in row chunks (:func:`_piece` of every descriptor of :func:`_piece_index`)."""
     for desc in _piece_index(storage, rows):
         yield _piece(storage, desc)
+
+
+def _components(G):
+    """The connected components of a symmetric sparse matrix's graph, ``(count, labels)``, numbered in the order of
+    their smallest column, as scipy's undirected search numbers them: its strongly connected components (those of
+    a symmetric graph), which it finds without the transposed copy of the matrix the undirected search makes."""
+    n = G.shape[0]
+    count, labels = connected_components(G, directed=True, connection='strong')
+    first = np.full(count, n, dtype=np.int64)
+    np.minimum.at(first, labels, np.arange(n, dtype=np.int64))
+    rank = np.empty(count, dtype=labels.dtype)
+    rank[np.argsort(first, kind='stable')] = np.arange(count, dtype=labels.dtype)
+    return count, rank[labels]
+
+
+def _bounded_map(pool, fn, items, width=_BLAS_THREADS):
+    """``[fn(item) for item in items]``, in ``pool`` with at most ``width`` items in flight (each holds its
+    buffers until it returns); the results in item order, so a sum over them keeps its order."""
+    if pool is None:
+        return [fn(it) for it in items]
+    from collections import deque
+    out, q = [], deque()
+    for it in items:
+        if len(q) >= width:
+            out.append(q.popleft().result())
+        q.append(pool.submit(fn, it))
+    while q:
+        out.append(q.popleft().result())
+    return out
 
 
 def _block_pinv_solve(G, R, project=None, pool=None):
@@ -200,7 +252,7 @@ def _block_pinv_solve(G, R, project=None, pool=None):
         project = None
     if project is not None:
         R = project.apply(np.array(R, dtype=np.float64, copy=True))
-    ncomp, labels = connected_components(G, directed=False)
+    ncomp, labels = _components(G)
     counts = np.bincount(labels, minlength=ncomp)
     if counts.max() > _DENSE_BLOCK:
         deg = np.diff(G.indptr)
@@ -291,16 +343,30 @@ def _schur_factor(G, hub, project=None, pool=None):
         if (hpos[project.columns] < 0).any():
             raise ValueError('the Schur path needs every constrained column among the hubs')
         ph = project.mapped(hpos)
-    Gc = G.tocoo()
-    er, ec, ev = Gc.row.astype(np.int64), Gc.col.astype(np.int64), Gc.data
-    hr, hc = is_hub[er], is_hub[ec]
-    ff = ~hr & ~hc
-    Gff = coo_matrix((ev[ff], (fpos[er[ff]], fpos[ec[ff]])), shape=(nF, nF)).tocsr()
-    hh = hr & hc
+    # The other columns' block and the hubs' own part, read off G's rows a chunk at a time in G's entry order
+    # (the order of G.tocoo(), so Gff is the same matrix), without a copy of G with int64 indices and masks.
+    ff_r, ff_c, ff_v = [], [], []
     C = np.zeros((nH, nH))
-    C[hpos[er[hh]], hpos[ec[hh]]] = ev[hh]
-    del Gc, er, ec, ev, hr, hc, ff, hh
-    ncomp, labels = connected_components(Gff, directed=False)
+    r0 = 0
+    while r0 < n:
+        r1 = max(r0 + 1, int(np.searchsorted(G.indptr, int(G.indptr[r0]) + _EXTRACT_ENTRIES, side='right')) - 1)
+        r1 = min(n, r1)
+        s0, s1 = int(G.indptr[r0]), int(G.indptr[r1])
+        er = np.repeat(np.arange(r0, r1, dtype=np.int64), np.diff(G.indptr[r0:r1 + 1]))
+        ec = G.indices[s0:s1].astype(np.int64)
+        ev = G.data[s0:s1]
+        hr, hc = is_hub[er], is_hub[ec]
+        ff = ~hr & ~hc
+        ff_r.append(fpos[er[ff]])
+        ff_c.append(fpos[ec[ff]])
+        ff_v.append(ev[ff])
+        hh = hr & hc
+        C[hpos[er[hh]], hpos[ec[hh]]] = ev[hh]
+        r0 = r1
+    del er, ec, ev, hr, hc, ff, hh
+    Gff = coo_matrix((np.concatenate(ff_v), (np.concatenate(ff_r), np.concatenate(ff_c))), shape=(nF, nF)).tocsr()
+    del ff_r, ff_c, ff_v
+    ncomp, labels = _components(Gff)
     counts = np.bincount(labels, minlength=ncomp)
     if counts.max() > _DENSE_BLOCK:
         return None
@@ -329,10 +395,8 @@ def _schur_factor(G, hub, project=None, pool=None):
     del Gfc, er, ec, ev, ecomp, Gff
 
     def run(fn, items):
-        """``fn`` over the items, in the pool when there is one; the results in item order."""
-        if pool is None:
-            return [fn(it) for it in items]
-        return list(pool.map(fn, items))
+        """``fn`` over the items, in the pool when there is one (a few in flight); the results in item order."""
+        return _bounded_map(pool, fn, items)
 
     def hub_part(rows):
         """The rows ``rows`` of G restricted to the hub columns, dense ``(len(rows), nH)``."""
@@ -437,9 +501,7 @@ class _SchurFactor:
         n, k, F, H, nF, nH, bl = self.n, R.shape[1], self.F, self.H, self.nF, self.nH, self.bl
 
         def run(fn, items):
-            if pool is None:
-                return [fn(it) for it in items]
-            return list(pool.map(fn, items))
+            return _bounded_map(pool, fn, items)
         RF, RH = R[F], R[H]
         Rh = RH.copy()
 
@@ -481,32 +543,53 @@ def _schur_pinv_solve(G, R, hub, project=None, pool=None):
 
 
 
-def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S):
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0):
     """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off)`` with ``pos``
     the solver columns, ``d64`` the values, ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over
     the chunk's rows (None: none) and ``off = (indptr, offset columns, values)`` the offset entries likewise (None:
-    none), all int64 / float64 and in storage order."""
-    pos = cols if colmap is None else colmap[cols]
-    d64 = data.astype(np.float64)
-    rows = np.repeat(np.arange(nr, dtype=np.int64), np.diff(lip))
-    o = pos >= n_sky_S
+    none), :data:`_IDX` / float64 and in storage order, written into the buffers of ``buf`` (a :class:`_Slot`;
+    ``tag`` tells a chunk's pieces apart). A row's offset entries are those at or past ``n_sky_S``: they are
+    counted by a running sum of the offset mask and selected by ``np.compress``."""
+    n = int(cols.size)
+    pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
+    if colmap is not None:
+        # A column outside the space (-1) holds only zero entries (the columns a coverage floor left without data):
+        # sent to column 0, the products read a valid column and the zero value keeps every one of them exact.
+        np.maximum(pos, 0, out=pos)
+    d64 = buf.get(f'{tag}d64', n, np.float64)
+    np.copyto(d64, data)
+    o = buf.get(f'{tag}o', n, np.bool_)
+    np.greater_equal(pos, n_sky_S, out=o)
+    c = buf.get(f'{tag}c', n + 1, _IDX)                  # c[j]: offset entries among the first j
+    c[0] = 0
+    np.cumsum(o, dtype=_IDX, out=c[1:])
+    ip = buf.get(f'{tag}ip', nr + 1, _IDX)
+    np.take(c, lip, out=ip)                               # the offset entries before each row
+    n_off = int(c[n])
     off = sky = None
-    oi = np.flatnonzero(o)
-    if oi.size:
-        ip = np.zeros(nr + 1, dtype=np.int64)
-        np.cumsum(np.bincount(rows[oi], minlength=nr), out=ip[1:])
-        off = (ip, (pos[oi] - n_sky_S).astype(np.int64), d64[oi])
-    si = np.flatnonzero(~o)
-    if si.size:
-        ips = np.zeros(nr + 1, dtype=np.int64)
-        np.cumsum(np.bincount(rows[si], minlength=nr), out=ips[1:])
-        sky = (ips, pos[si], d64[si], rows[si])
+    if n_off:
+        oc = buf.get(f'{tag}offcols', n_off, _IDX)
+        np.compress(o, pos, out=oc)
+        oc -= n_sky_S
+        ov = buf.get(f'{tag}offvals', n_off, np.float64)
+        np.compress(o, d64, out=ov)
+        off = (ip, oc, ov)
+    if n - n_off:
+        no = buf.get(f'{tag}no', n, np.bool_)
+        np.logical_not(o, out=no)
+        ips = buf.get(f'{tag}ips', nr + 1, _IDX)
+        np.subtract(lip, ip, out=ips)                     # the sky entries before each row
+        sc = buf.get(f'{tag}skycols', n - n_off, _IDX)
+        np.compress(no, pos, out=sc)
+        sv = buf.get(f'{tag}skyvals', n - n_off, np.float64)
+        np.compress(no, d64, out=sv)
+        sky = (ips, sc, sv, np.repeat(np.arange(nr, dtype=_IDX), np.diff(ips)))
     return lip, pos, d64, sky, off
 
 
 class _Slot:
-    """Reusable float64 buffers of one task slot: ``take(name, shape)`` returns a zeroed view of that shape, grown
-    when a request exceeds the buffer."""
+    """Reusable buffers of one task slot: ``take(name, shape)`` returns a zeroed float64 view of that shape,
+    ``get(name, size, dtype)`` an uninitialised 1-D view; each grown when a request exceeds the buffer."""
 
     def __init__(self):
         self.bufs = {}
@@ -519,6 +602,13 @@ class _Slot:
         v = b[:rows]
         v.fill(0.0)
         return v
+
+    def get(self, name, size, dtype):
+        dtype = np.dtype(dtype)
+        b = self.bufs.get(name)
+        if b is None or b.size < size or b.dtype != dtype:
+            b = self.bufs[name] = np.empty(max(int(size), 1), dtype=dtype)
+        return b[:size]
 
 
 def _combine_rows_in_place(M, C, cols=1 << 20):
@@ -558,10 +648,15 @@ class Deflation:
     :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
 
     def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1,
-                 projector=None):
+                 projector=None, signatures=None):
         t0 = time.perf_counter()
         self.settings = settings
         self.exclusion_info = None                    # Deflate(exclude=): the degenerate directions excluded (record)
+        self.signature_info = None                    # Offsets(exclude=SkySignature): the terms constrained (record)
+        if signatures and getattr(settings, 'exclude', None) is not None:
+            raise ValueError("Offsets(exclude=SkySignature(...)) together with Deflate(exclude=Degenerate(...)) is not "
+                             "supported: the second re-bases the pattern space on sky constraints, the first constrains "
+                             "the offsets' response to it")
         m, n = int(storage.shape[0]), int(storage.shape[1])
         self.shape = (m, n)
         h, w = int(ref_shape[0]), int(ref_shape[1])
@@ -573,14 +668,23 @@ class Deflation:
             raise ValueError(f"Deflate(terms={settings.terms!r}): no sky term {unknown} (the model's: {list(names)})")
         nsb = len(names)
         self._pool = ThreadPoolExecutor(max_workers=int(threads)) if threads > 1 else None
+        # The projections' blocks (as many as the threads: their partial sums set the arithmetic) are run by a few
+        # threads: each block is many small BLAS calls, which OpenBLAS serialises across threads (_BLAS_THREADS).
+        self._blas_pool = (ThreadPoolExecutor(max_workers=min(int(threads), _BLAS_THREADS)) if threads > 1
+                           else None)
         self._scratch = {}
-        # The columns the space lives on: those with entries (all of a compacted system's); the chunks over the
-        # threads (marking a column covered commutes).
+        # The columns the space lives on: those with a nonzero entry (all of a compacted system's, but the columns a
+        # coverage floor left without data: Fit(min_observations=)); the chunks over the threads (marking a column
+        # covered commutes).
         covered = np.zeros(n, dtype=bool)
+        mark_slots = {}                                           # one per thread, for this sweep
 
         def mark(desc):
-            for _lip, cols, _data in _piece(storage, desc)[2]:
-                covered[cols] = True
+            buf = mark_slots.get(threading.get_ident())
+            if buf is None:
+                buf = mark_slots[threading.get_ident()] = _Slot()
+            for _lip, cols, data in _piece(storage, desc, buf=buf)[2]:
+                covered[cols[data != 0]] = True
 
         descs0 = _piece_index(storage)
         if self._pool is None:
@@ -588,7 +692,7 @@ class Deflation:
                 mark(d)
         else:
             list(self._pool.map(mark, descs0))
-        del descs0
+        del descs0, mark_slots
         self.S = None if covered.all() else np.flatnonzero(covered)
         del covered
         nS = n if self.S is None else int(self.S.size)
@@ -612,6 +716,8 @@ class Deflation:
                     else 1.0 / np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64))
         # The patterns: (order + 1)^2 per deflated term, on the term's covered bounding box.
         order, basis = int(settings.order), str(settings.basis)
+        # (sel, x function, y function, box corner) per pattern; the values are made row by row into the pattern
+        # array below, one pattern's temporaries at a time
         labels, rows_of = [], []
         for name in terms:
             j = names.index(name)
@@ -624,7 +730,7 @@ class Deflation:
             for a in range(order + 1):
                 for c in range(order + 1):
                     labels.append(f"{name}:{a},{c}")
-                    rows_of.append((sel, fx[a][ix[sel] - x0] * fy[c][iy[sel] - y0]))
+                    rows_of.append((sel, fx[a], fy[c], x0, y0))
             if basis != 'polynomial' or order < POLY_ALWAYS:
                 px = axis_functions('polynomial', POLY_ALWAYS, x1 - x0 + 1)
                 py = axis_functions('polynomial', POLY_ALWAYS, y1 - y0 + 1)
@@ -633,7 +739,7 @@ class Deflation:
                         if a + c == 0 or (basis == 'polynomial' and a <= order and c <= order):
                             continue
                         labels.append(f"{name}:P{a},{c}")
-                        rows_of.append((sel, px[a][ix[sel] - x0] * py[c][iy[sel] - y0]))
+                        rows_of.append((sel, px[a], py[c], x0, y0))
         self._term_slices = []
         for j, name in enumerate(names):
             a_, b_ = int(np.searchsorted(term_of, j, 'left')), int(np.searchsorted(term_of, j, 'right'))
@@ -644,12 +750,12 @@ class Deflation:
             raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
         self.labels = labels
         Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
-        for i, (sel, vals) in enumerate(rows_of):
-            Z[i, sel] = vals * col_norm[sel]
+        for i, (sel, gx, gy, x0, y0) in enumerate(rows_of):
+            Z[i, sel] = (gx[ix[sel] - x0] * gy[iy[sel] - y0]) * col_norm[sel]
         del rows_of, term_of, iy, ix
         self._colmap = None
         if self.S is not None:
-            cm = np.full(n, -1, dtype=np.int64)
+            cm = np.full(n, -1, dtype=_IDX)
             cm[self.S] = np.arange(nS)
             self._colmap = cm
         # The column constraints (solver coordinates) on the offset columns of this space: the offsets'
@@ -684,6 +790,7 @@ class Deflation:
             # per row chunk).
             t = time.perf_counter()
             Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
+            del Z                                                 # the one layout until pass 2 has read it
             descs = _piece_index(storage)
 
             def pass1(my):
@@ -691,13 +798,15 @@ class Deflation:
                 Rt = np.zeros((n_off, k))
                 Gt = None
                 t_g = 0.0
+                slot = _Slot()                                    # this share's chunk buffers, reused chunk to chunk
                 for desc in my:
-                    r0, r1, pieces = _piece(storage, desc)
+                    r0, r1, pieces = _piece(storage, desc, buf=slot)
                     nr = r1 - r0
-                    U = np.zeros((nr, k))
+                    U = slot.take('U', (nr, k))
                     offs = []
-                    for lip, cols, data in pieces:
-                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                    for ti, (lip, cols, data) in enumerate(pieces):
+                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                                   buf=slot, tag=ti)
                         if sky is not None:
                             # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
                             # keep their order, so the sums are those of the whole piece
@@ -752,8 +861,9 @@ class Deflation:
             self.pairing_residual = float(np.max(np.linalg.norm(res, axis=0) /
                                                  np.maximum(np.linalg.norm(R, axis=1), 1e-300)))
             del res
-            Z[:, n_sky_S:] = -X.T
-            Zt[n_sky_S:, :] = -X                                  # the transposed copy follows (pass 2 reads it)
+            if signatures:
+                X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
+            Zt[n_sky_S:, :] = -X                                  # the paired patterns (pass 2 reads them)
             del G, R, X
             t_pair = time.perf_counter() - t
 
@@ -783,10 +893,10 @@ class Deflation:
                 bnorm2 += bn
             del acc2
             ATb = np.ascontiguousarray(NZb[:, k])
-            NZt = np.ascontiguousarray(NZb[:, :k])
-            del NZb, Zt
-            NZ = np.ascontiguousarray(NZt.T)
-            del NZt
+            NZ = np.ascontiguousarray(NZb[:, :k].T)               # one copy, into the layout the grams read
+            del NZb
+            Z = np.ascontiguousarray(Zt.T)                        # the patterns, one per row again
+            del Zt
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
 
@@ -995,6 +1105,104 @@ class Deflation:
             f"matrix {t_g:.1f} s of a thread's, with the reduction) + {t_pass2:.1f} s (chunks {st['work_thread_s']:.0f} thread-s over {st['work_wall_s']:.0f} s, "
             f"adds {st['add_thread_s']:.0f} thread-s over {st['add_wall_s']:.0f} s, {st['threads']} threads), blocks {t_pair:.1f} s; setup {self.setup_s:.1f} s")
 
+    def _exclude_signatures(self, signatures, X, G, info, scale, n, n_sky_S, n_off):
+        """``Offsets(exclude=SkySignature(k))``: each named term may not carry its response to the sky polynomials of
+        degree 1 to k (``k='all'``: to every pattern but the constant). ``X`` (``(n_off, patterns)``, solver coordinates) is the offsets' least-squares response to
+        every pattern; the polynomial patterns' responses restricted to a term are the term's signature of those
+        fields. The signature first loses its detector-fixed part (``chunk``: the columns of one chunk value, one per
+        group, hold the configurations the same in every group; their projection is removed per chunk), so a
+        pattern fixed on the detector stays free; the term's coefficients are then made orthogonal to what is left in
+        the data's metric (each coefficient weighted by its information, the diagonal of ``G``): a
+        :class:`~selfcal.core.projector.ColumnProjector` group joins the column constraints (the solver's operator, its
+        start and the solution apply it). Every pattern's response is then solved again under the constraint, by its
+        Lagrange form (the constraint spans every frame, so it is not one more block of the block solve):
+        ``X_c = X - Y (C^T Y)^+ C^T X`` with ``Y = G^+ C`` (the same block solve, or its factorisation when the shared
+        offsets made one). Returns ``X_c``; the record keeps what was constrained (``signature_exclusions``)."""
+        from .projector import _DROP
+        cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+        basis = str(self.settings.basis)
+
+        def poly_degree(label):
+            """The total degree of a polynomial pattern ('<term>:Pa,c', or 'a,c' with the polynomial basis); None for a
+            cosine pattern."""
+            key = label.split(':', 1)[1]
+            if key.startswith('P'):
+                key = key[1:]
+            elif basis != 'polynomial':
+                return None
+            a, c = key.split(',')
+            return int(a) + int(c)
+
+        degrees = [poly_degree(lbl) for lbl in self.labels]
+        gdiag = np.asarray(G.diagonal(), dtype=np.float64)
+        groups, cs, recs = [], [], []
+        for cols, degree, name, chunk in signatures:
+            cols = np.asarray(cols, dtype=np.int64)
+            sp = cm[cols]
+            ok = sp >= n_sky_S                                    # the term's unknowns in this space (with data)
+            cols, off, chunk = cols[ok], sp[ok] - n_sky_S, np.asarray(chunk, dtype=np.int64)[ok]
+            if degree == 'all':                                   # every pattern but the constant (a gauge)
+                fields = [i for i, lbl in enumerate(self.labels) if lbl.split(':', 1)[1] not in ('0,0', 'P0,0')]
+            else:
+                fields = [i for i, d in enumerate(degrees) if d is not None and 1 <= d <= int(degree)]
+            if off.size == 0 or not fields:
+                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree!r})): "
+                                 + ("the term has no unknown with data" if off.size == 0 else
+                                    "the deflation has no pattern to exclude (degree 1 to that degree, or any)"))
+            # Solver coordinates y, physical x = m y. The data's metric on the term's coefficients is the diagonal of
+            # the offsets' normal matrix g (1 for unit-norm columns): <u, v> = sum g u v in solver coordinates. A
+            # detector-fixed configuration (x the same in every group, one value per chunk) is f = 1 / m on the
+            # chunk's columns; each signature S loses its projection on those (per chunk, in the data's metric), so
+            # they stay free, and the constraint on y is (g S')^T y = 0.
+            m = np.ones(off.size) if scale is None else np.asarray(scale, dtype=np.float64)[cols]
+            g, f = gdiag[off], 1.0 / m
+            S = np.array(X[off][:, fields], dtype=np.float64)
+            norm0 = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
+            _, ch = np.unique(chunk, return_inverse=True)
+            den = np.bincount(ch, weights=g * f * f)
+            for j in range(S.shape[1]):
+                num = np.bincount(ch, weights=g * f * S[:, j], minlength=den.size)
+                S[:, j] -= f * np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)[ch]
+            kept = np.sqrt(np.einsum('i,ij,ij->j', g, S, S))
+            if float(kept.max()) <= _DROP * max(float(norm0.max()), 1e-300):
+                # Nothing of the term's response changes from frame to frame (one group, or every frame alike): zero up
+                # to rounding, so measured against the response before the detector-fixed part was removed.
+                raise ValueError(f"Offsets({name!r}, exclude=SkySignature({degree!r})): the term's signature is "
+                                 "detector-fixed throughout (one group, or every frame alike): nothing to constrain")
+            A = g[:, None] * S
+            U, sv, _ = np.linalg.svd(A, full_matrices=False)
+            keep = sv > _DROP * max(float(sv.max()), 1e-300)
+            U = np.ascontiguousarray(U[:, keep])
+            groups.append((cols[None, :], U[None, :, :]))
+            c = np.zeros((n_off, U.shape[1]))
+            c[off] = U
+            cs.append(c)
+            recs.append({'term': str(name), 'degree': degree if degree == 'all' else int(degree), 'fields': [self.labels[i] for i in fields],
+                         'columns': int(off.size), 'directions': int(U.shape[1]),
+                         'singular_values': [float(v) for v in sv], 'metric': 'data (the diagonal of the normal matrix)',
+                         'detector_fixed_free': True,
+                         'share_constrained': [float(a / b) if b > 0 else 0.0 for a, b in zip(kept, norm0)]})
+        C = np.concatenate(cs, axis=1)
+        Cp = C if self._proj_off is None else self._proj_off.apply(np.array(C, copy=True))
+        fac = info.get('factor')
+        Y = fac.solve(Cp, pool=self._pool)[0] if fac is not None else \
+            _block_pinv_solve(G, C, project=self._proj_off, pool=self._pool)[0]
+        lam = np.linalg.lstsq(C.T @ Y, C.T @ X, rcond=None)[0]
+        Xc = X - Y @ lam
+        held = float(np.abs(C.T @ Xc).max() / max(float(np.abs(Xc).max()), 1e-300))
+        groups0 = list(self._projector.groups) if self._projector is not None else []
+        self._projector = ColumnProjector(groups0 + groups)
+        for r in recs:
+            r['constraint_held'] = held
+        self.signature_info = recs
+        logger.info('Deflation: sky signatures excluded from ' + '; '.join(
+            f"{r['term']} ({r['columns']} unknowns, " + ('every pattern but the constant' if r['degree'] == 'all' else f"degree <= {r['degree']}")
+            + f": {r['directions']} directions; the share of each "
+            f"field's signature that is not detector-fixed: " + ', '.join(f'{v:.2f}' for v in r['share_constrained']) + ')'
+            for r in recs)
+            + f"; the patterns' responses solved under the constraint (|C^T X| / |X| = {held:.1e})")
+        return Xc
+
     def _offset_images(self, storage, Qh, n_sky_S, n_off):
         """``B_off^T B_sky Q`` for sky vectors ``Q`` ``(n_sky_S, q)`` (a single sky term, every row with one sky entry):
         one sweep over the matrix, the offsets' part of ``N Q`` (its sky part is ``Q`` itself for unit sky column
@@ -1007,13 +1215,15 @@ class Deflation:
 
         def sweep(my):
             Rt = np.zeros((n_off, q))
+            slot = _Slot()
             for desc in my:
-                r0, r1, pieces = _piece(storage, desc)
+                r0, r1, pieces = _piece(storage, desc, buf=slot)
                 nr = r1 - r0
-                U = np.zeros((nr, q))
+                U = slot.take('U', (nr, q))
                 offs = []
-                for lip, cols, data in pieces:
-                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S)
+                for ti, (lip, cols, data) in enumerate(pieces):
+                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                               buf=slot, tag=ti)
                     if sky is not None:
                         _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
                     if oc is not None:
@@ -1047,50 +1257,70 @@ class Deflation:
     def _transposed_products(self, storage, images, m, n_sky_S, extra=None):
         """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
         chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). Per batch of chunks
-        the images are made in parallel; the sky columns' products (``pos < n_sky_S``) are then summed per column
-        within the chunk (the entries sorted by column, a stable sort) and added into the output by threads that
-        own disjoint column ranges; the offset columns' (few) go through the transposed kernel into a private
-        buffer per chunk, added in chunk order. Every column's total is the chunk partials added in chunk order,
-        so the result does not depend on the thread count."""
+        the images are made in parallel, and each chunk's sky entries (``pos < n_sky_S``) are sorted by column (a
+        stable sort); threads that own disjoint column ranges then sum each chunk's products per column (in row
+        order, from zero) and add the sums into the output; the offset columns' (few) go through the transposed
+        kernel into a private buffer per chunk, added in chunk order. Every column's total is the chunk partials
+        added in chunk order, so the result does not depend on the thread count."""
         out = np.zeros((self.nS, m))
         descs = _piece_index(storage)
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
         n_off = self.nS - n_sky_S
 
         def partials(mp, buf):
-            """Per chunk: the sky columns' sums ``(uniq, part)`` (sorted) and the offset columns' ``(n_off, m)``."""
+            """Per chunk: the sky entries grouped by column ``(uniq, ip, rows, values)`` (the columns ascending, each
+            column's entries ``ip[i]:ip[i + 1]`` in row order; None: none), the chunk's ``U``, and the offset columns'
+            ``(columns, sums)``, the chunk's own offset columns only (None: none)."""
             (r0, r1, prepared), (U, x) = mp
             nr = r1 - r0
             sky = []
             off = None
+            ocs = [oc for _lip, _pos, _d64, _sk, oc in prepared if oc is not None]
+            if ocs:
+                # The chunk's offset columns numbered compactly, their sums in a buffer of that size: each the same
+                # sum, in the same order; a column the chunk does not touch gets no addition (its zero changed nothing).
+                mark = buf.bufs.get('offmark')
+                if mark is None or mark.size != n_off:
+                    mark = buf.bufs['offmark'] = np.zeros(n_off, dtype=bool)
+                for _ip, ci, _dd in ocs:
+                    mark[ci] = True
+                touched = np.flatnonzero(mark)
+                mark[touched] = False
+                cmap = buf.get('offmap', n_off, _IDX)
+                cmap[touched] = np.arange(touched.size)
+                sums = buf.take('offsums', (touched.size, m))
+                for ti, (ip, ci, dd) in enumerate(ocs):
+                    local = buf.get(f'{ti}offlocal', ci.size, _IDX)
+                    np.take(cmap, ci, out=local)
+                    _sparsetools.csc_matvecs(touched.size, nr, m, ip, local, dd, U, sums)
+                off = (touched, sums)
             for _lip, _pos, _d64, sk, oc in prepared:
-                if oc is not None:
-                    if off is None:
-                        off = np.zeros((n_off, m))
-                    _sparsetools.csc_matvecs(n_off, nr, m, oc[0], oc[1], oc[2], U, off)
                 if sk is not None:
                     sky.append((sk[1], sk[3], sk[2]))
+            grouped = None
             if sky:
                 ps = np.concatenate([q[0] for q in sky]) if len(sky) > 1 else sky[0][0]
                 rs = np.concatenate([q[1] for q in sky]) if len(sky) > 1 else sky[0][1]
                 ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
                 order = np.argsort(ps, kind='stable')
-                ps, rs, ds = ps[order], rs[order], ds[order]
+                ne = int(ps.size)
+                ps = np.take(ps, order, out=buf.get('sortcols', ne, _IDX))
+                rs = np.take(rs, order, out=buf.get('sortrows', ne, _IDX))
+                ds = np.take(ds, order, out=buf.get('sortvals', ne, np.float64))
+                del order
                 starts = np.flatnonzero(np.diff(ps, prepend=-1))
-                uniq = ps[starts]
-                ip = np.append(starts, ps.size).astype(np.int64)
-                part = buf.take('part', (uniq.size, m))
-                # the sums per column as a sparse product (one row per column of the chunk): the C kernel, which
-                # runs without the GIL (numpy's take / reduceat hold it)
-                _sparsetools.csr_matvecs(uniq.size, nr, m, ip, rs, ds, U, part)
-                del order, rs, ds, ps, ip
-            else:
-                uniq, part = np.zeros(0, dtype=np.int64), np.zeros((0, m))
-            return uniq, part, off, x
+                uniq = np.take(ps, starts, out=buf.get('uniq', starts.size, _IDX))
+                ip = buf.get('sortip', starts.size + 1, _IDX)
+                ip[:-1] = starts
+                ip[-1] = ne
+                grouped = (uniq, ip, rs, ds)
+            return grouped, U, off, x
 
-        # One buffer slot per task of a batch (U, Ud, part: a gigabyte per chunk at full scale), kept for the whole
-        # pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises across threads.
+        # One buffer slot per task of a batch (the chunk's entries and U: a gigabyte per chunk at full scale), kept
+        # for the whole pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises
+        # across threads. One more per column range, for its column sums (_ADD_COLUMNS columns at a time).
         slots = [_Slot() for _ in range(nt)]
+        add_slots = [_Slot() for _ in range(nt)]
         t_work = [0.0] * nt
         t_add = [0.0] * nt
         t_wall = [0.0, 0.0]
@@ -1098,10 +1328,11 @@ class Deflation:
         def work(i_desc):
             i, desc = i_desc
             t0 = time.perf_counter()
-            r0, r1, pieces = _piece(storage, desc)
-            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S) for lip, cols, data in pieces]
-            del pieces
             buf = slots[i]
+            r0, r1, pieces = _piece(storage, desc, buf=buf)
+            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti)
+                        for ti, (lip, cols, data) in enumerate(pieces)]
+            del pieces
             out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
             t_work[i] += time.perf_counter() - t0
             return out_
@@ -1113,18 +1344,27 @@ class Deflation:
             t_wall[0] += time.perf_counter() - t0
             if extra is not None:
                 extra.extend(pt[3] for pt in parts)
-            for uniq, part, off, _x in parts:
+            for _g, _U, off, _x in parts:
                 if off is not None:
-                    out[n_sky_S:] += off
+                    touched, sums = off
+                    out[n_sky_S + touched] += sums
             # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
             # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
-            samp = np.concatenate([u[::997] for u, _p, _o, _x in parts if u.size] or [np.zeros(0, dtype=np.int64)])
+            samp = np.concatenate([g[0][::997] for g, _U, _o, _x in parts if g is not None]
+                                  or [np.zeros(0, dtype=np.int64)])
             samp.sort()
             if samp.size >= nt:
                 cuts = np.concatenate(([0], samp[(np.arange(1, nt) * samp.size) // nt], [n_sky_S]))
                 cuts = np.maximum.accumulate(cuts)
             else:
                 cuts = np.linspace(0, n_sky_S, nt + 1, dtype=np.int64)
+            # Each chunk's column sums, made by the thread owning the columns: the products of the column's entries
+            # summed in row order from zero (a sparse product with one row per column of the chunk: the C kernel,
+            # which runs without the GIL), then added at their own columns by the transposed kernel with one entry
+            # per summed column (``out[c] += 1.0 * part``), so the work is the chunk's columns', not the range's.
+            n_max = min(max((g[0].size for g, _U, _o, _x in parts if g is not None), default=0), _ADD_COLUMNS)
+            steps = np.arange(n_max + 1, dtype=_IDX)
+            units = np.ones(n_max)
 
             def add(j):
                 lo, hi = int(cuts[j]), int(cuts[j + 1])
@@ -1132,13 +1372,20 @@ class Deflation:
                     return
                 t0 = time.perf_counter()
                 view = out[lo:hi]
-                for uniq, part, _off, _x in parts:
-                    i0, i1 = np.searchsorted(uniq, (lo, hi))
-                    if i1 > i0:
-                        ip = np.zeros(hi - lo + 1, dtype=np.int64)
-                        ip[uniq[i0:i1] - lo + 1] = 1
-                        np.cumsum(ip, out=ip)
-                        _sparsetools.csr_matvecs(hi - lo, i1 - i0, m, ip, np.arange(i1 - i0, dtype=np.int64), np.ones(i1 - i0), part[i0:i1], view)
+                pb = add_slots[j]
+                for g, U, _off, _x in parts:
+                    if g is None:
+                        continue
+                    uniq, ip, rs, ds = g
+                    i0, i1 = (int(v) for v in np.searchsorted(uniq, (lo, hi)))
+                    for a0 in range(i0, i1, _ADD_COLUMNS):
+                        a1 = min(i1, a0 + _ADD_COLUMNS)
+                        e0, e1 = int(ip[a0]), int(ip[a1])
+                        lip = np.subtract(ip[a0:a1 + 1], e0, out=pb.get('ip', a1 - a0 + 1, _IDX))
+                        part = pb.take('part', (a1 - a0, m))
+                        _sparsetools.csr_matvecs(a1 - a0, U.shape[0], m, lip, rs[e0:e1], ds[e0:e1], U, part)
+                        _sparsetools.csc_matvecs(hi - lo, a1 - a0, m, steps[:a1 - a0 + 1], uniq[a0:a1] - lo,
+                                                 units[:a1 - a0], part, view)
                 t_add[j] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
@@ -1153,15 +1400,22 @@ class Deflation:
         """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
         chunks, each exactly as a single sweep computes it)."""
         descs = _piece_index(storage)
+        slots = {}                                                # one per thread, for this sweep
 
         def chunk(desc):
-            r0, r1, pieces = _piece(storage, desc)
+            buf = slots.get(threading.get_ident())
+            if buf is None:
+                buf = slots[threading.get_ident()] = _Slot()
+            r0, r1, pieces = _piece(storage, desc, buf=buf)
             nr = r1 - r0
-            acc = np.zeros(nr)
-            for lip, cols, data in pieces:
-                pos = cols if self._colmap is None else self._colmap[cols]
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, data.astype(np.float64), v, acc)
-            fn(r0, r1, acc)
+            acc = buf.get('acc', nr, np.float64)
+            acc.fill(0.0)
+            for ti, (lip, cols, data) in enumerate(pieces):
+                pos = cols if self._colmap is None else np.maximum(self._colmap[cols], 0)   # -1: zero entries
+                d64 = buf.get(f'{ti}d64', data.size, np.float64)
+                np.copyto(d64, data)
+                _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, v, acc)
+            fn(r0, r1, acc)                                       # consumed here (the buffer is the thread's next chunk's)
 
         if self._pool is None:
             for d in descs:
@@ -1200,9 +1454,9 @@ class Deflation:
         return 0.5 * (out + out.T) if A is B else out
 
     def _map(self, fn):
-        if self._pool is None or len(self._blocks) == 1:
+        if self._blas_pool is None or len(self._blocks) == 1:
             return [fn(a, c) for a, c in self._blocks]
-        return list(self._pool.map(lambda ac: fn(*ac), self._blocks))
+        return list(self._blas_pool.map(lambda ac: fn(*ac), self._blocks))
 
     _SUB = 32768          # columns per sub-block: a float64 copy of k' x _SUB stays in cache
 
@@ -1245,14 +1499,31 @@ class Deflation:
         self._map(part)
 
     def _gather(self, y):
+        """``y`` on the covered columns, float64 (nS,), written block by block in the threads into a buffer the
+        deflation keeps: one gathered vector is live at a time (every caller consumes it before the next)."""
         y = np.asarray(y)
-        return y.astype(np.float64) if self.S is None else y[self.S].astype(np.float64)
+        buf = self._scratch.get('gathered')
+        if buf is None:
+            buf = self._scratch['gathered'] = np.empty(self.nS)
+        S = self.S
+
+        def part(j):
+            a, c = self._blocks[j]
+            np.copyto(buf[a:c], y[a:c] if S is None else y[S[a:c]], casting='unsafe')
+        self._wait(self._submit(part, len(self._blocks)))
+        return buf
 
     def _scatter(self, out, vS):
-        if self.S is None:
-            out[...] = vS
-        else:
-            out[self.S] = vS
+        """``vS`` written back to its columns of ``out`` (in ``out``'s dtype), block by block in the threads."""
+        S = self.S
+
+        def part(j):
+            a, c = self._blocks[j]
+            if S is None:
+                np.copyto(out[a:c], vS[a:c], casting='unsafe')
+            else:
+                out[S[a:c]] = vS[a:c]
+        self._wait(self._submit(part, len(self._blocks)))
 
     def project(self, y) -> np.ndarray:
         """``P y`` on the covered columns, float64 (nS,)."""
@@ -1356,10 +1627,12 @@ class Deflation:
         ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
         xS = self._gather(x)
 
-        def residual(r0, r1, prepared, _buf):
+        def residual(r0, r1, prepared, buf):
             nr = r1 - r0
-            r = np.array(b[r0:r1], dtype=np.float64)
-            acc = np.zeros(nr)
+            r = buf.get('resid', nr, np.float64)
+            np.copyto(r, b[r0:r1], casting='unsafe')
+            acc = buf.get('resid_acc', nr, np.float64)
+            acc.fill(0.0)
             for lip, pos, d64, _sky, _off in prepared:
                 _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, xS, acc)
             r -= acc
@@ -1376,7 +1649,7 @@ class Deflation:
     def summary(self) -> dict:
         """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
         st = self.settings
-        return {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
+        out = {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
                 'kept': self.kept, 'gauges': self.gauges,
                 'seen': [float(v) for v in np.sort(self.seen)],
@@ -1396,6 +1669,9 @@ class Deflation:
                 'excluded_degenerate': self.exclusion_info,                                        # Deflate(exclude=): the selection, or None
                 'seen_constrained': None if self.exclusion_info is None else [float(v) for v in np.sort(self.seen_constrained)],
                 'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
+        if self.signature_info is not None:
+            out['signature_exclusions'] = self.signature_info                                      # Offsets(exclude=SkySignature): the terms constrained
+        return out
 
     def summary_json(self) -> str:
         return json.dumps(self.summary(), sort_keys=True)
@@ -1404,3 +1680,6 @@ class Deflation:
         if self._pool is not None:
             self._pool.shutdown(wait=False)
             self._pool = None
+        if getattr(self, '_blas_pool', None) is not None:
+            self._blas_pool.shutdown(wait=False)
+            self._blas_pool = None

@@ -20,7 +20,15 @@ from ..io.calfile import CalFile
 from ..io.reproj import load_reproj_file
 from ..models.variables import FrameObservations, ObservationVariables
 
-__all__ = ['frame_observations', 'BasisOffsetSubtractor', 'ObservationWeight', 'ComposedHook']
+__all__ = ['frame_observations', 'weighted_pixels', 'BasisOffsetSubtractor', 'ObservationWeight', 'ComposedHook']
+
+
+def weighted_pixels(ctx):
+    """The observations of a frame that carry weight: the subframe pixels with ``sub_weight > 0`` and a
+    detector position. The others never reach a coadd or a solve, so a hook that only has to be right
+    where they do evaluates its functions there."""
+    sm = np.asarray(ctx.sub_mapping)
+    return np.nonzero((np.asarray(ctx.sub_weight) > 0) & np.isfinite(sm[0]) & np.isfinite(sm[1]))
 
 
 def frame_observations(ctx, index, variables, pixels=None, oversample_factor=1, det_shape=None,
@@ -34,23 +42,31 @@ def frame_observations(ctx, index, variables, pixels=None, oversample_factor=1, 
     :class:`~selfcal.models.variables.VariableSet` (None: built-ins only).
     ``pixels`` defaults to every subframe pixel with a detector position.
     Returns ``(obs, interp)``: the lazy variables and the bilinear matrix
-    (rows = the pixels) onto the detector grid of shape ``det_shape``."""
-    sm = np.asarray(ctx.sub_mapping, dtype=np.float64)
+    (rows = the pixels) onto the detector grid of shape ``det_shape``.
+
+    The frame's layers are read once per frame: hooks composed on the same
+    ``ctx`` (:class:`ComposedHook`) share them."""
+    sm = np.asarray(ctx.sub_mapping)            # the stored dtype: converted at the pixels only
     if pixels is None:
         pixels = np.nonzero(np.isfinite(sm[0]) & np.isfinite(sm[1]))
     rows, cols = pixels
     interp = None
     det = {}
     if det_shape is not None:
-        coords_yx = np.stack([sm[1][rows, cols], sm[0][rows, cols]]) * oversample_factor
+        coords_yx = np.stack([np.asarray(sm[1][rows, cols], dtype=np.float64),
+                              np.asarray(sm[0][rows, cols], dtype=np.float64)]) * oversample_factor
         interp = make_linear_interp_matrix(coords_yx, input_shape=tuple(det_shape))
         if variables is not None:
             for k, dmap in variables.detector.items():
                 det[k] = np.asarray(interp @ np.asarray(dmap, dtype=np.float64).ravel())
     layers = {}
     if variables is not None and variables.layers:
-        got = load_reproj_file(ctx.file, fields=[f'layers/{n}' for n in variables.layers])
-        layers = {n: got[f'layers/{n}'] for n in variables.layers}
+        read = getattr(ctx, '__dict__', {}).setdefault('_layers_read', {})      # one frame's context, one read
+        missing = [n for n in variables.layers if n not in read]
+        if missing:
+            got = load_reproj_file(ctx.file, fields=[f'layers/{n}' for n in missing])
+            read.update({n: got[f'layers/{n}'] for n in missing})
+        layers = {n: read[n] for n in variables.layers}
     fv = {}
     if variables is not None:
         row = index if frame_row is None else frame_row
@@ -70,7 +86,9 @@ def frame_observations(ctx, index, variables, pixels=None, oversample_factor=1, 
 
 class BasisOffsetSubtractor:
     """A frame hook subtracting the offset terms that carry known functions of
-    data variables, at every observation of each frame.
+    data variables, at every observation of each frame that carries weight
+    (:func:`weighted_pixels`, as in the solve; the frame's other pixels keep
+    their values: they never reach the coadd).
 
     ``cal_path``: the calibration whose ``offsets/map_<m>`` hold, per frame,
     the term's unknowns (``n_chunks * n`` coefficients, chunk-major).
@@ -99,8 +117,9 @@ class BasisOffsetSubtractor:
         if i is None:
             return sub_data
         shapes = {cm.shape for _, _, cm in self.terms}
+        pixels = weighted_pixels(ctx)
         for shape in shapes:
-            obs, interp = frame_observations(ctx, i, self.variables, oversample_factor=self.oversample_factor,
+            obs, interp = frame_observations(ctx, i, self.variables, pixels=pixels, oversample_factor=self.oversample_factor,
                                              det_shape=shape, frame_row=self.var_index.get(name, i))
             if obs.n == 0:
                 continue
@@ -150,10 +169,8 @@ class ObservationWeight:
         i = self.index.get(os.path.basename(ctx.file), 0)
         # the observations of the frame: the pixels that carry weight (a per-frame statistic of
         # the weight function, e.g. a median, is over those); the others keep weight 0
-        sm = np.asarray(ctx.sub_mapping, dtype=np.float64)
-        pixels = np.nonzero((np.asarray(ctx.sub_weight) > 0) & np.isfinite(sm[0]) & np.isfinite(sm[1]))
-        obs, _ = frame_observations(ctx, i, self.variables, pixels=pixels, oversample_factor=self.oversample_factor,
-                                    det_shape=self.det_shape)
+        obs, _ = frame_observations(ctx, i, self.variables, pixels=weighted_pixels(ctx),
+                                    oversample_factor=self.oversample_factor, det_shape=self.det_shape)
         factor = np.zeros(np.shape(ctx.sub_data), dtype=np.float64)
         if obs.n:
             w = (self.weight.coadd_weight(obs, self.power) if hasattr(self.weight, 'coadd_weight')

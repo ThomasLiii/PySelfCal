@@ -24,7 +24,7 @@ from ..geometry.map_helper import compute_chunk_contrib
 from ..io.atomic import atomic_path
 from ..io.cal_writer import write_sky_groups
 from ..io.calfile import CalFile
-from ..pipeline.model_eval import frame_observations
+from ..pipeline.model_eval import frame_observations, weighted_pixels
 
 __all__ = ["OffsetModelSubtractor", "solve_pixels", "dump_moments", "combine_moments", "write_sky_cal",
            "sky_monitors"]
@@ -38,8 +38,9 @@ def _basename(p):
 # the offsets subtracted
 # --------------------------------------------------------------------------- #
 class OffsetModelSubtractor:
-    """A frame hook subtracting a solved offset model at every observation of each frame: every
-    offset term of the model.
+    """A frame hook subtracting a solved offset model at every observation of each frame that carries
+    weight (:func:`~selfcal.pipeline.model_eval.weighted_pixels`; the others keep their values: they
+    never reach the sums): every offset term of the model.
 
     ``cal_paths``: one calibration or several (disjoint frame sets, e.g. the tiles of a run) whose
     ``offsets/map_<m>`` hold, per frame, each term's solved values: one per chunk, or ``n_chunks * n``
@@ -85,8 +86,9 @@ class OffsetModelSubtractor:
         if i is None:
             return sub_data
         shapes = {cm.shape for _, _, cm in self.terms}
+        pixels = weighted_pixels(ctx)
         for shape in shapes:
-            obs, interp = frame_observations(ctx, i, self.variables, oversample_factor=self.oversample_factor,
+            obs, interp = frame_observations(ctx, i, self.variables, pixels=pixels, oversample_factor=self.oversample_factor,
                                              det_shape=shape, frame_row=self.var_index.get(name, i))
             if obs.n == 0:
                 continue

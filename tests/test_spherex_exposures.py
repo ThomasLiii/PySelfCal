@@ -3,9 +3,10 @@
 ``read_l2b`` stores the L2b ``VARIANCE`` with every frame as the layer ``variance``, finite
 wherever the frame has a detector position (the bad pixels are filled before the interpolation),
 and ``add_layers`` / ``add_reader_layers`` give frames made without the layer the same one. It
-also dilates the SUR_ERROR and NONFUNC bits by one pixel, so that the mask covers every output pixel the exact
-reprojection spreads a dead pixel's value into; ``refresh_mask`` / ``refresh_reader_mask`` give
-frames made before that the same mask. The toy L2b files here: a small detector with a TAN WCS
+also sets bit 30 (``DILATED_DEAD_BIT``) on the one-pixel dilation of the SUR_ERROR and NONFUNC bits,
+keeping those bits as read, so that the mask covers every output pixel the exact reprojection
+spreads a dead pixel's value into; ``refresh_mask`` / ``refresh_reader_mask`` give frames made
+before that the same mask. The toy L2b files here: a small detector with a TAN WCS
 rotated against the reference grid, and the ``IMAGE`` / ``FLAGS`` / ``VARIANCE`` extensions, with a
 dead pixel of 600 MJy/sr flagged like the real ones.
 """
@@ -16,7 +17,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import binary_dilation, map_coordinates
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
@@ -27,6 +28,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import selfcal as sc  # noqa: E402
 from selfcal.instruments.spherex.exposures import (  # noqa: E402
     DILATED_BITS,
+    DILATED_DEAD_BIT,
     l2b_flags,
     l2b_variance,
     read_l2b,
@@ -137,8 +139,14 @@ def test_read_l2b_reads_the_variance_as_a_finite_layer(tmp_path):
     img, flags, var = write_l2b(p, rng, 3, 5)
     exp = read_l2b(p, 1, 2)
     assert np.array_equal(exp.data, img, equal_nan=True)
-    assert np.array_equal(exp.mask, dilate_bits(flags, DILATED_BITS)) and not np.array_equal(exp.mask, flags)
+    dead = 1 << DILATED_DEAD_BIT
+    assert np.array_equal(exp.mask, dilate_bits(flags, DILATED_BITS, into=DILATED_DEAD_BIT))
+    assert np.array_equal(exp.mask & ~dead, flags)                     # the bits as the file has them
+    grown = binary_dilation((flags & sum(1 << b for b in DILATED_BITS)) != 0, structure=np.ones((3, 3), dtype=bool))
+    assert np.array_equal((exp.mask & dead) != 0, grown) and grown[DEAD] and grown.sum() > 9
+    assert np.array_equal(l2b_flags(p), exp.mask)
     assert np.array_equal(read_l2b(p, 1, 2, dilate=()).mask, flags)
+    assert np.array_equal(read_l2b(p, 1, 2, into=None).mask, dilate_bits(flags, DILATED_BITS))   # 2026-10-15 to 10-22
     layer = exp.layers['variance']
     assert layer.dtype == np.float64 and np.isfinite(layer).all() and (layer > 0).all()
     usable = np.isfinite(var) & (var > 0)
@@ -226,10 +234,28 @@ def test_dilate_bits_grows_only_the_given_bits():
     assert np.array_equal(dilate_bits(m, ()), m)
 
 
+def test_dilate_bits_into_another_bit_keeps_the_bits():
+    m = np.zeros((9, 9), dtype=np.int32)
+    m[4, 4] = (1 << 2) | (1 << 0)
+    m[1, 7] = 1 << 6
+    out = dilate_bits(m, (2, 6), into=30)
+    assert out.dtype == m.dtype and np.array_equal(out & ~(1 << 30), m)          # every bit as it was
+    expect = np.zeros((9, 9), dtype=bool)
+    expect[3:6, 3:6] = True
+    expect[0:3, 6:9] = True
+    assert np.array_equal((out & (1 << 30)) != 0, expect)                        # the union's dilation, in bit 30
+    assert np.array_equal(dilate_bits(m, (), into=30), m)
+    for bad in (2, 31, 32):                                                       # a dilated bit; past a positive int32
+        with pytest.raises(ValueError):
+            dilate_bits(m, (2, 6), into=bad)
+    assert (dilate_bits(m.astype(np.uint32), (2,), into=31) >> 31).sum() == 9    # unsigned: bit 31 fits
+
+
 def test_the_dilated_mask_covers_the_dead_pixel_s_spread(tmp_path):
     """The exact reprojection spreads the dead pixel (600 MJy/sr) into the output pixels its area touches,
     beyond the bilinear footprint of its mask: with the frames rotated against the grid, the undilated
-    mask leaves some of them unflagged; the reader's dilation of SUR_ERROR flags every one of them."""
+    mask leaves some of them unflagged; the reader's bit 30 (the one-pixel dilation of SUR_ERROR and
+    NONFUNC) flags every one of them, every other bit as the undilated reprojection has it."""
     rng = np.random.default_rng(5)
     _exposures(tmp_path, rng, n=8)
     old = _reproject(tmp_path, 'undilated', read_l2b_undilated)
@@ -241,12 +267,13 @@ def test_the_dilated_mask_covers_the_dead_pixel_s_spread(tmp_path):
         assert np.array_equal(a['sub_data'], b['sub_data'], equal_nan=True)          # the data do not change
         leak = np.isfinite(a['sub_data']) & (np.abs(a['sub_data'] - 1.0) > 2.0)      # the sky is 1 +- 0.03
         leaked += int(leak.sum())
-        dil = sum(1 << b for b in DILATED_BITS)
+        dil = sum(1 << b for b in DILATED_BITS) | (1 << DILATED_DEAD_BIT)
         leaked_unflagged_old += int((leak & ((a['sub_bitmask'] & dil) == 0)).sum())
         assert not (leak & ((b['sub_bitmask'] & dil) == 0)).any()                     # every leak flagged now
         flagged_old += int(((a['sub_bitmask'] & dil) != 0).sum())
         flagged_new += int(((b['sub_bitmask'] & dil) != 0).sum())
-        assert np.array_equal(b['sub_bitmask'] & ~dil, a['sub_bitmask'] & ~dil)       # only the dilated bits differ
+        dead = 1 << DILATED_DEAD_BIT
+        assert np.array_equal(b['sub_bitmask'] & ~dead, a['sub_bitmask'])            # only the new bit differs
     assert leaked > 8 and leaked_unflagged_old > 0                                    # the flaw the dilation fixes
     assert flagged_new > flagged_old
 
@@ -259,7 +286,7 @@ def test_refresh_mask_writes_what_the_reprojection_writes(tmp_path):
     keys = ['sub_data', 'sub_foot', 'sub_mapping', 'ref_coords', 'det_header', 'sub_header', 'file_path', 'layers/variance']
     for fa, fb in zip(old.frames, new.frames):
         before = load_reproj_file(fa, keys + ['sub_bitmask'])
-        changed = refresh_reader_mask(fa, read_l2b, 1, 2, bits=DILATED_BITS)        # the dilated plane only
+        changed = refresh_reader_mask(fa, read_l2b, 1, 2, bits=(DILATED_DEAD_BIT,))  # the new bit's plane only
         after = load_reproj_file(fa, keys + ['sub_bitmask'])
         fresh = load_reproj_file(fb, ['sub_bitmask'])['sub_bitmask']
         assert np.array_equal(after['sub_bitmask'], fresh)                            # exactly the new reprojection's
@@ -275,3 +302,32 @@ def test_refresh_mask_writes_what_the_reprojection_writes(tmp_path):
         assert refresh_mask(fa, l2b_flags(after['file_path'])) == 0
         with pytest.raises(ValueError, match='detector'):
             refresh_mask(fa, np.zeros((H + 1, W), dtype=np.int32))
+
+
+def test_refresh_mask_from_the_stored_mapping(tmp_path):
+    """mapping='stored' samples the new bit's plane (DILATED_DEAD_BIT) at the detector positions the frame stores
+    instead of mapping the box through the WCS again: the new reprojection's mask up to the pixels within the stored
+    positions' float32 rounding of the threshold; only that bit changes, everything else stays."""
+    rng = np.random.default_rng(6)
+    _exposures(tmp_path, rng, n=5)
+    old = _reproject(tmp_path, 'undilated', read_l2b_undilated)
+    new = _reproject(tmp_path, 'dilated', read_l2b)
+    keys = ['sub_data', 'sub_foot', 'sub_mapping', 'ref_coords', 'det_header', 'sub_header', 'file_path', 'layers/variance']
+    dil = 1 << DILATED_DEAD_BIT
+    n_changed, n_differ = 0, 0
+    for fa, fb in zip(old.frames, new.frames):
+        before = load_reproj_file(fa, keys + ['sub_bitmask'])
+        n_changed += refresh_reader_mask(fa, read_l2b, 1, 2, bits=(DILATED_DEAD_BIT,), mapping='stored')
+        after = load_reproj_file(fa, keys + ['sub_bitmask'])
+        fresh = load_reproj_file(fb, ['sub_bitmask'])['sub_bitmask']
+        n_differ += int((after['sub_bitmask'] != fresh).sum())
+        assert np.array_equal(after['sub_bitmask'] & ~dil, before['sub_bitmask'] & ~dil)   # only the new bit
+        for k in keys:                                                                       # everything else unchanged
+            if isinstance(before[k], np.ndarray):
+                assert np.array_equal(before[k], after[k], equal_nan=True), k
+            else:
+                assert before[k] == after[k], k
+    print(f'stored mapping: {n_changed} pixels changed, {n_differ} differ from the new reprojection')
+    assert n_changed > 0 and n_differ <= max(2, n_changed // 10000)
+    with pytest.raises(ValueError, match='mapping'):
+        refresh_mask(old.frames[0], l2b_flags(load_reproj_file(old.frames[0], ['file_path'])['file_path']), mapping='grid')

@@ -123,8 +123,29 @@ def _compact_in_place(indices, e0, e1, col_map, cut=0, chunk=64_000_000):
             v -= cut
 
 
+def _floor_batch(rows_local, cols, data, num_rows, drop_sky):
+    """The coverage floor (``setup_lsqr(min_observations=)``) on one batch: its values with every entry
+    of a row whose sky column is in ``drop_sky`` (a boolean over the sky columns) set to zero, and those
+    rows (batch-local, ascending); ``(data, None)`` when the batch has none. The rows keep their
+    entries, so the row layout and the collated counts stand; the caller zeroes their right-hand side."""
+    cols = np.asarray(cols)
+    sky = cols < drop_sky.shape[0]
+    hit = np.zeros(cols.shape[0], dtype=bool)
+    hit[sky] = drop_sky[cols[sky]]
+    del sky
+    if not hit.any():
+        return data, None
+    rows_local = np.asarray(rows_local)
+    flag = np.zeros(int(num_rows), dtype=bool)
+    flag[rows_local[hit]] = True
+    del hit
+    out = np.array(data, copy=True)
+    out[flag[rows_local]] = 0
+    return out, np.flatnonzero(flag)
+
+
 def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
-                       indptr, col_map, csr_data, csr_indices, n_cols):
+                       indptr, col_map, csr_data, csr_indices, n_cols, drop_sky=None):
     """Place one batch's entries (batch-LOCAL rows, original entry order)
     into the unified CSR buffers.
 
@@ -133,7 +154,9 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     any process (pure data movement), and re-placing one is idempotent.
     Column ids are compacted in place afterwards. The row layout the kernel
     derives from the batch itself is checked against the global indptr; a
-    disagreement raises instead of silently corrupting the matrix.
+    disagreement raises instead of silently corrupting the matrix. With
+    ``drop_sky`` the coverage floor zeroes the rows of those sky columns
+    (:func:`_floor_batch`); returns those rows (batch-local) or None.
     """
     n = int(rows_arr.shape[0])
     e0 = int(indptr[row_offset])
@@ -141,7 +164,10 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     if e1 - e0 != n:
         raise RuntimeError(f"batch entry count {n} != indptr span {e1 - e0}")
     if n == 0:
-        return
+        return None
+    dropped = None
+    if drop_sky is not None:
+        data_arr, dropped = _floor_batch(rows_arr, cols_arr, data_arr, num_rows, drop_sky)
     local = _place_rows(rows_arr, cols_arr, data_arr, num_rows, n_cols,
                         csr_indices[e0:e1], csr_data[e0:e1])
     for k0 in range(0, num_rows + 1, 16_000_000):      # bounded comparison temp
@@ -151,6 +177,7 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
             raise RuntimeError("batch row layout disagrees with the global indptr")
     del local
     _compact_in_place(csr_indices, e0, e1, col_map)
+    return dropped
 
 
 def _scatter_batch_worker(task):
@@ -158,7 +185,8 @@ def _scatter_batch_worker(task):
 
     Everything the worker needs arrives EXPLICITLY in ``task`` (spill file
     paths + SharedBuffer handles); nothing is inherited from the parent, so
-    the pool can use the fork-safe forkserver start method.
+    the pool can use the fork-safe forkserver start method. Returns the rows
+    the coverage floor zeroed (batch-local) or None.
     """
     row_offset, num_rows, files, n_cols, bufs = task
     fr, fc, fd = files
@@ -166,13 +194,16 @@ def _scatter_batch_worker(task):
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
-    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
-                       bufs['indptr'].array, col_map,
-                       bufs['csr_data'].array, bufs['csr_indices'].array, n_cols)
+    drop = bufs.get('drop_sky')
+    dropped = _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
+                                 bufs['indptr'].array, col_map,
+                                 bufs['csr_data'].array, bufs['csr_indices'].array, n_cols,
+                                 drop_sky=drop.array if drop is not None else None)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
+    return dropped
 
 
 def _range_ids(cols_full, full_cuts):
@@ -185,9 +216,11 @@ def _range_ids(cols_full, full_cuts):
 
 
 def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
-                         col_map, csr_data, csr_indices, ip_all, n_cols):
+                         col_map, csr_data, csr_indices, ip_all, n_cols, drop_sky=None):
     """Place one STORAGE BLOCK (a spill batch, or one constraint block) into
-    the column-partitioned layout.
+    the column-partitioned layout. With ``drop_sky`` the coverage floor
+    zeroes the rows of those sky columns (:func:`_floor_batch`); returns
+    those rows (block-local) or None.
 
     The buffers are (block, range)-major: block b's entries are contiguous,
     and inside them range 0's rows come first, then range 1's, ... so every
@@ -210,7 +243,10 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
     ip_view = ip_all[ip_off:ip_off + T * (num_rows + 1)]
     if n == 0:
         ip_view[:] = 0
-        return
+        return None
+    dropped = None
+    if drop_sky is not None:
+        data_arr, dropped = _floor_batch(rows_local, cols_arr, data_arr, num_rows, drop_sky)
     vdt = np.int64 if (T * num_rows >= 2**31 or n >= 2**31) else np.int32
     key = _range_ids(cols_arr, full_cuts).astype(vdt)
     key *= vdt(num_rows)
@@ -229,23 +265,28 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
         np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
         _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
                           col_map, cut=int(cuts_c[t]))
+    return dropped
 
 
 def _scatter_block_worker_split(task):
-    """Partitioned-layout placement of one spill batch in a worker process."""
+    """Partitioned-layout placement of one spill batch in a worker process. Returns the rows
+    the coverage floor zeroed (block-local) or None."""
     num_rows, files, layout, n_cols, bufs = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
-    _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
-                         bufs['csr_data'].array, bufs['csr_indices'].array,
-                         bufs['ip_all'].array, n_cols)
+    drop = bufs.get('drop_sky')
+    dropped = _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
+                                   bufs['csr_data'].array, bufs['csr_indices'].array,
+                                   bufs['ip_all'].array, n_cols,
+                                   drop_sky=drop.array if drop is not None else None)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
+    return dropped
 
 
 def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
@@ -306,7 +347,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                outlier_group_variable: str | None = None,
                outlier_chunk_groups=None,
                fixed_sky: bool = False, moments_only: bool = False,
-               reduce: Callable | None = None) -> SetupResult:
+               reduce: Callable | None = None,
+               min_observations: int | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
@@ -325,6 +367,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     function: it is sent to them), and the result holds the reductions
     (``SetupResult.reduced``), ``pixel_counts`` and the constraint rows
     (``SetupResult.constraint_blocks``).
+
+    ``min_observations``: the coverage floor. The sky pixels the collated
+    counts show observed fewer times than this (counted over the first sky
+    term's entries: after the masks, the clip and the weights) leave the solve:
+    at the placement every entry of their rows is set to zero, and so is the
+    rows' right-hand side; the rows keep their slots (the layout and the
+    collated counts stand) and the pixels' columns stay without data, with
+    coverage 0 in ``pixel_counts`` and the other pixel state from the
+    constraint builders on. A single observation's row is fitted exactly by
+    its pixel's own value and informs no other unknown, so the solution of
+    every other unknown is the one without those rows. Matrix builds only
+    (not with ``moments_only`` or ``reduce``).
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
     arrays (rows/cols/data, 12 B per entry — the dominant setup-phase
@@ -500,6 +554,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("outlier_thresh must be a positive number or None")
     if not (isinstance(max_workers, int) and max_workers > 0):
         raise ValueError("max_workers must be a positive integer")
+    if min_observations is not None:
+        if isinstance(min_observations, bool) or not isinstance(min_observations, (int, np.integer)) \
+                or min_observations < 2:
+            raise ValueError(f"min_observations={min_observations!r}: an integer >= 2 or None")
+        if moments_only or reduce is not None:
+            raise ValueError("min_observations: the coverage floor applies to the matrix build "
+                             "(not moments_only or reduce)")
     if not isinstance(ignore_list, (list, np.ndarray)):
         raise TypeError("ignore_list must be a list or array of data quality flags to ignore")
     if not (isinstance(batch_size, int) and batch_size > 0):
@@ -1261,6 +1322,31 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _b_cols = _b_data = _b_rows = None
     _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
+    # ----------------------------------------------------------------
+    # Coverage floor (min_observations): the sky pixels the collated counts
+    # show observed fewer times than min_observations leave the solve. Their
+    # rows are zeroed at the data-row placement below (values; the right-hand
+    # side after it); the pixels' columns keep their slots without data and
+    # read as uncovered from here on (the constraint builders, the outputs).
+    # ----------------------------------------------------------------
+    drop_sky = None
+    if min_observations is not None:
+        _obs = pixel_counts[:num_sky]              # the first sky term's observations of each grid pixel
+        _drop_px = (_obs > 0) & (_obs < int(min_observations))
+        _n_drop_px = int(np.count_nonzero(_drop_px))
+        if _n_drop_px:
+            drop_sky = np.tile(_drop_px, num_sky_blocks)          # every sky term's column of those pixels
+            pixel_counts[:drop_sky.size][drop_sky] = 0
+            pixel_fisher[:drop_sky.size][drop_sky] = 0.0
+            if pixel_rhs is not None:
+                pixel_rhs[drop_sky] = 0.0
+            if pixel_cross is not None:
+                for _v in pixel_cross.values():
+                    _v[_drop_px] = 0.0
+        logger.info(f"Coverage floor: {_n_drop_px} sky pixels observed fewer than {int(min_observations)} times "
+                    "leave the solve.")
+        del _obs, _drop_px
+
     if moments_only:
         # The pixel state, accumulated by the collation, is all the caller reads: no matrix is
         # built and the batches' entries are dropped.
@@ -1516,6 +1602,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # otherwise-uncovered column would still need its slot: when one does,
     # the compaction is left to apply_lsqr.
     active_mask = pixel_counts > 0
+    if drop_sky is not None:        # the floor's columns keep their slots: their zeroed entries need one
+        active_mask[:drop_sky.size] |= drop_sky
     compaction_active = True
     for blk in constraint_blocks:
         cols_b = blk['cols']
@@ -1577,6 +1665,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     csr_indices = _shared_alloc('csr_indices', total_nnz, np.int32)
     _ip_all = (_shared_alloc('ip_all', int(_ip_off[-1]), np.int32)
                if _partitioned else None)
+    if drop_sky is not None and _par_scatter:    # the floor's columns, readable by the placement workers
+        _drop_shared = _shared_alloc('drop_sky', drop_sky.size, np.bool_)
+        _drop_shared[...] = drop_sky
+        drop_sky = _drop_shared
+        del _drop_shared
 
     # ----------------------------------------------------------------
     # Data-row placement. Every spill batch owns a contiguous row
@@ -1594,6 +1687,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # so an unattended run degrades to slow, never to a hang.
     # ----------------------------------------------------------------
     _done_par = set()
+    _floored = {}           # batch id -> the batch-local rows the coverage floor zeroed
     _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
     _batch_block = {src: _b for _b, src in enumerate(_blk_src)
                     if src is not None} if _partitioned else {}
@@ -1616,7 +1710,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if _partitioned:
             _bufs = {'csr_data': _shared['csr_data'],
                      'csr_indices': _shared['csr_indices'],
-                     'ip_all': _shared['ip_all'], 'col_map': _shared.get('col_map')}
+                     'ip_all': _shared['ip_all'], 'col_map': _shared.get('col_map'),
+                     'drop_sky': _shared.get('drop_sky')}
             _worker = _scatter_block_worker_split
             _tasks = [(_bi, (_blk_rows[_b], batch_results[_bi]['files'],
                              _layout_of(_b), total_cols, _bufs))
@@ -1624,7 +1719,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         else:
             _bufs = {'csr_data': _shared['csr_data'],
                      'csr_indices': _shared['csr_indices'],
-                     'indptr': _shared['indptr'], 'col_map': _shared.get('col_map')}
+                     'indptr': _shared['indptr'], 'col_map': _shared.get('col_map'),
+                     'drop_sky': _shared.get('drop_sky')}
             _worker = _scatter_batch_worker
             _tasks = [(_bi, (batch_row_starts[_bi], _r['num_rows'], _r['files'],
                              total_cols, _bufs))
@@ -1635,8 +1731,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         try:
             _futs = {_ex.submit(_worker, _task): _key for _key, _task in _tasks}
             for _f in as_completed(_futs, timeout=_timeout * max(1, len(_futs))):
-                _f.result(timeout=_timeout)     # re-raises a worker exception
+                _rows_floored = _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
+                if _rows_floored is not None:
+                    _floored[_futs[_f]] = _rows_floored
         except (_FutTimeout, BrokenProcessPool) as _e:
             logger.warning(f"Data-row placement: the parallel placement aborted "
                            f"({type(_e).__name__}: {_e}); {len(_futs) - len(_done_par)} batch(es) "
@@ -1657,13 +1755,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if _partitioned:
             if batch_id not in _done_par and batch['num_rows']:
                 _b = _batch_block[batch_id]
-                _scatter_block_split(batch['rows'], batch['cols'], batch['data'],
-                                     _blk_rows[_b], _layout_of(_b), col_map,
-                                     csr_data, csr_indices, _ip_all, total_cols)
+                _rows_floored = _scatter_block_split(
+                    batch['rows'], batch['cols'], batch['data'], _blk_rows[_b], _layout_of(_b), col_map,
+                    csr_data, csr_indices, _ip_all, total_cols, drop_sky=drop_sky)
+                if _rows_floored is not None:
+                    _floored[batch_id] = _rows_floored
         elif batch_id not in _done_par:
-            _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
-                               batch_row_starts[batch_id], batch['num_rows'],
-                               indptr, col_map, csr_data, csr_indices, total_cols)
+            _rows_floored = _scatter_one_batch(
+                batch['rows'], batch['cols'], batch['data'], batch_row_starts[batch_id], batch['num_rows'],
+                indptr, col_map, csr_data, csr_indices, total_cols, drop_sky=drop_sky)
+            if _rows_floored is not None:
+                _floored[batch_id] = _rows_floored
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
@@ -1677,6 +1779,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     batch_results = None
     if _spill_run_dir is not None:
         shutil.rmtree(_spill_run_dir, ignore_errors=True)
+    if drop_sky is not None:
+        # The coverage floor's rows: their right-hand side, as their values above.
+        _n_floored = 0
+        for _bi, _rows_floored in _floored.items():
+            full_b[batch_row_starts[_bi] + _rows_floored] = 0
+            _n_floored += int(_rows_floored.size)
+        logger.info(f"Coverage floor: {_n_floored} observations of those pixels set to zero "
+                    "(values and right-hand side); their columns stay without data.")
+        _floored = drop_sky = None
 
     # ----------------------------------------------------------------
     # Constraint placement: scatter the constraint blocks at their reserved row ranges.

@@ -242,7 +242,10 @@ clarity:
   both the LSQR builder and the co-adder. It decodes the bitmask, builds
   *one* bilinear-interpolation sparse matrix from `sub_mapping` (the
   detector-frame interp matrix is shared across all maps; only
-  `compute_chunk_contrib(chunk_map[m], interp_matrix)` is called per map),
+  `compute_chunk_contrib(chunk_map[m], interp_matrix)` is called per map;
+  with a validity weight, both paths build it and everything after it over
+  the bounding box of the rows that can carry weight, and the LSQR path's
+  chunk contributions are mapped back onto every subframe pixel),
   optionally subtracts the **sum of per-map per-chunk offsets** via
   `chunk_offsets` + `det_offset_funcs` lists for the mosaic path, applies
   a validity weight, and stamps NaNs to zero. Returns `chunk_contribs` as
@@ -330,7 +333,9 @@ clarity:
   sequential product, in verification mode) scatters rows in the same global
   row order whatever the block boundaries (`_sparsetools.csc_matvec`).
   The starts of [`core/solution.py`](core/solution.py) (`compute_x0_from_Ab`,
-  `compute_x0_offsets_fit`) consume it too.
+  `compute_x0_offsets_fit`) consume it too: `compute_x0_from_Ab` streams any
+  of the storages in row chunks through one kernel (`_column_sums`), with the
+  bytes of one `bincount` over the entries in row order.
 
   `ColSplitCSR` in the same module is that storage cut a second way, into
   column ranges: `sub[b][t]` is storage block `b` restricted to columns
@@ -863,7 +868,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as the engine takes it (variables, sky terms, offset terms, weight, priors), built from an `sc.Model`, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
 | [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
 | [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |
-| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `fill_missing` (a reader's layer without NaN), `dilate_bits` (a reader's mask grown by a pixel), `write_frame` (the frame-file contract), `frame_compression`, `frame_header_values`. |
+| [`io/frames.py`](io/frames.py) | `ExposureData` + the default FITS reader (the exposure-reader contract), `fill_missing` (a reader's layer without NaN), `dilate_bits` (a reader's mask grown by a pixel, in the bits themselves or in another bit), `write_frame` (the frame-file contract), `frame_compression`, `frame_header_values`. |
 | [`pipeline/model_eval.py`](pipeline/model_eval.py) | Evaluating a solved model outside the solve: `BasisOffsetSubtractor` (the mosaic's per-observation subtraction of offset terms with a basis). |
 | [`instruments/base.py`](instruments/base.py) | The typed geometry (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`). |
 | [`instruments/grid.py`](instruments/grid.py) | Rectangular chunk-grid helpers (`rect_grid_chunk_map`, `upsample_chunk_map`). |
@@ -871,7 +876,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`instruments/euclid/hooks.py`](instruments/euclid/hooks.py) | The recipe's per-frame hooks (`StarMask`, `ResidualMask`). |
 | [`instruments/euclid/adapter.py`](instruments/euclid/adapter.py) | Euclid helpers: the strip and grid chunk maps, their offset renderers, the edge taper. |
 | [`instruments/spherex/settings.py`](instruments/spherex/settings.py) | `sc.SPHEREx` (chunk maps and axes, wavelength maps, renderer, layout), its jobs, `line`, `precompute_lvf`, `zodi_anchor`. |
-| [`instruments/spherex/exposures.py`](instruments/spherex/exposures.py) | The L2b exposure reader `read_l2b` (`IMAGE`, `FLAGS` with SUR_ERROR and NONFUNC dilated by one pixel, and `VARIANCE` as the frame layer `variance`), `l2b_variance`, `l2b_flags`. |
+| [`instruments/spherex/exposures.py`](instruments/spherex/exposures.py) | The L2b exposure reader `read_l2b` (`IMAGE`, `FLAGS` as read plus bit 30 on the one-pixel dilation of SUR_ERROR and NONFUNC, and `VARIANCE` as the frame layer `variance`), `l2b_variance`, `l2b_flags`. |
 | [`instruments/spherex/adapter.py`](instruments/spherex/adapter.py) | SPHEREx helpers: the readout-channel chunk map (`make_readout_chunk_map`) and the named subchannel windows (`SUBCH_WINDOWS`). |
 | [`instruments/spherex/line_catalog.py`](instruments/spherex/line_catalog.py) | SPHEREx named coefficients (`pah_3p29`) + the `pah_3p29()` SkyModel factory. |
 | [`instruments/spherex/spherex_utility.py`](instruments/spherex/spherex_utility.py) | SPHEREx LVF arcs, chunk maps, adjacency, offset-map splines. |

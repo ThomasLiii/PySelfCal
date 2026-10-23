@@ -353,6 +353,42 @@ class Poly(Config):
 
 
 @dataclass(frozen=True)
+class SkySignature(Config):
+    """What an offset term may not carry (``Offsets(exclude=SkySignature(degree))``): its response to the smooth sky
+    fields, the polynomials of degree 1 to ``degree`` on the sky grid, or with ``degree='all'`` every pattern of the
+    deflation but the constant.
+
+    A sky field leaves a signature in every frame that offset terms can partly take: a sky plane appears in a frame
+    as a slope along each detector direction, so a per-frame slope term absorbs it almost whole and the data barely
+    see the plane. The signature changes from frame to frame with the frame's pointing and orientation, which a
+    term of the instrument has no reason to follow. With this exclusion the term's coefficients have no component
+    along that signature (a hard constraint by reparametrisation, no row and no weight): the sky field must then be
+    fitted by the sky, measured through the part of the signature the term can no longer take. Two choices make the
+    constraint the data's own:
+
+    - orthogonality is measured in the data's metric, each coefficient weighted by its information (the diagonal of
+      the offsets' normal matrix), so a coefficient the data barely measure cannot take the constraint up for the
+      rest;
+    - what the term holds the same way in every frame (one value per chunk, shared by every group: a pattern fixed
+      on the detector) stays free: that part of the signature is removed before it becomes a constraint, so a
+      detector-fixed slope stays in the offsets whatever orientations the frames have.
+
+    The signature is the term's part of the offsets' least-squares response to each field, computed from the system
+    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
+    and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes),
+    2 (the planes and the three quadratics) or ``'all'`` (every pattern of ``Deflate(order)``, the cosines included,
+    except the constant: the mean is a gauge of the sky and the per-frame constants, not of a slope-like term, and
+    excluding it would anchor the zero point).
+    """
+    degree: int | str = 1
+
+    def _validate(self):
+        if self.degree != 'all' and not (isinstance(self.degree, int) and 1 <= self.degree <= 2):
+            raise ConfigError(f"SkySignature(degree={self.degree!r}): 1 (the planes), 2 (the planes and the quadratics) "
+                              "or 'all' (every pattern of the deflation but the constant)")
+
+
+@dataclass(frozen=True)
 class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
@@ -422,7 +458,10 @@ class Offsets(Config):
     map with one axis. ``exclude=Poly(0)`` without ``along`` takes any map: the term carries no
     constant, i.e. each group's chunk offsets average to zero over the chunks the solve carries
     (those the group observed, and any that a prior's rows tie in). The excluded part goes where
-    the data can place it: other terms or the sky.
+    the data can place it: other terms or the sky. ``exclude=SkySignature(k)`` is a hard
+    constraint of another kind: the term carries no part of its response to the sky polynomials
+    of degree 1 to k (a per-frame slope term that would otherwise absorb a sky plane in every
+    frame; :class:`SkySignature`).
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.
@@ -440,7 +479,7 @@ class Offsets(Config):
     smooth_step: int | None = None
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
-    exclude: Poly | None = added(None, since='2026-10')
+    exclude: Poly | SkySignature | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -469,10 +508,16 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
             if self.per != 'frame':
                 raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
-        if self.exclude is not None:
+        if isinstance(self.exclude, SkySignature):
+            if self.polynomial is not None:
+                raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
+            if self.per == 'all':
+                raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
+                                  "a term shared by every frame is the same in every frame: nothing to constrain")
+        elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
-                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis)")
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis) or a SkySignature(degree)")
             bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
             if bad:
                 raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
@@ -503,7 +548,9 @@ class Offsets(Config):
             kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
             out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows),
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
-            if self.exclude is not None:
+            if isinstance(self.exclude, SkySignature):
+                out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+            elif self.exclude is not None:
                 out['exclude_degree'] = int(self.exclude.degree)
                 out['exclude_axis'] = self.exclude.along
             if self.smooth_along is not None:
@@ -816,8 +863,8 @@ class Model(Config):
     :class:`Derived`, :class:`FrameFunction`). ``weight``: a function of data variables that
     multiplies every observation's weight (the coadd uses its square), or a :class:`Variance` (the
     observation's noise variance: the weight is ``1/sqrt`` of it, the coadd's ``1/`` it). ``priors``:
-    :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block`
-    build the standard models.
+    :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block` build
+    the standard models.
     """
     _: KW_ONLY
     sky: tuple[Sky, ...] = (Sky(),)

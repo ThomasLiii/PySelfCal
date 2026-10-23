@@ -1,8 +1,9 @@
-"""Bit-equality property test: compute_x0_from_Ab (the separate-fit start) on the large systems'
-storages (BlockCSR, ColSplitCSR) vs its csr path.
+"""Bit-equality property test: compute_x0_from_Ab (the separate-fit start) on csr, BlockCSR and
+ColSplitCSR storages (streamed in row chunks) vs the legacy algorithm (compute_x0_from_Ab of the
+matrix as a coo_matrix: one bincount over its entries in row order).
 
-Covers: f32/f64 data, with/without active_mask, empty rows, one or several sky blocks, and forced
-multi-chunk selection (via _chunk_target_entries) to prove chunked gathering reproduces the one-shot
+Covers: f32/f64 data, int32/int64 indices, with/without active_mask, empty rows, one or several sky
+blocks, and forced multi-chunk selection (via _chunk_target_entries) to prove chunked gathering reproduces the one-shot
 path bit-for-bit.
 
 Ported from workspace/memopt/scripts/test_x0_bitequal.py. Runnable as
@@ -51,6 +52,37 @@ def build_case(rng, n_rows, ref_shape, num_sky_blocks, n_chunk_cols,
     return A, b, active_mask
 
 
+def test_x0_from_Ab_csr_bitequal():
+    """compute_x0_from_Ab on a csr matrix (streamed in row chunks) == the legacy one-bincount path over the matrix
+    as a coo_matrix, bit for bit: 2*2*2*3*3*3 = 216 cases.
+
+    The nested loop is kept (rather than pytest.parametrize) so a single seeded rng advances through every case.
+    """
+    rng = np.random.default_rng(_SEED)
+    ref_shape = (7, 9)
+    n_cases = 0
+    for data_dtype in (np.float32, np.float64):
+        for idx_dtype in (np.int32, np.int64):
+            for use_mask in (False, True):
+                for num_sky_blocks in (1, 2, 4):
+                    for n_frame in (1, 5, 40):
+                        for chunk_target in (10**9, 50, 7):
+                            n_cases += 1
+                            A, b, am = build_case(rng, n_rows=200, ref_shape=ref_shape, num_sky_blocks=num_sky_blocks,
+                                                  n_chunk_cols=30, n_frame_cols=n_frame, data_dtype=data_dtype,
+                                                  idx_dtype=idx_dtype, use_active_mask=use_mask)
+                            ref = compute_x0_from_Ab(A.tocoo(), b, ref_shape, num_sky_blocks=num_sky_blocks,
+                                                     active_mask=am)
+                            new = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks, active_mask=am,
+                                                     _chunk_target_entries=chunk_target)
+                            assert ref.dtype == new.dtype and ref.shape == new.shape and ref.tobytes() == new.tobytes(), (
+                                f"x0 not bit-equal dtype={data_dtype.__name__} idx={idx_dtype.__name__} "
+                                f"mask={use_mask} J={num_sky_blocks} F={n_frame} chunk={chunk_target}: "
+                                f"{int((ref != new).sum())} of {ref.size} differ")
+    # Guard against silently shrinking coverage.
+    assert n_cases == 216
+
+
 def test_x0_from_Ab_split_storages_bitequal():
     """compute_x0_from_Ab on the large systems' storages (BlockCSR, ColSplitCSR with cuts in the sky and in the
     offsets) == its csr path, bit for bit: f32/f64 data, with/without active_mask, one or several sky blocks,
@@ -65,9 +97,9 @@ def test_x0_from_Ab_split_storages_bitequal():
                 for chunk_target in (10**9, 37):
                     A, b, am = build_case(rng, n_rows=300, ref_shape=ref_shape, num_sky_blocks=num_sky_blocks,
                                           n_chunk_cols=45, n_frame_cols=6, data_dtype=data_dtype,
-                                             idx_dtype=np.int32, use_active_mask=use_mask, density=0.08)
+                                          idx_dtype=np.int32, use_active_mask=use_mask, density=0.08)
                     A.sort_indices()
-                    ref = compute_x0_from_Ab(A, b, ref_shape, num_sky_blocks=num_sky_blocks, active_mask=am)
+                    ref = compute_x0_from_Ab(A.tocoo(), b, ref_shape, num_sky_blocks=num_sky_blocks, active_mask=am)
                     n = A.shape[1]
 
                     def blocks():

@@ -260,6 +260,29 @@ What each settles:
   moved far along weakly constrained directions, where the result then depends on the
   [warm start](glossary.md#warm-start).
 
+Hard constraints settle a direction without any row or weight, by removing it from the unknowns
+(a reparametrisation the solver applies at every iteration):
+
+- `sc.Offsets(exclude=sc.Poly(k, along=axis))`: the term carries no polynomial of degree `k` or less
+  along the chunk axis (for a pattern shared by every frame, the parts that duplicate per-frame
+  terms).
+- `sc.Offsets(exclude=sc.SkySignature(k))`: the term carries no part of its response to the smooth
+  sky fields, the polynomials of degree 1 to `k` on the sky grid. A sky plane appears in every frame
+  as a slope along each detector direction, so a per-frame slope term absorbs it nearly whole; the
+  plane's signature in the slopes follows each frame's pointing and orientation, which a slope of the
+  instrument does not. Without that part, the sky field is fitted by the sky. The constraint is
+  measured in the data's metric (each coefficient weighted by its information, so coefficients the
+  data barely measure cannot take it up for the rest), and what the term holds the same way in every
+  frame (a pattern fixed on the detector) stays free. Whatever the true per-frame slopes do hold
+  along the rest of the signature (the survey-mean gradient of a foreground at each position, say)
+  goes into the map as that field. The signature comes from the system itself (the deflation's
+  setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
+  or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
+  too) but the constant, instead of the polynomials up to a degree.
+- `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
+  component along given (or automatically found) shapes; what the data place there goes to the
+  other terms.
+
 ### Comparing solutions
 
 Two solves that fit the data equally well can differ in their raw arrays along these directions.
@@ -295,6 +318,14 @@ Compare quantities that a change of gauge leaves alone:
   variable, by default the instrument's wavelength map). The N-pass passes clip the same way
   (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
   basis value is not finite are dropped as well.
+- **Coverage floor.** `sc.Fit(min_observations=2)` leaves out of the solve the sky pixels that fewer
+  than 2 observations cover, counted after the masks, the clip if any and the weights. A sky pixel
+  with a single observation fits that observation exactly and informs no other unknown, so it adds
+  an unknown and nothing else. The matrix build counts the observations as it collates the rows and
+  zeroes those pixels' rows as it places them (values and right-hand side), with no extra pass over
+  the frames; the pixels' columns stay without data (coverage 0, value 0, outside the deflation's
+  patterns), so every other unknown gets the solution without those rows. The mosaic still covers
+  them. Off by default.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
   the same in the mosaic; for example Euclid's star mask
@@ -318,8 +349,9 @@ The mosaic coadds the corrected frames on the reference grid
 ([`Mosaicker.make_mosaic`][selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic]). From each
 frame it subtracts the chunk offsets of every offset term (the per-frame scalar among them), drawn
 on the detector by the instrument's offset renderer; offset terms with a `coefficient` or a `basis`
-are evaluated and subtracted at every observation
-([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]). The offset of a
+are evaluated and subtracted at every observation that carries weight, as in the solve
+([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]; the frame's other pixels never reach
+the coadd). The offset of a
 frame and chunk that the solve saw only in part (its covered fraction, counted over the chunk's
 pixels that the job can observe, below `sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first.
 The SPHEREx subchannel renderer and the Euclid grid spline fill such a chunk in from the frame's

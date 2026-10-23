@@ -125,6 +125,17 @@ SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
     numerics=sc.Numerics(30, batch=40),
     name='subch_varweight_columns')
 
+#: The final channel recipe of the weak-mode work (the user, 2026-10-21 and 10-22): SUBCH_VARWEIGHT_COLUMNS with the
+#: x-slope term kept from every smooth sky pattern of the deflation but the constant (exclude=SkySignature('all'): a
+#: sky field cannot hide in the per-frame slopes), and the sky pixels that a single observation covers left out of the
+#: solve (Fit(min_observations=2); the coadd still covers them). Its products carry 'subch_varweight_columns_final'.
+SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
+    model=SUBCH_VARWEIGHT_COLUMNS.model.replace(offsets=tuple(
+        o.replace(exclude=sc.SkySignature('all')) if o.name == 'xs_term' else o
+        for o in SUBCH_VARWEIGHT_COLUMNS.model.offsets)),
+    fit=SUBCH_VARWEIGHT_COLUMNS.fit.replace(min_observations=2),
+    name='subch_varweight_columns_final')
+
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),

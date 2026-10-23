@@ -476,3 +476,25 @@ def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     # the toy's sky pixels seen by one frame leave directions the data barely fix: solutions of the same fit
     # (true residuals equal to 1e-8) differ by a few 1e-5 along them
     assert err(sky(_recipe(160, name='d160', deflate=sc.Deflate(2)))) < 1e-4
+
+
+def test_the_column_sums_go_to_their_own_columns_bit_for_bit():
+    """The transposed products add each chunk's per-column sums at their own columns (one kernel entry per
+    summed column, so the work is the chunk's columns', not the thread's column range's): the same single
+    addition per element, in chunk order, as the earlier construction over the whole range."""
+    from scipy.sparse import _sparsetools
+    rng = np.random.default_rng(5)
+    lo, hi, m = 1000, 6000, 3
+    out_old = rng.standard_normal((hi - lo, m))
+    out_new = out_old.copy()
+    for _ in range(4):                                       # four chunks' partials, in order
+        uniq = np.sort(rng.choice(np.arange(lo, hi), size=700, replace=False)).astype(np.int64)
+        part = rng.standard_normal((uniq.size, m))
+        ip = np.zeros(hi - lo + 1, dtype=np.int64)
+        ip[uniq - lo + 1] = 1
+        np.cumsum(ip, out=ip)
+        _sparsetools.csr_matvecs(hi - lo, uniq.size, m, ip, np.arange(uniq.size, dtype=np.int64), np.ones(uniq.size),
+                                 part, out_old)
+        _sparsetools.csc_matvecs(hi - lo, uniq.size, m, np.arange(uniq.size + 1, dtype=np.int64), uniq - lo,
+                                 np.ones(uniq.size), part, out_new)
+    assert out_new.tobytes() == out_old.tobytes()

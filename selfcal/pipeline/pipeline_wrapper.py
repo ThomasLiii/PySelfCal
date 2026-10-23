@@ -759,8 +759,12 @@ class Calibrator(Reprojector):
                    batch_spill_dir: str | None = None,
                    variables=None, weight_function=None, priors: list | None = None,
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
-                   fixed_sky: bool = False, moments_only: bool = False, reduce=None) -> None:
+                   fixed_sky: bool = False, moments_only: bool = False, reduce=None,
+                   min_observations: int | None = None) -> None:
         """Build the LSQR system for K chunk maps.
+
+        ``min_observations``: the sky pixels observed fewer times than this leave
+        the solve (``Fit(min_observations=)``; :func:`selfcal.core.system.setup_lsqr`).
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms alone, and :meth:`save_calibration` writes the solved
@@ -965,7 +969,8 @@ class Calibrator(Reprojector):
                 weight_function=weight_function, priors=priors,
                 outlier_group_variable=outlier_group_variable,
                 outlier_chunk_groups=outlier_chunk_groups,
-                fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce)
+                fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
+                min_observations=min_observations)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -1090,7 +1095,8 @@ class Calibrator(Reprojector):
                    btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
-                   scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None) -> None:
+                   scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None,
+                   signatures=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1148,6 +1154,10 @@ class Calibrator(Reprojector):
         vectors : {'float32', 'float64'} or None, optional
             The precision of the solver's vectors (``sc.Fit(vectors=...)``;
             :func:`~selfcal.core.solve.apply_lsqr`). None: the method's own.
+        exclusions, signatures : list or None, optional
+            The model's hard constraints (:meth:`~selfcal.models.spec.ModelSpec.column_exclusions`,
+            :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`;
+            :func:`~selfcal.core.solve.apply_lsqr`).
 
         Returns
         -------
@@ -1204,6 +1214,7 @@ class Calibrator(Reprojector):
                         atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                         solver=solver, use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
                         num_cols_full=num_cols_full_local, conlim=conlim, return_record=True, exclusions=exclusions,
+                        signatures=signatures,
                         **snap)
                 finally:
                     if _spill_dir is not None:
