@@ -21,6 +21,16 @@ SUBCH_WINDOWS = {
 }
 
 
+def make_column_chunk_map(det_shape=(2040, 2040)):
+    """One chunk per detector column at detector resolution: chunk id = the column index
+    (every row, the reference columns included). Returns (chunk_map int32, n_chunks). An offset
+    term on this map shared by every frame (``sc.Offsets(on='detector_column', per='all')``) is a
+    detector-fixed column pattern: the survey-mean of what the per-frame terms do not represent
+    along x, which one-sided coverage otherwise amplifies into the map's outskirts (2026-10)."""
+    H, W = det_shape
+    return np.tile(np.arange(W, dtype=np.int32), (H, 1)), int(W)
+
+
 def make_readout_chunk_map(det_shape=(2040, 2040), col_start=60, col_width=64):
     """Per-readout-channel chunk map at detector resolution (H2RG, post 4px trim).
     Chunk 0 covers the first ``col_start`` reference columns; then one chunk per

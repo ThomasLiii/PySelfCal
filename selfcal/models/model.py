@@ -6,14 +6,14 @@ These are the settings objects of the Python API (``sc.Model``, ``sc.Sky``, ``sc
 here. The fitted equation, for every observation (one value of one frame on one reference
 pixel)::
 
-    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk, k] · φ_mk(v)  +  s(frame)
+    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk, k] · φ_mk(v)
 
 * :class:`Sky`: a sky map ``S_j`` times a known function ``c_j`` of data variables ``v``
   (``times``; none: a constant sky);
 * :class:`Offsets`: an offset per chunk of a chunk map (``on``), shared by the frames of a
   group (``per``), optionally times known functions (``times``, ``basis``), or a polynomial
-  (``polynomial``); with smoothness, polynomial-shape and mean-zero priors;
-* the per-frame scalar ``s`` (``Model.scalar``);
+  (``polynomial``); with smoothness and polynomial-shape priors and hard constraints
+  (``exclude``); a per-frame scalar is the term of one chunk, ``Offsets('scalar', on='detector')``;
 * data variables beyond the built-in and instrument ones (``Model.variables``: a header
   keyword, a function of the frame list, a detector or sky map, ...);
 * :class:`Prior`: any linear rows on the unknowns, written as a function.
@@ -32,7 +32,7 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
-from ..config.base import Config, ConfigError, FrozenDict
+from ..config.base import Config, ConfigError, FrozenDict, added
 from ..config.functions import by_value, function_ref
 
 
@@ -353,6 +353,42 @@ class Poly(Config):
 
 
 @dataclass(frozen=True)
+class SkySignature(Config):
+    """What an offset term may not carry (``Offsets(exclude=SkySignature(degree))``): its response to the smooth sky
+    fields, the polynomials of degree 1 to ``degree`` on the sky grid, or with ``degree='all'`` every pattern of the
+    deflation but the constant.
+
+    A sky field leaves a signature in every frame that offset terms can partly take: a sky plane appears in a frame
+    as a slope along each detector direction, so a per-frame slope term absorbs it almost whole and the data barely
+    see the plane. The signature changes from frame to frame with the frame's pointing and orientation, which a
+    term of the instrument has no reason to follow. With this exclusion the term's coefficients have no component
+    along that signature (a hard constraint by reparametrisation, no row and no weight): the sky field must then be
+    fitted by the sky, measured through the part of the signature the term can no longer take. Two choices make the
+    constraint the data's own:
+
+    - orthogonality is measured in the data's metric, each coefficient weighted by its information (the diagonal of
+      the offsets' normal matrix), so a coefficient the data barely measure cannot take the constraint up for the
+      rest;
+    - what the term holds the same way in every frame (one value per chunk, shared by every group: a pattern fixed
+      on the detector) stays free: that part of the signature is removed before it becomes a constraint, so a
+      detector-fixed slope stays in the offsets whatever orientations the frames have.
+
+    The signature is the term's part of the offsets' least-squares response to each field, computed from the system
+    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
+    and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes),
+    2 (the planes and the three quadratics) or ``'all'`` (every pattern of ``Deflate(order)``, the cosines included,
+    except the constant: the mean is a gauge of the sky and the per-frame constants, not of a slope-like term, and
+    excluding it would anchor the zero point).
+    """
+    degree: int | str = 1
+
+    def _validate(self):
+        if self.degree != 'all' and not (isinstance(self.degree, int) and 1 <= self.degree <= 2):
+            raise ConfigError(f"SkySignature(degree={self.degree!r}): 1 (the planes), 2 (the planes and the quadratics) "
+                              "or 'all' (every pattern of the deflation but the constant)")
+
+
+@dataclass(frozen=True)
 class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
@@ -361,22 +397,40 @@ class Sky(Config):
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
     coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
     0.3 for the others; 0 for none).
+
+    ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
+    coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
+    at the first pixel to 1 at the last, flat arrays over the grid's pixels) returning the excluded
+    shapes, ``(pixels, r)`` or one shape ``(pixels,)``: the map has no component along them, exactly,
+    by reparametrisation in the solve (as ``Offsets(exclude=)`` does for an offset term); what the
+    data place along them goes to the other terms. The subspace the shapes span is what is
+    excluded, so include the lower orders a gauge of the model could trade against the shape
+    (for a quadratic: the constant and the plane, ``[1, u, v, r^2]``), or the constraint binds only
+    their combination. A module-level function (it is named in the product's record and the workers
+    import it). None: no constraint.
     """
     name: str = 'continuum'
     _: KW_ONLY
     times: Function | Shape | str | Callable | None = None
     damping: float | None = None
+    exclude: Callable | None = added(None, since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'times', _as_function(self.times, f"Sky({self.name!r}).times"))
         if self.damping is not None and self.damping < 0:
             raise ConfigError(f"Sky({self.name!r}, damping={self.damping}): at least 0")
+        if self.exclude is not None and not callable(self.exclude):
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a function shapes(u, v) of the grid's pixel coordinates")
+        if self.exclude is not None and getattr(self.exclude, '__name__', '<lambda>') == '<lambda>':
+            raise ConfigError(f"Sky({self.name!r}, exclude=...): a module-level function, not a lambda (it is named in the record)")
 
     def lower(self, damping) -> dict:
         out = {'name': self.name, 'damp_weight': float(damping)}
         c = _lower_function(self.times)
         if c is not None:
             out['coefficient'] = c
+        if self.exclude is not None:
+            out['exclude'] = f"{self.exclude.__module__}:{self.exclude.__qualname__}"
         return out
 
 
@@ -396,12 +450,20 @@ class Offsets(Config):
 
     Priors: ``smooth`` pulls chunks that neighbour along ``smooth_along`` (default: the map's
     own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given;
-    ``poly_prior`` pulls the offsets toward soft polynomials; ``mean_zero`` anchors each group's
-    mean over the chunks it observed at zero (the chunks with data in the job: an unobserved chunk's
-    offset is then not an unknown of the solve); ``damping`` pulls every offset toward zero (coverage
-    weighted).
-    ``exact_group_rows`` (shared terms): the anchor and smoothness rows once per group, not per
-    frame (the same normal equations, far fewer rows, different last bits).
+    ``poly_prior`` pulls the offsets toward soft polynomials; ``damping`` pulls every offset toward
+    zero (coverage weighted).
+    ``exclude=Poly(k, along=axis)`` is a hard constraint: the term carries no polynomial of degree
+    <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
+    the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
+    map with one axis. ``exclude=Poly(0)`` without ``along`` takes any map: the term carries no
+    constant, i.e. each group's chunk offsets average to zero over the chunks the solve carries
+    (those the group observed, and any that a prior's rows tie in). The excluded part goes where
+    the data can place it: other terms or the sky. ``exclude=SkySignature(k)`` is a hard
+    constraint of another kind: the term carries no part of its response to the sky polynomials
+    of degree 1 to k (a per-frame slope term that would otherwise absorb a sky plane in every
+    frame; :class:`SkySignature`).
+    ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
+    same normal equations, far fewer rows, different last bits).
     ``render``: which of the instrument's renderers draws the term on the mosaic.
     ``name``: how priors refer to the term (default: the map's name).
     """
@@ -417,7 +479,7 @@ class Offsets(Config):
     smooth_step: int | None = None
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
-    mean_zero: bool = False
+    exclude: Poly | SkySignature | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -435,8 +497,7 @@ class Offsets(Config):
             raise ConfigError(f"{label}: n= is the number of functions of basis=, which is not given")
         if self.polynomial is not None:
             bad = [k for k, v in (('smooth', self.smooth), ('poly_prior', self.poly_prior),
-                                  ('basis', self.basis), ('mean_zero', self.mean_zero),
-                                  ('exact_group_rows', self.exact_group_rows)) if v]
+                                  ('basis', self.basis), ('exact_group_rows', self.exact_group_rows)) if v]
             if bad:
                 raise ConfigError(f"{label}: polynomial= makes the offset a polynomial, which takes no "
                                   f"{', '.join(bad)}")
@@ -447,6 +508,21 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
             if self.per != 'frame':
                 raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
+        if isinstance(self.exclude, SkySignature):
+            if self.polynomial is not None:
+                raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
+            if self.per == 'all':
+                raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
+                                  "a term shared by every frame is the same in every frame: nothing to constrain")
+        elif self.exclude is not None:
+            e = self.exclude
+            if not isinstance(e, Poly) or int(e.degree) < 0:
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis) or a SkySignature(degree)")
+            bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
+            if bad:
+                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
         for p in self.poly_prior:
             p.lower_soft(label)
         if self.exact_group_rows and self.per == 'frame':
@@ -470,9 +546,13 @@ class Offsets(Config):
                        segments=None if p.segments is None else [list(s) for s in p.segments])
         else:
             kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
-            out.update(kind=kind, reg_weight=float(self.smooth), mean_zero=bool(self.mean_zero),
-                       exact_group_rows=bool(self.exact_group_rows),
+            out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows),
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
+            if isinstance(self.exclude, SkySignature):
+                out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+            elif self.exclude is not None:
+                out['exclude_degree'] = int(self.exclude.degree)
+                out['exclude_axis'] = self.exclude.along
             if self.smooth_along is not None:
                 out['adjacency'] = list(self.smooth_along)
             if self.smooth_step is not None:
@@ -719,8 +799,8 @@ class FrameFunction(_Source):
 # =============================================================================== priors
 @dataclass(frozen=True, init=False)
 class Prior(Config):
-    """Linear rows on the unknowns of ``terms`` (sky-term names, offset-term names,
-    ``"scalar"``): ``fn(*term infos, **params)`` returns them (the contract of
+    """Linear rows on the unknowns of ``terms`` (sky-term names, offset-term names):
+    ``fn(*term infos, **params)`` returns them (the contract of
     :mod:`selfcal.models.priors`), scaled by ``weight``. ``fn`` is a function, or the name of a
     ready-made prior of :mod:`selfcal.models.priors` (see :mod:`selfcal.priors`)."""
     fn: Callable | str
@@ -773,23 +853,22 @@ class Prior(Config):
 # =============================================================================== the model
 @dataclass(frozen=True)
 class Model(Config):
-    """The model: sky terms, offset terms, the per-frame scalar, data variables, an
-    observation weight and priors.
+    """The model: sky terms, offset terms, data variables, an observation weight and priors.
 
     ``sky``: :class:`Sky` terms (at least one; default one constant sky). ``offsets``:
-    :class:`Offsets` terms. ``scalar``: a per-frame scalar ``s(frame)``. ``variables``: the
+    :class:`Offsets` terms (a per-frame scalar is one of them: ``Offsets('scalar', on='detector')``,
+    one chunk, one value per frame). ``variables``: the
     model's own data variables, ``{name: source}`` (:class:`Header`, :class:`PerFrame`,
     :class:`DetectorMap`, :class:`SkyMap`, :class:`SolvedSky`, :class:`Layer`,
     :class:`Derived`, :class:`FrameFunction`). ``weight``: a function of data variables that
     multiplies every observation's weight (the coadd uses its square), or a :class:`Variance` (the
     observation's noise variance: the weight is ``1/sqrt`` of it, the coadd's ``1/`` it). ``priors``:
-    :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block`
-    build the standard models.
+    :class:`Prior` rows. The presets :func:`continuum`, :func:`spectral` and :func:`two_block` build
+    the standard models.
     """
     _: KW_ONLY
     sky: tuple[Sky, ...] = (Sky(),)
     offsets: tuple[Offsets, ...] = ()
-    scalar: bool = True
     variables: dict[str, _Source] = field(default_factory=FrozenDict)
     weight: Function | Shape | str | Callable | None = None
     priors: tuple[Prior, ...] = ()
@@ -807,7 +886,7 @@ class Model(Config):
         dup = sorted({n for n in explicit if explicit.count(n) > 1} | (set(explicit) & set(names)))
         if dup:
             raise ConfigError(f"Model: term names used twice: {dup}")
-        known = set(names) | set(off) | ({'scalar'} if self.scalar else set())
+        known = set(names) | set(off)
         for p in self.priors:
             bad = [t for t in p.terms if t not in known]
             if bad and not any(t.name is None for t in self.offsets):
@@ -821,8 +900,7 @@ class Model(Config):
 
     def lower(self, mosaic='full') -> dict:
         """The ``[model]`` table (:meth:`~selfcal.models.spec.ModelSpec.from_config`) of this model."""
-        table = {'scalar': bool(self.scalar), 'mosaic': mosaic,
-                 'sky': [t.lower(d) for t, d in zip(self.sky, self.sky_dampings())]}
+        table = {'mosaic': mosaic, 'sky': [t.lower(d) for t, d in zip(self.sky, self.sky_dampings())]}
         if self.offsets:
             table['offset'] = [t.lower() for t in self.offsets]
         if self.variables:
@@ -855,17 +933,20 @@ class Model(Config):
 # =============================================================================== presets
 def continuum(smooth=0.1, poly_prior=None, damping=None) -> Model:
     """A constant sky (``damping``: see :class:`Sky`), an offset per frame and chunk of the
-    primary map smoothed along the map's own axes (``smooth``) and anchored at zero mean, optional
-    soft polynomials (``poly_prior``: a :class:`Poly` or several), and the per-frame scalar."""
+    primary map smoothed along the map's own axes (``smooth``) with no constant (``exclude=Poly(0)``),
+    optional soft polynomials (``poly_prior``: a :class:`Poly` or several), and a per-frame scalar
+    (``Offsets('scalar', on='detector')``), which holds each frame's level."""
     poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
-    return Model(sky=(Sky(damping=damping),), offsets=(Offsets(smooth=smooth, poly_prior=poly, mean_zero=True),))
+    return Model(sky=(Sky(damping=damping),),
+                 offsets=(Offsets(smooth=smooth, poly_prior=poly, exclude=Poly(0)), Offsets('scalar', on='detector')))
 
 
 def spectral(lines, polynomial=None, smooth=None, poly_prior=None, damping=None) -> Model:
     """A constant sky (``damping``) plus the sky terms ``lines`` (:class:`Sky` terms with a
-    function of the wavelength), and the per-frame scalar. The offsets: a hard polynomial along
-    the spectral axis (``polynomial``, a :class:`Poly` with a window), or the :func:`continuum`
-    offset term (``smooth``, default 0.1; ``poly_prior``)."""
+    function of the wavelength). The offsets: a hard polynomial along the spectral axis
+    (``polynomial``, a :class:`Poly` with a window), or the :func:`continuum` offset term (``smooth``,
+    default 0.1; ``poly_prior``), and a per-frame scalar (``Offsets('scalar', on='detector')``), which
+    holds each frame's level."""
     lines = (lines,) if isinstance(lines, Sky) else tuple(lines)
     if polynomial is not None:
         if smooth is not None or poly_prior is not None:
@@ -874,16 +955,15 @@ def spectral(lines, polynomial=None, smooth=None, poly_prior=None, damping=None)
         offsets = (Offsets(polynomial=polynomial),)
     else:
         poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
-        offsets = (Offsets(smooth=0.1 if smooth is None else smooth, poly_prior=poly, mean_zero=True),)
-    return Model(sky=(Sky(damping=damping),) + lines, offsets=offsets)
+        offsets = (Offsets(smooth=0.1 if smooth is None else smooth, poly_prior=poly, exclude=Poly(0)),)
+    return Model(sky=(Sky(damping=damping),) + lines, offsets=offsets + (Offsets('scalar', on='detector'),))
 
 
 def two_block(second='readout', smooth=0.1, second_smooth=0.0, along='subchannel', damping=None) -> Model:
     """A constant sky, an offset per frame and chunk of the primary map smoothed between
-    neighbours one step apart along ``along`` (no anchor), and a detector-fixed offset on the
-    chunk map ``second`` shared by every frame, anchored at zero mean (``second_smooth``: its
+    neighbours one step apart along ``along``, and a detector-fixed offset on the chunk map
+    ``second`` shared by every frame, with no constant (``exclude=Poly(0)``; ``second_smooth``: its
     smoothness weight). No per-frame scalar."""
     return Model(sky=(Sky(damping=damping),),
                  offsets=(Offsets(smooth=smooth, smooth_along=(along,), smooth_step=1),
-                          Offsets(on=second, per='all', smooth=second_smooth, smooth_along=(), mean_zero=True)),
-                 scalar=False)
+                          Offsets(on=second, per='all', smooth=second_smooth, smooth_along=(), exclude=Poly(0))))

@@ -50,7 +50,7 @@ def main():
     with CalFile(cal_path) as cal:
         print(cal.describe())
         offsets = cal.offsets[0]               # (frames, chunks): offset map 0, the 4 x 4 chunks
-        scalars = cal.frame_scalar             # (frames,)
+        scalars = cal.offsets[1][:, 0]         # (frames,): map 1, the per-frame scalar (one chunk)
         coverage = cal.sky_coverage(0)         # observations of each pixel of the sky map
         # Frame exp_<k>_det_00.h5 comes from exposure k of the sorted list, sim_<k>.fits,
         # whose truth is row k of truth.npz.

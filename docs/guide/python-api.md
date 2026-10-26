@@ -50,6 +50,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
+| `sc.Fit(min_observations=2)` | leave out of the solve the sky pixels a single observation covers |
 | `sc.Result` | the products, with readers |
 
 ### Instruments and jobs
@@ -80,8 +81,9 @@ def gradient(det_x, det_y):                      # two basis functions over the 
     return [(det_x - 32) / 64, (det_y - 24) / 48]
 
 MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
-                 offsets=[sc.Offsets("thermal", per="all", times=above_80, mean_zero=True),
-                          sc.Offsets("gradient", on="detector", basis=gradient, n=2)],
+                 offsets=[sc.Offsets("thermal", per="all", times=above_80, exclude=sc.Poly(0)),
+                          sc.Offsets("gradient", on="detector", basis=gradient, n=2),
+                          sc.Offsets("scalar", on="detector")],       # one constant per frame
                  variables={"temperature": sc.Header("TEMP")})
 ```
 
@@ -93,7 +95,14 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   frame variable such as `"detector"`), optionally times one function (`times=`) or `n` basis
   functions (`basis=`, `n=`), or a polynomial (`polynomial=sc.Poly(2, window=range(200, 321))`).
   Priors: `smooth` along `smooth_along` (default the map's own axes), `poly_prior` (soft
-  `sc.Poly`), `mean_zero`, `damping`.
+  `sc.Poly`), `damping`. A hard constraint, `exclude=sc.Poly(k, along=axis)`: the term carries no
+  polynomial of degree ≤ `k` along the axis (per group of frames), imposed exactly in the solver,
+  with no row and no weight; `exclude=sc.Poly(0)` needs no `along` (no constant over all of a
+  group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
+  value per frame. `exclude=sc.SkySignature(k)` keeps a per-frame term from taking up the smooth sky
+  fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
+  constant); it needs `sc.Fit(deflate=...)`
+  ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds
   parameters (`sc.Function(above_80, t0=70.0)`). Built-in shapes: `sc.template(file)`,
@@ -106,8 +115,9 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 - **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
   `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
   `sc.two_block(second="readout")`; `spherex.line("aromatic", damping=5e-3)` is a sky term with
-  a shipped line template. A preset is a plain function that returns a `Model`; a calibration
-  variant of your own is one too, or the `Model` itself.
+  a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
+  per-frame scalar; `sc.two_block` has none. A preset is a plain function that returns a `Model`;
+  a calibration variant of your own is one too, or the `Model` itself.
 
 ### The recipe
 
@@ -121,8 +131,8 @@ SUBCHANNEL = sc.ChunkGroups.along("subchannel")              # chunks grouped by
 BY_SUBCHANNEL = NUMCOL3.replace(fit=NUMCOL3.fit.replace(clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
 ```
 
-`sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver,
-per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the
+`sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver, its
+starting vector, per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the
 mosaic (`None`: no mosaic); `sc.Numerics` the summation
 layout (threads and batch sizes). `Numerics` belongs to the recipe because it changes the last
 bits of the products; its defaults are production's, so a recipe reproduces production on any
@@ -210,15 +220,16 @@ more = field.calibrate(recipe.replace(fit=sc.Fit(M, tolerance=0), name="more"),
 ```
 
 `start=` starts each job's solve from the solution of an earlier cal instead of the default
-guess: a cal file, the `Result` of an earlier calibration (each job from its cal), or
-`{job: cal}`. It continues a solve that has not converged, or starts a variant (another fit,
-another clip) from an earlier solution. The cal must be a solution of the same system, or the
+start (`sc.Fit(seed=)`, [below](#the-solver)): a cal file, the `Result` of an earlier
+calibration (each job from its cal), or `{job: cal}`. It continues a solve that has not
+converged, or starts a variant (another fit, another clip) from an earlier solution. The cal must be a solution of the same system, or the
 action is refused, saying what differs: the same frames in the same order, the same model (sky
 terms, offset terms on the same chunk maps shared over the same groups of frames, the same basis
 functions), the same reference grid and the same job (the plan checks most of it before the
-solve is set up). Columns with data now that the source left at zero start at zero; the log
-counts them. Plain calibrations only: `tiles=` and `passes=` take no start, and a model with a
-hard polynomial basis (`Offsets(polynomial=...)`) cannot be continued (its cal holds the offsets
+solve is set up). A cal of an older layout that holds the per-frame scalar apart, in a dataset
+`frame_scalar`, is refused too: its offsets miss each frame's level. Columns with data now that
+the source left at zero start at zero; the log counts them. Plain calibrations only: `tiles=`
+and `passes=` take no start, and a model with a hard polynomial basis (`Offsets(polynomial=...)`) cannot be continued (its cal holds the offsets
 the polynomial expands to, not its coefficients). Give the continuation a name of its own: the
 cal an action writes is never its start.
 
@@ -249,8 +260,8 @@ deletes its older ones as it goes; snapshots of earlier runs are never deleted);
 default) keeps them all; `snapshots=100` is `sc.Snapshots(every=100)`.
 
 A snapshot is a complete cal file, in the cal's schema, so whatever reads a cal reads it: the sky
-terms with their coverage and Fisher information, the offsets, `frame_scalar`, the chunk maps and
-the frame list. Its sky, offset and scalar datasets are bit for bit those of a solve of exactly
+terms with their coverage and Fisher information, the offsets, the chunk maps and the frame list.
+Its sky and offset datasets are bit for bit those of a solve of exactly
 that many iterations (`sc.Fit(iterations=400, tolerance=0)`). Its `solve` group says
 `snapshot = True` and `iteration` (cumulative), with the solver's estimates at that iteration and
 the system's identity:
@@ -419,6 +430,13 @@ products' precision (`float32=`) for LSQR and LSMR, as before. `vectors="float64
 computed in float64 from the float32 matrix, which costs about one extra pass over it per product. The
 record of every solve says which method ran and in what precision.
 
+`seed=` sets where the iterations start. `"separate"` (the default) puts every offset unknown at its
+own least-squares fit to the data, as if every other unknown were zero (a chunk constant at the
+weighted mean of its pixels), and the sky terms at zero; `"offsets"` fits each frame's offset
+unknowns jointly, the sky at zero; `"zero"` starts everything at zero. The terms' hard constraints
+(`exclude=`) are imposed on the start. A [continued solve](#continuing-a-solve) starts from its cal
+instead.
+
 ### Deflation
 
 ```python
@@ -457,7 +475,7 @@ Read it with three facts in mind:
   patterns (`nullness_min`, `nullness_median`: `|B z| / |B F|`, the residual of a pattern with its
   offsets over that of the pattern alone; small means nearly invisible).
 - **Gauges stay where a plain solve leaves them.** A direction the data cannot see at all (the sky's
-  mean against per-frame scalars; a plane or quadratic the offsets absorb exactly) is recognised and
+  mean against the frames' levels; a plane or quadratic the offsets absorb exactly) is recognised and
   left out. A higher-degree pattern absorbed exactly, possible only on a flat geometry with offsets
   of that degree, would be in the space only in part: deflate it whole (`basis="polynomial"` of at
   least its degree).

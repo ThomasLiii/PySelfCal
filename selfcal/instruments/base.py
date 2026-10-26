@@ -9,8 +9,8 @@ An instrument (:class:`~selfcal.instruments.contract.Instrument`: ``sc.SPHEREx``
   *column*");
 * :class:`DetectorGeometry`: the chunk maps by name (one primary), and the named per-pixel
   detector maps (a wavelength map for spectral fits; none for a broadband imager);
-* :class:`JobGeometry`: which pixels are valid for a job, and the edge-taper weights of the solve
-  and the mosaic;
+* :class:`JobGeometry`: which pixels are valid for a job, and the per-pixel weights of the solve
+  and the mosaic (Euclid: an optional edge taper);
 * :class:`ExposureLayout`: how a raw exposure file is read (its science and data-quality entries,
   the detectors it holds, an optional header filter and reader).
 """

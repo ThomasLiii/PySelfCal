@@ -70,7 +70,8 @@ package: the model ([`selfcal.models`](selfcal/models/index.md)), the solver
 ([`selfcal.core`](selfcal/core/index.md)), instruments
 ([`selfcal.instruments`](selfcal/instruments/index.md)), file I/O
 ([`selfcal.io`](selfcal/io/index.md)), the calibration and mosaic passes
-([`selfcal.pipeline`](selfcal/pipeline/index.md)), and the Python API's actions with the run
+([`selfcal.pipeline`](selfcal/pipeline/index.md)), the N-pass alternating solve
+([`selfcal.npass`](selfcal/npass/index.md)), and the Python API's actions with the run
 engine behind them ([`selfcal.run`](selfcal/run/index.md)): the field and the recipe, their
 lowering to the engine's run specification, the tasks, the N-pass scheduling, and the products'
 records and fingerprints.

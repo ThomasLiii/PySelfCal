@@ -1,11 +1,14 @@
-"""Primitives of the N-pass alternating solve (selfcal.pipeline.npass), on a
-small synthetic sky-only system:
+"""Primitives of the N-pass alternating solve (selfcal.npass), on a small synthetic
+sky-only system:
 
 * moment ADDITIVITY: dumps over two disjoint frame subsets, combined, equal the
   single full solve exactly (J = 2 and J = 4 — the seam-free full-field claim);
 * SkySubtractor.window handles a subframe overhanging the map's low edge
   (negative ref_coords), the bug that produced the LMC streaks;
-* refit_offsets_per_frame recovers known per-frame poly-basis offsets.
+* the OFFSET pass's system (``setup_lsqr(fixed_sky=True)`` with the sky
+  subtracted by SkySubtractor, each frame's rows reduced to its normal equations
+  and solved directly) has no sky columns and fits known per-frame offsets down
+  to the noise -- and cannot without the sky subtracted.
 """
 import os
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
@@ -17,10 +20,10 @@ import hdf5plugin  # noqa: F401
 import pytest
 
 from selfcal.core.system import setup_lsqr
-from selfcal.core.solution import solve_sky_closed_form
 from selfcal.models.sky_model import Coefficient, ContinuumComponent, SkyComponent, SkyModel
 from selfcal.models.profiles import GaussianProfile
-from selfcal.pipeline import npass
+from selfcal.npass.offsets import SkySubtractor, normal_equations, solve_frames
+from selfcal.npass.sky import combine_moments, dump_moments, solve_pixels, write_sky_cal
 
 REF = (40, 40)
 DET = (16, 16)
@@ -81,7 +84,7 @@ def _setup(paths, sky_model, bc_det, postprocess=None):
                       det_aux=[bc_det, np.full(DET, 0.03)], max_workers=2, batch_size=20,
                       apply_mask=True, apply_weight=True,
                       outlier_thresh=100.0, weighted_damping=True, damp_weight=1e-3,
-                      damp_weight_line=1e-3, use_per_frame_scalar=False,
+                      damp_weight_line=1e-3,
                       postprocess_func=postprocess)
 
 
@@ -102,16 +105,16 @@ def test_combine_moments_equals_full_solve(tmp_path, J):
     num_sky = REF[0] * REF[1]
     dws = [1e-3] * J
     r_full = _setup(paths, sky_model, bc_det)
-    x_full = solve_sky_closed_form(r_full.pixel_fisher, r_full.pixel_cross, r_full.pixel_rhs,
+    x_full = solve_pixels(r_full.pixel_fisher, r_full.pixel_cross, r_full.pixel_rhs,
                                    r_full.pixel_counts, num_sky, J, damp_weights=dws)
     dumps = []
     for k, sub in enumerate((paths[:37], paths[37:])):
         r = _setup(sub, sky_model, bc_det)
         d = str(tmp_path / f"m{k}.npz")
-        npass.dump_moments(_CC(r, J, sub), d)
+        dump_moments(_CC(r, J, sub), d)
         dumps.append(d)
     out = str(tmp_path / "combined.h5")
-    npass.combine_moments(dumps, out, sky_names=sky_model.names, damp_weights=dws,
+    combine_moments(dumps, out, sky_names=sky_model.names, damp_weights=dws,
                           line_fisher_threshold=0.0)
     with h5py.File(out, "r") as f:
         names = [n.decode() for n in f.attrs["sky_components"]]
@@ -125,7 +128,7 @@ def test_combine_moments_equals_full_solve(tmp_path, J):
         assert set(f["sky_separability"].keys()) == set(names[1:])
     # frames are double-counted -> refused
     with pytest.raises(ValueError):
-        npass.combine_moments([dumps[0], dumps[0]], str(tmp_path / "dup.h5"),
+        combine_moments([dumps[0], dumps[0]], str(tmp_path / "dup.h5"),
                               sky_names=sky_model.names, damp_weights=dws)
 
 
@@ -134,12 +137,12 @@ def test_sky_subtractor_window_handles_low_edge_overhang(tmp_path):
     J = 2
     paths, bc_det, truth, sky_model = _make_frames(str(tmp_path), rng, J, n_frames=4)
     cal = str(tmp_path / "sky.h5")
-    npass.write_sky_cal(cal, ref_shape=REF, sky_names=sky_model.names,
+    write_sky_cal(cal, ref_shape=REF, sky_names=sky_model.names,
                         sky_maps=[t.astype(np.float32) for t in truth],
                         sky_counts=[np.ones(REF)] * J, sky_fishers=[np.ones(REF)] * J,
                         pixel_cross=np.zeros(REF[0] * REF[1]),
                         pixel_fisher=np.ones(J * REF[0] * REF[1]), reproj_list=[])
-    sub = npass.SkySubtractor(cal, sky_model, export_dir=str(tmp_path / "exp"))
+    sub = SkySubtractor(cal, sky_model, export_dir=str(tmp_path / "exp"))
     rc = np.array([-5, DET[0] - 5, -2, DET[1] - 2])          # overhangs top-left
     maps, on = sub.window(rc, DET)
     assert not on[:5].any() and not on[:, :2].any() and on[5:, 2:].all()
@@ -151,7 +154,47 @@ def test_sky_subtractor_window_handles_low_edge_overhang(tmp_path):
     assert np.allclose(maps[1][:6], truth[1][REF[0] - 6:, 3:3 + DET[1]])
 
 
-def test_refit_offsets_recovers_known_offsets(tmp_path):
+def sky_cal_of(tmp, truth, sky_model):
+    """A sky-only cal holding the true sky maps."""
+    J = len(truth)
+    cal = os.path.join(tmp, "sky.h5")
+    write_sky_cal(cal, ref_shape=REF, sky_names=sky_model.names,
+                        sky_maps=[t.astype(np.float32) for t in truth],
+                        sky_counts=[np.ones(REF)] * J, sky_fishers=[np.ones(REF)] * J,
+                        pixel_cross=np.zeros(REF[0] * REF[1]),
+                        pixel_fisher=np.ones(J * REF[0] * REF[1]), reproj_list=[])
+    return cal
+
+
+def noise_norm(paths, sigma=2e-3):
+    """The weighted norm of the frames' noise (``sigma`` per observation, weights ``1/sqrt(|v|)``)
+    over the observations the solve keeps (bitmask 0)."""
+    total = 0.0
+    for p in paths:
+        with h5py.File(p, "r") as f:
+            v = f["sub_data"][()].astype(np.float64)
+            ok = f["sub_bitmask"][()] == 0
+        total += float(np.sum(sigma ** 2 / np.abs(v[ok])))
+    return np.sqrt(total)
+
+
+def fixed_sky_fit(paths, sky_model, bc_det, det_chunk_map, poly_basis, hook):
+    """The OFFSET pass's system over ``paths`` -- a polynomial-basis offset per group plus a per-frame
+    scalar (an offset of one chunk), the sky held fixed (``hook`` subtracts it, or None) -- each frame's
+    rows reduced to its normal equations and solved directly. Returns ``(the true residual norm, the
+    columns solved)``."""
+    r = setup_lsqr(paths, REF, chunk_maps=[det_chunk_map, np.zeros_like(det_chunk_map)],
+                   poly_basis_list=[poly_basis, None], sky_model=sky_model, det_aux=[bc_det, np.full(DET, 0.03)],
+                   max_workers=2, batch_size=20, apply_mask=True, apply_weight=True, outlier_thresh=100.0,
+                   postprocess_func=hook, fixed_sky=True, reduce=normal_equations)
+    assert r.A is None                                                        # no matrix
+    x, summary = solve_frames(r.reduced, r.constraint_blocks, r.pixel_counts.size)
+    assert np.all(np.isfinite(x))
+    cols = np.unique(np.concatenate([f.cols for f in r.reduced if f is not None]))
+    return summary["true_residual"], cols
+
+
+def test_fixed_sky_system_fits_the_offsets_alone(tmp_path):
     rng = np.random.default_rng(11)
     J = 2
     # chunk map on the detector: 4 "subchannels" (row bands) x 2 columns
@@ -167,27 +210,15 @@ def test_refit_offsets_recovers_known_offsets(tmp_path):
     a_true = 0.05 * rng.standard_normal((n_frames, ncol))
     s_true = 0.1 * rng.standard_normal(n_frames)
     from selfcal.geometry.map_helper import chunk_to_det
-    offsets = []
-    for k in range(n_frames):
-        per_chunk = a_true[k][pb["chunk_group"]] * B[:, 0] + s_true[k]
-        offsets.append(chunk_to_det(cm, chunk_data=per_chunk))
+    offsets = [chunk_to_det(cm, chunk_data=a_true[k][pb["chunk_group"]] * B[:, 0] + s_true[k])
+               for k in range(n_frames)]
     paths, bc_det, truth, sky_model = _make_frames(str(tmp_path), rng, J, n_frames=n_frames,
                                                    offsets=offsets, bc_jitter=0.0)
-    cal = str(tmp_path / "sky.h5")
-    npass.write_sky_cal(cal, ref_shape=REF, sky_names=sky_model.names,
-                        sky_maps=[t.astype(np.float32) for t in truth],
-                        sky_counts=[np.ones(REF)] * J, sky_fishers=[np.ones(REF)] * J,
-                        pixel_cross=np.zeros(REF[0] * REF[1]),
-                        pixel_fisher=np.ones(J * REF[0] * REF[1]), reproj_list=[])
-    sky = npass.SkySubtractor(cal, sky_model, export_dir=str(tmp_path / "exp"))
-    out = str(tmp_path / "off.h5")
-    _, mon = npass.refit_offsets_per_frame(
-        paths, sky, det_chunk_map=cm, grid_valid=np.ones(DET, dtype=np.float32),
-        det_aux=[bc_det, np.full(DET, 0.03)], poly_basis=pb, edges=None, ignore_list=[],
-        thresh=100.0, bright_cut=None, min_pix=0, out_h5=out, max_workers=2)
-    assert mon["n_fit"] == n_frames
-    with h5py.File(out, "r") as f:
-        off = f["offsets/map_0"][:]; sc = f["frame_scalar"][:]
-    per_chunk_true = np.array([a_true[k][pb["chunk_group"]] * B[:, 0] + s_true[k]
-                               for k in range(n_frames)])
-    assert np.max(np.abs((off + sc[:, None]) - per_chunk_true)) < 5e-3
+    subtract = SkySubtractor(sky_cal_of(str(tmp_path), truth, sky_model), sky_model,
+                             export_dir=str(tmp_path / "exp"), exclude_off_map=True)
+    rnorm, cols = fixed_sky_fit(paths, sky_model, bc_det, cm, pb, subtract)
+    assert cols.min() >= J * REF[0] * REF[1]                                  # no sky unknowns
+    noise = noise_norm(paths)
+    assert 0.8 * noise < rnorm < 1.1 * noise, (rnorm, noise)                 # the offsets, down to the noise
+    rnorm_raw, _ = fixed_sky_fit(paths, sky_model, bc_det, cm, pb, None)       # the sky NOT subtracted
+    assert rnorm_raw > 20 * noise, (rnorm_raw, noise)

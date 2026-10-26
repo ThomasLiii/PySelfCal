@@ -8,7 +8,8 @@ file, and the mosaic reads both.
   (:class:`~selfcal.io.frames.ExposureData`) and the frame file
   (:func:`~selfcal.io.frames.write_frame`).
 - :mod:`~selfcal.io.reprojection`: :func:`~selfcal.io.reprojection.batch_reproject` reprojects
-  every detector of every exposure onto a box of the reference grid, one frame file each.
+  every detector of every exposure onto a box of the reference grid, one frame file each;
+  :func:`~selfcal.io.reprojection.add_layers` adds per-pixel planes to frames that exist.
 - :mod:`~selfcal.io.reproj`: reads frame files and owns their ``exp_<exposure>_det_<detector>.h5``
   names.
 - :mod:`~selfcal.io.frame_select`: picks the frames of a tile from each frame file's

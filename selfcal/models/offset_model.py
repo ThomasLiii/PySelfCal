@@ -1,15 +1,15 @@
 """OffsetModel / OffsetBlock — bundle the per-map offset configuration.
 
-``setup_lsqr`` historically takes seven parallel length-K lists, all indexed by
+``setup_lsqr`` historically takes six parallel length-K lists, all indexed by
 the same map index ``m``::
 
     chunk_maps, det_groups_list, det_templates, reg_weights,
-    adj_infos, poly_constraints_list, mean_offsets_list
+    adj_infos, poly_constraints_list
 
 Keeping those in lockstep by hand is error-prone in any multi-map
 configuration — e.g. a two-map setup must pair ``det_groups_list=[None, zeros]``
-in one list with ``mean_offsets_list=[None, target]`` in another (see the
-``sc.two_block`` model for a real two-map instance). ``OffsetModel`` bundles
+in one list with ``reg_weights=[w, 0.0]`` in another (see the ``sc.two_block``
+model for a real two-map instance). ``OffsetModel`` bundles
 each map's configuration into one :class:`OffsetBlock` so a multi-map setup
 reads as cohesive blocks.
 
@@ -24,12 +24,11 @@ remain supported but are deprecated; new code should construct an
 ``OffsetModel``.
 
 Per-block (lives on ``OffsetBlock``): chunk map, frame grouping, template,
-adjacency + its weight, polynomial-chain constraints, mean-offset anchor.
+adjacency + its weight, polynomial-chain constraints.
 Global solver settings (the sky model and its per-pixel damping ``damp_weight`` /
 ``damp_weight_line``, masking, weighting, workers, ...) are NOT per-block and stay
 as ``setup_lsqr`` kwargs; the offset damping is per map (``damp_offset_maps``).
-``use_per_frame_scalar`` is a model-level flag (the scalar block is shared
-across maps), so it lives on ``OffsetModel``.
+Hard constraints on a block's columns (``exclusions``) go to the solver, not here.
 """
 from __future__ import annotations
 
@@ -133,17 +132,14 @@ class OffsetBlock:
         ``{'chains', 'stencil', 'weight'}`` (``poly_constraints_list[m]``).
         Multiple groups are allowed (e.g. column + subchannel chains) and are
         applied in list order.
-    mean_offset : object or None
-        Per-frame mean-anchor target for this block (``mean_offsets_list[m]``),
-        typically ``np.zeros(num_frames)``.
     poly_basis : dict or None
         Hard polynomial-basis offset (replaces the soft ``poly_constraints``
         subchannel penalty). When set, this block does NOT solve a free offset
         per chunk; instead the per-frame offset IS a degree-D Chebyshev
         polynomial in an abstract per-chunk coordinate, independent per group
         (for SPHEREx: coordinate = subchannel, group = column), solved for its
-        coefficients ``a[frame, group, d]`` (d=1..D; the per-frame scalar owns
-        the DC). Dict keys (see :mod:`selfcal.models.offset_basis`): ``degree``
+        coefficients ``a[frame, group, d]`` (d=1..D: no constant, so a frame's
+        level belongs to another block, such as one on a one-chunk map). Dict keys (see :mod:`selfcal.models.offset_basis`): ``degree``
         (int D), ``num_groups`` (number of independent polynomials),
         ``coord_lo``/``coord_hi`` (coordinate window), ``chunk_coord``/
         ``chunk_group`` (per-chunk coordinate / group-index arrays). When set,
@@ -169,7 +165,6 @@ class OffsetBlock:
     reg_weight: float = 0.0
     adj_info: object = None
     poly_constraints: object = None
-    mean_offset: object = None
     poly_basis: object = None
     basis: object = None
 
@@ -185,10 +180,9 @@ class OffsetBlock:
 
 @dataclass(frozen=True)
 class OffsetModel:
-    """Ordered collection of :class:`OffsetBlock` + model-level solver flags."""
+    """Ordered collection of :class:`OffsetBlock`."""
 
     blocks: tuple
-    use_per_frame_scalar: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, 'blocks', tuple(self.blocks))
@@ -225,9 +219,8 @@ class OffsetModel:
         dict
             The parallel-list ``setup_lsqr`` kwargs: ``chunk_maps``,
             ``det_groups_list``, ``det_templates``, ``reg_weights``,
-            ``adj_infos``, ``poly_constraints_list``, ``mean_offsets_list``,
-            ``poly_basis_list``, ``basis_list`` (each a length-K list indexed
-            by map ``m``), plus the model-level ``use_per_frame_scalar`` flag.
+            ``adj_infos``, ``poly_constraints_list``, ``poly_basis_list``,
+            ``basis_list`` (each a length-K list indexed by map ``m``).
         """
         return {
             'chunk_maps': [b.chunk_map for b in self.blocks],
@@ -236,8 +229,6 @@ class OffsetModel:
             'reg_weights': [b.reg_weight for b in self.blocks],
             'adj_infos': [b.adj_info for b in self.blocks],
             'poly_constraints_list': [b.poly_constraints for b in self.blocks],
-            'mean_offsets_list': [b.mean_offset for b in self.blocks],
             'poly_basis_list': [b.poly_basis for b in self.blocks],
             'basis_list': [b.basis for b in self.blocks],
-            'use_per_frame_scalar': self.use_per_frame_scalar,
         }

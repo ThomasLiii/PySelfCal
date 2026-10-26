@@ -3,7 +3,7 @@
 The equation the solver fits, for every observation ``i`` (one value of one
 frame on one reference pixel ``P``, seen at a detector position)::
 
-    data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)  +  s(frame)
+    data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] · φ_mk(v_i)
 
 * **data variables** ``v`` (:mod:`selfcal.models.variables`): named
   per-observation quantities — the built-in coordinates, the instrument's
@@ -21,9 +21,10 @@ frame on one reference pixel ``P``, seen at a detector position)::
   (``coefficient`` = one function, ``basis`` = several: a pattern times the
   temperature, a per-frame gradient in detector coordinates, a gain times a
   previous sky), or a Chebyshev polynomial along a chunk axis (``polybasis``).
-  Priors: smoothness along chunk axes, polynomial shape, mean-zero anchor,
-  Tikhonov ``damp``.
-* the per-frame **scalar** ``s`` (``scalar = true``).
+  Priors: smoothness along chunk axes, polynomial shape, Tikhonov ``damp``;
+  hard constraints: no polynomial of a degree along a chunk axis (``exclude``).
+  A per-frame scalar is the O term of one chunk (map ``"detector"``), one value
+  per frame.
 * **weight**: an optional function of data variables multiplying every
   observation's weight (an inverse-variance plane, a per-frame quality).
 * **priors** (:class:`PriorSpec`): any linear rows on the unknowns of one or
@@ -44,6 +45,8 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
+
+from selfcal.config.base import import_name
 
 from .offset_model import Basis, OffsetBlock, OffsetModel
 from .offset_structure import (
@@ -179,11 +182,15 @@ class SkyTerm:
 
     ``name`` (the product name of the map) defaults to ``continuum`` for a
     constant term and to the catalogue entry for a catalogue coefficient.
-    ``damp_weight``: the term's Tikhonov prior (None = the solver default).
+    ``damp_weight``: the term's Tikhonov prior (None = the solver default). ``exclude``: a hard
+    constraint on the map's shape, ``"package.module:function"`` (or the function itself) returning
+    the excluded shapes ``(pixels, r)`` from the grid's pixel coordinates ``(u, v)`` (see
+    :class:`selfcal.run.recipe.Sky`); None: none.
     """
     name: str | None = None
     coefficient: object = None
     damp_weight: float | None = None
+    exclude: object = None
 
     def __post_init__(self):
         name = self.name
@@ -233,12 +240,19 @@ class OffsetTerm:
     Priors: ``reg_weight`` pulls chunks that neighbour along the ``adjacency``
     axes together (None = the map's default axes; ``()`` = none;
     ``adjacency_step`` restricts pairs to that difference), ``poly`` adds soft
-    polynomial constraints, ``mean_zero`` anchors the per-frame mean over the
-    observed chunks (those with data) at zero (per basis function), ``damp`` is
-    Tikhonov damping toward zero.
-    ``exact_group_rows``: for fixed/grouped terms, emit the mean-zero anchor and
-    the adjacency rows once per group instead of once per frame (exact; far
-    fewer rows). ``render``: which of the instrument's offset renderers draws the
+    polynomial constraints, ``damp`` is Tikhonov damping toward zero.
+    ``exclude_degree`` / ``exclude_axis``: a hard constraint, the term has no
+    polynomial of that degree along the axis (per line of the other axes, per
+    group), imposed by reparametrisation in the solver
+    (:meth:`ModelSpec.column_exclusions`); degree 0 with no axis: no constant
+    over all of a group's chunks. ``signature_degree``: a hard constraint, the
+    term carries no part of its response to the sky polynomials of degree 1 to
+    that degree (``'all'``: to every pattern of the deflation but the
+    constant), computed from the system by the deflation's setup
+    (:meth:`ModelSpec.signature_exclusions`).
+    ``exact_group_rows``: for fixed/grouped terms, emit the adjacency rows once
+    per group instead of once per frame (exact; far fewer rows). ``render``:
+    which of the instrument's offset renderers draws the
     term on the mosaic. ``name``: how priors refer to the term (default: the
     map's name)."""
     map: str | None = None
@@ -247,7 +261,6 @@ class OffsetTerm:
     adjacency: tuple | None = None
     adjacency_step: int | None = None
     poly: tuple = ()
-    mean_zero: bool = False
     axis: str | None = None
     group_axis: str | None = None
     degree: int | None = None
@@ -257,6 +270,9 @@ class OffsetTerm:
     damp: float = 0.0
     groups: str | None = None
     exact_group_rows: bool = False
+    exclude_degree: int | None = None
+    exclude_axis: str | None = None
+    signature_degree: int | str | None = None
     render: str | None = None
     coefficient: object = None
     basis: object = None
@@ -279,6 +295,14 @@ class OffsetTerm:
             raise ValueError("an offset term takes `coefficient` (one function) or `basis` (several), not both")
         if self.basis is not None and self.kind == 'polybasis':
             raise ValueError("a polybasis term takes a `coefficient`, not a `basis`")
+        if self.exclude_degree is not None:
+            if int(self.exclude_degree) < 0:
+                raise ValueError("exclude_degree is at least 0")
+            if self.kind == 'polybasis' or self.n_basis != 1:
+                raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
+        if self.signature_degree is not None and self.signature_degree != 'all' \
+                and not 1 <= int(self.signature_degree) <= 2:
+            raise ValueError("signature_degree is 1, 2 (the deflation's polynomial patterns go to degree 2) or 'all'")
 
     @property
     def n_basis(self) -> int:
@@ -293,7 +317,7 @@ class OffsetTerm:
 class PriorSpec:
     """One ``[[model.prior]]`` entry: ``function(*terms, **params)`` returns linear
     rows on the unknowns of the named ``terms`` (sky-term names, offset-term
-    names, ``scalar``), scaled by ``weight``. ``function`` is a ready-made prior
+    names), scaled by ``weight``. ``function`` is a ready-made prior
     of :mod:`selfcal.models.priors` by its bare name or any
     ``"package.module:name"``."""
     terms: tuple
@@ -351,12 +375,11 @@ class PriorSpec:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModelSpec:
-    """A self-calibration model: sky and offset terms, scalar, variables, weight, priors.
+    """A self-calibration model: sky and offset terms, variables, weight, priors.
 
     ``sky`` holds the sky terms (:class:`SkyTerm`; at least one, by default one
     constant ``continuum`` term) and ``offset`` the offset terms
-    (:class:`OffsetTerm`; none by default). ``scalar`` adds the per-frame scalar
-    ``s(frame)``. ``variables`` are the model's own data variables
+    (:class:`OffsetTerm`; none by default). ``variables`` are the model's own data variables
     (:class:`VariableSpec`), ``weight`` an optional function of data variables
     that multiplies every observation's weight (a
     :class:`~selfcal.models.sky_model.Coefficient` or its config form), and
@@ -377,7 +400,6 @@ class ModelSpec:
     """
     sky: tuple = (SkyTerm(),)
     offset: tuple = ()
-    scalar: bool = True
     mosaic: str = 'full'                 # full | no_wav | none
     variables: tuple = ()
     weight: object = None
@@ -406,20 +428,22 @@ class ModelSpec:
         """The ``[model]`` table: ``sky = [{name=..., coefficient={...}, damp_weight=...}, ...]``,
         ``offset = [{map=..., kind=..., coefficient/basis={...}, poly=[...]}, ...]``,
         ``variables = {name = {<source> = ..., ...}}``, ``weight = {variable, function, ...}``,
-        ``prior = [{term(s)=..., function=..., weight=..., <params>}, ...]``, ``scalar``, ``mosaic``."""
+        ``prior = [{term(s)=..., function=..., weight=..., <params>}, ...]``, ``mosaic``."""
         t = dict(table)
+        if 'scalar' in t:
+            raise ValueError("[model] scalar: the per-frame scalar is an offset term, "
+                             "offset = [{map = 'detector', name = 'scalar'}] (sc.Offsets('scalar', on='detector'))")
         sky = t.pop('sky', None) or [{}]
         offset = t.pop('offset', None) or []
-        scalar = bool(t.pop('scalar', True))
         mosaic = str(t.pop('mosaic', 'full'))
         variables = t.pop('variables', None) or {}
         weight = t.pop('weight', None)
         priors = t.pop('prior', None) or t.pop('priors', None) or []
         if t:
             raise ValueError(f"unknown [model] keys {sorted(t)}; expected sky / offset / variables / "
-                             f"weight / prior / scalar / mosaic")
+                             f"weight / prior / mosaic")
         return cls(sky=tuple(_sky_term(dict(s)) for s in sky),
-                   offset=tuple(OffsetTerm(**dict(o)) for o in offset), scalar=scalar, mosaic=mosaic,
+                   offset=tuple(OffsetTerm(**dict(o)) for o in offset), mosaic=mosaic,
                    variables=tuple(VariableSpec.from_config(k, v) for k, v in dict(variables).items()),
                    weight=None if weight is None else dict(weight),
                    priors=tuple(PriorSpec.from_config(p) for p in priors))
@@ -435,12 +459,6 @@ class ModelSpec:
         """Whether anything in the model reads data variables."""
         return (self.has_coefficients or bool(self.variables) or self.weight is not None
                 or any(t.coefficient is not None or t.basis is not None for t in self.offset))
-
-    @property
-    def x0_kind(self) -> str:
-        """How the solve is initialised: from the per-frame scalars when the model
-        has them, else from the normal equations' diagonal."""
-        return 'scalar_only' if self.scalar else 'from_Ab'
 
     def variable_names(self, geom=None, frame_variables=()) -> list[str]:
         """Every data-variable name the model may read: built-ins, the
@@ -533,7 +551,7 @@ class ModelSpec:
         if self.weight is not None:
             build_coefficient(self.weight, geom, catalog=catalog, name='weight', log=lambda *a, **k: None,
                               known=known)
-        terms = set(t.name for t in self.sky) | set(self.offset_names(geom)) | ({'scalar'} if self.scalar else set())
+        terms = set(t.name for t in self.sky) | set(self.offset_names(geom))
         for p in self.priors:
             bad = [t for t in p.terms if t not in terms]
             if bad:
@@ -569,7 +587,7 @@ class ModelSpec:
         known = self._known(tuple(frame_variables) + tuple(frame_groups or ()))
         blocks = [self._offset_block(term, geom, n_frames, frame_groups or {}, log, catalog, known)
                   for term in self.offset]
-        return OffsetModel(blocks, use_per_frame_scalar=self.scalar)
+        return OffsetModel(blocks)
 
     def setup_kwargs(self) -> dict:
         """The solver options the terms' priors imply beyond the OffsetModel:
@@ -580,9 +598,98 @@ class ModelSpec:
             kw['damp_offset_maps'] = [float(t.damp) for t in self.offset]
         exact = [m for m, t in enumerate(self.offset) if t.exact_group_rows]
         if exact:
-            kw['mean_offset_group_rows'] = True
             kw['group_adjacency_maps'] = exact
         return kw
+
+    def column_exclusions(self, geom, layout) -> list:
+        """The terms' hard constraints as the solver takes them (``apply_lsqr(exclusions=...)``):
+        ``[(cols, P), ...]`` with ``cols`` ``(G, n)`` the full-layout columns of each offset group's
+        chunks along one line of the excluded axis and ``P`` ``(n, k + 1)`` an orthonormal basis of
+        the polynomials of degree <= k in the chunks' coordinate along that axis (degree 0 with no
+        axis: one line of all the map's chunks, ``P`` the constant). ``layout`` is the
+        :class:`~selfcal.core.layout.SystemLayout` of the assembled system. Empty without ``exclude``
+        terms (the historical recipes). A sky term's ``exclude`` gives one group over the term's pixel
+        columns with the shapes it returns (orthonormalised), evaluated at the grid's pixel coordinates."""
+        out = []
+        H, W = (int(v) for v in layout.ref_shape)
+        for j, term in enumerate(self.sky):
+            if term.exclude is None:
+                continue
+            fn = import_name(term.exclude) if isinstance(term.exclude, str) else term.exclude
+            vv, uu = np.mgrid[0:H, 0:W]
+            u = (uu.ravel() / max(W - 1, 1)).astype(np.float64)
+            v = (vv.ravel() / max(H - 1, 1)).astype(np.float64)
+            S = np.asarray(fn(u, v), dtype=np.float64)
+            if S.ndim == 1:
+                S = S[:, None]
+            if S.shape[0] != H * W or S.ndim != 2:
+                raise ValueError(f"sky term {term.name!r}: exclude's shapes must be (pixels, r) over the {H}x{W} grid, got {S.shape}")
+            P = np.linalg.qr(S)[0]
+            cols = (j * H * W + np.arange(H * W, dtype=np.int64))[None, :]
+            out.append((cols, P))
+        for m, term in enumerate(self.offset):
+            if term.exclude_degree is None:
+                continue
+            cm = _chunk_map(term, geom)
+            k = int(term.exclude_degree)
+            axes = cm.axes
+            if axes is None or len(axes) == 0:
+                raise ValueError(f"offset term on map {cm.name!r}: exclude needs a chunk map with axes")
+            axis = term.exclude_axis
+            if axis is None and len(axes) == 1:
+                axis = axes.names[0]
+            if axis is None and k != 0:
+                raise ValueError(f"offset term on map {cm.name!r}: exclude=Poly({k}) needs along= (axes: "
+                                 f"{axes.names}); only degree 0, the constant, takes every chunk at once")
+            if axis is not None and axis not in axes:
+                raise ValueError(f"offset term on map {cm.name!r}: no chunk axis {axis!r} (axes: {axes.names})")
+            if layout.det_template_arr_list[m] is not None:
+                raise ValueError(f"offset term on map {cm.name!r}: exclude does not apply to a template term")
+            n_chunks = int(layout.num_chunks_list[m])
+            n_groups = int(layout.num_offset_groups_list[m])
+            base = int(layout.col_bases[m])
+            if axis is None:                                    # the constant over all of a group's chunks
+                ids = np.arange(n_chunks)
+                coord = np.zeros(n_chunks)
+                key = np.zeros(n_chunks, dtype=np.int64)
+            else:
+                coord = np.asarray(axes[axis].of_chunk, dtype=np.float64)
+                others = [np.asarray(a.of_chunk) for a in axes.others(axis)]
+                ids = np.arange(min(n_chunks, coord.size))
+                key = np.zeros(ids.size, dtype=np.int64)
+                for o in others:
+                    key = key * (int(o.max()) + 1) + o[ids]
+            for line in np.unique(key):
+                chunks = ids[key == line]
+                if chunks.size < k + 2:
+                    continue                                    # the line would be constrained to zero: left free
+                t = coord[chunks]
+                t = (t - t.mean()) / max(float(np.ptp(t)) / 2.0, 1e-300)
+                V = np.vander(t, k + 1, increasing=True)
+                P = np.linalg.qr(V)[0]
+                cols = base + (np.arange(n_groups, dtype=np.int64)[:, None] * n_chunks) + chunks[None, :]
+                out.append((cols, P))
+        return out
+
+    def signature_exclusions(self, layout) -> list:
+        """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
+        solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the
+        term's full-layout columns (every group, chunk and function), ``k`` the largest degree of the sky
+        polynomials whose response the term may not carry (``'all'``: every pattern but the constant), and ``chunk``
+        each column's place within its group (the columns of one ``chunk`` value, one per group, hold the term's
+        detector-fixed configurations). Empty without such terms."""
+        def deg(k):
+            return k if k == 'all' else int(k)
+
+        out = []
+        for m, term in enumerate(self.offset):
+            k = term.signature_degree
+            if k is None:
+                continue
+            base, nc = int(layout.col_bases[m]), int(layout.num_chunks_list[m])
+            cols = np.arange(base, int(layout.col_bases[m + 1]), dtype=np.int64)
+            out.append((cols, deg(k), term.name or term.map or 'primary', (cols - base) % nc))
+        return out
 
     def _offset_function(self, term, geom, catalog, known, log):
         """The term's known functions of data variables as a Basis (None: none)."""
@@ -613,7 +720,7 @@ class ModelSpec:
                 f"{group!r} over [{term.lo}, {term.hi}]"
                 + (f", {len(term.segments)} segments" if term.segments else ""), flush=True)
             return OffsetBlock(chunk_map=cm.det, poly_basis=pb, basis=basis)
-        # free / fixed / grouped: adjacency + soft polynomials + anchor
+        # free / fixed / grouped: adjacency + soft polynomials
         axes = cm.adjacency_axes if term.adjacency is None else tuple(term.adjacency)
         if term.adjacency_step is not None:
             if len(axes) != 1:
@@ -657,9 +764,7 @@ class ModelSpec:
                 f"{basis.coefficient.describe()}", flush=True)
         return OffsetBlock(
             chunk_map=cm.det, adj_info=adj, reg_weight=term.reg_weight,
-            poly_constraints=groups or None,
-            mean_offset=np.zeros(n_frames) if term.mean_zero else None,
-            det_groups=det_groups, basis=basis)
+            poly_constraints=groups or None, det_groups=det_groups, basis=basis)
 
     # ---- lowering: variables -------------------------------------------------------------------
     def build_variables(self, geom, frames, *, ref_shape=None, ref_wcs=None, frame_variables=None,
@@ -743,12 +848,6 @@ class ModelSpec:
                 return TermInfo(name=name, kind='sky', shape=tuple(L.ref_shape), col_base=j * n_sky,
                                 coverage=pc[j * n_sky:(j + 1) * n_sky].reshape(L.ref_shape),
                                 variables=variables, n_frames=L.num_frames)
-            if name == 'scalar':
-                if not L.num_scalar_cols:
-                    raise ValueError("a prior names the per-frame scalar, which the model does not have")
-                sl = L.scalar_slice()
-                return TermInfo(name=name, kind='scalar', shape=(L.num_frames,), col_base=sl.start,
-                                coverage=pc[sl], variables=variables, n_frames=L.num_frames)
             m = off_index[name]
             nb = nbs[m]
             shape = (L.num_offset_groups_list[m], L.num_chunks_list[m] // nb, nb)

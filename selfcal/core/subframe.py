@@ -91,6 +91,24 @@ def _mask_bbox(mask2d):
     return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
 
 
+def _frame_columns(m, box, shape):
+    """A csc matrix ``m`` over the subframe pixels of ``box`` ``(r0, r1, c0, c1)`` (its columns in row-major order)
+    as the same matrix over every pixel of a subframe of ``shape``: the pixels outside the box have no entries; the
+    entries, their order and the index dtype are ``m``'s."""
+    r0, r1, c0, c1 = box
+    H, W = shape
+    bh, bw = r1 - r0, c1 - c0
+    m = m.tocsc()
+    ip = m.indptr
+    indptr = np.zeros(H * W + 1, dtype=ip.dtype)
+    upto = indptr[1:].reshape(H, W)                  # upto[r, c]: the entries of the pixels up to and including (r, c)
+    upto[r0:r1, :c0] = ip[0:bh * bw:bw, None]        # left of the box: the entries of the box rows above
+    upto[r0:r1, c0:c1] = ip[1:].reshape(bh, bw)
+    upto[r0:r1, c1:] = ip[bw::bw, None]              # right of the box: through the end of the box row
+    upto[r1:] = ip[-1]
+    return type(m)((m.data, m.indices, indptr), shape=(m.shape[0], H * W))
+
+
 _needed_support = {}
 
 
@@ -111,8 +129,26 @@ def _accepts_needed(func):
     return ok
 
 
+def _left_out(chunk_map, chunk_offset, ids):
+    """Where the chunk ids ``ids`` (of ``chunk_map``'s pixels) name a chunk whose offset is NaN (left
+    out of the coadd), or None when none is."""
+    nan = np.isnan(np.asarray(chunk_offset, dtype=np.float64))
+    if not nan.any():
+        return None
+    return (ids >= 0) & nan[np.clip(ids, 0, nan.size - 1)]
+
+
 def _render_offset(func, chunk_map, chunk_offset, needed):
-    """Per-frame grid offset of one map at the flat grid indices ``needed`` (1-D)."""
+    """Per-frame grid offset of one map at the flat grid indices ``needed`` (1-D). A chunk whose offset is
+    NaN (the mosaic leaves it out) is drawn with the others at zero and its pixels then set to NaN, so
+    a renderer that draws across chunks never sees one."""
+    out = (_left_out(chunk_map, chunk_offset, np.asarray(chunk_map).ravel()[needed])
+           if np.isnan(np.asarray(chunk_offset, dtype=np.float64)).any() else None)
+    if out is not None:
+        vals = np.array(_render_offset(func, chunk_map, np.nan_to_num(chunk_offset, nan=0.0), needed),
+                        dtype=np.float64)
+        vals[out] = np.nan
+        return vals
     if func is None:
         return chunk_to_det(chunk_map, chunk_data=chunk_offset, needed=needed)
     if _accepts_needed(func):
@@ -170,11 +206,12 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
 
     Notes
     -----
-    On the mosaic path (``for_lsqr=False`` with a ``grid_valid_weight``) the
-    interpolation matrix, offsets, valid weight and auxiliary maps are built
-    only over the bounding box of the rows that can carry nonzero weight;
-    outside it the weight is exactly zero and the data untouched, so the
-    returned full-frame arrays are identical to the full-frame computation.
+    With a ``grid_valid_weight`` the interpolation matrix, offsets, valid weight,
+    auxiliary maps and chunk contributions are built only over the bounding box
+    of the rows that can carry nonzero weight; outside it the weight is exactly
+    zero, the data untouched and the contributions empty, so the returned
+    full-frame arrays (and the chunk contributions, over every subframe pixel)
+    are identical to the full-frame computation.
     """
     if ignore_list is None:
         ignore_list = []
@@ -250,7 +287,7 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         or det_aux is not None
         or grid_valid_weight is not None
     )
-    box = None          # (r0, r1, c0, c1) of the rows that can carry weight (mosaic path)
+    box = None          # (r0, r1, c0, c1) of the rows that can carry weight
     if need_interp:
         if interp_input_shape is None:
             raise ValueError(
@@ -259,7 +296,11 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                 "to infer the detector-grid shape from.")
         H, W = sub_data.shape
         sub_mapping_flat = sub_mapping.reshape(2, np.prod(sub_mapping.shape[1:]))
-        sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
+        # a factor of 1 that keeps the dtype leaves the coordinates as stored (no full-frame copy)
+        if oversample_factor == 1 and np.result_type(sub_mapping_flat, oversample_factor) == sub_mapping_flat.dtype:
+            sub_mapping_flat_scaled = sub_mapping_flat
+        else:
+            sub_mapping_flat_scaled = sub_mapping_flat * oversample_factor
         coords_yx = sub_mapping_flat_scaled[::-1]
         # Pre-filter zero-weight rows before building the interp matrix:
         # when grid_valid_weight is available, drop rows whose bilinear
@@ -273,20 +314,22 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         valid_row_mask = None
         if grid_valid_weight is not None:
             valid_row_mask = _valid_row_mask(coords_yx, grid_valid_weight)
-        if not for_lsqr and valid_row_mask is not None:
-            # Mosaic path: everything downstream is zero outside the bbox of
-            # the kept rows, so the matrix (and the products below) cover the
-            # bbox only. Row entries do not depend on the row's neighbours, so
-            # they are the ones the full-frame build would produce.
+            # Everything downstream is zero outside the bbox of the kept rows,
+            # so the matrix (and the products below) cover the bbox only. Row
+            # entries do not depend on the row's neighbours, so they are the
+            # ones the full-frame build would produce.
             box = _mask_bbox(valid_row_mask.reshape(H, W))
-            if box is not None:
-                r0, r1, c0, c1 = box
-                interp_matrix = make_linear_interp_matrix(
-                    coords_yx.reshape(2, H, W)[:, r0:r1, c0:c1].reshape(2, -1),
-                    input_shape=interp_input_shape,
-                    valid_row_mask=valid_row_mask.reshape(H, W)[r0:r1, c0:c1].ravel(),
-                )
-        else:
+        if box is not None:
+            r0, r1, c0, c1 = box
+            interp_matrix = make_linear_interp_matrix(
+                coords_yx.reshape(2, H, W)[:, r0:r1, c0:c1].reshape(2, -1),
+                input_shape=interp_input_shape,
+                valid_row_mask=valid_row_mask.reshape(H, W)[r0:r1, c0:c1].ravel(),
+            )
+        elif for_lsqr or valid_row_mask is None:
+            # the full-frame matrix: no valid weight bounds the rows, or no row
+            # can carry weight on the LSQR path (an empty matrix, for chunk
+            # contributions of the subframe's shape)
             interp_matrix = make_linear_interp_matrix(
                 coords_yx,
                 input_shape=interp_input_shape,
@@ -294,21 +337,21 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
             )
 
     if box is not None:
-        # ---- mosaic path over the bbox (identical values, ~3 % of the work) ----
+        # ---- over the bbox (identical values, ~3 % of the work) ----
         r0, r1, c0, c1 = box
         bh, bw = r1 - r0, c1 - c0
         w_box = np.ones((bh, bw), dtype=np.float32)
-        if 'sub_bitmask' in result:
+        if apply_mask and 'sub_bitmask' in result:
             # invert=True: 1 = Good pixel, 0 = Bad pixel
             w_box *= bit_to_bool(result['sub_bitmask'][r0:r1, c0:c1], ignore_list, invert=True)
-        # Grid pixels the matrix reads: the only ones any renderer must produce.
-        touched = np.zeros(int(np.prod(interp_input_shape)), dtype=bool)
-        touched[interp_matrix.indices] = True
-        needed = np.flatnonzero(touched)
-        del touched
         if chunk_offsets is not None:
             if len(chunk_offsets) != len(chunk_maps):
                 raise ValueError("chunk_offsets length must match chunk_maps")
+            # Grid pixels the matrix reads: the only ones any renderer must produce.
+            touched = np.zeros(int(np.prod(interp_input_shape)), dtype=bool)
+            touched[interp_matrix.indices] = True
+            needed = np.flatnonzero(touched)
+            del touched
             total_vals = None
             for m, off_m in enumerate(chunk_offsets):
                 if off_m is None:
@@ -332,6 +375,9 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         sub_weight[...] = 0.0
         sub_weight[r0:r1, c0:c1] = w_box
         chunk_contribs = []
+        if for_lsqr:
+            chunk_contribs = [_frame_columns(compute_chunk_contrib(cm, interp_matrix), box, (H, W))
+                              for cm in chunk_maps]
     else:
         # Apply bitmask
         if apply_mask and 'sub_bitmask' in result:
@@ -351,10 +397,14 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                     continue
                 cm = chunk_maps[m]
                 func_m = det_offset_funcs[m] if det_offset_funcs is not None else None
+                out = _left_out(cm, off_m, np.asarray(cm))
+                off_draw = off_m if out is None else np.nan_to_num(off_m, nan=0.0)
                 if func_m is not None:
-                    grid_offset_m = func_m(cm, off_m)
+                    grid_offset_m = func_m(cm, off_draw)
                 else:
-                    grid_offset_m = chunk_to_det(cm, chunk_data=off_m)
+                    grid_offset_m = chunk_to_det(cm, chunk_data=off_draw)
+                if out is not None:                       # a chunk left out of the coadd: its pixels NaN
+                    grid_offset_m = np.where(out, np.nan, grid_offset_m)
                 if total_grid_offset is None:
                     total_grid_offset = grid_offset_m
                 else:

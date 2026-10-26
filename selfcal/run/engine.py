@@ -19,7 +19,7 @@ tag, the frame variables and the optional renderers, maps and catalogue) and low
 (:class:`~selfcal.models.spec.ModelSpec`) to the solver's objects; it never names a telescope.
 
 Edits here must keep calibration output byte-identical — run the gates
-(``selfcal_scripts/gates/run_gates.sh`` and ``run_m13_gate.sh``) before committing.
+(``selfcal_scripts/gates/run_gates.sh``) before committing.
 """
 from __future__ import annotations
 
@@ -291,18 +291,27 @@ class RunContext:
 
         With a warm start (``start``, a checked :class:`~selfcal.core.warm_start.WarmStart`): the
         solution of the cal it reads (:meth:`~selfcal.core.warm_start.WarmStart.vector`).
-        Otherwise, with the per-frame scalar, each frame's scalar starts at the weighted mean of its
-        data and everything else at zero (:func:`~selfcal.core.solution.compute_x0_scalar_only`);
-        without it, the first sky term starts at zero and every later column at its own diagonal
-        least-squares estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`, given one sky
-        block whatever the model's number)."""
+        Otherwise, by ``Fit(seed=)``: ``'separate'``, the sky terms at zero and every offset column at its
+        own diagonal least-squares estimate (:func:`~selfcal.core.solution.compute_x0_from_Ab`);
+        ``'offsets'``, the sky at zero and every other column at its frame's joint least-squares fit
+        (:func:`~selfcal.core.solution.compute_x0_offsets_fit`); ``'zero'``, None. The solver imposes the
+        terms' hard constraints on it."""
         if start is not None:
             return start.vector(active_mask=getattr(cc, 'active_mask', None))
-        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_scalar_only
-        if self.model.x0_kind == 'from_Ab':
-            return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, active_mask=getattr(cc, 'active_mask', None))
-        return compute_x0_scalar_only(cc.A, cc.b, cc.ref_shape, scalar_col_start=cc.col_bases[len(cc.chunk_maps)],
-                                      num_sky_blocks=cc.num_sky_blocks, active_mask=getattr(cc, 'active_mask', None))
+        from selfcal.core.solution import compute_x0_from_Ab, compute_x0_offsets_fit
+        if self.seed == 'zero':
+            return None
+        if self.seed == 'offsets':
+            return compute_x0_offsets_fit(cc.A, cc.b, cc.ref_shape, num_sky_blocks=cc.num_sky_blocks,
+                                          active_mask=getattr(cc, 'active_mask', None))
+        return compute_x0_from_Ab(cc.A, cc.b, cc.ref_shape, num_sky_blocks=cc.num_sky_blocks,
+                                  active_mask=getattr(cc, 'active_mask', None))
+
+    @property
+    def seed(self) -> str:
+        """The recipe's ``Fit(seed=)``: how the solver starts (``'separate'`` unless the recipe says otherwise)."""
+        fit = getattr(getattr(self.spec, 'recipe', None), 'fit', None)
+        return str(getattr(fit, 'seed', 'separate') or 'separate')
 
     def solve_options(self):
         """The solver's ``apply_lsqr`` keywords."""
@@ -349,18 +358,6 @@ class RunContext:
             raise ValueError("the grouped outlier clip needs a chunk map with a spectral axis and an instrument "
                              "wavelength map")
         return group_edges_along(geom.aux[geom.wavelength_key], cm.det, cm.axes, cm.spectral_axis)
-
-    def refit_poly_basis(self, degree, segments=None):
-        """The per-frame polynomial offset basis of the N-pass OFFSET refit: degree ``degree`` along
-        the primary map's spectral axis, one per value of its group axis, over the model's
-        polynomial window (optionally piecewise on ``segments``)."""
-        from selfcal.models.offset_structure import poly_basis_along
-        if self.spec.spectral_window is None:
-            raise ValueError("the OFFSET refit's polynomial spans the model's polynomial window, and the model "
-                             "has none")
-        cm = self.geom.chunk_map
-        lo, hi = self.spec.spectral_window
-        return poly_basis_along(cm.axes, cm.spectral_axis, cm.group_axis, int(degree), lo, hi, segments=segments)
 
     # ---- naming (the one place) ------------------------------------------------------------
     def stem(self, job, suffix=None):
@@ -523,46 +520,8 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     """
     spec = ctx.spec
     checkpoint = checkpoint or (lambda label: None)
-    cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
-    if frames is not None:
-        cc.reproj_list = list(frames)
-    n_frames = len(cc.reproj_list)
-    # The model's data variables beyond the instrument's detector maps (frame values, sky maps,
-    # stored layers, functions): None when the model reads none.
-    variables = ctx.variables(cc.reproj_list, ref_shape=cc.ref_shape, ref_wcs=cc.ref_wcs)
-    offset_model = ctx.offset_model(cc.reproj_list, variables)
-    sky_model = ctx.sky_model()
-    det_aux, aux_keys = ctx.aux_maps()
-    cal_kwargs = dict(spec.setup)
-    cal_kwargs.update(ctx.model.setup_kwargs())       # the model's own solver options (if any)
-    if variables is not None:
-        cal_kwargs['variables'] = variables
-    weight_function = ctx.weight()
-    if weight_function is not None:
-        cal_kwargs['weight_function'] = weight_function
-    priors = ctx.priors(variables, n_frames)
-    if priors:
-        cal_kwargs['priors'] = priors
-    groups = cal_kwargs.pop('outlier_groups', None)
-    if groups is not None:
-        cal_kwargs.update(clip_groups(ctx, groups))
-    # The grouped clip bins the instrument's wavelength map unless the clip names another variable.
-    if not cal_kwargs.get('outlier_group_variable'):
-        cal_kwargs['outlier_group_variable'] = ctx.geom.wavelength_key
-    if spec.pre_cal is not None:
-        cal_kwargs['preprocess_func'] = spec.pre_cal
-    if spec.post_cal is not None:
-        cal_kwargs['postprocess_func'] = spec.post_cal
     checkpoint('pre-setup_lsqr')
-    cc.setup_lsqr(
-        offset_model=offset_model,
-        grid_valid_weight=jobgeom.det_valid_weight,
-        oversample_factor=1,
-        sky_model=sky_model,
-        det_aux=det_aux,
-        aux_keys=aux_keys,
-        batch_spill_dir=spec.scratch,
-        **cal_kwargs)
+    cc = setup_job(ctx, jobgeom, frame_dir=frame_dir, frames=frames)
     checkpoint('post-setup_lsqr')
     # The identity of the system set up (recorded on the cal) and the solve's start: the solution
     # of an earlier cal of this system (checked against it), or the default guess.
@@ -580,7 +539,10 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     watch = {} if spec.monitor is None else {'monitor': spec.monitor}
     if snapshots is not None:
         watch['snapshots'] = snapshots
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch())
+    exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout)      # the terms' hard constraints, if any
+    signatures = ctx.model.signature_exclusions(cc.layout)             # the terms that may not carry a sky signature
+    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
+                  exclusions=exclusions or None, signatures=signatures or None)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record
@@ -615,6 +577,55 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     return cal_path
 
 
+def setup_job(ctx, jobgeom, *, frame_dir, frames=None, **options):
+    """The system of one job over one frame list, set up as the engine's solve sets it up: a
+    :class:`~selfcal.pipeline.pipeline_wrapper.Calibrator` after ``setup_lsqr``, the model lowered
+    by ``ctx`` with the run's ``setup_lsqr`` keywords (and ``options``, keywords of a caller that
+    solves the system its own way). ``frames`` (paths under ``frame_dir``) overrides the directory
+    glob."""
+    spec = ctx.spec
+    cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
+    if frames is not None:
+        cc.reproj_list = list(frames)
+    n_frames = len(cc.reproj_list)
+    # The model's data variables beyond the instrument's detector maps (frame values, sky maps,
+    # stored layers, functions): None when the model reads none.
+    variables = ctx.variables(cc.reproj_list, ref_shape=cc.ref_shape, ref_wcs=cc.ref_wcs)
+    offset_model = ctx.offset_model(cc.reproj_list, variables)
+    sky_model = ctx.sky_model()
+    det_aux, aux_keys = ctx.aux_maps()
+    cal_kwargs = dict(spec.setup)
+    cal_kwargs.update(ctx.model.setup_kwargs())       # the model's own solver options (if any)
+    if variables is not None:
+        cal_kwargs['variables'] = variables
+    weight_function = ctx.weight()
+    if weight_function is not None:
+        cal_kwargs['weight_function'] = weight_function
+    priors = ctx.priors(variables, n_frames)
+    if priors:
+        cal_kwargs['priors'] = priors
+    groups = cal_kwargs.pop('outlier_groups', None)
+    if groups is not None:
+        cal_kwargs.update(clip_groups(ctx, groups))
+    # The grouped clip bins the instrument's wavelength map unless the clip names another variable.
+    if not cal_kwargs.get('outlier_group_variable'):
+        cal_kwargs['outlier_group_variable'] = ctx.geom.wavelength_key
+    if spec.pre_cal is not None:
+        cal_kwargs['preprocess_func'] = spec.pre_cal
+    if spec.post_cal is not None:
+        cal_kwargs['postprocess_func'] = spec.post_cal
+    cc.setup_lsqr(
+        offset_model=offset_model,
+        grid_valid_weight=jobgeom.det_valid_weight,
+        oversample_factor=1,
+        sky_model=sky_model,
+        det_aux=det_aux,
+        aux_keys=aux_keys,
+        batch_spill_dir=spec.scratch,
+        **cal_kwargs, **options)
+    return cc
+
+
 # ---------------------------------------------------------------------------
 # Primitive 2: one cal -> one mosaic
 # ---------------------------------------------------------------------------
@@ -644,7 +655,7 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     # Offset terms whose offsets are coefficients of known functions of data
     # variables are not constant per chunk: the mosaic subtracts them at every
     # observation (BasisOffsetSubtractor), and hands the chunk path zeros for
-    # them (plus the per-frame scalar on map 0, which the cal folds in there).
+    # them.
     basis_hook = _basis_offset_hook(ctx, mm, cal_path)
     # The model's observation weight (a row weight w) weights the coadd by w², as
     # in the solve.
@@ -687,14 +698,16 @@ def mosaic_job(ctx, job, jobgeom, *, cal_path, frame_dir, mos_file, cache_dir):
     # A cal gauged on the map (Fit(gauge=sc.Gauge(..., apply='map'))): its polynomial, which the cal's sky
     # term carries, is added to the mean maps here, so the mosaic matches that sky term. The cal decides,
     # not the recipe: a mosaic of an existing cal (field.mosaic) adds the gauge that cal recorded.
-    from selfcal.core.gauge import apply_to_maps
+    from selfcal.core.gauge import apply_to_maps, gauge_cards
     from selfcal.io.calfile import CalFile
     with CalFile(cal_path) as cal_:
         recorded = cal_.gauge
-    apply_to_maps(maps, recorded, log=print)
+    for name in apply_to_maps(maps, recorded, log=print):
+        maps[name]['header'] = list(maps[name].get('header') or ()) + gauge_cards(recorded)
     if spec.gauge is not None and recorded is None:
         print(f"[gauge] the recipe's fit has a gauge, but {os.path.basename(cal_path)} records none: the maps "
               f"are as solved")
+    variance_map(maps, ctx.weight(), ctx.unit)
     if want_wav:
         inst.finalize_mosaic(geom, mm, maps, spec.mosaic['sigma'])
     mos_path = mm.save_mosaic(mos_file=mos_file, overwrite=True)
@@ -733,6 +746,9 @@ def gauge_terms(ctx, gauge):
     if terms[m_c].on != slope.on:
         raise ConfigError(f"Gauge: the slope term ({slope.on!r}) and the constant term ({terms[m_c].on!r}) must share "
                           f"their chunk map")
+    if gauge.apply == 'offsets' and terms[m_c].exclude is not None:
+        raise ConfigError(f"Gauge(apply='offsets') moves each frame's change of level into the constant term "
+                          f"({terms[m_c].name or terms[m_c].on!r}), which has exclude=: use apply='map'")
     ny, nx = (int(v) for v in ctx.geom.shape)
     centre = gauge.centre if gauge.centre is not None else ((nx - 1) / 2.0, (ny - 1) / 2.0)
     half = float(gauge.half) if gauge.half is not None else nx / 2.0
@@ -749,11 +765,39 @@ def gauge_terms(ctx, gauge):
     return {'slope_map': m_s, 'constant_map': m_c, 'centre': (float(centre[0]), float(centre[1])), 'half': half}
 
 
+def variance_map(maps, weight, unit):
+    """Add ``var_map`` to a mosaic's ``maps`` when the model's weight is a noise variance
+    (``sc.Variance``: the coadd weights are the inverse variances): ``1 / MEAN_MAP_WEIGHT``, the
+    variance of the mean map's white noise, 0 where the map has no weight. It is the noise level at
+    scales above a few map pixels: a single pixel of frames reprojected exactly has less (its noise is
+    shared with its neighbours, about 0.44 of the input variance for a near 1:1 grid), and the
+    correlated noise of the estimated offsets, the sky plane and the zero point (which the solve
+    leaves free) is not in it. Returns the entry, or None for any other weight (``1 / W`` has no
+    unit then)."""
+    from selfcal.models.sky_model import NoiseVariance
+    if not isinstance(weight, NoiseVariance):
+        return None
+    entry = maps.get('mean_map')
+    if entry is None or entry.get('weight') is None:
+        return None
+    w = np.asarray(entry['weight'], dtype=np.float64)
+    with np.errstate(divide='ignore'):
+        var = np.where(w > 0, 1.0 / w, 0.0).astype(np.float32)
+    maps['var_map'] = {
+        'data': var, 'weight': None, 'aux': None, 'unit': f'({unit})^2' if unit else '',
+        'header': [('COMMENT', 'VAR_MAP = 1 / MEAN_MAP_WEIGHT: the variance of MEAN_MAP from the inverse-variance'),
+                   ('COMMENT', 'weights (the model weight is a noise variance). It is the white noise at scales'),
+                   ('COMMENT', 'above a few map pixels; one pixel of exactly reprojected frames has less (its noise'),
+                   ('COMMENT', 'is shared with its neighbours). The correlated noise of the estimated offsets and'),
+                   ('COMMENT', 'the free sky plane and zero point are not included.')]}
+    return maps['var_map']
+
+
 def _basis_offset_hook(ctx, mm, cal_path):
     """The mosaic's per-observation subtraction of the offset terms that carry
     known functions of data variables (``coefficient`` / ``basis``), or None.
-    Rewrites those maps' entries of ``mm.offsets`` so the chunk path subtracts
-    only the per-frame scalar there."""
+    Rewrites those maps' entries of ``mm.offsets`` to zeros, so the chunk path
+    subtracts nothing there."""
     if not any(t.coefficient is not None or t.basis is not None for t in ctx.model.offset):
         return None
     from selfcal.io.calfile import CalFile
@@ -766,14 +810,11 @@ def _basis_offset_hook(ctx, mm, cal_path):
     terms = [(m, b.basis, b.chunk_map) for m, b in enumerate(offset_model.blocks) if b.basis is not None]
     keep = [os.path.basename(p) for p in frames]
     with CalFile(cal_path) as cal:
-        scalar = cal.frame_scalar
         order = {os.path.basename(p): i for i, p in enumerate(cal.reproj_list)}
     rows = np.array([order[k] for k in keep], dtype=np.int64)
     for m, _, cm in terms:
         n_chunks = int(np.asarray(cm).max()) + 1
         zeros = np.zeros((len(rows), n_chunks), dtype=np.float64)
-        if m == 0 and scalar is not None:
-            zeros += np.asarray(scalar)[rows][:, None]
         mm.offsets[m] = zeros
         mm.offset_coverage_fracs[m] = np.ones_like(zeros)
     return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1, frame_names=frames)

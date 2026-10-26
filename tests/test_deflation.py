@@ -59,7 +59,7 @@ def _chunk_system(h=24, w=24, frames=60, chunks=4, scalar=True, seed=1):
         for yy_ in range(8):
             for xx_ in range(16):
                 p = (y0 + yy_) * w + (x0 + xx_)
-                c = xx_ // 4
+                c = xx_ * chunks // 16                 # the frame's 16 columns in `chunks` chunks (4-px chunks by default)
                 ci = off0 + (f * chunks + c) * 2
                 rows += [r, r, r]
                 cols += [p, ci, ci + 1]
@@ -114,6 +114,31 @@ def _near_null_system(H=16, W=24, weak=0.005, noise=0.05, seed=0):
     return sp.csr_matrix((vals, (rows, cols)), shape=(r, H * W + nf)), np.asarray(b), H * W, (H, W)
 
 
+def _shared_system(frames=500, shared=16, seed=3, **kw):
+    """The chunk system plus ``shared`` offsets every frame uses: one per frame-local column ``xx_``, the
+    same unknown in all frames (a detector-fixed column pattern), with a fixed pattern added to the
+    data. Each shared unknown couples to every frame's columns: in the offsets' normal matrix it is a
+    hub. Returns (A, b, number of sky columns, grid, number of shared columns)."""
+    A, b, npix, grid = _chunk_system(frames=frames, seed=seed, **kw)
+    pattern = 0.1 * np.sin(np.arange(shared) * 0.9)
+    n = A.shape[1]
+    coo = A.tocoo()
+    rows, cols, vals = list(coo.row), list(coo.col), list(coo.data)
+    b = b.copy()
+    # the data rows come in the frame order of _chunk_system: 8 x 16 pixels then one anchor row per frame
+    r = 0
+    for _f in range(frames):
+        for yy_ in range(8):
+            for xx_ in range(16):
+                rows.append(r)
+                cols.append(n + xx_ % shared)
+                vals.append(1.0)
+                b[r] += pattern[xx_ % shared]
+                r += 1
+        r += 1
+    A2 = sp.csr_matrix((vals, (rows, cols)), shape=(A.shape[0], n + shared))
+    return A2, b, npix, grid, shared
+
 CHUNK = _chunk_system()
 NEAR_NULL = _near_null_system()
 
@@ -157,6 +182,119 @@ def _converged(system, solver='lsqr'):
 
 def _rel(a, b):
     return float(np.linalg.norm(a - b) / np.linalg.norm(b))
+
+
+# =================================================================== offsets many frames share (hub columns)
+def test_offsets_shared_by_every_frame_are_eliminated_by_a_schur_complement(caplog):
+    """A column pattern every frame shares turns the offsets' normal matrix into one connected block
+    (500 frames x 9 columns + 16 shared: above the dense limit). The shared columns are hubs: eliminated
+    by a Schur complement, the blocks stay per frame, the pairing is exact, and the deflated solve
+    reaches plain least squares' solution (gauges included)."""
+    import logging
+    A, b, npix, grid, shared = _shared_system()
+    system = (A, b, npix, grid)
+    x_plain = _converged(system)
+    with caplog.at_level(logging.INFO, logger='selfcal.core.deflation'):
+        x, rec = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=600)
+    assert _rel(x, x_plain) < 1e-7
+    d = json.loads(rec.deflation)
+    assert d['pairing_residual'] < 1e-10 and d['resolve_change'] < 1e-6
+    msg = [m for m in caplog.messages if 'offset response solved' in m]
+    assert msg and f'{shared} columns shared by many frames eliminated by a Schur complement' in msg[0]
+    assert 'on 2500 blocks (largest 5,' in msg[0]   # per frame: the 4 constants + the scalar; the 4 slopes alone (orthogonal)
+
+
+def test_the_schur_path_solves_the_normal_equations_exactly(monkeypatch):
+    """On a small shared system, forced through the Schur path by a low dense limit: G X = R to rounding,
+    and the same as the dense pseudo-inverse's G X."""
+    import selfcal.core.deflation as D
+    A, b, npix, grid, shared = _shared_system(frames=40)
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    Ac = A[:, active].tocsr()
+    off = Ac[:, npix:]
+    G = (off.T @ off).tocsr()
+    G.sum_duplicates()
+    rng = np.random.default_rng(0)
+    R = rng.normal(size=(G.shape[0], 3))
+    R = G @ R                                             # a consistent right-hand side
+    X_dense, info_dense = D._block_pinv_solve(G, R)
+    assert 'hubs' not in info_dense                       # one block of 376 columns: dense, no hub
+    monkeypatch.setattr(D, '_DENSE_BLOCK', 16)
+    X_schur, info = D._block_pinv_solve(G, R)
+    assert info['hubs'] == shared and info['largest'] <= 9 and info['blocks'] >= 40     # per frame: at most 9 columns
+    assert np.linalg.norm(G @ X_schur - R) < 1e-9 * np.linalg.norm(R)
+    assert np.linalg.norm(G @ X_schur - G @ X_dense) < 1e-9 * np.linalg.norm(R)
+
+
+def _one_search(G):
+    """The components of one scipy search over the whole graph, numbered as the deflation numbers them."""
+    from scipy.sparse.csgraph import connected_components
+    count, labels = connected_components(G, directed=False)
+    first = np.full(count, G.shape[0], dtype=np.int64)
+    np.minimum.at(first, labels, np.arange(G.shape[0]))
+    rank = np.empty(count, dtype=labels.dtype)
+    rank[np.argsort(first, kind='stable')] = np.arange(count, dtype=labels.dtype)
+    return count, rank[labels]
+
+
+def test_the_component_search_joins_its_pieces_through_the_shared_columns():
+    """The components found with columns set aside and joined through their rows are those of one search over the
+    whole graph, labels included, for random symmetric graphs (blocks, isolated columns, columns coupled to many
+    others) and any set of columns set aside: none, the default (by coupling count), random ones, all."""
+    import selfcal.core.deflation as D
+    rng = np.random.default_rng(3)
+    for trial in range(8):
+        n = int(rng.integers(50, 400))
+        parts = []
+        for _ in range(int(rng.integers(1, 12))):
+            k = int(rng.integers(2, 30))
+            idx = rng.choice(n, size=k, replace=False)
+            m = int(rng.integers(1, 3 * k))
+            parts.append((idx[rng.integers(0, k, m)], idx[rng.integers(0, k, m)]))
+        if trial % 2:                                     # a few columns coupled to many others
+            hub = rng.choice(n, size=3, replace=False)
+            others = rng.choice(n, size=n // 3, replace=False)
+            parts.append((np.repeat(hub, others.size), np.tile(others, hub.size)))
+        r = np.concatenate([p[0] for p in parts] + [np.arange(n)])
+        c = np.concatenate([p[1] for p in parts] + [np.arange(n)])
+        G = sp.coo_matrix((np.ones(r.size), (r, c)), shape=(n, n)).tocsr()
+        G = (G + G.T).tocsr()
+        G.sum_duplicates()
+        want = _one_search(G)
+        for shared in ([], None, np.sort(rng.choice(n, size=n // 10, replace=False)), np.arange(n)):
+            got = D._components(G, shared)
+            assert got[0] == want[0]
+            assert np.array_equal(got[1], want[1])
+
+
+def test_the_block_solve_is_the_same_with_one_search_over_the_whole_graph(monkeypatch):
+    """The shared-column system's block solve with the shared columns set aside in the component search, and with
+    one search over the whole graph: the same solution, bit for bit."""
+    import selfcal.core.deflation as D
+    A, b, npix, grid, shared = _shared_system(frames=40)
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    off = A[:, active].tocsr()[:, npix:]
+    G = (off.T @ off).tocsr()
+    G.sum_duplicates()
+    R = G @ np.random.default_rng(1).normal(size=(G.shape[0], 3))
+    monkeypatch.setattr(D, '_DENSE_BLOCK', 16)
+    X0, info0 = D._block_pinv_solve(G, R)
+    monkeypatch.setattr(D, '_components', _one_search)
+    X1, info1 = D._block_pinv_solve(G, R)
+    assert info0['hubs'] == shared
+    assert all(info1[k] == info0[k] for k in ('blocks', 'largest', 'zero_eigenvalues', 'hubs'))
+    assert np.array_equal(X1, X0)
+
+
+def test_the_schur_path_stays_put_past_convergence():
+    """The shared-column system far past its convergence (~125 iterations), CGLS at a fixed count: the solution
+    stays at plain least squares' (a response with a null-space component would let it drift: the Schur
+    path returns the minimum-norm one)."""
+    A, b, npix, grid, _ = _shared_system()
+    system = (A, b, npix, grid)
+    x_plain = _converged(system)
+    x, _rec = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=1000, solver='cgls')
+    assert _rel(x, x_plain) < 1e-7
 
 
 # =================================================================== the method
@@ -395,4 +533,28 @@ def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     with CalFile(cal) as c:
         deflated20 = np.nan_to_num(np.asarray(c.sky(0), dtype=np.float64))
     assert err(deflated20) < err(sky(_recipe(20, name='plain20')))
-    assert err(sky(_recipe(160, name='d160', deflate=sc.Deflate(2)))) < 1e-5
+    # the toy's sky pixels seen by one frame leave directions the data barely fix: solutions of the same fit
+    # (true residuals equal to 1e-8) differ by a few 1e-5 along them
+    assert err(sky(_recipe(160, name='d160', deflate=sc.Deflate(2)))) < 1e-4
+
+
+def test_the_column_sums_go_to_their_own_columns_bit_for_bit():
+    """The transposed products add each chunk's per-column sums at their own columns (one kernel entry per
+    summed column, so the work is the chunk's columns', not the thread's column range's): the same single
+    addition per element, in chunk order, as the earlier construction over the whole range."""
+    from scipy.sparse import _sparsetools
+    rng = np.random.default_rng(5)
+    lo, hi, m = 1000, 6000, 3
+    out_old = rng.standard_normal((hi - lo, m))
+    out_new = out_old.copy()
+    for _ in range(4):                                       # four chunks' partials, in order
+        uniq = np.sort(rng.choice(np.arange(lo, hi), size=700, replace=False)).astype(np.int64)
+        part = rng.standard_normal((uniq.size, m))
+        ip = np.zeros(hi - lo + 1, dtype=np.int64)
+        ip[uniq - lo + 1] = 1
+        np.cumsum(ip, out=ip)
+        _sparsetools.csr_matvecs(hi - lo, uniq.size, m, ip, np.arange(uniq.size, dtype=np.int64), np.ones(uniq.size),
+                                 part, out_old)
+        _sparsetools.csc_matvecs(hi - lo, uniq.size, m, np.arange(uniq.size + 1, dtype=np.int64), uniq - lo,
+                                 np.ones(uniq.size), part, out_new)
+    assert out_new.tobytes() == out_old.tobytes()

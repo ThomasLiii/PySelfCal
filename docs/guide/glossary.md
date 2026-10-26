@@ -30,9 +30,10 @@ and `det_y`, for example, gives every frame its own gradient across the detector
 ## Cal file { #cal-file }
 
 `calibration/cal_<stem>.h5`, the product of a solve: the map of every sky term with its coverage
-and Fisher information, the offsets of every frame and chunk for each offset term, the per-frame
-scalars and the list of frame files. Read it with [`CalFile`][selfcal.io.calfile.CalFile]; the
-[schema](pipeline.md#cal_h5-schema-multi-chunk-map) lists its datasets. See
+and Fisher information, the offsets of every frame and chunk for each offset term (a
+[per-frame scalar](#per-frame-scalar) is one of them) and the list of frame files. Read it with
+[`CalFile`][selfcal.io.calfile.CalFile]; the [schema](pipeline.md#cal_h5-schema-multi-chunk-map)
+lists its datasets. See
 [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
 
 ## Channel { #channel }
@@ -92,9 +93,12 @@ without one has `c = 1`. See [The model](concepts.md#the-model).
 
 The number of observations of an unknown: per sky pixel (`sky_coverage/<name>` in the cal file)
 and per frame and chunk (`offset_coverage/map_<m>`, with `offset_coverage_frac/map_<m>` the
-fraction of the chunk's pixels the frame covered). The damping rows are weighted by it, and the
-mosaic sets to zero the offset of a frame and chunk whose covered fraction is below
-`sc.Coadd(min_chunk_coverage=)`.
+fraction of the chunk's pixels the frame covered, counted over the pixels the job can observe; 0
+for a chunk with none of them). The damping rows are weighted by it, and the mosaic sets to zero the
+offset of a frame and chunk whose covered fraction is below `sc.Coadd(min_chunk_coverage=)`. When
+the fraction is above 0, the instrument's renderer fills that chunk in from the frame's other chunks
+where it can, and the chunk's pixels in that frame are left out of the coadd otherwise. See
+[The mosaic](concepts.md#the-mosaic).
 
 ## Damping { #damping }
 
@@ -167,8 +171,8 @@ coefficient, the cal file also records a recommended threshold (`line_fisher_thr
 
 ## Frame { #frame }
 
-One detector of one exposure, resampled onto the reference grid: the unit that the offsets and the
-per-frame scalar belong to. It is stored as a [frame file](#frame-file). See
+One detector of one exposure, resampled onto the reference grid: the unit that the offsets belong
+to. It is stored as a [frame file](#frame-file). See
 [The problem](concepts.md#the-problem).
 
 ## Frame file { #frame-file }
@@ -219,6 +223,19 @@ of over the whole frame: `sc.Clip(sigma, per="chunk")` (the chunk of the primary
 spectral axis, binned by wavelength) or `per=sc.ChunkGroups.mapping(...)`, or bins of a data
 variable, `sc.Clip(sigma, variable=..., edges=[...])` (default: the instrument's wavelength map).
 See [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
+
+## Hard constraint { #hard-constraint }
+
+A restriction of an offset term's unknowns that adds no row to the system
+(`sc.Offsets(exclude=sc.Poly(k, along=axis))`): the term carries no polynomial of degree `k` or
+less along the chunk axis, per line of the other axes and per group of frames. `along` may be
+omitted on a map with one axis, and for `k = 0` on a map with several axes too: no constant over
+all of a group's chunks. The solver imposes it exactly by reparametrisation
+([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), with no weight; a chunk with no
+unknown in the solve (no observation and no prior row on it) drops out. It applies to a term of one
+unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the chunk term of
+`sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar). See
+[What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Hook { #hook }
 
@@ -281,18 +298,11 @@ are close to concentric circular arcs; selfcal fits their centre and radii (the 
 `lvf_params_D<N>.npy`, shipped with the package and remade by `spherex.precompute_lvf`) and builds the
 [subchannels](#subchannel) from them.
 
-## Mean-zero anchor { #mean-zero-anchor }
-
-The prior `sc.Offsets(mean_zero=True)` of an offset term: for every frame (and basis function), a row of
-weight 10 pulls the mean of the frame's offsets over all chunks of the map to zero, so the frame's
-overall level goes to its per-frame scalar. See
-[What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
-
 ## Model { #model }
 
-What a solve fits: sky terms, offset terms, the per-frame scalar, data variables, the observation
-weight and priors: an `sc.Model`, written out or made by a [preset](#preset), which the run
-engine receives as a [`ModelSpec`][selfcal.models.spec.ModelSpec]. See
+What a solve fits: sky terms, offset terms, data variables, the observation weight and priors: an
+`sc.Model`, written out or made by a [preset](#preset), which the run engine receives as a
+[`ModelSpec`][selfcal.models.spec.ModelSpec]. See
 [The model](concepts.md#the-model).
 
 ## Monitor { #monitor }
@@ -313,8 +323,8 @@ the solve, when the recipe has a `Coadd`, or by `field.mosaic`. See [The mosaic]
 ## N-pass solve { #n-pass }
 
 `field.calibrate(recipe, passes=sc.Passes(n, order=...))`, a solve in passes for spectral models: pass 1 (INIT) is the joint solve of a plain calibration; SKY passes then solve
-the sky terms exactly given the offsets, and OFFSET passes refit every frame's polynomial offset
-and scalar given the sky, in turn. See
+the sky terms exactly given the offsets, and OFFSET passes refit the model's offset terms (whatever
+they are) given the sky, in turn. See
 [Scaling up](concepts.md#scaling-up) and
 [N-pass alternating solve](pipeline.md#n-pass-alternating-solve).
 
@@ -376,7 +386,9 @@ One block of offsets in the model, on one chunk map, also called an offset map (
 [`OffsetTerm`][selfcal.models.spec.OffsetTerm]). `per="frame"`: an offset
 per frame and chunk; `per="all"`: one offset vector shared by all frames; `per=` a frame variable:
 one per group of frames with equal values of it; `polynomial=`: see [polybasis](#polybasis). It may
-carry a [coefficient](#coefficient) (`times=`) or a [basis](#basis), and its priors. Map `m`'s offsets are `offsets/map_<m>` in the cal file. See
+carry a [coefficient](#coefficient) (`times=`) or a [basis](#basis), its priors and a
+[hard constraint](#hard-constraint) (`exclude=`). The term on the map `"detector"`, one chunk, is a
+[per-frame scalar](#per-frame-scalar). Map `m`'s offsets are `offsets/map_<m>` in the cal file. See
 [The model](concepts.md#the-model).
 
 ## Outlier threshold { #outlier-threshold }
@@ -396,11 +408,13 @@ changes neither the mosaic's grid, which is the reference grid, nor the solve. S
 
 ## Per-frame scalar { #per-frame-scalar }
 
-One additive constant per frame (`sc.Model(scalar=True)`, the default; `frame_scalar` in the cal
-file). With mean-zero
-anchors on the offset terms it carries each frame's overall level, and the chunk offsets carry
-only structure within the frame. The mosaic subtracts it with the first offset map. See
-[The model](concepts.md#the-model).
+One additive constant per frame: the [offset term](#offset-term) on the built-in map `"detector"`,
+whose one chunk is the whole detector (`sc.Offsets("scalar", on="detector")`). It is an offset
+term like any other: stored as `offsets/map_<m>` in the cal file, named by its term name in priors,
+subtracted by the mosaic with the other terms. A model has one only if it lists it: `sc.continuum`
+and `sc.spectral` end with it, `sc.two_block` has none. Beside chunk offsets with no constant
+(`exclude=sc.Poly(0)`) it carries each frame's overall level, and the chunk offsets carry only
+structure within the frame. See [The model](concepts.md#the-model).
 
 ## Plan { #plan }
 
@@ -416,9 +430,9 @@ An offset term that is a polynomial
 (`sc.Offsets(polynomial=sc.Poly(degree, along=, window=, segments=))`): the offset is a
 polynomial along one chunk
 axis (default the spectral axis) over the `window` of chunks, one per value of the map's group
-axis, and the solve fits its coefficients (a Chebyshev series of degrees 1 to `degree`; the
-per-frame scalar carries the constant). `segments` fits an independent shape on each listed
-sub-range. See [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
+axis, and the solve fits its coefficients (a Chebyshev series of degrees 1 to `degree`, with no
+constant: another term, such as the per-frame scalar, carries each frame's level). `segments`
+fits an independent shape on each listed sub-range. See [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Polynomial constraint { #polynomial-constraint }
 
@@ -445,10 +459,10 @@ variant of your own is written the same way. The named modes of the old TOML con
 ## Prior { #prior }
 
 Linear rows added to the system beside the data rows, to settle what the data leave free: the
-priors built into the terms (`sc.Sky(damping=)`, and an offset term's `smooth`, `poly_prior`,
-`mean_zero` and `damping`) and user priors (`sc.Model(priors=[...])`: a function that returns rows
+priors built into the terms (`sc.Sky(damping=)`, and an offset term's `smooth`, `poly_prior` and
+`damping`) and user priors (`sc.Model(priors=[...])`: a function that returns rows
 on the unknowns of named terms, `sc.Prior(fn, terms)`; ready-made: `sc.priors.frame_smoothness`,
-`sky_smoothness`, `toward`). See
+`sky_smoothness`, `toward`). A [hard constraint](#hard-constraint) adds no row. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Recipe { #recipe }
@@ -566,16 +580,20 @@ See [Scaling up](concepts.md#scaling-up).
 The instrument's weight of each detector pixel for a job
 ([`JobGeometry`][selfcal.instruments.base.JobGeometry]): `det_valid_weight` for the solve and
 `grid_valid_weight`, on the oversampled detector grid, for the mosaic. SPHEREx: the job's
-subchannels (in the solve, one more on each side for a channel job), tapered toward their edges in
-the mosaic; Euclid: an optional taper at the detector edges. See
+subchannels (in the solve, one more on each side for a channel job) as 0/1 in both;
+Euclid: an optional taper at the detector edges. See
 [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
 
 ## Warm start { #warm-start }
 
-The vector the solver starts from. The run engine starts each frame's scalar at the weighted mean
-of its data and every other unknown at zero; a model without the scalar starts every offset at its
-own one-column least-squares estimate. With a limited number of iterations, it matters along
-weakly constrained directions. See
+The vector the solver starts from, `sc.Fit(seed=)`. By default (`"separate"`) every offset unknown
+starts at its own least-squares fit to the data, as if every other unknown were zero (a constant:
+the weighted mean of its pixels), and the sky terms at zero; `"offsets"` starts the offset unknowns
+at their joint least-squares fit, frame by frame, and the sky at zero; `"zero"` starts everything
+at zero. The terms' [hard constraints](#hard-constraint) are imposed on the start.
+`field.calibrate(start=)` starts from the solution of an earlier cal instead
+([Continuing a solve](python-api.md#continuing-a-solve)). With a limited number of iterations,
+the start matters along weakly constrained directions. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Zodiacal-light anchor { #zodi-anchor }

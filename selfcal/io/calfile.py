@@ -6,8 +6,8 @@ The pipeline writes several HDF5 layouts (documented in PIPELINE.md):
   blocks ``sky/<name>`` with ``sky_coverage/<name>``, ``sky_fisher/<name>`` and
   (spectral blocks) ``sky_separability/<name>``; per-map offsets
   ``offsets/map_<m>`` with ``offset_coverage/map_<m>``,
-  ``offset_coverage_frac/map_<m>`` and ``chunk_maps/map_<m>``; the per-frame
-  ``frame_scalar``; ``reproj_list``. The v2 names below exist as hard links.
+  ``offset_coverage_frac/map_<m>`` and ``chunk_maps/map_<m>`` (a per-frame scalar
+  is one of those maps); ``reproj_list``. The v2 names below exist as hard links.
 * **v2**: ``skymap`` (+ ``skymap_line`` for a 2-block sky), the same
   ``offsets/map_<m>`` groups.
 * **v1**: a single top-level ``offset``.
@@ -15,9 +15,12 @@ The pipeline writes several HDF5 layouts (documented in PIPELINE.md):
   / no sky respectively).
 
 ``CalFile`` hides those differences: ``sky(name)``, ``offsets`` (a list per
-map, expanded per frame), ``frame_scalar``, ``reproj_list`` ... resolve on any
-of them, and the analysis scripts, the mosaicker and the N-pass readers all
-go through it. Reads are lazy; use it as a context manager or call ``close()``.
+map, expanded per frame), ``reproj_list`` ... resolve on any of them, and the
+analysis scripts, the mosaicker and the N-pass readers all go through it. Reads
+are lazy; use it as a context manager or call ``close()``. An older layout held
+each frame's level apart, in a top-level ``frame_scalar``; its offsets miss that
+level, and the readers that apply offsets refuse it
+(:meth:`CalFile.check_offsets_complete`).
 """
 from __future__ import annotations
 
@@ -227,11 +230,13 @@ class CalFile:
         offs = self.offsets
         return int(offs[0].shape[0]) if offs else 0
 
-    @property
-    def frame_scalar(self) -> np.ndarray | None:
-        """The per-frame scalar offset, shape ``(n_frames,)``, or None when the solve had none."""
-        f = self._f
-        return f['frame_scalar'][()] if 'frame_scalar' in f else None
+    def check_offsets_complete(self):
+        """Raise ``ValueError`` when :attr:`offsets` miss part of each frame's level: the file holds a
+        separate per-frame scalar (``frame_scalar``), an older layout (a per-frame scalar is an offset
+        term, stored as ``offsets/map_<m>`` like any other)."""
+        if 'frame_scalar' in self._f:
+            raise ValueError(f"{self.path} holds a separate per-frame scalar (frame_scalar), an older layout whose "
+                             f"offsets miss each frame's level: its offsets are not applied; remake the cal")
 
     @property
     def gauge(self) -> dict | None:
@@ -270,8 +275,7 @@ class CalFile:
 
     @property
     def offsets(self) -> list[np.ndarray]:
-        """Per-map ``(n_frames, n_chunks)`` offsets, expanded per frame (the per-frame
-        scalar is NOT included; see :meth:`total_offsets`)."""
+        """Per-map ``(n_frames, n_chunks)`` offsets, expanded per frame."""
         return self._per_map('offsets', 'offset')
 
     @property
@@ -311,23 +315,12 @@ class CalFile:
         """Per-map chunk maps stored with the cal (empty for the legacy schemas)."""
         return self._per_map('chunk_maps', None)
 
-    def total_offsets(self) -> list[np.ndarray]:
-        """``offsets`` with the per-frame scalar folded into map 0 — the total
-        per-(frame, chunk) bias a single-map consumer subtracts."""
-        offs = self.offsets
-        sc = self.frame_scalar
-        if offs and sc is not None:
-            offs = list(offs)
-            offs[0] = offs[0] + sc[:, np.newaxis]
-        return offs
-
     # ---- summary ------------------------------------------------------------------------------
     def describe(self) -> str:
         """A short text summary: schema, sky blocks and grid, offset maps, frames, attributes."""
         lines = [f'{os.path.basename(self.path)}: schema v{self.schema_version}',
                  f'  sky blocks: {self.sky_names} on {self.ref_shape}',
-                 f'  offset maps: {self.num_maps}, frames: {self.n_frames}, '
-                 f'frame scalar: {"yes" if self.frame_scalar is not None else "no"}']
+                 f'  offset maps: {self.num_maps}, frames: {self.n_frames}']
         extra = {k: v for k, v in self.attrs.items()
                  if k not in ('sky_components',) and not isinstance(v, np.ndarray)}
         if extra:

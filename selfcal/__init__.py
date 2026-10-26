@@ -3,10 +3,11 @@
 For every observation — one value of one frame on one reference-grid pixel —
 the solver fits::
 
-    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk_m, k] · φ_mk(v)  +  s(frame)
+    data = Σ_j S_j[pixel] · c_j(v)  +  Σ_m O_m[group(frame), chunk_m, k] · φ_mk(v)
 
 ``S_j`` are sky maps, ``O_m`` offsets on chunk maps of the detector (shared by
-groups of frames), ``s`` a per-frame scalar; ``c_j`` and ``φ_mk`` are ANY
+groups of frames; a per-frame scalar is the offset term of one chunk); ``c_j``
+and ``φ_mk`` are ANY
 functions of *data variables* ``v``: detector maps (SPHEREx: its wavelength
 map), per-frame values (time, filter, a half-wave-plate angle, a temperature),
 reference-grid maps, planes stored with each frame, the built-in coordinates,
@@ -58,11 +59,11 @@ _EXPORTS = {
     # the Python API
     **dict.fromkeys(('Config', 'ConfigError', 'by_value'), 'selfcal.config'),
     **dict.fromkeys(('Function', 'Variance', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
-                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
+                     'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'SkySignature', 'Layer', 'Derived', 'FrameFunction',
                      'Prior', 'Model', 'continuum', 'spectral', 'two_block'), 'selfcal.models.model'),
     'shot_noise': 'selfcal.models.noise',
     **dict.fromkeys(('ChunkGroups', 'Clip', 'Fit', 'Coadd', 'Numerics', 'Recipe', 'Stop', 'ResidualRule',
-                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Gauge'), 'selfcal.run.recipe'),
+                     'GradientRule', 'LargeScaleRule', 'ChiSquaredRule', 'Deflate', 'Degenerate', 'Gauge'), 'selfcal.run.recipe'),
     **dict.fromkeys(('Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor'), 'selfcal.run.schedule'),
     **dict.fromkeys(('Compute', 'Tuning'), 'selfcal.run.compute'),
     **dict.fromkeys(('Field', 'frames_in', 'Submitted'), 'selfcal.run.field'),
@@ -137,6 +138,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
         Prior,
         Sky,
         SkyMap,
+        SkySignature,
         SolvedSky,
         catalog,
         continuum,
@@ -177,6 +179,7 @@ if TYPE_CHECKING:                     # what the names are, for type checkers an
         Clip,
         Coadd,
         Deflate,
+        Degenerate,
         Fit,
         GradientRule,
         LargeScaleRule,

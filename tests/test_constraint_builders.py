@@ -1,40 +1,18 @@
-"""Phase 3c unit tests: global constraint builders reproduce the legacy blocks.
+"""Unit tests: global constraint builders reproduce the legacy blocks.
 
-The cal gates exercise mean-offset + continuum damping on real data, but NOT
-line damping (production runs damp_weight_line=0) or offset damping (no
-damp_offset_maps). These tests check all four builder paths against the exact
-inline formulas that used to live in lsqr.setup_lsqr.
+The cal gates exercise continuum damping on real data, but NOT line damping
+(production runs damp_weight_line=0) or offset damping (no damp_offset_maps).
+These tests check the builder paths against the exact inline formulas that
+used to live in lsqr.setup_lsqr.
 
 Runnable as ``python tests/test_constraint_builders.py`` or under pytest.
 """
 import numpy as np
 
 from selfcal.core.constraint_builders import (
-    mean_offset_block,
     offset_damping_block,
     sky_damping_block,
 )
-
-
-def test_mean_offset_block_matches_legacy():
-    num_frames, nc_m, m = 7, 5, 1
-    col_bases = [100, 100 + 0, 100 + num_frames * nc_m]  # arbitrary; m=1 base used
-    ftg_m = np.arange(num_frames)  # per-frame groups (no det_groups)
-    mean_off = np.linspace(-0.3, 0.4, num_frames)
-    w = 10.0
-    blk = mean_offset_block(m, mean_off, num_frames, nc_m, ftg_m, col_bases, weight=w)
-
-    # legacy inline
-    rows = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
-    offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
-    cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
-    data = np.full(num_frames * nc_m, w, dtype=np.float32)
-    b = np.asarray(mean_off).astype(np.float64).flatten() * nc_m * w
-    assert np.array_equal(blk.rows_local, rows)
-    assert np.array_equal(blk.cols, cols)
-    assert np.array_equal(blk.data, data)
-    assert np.array_equal(blk.b, b)
-    assert blk.num_rows == num_frames and blk.nnz_per_row == nc_m
 
 
 def _check_sky_damping(block_index, num_sky):

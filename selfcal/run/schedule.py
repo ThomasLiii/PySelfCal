@@ -64,26 +64,23 @@ class Tiles(Config):
 
 @dataclass(frozen=True)
 class Refit(Config):
-    """The N-pass offset pass: each frame's offsets refitted against the fixed sky, as a
-    degree-``degree`` polynomial along the spectral axis per group (optionally piecewise on
-    ``segments``) plus a level. ``clip``: of the residual (per frame unless chunk groups are
-    given). ``bright_cut``: only pixels whose modelled sky is below it (all pixels when fewer than
-    ``min_pixels`` remain). ``ridge``: Tikhonov on the shape coefficients (0: plain least
-    squares)."""
-    degree: int = 4
+    """The N-pass OFFSET pass: the offsets refitted against the fixed sky -- the recipe's own offset
+    terms (whatever the model has, with its constraints and priors), every frame
+    solved directly from its normal equations. Nothing about the offsets is chosen here.
+    ``clip``: of the residual (per frame unless chunk groups are given). ``bright_cut``: only the
+    observations whose modelled sky is below it (all of a frame's when fewer than ``min_pixels``
+    remain; None: every observation)."""
     _: KW_ONLY
     clip: Clip = field(default_factory=lambda: Clip(2.5))
-    bright_cut: float | None = 0.05
+    bright_cut: float | None = None
     min_pixels: int = 5000
-    segments: tuple[tuple[int, int], ...] | None = None
-    ridge: float = 0.0
 
     def _validate(self):
         object.__setattr__(self, 'clip', as_clip(self.clip, 'Refit(clip=...)'))
         if self.clip is None:
             raise ConfigError("Refit(clip=None): the offset refit always clips; give a sigma")
-        if self.degree < 0 or self.min_pixels < 0 or self.ridge < 0:
-            raise ConfigError("Refit: degree, min_pixels and ridge are at least 0")
+        if self.min_pixels < 0:
+            raise ConfigError("Refit: min_pixels is at least 0")
 
 
 def schedule(n, order='offset_first'):

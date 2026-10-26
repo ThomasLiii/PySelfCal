@@ -1,7 +1,7 @@
 """Per-subframe LSQR row assembly (runs in the worker processes).
 
 ``_prep_lsqr`` emits one subframe's sparse rows (sky components, offsets,
-per-frame scalar, per-frame constraints); ``_prep_lsqr_batch_worker``
+per-frame constraints); ``_prep_lsqr_batch_worker``
 reconstructs the shared-memory arrays once per batch and assembles that
 batch's rows. Companion modules: ``selfcal.core.system`` (dispatches
 ``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor and assembles the full
@@ -39,8 +39,6 @@ def _prep_lsqr(task_params):
     poly_basis_list = task_params.get('poly_basis_list') or [None] * len(task_params['chunk_maps'])
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
-    scalar_col_start = task_params['scalar_col_start']
-    num_scalar_cols = task_params['num_scalar_cols']
     det_template_list = task_params['det_template_list']
     chunk_maps = task_params['chunk_maps']
     K = len(chunk_maps)
@@ -132,7 +130,7 @@ def _prep_lsqr(task_params):
             # Same arity as the success return (the caller unpacks 6 and skips
             # on an empty b); off_counts is None, as it is whenever there is no
             # per-offset bookkeeping to report.
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None, np.empty(0, dtype=np.int64)
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
@@ -191,8 +189,14 @@ def _prep_lsqr(task_params):
         # identical entry sequence, and after the final int32/float32 casts
         # identical bytes, to the general loop; preserve this equivalence
         # when editing either path. The coefficients were evaluated above from
-        # the observations' data variables.
-        if J == 1 and sky_coeffs[0] is None:
+        # the observations' data variables. A fixed sky (``fixed_sky``: known,
+        # and subtracted from the data by a frame hook) has no unknowns: no
+        # sky entries, the offsets alone are fitted.
+        if task_params.get('fixed_sky'):
+            S_rows = np.empty(0, dtype=np.int64)
+            S_cols = np.empty(0, dtype=np.int64)
+            S_data = np.empty(0, dtype=np.float32)
+        elif J == 1 and sky_coeffs[0] is None:
             S_rows = np.arange(num_valid_pixels)
             S_cols = ref_pix_indices
             S_data = valid_weight
@@ -252,15 +256,18 @@ def _prep_lsqr(task_params):
             elif phi_m is not None:
                 # Basis of n known functions of data variables: one unknown per
                 # (group, chunk, function), column g*(n_chunks*n) + c*n + k, entry
-                # w * chunk_val * phi_k(v). n == 1 (a coefficient) keeps the
-                # plain block's columns.
+                # w * chunk_val * phi_k(v), stored only where phi_k(v) is not zero (a
+                # function zero over much of the detector would otherwise fill the
+                # matrix with zeros). n == 1 (a coefficient) keeps the plain block's columns.
                 nb = phi_m.shape[1]
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
                 base = col_bases[m] + group_idx_list[m] * num_chunks_list[m]
                 for k in range(nb):
-                    O_rows_parts.append(sub_idx_m)
-                    O_cols_parts.append(base + chunk_idx_m * nb + k)
-                    O_data_parts.append(_fw * phi_m[sub_idx_m, k])
+                    phi_k = phi_m[sub_idx_m, k]
+                    nz_k = phi_k != 0
+                    O_rows_parts.append(sub_idx_m[nz_k])
+                    O_cols_parts.append(base + chunk_idx_m[nz_k] * nb + k)
+                    O_data_parts.append(_fw[nz_k] * phi_k[nz_k])
             else:
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
                 O_rows_parts.append(sub_idx_m)
@@ -327,22 +334,10 @@ def _prep_lsqr(task_params):
                 reg_data = np.concatenate(reg_data_parts)
                 reg_b = np.concatenate(reg_b_parts)
 
-        # Per-frame scalar term (one column per frame, applied to every valid pixel)
-        Sc_rows, Sc_cols, Sc_data = [], [], []
-        if num_scalar_cols > 0:
-            scalar_col = scalar_col_start + index
-            Sc_rows = np.arange(num_valid_pixels)
-            Sc_cols = np.full(num_valid_pixels, scalar_col, dtype=np.int64)
-            Sc_data = valid_weight
-
-        # Concatenate Data, Offset, Scalar, and Regularization
+        # Concatenate Data, Offset, and Regularization
         parts_rows = [S_rows, O_rows]
         parts_cols = [S_cols, O_cols]
         parts_data = [S_data, O_data]
-        if len(Sc_rows) > 0:
-            parts_rows.append(Sc_rows)
-            parts_cols.append(Sc_cols)
-            parts_data.append(Sc_data)
         if len(reg_rows) > 0:
             parts_rows.append(reg_rows)
             parts_cols.append(reg_cols)
@@ -356,12 +351,6 @@ def _prep_lsqr(task_params):
         sub_rows = sub_rows[valid_mask]
         sub_cols = sub_cols[valid_mask]
         sub_data_vec = sub_data_vec[valid_mask]
-        # The offset columns the DATA rows touch (rows before the regularisation rows), with a nonzero
-        # entry: the chunks this frame observed. The anchor runs over them (setup_lsqr); the entry
-        # counts (pixel_counts) also count the regularisation rows, which touch every chunk.
-        _num_sky_eff = task_params['num_sky_blocks'] * task_params['ref_shape'][0] * task_params['ref_shape'][1]
-        _data_entry = (sub_rows < num_valid_pixels) & (sub_cols >= _num_sky_eff) & (sub_data_vec != 0)
-        observed = np.unique(sub_cols[_data_entry]).astype(np.int64)
 
         unique_rows, new_row_indices = np.unique(sub_rows, return_inverse=True)
         sub_rows = new_row_indices.astype(np.int32)
@@ -373,10 +362,9 @@ def _prep_lsqr(task_params):
         if task_params.get('merge_duplicates'):
             ref_h, ref_w = task_params['ref_shape']
             sub_rows, sub_cols, sub_data_vec, off_counts = _merge_subframe_duplicates(
-                sub_rows, sub_cols, sub_data_vec, len(sub_b),
-                task_params['scalar_col_start'] + task_params['num_scalar_cols'],
+                sub_rows, sub_cols, sub_data_vec, len(sub_b), col_bases[-1],
                 task_params['num_sky_blocks'] * ref_h * ref_w)
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts, observed
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
 
     except FrameLoadError:
         raise                                   # a missing/corrupt frame is fatal, never silently dropped
@@ -395,15 +383,15 @@ def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
     Template / hard-poly-basis offsets emit one entry per chunk-contrib into
     the same per-frame column, so ~1/4 of a template-mode row's entries are
     duplicates. Left in, they inflate every downstream buffer (batch spill
-    files, the CSR buffers of Phase 3/4a) by the same fraction until the
-    Phase-5 merge. Merging here instead is bit-identical to merging there:
+    files, the CSR buffers setup_lsqr allocates and fills) by the same fraction until
+    the final matrix's duplicate merge. Merging here instead is bit-identical to merging there:
     scipy's ``coo -> csr`` conversion is a stable row bucket (``coo_tocsr``
     keeps each row's entries in emission order) followed by the very kernels
-    Phase 5 runs on the very same per-row sequences (``csr_sort_indices`` then
+    that final merge runs on the very same per-row sequences (``csr_sort_indices`` then
     ``csr_sum_duplicates``, float32 arithmetic), and the global scatter is
-    stable too, so each row reaches Phase 5 with the same entry sequence
-    either way. The stream returned is row-grouped and column-sorted; Phase 5
-    then finds nothing to merge.
+    stable too, so each row reaches that merge with the same entry sequence
+    either way. The stream returned is row-grouped and column-sorted; the final
+    merge then finds nothing to merge.
 
     ``pixel_counts`` is defined on the PRE-merge stream (its offset-column
     part feeds ``offset_damping_block``), so the pre-merge counts of every
@@ -494,6 +482,26 @@ def _prep_lsqr_batch_worker(batch_params):
     spill_paths = None
     spill_fhs = None
     try:
+        reduce = batch_params.get('reduce')
+        if reduce is not None:
+            # setup_lsqr(reduce=...): each subframe's rows go to `reduce` instead of into the
+            # matrix, returned with the subframe's entry counts per column (the pre-merge counts,
+            # as pixel_counts keeps them).
+            out = []
+            for task_params in sub_tasks:
+                task_params.update(shm_arrays)
+                result = _prep_lsqr(task_params)
+                if result is None or len(result[3]) == 0:
+                    continue
+                sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+                ids, cnt = np.unique(sub_cols, return_counts=True)
+                if off_counts is not None:
+                    num_sky_eff = task_params['num_sky_blocks'] * int(np.prod(task_params['ref_shape']))
+                    sky = ids < num_sky_eff
+                    ids, cnt = np.concatenate([ids[sky], off_counts[0]]), np.concatenate([cnt[sky], off_counts[1]])
+                out.append((task_params['index'], reduce(sub_rows, sub_cols, sub_data, sub_b, num_rows),
+                            (ids.astype(np.int64), cnt.astype(np.int64))))
+            return out
         if spill_dir is not None:
             # Stream the bulk COO arrays straight to files, one append per
             # subframe: no per-batch list retention, no concatenate copy,
@@ -514,7 +522,6 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_data = []
         batch_b = []
         off_ids_parts, off_cnt_parts = [], []
-        observed_parts = []
         batch_row_offset = 0
         n_entries = 0
 
@@ -527,13 +534,12 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, observed = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
             if len(sub_b) == 0:
                 continue
             if off_counts is not None:
                 off_ids_parts.append(off_counts[0])
                 off_cnt_parts.append(off_counts[1])
-            observed_parts.append(observed)
 
             if spill_fhs is not None:
                 (sub_rows + batch_row_offset).tofile(spill_fhs[0])
@@ -570,9 +576,6 @@ def _prep_lsqr_batch_worker(batch_params):
             _tot = np.zeros(_u.size, dtype=np.int64)
             np.add.at(_tot, _inv, np.concatenate(off_cnt_parts))
             offset_counts = (_u, _tot)
-        # The offset columns the batch's data rows touch (the observed chunks), sparse.
-        offset_observed = (np.unique(np.concatenate(observed_parts)) if observed_parts
-                           else np.empty(0, dtype=np.int64))
 
         if spill_fhs is not None:
             for fh in spill_fhs:
@@ -584,7 +587,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
             return {'files': spill_paths, 'shm': [b_meta],
                     'num_rows': batch_row_offset, 'n_entries': n_entries,
-                    'offset_counts': offset_counts, 'offset_observed': offset_observed}
+                    'offset_counts': offset_counts}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)
@@ -600,7 +603,7 @@ def _prep_lsqr_batch_worker(batch_params):
             shm.close()
 
         return {'shm': result_shm, 'num_rows': batch_row_offset,
-                'offset_counts': offset_counts, 'offset_observed': offset_observed}
+                'offset_counts': offset_counts}
     finally:
         for shm in shm_handles:
             shm.close()

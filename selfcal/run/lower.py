@@ -62,6 +62,8 @@ def setup_options(recipe, compute, instrument) -> dict:
                'damp_weight': float(damp[0]), 'batch_size': recipe.numerics.batch,
                'max_workers': compute.resolved_workers}
     options.update(clip_keys(fit.clip))
+    if fit.min_observations is not None:
+        options['min_observations'] = fit.min_observations
     return options
 
 
@@ -116,10 +118,9 @@ def passes_spec(passes) -> PassesSpec:
         flags = p.init_clip.ignore_flags
         init = _pass_clip(p.init_clip, None if flags is None else tuple(flags))
     return PassesSpec(n=p.n, order=p.order, init_clip=init, sky_clip=_pass_clip(p.sky_clip),
-                      refit_degree=refit.degree, refit_clip=_pass_clip(refit.clip), bright_cut=refit.bright_cut,
+                      refit_clip=_pass_clip(refit.clip), bright_cut=refit.bright_cut,
                       min_pixels=refit.min_pixels,
-                      segments=None if refit.segments is None else tuple(tuple(s) for s in refit.segments),
-                      ridge=float(refit.ridge), stop_tol=float(p.stop_tol), sky_merge=p.sky_merge,
+                      stop_tol=float(p.stop_tol), sky_merge=p.sky_merge,
                       keep_moments=p.keep_moments)
 
 
@@ -282,7 +283,7 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             output_dir=os.path.dirname(field.path), run_name=field.name, resolution_arcsec=field.pixel_scale,
             recipe=recipe, jobs=tuple(group), scratch=scratch, suffix=recipe.suffix,
             oversample=coadd.oversample if coadd else 1, frames=source, model=model.lower(mosaic),
-            line_fisher_threshold=float(recipe.fit.line_fisher_threshold), spectral_window=model.spectral_window(),
+            line_fisher_threshold=float(recipe.fit.line_fisher_threshold),
             setup=setup_options(recipe, compute, inst), lsqr=solver_options(recipe),
             mosaic=coadd_options(recipe, compute, inst), pre_cal=recipe.fit.raw_frame_hook,
             post_cal=recipe.fit.frame_hook, post_mosaic=coadd.frame_hook if coadd is not None else None,

@@ -11,7 +11,7 @@ downstream must see exactly the bytes the unified / BlockCSR path produces:
    restricted to those rows and columns, entry for entry;
 3. preconditioner: column square norms from ``_iter_range_pieces_colsplit``
    == the unified chunk loop, bitwise, at arbitrary chunk sizes;
-4. consumers: ``compute_x0_scalar_only``, the SpMV operator, and full
+4. consumers: ``compute_x0_from_Ab``, the SpMV operator, and full
    ``apply_lsqr`` solves agree bit for bit with the BlockCSR path.
 
 Runnable as ``python tests/test_colsplit_bitequal.py`` or under pytest.
@@ -25,7 +25,7 @@ from scipy.sparse import _sparsetools, csr_matrix, random as sprandom
 
 from selfcal.core import solve as SV
 from selfcal.core.blockcsr import ColSplitCSR, build_block_csr, partition_block_csr
-from selfcal.core.solution import compute_x0_scalar_only
+from selfcal.core.solution import compute_x0_from_Ab
 from selfcal.core.system import _range_ids, _scatter_block_split, _scatter_one_batch
 
 _SEED_PLACEMENT = 11
@@ -210,11 +210,11 @@ def test_consumers_bitequal(trials=12):
         m, n = int(rng.integers(40, 700)), int(rng.integers(30, 400))
         A = sprandom(m, n, density=float(rng.choice([0.03, 0.1, 0.3])),
                      random_state=int(rng.integers(1e9)), format='csr').astype(dtype)
-        n_sc = int(rng.integers(2, 6))
-        scalar_col_start = n - n_sc
+        n_pf = int(rng.integers(2, 6))
+        pf_start = n - n_pf
         A = A.tolil()
-        for r in range(m):                     # a scalar-block entry in every row
-            A[r, scalar_col_start + int(rng.integers(0, n_sc))] = float(rng.standard_normal())
+        for r in range(m):                     # an entry in every row in a block of per-frame columns
+            A[r, pf_start + int(rng.integers(0, n_pf))] = float(rng.standard_normal())
         A = A.tocsr().astype(dtype)
         A.sort_indices()
         A.sum_duplicates()
@@ -228,17 +228,12 @@ def test_consumers_bitequal(trials=12):
 
         T = int(rng.choice([2, 3, 4, 6]))
         cuts = np.linspace(0, n, T + 1, dtype=np.int64)
-        if cuts[-2] > scalar_col_start:        # scalar block must sit in the last range
-            cuts[-2] = scalar_col_start - 1 if scalar_col_start > 1 else 0
-            cuts = np.unique(cuts)
-            if len(cuts) - 1 < 2:
-                continue
         B, C = bcsr(), partition_block_csr(bcsr(), cuts)
         assert C.nnz == B.nnz
 
         b = rng.standard_normal(m).astype(dtype)
-        x0a = compute_x0_scalar_only(B, b, (1, 1), scalar_col_start, num_sky_blocks=1)
-        x0b = compute_x0_scalar_only(C, b, (1, 1), scalar_col_start, num_sky_blocks=1)
+        x0a = compute_x0_from_Ab(B, b, (1, 1), num_sky_blocks=1)
+        x0b = compute_x0_from_Ab(C, b, (1, 1), num_sky_blocks=1)
         assert np.array_equal(x0a.view(np.uint8), x0b.view(np.uint8)), "x0 differs"
 
         os.environ['SELFCAL_RMATVEC_SPLIT'] = '1'   # keep the reference sequential

@@ -2,21 +2,20 @@
 
 import logging
 import os
-import h5py
-import hdf5plugin
-import numpy as np
-from tqdm import tqdm
+import shutil
 
+import h5py
+import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
-
-from reproject import reproject_interp, reproject_exact, reproject_adaptive
+from reproject import reproject_adaptive, reproject_exact, reproject_interp
+from tqdm import tqdm
 
 from .. import _state
 from ..core.shmbuf import worker_pool_context
 from ..geometry.map_helper import bit_to_bool, bool_to_bit
-from .frames import read_exposure
+from .frames import frame_compression, read_exposure
 from .reproj import reproj_basename
 
 logger = logging.getLogger(__name__)
@@ -34,6 +33,72 @@ def _result(task_params, output_file, success, error=None):
         'dq_ext': task_params['dq_ext'],
         'error': error,
     }
+
+
+#: A reprojected bit plane flags an output pixel where its bilinear value exceeds this.
+MASK_THRESHOLD = 0.01
+
+
+def pack_mask(sub_bits) -> np.ndarray:
+    """The frame's bit mask (``sub_bitmask``) from the bilinearly reprojected bit planes
+    ``sub_bits`` (``(32, H, W)`` floats): a bit is set where its plane exceeds
+    :data:`MASK_THRESHOLD`."""
+    return bool_to_bit(np.asarray(sub_bits) > MASK_THRESHOLD)
+
+
+def reproject_mask(det_bitmask, det_wcs, sub_wcs, shape_out, bits=None) -> np.ndarray:
+    """A detector bit mask on a frame's box, as the reprojection writes ``sub_bitmask``: every
+    bit plane interpolated bilinearly like the coordinates, then packed by :func:`pack_mask`.
+    ``bits``: only these bit planes are interpolated (the result has no other bit set), for a
+    refresh that changes some bits only."""
+    expanded = bit_to_bool(np.asarray(det_bitmask), expand_bits=True)
+    if bits is None:
+        sub, _ = reproject_interp((np.asarray(expanded, dtype=np.float64), det_wcs), sub_wcs,
+                                  shape_out=tuple(shape_out), order='bilinear')
+        return pack_mask(sub)
+    sel = sorted({int(b) for b in bits})
+    sub, _ = reproject_interp((np.asarray(expanded[sel], dtype=np.float64), det_wcs), sub_wcs,
+                              shape_out=tuple(shape_out), order='bilinear')
+    full = np.zeros((expanded.shape[0],) + tuple(shape_out), dtype=bool)
+    full[sel] = np.asarray(sub) > MASK_THRESHOLD
+    return bool_to_bit(full)
+
+
+def reproject_mask_at(det_bitmask, coords, bits=None) -> np.ndarray:
+    """A detector bit mask on a frame's box, sampled at the detector positions the frame stores
+    (``coords``: its ``sub_mapping``, ``(2, H, W)`` detector x and y, NaN where none) instead of
+    mapping the box through the WCS again: every bit plane interpolated bilinearly at those
+    positions with the interpolation :func:`reproject_mask` uses, then packed by the same rule.
+    The stored positions are the detector pixel grid interpolated like the planes, kept in
+    float32: a pixel whose interpolated plane lies within that rounding of
+    :data:`MASK_THRESHOLD` can come out the other way (12 of 9.8 M pixels on a SPHEREx frame).
+    Valid only for frames whose ``sub_mapping`` is the detector pixel grid (a reader without its
+    own detector coordinates). ``bits``: only these bit planes (the result has no other bit set)."""
+    from reproject.array_utils import map_coordinates
+    det = np.asarray(det_bitmask).astype(np.int64) & 0xFFFFFFFF
+    shape = tuple(np.shape(coords)[1:])
+    pts = np.array([np.asarray(coords[1], dtype=np.float64).ravel(), np.asarray(coords[0], dtype=np.float64).ravel()])
+    out = np.zeros(shape, dtype=np.uint32)        # bool_to_bit's packing, one plane at a time
+    for b in (range(32) if bits is None else sorted({int(b) for b in bits})):
+        plane = ((det >> b) & 1).astype(np.float64)
+        if plane.any():                           # an empty plane interpolates to 0 or NaN: no bit
+            v = np.asarray(map_coordinates(plane, pts, order=1, cval=np.nan, mode='constant')).reshape(shape)
+            out |= (v > MASK_THRESHOLD).astype(np.uint32) << np.uint32(b)
+    return out
+
+
+def reproject_layers(layers, det_wcs, sub_wcs, shape_out) -> dict:
+    """The per-pixel planes of an exposure (a reader's ``layers``, ``{name: (H, W)}``) on a frame's
+    box: each interpolated bilinearly from the detector grid (``det_wcs``) onto the box's grid
+    (``sub_wcs``, ``shape_out``), like the detector coordinates every frame stores
+    (``sub_mapping``), so a plane without NaN covers exactly the pixels that have a detector
+    position. Returns ``{name: (shape_out) float32}``."""
+    out = {}
+    for name, plane in (layers or {}).items():
+        sub_plane, _ = reproject_interp((np.asarray(plane, dtype=np.float64), det_wcs), sub_wcs,
+                                        shape_out=tuple(shape_out), order='bilinear')
+        out[name] = sub_plane.astype(np.float32)
+    return out
 
 
 def _reproject_worker(task_params):
@@ -123,9 +188,7 @@ def _reproject_worker(task_params):
         )
         sub_mapping = sub_aux[0:2] # x, y
         if det_bitmask is not None:
-            sub_expanded_mask_float = sub_aux[2:]
-            sub_expanded_mask_bool = sub_expanded_mask_float > 0.01
-            sub_bitmask = bool_to_bit(sub_expanded_mask_bool)
+            sub_bitmask = pack_mask(sub_aux[2:])
         else:
             sub_bitmask = np.zeros((sub_width, sub_width), dtype=np.int32)
 
@@ -133,13 +196,8 @@ def _reproject_worker(task_params):
 
             # Compression: Zstd(clevel=5) + byte-shuffle — smaller files than
             # gzip at comparable speed, reducing disk I/O when the many
-            # per-frame files are re-read downstream. hdf5plugin.Zstd()
-            # expands to the HDF5 filter kwargs.
-            comp_args = {
-                **hdf5plugin.Zstd(clevel=5),
-                'shuffle': True,
-                'track_times': False
-            }
+            # per-frame files are re-read downstream.
+            comp_args = frame_compression()
 
             # 1. Save Data
             hf.create_dataset('sub_data', data=sub_data, dtype=np.float32, chunks=sub_data.shape, **comp_args)
@@ -149,11 +207,9 @@ def _reproject_worker(task_params):
 
             # Extra per-pixel planes of the exposure (reader layers): reprojected
             # bilinearly like the coordinates, stored as layers/<name>.
-            for lname, plane in (exp.layers or {}).items():
-                sub_plane, _ = reproject_interp((np.asarray(plane, dtype=np.float64), det_wcs), sub_wcs,
-                                                shape_out=(sub_width, sub_width), order='bilinear')
-                hf.create_dataset(f'layers/{lname}', data=sub_plane.astype(np.float32), dtype=np.float32,
-                                  chunks=sub_plane.shape, **comp_args)
+            for lname, sub_plane in reproject_layers(exp.layers, det_wcs, sub_wcs, (sub_width, sub_width)).items():
+                hf.create_dataset(f'layers/{lname}', data=sub_plane, dtype=np.float32, chunks=sub_plane.shape,
+                                  **comp_args)
 
             # 2. Save Metadata as Attributes
             hf.attrs['sub_header'] = sub_header_str
@@ -345,3 +401,133 @@ def batch_reproject(exposure_list, ref_wcs, ref_shape,
     logger.info(f'Batch reprojection completed. {len(success_file)} frames successfully '
                 f'processed out of {len(tasks)} ({len(failures)} failed).')
     return success_file, failures
+
+
+def _attr_str(hf, key):
+    v = hf.attrs.get(key)
+    if v is None:
+        raise ValueError(f"frame {hf.filename} has no attribute {key!r}")
+    return v.decode('utf-8') if isinstance(v, bytes) else str(v)
+
+
+def add_layers(frame_path, layers, *, replace=False) -> list[str]:
+    """Add per-pixel planes of the exposure to an existing frame file as ``layers/<name>``: the
+    planes its reader did not return when the frame was made (:func:`add_reader_layers` reads
+    them from the source exposure). ``layers``: ``{name: (H, W) detector plane}``; each is
+    reprojected as the reprojection would have (:func:`reproject_layers`, with the WCS and the box
+    the frame stores), so a pass over existing frames writes what a new reprojection writes. A
+    layer the file already holds is kept unless ``replace``. The frame is rewritten atomically (a
+    copy with the layers added takes its place), its other datasets and attributes byte for byte.
+    Returns the names written."""
+    with h5py.File(frame_path, 'r') as hf:
+        have = set(hf['layers'].keys()) if 'layers' in hf else set()
+        det_header = fits.Header.fromstring(_attr_str(hf, 'det_header'))
+        sub_header = fits.Header.fromstring(_attr_str(hf, 'sub_header'))
+        shape = tuple(hf['sub_data'].shape)
+    todo = {name: plane for name, plane in (layers or {}).items() if replace or name not in have}
+    if not todo:
+        return []
+    if 'NAXIS1' in det_header and 'NAXIS2' in det_header:
+        det_shape = (int(det_header['NAXIS2']), int(det_header['NAXIS1']))
+        for name, plane in todo.items():
+            if np.shape(plane) != det_shape:
+                raise ValueError(f"layer {name!r} is {np.shape(plane)}, the frame's detector {det_shape}")
+    planes = reproject_layers(todo, WCS(det_header), WCS(sub_header), shape)
+    tmp = f'{frame_path}.tmp.{os.getpid()}'
+    try:
+        shutil.copyfile(frame_path, tmp)
+        with h5py.File(tmp, 'r+', libver='latest') as hf:
+            comp = frame_compression()
+            for name, plane in planes.items():
+                key = f'layers/{name}'
+                if key in hf:
+                    del hf[key]
+                hf.create_dataset(key, data=plane, dtype=np.float32, chunks=plane.shape, **comp)
+        os.replace(tmp, frame_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return list(planes)
+
+
+def add_reader_layers(frame_path, reader, sci_ext, dq_ext=None, *, names=None, replace=False) -> list[str]:
+    """Add to an existing frame the layers its reader returns now (a reader that gained layers
+    after the frame was made): the source exposure (the frame's ``file_path``) is read again with
+    ``reader`` (None: the default FITS reader) and ``sci_ext`` / ``dq_ext`` (the instrument's
+    layout), and its layers — all of them, or ``names`` — go through :func:`add_layers`."""
+    with h5py.File(frame_path, 'r') as hf:
+        source = _attr_str(hf, 'file_path')
+    exp = read_exposure(reader, source, sci_ext, dq_ext)
+    layers = dict(exp.layers or {})
+    if names is not None:
+        missing = [n for n in names if n not in layers]
+        if missing:
+            raise ValueError(f"the reader of {source} returns no layer(s) {missing} (it returns {sorted(layers)})")
+        layers = {n: layers[n] for n in names}
+    return add_layers(frame_path, layers, replace=replace)
+
+
+def refresh_mask(frame_path, det_bitmask, bits=None, mapping='wcs') -> int:
+    """Recompute an existing frame's ``sub_bitmask`` from the detector bit mask ``det_bitmask``
+    (the exposure's mask as its reader returns it now, e.g. with bits dilated:
+    :func:`refresh_reader_mask` reads it), reprojected as the reprojection would
+    (:func:`reproject_mask`, with the WCS and the box the frame stores). ``bits``: recompute only
+    these bit planes and keep the stored mask's other bits, which is right when only those bits
+    changed since the frame was made and 32 times cheaper than every plane. ``mapping``: ``'wcs'``
+    maps the box through the frame's WCS again, exactly as the reprojection did; ``'stored'``
+    samples the planes at the detector positions the frame stores (:func:`reproject_mask_at`:
+    without the WCS mapping, most of the cost; equal up to the stored positions' float32 rounding
+    at the threshold; frames whose ``sub_mapping`` is the detector pixel grid only). The frame is
+    rewritten atomically, its other datasets and attributes byte for byte (copied object by
+    object), when the mask changes. Returns the number of pixels whose mask changed."""
+    if mapping not in ('wcs', 'stored'):
+        raise ValueError(f"mapping={mapping!r}: 'wcs' or 'stored'")
+    with h5py.File(frame_path, 'r') as hf:
+        det_header = fits.Header.fromstring(_attr_str(hf, 'det_header'))
+        sub_header = fits.Header.fromstring(_attr_str(hf, 'sub_header'))
+        old = hf['sub_bitmask'][...]
+        coords = hf['sub_mapping'][...] if mapping == 'stored' else None
+    shape = tuple(old.shape)
+    if 'NAXIS1' in det_header and 'NAXIS2' in det_header:
+        det_shape = (int(det_header['NAXIS2']), int(det_header['NAXIS1']))
+        if np.shape(det_bitmask) != det_shape:
+            raise ValueError(f"the mask is {np.shape(det_bitmask)}, the frame's detector {det_shape}")
+    if mapping == 'stored':
+        new = reproject_mask_at(det_bitmask, coords, bits=bits).astype(old.dtype)
+    else:
+        new = reproject_mask(det_bitmask, WCS(det_header), WCS(sub_header), shape, bits=bits).astype(old.dtype)
+    if bits is not None:
+        others = ~sum(old.dtype.type(1 << int(b)) for b in bits)
+        new = (old & others) | new
+    changed = int((new != old).sum())
+    if changed == 0:
+        return 0
+    tmp = f'{frame_path}.tmp.{os.getpid()}'
+    try:
+        with h5py.File(frame_path, 'r') as src, h5py.File(tmp, 'w', libver='latest') as dst:
+            for name in src:
+                if name != 'sub_bitmask':
+                    src.copy(name, dst, name=name)
+            for key, value in src.attrs.items():
+                dst.attrs[key] = value
+            dst.create_dataset('sub_bitmask', data=new, chunks=shape, **frame_compression())
+        os.replace(tmp, frame_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return changed
+
+
+def refresh_reader_mask(frame_path, reader, sci_ext, dq_ext, bits=None, mapping='wcs') -> int:
+    """Refresh an existing frame's ``sub_bitmask`` with the mask its reader returns now (a reader
+    that dilates or edits bits since the frame was made): the source exposure (the frame's
+    ``file_path``) is read again with ``reader`` (None: the default FITS reader) and ``sci_ext`` /
+    ``dq_ext``, and its mask goes through :func:`refresh_mask` (``bits``: only those planes;
+    ``mapping``: how the planes reach the frame's box). Returns the number of pixels whose mask
+    changed."""
+    with h5py.File(frame_path, 'r') as hf:
+        source = _attr_str(hf, 'file_path')
+    exp = read_exposure(reader, source, sci_ext, dq_ext)
+    if exp.mask is None:
+        raise ValueError(f"the reader of {source} returns no mask")
+    return refresh_mask(frame_path, exp.mask, bits=bits, mapping=mapping)

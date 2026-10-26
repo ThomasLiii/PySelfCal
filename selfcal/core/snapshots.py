@@ -17,7 +17,7 @@ analysis tools. The parts of a cal that do not depend on the solution (the sky t
 Fisher information and separability, the offsets' coverage, the chunk maps, the frame list) are
 written once, before the solve, to a template next to the snapshots (``.<cal stem>_static-<pid>.h5``,
 removed at the end of the solve); each snapshot is a copy of the template plus the solution (the sky
-maps, written a band of chunk rows at a time; each offset term's offsets; the per-frame scalar) and
+maps, written a band of chunk rows at a time; each offset term's offsets) and
 the attributes of its ``solve`` group: ``snapshot = True``, ``iteration`` (cumulative across warm
 starts: the start's ``iterations_total`` plus this solve's iteration), ``iterations``,
 ``iterations_total``, the solver's estimates at that iteration (``r1norm`` ... ``xnorm``, ``test1``,
@@ -27,8 +27,8 @@ cal has them (:mod:`selfcal.core.warm_start`). Each file is written atomically
 
 Memory: a snapshot never holds a second copy of the solution. It reads one band of chunk rows of a
 sky map at a time (the HDF5 chunk rows: about 200 rows, ~10 MB of a 12k x 12k float32 map, which
-is ~600 MB whole before compression), one offset term (expanded per frame, as the cal stores it)
-and the per-frame scalar, besides the solver's own vectors.
+is ~600 MB whole before compression) and one offset term (expanded per frame, as the cal stores it),
+besides the solver's own vectors.
 
 Retention: ``keep=m`` deletes the oldest snapshot this solve wrote once it has written ``m + 1``;
 snapshots of earlier runs are never deleted. Snapshots are best effort: a snapshot that cannot be

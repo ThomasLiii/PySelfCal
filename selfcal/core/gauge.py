@@ -34,15 +34,16 @@ pointing); a coverage-weighted least squares over every (frame, chunk).
 The polynomial ``P(p) = g . (p - p0) + (p - p0)^T H (p - p0) / 2`` (``H = 0`` for the plane), minus its
 mean over the covered pixels, is then added to the sky term and recorded on the cal (``gauge/``);
 with ``apply='map'`` every mosaic made from the cal adds it to its maps (the offsets stay as solved),
-with ``apply='offsets'`` its image is removed from the offsets instead (the slopes, the chunk
-constants, the per-frame scalar), which is exact only up to the band discretisation (and, for a
-quadratic, its curvature within a frame).
+with ``apply='offsets'`` its image is removed from the offsets instead (the slopes and the chunk
+constants, which take each frame's change of level), which is exact only up to the band
+discretisation (and, for a quadratic, its curvature within a frame).
 
 The geometry: each frame's detector axes and centre on the reference grid, from a tangent plane
 through the frame's stored header (``geometry='tangent'``: its pointing, reference pixel, PC matrix
 and scale, no distortion terms) or from its full stored WCS (``'header'``). These are the
 computations of the transfer-function campaign's post-solve gauges, the plane and the quadratic,
-kept bit for bit (the ``transfer`` and ``transfer_quad`` gates of ``selfcal_scripts/gates``).
+reproduced bit for bit when they entered the library (2026-10-14); the plane on the map is gated by
+the ``production`` gate of ``selfcal_scripts/gates``.
 """
 from __future__ import annotations
 
@@ -157,6 +158,8 @@ def fit_gauge(b, ocov, J, D, dy, half, *, degree=1, position_degree=2, scale_D=1
     A = np.stack(cols, axis=1)
     sol = np.linalg.lstsq(A * wts[:, None], v * wts, rcond=None)[0]
     res = v - A @ sol
+    covariance = _fit_covariance(A * wts[:, None], res * wts, len(names))
+    covariance.pop('_cov_diag')
     par = dict(zip(names, sol))
     g = np.array([par['g0'], par['g1']])
     H = (np.array([[par['H00'], par['H01']], [par['H01'], par['H11']]]) if degree == 2 else np.zeros((2, 2)))
@@ -164,7 +167,8 @@ def fit_gauge(b, ocov, J, D, dy, half, *, degree=1, position_degree=2, scale_D=1
     def wrms(z):
         return float(np.sqrt(np.sum(wts ** 2 * z ** 2) / np.sum(wts ** 2)))
 
-    stats = {'n_slopes': int(kk.size), 'n_parameters': len(names), 'slope_rms': wrms(v), 'residual_rms': wrms(res)}
+    stats = {'n_slopes': int(kk.size), 'n_parameters': len(names), 'slope_rms': wrms(v), 'residual_rms': wrms(res),
+             **covariance}
     if degree == 2:
         HJ = np.einsum('kai,ab,kbj->kij', J, H, J)
         curv = 0.5 * np.abs(HJ[:, 0, 0]) * half ** 2 * np.sqrt(np.mean((np.linspace(-1, 1, 201) ** 2 - 1 / 3) ** 2))
@@ -184,26 +188,45 @@ def _fit_plane(b, ocov, xk, half):
         raise ValueError('the gauge has no solved slopes to fit (no frame covers the slope term)')
     A = np.column_stack([xk[ok], np.ones(ok.sum())])
     sol = np.linalg.lstsq(A, bx[ok], rcond=None)[0]
+    res = bx[ok] - A @ sol
     stats = {'n_slopes': int(good[ok].sum()), 'n_frames': int(ok.sum()), 'n_parameters': 3,
-             'slope_rms': float(np.nanstd(bx)), 'residual_rms': float(np.std(bx[ok] - A @ sol)),
+             'slope_rms': float(np.nanstd(bx)), 'residual_rms': float(np.std(res)),
              'detector_slope': float(sol[2])}
+    stats.update(_fit_covariance(A, res, 3))
+    stats['detector_slope_sigma'] = float(np.sqrt(stats.pop('_cov_diag')[2]))
     return sol[:2].copy(), np.zeros((2, 2)), stats
 
 
-def move_into_offsets(c, b, scalar, good, J, D, dy, g, H, half):
-    """The image of the polynomial removed from the offsets (``apply='offsets'``): the slopes ``b``,
-    the chunk constants ``c`` (per frame, mean-zero over its covered chunks) and the per-frame
-    ``scalar``; returns the three new arrays."""
-    K = b.shape[0]
+def _fit_covariance(A, res, n_parameters):
+    """The covariance of a least-squares fit's parameters, ``residual variance x (A^T A)^-1`` with
+    the residual variance ``|res|^2 / (rows - parameters)`` (the rows' scatter about the fit, so the
+    fit's own quality sets the error bars), for the plane's two components (the first two columns of
+    ``A``): ``g_cov`` (2 x 2, per grid pixel squared), ``g_sigma`` and ``g_corr``; ``_cov_diag`` is
+    the whole diagonal, for the caller."""
+    dof = max(A.shape[0] - int(n_parameters), 1)
+    s2 = float(res @ res) / dof
+    ata = A.T @ A
+    try:
+        cov = s2 * np.linalg.inv(ata)
+    except np.linalg.LinAlgError:
+        cov = s2 * np.linalg.pinv(ata)
+    sig = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    corr = float(cov[0, 1] / (sig[0] * sig[1])) if sig[0] > 0 and sig[1] > 0 else 0.0
+    return {'g_cov': [[float(cov[0, 0]), float(cov[0, 1])], [float(cov[1, 0]), float(cov[1, 1])]],
+            'g_sigma': [float(sig[0]), float(sig[1])], 'g_corr': corr, '_cov_diag': sig ** 2}
+
+
+def move_into_offsets(c, b, J, D, dy, g, H, half):
+    """The image of the polynomial removed from the offsets (``apply='offsets'``): the slopes ``b``
+    and the chunk constants ``c``, which take each frame's change of level too; returns the two new
+    arrays."""
     HJ = np.einsum('kai,ab,kbj->kij', J, H, J)                             # J^T H J (per det px^2)
     lin = np.einsum('kai,ka->ki', J, (D @ H.T) + g[None, :])               # J^T (H D_k + g) (per det px)
     b_new = b - half * (lin[:, 0][:, None] + HJ[:, 0, 1][:, None] * dy[None, :])
     adj = lin[:, 1][:, None] * dy[None, :] + 0.5 * HJ[:, 1, 1][:, None] * dy[None, :] ** 2
-    gm = good.any(axis=1)
-    adj_mean = np.array([adj[k, good[k]].mean() if gm[k] else 0.0 for k in range(K)])
-    c_new = c - (adj - adj_mean[:, None])
-    scalar_new = scalar - adj_mean - (D @ g) - 0.5 * np.einsum('ka,ab,kb->k', D, H, D)
-    return c_new, b_new, scalar_new
+    level = (D @ g) + 0.5 * np.einsum('ka,ab,kb->k', D, H, D)
+    c_new = c - adj - level[:, None]
+    return c_new, b_new
 
 
 def polynomial(shape, g, H, p0, mean=0.0):
@@ -246,7 +269,6 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
         c = f[f'offsets/map_{constant_map}'][:].astype(np.float64)
         b = f[f'offsets/map_{slope_map}'][:].astype(np.float64)
         ocov = f[f'offset_coverage/map_{slope_map}'][:].astype(np.float64)
-        scalar = f['frame_scalar'][:].astype(np.float64) if 'frame_scalar' in f else None
         cmap = f[f'chunk_maps/map_{constant_map}'][:]
         n_frames = len(f['reproj_list'])
     if len(frames) != n_frames:
@@ -255,8 +277,6 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     if c.shape != (K, S):
         raise ValueError(f"the gauge's constant map {constant_map} has {c.shape[1]} chunks, the slope map {slope_map} "
                          f"{S}: the two terms must share their chunk map")
-    if apply == 'offsets' and scalar is None:
-        raise ValueError("apply='offsets' moves part of the polynomial into the per-frame scalar, which this cal has none of")
     if geometry == 'tangent':
         headers = frame_header_values(frames, GAUGE_KEYS, max_workers=max_workers)
     else:
@@ -273,6 +293,13 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     sky_add = _polynomial_at(pxx.astype(np.float64), pyy.astype(np.float64), g, H, p0)
     mean = float(sky_add.mean())
     sky[m] += sky_add - mean
+    # The polynomial's amplitude over the covered map (peak to peak) and, from the plane's
+    # covariance, the uncertainty of the plane's rise between the two extreme pixels.
+    i_hi, i_lo = int(np.argmax(sky_add)), int(np.argmin(sky_add))
+    stats['polynomial_amplitude'] = float(sky_add[i_hi] - sky_add[i_lo])
+    if 'g_cov' in stats:
+        d = np.array([pxx[i_hi] - pxx[i_lo], pyy[i_hi] - pyy[i_lo]], dtype=np.float64)
+        stats['plane_amplitude_sigma'] = float(np.sqrt(max(d @ np.asarray(stats['g_cov']) @ d, 0.0)))
     if degree == 1:
         fitted = (f"the plane, from {stats['n_frames']} frames' mean slopes (of {K} frames x {S} chunks): mean slope rms "
                   f"{stats['slope_rms']:.3e} -> {stats['residual_rms']:.3e} per det px after the fit, the detector-fixed "
@@ -288,11 +315,9 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
     with h5py.File(cal_path, 'r+') as f:
         f[f'sky/{sky_name}'][...] = sky.astype(np.float32)
         if apply == 'offsets':
-            good = (ocov > 0) & np.isfinite(b)
-            c_new, b_new, scalar_new = move_into_offsets(c, b, scalar, good, J, D, dy, g, H, half)
+            c_new, b_new = move_into_offsets(c, b, J, D, dy, g, H, half)
             f[f'offsets/map_{constant_map}'][...] = c_new.astype(f[f'offsets/map_{constant_map}'].dtype)
             f[f'offsets/map_{slope_map}'][...] = b_new.astype(f[f'offsets/map_{slope_map}'].dtype)
-            f['frame_scalar'][...] = scalar_new.astype(f['frame_scalar'].dtype)
         if 'gauge' in f:
             del f['gauge']
         grp = f.create_group('gauge')
@@ -360,3 +385,32 @@ def apply_to_maps(maps, gauge, log=print):
         log(f"[gauge] the cal's post-solve gauge (plane g = {np.asarray(gauge['g']).tolist()} per grid px, degree "
             f"{gauge.get('degree')}) added to {', '.join(done)}")
     return done
+
+
+def gauge_cards(gauge) -> list:
+    """The FITS header cards of a gauge applied to the map (a dict from :func:`read_gauge`): the
+    polynomial's degree, plane ``g`` (per grid pixel) with its uncertainties and correlation, the
+    reference pixel, the mean removed, the geometry, and the polynomial's peak-to-peak amplitude over
+    the covered map with the plane's uncertainty of it."""
+    if gauge is None:
+        return []
+    g = np.asarray(gauge['g'], dtype=np.float64)
+    p0 = np.asarray(gauge['p0'], dtype=np.float64)
+    cards = [('GAUGEDEG', int(gauge.get('degree', 1)), 'post-solve gauge: polynomial degree'),
+             ('GAUGEG1', float(g[0]), 'plane: d(map)/dx per grid pixel'),
+             ('GAUGEG2', float(g[1]), 'plane: d(map)/dy per grid pixel'),
+             ('GAUGEX0', float(p0[0]), 'plane reference pixel x (0-based)'),
+             ('GAUGEY0', float(p0[1]), 'plane reference pixel y (0-based)'),
+             ('GAUGEMU', float(gauge.get('mean', 0.0)), 'mean of the polynomial removed over the covered map'),
+             ('GAUGEGEO', str(gauge.get('geometry', '')), 'frame geometry of the gauge fit')]
+    sig = gauge.get('g_sigma')
+    if sig is not None:
+        sig = np.asarray(sig, dtype=np.float64)
+        cards += [('GAUGESG1', float(sig[0]), '1-sigma uncertainty of GAUGEG1'),
+                  ('GAUGESG2', float(sig[1]), '1-sigma uncertainty of GAUGEG2'),
+                  ('GAUGERHO', float(gauge.get('g_corr', 0.0)), 'correlation of GAUGEG1 and GAUGEG2')]
+    if 'polynomial_amplitude' in gauge:
+        cards.append(('GAUGEAMP', float(gauge['polynomial_amplitude']), 'peak-to-peak of the polynomial over the map'))
+    if 'plane_amplitude_sigma' in gauge:
+        cards.append(('GAUGEASG', float(gauge['plane_amplitude_sigma']), '1-sigma uncertainty of the plane\'s rise'))
+    return cards

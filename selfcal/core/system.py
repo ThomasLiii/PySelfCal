@@ -32,7 +32,6 @@ from ..models.sky_model import SkyModel
 from .assembly import _prep_lsqr_batch_worker
 from .constraint_builders import (
     grouped_adjacency_block,
-    mean_offset_block,
     offset_damping_block,
     sky_damping_block,
 )
@@ -66,7 +65,10 @@ class SetupResult(NamedTuple):
     when ``pixel_spill`` is set: the arrays are parked on scratch disk and the
     caller restores them (once) when it needs them. ``active_mask`` is None
     unless the early zero-coverage-column compaction ran (it does unless a
-    constraint row touches an otherwise-uncovered column).
+    constraint row touches an otherwise-uncovered column). ``A`` and ``b`` are
+    None when no matrix was built: ``moments_only`` (the pixel state alone) or
+    ``reduce`` (``reduced``: each subframe's reduction, in subframe order, None
+    for a subframe with no rows; ``constraint_blocks``: the constraint rows).
     """
     A: object
     b: object
@@ -76,6 +78,8 @@ class SetupResult(NamedTuple):
     active_mask: object = None
     pixel_spill: object = None
     pixel_rhs: object = None
+    reduced: object = None
+    constraint_blocks: object = None
 
 
 def _place_rows(rows_local, cols, data, num_rows, n_cols, out_indices, out_data):
@@ -119,8 +123,29 @@ def _compact_in_place(indices, e0, e1, col_map, cut=0, chunk=64_000_000):
             v -= cut
 
 
+def _floor_batch(rows_local, cols, data, num_rows, drop_sky):
+    """The coverage floor (``setup_lsqr(min_observations=)``) on one batch: its values with every entry
+    of a row whose sky column is in ``drop_sky`` (a boolean over the sky columns) set to zero, and those
+    rows (batch-local, ascending); ``(data, None)`` when the batch has none. The rows keep their
+    entries, so the row layout and the collated counts stand; the caller zeroes their right-hand side."""
+    cols = np.asarray(cols)
+    sky = cols < drop_sky.shape[0]
+    hit = np.zeros(cols.shape[0], dtype=bool)
+    hit[sky] = drop_sky[cols[sky]]
+    del sky
+    if not hit.any():
+        return data, None
+    rows_local = np.asarray(rows_local)
+    flag = np.zeros(int(num_rows), dtype=bool)
+    flag[rows_local[hit]] = True
+    del hit
+    out = np.array(data, copy=True)
+    out[flag[rows_local]] = 0
+    return out, np.flatnonzero(flag)
+
+
 def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
-                       indptr, col_map, csr_data, csr_indices, n_cols):
+                       indptr, col_map, csr_data, csr_indices, n_cols, drop_sky=None):
     """Place one batch's entries (batch-LOCAL rows, original entry order)
     into the unified CSR buffers.
 
@@ -129,7 +154,9 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     any process (pure data movement), and re-placing one is idempotent.
     Column ids are compacted in place afterwards. The row layout the kernel
     derives from the batch itself is checked against the global indptr; a
-    disagreement raises instead of silently corrupting the matrix.
+    disagreement raises instead of silently corrupting the matrix. With
+    ``drop_sky`` the coverage floor zeroes the rows of those sky columns
+    (:func:`_floor_batch`); returns those rows (batch-local) or None.
     """
     n = int(rows_arr.shape[0])
     e0 = int(indptr[row_offset])
@@ -137,7 +164,10 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     if e1 - e0 != n:
         raise RuntimeError(f"batch entry count {n} != indptr span {e1 - e0}")
     if n == 0:
-        return
+        return None
+    dropped = None
+    if drop_sky is not None:
+        data_arr, dropped = _floor_batch(rows_arr, cols_arr, data_arr, num_rows, drop_sky)
     local = _place_rows(rows_arr, cols_arr, data_arr, num_rows, n_cols,
                         csr_indices[e0:e1], csr_data[e0:e1])
     for k0 in range(0, num_rows + 1, 16_000_000):      # bounded comparison temp
@@ -147,6 +177,7 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
             raise RuntimeError("batch row layout disagrees with the global indptr")
     del local
     _compact_in_place(csr_indices, e0, e1, col_map)
+    return dropped
 
 
 def _scatter_batch_worker(task):
@@ -154,7 +185,8 @@ def _scatter_batch_worker(task):
 
     Everything the worker needs arrives EXPLICITLY in ``task`` (spill file
     paths + SharedBuffer handles); nothing is inherited from the parent, so
-    the pool can use the fork-safe forkserver start method.
+    the pool can use the fork-safe forkserver start method. Returns the rows
+    the coverage floor zeroed (batch-local) or None.
     """
     row_offset, num_rows, files, n_cols, bufs = task
     fr, fc, fd = files
@@ -162,13 +194,16 @@ def _scatter_batch_worker(task):
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
-    _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
-                       bufs['indptr'].array, col_map,
-                       bufs['csr_data'].array, bufs['csr_indices'].array, n_cols)
+    drop = bufs.get('drop_sky')
+    dropped = _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
+                                 bufs['indptr'].array, col_map,
+                                 bufs['csr_data'].array, bufs['csr_indices'].array, n_cols,
+                                 drop_sky=drop.array if drop is not None else None)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
+    return dropped
 
 
 def _range_ids(cols_full, full_cuts):
@@ -181,9 +216,11 @@ def _range_ids(cols_full, full_cuts):
 
 
 def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
-                         col_map, csr_data, csr_indices, ip_all, n_cols):
+                         col_map, csr_data, csr_indices, ip_all, n_cols, drop_sky=None):
     """Place one STORAGE BLOCK (a spill batch, or one constraint block) into
-    the column-partitioned layout.
+    the column-partitioned layout. With ``drop_sky`` the coverage floor
+    zeroes the rows of those sky columns (:func:`_floor_batch`); returns
+    those rows (block-local) or None.
 
     The buffers are (block, range)-major: block b's entries are contiguous,
     and inside them range 0's rows come first, then range 1's, ... so every
@@ -197,7 +234,7 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
 
     ``layout`` = (T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off,
     expected_range_nnz); the placed per-range entry counts must match the
-    Phase-1 totals the layout was built from, else this raises.
+    per-range totals counted while collating the workers' results, else this raises.
     """
     T, full_cuts, cuts_c, blk_start, blk_nnz, ip_off, expected = layout
     n = int(rows_local.shape[0])
@@ -206,7 +243,10 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
     ip_view = ip_all[ip_off:ip_off + T * (num_rows + 1)]
     if n == 0:
         ip_view[:] = 0
-        return
+        return None
+    dropped = None
+    if drop_sky is not None:
+        data_arr, dropped = _floor_batch(rows_local, cols_arr, data_arr, num_rows, drop_sky)
     vdt = np.int64 if (T * num_rows >= 2**31 or n >= 2**31) else np.int32
     key = _range_ids(cols_arr, full_cuts).astype(vdt)
     key *= vdt(num_rows)
@@ -220,28 +260,59 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
         s0, s1 = int(seg[0]), int(seg[-1])
         if s1 - s0 != int(expected[t]):
             raise RuntimeError(f"column range {t}: {s1 - s0} entries placed, "
-                               f"{int(expected[t])} expected from Phase 1")
+                               f"{int(expected[t])} expected from the collated counts")
         o = t * (num_rows + 1)
         np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
         _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
                           col_map, cut=int(cuts_c[t]))
+    return dropped
 
 
 def _scatter_block_worker_split(task):
-    """Partitioned-layout placement of one spill batch in a worker process."""
+    """Partitioned-layout placement of one spill batch in a worker process. Returns the rows
+    the coverage floor zeroed (block-local) or None."""
     num_rows, files, layout, n_cols, bufs = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
-    _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
-                         bufs['csr_data'].array, bufs['csr_indices'].array,
-                         bufs['ip_all'].array, n_cols)
+    drop = bufs.get('drop_sky')
+    dropped = _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
+                                   bufs['csr_data'].array, bufs['csr_indices'].array,
+                                   bufs['ip_all'].array, n_cols,
+                                   drop_sky=drop.array if drop is not None else None)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
+    return dropped
+
+
+def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
+    """``setup_lsqr(reduce=...)``: the subframes' reductions from the workers (no matrix), the entry
+    counts per column (as the matrix build's collation accumulates them), then the constraint rows
+    (``constraint_blocks(pixel_counts)``). Returns the :class:`SetupResult`, or None when no
+    subframe has data."""
+    pixel_counts = np.zeros(total_cols, dtype=np.int64)
+    reduced = [None] * num_frames
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
+            futures = [executor.submit(_prep_lsqr_batch_worker, batch) for batch in batched_tasks]
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Reducing subframes",
+                               disable=not _state.progress_enabled):
+                for index, value, (ids, counts) in future.result():
+                    reduced[index] = value
+                    pixel_counts[ids] += counts            # integers: exact in any order
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
+    if all(v is None for v in reduced):
+        logger.warning("No valid data found in any subframe.")
+        return None
+    return SetupResult(A=None, b=None, pixel_counts=pixel_counts, pixel_fisher=None, pixel_cross=None,
+                       reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts))
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -255,15 +326,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                batch_size: int = 10, offset_regularization: bool = False,
                reg_weights: list[float] | None = None, adj_infos: list | None = None,
                poly_constraints_list: list | None = None,
-               mean_offsets_list: list | None = None, det_groups_list: list | None = None,
+               det_groups_list: list | None = None,
                det_templates: list | None = None,
                poly_basis_list: list | None = None,
-               use_per_frame_scalar: bool = False,
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.1,
                damp_offset_maps: list[float] | None = None,
-               mean_offset_group_rows: bool = False,
                group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
                aux_keys: list[str] | None = None,
@@ -276,8 +345,40 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                weight_function=None,
                priors: list | None = None,
                outlier_group_variable: str | None = None,
-               outlier_chunk_groups=None) -> SetupResult:
+               outlier_chunk_groups=None,
+               fixed_sky: bool = False, moments_only: bool = False,
+               reduce: Callable | None = None,
+               min_observations: int | None = None) -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``fixed_sky``: the sky is known and already subtracted from the data (by a
+    frame hook): no sky entries and no sky damping rows are emitted, so the
+    system holds the offset terms and their constraint rows alone (the sky columns stay empty and are compacted away) -- the
+    offsets given the sky, for any offset model.
+
+    ``moments_only``: build no matrix; the result holds the pixel state alone
+    (``pixel_counts``, ``pixel_fisher``, ``pixel_cross`` and, with
+    ``sky_rhs_moments``, ``pixel_rhs``: the same arrays the matrix build
+    returns), all a closed-form sky solve reads.
+
+    ``reduce``: build no matrix; each subframe's rows (``rows, cols, data, b,
+    num_rows``, the triplets the matrix is assembled from) go to
+    ``reduce(rows, cols, data, b, num_rows)`` in the workers (a module-level
+    function: it is sent to them), and the result holds the reductions
+    (``SetupResult.reduced``), ``pixel_counts`` and the constraint rows
+    (``SetupResult.constraint_blocks``).
+
+    ``min_observations``: the coverage floor. The sky pixels the collated
+    counts show observed fewer times than this (counted over the first sky
+    term's entries: after the masks, the clip and the weights) leave the solve:
+    at the placement every entry of their rows is set to zero, and so is the
+    rows' right-hand side; the rows keep their slots (the layout and the
+    collated counts stand) and the pixels' columns stay without data, with
+    coverage 0 in ``pixel_counts`` and the other pixel state from the
+    constraint builders on. A single observation's row is fitted exactly by
+    its pixel's own value and informs no other unknown, so the solution of
+    every other unknown is the one without those rows. Matrix builds only
+    (not with ``moments_only`` or ``reduce``).
 
     ``batch_spill_dir``: when set, workers stream each batch's bulk COO
     arrays (rows/cols/data, 12 B per entry — the dominant setup-phase
@@ -290,9 +391,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     SharedMemory path (its dtype varies per batch and it is ~25x smaller).
     Default None keeps the pure-SharedMemory behavior.
 
-    The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε``: K independent
-    additive offset blocks, each with its own chunk map, frame-to-group mapping,
-    template, regularization, and mean-offset constraint. With K=1 the
+    The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε`` (``s`` the sky): K
+    independent additive offset blocks, each with its own chunk map, frame-to-group
+    mapping, template and regularization. With K=1 the
     multi-map machinery reduces exactly to a plain single-chunk-map solve
     with no extra terms.
 
@@ -326,20 +427,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` per chain r per frame.
         Generalizes the constant-prior ``adj_infos`` (stencil=[1,-1]) to
         arbitrary finite-difference operators. Skipped in template mode.
-    mean_offsets_list : list or None
-        Per-map mean-offset constraint targets (length K). Each entry is a
-        length-num_frames array or ``None`` to disable for that map.
     det_groups_list : list or None
         Per-map frame→group labels (length K). Each entry is ``None`` (one
-        group per frame) or an array of length num_frames. A single per-frame
-        scalar bias column is added if any map uses det_groups (or if
-        ``use_per_frame_scalar`` is True).
-    use_per_frame_scalar : bool, optional
-        When True, add a per-frame scalar column (one per frame) even when
-        no map uses ``det_groups`` — useful for absorbing per-frame DC into
-        an explicit column so the per-frame chunk offsets only carry
-        within-frame structure. Pair with ``mean_offsets_list=[zeros]`` and
-        a zero-chunk x0 init to push DC into the scalar.
+        group per frame) or an array of length num_frames.
     det_templates : list or None
         Per-map fixed spatial templates (length K). When set for map m, that
         map solves only for a per-frame amplitude α[k] (block size = num_frames).
@@ -374,8 +464,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         Enable the per-map adjacency/offset regularization rows.
     poly_basis_list : list or None, optional
         Per-map hard polynomial basis (length K). When set for map m, that map
-        solves for polynomial coefficients (shape-only; DC absorbed by the
-        per-frame scalar) rather than per-chunk offsets.
+        solves for polynomial coefficients (shape-only: no constant; a frame's
+        level belongs to another map) rather than per-chunk offsets.
     postprocess_func : callable or None, optional
         Optional per-subframe postprocessing hook run inside the worker.
     preprocess_func : callable or None, optional
@@ -387,14 +477,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     damp_offset_maps : list of float or None, optional
         Coverage-weighted damping of the offset columns, per map (length K):
         map ``m`` is damped with weight ``damp_offset_maps[m]`` and maps with
-        weight 0 stay free; the per-frame scalar is never damped. Use it to
+        weight 0 stay free. Use it to
         gauge a per-frame map that should absorb only frame-unique artifacts
         while a detector-fixed map stays undamped.
-    mean_offset_group_rows : bool, optional
-        Emit each det-grouped map's mean-offset anchor once per group with
-        weight ``w·√k`` instead of once per frame (k frames per group). The
-        normal equations are identical; nnz drops from frames×chunks to
-        groups×chunks. Default False keeps the per-frame rows.
     group_adjacency_maps : list of int or None, optional
         Maps whose adjacency regularization is emitted once per group with
         weight ``reg_weight·√k`` instead of once per frame by the workers.
@@ -469,10 +554,19 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("outlier_thresh must be a positive number or None")
     if not (isinstance(max_workers, int) and max_workers > 0):
         raise ValueError("max_workers must be a positive integer")
+    if min_observations is not None:
+        if isinstance(min_observations, bool) or not isinstance(min_observations, (int, np.integer)) \
+                or min_observations < 2:
+            raise ValueError(f"min_observations={min_observations!r}: an integer >= 2 or None")
+        if moments_only or reduce is not None:
+            raise ValueError("min_observations: the coverage floor applies to the matrix build "
+                             "(not moments_only or reduce)")
     if not isinstance(ignore_list, (list, np.ndarray)):
         raise TypeError("ignore_list must be a list or array of data quality flags to ignore")
     if not (isinstance(batch_size, int) and batch_size > 0):
         raise ValueError("batch_size must be a positive integer")
+    if moments_only and reduce is not None:
+        raise ValueError("give moments_only or reduce, not both")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
@@ -491,7 +585,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     basis_list = _default(basis_list, None)
     adj_infos = _default(adj_infos, None)
     poly_constraints_list = _default(poly_constraints_list, None)
-    mean_offsets_list = _default(mean_offsets_list, None)
     det_groups_list = _default(det_groups_list, None)
     det_templates = _default(det_templates, None)
     poly_basis_list = _default(poly_basis_list, None)
@@ -534,7 +627,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     ]
     for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
                       ('poly_constraints_list', poly_constraints_list),
-                      ('mean_offsets_list', mean_offsets_list),
                       ('det_groups_list', det_groups_list),
                       ('det_templates', det_templates),
                       ('poly_basis_list', poly_basis_list),
@@ -560,7 +652,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # J sky terms: the sky block is J * num_sky columns, one map per term. The
     # data row of observation i of reference pixel P carries one nnz per term,
     #
-    #   data_i = w_i * Σ_j c_j(v_i) * S_j[P] + offsets + scalar,
+    #   data_i = w_i * Σ_j c_j(v_i) * S_j[P] + offsets,
     #
     # with c_j any function of the observation's data variables v_i (detector
     # maps, frame values, sky maps, stored layers, functions of those — see
@@ -638,7 +730,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
     # SystemLayout computes the per-map group mapping, template normalization,
-    # col_bases, the per-frame scalar block, and the total column count. The
+    # col_bases, and the total column count. The
     # Calibrator builds the same layout from the same inputs (see
     # pipeline_wrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
     # column arithmetic can never drift.
@@ -646,20 +738,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
         det_groups_list=det_groups_list, det_templates=det_templates,
-        use_per_frame_scalar=use_per_frame_scalar, poly_basis_list=poly_basis_list,
-        basis_list=basis_list)
+        poly_basis_list=poly_basis_list, basis_list=basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
     det_template_arr_list = layout.det_template_arr_list
-    num_scalar_cols = layout.num_scalar_cols
     col_bases = layout.col_bases
-    scalar_col_start = layout.scalar_col_start
     total_cols = layout.total_cols
 
-    if any_det_groups or use_per_frame_scalar:
-        logger.info(f"Locking detector offsets: {num_frames} frames -> "
-                    f"groups {num_offset_groups_list} + {num_frames} frame scalars")
+    if any_det_groups:
+        logger.info(f"Grouped offsets: {num_frames} frames -> groups {num_offset_groups_list}")
     if any(t is not None for t in det_template_arr_list):
         tmpl_indices = [m for m, t in enumerate(det_template_arr_list) if t is not None]
         logger.info(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
@@ -692,17 +780,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
         'col_bases': col_bases,
-        'scalar_col_start': scalar_col_start,
-        'num_scalar_cols': num_scalar_cols,
         'det_template_list': det_template_arr_list,
         # Template / hard-poly-basis offsets emit duplicate (row, col)
         # entries; merge them per subframe in the worker (bit-identical to
-        # the Phase-5 merge, see assembly._merge_subframe_duplicates) so no
+        # the final matrix's duplicate merge, see assembly._merge_subframe_duplicates) so no
         # downstream buffer is sized on the pre-merge stream.
         'merge_duplicates': bool(any(t is not None for t in det_template_arr_list)
                                  or any(pb is not None for pb in poly_basis_list)),
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
+        'fixed_sky': bool(fixed_sky),
         'aux_keys': aux_keys,
         'outlier_group_variable': outlier_group_variable,
         'basis_list': basis_list if any(b is not None for b in basis_list) else None,
@@ -791,7 +878,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         all_individual_tasks.append(task_params)
 
     _spill_run_dir = None
-    if batch_spill_dir is not None:
+    if batch_spill_dir is not None and reduce is None:       # reduce: no entries leave the workers
         os.makedirs(batch_spill_dir, exist_ok=True)
         _spill_run_dir = tempfile.mkdtemp(prefix='batch_spill_',
                                           dir=batch_spill_dir)
@@ -802,9 +889,84 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         batch = {'sub_tasks': all_individual_tasks[i : i + batch_size],
                  'batch_id': i // batch_size,
                  'spill_dir': _spill_run_dir}
+        if reduce is not None:
+            batch['reduce'] = reduce
         batched_tasks.append(batch)
 
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
+
+    def _constraint_blocks(pixel_counts):
+        """The global constraint blocks (as dicts, in emission order), given the collated entry
+        counts per column (``pixel_counts``). Shared by the matrix build and ``reduce``."""
+        num_sky_eff = num_sky_blocks * num_sky
+        sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
+        offset_pixel_counts = pixel_counts[num_sky_eff:]
+
+        # Global constraint blocks (see selfcal.constraint_builders). Emission order
+        # is load-bearing for the CSR scatter: grouped adjacency (group_adjacency_maps)
+        # -> sky damping (continuum, then line blocks) -> offset damping.
+        constraint_blocks = []
+
+        # --- Grouped adjacency (maps in group_adjacency_maps) ---
+        # Same conditions as the worker-side per-frame rows it replaces.
+        if offset_regularization:
+            for m in group_adjacency_maps:
+                if (reg_weights[m] <= 0 or adj_infos[m] is None
+                        or det_template_arr_list[m] is not None
+                        or poly_basis_list[m] is not None):
+                    continue
+                blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
+                                              num_chunks_list[m], frame_to_group_list[m],
+                                              col_bases)
+                logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
+                            f"(one copy per group, weight x sqrt(k))")
+                constraint_blocks.append(blk.as_dict())
+
+        # --- Coverage-weighted sky damping, one block per sky term ---
+        # Each term is damped by its own ``damp_weight`` when it sets one, else by
+        # ``damp_weight`` (first term) / ``damp_weight_line`` (the others) — the
+        # rule of SkyModel.damp_weights, shared with the closed-form sky solve.
+        if weighted_damping and not fixed_sky:          # a fixed sky has no unknowns to damp
+            for j, w_j in enumerate(sky_model.damp_weights(damp_weight, damp_weight_line)):
+                if w_j <= 0:
+                    continue
+                comp = sky_model.components[j]
+                logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
+                counts_j = sky_pixel_counts if j == 0 else pixel_counts[j * num_sky:(j + 1) * num_sky]
+                blk = sky_damping_block(j, w_j, counts_j, num_sky)
+                if blk is not None:
+                    constraint_blocks.append(blk.as_dict())
+
+        # --- Coverage-weighted offset damping ---
+        if damp_offset_maps is not None:
+            for m, w_m in enumerate(damp_offset_maps):
+                if w_m <= 0:
+                    continue
+                b0 = col_bases[m] - num_sky_eff
+                b1 = col_bases[m + 1] - num_sky_eff
+                logger.info(f"Applying Coverage-Weighted Offset Damping to map {m} "
+                            f"(weight={w_m}, {b1 - b0} columns)...")
+                blk = offset_damping_block(w_m, offset_pixel_counts[b0:b1], col_bases[m])
+                if blk is not None:
+                    constraint_blocks.append(blk.as_dict())
+
+
+        # --- User priors (any linear rows on the unknowns), after the built-ins ---
+        if priors:
+            from .constraint_builders import SystemInfo, as_constraint_block
+            info = SystemInfo(layout=layout, pixel_counts=pixel_counts, sky_names=tuple(sky_model.names))
+            for i, prior in enumerate(priors):
+                blk = as_constraint_block(prior(info), total_cols, name=getattr(prior, 'name', f'prior {i}'))
+                if blk is None:
+                    continue
+                logger.info(f"Applying prior {getattr(prior, 'name', i)}: {blk.num_rows} rows")
+                constraint_blocks.append(blk.as_dict())
+        return constraint_blocks
+
+    if reduce is not None:
+        return _setup_reduced(batched_tasks, max_workers=max_workers, total_cols=total_cols,
+                              num_frames=num_frames, shm_objects=shm_objects,
+                              constraint_blocks=_constraint_blocks)
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results
@@ -812,9 +974,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # bincount would need a full-nnz float64 squared-data temp — 8 B per
     # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
-    # The offset columns the data rows touch (the observed chunks; the regularisation rows do not count):
-    # the mean-offset anchor runs over them.
-    observed_cols = np.zeros(total_cols, dtype=bool)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
     pixel_rhs = (np.zeros(num_sky_blocks * num_sky, dtype=np.float64)
                  if sky_rhs_moments else None)
@@ -844,9 +1003,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return arr
 
     # ----------------------------------------------------------------
-    # Phase 1: collate worker results.
+    # Collation: the workers' results, batch by batch.
     #
-    # We retain each batch's (rows, cols, data, b) so Phase 4 can scatter
+    # We retain each batch's (rows, cols, data, b) so the data-row placement can scatter
     # them directly into the final CSR buffers in batch-id order. Per-batch
     # we also accumulate row_nnz_per_batch[batch_id] = bincount(local_rows)
     # so the CSR indptr can be built without re-touching every batch's row
@@ -864,11 +1023,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # (one range: block-major storage with one int32 indptr per block, the
     # same bytes per row as a BlockCSR); more ranges only serve the
     # byte-exact verification kernel. Ranges are cut in the FULL column
-    # space here (compaction is decided only after Phase 1); the compaction
+    # space here (compaction is decided only after the collation); the compaction
     # map is monotone, so each full-space range maps onto one contiguous
-    # compact range. Phase 1 counts each batch's entries PER RANGE (T
+    # compact range. The collation counts each batch's entries PER RANGE (T
     # integers per batch, order-free) — the per-row layout comes out of the
-    # placement kernel itself. Phase 2e may lower T (memory gate) by merging
+    # placement kernel itself. The row layout may lower T (memory gate) by merging
     # adjacent ranges, whose cuts are a subset of these.
     try:
         _split_T_req = max(1, int(os.environ.get('SELFCAL_RMATVEC_SPLIT', '1')))
@@ -916,19 +1075,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             # each range.
             range_nnz_per_batch[batch_id] = np.add.reduceat(
                 _cnt, _full_cuts[:-1]).astype(np.int64)
-        _obs = result.get('offset_observed')
-        if _obs is not None and _obs.size:
-            observed_cols[_obs] = True            # a boolean OR: the same in any batch order
         _oc = result.get('offset_counts')
         if _oc is not None:
             # The worker merged duplicate offset entries; pixel_counts
-            # keeps the pre-merge contract for the offset + scalar
-            # columns from the counts it shipped (integers -> exact).
+            # keeps the pre-merge contract for the offset columns from the
+            # counts it shipped (integers -> exact).
             _cnt[num_sky_blocks * num_sky:] = 0
             _cnt[_oc[0]] = _oc[1]
         # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
-        # add the global row offset in Phase 3 (cumulative across
-        # batches). Keeping this batch-local is what lets Phase 4
+        # add the global row offsets later (batch_row_starts, cumulative across
+        # batches). Keeping this batch-local is what lets the placement
         # stream-scatter without revisiting all batches twice.
         row_nnz_per_batch[batch_id] = np.bincount(
             _b_rows, minlength=result['num_rows']
@@ -1167,7 +1323,56 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _masks = _rowvals = _rowb = _v = _m_j = _sky = result = None
 
     # ----------------------------------------------------------------
-    # Phase 2: compute per-batch row offsets, total_rows_data, and the
+    # Coverage floor (min_observations): the sky pixels the collated counts
+    # show observed fewer times than min_observations leave the solve. Their
+    # rows are zeroed at the data-row placement below (values; the right-hand
+    # side after it); the pixels' columns keep their slots without data and
+    # read as uncovered from here on (the constraint builders, the outputs).
+    # ----------------------------------------------------------------
+    drop_sky = None
+    if min_observations is not None:
+        _obs = pixel_counts[:num_sky]              # the first sky term's observations of each grid pixel
+        _drop_px = (_obs > 0) & (_obs < int(min_observations))
+        _n_drop_px = int(np.count_nonzero(_drop_px))
+        if _n_drop_px:
+            drop_sky = np.tile(_drop_px, num_sky_blocks)          # every sky term's column of those pixels
+            pixel_counts[:drop_sky.size][drop_sky] = 0
+            pixel_fisher[:drop_sky.size][drop_sky] = 0.0
+            if pixel_rhs is not None:
+                pixel_rhs[drop_sky] = 0.0
+            if pixel_cross is not None:
+                for _v in pixel_cross.values():
+                    _v[_drop_px] = 0.0
+        logger.info(f"Coverage floor: {_n_drop_px} sky pixels observed fewer than {int(min_observations)} times "
+                    "leave the solve.")
+        del _obs, _drop_px
+
+    if moments_only:
+        # The pixel state, accumulated by the collation, is all the caller reads: no matrix is
+        # built and the batches' entries are dropped.
+        any_kept = False
+        for r in batch_results:
+            if r is None:
+                continue
+            any_kept = True
+            for _p in r.get('files', ()):
+                try:
+                    os.remove(_p)
+                except OSError:
+                    pass
+        batch_results = None
+        if _spill_run_dir is not None:
+            shutil.rmtree(_spill_run_dir, ignore_errors=True)
+        if not any_kept:
+            logger.warning("No valid data found in any subframe.")
+            return None, None
+        if pixel_cross is not None and num_sky_blocks == 2:
+            pixel_cross = pixel_cross[(0, 1)]
+        return SetupResult(A=None, b=None, pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                           pixel_cross=pixel_cross, pixel_rhs=pixel_rhs)
+
+    # ----------------------------------------------------------------
+    # Row offsets: per-batch row offsets, total_rows_data, and the
     # data-row half of row_nnz.
     # ----------------------------------------------------------------
     batch_row_starts = [0] * len(batched_tasks)
@@ -1189,108 +1394,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     total_rows_data = int(total_rows_data)
 
     # ----------------------------------------------------------------
-    # Phase 2b: build constraint blocks (rows-local-to-block, cols, data,
+    # Constraint blocks: build them (rows-local-to-block, cols, data,
     # b). We assemble them up front so we can pre-count their per-row nnz,
     # finalize total_rows, and allocate the CSR buffers once.
     # ----------------------------------------------------------------
-    num_sky_eff = num_sky_blocks * num_sky
-    sky_pixel_counts = pixel_counts[:num_sky]                       # continuum coverage
-    offset_pixel_counts = pixel_counts[num_sky_eff:]
-
-    # Global constraint blocks (see selfcal.constraint_builders). Emission order
-    # is load-bearing for the CSR scatter: mean-offset anchors (per map) ->
-    # grouped adjacency (group_adjacency_maps) -> sky damping (continuum, then
-    # line blocks) -> offset damping.
-    constraint_blocks = []
-
-    # --- Per-frame mean-offset constraints (one block per chunk map) ---
-    #TODO: Pass weight from higher level instead of hardcoding here
-    constraint_weight = 10.0
-    for m in range(K):
-        mean_off = mean_offsets_list[m]
-        if mean_off is None:
-            continue
-        if det_template_arr_list[m] is not None:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: template mode does not have per-chunk offsets")
-            continue
-        if poly_basis_list[m] is not None:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: hard poly-basis is shape-only (DC in the scalar)")
-            continue
-        logger.info(f"Applying target mean offset constraints for map {m} ({num_frames} frames)...")
-        _nb = 1 if basis_list[m] is None else int(basis_list[m].n)
-        # Over the chunks with data (the frame's observed chunks: a chunk outside the job's window
-        # has no data and would otherwise enter the anchor only, leaving its constant and the
-        # frame's scalar free to shift against each other, and uncompactable).
-        _blk = mean_offset_block(
-            m, mean_off, num_frames, num_chunks_list[m], frame_to_group_list[m],
-            col_bases, weight=constraint_weight,
-            group_rows=mean_offset_group_rows, n_basis=_nb, covered=observed_cols)
-        if _blk.num_rows == 0:
-            logger.warning(f"Skipping mean-offset constraint for map {m}: no frame has an observed chunk")
-            continue
-        constraint_blocks.append(_blk.as_dict())
-
-    # --- Grouped adjacency (maps in group_adjacency_maps) ---
-    # Same conditions as the worker-side per-frame rows it replaces.
-    if offset_regularization:
-        for m in group_adjacency_maps:
-            if (reg_weights[m] <= 0 or adj_infos[m] is None
-                    or det_template_arr_list[m] is not None
-                    or poly_basis_list[m] is not None):
-                continue
-            blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
-                                          num_chunks_list[m], frame_to_group_list[m],
-                                          col_bases)
-            logger.info(f"Grouped adjacency for map {m}: {blk.num_rows} rows "
-                        f"(one copy per group, weight x sqrt(k))")
-            constraint_blocks.append(blk.as_dict())
-
-    # --- Coverage-weighted sky damping, one block per sky term ---
-    # Each term is damped by its own ``damp_weight`` when it sets one, else by
-    # ``damp_weight`` (first term) / ``damp_weight_line`` (the others) — the
-    # rule of SkyModel.damp_weights, shared with the closed-form sky solve.
-    if weighted_damping:
-        for j, w_j in enumerate(sky_model.damp_weights(damp_weight, damp_weight_line)):
-            if w_j <= 0:
-                continue
-            comp = sky_model.components[j]
-            logger.info(f"Applying Coverage-Weighted Damping ({comp.name}, damp={w_j})...")
-            counts_j = sky_pixel_counts if j == 0 else pixel_counts[j * num_sky:(j + 1) * num_sky]
-            blk = sky_damping_block(j, w_j, counts_j, num_sky)
-            if blk is not None:
-                constraint_blocks.append(blk.as_dict())
-
-    # --- Coverage-weighted offset damping ---
-    if damp_offset_maps is not None:
-        for m, w_m in enumerate(damp_offset_maps):
-            if w_m <= 0:
-                continue
-            b0 = col_bases[m] - num_sky_eff
-            b1 = col_bases[m + 1] - num_sky_eff
-            logger.info(f"Applying Coverage-Weighted Offset Damping to map {m} "
-                        f"(weight={w_m}, {b1 - b0} columns)...")
-            blk = offset_damping_block(w_m, offset_pixel_counts[b0:b1], col_bases[m])
-            if blk is not None:
-                constraint_blocks.append(blk.as_dict())
-
-
-    # --- User priors (any linear rows on the unknowns), after the built-ins ---
-    if priors:
-        from .constraint_builders import SystemInfo, as_constraint_block
-        info = SystemInfo(layout=layout, pixel_counts=pixel_counts, sky_names=tuple(sky_model.names))
-        for i, prior in enumerate(priors):
-            blk = as_constraint_block(prior(info), total_cols, name=getattr(prior, 'name', f'prior {i}'))
-            if blk is None:
-                continue
-            logger.info(f"Applying prior {getattr(prior, 'name', i)}: {blk.num_rows} rows")
-            constraint_blocks.append(blk.as_dict())
-
-    # These slices are views: left alive they would pin the whole
-    # pixel_counts array through the CSR build even after it is spilled.
-    sky_pixel_counts = offset_pixel_counts = observed_cols = None
+    constraint_blocks = _constraint_blocks(pixel_counts)
 
     # ----------------------------------------------------------------
-    # Phase 2c: finalize total_rows + build row_nnz over the entire row
+    # Row totals: finalize total_rows + build row_nnz over the entire row
     # space (data rows first, then each constraint block).
     # ----------------------------------------------------------------
     constraint_row_total = sum(blk['num_rows'] for blk in constraint_blocks)
@@ -1317,7 +1428,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # Per-range entry totals of the constraint blocks (partitioned storage
     # only), from their full-space column ids — same shape as the per-batch
-    # totals Phase 1 accumulated.
+    # totals the collation accumulated.
     range_nnz_per_cblock = None
     if _want_split:
         range_nnz_per_cblock = [
@@ -1326,7 +1437,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
             for blk in constraint_blocks]
 
     # ----------------------------------------------------------------
-    # Phase 2d: build full_b (vector of right-hand-sides). Concatenated in
+    # Right-hand side: build full_b (vector of right-hand-sides). Concatenated in
     # the same order as the row scatter: per-batch b in batch-id order,
     # then each constraint block's b.
     # ----------------------------------------------------------------
@@ -1368,7 +1479,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         blk['b'] = None
 
     # ----------------------------------------------------------------
-    # Parallel-placement decision (Phase 4a): spill batches are placed by
+    # Parallel-placement decision (data-row placement): spill batches are placed by
     # worker processes into disjoint entry spans; the arrays they need
     # (csr_data/csr_indices and, for partitioned storage, ip_all to write;
     # indptr/col_map to read) live in memfd-backed SharedBuffers handed to
@@ -1391,7 +1502,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return np.zeros(n, dtype=dtype) if zero else np.empty(n, dtype=dtype)
 
     # ----------------------------------------------------------------
-    # Phase 2e: total_nnz, then the CSR row layout. The unified path builds
+    # Row layout: total_nnz, then the CSR row layout. The unified path builds
     # the int64 global indptr; the partitioned path builds a storage-block
     # table instead (one block per spill batch, then one per constraint
     # block) and never materialises a global indptr at all.
@@ -1485,14 +1596,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ~5e-6 relative in the maps), which is why it used to be excluded for
     # template modes under the byte-equality rule.
     # ----------------------------------------------------------------
-    # Some runs still need the uncompacted path — e.g. when the caller passes
-    # mean_offsets_list (per-frame chunk constraint rows write into specific
-    # column indices that must not be dropped). mean_offsets / damping rows
-    # already register coverage via the data rows, so columns they touch will
-    # have pixel_counts > 0. Constraint rows pointing at otherwise-uncovered
-    # cols would still need those slots: when one does, the compaction is left
-    # to apply_lsqr.
+    # Some runs still need the uncompacted path: constraint rows (damping,
+    # priors) register coverage via the data rows, so columns they touch
+    # normally have pixel_counts > 0, but a constraint row pointing at an
+    # otherwise-uncovered column would still need its slot: when one does,
+    # the compaction is left to apply_lsqr.
     active_mask = pixel_counts > 0
+    if drop_sky is not None:        # the floor's columns keep their slots: their zeroed entries need one
+        active_mask[:drop_sky.size] |= drop_sky
     compaction_active = True
     for blk in constraint_blocks:
         cols_b = blk['cols']
@@ -1505,7 +1616,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         assert n_active < 2**31, (
             f"n_active={n_active} overflows int32 column ids")
         # int32 halves both the map itself (total_cols entries) and every
-        # per-batch col_map[cols_b] gather output in Phase 4. Values are
+        # per-batch col_map[cols_b] gather output of the placement. Values are
         # exact (cumsum <= n_active < 2^31).
         col_map = _shared_alloc('col_map', int(active_mask.size), np.int32)
         np.cumsum(active_mask, dtype=np.int32, out=col_map)
@@ -1527,12 +1638,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     # ----------------------------------------------------------------
     # Park the pixel state for the CSR build. pixel_counts/fisher/cross were
-    # last read by the Phase-2 constraint builders and the column compaction
+    # last read by the constraint builders and the column compaction
     # just above; nothing between here and the return touches them, yet they
     # are large — 16 B per column (counts + fisher) plus 8 B x num_sky per
     # cross pair, e.g. ~17 GB for a 4-sky-block model on a ~1.5e8-pixel
     # grid — and they would otherwise sit on top of the process-lifetime
-    # memory peak (the Phase-5 CSR/BlockCSR build below). A round trip
+    # memory peak (the matrix hand-over's CSR/BlockCSR build below). A round trip
     # through scratch disk removes them from that peak; the arrays come
     # back bit-identical (np.save/np.load of int64/float64), and
     # Calibrator.apply_lsqr spills them again for the solve.
@@ -1544,7 +1655,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_counts = pixel_fisher = pixel_cross = None
 
     # ----------------------------------------------------------------
-    # Phase 3: allocate the entry buffers (plus, for partitioned storage,
+    # Buffer allocation: the entry buffers (plus, for partitioned storage,
     # the back-to-back per-(block, range) indptrs). With the spill path
     # active they are memfd-backed shared mappings the worker processes
     # write into; otherwise plain arrays written in this process —
@@ -1554,9 +1665,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     csr_indices = _shared_alloc('csr_indices', total_nnz, np.int32)
     _ip_all = (_shared_alloc('ip_all', int(_ip_off[-1]), np.int32)
                if _partitioned else None)
+    if drop_sky is not None and _par_scatter:    # the floor's columns, readable by the placement workers
+        _drop_shared = _shared_alloc('drop_sky', drop_sky.size, np.bool_)
+        _drop_shared[...] = drop_sky
+        drop_sky = _drop_shared
+        del _drop_shared
 
     # ----------------------------------------------------------------
-    # Phase 4a: place the data rows. Every spill batch owns a contiguous row
+    # Data-row placement. Every spill batch owns a contiguous row
     # range — hence a contiguous entry span of the CSR buffers (unified), or
     # one whole storage block (partitioned) — so worker processes can place
     # batches in any order without a byte of overlap, and a batch that has
@@ -1564,13 +1680,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # (scipy's coo_tocsr, see _place_rows) reproduces the stable
     # sort-by-row / within-row-cumcount placement the previous Python kernel
     # produced, in one C pass; the layout it derives is checked against the
-    # Phase-1 counts, so a disagreement raises rather than corrupts.
+    # collated counts, so a disagreement raises rather than corrupts.
     #
     # Safety net: a batch that does not finish within
     # SELFCAL_SCATTER_TIMEOUT_S (or a broken pool) is redone serially below,
     # so an unattended run degrades to slow, never to a hang.
     # ----------------------------------------------------------------
     _done_par = set()
+    _floored = {}           # batch id -> the batch-local rows the coverage floor zeroed
     _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
     _batch_block = {src: _b for _b, src in enumerate(_blk_src)
                     if src is not None} if _partitioned else {}
@@ -1580,20 +1697,21 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                 int(_blk_nnz[_b]), int(_ip_off[_b]), _blk_rnnz[_b])
 
     if _partitioned:
-        logger.info(f"Phase 4a: parallel placement into partitioned storage "
+        logger.info(f"Data-row placement: parallel, into partitioned storage "
                     f"({_nb} storage blocks x {_split_T} column ranges), "
                     f"{len(_file_batches)} batches over {_scatter_workers} "
                     "workers (forkserver).")
     elif _par_scatter:
-        logger.info(f"Phase 4a: parallel placement, {len(_file_batches)} batches "
+        logger.info(f"Data-row placement: parallel, {len(_file_batches)} batches "
                     f"over {_scatter_workers} workers (forkserver).")
     else:
-        logger.info("Phase 4a: serial placement.")
+        logger.info("Data-row placement: serial.")
     if _par_scatter:
         if _partitioned:
             _bufs = {'csr_data': _shared['csr_data'],
                      'csr_indices': _shared['csr_indices'],
-                     'ip_all': _shared['ip_all'], 'col_map': _shared.get('col_map')}
+                     'ip_all': _shared['ip_all'], 'col_map': _shared.get('col_map'),
+                     'drop_sky': _shared.get('drop_sky')}
             _worker = _scatter_block_worker_split
             _tasks = [(_bi, (_blk_rows[_b], batch_results[_bi]['files'],
                              _layout_of(_b), total_cols, _bufs))
@@ -1601,7 +1719,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         else:
             _bufs = {'csr_data': _shared['csr_data'],
                      'csr_indices': _shared['csr_indices'],
-                     'indptr': _shared['indptr'], 'col_map': _shared.get('col_map')}
+                     'indptr': _shared['indptr'], 'col_map': _shared.get('col_map'),
+                     'drop_sky': _shared.get('drop_sky')}
             _worker = _scatter_batch_worker
             _tasks = [(_bi, (batch_row_starts[_bi], _r['num_rows'], _r['files'],
                              total_cols, _bufs))
@@ -1612,12 +1731,14 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         try:
             _futs = {_ex.submit(_worker, _task): _key for _key, _task in _tasks}
             for _f in as_completed(_futs, timeout=_timeout * max(1, len(_futs))):
-                _f.result(timeout=_timeout)     # re-raises a worker exception
+                _rows_floored = _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
+                if _rows_floored is not None:
+                    _floored[_futs[_f]] = _rows_floored
         except (_FutTimeout, BrokenProcessPool) as _e:
-            logger.warning(f"Phase 4a: parallel placement aborted ({type(_e).__name__}: "
-                           f"{_e}); {len(_futs) - len(_done_par)} batch(es) will be "
-                           "placed serially.")
+            logger.warning(f"Data-row placement: the parallel placement aborted "
+                           f"({type(_e).__name__}: {_e}); {len(_futs) - len(_done_par)} batch(es) "
+                           "will be placed serially.")
             for _p in list(getattr(_ex, '_processes', {}).values()):
                 try:
                     _p.kill()
@@ -1634,13 +1755,17 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if _partitioned:
             if batch_id not in _done_par and batch['num_rows']:
                 _b = _batch_block[batch_id]
-                _scatter_block_split(batch['rows'], batch['cols'], batch['data'],
-                                     _blk_rows[_b], _layout_of(_b), col_map,
-                                     csr_data, csr_indices, _ip_all, total_cols)
+                _rows_floored = _scatter_block_split(
+                    batch['rows'], batch['cols'], batch['data'], _blk_rows[_b], _layout_of(_b), col_map,
+                    csr_data, csr_indices, _ip_all, total_cols, drop_sky=drop_sky)
+                if _rows_floored is not None:
+                    _floored[batch_id] = _rows_floored
         elif batch_id not in _done_par:
-            _scatter_one_batch(batch['rows'], batch['cols'], batch['data'],
-                               batch_row_starts[batch_id], batch['num_rows'],
-                               indptr, col_map, csr_data, csr_indices, total_cols)
+            _rows_floored = _scatter_one_batch(
+                batch['rows'], batch['cols'], batch['data'], batch_row_starts[batch_id], batch['num_rows'],
+                indptr, col_map, csr_data, csr_indices, total_cols, drop_sky=drop_sky)
+            if _rows_floored is not None:
+                _floored[batch_id] = _rows_floored
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
@@ -1654,9 +1779,18 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     batch_results = None
     if _spill_run_dir is not None:
         shutil.rmtree(_spill_run_dir, ignore_errors=True)
+    if drop_sky is not None:
+        # The coverage floor's rows: their right-hand side, as their values above.
+        _n_floored = 0
+        for _bi, _rows_floored in _floored.items():
+            full_b[batch_row_starts[_bi] + _rows_floored] = 0
+            _n_floored += int(_rows_floored.size)
+        logger.info(f"Coverage floor: {_n_floored} observations of those pixels set to zero "
+                    "(values and right-hand side); their columns stay without data.")
+        _floored = drop_sky = None
 
     # ----------------------------------------------------------------
-    # Phase 4b: scatter constraint blocks at their reserved row ranges.
+    # Constraint placement: scatter the constraint blocks at their reserved row ranges.
     #
     # Each constraint block is a contiguous row range as well (unified: its
     # own entry span; partitioned: its own storage block), so the same
@@ -1680,7 +1814,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     _shared.clear()          # fds closed; the arrays keep their mappings
 
     # ----------------------------------------------------------------
-    # Phase 5: hand the placed entries over as a matrix.
+    # Matrix hand-over: the placed entries become the matrix.
     #
     # Partitioned storage is already in its final layout: each
     # (block, range) piece is a contiguous CSR, so all that remains is the
@@ -1741,7 +1875,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         del _pieces, _canon
         full_A = ColSplitCSR(_sub, _row_bounds, _cuts_c, (total_rows, n_active))
         del _sub, _ip_all, csr_data, csr_indices
-        logger.info(f"Phase 5: ColSplitCSR with {_nb} int32 storage blocks x "
+        logger.info(f"Matrix hand-over: ColSplitCSR with {_nb} int32 storage blocks x "
                     f"{_split_T} column ranges (nnz={total_nnz}).")
     elif total_nnz >= _block_thr:
         from .blockcsr import build_block_csr
@@ -1750,7 +1884,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                                  (total_rows, n_active), target)
         _blk_starts = [int(indptr[r0]) for r0 in full_A.row_bounds[:-1]]
         del indptr
-        logger.info(f"Phase 5: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
+        logger.info(f"Matrix hand-over: BlockCSR with {len(full_A.blocks)} int32 row-blocks "
                     f"(nnz={total_nnz}).")
         _blocks = full_A.blocks
     else:
@@ -1781,7 +1915,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         _, _, _nnz_pre, _nnz_post = merge_duplicates_inplace(_blocks, _buf, _blk_starts)
         del _buf, _blocks, _blk_starts
         if _nnz_post != _nnz_pre:
-            logger.info(f"Phase 5: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
+            logger.info(f"Matrix hand-over: merged {_nnz_pre - _nnz_post} duplicate (row, col) "
                         f"entries in place (nnz {_nnz_pre} -> {_nnz_post}).")
 
     # NOTE: the pixel state is deliberately NOT restored here. Restoring it
@@ -1808,7 +1942,8 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
                            num_offset_groups_list: list[int],
                            chunk_maps: list[np.ndarray],
                            num_sky_blocks: int = 1,
-                           num_chunks_list: list[int] | None = None
+                           num_chunks_list: list[int] | None = None,
+                           window: np.ndarray | None = None
                            ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
     """Generic coverage slicing for any number of sky blocks.
 
@@ -1825,6 +1960,14 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
     layout count must be used to slice + advance the cursor correctly; the caller
     (``save_calibration``) overrides the coverage for those maps, so a
     shape-correct placeholder frac is returned rather than a per-chunk division.
+
+    ``window`` (a boolean map on the chunk maps' grid, or None): the detector
+    pixels the solve can observe. A chunk's coverage fraction is then its count
+    over the chunk's pixels inside the window (None: all its pixels), so a chunk
+    larger than the window, such as the one chunk of a per-frame scalar, is
+    measured against what the job could see of it; a chunk with no pixel inside
+    the window has the fraction 0 (its count holds only the rows that touch
+    every chunk, such as smoothness rows).
     """
     num_sky = ref_shape[0] * ref_shape[1]
     sky_coverages = [pixel_counts[j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -1839,8 +1982,13 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
         block = ng * nchk
         offset_coverage = pixel_counts[cursor:cursor + block].reshape(ng, nchk)
         if nchk == real_chunks:
-            chunk_sizes = np.bincount(cm[cm >= 0].ravel(), minlength=real_chunks)
-            offset_valid_frac = (offset_coverage / np.maximum(chunk_sizes, 1))
+            inside = cm >= 0
+            if window is not None:
+                if np.shape(window) != np.shape(cm):
+                    raise ValueError(f"the window {np.shape(window)} and chunk map {m} {np.shape(cm)} differ in shape")
+                inside &= np.asarray(window, dtype=bool)
+            chunk_sizes = np.bincount(cm[inside].ravel(), minlength=real_chunks)
+            offset_valid_frac = np.where(chunk_sizes > 0, offset_coverage / np.maximum(chunk_sizes, 1), 0.0)
         else:
             # Layout columns are not one-per-chunk (template alpha / poly-basis
             # coeffs); the caller overrides this map's coverage, so a shape-correct

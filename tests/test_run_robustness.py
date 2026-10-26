@@ -98,7 +98,7 @@ def test_rerun_overwrite_makes_a_mosaic_again_and_keeps_the_cwd(toy):
 
 def test_submit_refuses_settings_a_detached_run_cannot_rebuild(toy):
     model = sc.Model(sky=[sc.Sky(damping=0.001), sc.Sky('known', times='known')],
-                     offsets=[sc.Offsets(smooth=0.1, mean_zero=True)],
+                     offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')],
                      variables={'known': sc.SkyMap(np.ones(toy.reference()[1]))})
     recipe = sc.Recipe(model, fit=sc.Fit(10), coadd=None, numerics=sc.Numerics(2, batch=4), name='arrays')
     with pytest.raises(ConfigError, match='could not rebuild'):
@@ -117,7 +117,7 @@ def test_a_run_script_function_reaches_the_worker_processes(toy, tmp_path):
         f"from selfcal import *\nFIELD = {toy!r}\n\n"
         "def ramp(det_x):\n    return (det_x - 32.0) / 64.0\n\n"
         "RECIPE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.001), sc.Sky('ramp', times=ramp)],\n"
-        "                            offsets=[sc.Offsets(smooth=0.1, mean_zero=True)]),\n"
+        "                            offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),\n"
         "                   fit=sc.Fit(10), coadd=None, numerics=sc.Numerics(2, batch=4), name='script_fn')\n\n"
         "if __name__ == '__main__':\n    print(FIELD.calibrate(RECIPE))\n")
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in (_REPO, os.environ.get('PYTHONPATH')) if p))

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from ...models.profiles import GaussianProfile, QuadratureSigma
 from ...models.sky_model import Coefficient, SkyModel
-from .spherex_utility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
+from .spherex_utility import LINE_SIGMA_UM, PAH_LINE_CENTER_UM
 
 PAH_INTRINSIC_VAR_UM2 = 2.890e-4
 FWHM_TO_SIGMA = 2.355

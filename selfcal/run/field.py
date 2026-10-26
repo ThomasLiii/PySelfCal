@@ -170,6 +170,7 @@ def _prepare(plan):
                 if kind == 'sky':
                     expected[f'pass{i}'] = fingerprint(book.passed(job, i, 'sky'))
                 else:
+                    expected[f'pass{i}'] = fingerprint(book.passed(job, i, 'off'))
                     expected[f'sky{i - 1}'] = book.fp_of(previous)
                 previous = path
             clear_stale_intermediates(work, cal_dir, stem, expected)

@@ -18,7 +18,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from selfcal.core.constraint_builders import ConstraintBlock, as_constraint_block, mean_offset_block  # noqa: E402
+from selfcal.core.constraint_builders import ConstraintBlock, as_constraint_block  # noqa: E402
 from selfcal.core.layout import SystemLayout                                                   # noqa: E402
 from selfcal.geometry.map_helper import _parse_chunk_map, chunk_to_det                           # noqa: E402
 from selfcal.models.offset_model import Basis, OffsetBlock, OffsetModel, as_basis_values        # noqa: E402
@@ -167,15 +167,6 @@ def test_layout_counts_basis_columns():
     assert L.col_bases == [25, 25 + 12, 25 + 12 + 6]
 
 
-def test_mean_zero_anchor_per_basis_function():
-    ftg = np.arange(2)
-    blk = mean_offset_block(0, np.zeros(2), 2, 6, ftg, [10, 22], weight=1.0, n_basis=2)
-    assert blk.num_rows == 4 and blk.nnz_per_row == 3
-    cols = blk.cols.reshape(4, 3)
-    assert np.array_equal(cols[0], [10, 12, 14]) and np.array_equal(cols[1], [11, 13, 15])
-    assert np.array_equal(cols[2], [16, 18, 20]) and np.array_equal(cols[3], [17, 19, 21])
-
-
 # ---------------------------------------------------------------------------
 # the spec: variables, offset functions, groupings, weight, priors
 # ---------------------------------------------------------------------------
@@ -189,7 +180,7 @@ def test_spec_lowers_general_model():
         'weight': {'variable': 'var', 'function': 'tests.test_general_model:double'},
         'sky': [{'name': 'continuum'},
                 {'name': 'mod', 'coefficient': {'variable': 'psi', 'function': 'tests.test_general_model:double'}}],
-        'offset': [{'kind': 'free', 'reg_weight': 0.1, 'mean_zero': True, 'name': 'chunks',
+        'offset': [{'kind': 'free', 'reg_weight': 0.1, 'name': 'chunks',
                     'basis': {'variable': ['det_x', 'det_y'], 'function': 'tests.test_general_model:plane', 'n': 2}},
                    {'kind': 'fixed', 'coefficient': {'variable': 'time'}},
                    {'map': 'detector', 'kind': 'grouped', 'groups': 'hwp'}],
@@ -336,7 +327,7 @@ def test_sky_subtractor_reads_frame_variables(tmp_path):
     import h5py
     from selfcal.core.subframe import FrameContext
     from selfcal.models.sky_model import SkyComponent, SkyModel
-    from selfcal.pipeline.npass import SkySubtractor
+    from selfcal.npass.offsets import SkySubtractor
     ref = (6, 6)
     cal = str(tmp_path / 'sky.h5')
     with h5py.File(cal, 'w') as f:

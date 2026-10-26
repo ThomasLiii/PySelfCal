@@ -102,6 +102,10 @@ class Plan:
             lines.append(f"  stop        {describe_stop(r.fit.stop, r.fit)}")
         if r is not None and r.fit.deflate is not None:
             lines.append(f"  deflate     {describe_deflate(r.fit.deflate)}")
+        if r is not None and getattr(r.fit, 'seed', 'separate') == 'offsets':
+            lines.append("  start       the sky at zero, every offset column at its frame's joint least-squares fit to the data")
+        if r is not None and getattr(r.fit, 'seed', 'separate') == 'zero':
+            lines.append("  start       everything at zero")
         if r is not None and r.fit.gauge is not None:
             lines.append(f"  gauge       {describe_gauge(r.fit.gauge)}")
         if self.monitor is not None:
@@ -139,8 +143,13 @@ def describe_gauge(gauge) -> str:
 def describe_deflate(deflate) -> str:
     """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
+    rule = ''
+    ex = getattr(deflate, 'exclude', None)
+    if ex is not None:
+        rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '
+                 'excluded from the sky (a hard constraint in map space), the space re-based, the solve on the constrained system')
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
-            f"offsets that absorb them, solved directly; the iterations run on the rest")
+            f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 
 
 def describe_stop(stop, fit=None) -> str:
@@ -536,13 +545,18 @@ def _check_passes(ctx, recipe, passes):
     jobs = ctx.jobs()
     if len(jobs) != 1:
         raise ConfigError(f"calibrate(passes=...): the N-pass solve runs one job; got {[j.name for j in jobs]}")
-    if recipe.model.spectral_window() is None:
-        raise ConfigError("calibrate(passes=...): the OFFSET pass refits a polynomial along the spectral axis over "
-                          "the model's window: give the model a polynomial with a window (Offsets(polynomial="
-                          "sc.Poly(2, window=range(lo, hi + 1))))")
-    if any(t.times is not None or t.basis is not None for t in recipe.model.offsets):
-        raise ConfigError("calibrate(passes=...): the OFFSET pass refits a polynomial per frame; offset terms with "
-                          "times= or basis= run without passes")
+    if not recipe.model.offsets:
+        raise ConfigError("calibrate(passes=...): the model has no offset terms, so there is nothing for the OFFSET "
+                          "passes to solve")
+    shared = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if t.per != 'frame']
+    if shared:
+        raise ConfigError(f"calibrate(passes=...): the offset terms on {shared} are shared across frames (per=...); "
+                          f"an OFFSET pass solves every frame's offsets on their own and takes per='frame' terms only")
+    from ..models.model import SkySignature
+    tied = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if isinstance(t.exclude, SkySignature)]
+    if tied:
+        raise ConfigError(f"calibrate(passes=...): the offset terms on {tied} exclude a sky signature, a constraint "
+                          f"across frames; an OFFSET pass solves every frame's offsets on their own")
     for name, clip in (('init_clip', passes.init_clip), ('sky_clip', passes.sky_clip),
                        ('offset.clip', passes.offset.clip)):
         per = getattr(clip, 'per', 'frame')

@@ -565,9 +565,9 @@ def clear_stale_intermediates(work_dir, cal_dir, stem, expected):
     """Delete the N-pass intermediates that were made from other inputs.
 
     The SKY passes keep per-tile moment dumps (``<work_dir>/moments/pass<i>_<tile>.npz``; with
-    ``sky_merge="stitch"``, ``<cal_dir>/<stem>_pass<i>sky_<tile>.h5``) and the OFFSET passes export
-    the previous sky (``<work_dir>/sky_pass<j>/``); the engine reuses any it finds, so an
-    interrupted run can resume. ``expected`` maps ``"pass<i>"`` and ``"sky<j>"`` to the fingerprint
+    ``sky_merge="stitch"``, ``<cal_dir>/<stem>_pass<i>sky_<tile>.h5``) and the OFFSET passes their
+    tiles' solutions (``<cal_dir>/<stem>_pass<i>off_<tile>.h5``) and the previous sky they export
+    (``<work_dir>/sky_pass<j>/``); the engine reuses any it finds, so an interrupted run can resume. ``expected`` maps ``"pass<i>"`` and ``"sky<j>"`` to the fingerprint
     of what made them; a manifest in ``work_dir`` records the fingerprints the intermediates were
     made with, and those that differ (or are unknown) are deleted before the run.
     """
@@ -584,6 +584,7 @@ def clear_stale_intermediates(work_dir, cal_dir, stem, expected):
             i = key[len('pass'):]
             paths = glob.glob(os.path.join(work_dir, 'moments', f'pass{i}_*.npz'))
             paths += glob.glob(os.path.join(cal_dir, f'{stem}_pass{i}sky_*.h5'))
+            paths += glob.glob(os.path.join(cal_dir, f'{stem}_pass{i}off_*.h5'))
         else:
             paths = [os.path.join(work_dir, f'sky_pass{key[len("sky"):]}')]
         for p in paths:

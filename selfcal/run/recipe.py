@@ -29,6 +29,7 @@ rest, for solves whose slowest part is the large scales (:mod:`selfcal.core.defl
 """
 from __future__ import annotations
 
+import math
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Callable, Literal
 
@@ -323,6 +324,33 @@ class Stop(Config):
 
 
 @dataclass(frozen=True)
+class Degenerate(Config):
+    """Which pattern directions of a :class:`Deflate` count as degenerate, to be excluded from the sky.
+
+    The deflation's setup decomposes its pattern space (the smooth sky shapes with the offsets that absorb
+    them) into directions and measures how well the data see each: the seen fraction, ``sqrt(lambda /
+    lambda_max)``, the direction's residual signature against the best-seen one's, once the offsets have
+    absorbed what they can. A direction seen at a fraction ``s`` is solved as what the data show divided
+    by ``s``: whatever the frames leave unmodelled along it enters the map ``1 / s`` times larger. The
+    directions seen below ``below`` are degenerate (the exact gauges, seen at nothing, among them): their
+    sky shapes, in map space, become a hard constraint on the sky (as :class:`~selfcal.models.model.Sky`
+    ``exclude=`` does for shapes given by hand): the map has no component along them, what the data place
+    there goes to the other terms, and the deflation space is re-based on the constrained patterns. One
+    run, nothing named by hand, whatever model, footprint or instrument made the direction invisible: on a
+    survey whose geometry makes the sky's radial quadratic the image of a detector pattern, that quadratic
+    comes out together with the mean and the planes; elsewhere, whatever is degenerate within the pattern
+    space. The default, 0.05, follows from a map requirement of a few 1e-3 over frames whose residual
+    pattern is a few 1e-4. The record keeps the selection and every direction's measures (its seen
+    fraction and composition).
+    """
+    below: float = 0.05
+
+    def _validate(self):
+        if not 0.0 < float(self.below) < 1.0:
+            raise ConfigError(f"Degenerate(below={self.below}): a seen fraction, 0 < below < 1")
+
+
+@dataclass(frozen=True)
 class Deflate(Config):
     """Solve the smooth sky patterns directly and iterate on the rest (deflation).
 
@@ -345,11 +373,22 @@ class Deflate(Config):
     The solution includes the patterns' least-squares values at once: where the data barely constrain
     a pattern (the record's ``nullness``), that value is what the data say, however large, while an
     unconverged plain solve would still be near its start. Directions the data cannot see at all
-    (gauges: the sky's mean against per-frame scalars; a plane or quadratic the offsets absorb
+    (gauges: the sky's mean against the frames' levels; a plane or quadratic the offsets absorb
     exactly) are recognised and left as a plain solve leaves them. A gauge the patterns contain only in
     part (a higher-degree pattern the offsets absorb exactly, which needs a flat geometry and offsets
     of that degree) would make the solve drift along it once converged: deflate it whole
     (``basis="polynomial"`` of at least its degree).
+
+    The setup's record keeps the decomposition of the pattern space (each direction's pattern weights,
+    eigenvalue and seen fraction, ``sqrt(lambda / lambda_max)``), and the log prints the least-seen
+    directions: a near-null direction's least-squares value is what little the data say about it,
+    noise and systematics included, and it can be large.
+
+    ``exclude``: a :class:`Degenerate` names the directions of the pattern space that are degenerate (those the
+    data see below a fraction); their sky shapes are excluded from the sky as a hard constraint in map space
+    (the mechanism of ``Sky(exclude=)``), the deflation space is re-based on the constrained patterns from
+    the same setup, and the solve runs on the constrained system. The post-solve plane gauge (``Fit(gauge=)``)
+    then has nothing to move and is left off. None (the default): off.
 
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
@@ -362,6 +401,7 @@ class Deflate(Config):
     basis: Literal['cosine', 'polynomial'] = 'cosine'
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
+    exclude: Degenerate | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -371,6 +411,8 @@ class Deflate(Config):
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
+        if self.exclude is not None and not isinstance(self.exclude, Degenerate):
+            raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:
             terms = (self.terms,) if isinstance(self.terms, str) else tuple(self.terms)
             if not terms or not all(isinstance(t, str) and t for t in terms):
@@ -405,7 +447,8 @@ class Gauge(Config):
     against the frame's x axis on the grid, with a slope fixed on the detector as the nuisance -- and
     moved into the sky: added to the cal's sky term and, ``apply="map"``, to the maps of every mosaic
     made from the cal (the offsets stay as solved; exact), or, ``apply="offsets"``, removed from the
-    offsets instead (exact only up to the band discretisation). ``degree=2`` moves a sky quadratic
+    offsets instead (exact only up to the band discretisation; the constant term takes each frame's
+    change of level, so it has no ``exclude=``). ``degree=2`` moves a sky quadratic
     too, fitted with the plane to every (frame, chunk) slope, with a detector-fixed slope per chunk
     and a polynomial of degree ``position_degree`` (default 2) in the frame's position as the
     nuisance. A quadratic is not a freedom of the model: its curvature along x within a frame has no
@@ -467,6 +510,12 @@ class Fit(Config):
     (:mod:`selfcal.core.solve_record`). ``clip``: the
     outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
+    ``min_observations``: leave out of the solve the sky pixels observed fewer times than this (2: those a
+    single observation covers, whose one row the pixel's own value fits exactly, informing nothing else),
+    counted over the observations the solve uses (after the masks, the clip if any and the weights) by
+    the matrix build itself; those observations are set to zero in the matrix and the right-hand side,
+    the pixels' columns are left without data (coverage 0, value 0 in the solution, outside the
+    deflation's patterns), and the coadd still covers them (None: every pixel).
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -480,6 +529,13 @@ class Fit(Config):
     directly and iterate on the rest (a :class:`Deflate`; None: plain iterations). ``gauge``: after
     the solve, move the sky plane / quadratic a per-frame gradient model absorbed into the sky (a
     :class:`Gauge`; None: the solution as solved).
+    ``seed``: the solver's starting vector: ``'separate'`` (every offset column at its own least-squares fit
+    to the data, as if every other unknown were zero: a constant at the weighted mean of its pixels; the sky
+    terms at zero: :func:`~selfcal.core.solution.compute_x0_from_Ab`) or ``'offsets'`` (every offset column
+    at its frame's joint least-squares fit to the data, the sky at zero:
+    :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). The terms'
+    hard constraints (``exclude=``) are then imposed on the start. A warm start (``calibrate(start=)``)
+    replaces them.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -499,8 +555,18 @@ class Fit(Config):
     deflate: Deflate | None = added(None, since='2026-10')
     vectors: Literal['float32', 'float64'] | None = added(None, since='2026-10')
     gauge: Gauge | None = added(None, since='2026-10')
+    seed: Literal['separate', 'offsets', 'zero'] = added('separate', since='2026-10')
+    min_observations: int | None = added(None, since='2026-10')
 
     def _validate(self):
+        if self.seed not in ('separate', 'offsets', 'zero'):
+            raise ConfigError(f"Fit(seed={self.seed!r}): 'separate' (every offset column at its own least-squares fit, the sky "
+                              f"at zero), 'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) "
+                              f"or 'zero' (everything at zero)")
+        if self.min_observations is not None and (isinstance(self.min_observations, bool)
+                                                  or not isinstance(self.min_observations, int)
+                                                  or self.min_observations < 2):
+            raise ConfigError(f"Fit(min_observations={self.min_observations!r}): an integer >= 2 (None: every pixel)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:
@@ -550,9 +616,12 @@ class Coadd(Config):
     :class:`Fit`. ``oversample``: each detector pixel sampled ``oversample`` times per axis on the
     way (the final mosaic stays on the reference grid). ``instrument_maps``: coadd the
     instrument's per-pixel maps too (SPHEREx: the wavelength maps). ``min_chunk_coverage``: a
-    chunk observed in a smaller fraction of a frame takes no offset. ``subtract_offsets``:
-    subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: remove each
-    frame's mean offset first. ``frame_hook``: called on each corrected frame.
+    chunk a frame observed in a smaller fraction of its pixels the job can see takes no offset of
+    its own: the instrument's renderer fills it from the frame's other chunks where it can
+    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``subtract_offsets``:
+    subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: first subtract
+    from the first offset map its mean over every frame's valid chunks (one number, recorded as the
+    mosaic's ``MEANOFF``). ``frame_hook``: called on each corrected frame.
     """
     clip: float | None = 2.0
     _: KW_ONLY

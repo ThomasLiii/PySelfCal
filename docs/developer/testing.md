@@ -46,10 +46,11 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | | `test_nsky_roundtrip.py` | a three-component sky model survives the save and the load exactly, with the v3 layout and its v2 aliases |
 | | `test_offset_structure.py` | the generic chunk-axes builders reproduce the SPHEREx builders exactly |
 | | `test_piecewise_offset_basis.py` | the segmented Chebyshev offset basis |
+| | `test_offset_terms.py` | the per-frame scalar as an ordinary offset term and `exclude=sc.Poly(0)` as an exact constraint: the column layout; the constraint on a map with several axes; the removed settings refused; two spellings of one model reach the same fit; a chunk's coverage fraction counted over its pixels in the solve's window; the mosaic leaves out a zeroed chunk nothing fills; a cal file with a separate `frame_scalar` refused |
 | Instruments | `test_euclid_instrument.py` | the Euclid exposure layout, chunk maps and axes, edge taper, renderers, hooks and grouped terms |
 | | `test_spherex_precompute.py` | `spherex.precompute_lvf` writes the LVF arc parameters |
 | | `test_grid_chunk_map.py` | rectangular chunk maps of any size |
-| Solver | `test_constraint_builders.py`, `test_grouped_constraints.py` | the constraint rows (mean-offset anchors, sky and offset damping), grouped rows and per-map offset damping |
+| Solver | `test_constraint_builders.py`, `test_grouped_constraints.py` | the constraint rows (sky and offset damping), grouped rows and per-map offset damping |
 | | `test_closed_form_sky.py` | the closed-form sky-only solve equals the converged LSQR solution |
 | | `test_prep_lsqr_arity.py` | the per-frame preparation returns the same number of values on every path, including a frame with no valid pixel |
 | | `test_blockcsr_bitequal.py`, `test_colsplit_bitequal.py`, `test_x0_bitequal.py` | the memory- and speed-optimised matrix paths give the same bytes as the reference paths |
@@ -93,7 +94,9 @@ run real-data calibrations, written with the Python API, and compare every datas
 calibration and every extension of the mosaic with stored references, exactly.
 
 Run them for any change that can alter numbers in the solve or the mosaic: the system build, the
-constraint rows, the solver, the model lowering, the coadd, or the engine's handling of frames.
+constraint rows, the solver, the model lowering, the coadd, or the engine's handling of frames. A
+change to code that no gate covers adds a short gate for it: a small subset of an existing fixture,
+the fewest iterations that exercise the code, and goldens made from the committed tree.
 [Regression gates](gates.md) lists the gates and their references, and the engine views that check
 a change to the engine without a solve. The gates read data that only exist on the processing
 host, so CI does not run them.

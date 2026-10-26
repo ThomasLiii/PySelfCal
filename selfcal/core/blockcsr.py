@@ -15,7 +15,7 @@ ranges).
 
 ``BlockCSR`` is intentionally minimal: an ordered list of scipy
 ``csr_matrix`` row-blocks plus their global row boundaries. Only
-``core.solve.apply_lsqr`` and ``core.solution.compute_x0_scalar_only``
+``core.solve.apply_lsqr`` and the starts of ``core.solution``
 consume it. ``setup_lsqr`` emits it only when total nnz crosses the int64
 threshold (env ``SELFCAL_BLOCK_NNZ`` overrides, for tests), so every
 smaller run keeps the plain ``csr_matrix`` path byte-for-byte.

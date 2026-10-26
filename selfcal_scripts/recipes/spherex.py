@@ -16,10 +16,12 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal.models.variables import identity
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT', 'SLOPE_GAUGE_COLUMNS',
+           'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
            'pahfit_tiled']
 
@@ -53,13 +55,15 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
 
 #: The channel recipe of 2026-10 (the transfer-function and zodi-leak work on Ch9, NumCol 1 with 17
-#: channels): subchannel constants plus a free gradient per frame along detector x, undamped and
-#: unregularised, no clip, every observation weighted by its shot noise floored at the frame's median
+#: channels): subchannel constants with no constant over a frame's subchannels, a free gradient per frame along
+#: detector x and a per-frame scalar (the frame's level), undamped and unregularised, no clip, every observation
+#: weighted by its shot noise floored at the frame's median
 #: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve plane gauge applied on
 #: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
-#: ignored). The gate `transfer` pins it to the workspace implementations it replaced.
+#: ignored). The gate `production` runs it on 100 frames of the qr2 set.
 SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
-                                 offsets=[sc.Offsets(on='subchannel', mean_zero=True), spherex.frame_slope()],
+                                 offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), spherex.frame_slope(),
+                                          sc.Offsets('scalar', on='detector')],
                                  weight=sc.shot_noise()),
                         fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
                                    stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)),
@@ -73,6 +77,64 @@ SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
 #: wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same name and the same cal; the mosaic's other maps
 #: are SLOPE_GAUGE's.
 CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_maps=True))
+
+#: SLOPE_GAUGE weighted by the L2b ``VARIANCE`` instead of the shot-noise proxy (2026-10-15, the covariance
+#: work): the frame layer ``variance`` (the SPHEREx reader stores it; frames made before 2026-10-15 get it
+#: from ``selfcal.io.reprojection.add_layers``) weights the solve's rows by 1/sigma and the coadd by
+#: 1/variance. The same model, fit, gauge and coadd.
+SLOPE_GAUGE_VARWEIGHT = SLOPE_GAUGE.replace(
+    model=SLOPE_GAUGE.model.replace(variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
+    name='slope_gauge_varweight')
+
+#: The shared-column term (the quadrant-bowl work, 2026-10-17): one constant per detector column
+#: (2,040) shared by EVERY frame, on the SPHEREx ``detector_column`` chunk map. It holds the
+#: survey-mean detector-fixed pattern along x that the per-frame subchannel constants + x-slope do
+#: not represent and that one-sided coverage amplifies into a footprint's outskirts (the D2 bulge,
+#: the quadrant rims). The deflation eliminates the shared columns by a Schur complement.
+SHARED_COLUMNS = sc.Offsets('columns', on='detector_column', per='all')
+
+#: SLOPE_GAUGE plus the shared columns: the recipe of the Ch9 W17 maps `*_slope_gauge_colonly_defl`
+#: (D1-D6, 2026-10-18; made from the workspace driver with the same term, then under the name
+#: ``readout`` patched to one chunk per column). Footprint-invariant to 0.16e-3 MJy/sr on D2 and
+#: the Gaussian-sky transfer function of the production recipe or better on the D3 / D6 scenes.
+SLOPE_GAUGE_COLUMNS = SLOPE_GAUGE.replace(
+    model=SLOPE_GAUGE.model.replace(offsets=tuple(SLOPE_GAUGE.model.offsets) + (SHARED_COLUMNS,)),
+    name='slope_gauge_columns')
+
+#: SLOPE_GAUGE_VARWEIGHT plus the shared columns (the covariance work's recipe from 2026-10-18).
+SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
+    model=SLOPE_GAUGE_VARWEIGHT.model.replace(offsets=tuple(SLOPE_GAUGE_VARWEIGHT.model.offsets) + (SHARED_COLUMNS,)),
+    name='slope_gauge_varweight_columns')
+
+#: The base recipe of the weak-mode work (2026-10-21; workspace/weak-modes/plan.md): per frame one free constant per
+#: subchannel (they hold the frame's level: no per-frame scalar term and no constraint on their mean; the default
+#: seed starts each at the inverse-variance weighted mean of its pixels) and the x-slope per subchannel; one
+#: constant per detector column shared by every
+#: frame, without its constant and slope across the columns (those two duplicate the per-frame terms exactly);
+#: weighted by the frames' L2b VARIANCE layer; no clip, damping, regularisation, degenerate-mode exclusion or
+#: post-solve gauge; deflated CGLS to the chi-squared stop; the coadd as SLOPE_GAUGE's (inverse-variance weights,
+#: VAR_MAP). The weak-mode runs add a single-observation drop (a workspace frame hook).
+SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
+    sc.Model(sky=[sc.Sky(damping=0.0)],
+             offsets=[sc.Offsets(on='subchannel'), spherex.frame_slope(),
+                      sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(1))],
+             variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
+    fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
+               stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10))),
+    coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
+    numerics=sc.Numerics(30, batch=40),
+    name='subch_varweight_columns')
+
+#: The final channel recipe of the weak-mode work (the user, 2026-10-21 and 10-22): SUBCH_VARWEIGHT_COLUMNS with the
+#: x-slope term kept from every smooth sky pattern of the deflation but the constant (exclude=SkySignature('all'): a
+#: sky field cannot hide in the per-frame slopes), and the sky pixels that a single observation covers left out of the
+#: solve (Fit(min_observations=2); the coadd still covers them). Its products carry 'subch_varweight_columns_final'.
+SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
+    model=SUBCH_VARWEIGHT_COLUMNS.model.replace(offsets=tuple(
+        o.replace(exclude=sc.SkySignature('all')) if o.name == 'xs_term' else o
+        for o in SUBCH_VARWEIGHT_COLUMNS.model.offsets)),
+    fit=SUBCH_VARWEIGHT_COLUMNS.fit.replace(min_observations=2),
+    name='subch_varweight_columns_final')
 
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
@@ -114,11 +176,13 @@ def pahfit_tiled(name, *, iterations):
                      coadd=None, name=name)
 
 
-#: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel.
+#: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel; the
+#: OFFSET passes fit only observations whose modelled sky is below 0.05 MJy/sr. The OFFSET passes refit the
+#: recipe's own offset terms (until 2026-10 they refitted a separate degree-4 polynomial per column).
 MULTILINE3_PASSES = sc.Passes(5, order='offset_first',
                               init_clip=sc.Clip(2.5, per=SUBCHANNEL, ignore_flags=[21]),
                               sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
-                              offset=sc.Refit(4, clip=sc.Clip(2.5, per=SUBCHANNEL)))
+                              offset=sc.Refit(clip=sc.Clip(2.5, per=SUBCHANNEL), bright_cut=0.05))
 
 
 # ---------------------------------------------------------------------------------------------- tilings

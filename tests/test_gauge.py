@@ -98,7 +98,7 @@ def toy_field(tmp_path, n_exp=36, seed=11):
 
 def model():
     return sc.Model(sky=[sc.Sky(damping=0.0)],
-                    offsets=[sc.Offsets(mean_zero=True), sc.Offsets('slope', times=sc.Function(xtilde, of='det_x'))])
+                    offsets=[sc.Offsets(), sc.Offsets('slope', times=sc.Function(xtilde, of='det_x'))])
 
 
 def large_scale_error(field, got, ok, sky, truth_wcs, degree=2):
@@ -157,6 +157,17 @@ def test_the_plane_from_the_frames_mean_slopes():
     assert np.allclose(g_fit, g, rtol=1e-9, atol=0) and np.all(H_fit == 0), g_fit
     assert abs(stats['detector_slope'] - c) < 1e-9 * c and stats['residual_rms'] < 1e-9 * stats['slope_rms']
     assert stats['n_frames'] == K - 1 and stats['n_slopes'] == (K - 1) * S - 1 and stats['n_parameters'] == 3
+    # the fit's covariance: nothing left over here, so no uncertainty; with noise on the slopes, the
+    # recovered plane is within its error bars, and the covariance is the residual variance x (A^T A)^-1
+    assert np.shape(stats['g_cov']) == (2, 2) and max(stats['g_sigma']) < 1e-9 * np.abs(g).max()
+    noisy = b + rng.normal(0, 2e-4 * half, b.shape)
+    g_n, _, st = fit_gauge(noisy, ocov, J, None, None, half)
+    assert all(abs(g_n[i] - g[i]) < 5 * st['g_sigma'][i] for i in range(2)), (g_n, st['g_sigma'])
+    # the off-diagonal pair is equal to rounding: some BLAS kernels (OpenBLAS's Zen, on CI's AMD
+    # runners) give the two products different last digits
+    assert abs(st['g_corr']) <= 1
+    assert np.isclose(st['g_cov'][0][1], st['g_cov'][1][0], rtol=1e-12, atol=0.0)
+    assert st['g_sigma'][0] > 0 and st['detector_slope_sigma'] > 0
 
 
 def test_frame_geometry_from_the_header(tmp_path):
@@ -203,12 +214,14 @@ def test_frame_geometry_with_an_off_centre_reference_pixel(tmp_path):
 
 # ---- the solve -------------------------------------------------------------------------------------------
 def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
-    """A known plane hidden in the offsets of a solved cal (its image in the slopes, the band constants and
-    the frame scalars, taken out of the sky) is a solution the data cannot tell from the original; a
-    solve warm-started there keeps it, and the gauge finds it in the slopes (on top of whatever the
-    original solve had absorbed) and brings it back: the cal's sky term and the mosaic match the truth
-    either way, the offsets stay as solved. (A quadratic cannot hide the same way: its curvature along
-    x has no term in the offsets, so the solve corrects it; the fit's quadratic is tested above.)"""
+    """A known plane hidden in the offsets of a solved cal (its image in the slopes and the band constants, taken
+    out of the sky) is found by the gauge in the slopes, on top of whatever the original solve had absorbed: the
+    gauge of the hidden cal minus that of the original is the hidden plane. The image is not exactly invisible to the
+    data (a frame's level held by chunk constants is weighted by the detector's interpolation weights, which sum to
+    a little less than one at its edge), so a solve does not keep it; gauged solves from the original's start and
+    from the hidden one both give the sky term and the mosaic the truth's large scales. (A quadratic cannot hide the
+    same way: its curvature along x has no term in the offsets, so the solve corrects it; the fit's quadratic is
+    tested above.)"""
     import shutil
 
     import h5py
@@ -226,7 +239,6 @@ def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
         sky0 = f['sky/continuum'][:].astype(np.float64)
         cov = f['sky_coverage/continuum'][:]
         c, b = f['offsets/map_0'][:].astype(np.float64), f['offsets/map_1'][:].astype(np.float64)
-        ocov, scalar = f['offset_coverage/map_1'][:], f['frame_scalar'][:].astype(np.float64)
         cmap = f['chunk_maps/map_0'][:]
         J, centres = frame_geometry(frame_header_values(frames, GAUGE_KEYS), ref_wcs, CENTRE)
         m = cov > 0
@@ -234,30 +246,30 @@ def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
         p0 = np.array([px.mean(), py.mean()])
         P = polynomial(sky0.shape, g_true, H_true, p0)
         sky0[m] -= P[m] - P[m].mean()
-        good = (ocov > 0) & np.isfinite(b)
         dy = chunk_row_offsets(cmap, b.shape[1], CENTRE[1])
-        c_new, b_new, s_new = move_into_offsets(c, b, scalar, good, J, centres - p0, dy, -g_true, -H_true, HALF)
+        c_new, b_new = move_into_offsets(c, b, J, centres - p0, dy, -g_true, -H_true, HALF)
         f['sky/continuum'][...] = sky0.astype(np.float32)
         f['offsets/map_0'][...] = c_new.astype(f['offsets/map_0'].dtype)
         f['offsets/map_1'][...] = b_new.astype(f['offsets/map_1'].dtype)
-        f['frame_scalar'][...] = s_new.astype(f['frame_scalar'].dtype)
-    fit = sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12, gauge=sc.Gauge('slope'))
-    gauged0 = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged0'))
-    gauged = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged'), start=hidden)
-    with gauged0.cal() as c0g:
-        gz0 = c0g.gauge
-        s0g, cov0 = c0g.sky(0), c0g.sky_coverage(0)
-    with gauged.cal() as c1:
-        s1, cov1 = c1.sky(0), c1.sky_coverage(0)
-        gz = c1.gauge
-        off1 = c1.offsets[1]
-    assert gz is not None and gz['applied_to'] == 'map' and gz['n_slopes'] > 0
+    # the gauge of each cal as solved: the hidden one's minus the original's is the hidden plane
+    from selfcal.core.gauge import gauge_cal
+    terms = dict(slope_map=1, constant_map=0, centre=CENTRE, half=HALF, log=lambda *a, **k: None)
+    original = str(tmp_path / 'original.h5')
+    shutil.copyfile(plain.cal_paths[0], original)
+    gz0, gz = gauge_cal(original, frames, ref_wcs, **terms), gauge_cal(hidden, frames, ref_wcs, **terms)
     dg, dH = np.asarray(gz['g']) - np.asarray(gz0['g']), np.asarray(gz['H']) - np.asarray(gz0['H'])
     print(f"gauge found g = {gz['g']}, the original solve's {gz0['g']}: difference {dg} (hidden {g_true}); "
           f"H difference {np.abs(dH).max():.2e} (nothing hidden)")
     assert np.allclose(dg, g_true, rtol=0.1, atol=1e-4), (dg, g_true)
     assert np.abs(dH).max() < 1e-7, dH
-    assert np.std(off1 - b_new) < 0.05 * np.std(b_new - b)                  # the warm start kept the hidden image
+    fit = sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12, gauge=sc.Gauge('slope'))
+    gauged0 = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged0'))
+    gauged = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged'), start=hidden)
+    with gauged0.cal() as c0g:
+        s0g, cov0 = c0g.sky(0), c0g.sky_coverage(0)
+    with gauged.cal() as c1:
+        s1, cov1 = c1.sky(0), c1.sky_coverage(0)
+        assert c1.gauge is not None and c1.gauge['applied_to'] == 'map' and c1.gauge['n_slopes'] > 0
     ok = (cov1 >= 4) & np.isfinite(s1) & (cov0 >= 4) & np.isfinite(s0g)
     scale = float(np.std(P[m]))
     e0 = large_scale_error(field, s0g, ok, sky, truth)
@@ -314,6 +326,21 @@ def test_a_mosaic_of_a_gauged_cal(tmp_path):
         for name in ('MEAN_MAP', 'STD_MAP'):
             a0 = np.asarray(m0[name])
             assert np.array_equal(a0, np.asarray(m1[name])) and np.array_equal(a0, np.asarray(m2[name])), name
+    from astropy.io import fits
+    with made.cal() as cal:
+        recorded = cal.gauge
+    with fits.open(made.mosaic_paths[0]) as hdul:
+        gauged = [x.name for x in hdul if x.name in ('MEAN_MAP', 'SC_MEAN_MAP')]
+    assert 'MEAN_MAP' in gauged
+    for ext in gauged:                                                     # the gauge and its uncertainties in the header
+        h = fits.getheader(made.mosaic_paths[0], ext)
+        assert h['GAUGEDEG'] == 1                                             # FITS cards keep ~15 digits
+        assert h['GAUGEG1'] == pytest.approx(float(recorded['g'][0]), rel=1e-12)
+        assert h['GAUGEG2'] == pytest.approx(float(recorded['g'][1]), rel=1e-12)
+        assert h['GAUGESG1'] == pytest.approx(float(recorded['g_sigma'][0]), rel=1e-12) and h['GAUGESG1'] > 0
+        assert abs(h['GAUGERHO']) <= 1
+        assert h['GAUGEAMP'] > 0 and h['GAUGEASG'] >= 0 and h['GAUGEGEO'] == recorded['geometry']
+    assert 'GAUGEG1' not in fits.getheader(made.mosaic_paths[0], 'STD_MAP')
     for kw in (dict(tiles=sc.Tiles(grid=(2, 1))), dict(passes=sc.Passes(3))):
         with pytest.raises(sc.ConfigError, match='post-solve gauge'):
             lower(field, recipe, **kw)

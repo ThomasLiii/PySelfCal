@@ -7,12 +7,11 @@ worker and are not built by these helpers, except the grouped adjacency of
 (or ``None`` when it would be empty); ``setup_lsqr`` appends them in a fixed
 order that the CSR scatter depends on:
 
-    1. per-map mean-offset anchors (one per chunk map)
-    2. grouped adjacency, one block per map in ``group_adjacency_maps``
+    1. grouped adjacency, one block per map in ``group_adjacency_maps``
        (absent by default)
-    3. sky damping, in sky-component order (continuum, then each line block)
-    4. offset damping, per map with ``damp_offset_maps``
-    5. user priors (``setup_lsqr(priors=...)``), in the order given — any
+    2. sky damping, in sky-component order (continuum, then each line block)
+    3. offset damping, per map with ``damp_offset_maps``
+    4. user priors (``setup_lsqr(priors=...)``), in the order given — any
        linear rows a caller builds from :class:`SystemInfo`
        (:func:`as_constraint_block` normalises them)
 
@@ -42,26 +41,6 @@ class ConstraintBlock:
     num_rows: int
     nnz_per_row: object  # int (uniform) or ndarray (per-row)
 
-    def restrict(self, keep):
-        """The block without the entries whose column is not in ``keep`` (a boolean mask over the full
-        column layout): each row keeps its other entries and its right-hand side is rescaled to the
-        entries kept (the rows are sums over equal weights, so a row of ``n`` entries with right-hand side
-        ``b`` asks for the same per-entry mean with ``n'`` entries and ``b n' / n``); rows left with no entry
-        are dropped. Returns a new block (``nnz_per_row`` per row)."""
-        keep = np.asarray(keep, dtype=bool)
-        sel = keep[self.cols]
-        if sel.all():
-            return self
-        old_nnz = np.bincount(self.rows_local, minlength=self.num_rows).astype(np.float64)
-        rows = self.rows_local[sel]
-        new_nnz = np.bincount(rows, minlength=self.num_rows)
-        alive = new_nnz > 0
-        renumber = np.cumsum(alive) - 1
-        with np.errstate(divide='ignore', invalid='ignore'):
-            b = np.where(alive, self.b * new_nnz / np.where(old_nnz > 0, old_nnz, 1), 0.0)[alive]
-        return ConstraintBlock(renumber[rows].astype(np.int64), self.cols[sel], self.data[sel], b,
-                               num_rows=int(alive.sum()), nnz_per_row=new_nnz[alive].astype(np.int64))
-
     def as_dict(self):
         """Return the block as the dict the CSR scatter consumes, keyed by field name.
 
@@ -76,117 +55,6 @@ class ConstraintBlock:
             'num_rows': self.num_rows,
             'nnz_per_row': self.nnz_per_row,
         }
-
-
-def mean_offset_block(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                      weight=10.0, group_rows=False, n_basis=1, covered=None):
-    """Per-frame mean-offset anchor for chunk map ``m``.
-
-    Constrains each frame's per-chunk offset mean toward ``mean_off`` (length
-    num_frames) with the given Lagrange ``weight``. Caller must skip template-
-    mode maps (no per-chunk offsets) and None ``mean_off``.
-
-    ``covered`` (a boolean mask over the full column layout, or None): the anchor
-    runs over the chunks the frame observed, i.e. the offset columns with data
-    (:meth:`ConstraintBlock.restrict`). Over every chunk of the map, as before
-    (``covered=None``), a chunk outside the job's window, with no data, enters
-    the anchor only: the frame's scalar and its observed constants can then
-    shift against each other with the unobserved constants taking up the mean,
-    a direction the data barely see (exactly unseen without smoothing rows), and
-    those columns cannot be compacted away.
-
-    ``group_rows``: when several frames share one offset group (det_groups),
-    their per-frame rows are identical (same columns, same weight, and the same
-    target when the targets agree). k identical rows contribute k·w²·11ᵀ to AᵀA
-    and k·w·β to Aᵀb, exactly what one row with weight w·√k and rhs β·√k
-    contributes. Emitting one row per group is therefore exact in the normal
-    equations while cutting nnz from frames×chunks to groups×chunks (3.8e9 →
-    4e6 for the N=510 Euclid EDFN solve). A group whose frames disagree on the
-    target keeps its per-frame rows. Off by default: the per-frame form is
-    frozen by the byte-equality goldens.
-
-    ``n_basis`` > 1 (a map whose offsets are coefficients of ``n_basis``
-    functions per chunk, columns ``c*n_basis + k``): one anchor per function
-    ``k`` — the mean over chunks of each function's coefficient.
-    """
-    if n_basis > 1:
-        blk = _mean_offset_block_basis(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases,
-                                       weight, group_rows, int(n_basis))
-        return blk if covered is None else blk.restrict(covered)
-    blk = _mean_offset_block_plain(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases, weight, group_rows)
-    return blk if covered is None else blk.restrict(covered)
-
-
-def _mean_offset_block_plain(m, mean_off, num_frames, num_chunks_m, ftg_m, col_bases, weight, group_rows):
-    """``mean_offset_block`` over every chunk of the map, one function per chunk."""
-    mean_offsets_arr = np.asarray(mean_off)
-    nc_m = num_chunks_m
-    if group_rows:
-        ftg = np.asarray(ftg_m).astype(np.int64)
-        targets = mean_offsets_arr.astype(np.float64).flatten()
-        chunk_idx = np.arange(nc_m, dtype=np.int64)
-        rows_l, cols_l, data_l, b_l = [], [], [], []
-        r = 0
-        for g in np.unique(ftg):
-            members = np.nonzero(ftg == g)[0]
-            tg = targets[members]
-            if np.all(tg == tg[0]):
-                w = weight * np.sqrt(len(members))
-                rows_l.append(np.full(nc_m, r, dtype=np.int64))
-                cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
-                data_l.append(np.full(nc_m, w, dtype=np.float32))
-                b_l.append(tg[0] * nc_m * w)
-                r += 1
-            else:
-                for fi in members:
-                    rows_l.append(np.full(nc_m, r, dtype=np.int64))
-                    cols_l.append(col_bases[m] + g * nc_m + chunk_idx)
-                    data_l.append(np.full(nc_m, weight, dtype=np.float32))
-                    b_l.append(targets[fi] * nc_m * weight)
-                    r += 1
-        return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l),
-                               np.concatenate(data_l), np.array(b_l, dtype=np.float64),
-                               num_rows=r, nnz_per_row=nc_m)
-    rows_local = np.repeat(np.arange(num_frames, dtype=np.int64), nc_m)
-    offset_starts = col_bases[m] + ftg_m.astype(np.int64) * nc_m
-    cols = (offset_starts[:, None] + np.arange(nc_m, dtype=np.int64)[None, :]).reshape(-1)
-    data = np.full(num_frames * nc_m, weight, dtype=np.float32)
-    b = mean_offsets_arr.astype(np.float64).flatten() * nc_m * weight
-    return ConstraintBlock(rows_local, cols, data, b, num_rows=num_frames, nnz_per_row=nc_m)
-
-
-def _mean_offset_block_basis(m, mean_off, num_frames, num_cols_m, ftg_m, col_bases, weight,
-                             group_rows, nb):
-    """``mean_offset_block`` for a map with ``nb`` basis functions per chunk
-    (``num_cols_m = n_chunks * nb`` columns per group): rows per (frame or
-    group, function)."""
-    targets = np.asarray(mean_off, dtype=np.float64).ravel()
-    nc = num_cols_m // nb
-    ftg = np.asarray(ftg_m).astype(np.int64)
-    units = []                                   # (group, target, row weight)
-    if group_rows:
-        for g in np.unique(ftg):
-            members = np.nonzero(ftg == g)[0]
-            tg = targets[members]
-            if np.all(tg == tg[0]):
-                units.append((g, tg[0], weight * np.sqrt(len(members))))
-            else:
-                units.extend((g, targets[f], weight) for f in members)
-    else:
-        units = [(ftg[f], targets[f], weight) for f in range(num_frames)]
-    rows_l, cols_l, data_l, b_l = [], [], [], []
-    chunk = np.arange(nc, dtype=np.int64)
-    r = 0
-    for g, tgt, w in units:
-        start = col_bases[m] + g * num_cols_m
-        for k in range(nb):
-            rows_l.append(np.full(nc, r, dtype=np.int64))
-            cols_l.append(start + chunk * nb + k)
-            data_l.append(np.full(nc, w, dtype=np.float32))
-            b_l.append(tgt * nc * w)
-            r += 1
-    return ConstraintBlock(np.concatenate(rows_l), np.concatenate(cols_l), np.concatenate(data_l),
-                           np.array(b_l, dtype=np.float64), num_rows=r, nnz_per_row=nc)
 
 
 def sky_damping_block(block_index, weight, coverage, num_sky):
@@ -253,7 +121,7 @@ def grouped_adjacency_block(m, adj_info, reg_weight, num_chunks_m, ftg_m, col_ba
 class SystemInfo:
     """What a user prior sees when it builds its rows: the column layout of the
     unknowns (:class:`~selfcal.core.layout.SystemLayout`: the sky blocks, each
-    offset map's ``col_bases`` / groups / chunks, the per-frame scalars) and the
+    offset map's ``col_bases`` / groups / chunks) and the
     number of observations that touch each column (``pixel_counts``, the full
     column space) — known only after the data rows are built, which is when the
     priors run. ``sky_names`` names the sky blocks in order."""
