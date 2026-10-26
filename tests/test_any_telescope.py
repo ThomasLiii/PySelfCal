@@ -327,6 +327,49 @@ def test_thermal_pattern_and_gradients(tmp_path):
     assert plane_resid.std() < 0.01, plane_resid.std()
 
 
+def ramps(det_x):
+    """Three hat functions of the detector column on nodes at its two ends and its middle (a piecewise-linear
+    function of x); the first and the last are exactly zero on the far half of the detector."""
+    x = np.asarray(det_x, dtype=np.float64)
+    half = (W - 1) / 2
+    return [np.clip(1.0 - np.abs(x - c) / half, 0.0, None) for c in (0.0, half, W - 1.0)]
+
+
+def test_a_basis_stores_no_entries_where_its_functions_are_zero(tmp_path):
+    """A per-frame offset piecewise linear along the detector's columns (three hat functions): the solve recovers each
+    frame's bend, and each function's coverage counts only the observations where it is not zero (the matrix holds no
+    entries for a function's zeros: the outer hats cover about half of what the middle one does)."""
+    rng = np.random.default_rng(5)
+    sky = true_sky()
+    n_exp = 32
+    nodes = rng.normal(0, 0.3, (n_exp, 3))
+    y, x = np.mgrid[0:H, 0:W].astype(np.float64)
+    hats = ramps(x)
+    for k in range(n_exp):
+        oy, ox = rng.integers(0, REF - H), rng.integers(0, REF - W)
+        img = sky[oy:oy + H, ox:ox + W] + sum(nodes[k, j] * hats[j] for j in range(3)) + rng.normal(0, 0.01, (H, W))
+        write_exposure(tmp_path / 'exposures' / f'ramp_exp_{k:03d}.fits', img, ox, oy, {})
+
+    field = sc.Field(tmp_path / 'ramp_run', sc.Camera((H, W), chunks=CHUNKS, tag='Ramp'), PIX, compute=TWO_WORKERS)
+    field.reproject(tmp_path / 'exposures' / 'ramp_exp_*.fits', method='interp', padding=8)
+    model = sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets('ramp', on='detector', basis=ramps, n=3)])
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+
+    with result.cal() as cal:
+        got = np.asarray(cal.offsets[0], dtype=np.float64).reshape(-1, 3)
+        cov = np.asarray(cal.offset_coverage[0], dtype=np.float64).reshape(-1, 3)
+        exposure, _ = frame_ids(cal)
+    # Every frame is shifted, not turned: a sky curved along x looks in each frame like a ramp proportional to its
+    # shift plus a common bend, which the hats nearly reproduce, so each frame's constant and ramp are weakly set. Its
+    # bend (the second difference of its nodes, minus the frames' mean) is not: compare that.
+    bend = lambda v: v[:, 0] - 2 * v[:, 1] + v[:, 2]
+    r, s = agreement(bend(got), bend(nodes[exposure]))
+    print(f"bends r = {r:.4f}, slope {s:.3f}; coverage per frame (outer, middle, outer): {cov.mean(axis=0).round(1)}")
+    assert r > 0.99 and abs(s - 1) < 0.05, (r, s)
+    assert (cov[:, 1] > 0).all()
+    assert np.all(cov[:, 0] < 0.6 * cov[:, 1]) and np.all(cov[:, 2] < 0.6 * cov[:, 1]), cov[:4]
+
+
 # ============================================================================
 # 4. data cubes whose slices are frames
 # ============================================================================
