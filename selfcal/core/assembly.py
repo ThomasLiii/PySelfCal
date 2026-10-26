@@ -256,15 +256,18 @@ def _prep_lsqr(task_params):
             elif phi_m is not None:
                 # Basis of n known functions of data variables: one unknown per
                 # (group, chunk, function), column g*(n_chunks*n) + c*n + k, entry
-                # w * chunk_val * phi_k(v). n == 1 (a coefficient) keeps the
-                # plain block's columns.
+                # w * chunk_val * phi_k(v), stored only where phi_k(v) is not zero (a
+                # function zero over much of the detector would otherwise fill the
+                # matrix with zeros). n == 1 (a coefficient) keeps the plain block's columns.
                 nb = phi_m.shape[1]
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
                 base = col_bases[m] + group_idx_list[m] * num_chunks_list[m]
                 for k in range(nb):
-                    O_rows_parts.append(sub_idx_m)
-                    O_cols_parts.append(base + chunk_idx_m * nb + k)
-                    O_data_parts.append(_fw * phi_m[sub_idx_m, k])
+                    phi_k = phi_m[sub_idx_m, k]
+                    nz_k = phi_k != 0
+                    O_rows_parts.append(sub_idx_m[nz_k])
+                    O_cols_parts.append(base + chunk_idx_m[nz_k] * nb + k)
+                    O_data_parts.append(_fw[nz_k] * phi_k[nz_k])
             else:
                 _fw = valid_weight[sub_idx_m] * chunk_vals_m
                 O_rows_parts.append(sub_idx_m)
