@@ -657,7 +657,7 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
 
 **Groups (one dataset per map):**
 - `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
-- `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map)
+- `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map); for a map whose offsets multiply `n_basis > 1` functions, `(num_frames, num_chunks_m * n_basis)`, each function's count taken over the pixels where it is not zero
 - `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of the chunk's pixels covered per frame, counted over the chunk's pixels inside the solve's window (the detector pixels the job can observe; 0 for a chunk with no pixel inside it; `sc.Coadd(min_chunk_coverage=)` compares it) (float32 ones for a template or polynomial-basis map)
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
 - a per-frame scalar (`sc.Offsets("scalar", on="detector")`) is an offset map like the others: `offsets/map_{m}` is `(num_frames, 1)`, its chunk map all zeros
