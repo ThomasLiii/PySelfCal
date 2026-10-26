@@ -205,12 +205,66 @@ def _pieces(storage, rows=_ROWS):
         yield _piece(storage, desc)
 
 
-def _components(G):
-    """The connected components of a symmetric sparse matrix's graph, ``(count, labels)``, numbered in the order of
-    their smallest column, as scipy's undirected search numbers them: its strongly connected components (those of
-    a symmetric graph), which it finds without the transposed copy of the matrix the undirected search makes."""
+def _components(G, shared=None):
+    """The connected components of a symmetric csr matrix's graph, ``(count, labels)``, numbered in the order of
+    their smallest column, as scipy's undirected search numbers them. The ``shared`` columns (default: those coupled
+    to more than :data:`_HUB_RATIO` times the median count, offsets many frames share, whose rows hold most of the
+    entries) are set aside: scipy searches the graph of the other columns among themselves (its strongly connected
+    components, those of a symmetric graph, found without the transposed copy the undirected search makes), and the
+    pieces it finds are joined through the shared columns' rows: each row puts the pieces and shared columns it holds
+    into one group. The components do not depend on which columns are set aside; the search stays small where the
+    whole graph would pass scipy's limit of 2^31 entries (its 32-bit indices), past which it runs for hours."""
     n = G.shape[0]
-    count, labels = connected_components(G, directed=True, connection='strong')
+    if shared is None:
+        deg = np.diff(G.indptr)
+        shared = np.flatnonzero(deg > _HUB_RATIO * np.median(deg)) if n else np.zeros(0, dtype=np.int64)
+    if len(shared) == 0:
+        count, labels = connected_components(G, directed=True, connection='strong')
+    else:
+        shared = np.asarray(shared, dtype=np.int64)
+        is_shared = np.zeros(n, dtype=bool)
+        is_shared[shared] = True
+        other = np.flatnonzero(~is_shared)
+        pos = np.full(n, -1, dtype=np.int64)
+        pos[other] = np.arange(other.size)
+        # the other columns' graph among themselves, read off their rows (runs of consecutive rows, a chunk of
+        # entries at a time: no copy of G)
+        ip, counts, cols = G.indptr, [np.zeros(0, dtype=np.int64)], [np.zeros(0, dtype=np.int64)]
+        cut = np.flatnonzero(np.diff(other) > 1)
+        runs = zip(other[np.r_[0, cut + 1]], other[np.r_[cut, other.size - 1]] + 1) if other.size else ()
+        for a, e in runs:
+            r0 = int(a)
+            while r0 < e:
+                r1 = min(int(e), max(r0 + 1, int(np.searchsorted(ip, int(ip[r0]) + _EXTRACT_ENTRIES, side='right')) - 1))
+                s0 = int(ip[r0])
+                col = G.indices[s0:int(ip[r1])]
+                at = np.flatnonzero(~is_shared[col])
+                row = np.searchsorted(ip[r0:r1 + 1] - s0, at, side='right') - 1
+                counts.append(np.bincount(row, minlength=r1 - r0))
+                cols.append(pos[col[at]])
+                r0 = r1
+        oip = np.zeros(other.size + 1, dtype=np.int64)
+        np.cumsum(np.concatenate(counts), out=oip[1:])
+        cols = np.concatenate(cols)
+        count, piece = connected_components(csr_matrix((np.ones(cols.size), cols, oip), shape=(other.size,) * 2),
+                                            directed=True, connection='strong')
+        # the joins: each shared column's row merges the groups of every piece and shared column it holds (and its own)
+        node = np.empty(n, dtype=np.int32)
+        node[other] = piece
+        node[shared] = count + np.arange(shared.size)
+        group = np.arange(count + shared.size, dtype=np.int32)
+        member = node.copy()                            # each column's group
+        for s in shared:
+            g = member[G.indices[int(ip[s]):int(ip[s + 1])]]
+            low, high = g.min(initial=member[s]), g.max(initial=member[s])
+            if low != high:                             # the row joins groups apart until now: one group
+                merged = np.zeros(group.size, dtype=bool)
+                merged[g] = True
+                merged[member[s]] = True
+                group[merged[group]] = low
+                member = group[node]
+        roots, labels = np.unique(member, return_inverse=True)
+        count, labels = roots.size, labels.astype(np.int32)
     first = np.full(count, n, dtype=np.int64)
     np.minimum.at(first, labels, np.arange(n, dtype=np.int64))
     rank = np.empty(count, dtype=labels.dtype)

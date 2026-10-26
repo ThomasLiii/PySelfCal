@@ -226,6 +226,66 @@ def test_the_schur_path_solves_the_normal_equations_exactly(monkeypatch):
     assert np.linalg.norm(G @ X_schur - G @ X_dense) < 1e-9 * np.linalg.norm(R)
 
 
+def _one_search(G):
+    """The components of one scipy search over the whole graph, numbered as the deflation numbers them."""
+    from scipy.sparse.csgraph import connected_components
+    count, labels = connected_components(G, directed=False)
+    first = np.full(count, G.shape[0], dtype=np.int64)
+    np.minimum.at(first, labels, np.arange(G.shape[0]))
+    rank = np.empty(count, dtype=labels.dtype)
+    rank[np.argsort(first, kind='stable')] = np.arange(count, dtype=labels.dtype)
+    return count, rank[labels]
+
+
+def test_the_component_search_joins_its_pieces_through_the_shared_columns():
+    """The components found with columns set aside and joined through their rows are those of one search over the
+    whole graph, labels included, for random symmetric graphs (blocks, isolated columns, columns coupled to many
+    others) and any set of columns set aside: none, the default (by coupling count), random ones, all."""
+    import selfcal.core.deflation as D
+    rng = np.random.default_rng(3)
+    for trial in range(8):
+        n = int(rng.integers(50, 400))
+        parts = []
+        for _ in range(int(rng.integers(1, 12))):
+            k = int(rng.integers(2, 30))
+            idx = rng.choice(n, size=k, replace=False)
+            m = int(rng.integers(1, 3 * k))
+            parts.append((idx[rng.integers(0, k, m)], idx[rng.integers(0, k, m)]))
+        if trial % 2:                                     # a few columns coupled to many others
+            hub = rng.choice(n, size=3, replace=False)
+            others = rng.choice(n, size=n // 3, replace=False)
+            parts.append((np.repeat(hub, others.size), np.tile(others, hub.size)))
+        r = np.concatenate([p[0] for p in parts] + [np.arange(n)])
+        c = np.concatenate([p[1] for p in parts] + [np.arange(n)])
+        G = sp.coo_matrix((np.ones(r.size), (r, c)), shape=(n, n)).tocsr()
+        G = (G + G.T).tocsr()
+        G.sum_duplicates()
+        want = _one_search(G)
+        for shared in ([], None, np.sort(rng.choice(n, size=n // 10, replace=False)), np.arange(n)):
+            got = D._components(G, shared)
+            assert got[0] == want[0]
+            assert np.array_equal(got[1], want[1])
+
+
+def test_the_block_solve_is_the_same_with_one_search_over_the_whole_graph(monkeypatch):
+    """The shared-column system's block solve with the shared columns set aside in the component search, and with
+    one search over the whole graph: the same solution, bit for bit."""
+    import selfcal.core.deflation as D
+    A, b, npix, grid, shared = _shared_system(frames=40)
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    off = A[:, active].tocsr()[:, npix:]
+    G = (off.T @ off).tocsr()
+    G.sum_duplicates()
+    R = G @ np.random.default_rng(1).normal(size=(G.shape[0], 3))
+    monkeypatch.setattr(D, '_DENSE_BLOCK', 16)
+    X0, info0 = D._block_pinv_solve(G, R)
+    monkeypatch.setattr(D, '_components', _one_search)
+    X1, info1 = D._block_pinv_solve(G, R)
+    assert info0['hubs'] == shared
+    assert all(info1[k] == info0[k] for k in ('blocks', 'largest', 'zero_eigenvalues', 'hubs'))
+    assert np.array_equal(X1, X0)
+
+
 def test_the_schur_path_stays_put_past_convergence():
     """The shared-column system far past its convergence (~125 iterations), CGLS at a fixed count: the solution
     stays at plain least squares' (a response with a null-space component would let it drift: the Schur
