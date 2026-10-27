@@ -500,7 +500,7 @@ J sky blocks `S_j` (continuum + line amplitudes; `c_j` = e.g. the line template 
 observation's wavelength) and the frame's offset `O_k`: **whatever offset terms the recipe's
 model has** -- per-chunk values, a polynomial along a chunk axis (`sc.Poly`, segmented or not),
 templates, coefficients of known functions of data variables (`times=` / `basis=`, e.g. the
-x-slope of `spherex.frame_slope`, the hat functions of `spherex.spectral_offsets`, a per-frame scalar),
+x-slope of `terms.frame_slope`, the hat functions of `terms.spectral_offsets` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
 with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
 of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script

@@ -42,12 +42,17 @@ from astropy.wcs import WCS  # noqa: E402
 import selfcal as sc  # noqa: E402
 from selfcal.geometry import wcs_helper  # noqa: E402
 from selfcal.io.frames import standard_frame_path, write_frame  # noqa: E402
-from selfcal.models.bases import tilt  # noqa: E402
 
 DET, N_BAND, N_COL, REF, PIX = 64, 16, 2, 96, 20.0
 N_FRAMES = 20
 LINE_CENTER, LINE_SIGMA = 1.25, 0.08
 TAG = 'ToyAny'
+
+def tilt(x, centre, half):
+    """A linear basis of a coordinate, -1 to +1 over centre +- half (defined here, above the API call)."""
+    return (np.asarray(x, dtype=np.float64) - centre) / half
+
+
 CENTRE, HALF = (DET - 1) / 2.0, DET / 2.0
 
 

@@ -58,6 +58,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import selfcal as sc  # noqa: E402
 from selfcal.instruments import spherex  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 from selfcal.io.frames import standard_frame_path, write_frame  # noqa: E402
 from selfcal.run import products  # noqa: E402
 
@@ -245,8 +246,8 @@ SPECTRAL = sc.spectral([sc.Sky('line', times=sc.gaussian(1.25, sigma=0.08))], po
 
 def lines():
     """Sky terms of every kind of coefficient of the wavelength, damping set and left unset."""
-    return [spherex.line('aromatic'),                                              # a shipped template
-            spherex.line('aliphatic', 5e-3),
+    return [T.line('aromatic'),                                              # a shipped template
+            T.line('aliphatic', 5e-3),
             sc.Sky('broad', times=sc.gaussian(3.40, width='bandwidth', intrinsic_var=2.89e-4)),
             sc.Sky('narrow', times=sc.gaussian(3.30, sigma=0.02), damping=0.0),
             sc.Sky('pah', times=sc.catalog('pah_3p29', center=3.29)),
@@ -294,7 +295,7 @@ class Case:
 
 
 def cases(files):
-    polybasis = sc.spectral([spherex.line('aromatic', 5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
+    polybasis = sc.spectral([T.line('aromatic', 5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
     aromatic = spherex.window('Aromatic')
     return [
         # the instruments, each with its default job where it has one
@@ -314,7 +315,7 @@ def cases(files):
              sc.Recipe(sc.spectral(lines(), polynomial=sc.Poly(2, window=range(200, 321))), coadd=None,
                        name='lines'), spherex.window('Multiline3', subchannels=range(200, 321))),
         Case('spectral_soft_poly', sc.SPHEREx(4),
-             sc.Recipe(sc.spectral([spherex.line('aromatic', 5e-3)], smooth=0.2,
+             sc.Recipe(sc.spectral([T.line('aromatic', 5e-3)], smooth=0.2,
                                    poly_prior=sc.Poly(3, along='subchannel', window=range(200, 321)), damping=0.05),
                        name='soft'), spherex.window('W', subchannels=range(200, 321))),
         Case('two_block_settings', sc.SPHEREx(4),

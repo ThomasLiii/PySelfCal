@@ -114,14 +114,19 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   `sc.priors.toward(term, variable)`, or your own function wrapped in `sc.Prior(fn, terms)`.
 - **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
   `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
-  `sc.two_block(second="readout")`; `spherex.line("aromatic", damping=5e-3)` is a sky term with
-  a shipped line template; `spherex.frame_slope()` is a per-frame gradient along detector x per
-  subchannel, and `spherex.spectral_offsets(subchannels)` a per-frame offset continuous across the
-  job's subchannels (hat functions of the position across the LVF arcs, the variable
-  `arc_position`: `variables={"arc_position": sc.DetectorMap(spherex.arc_position)}`), in place of
-  per-subchannel constants. `sc.continuum` and `sc.spectral` end their offset terms with the
+  `sc.two_block(second="readout")`; `terms.line("aromatic", damping=5e-3)` (the SPHEREx model side, below)
+  is a sky term with a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
   per-frame scalar; `sc.two_block` has none. A preset is a plain function that returns a `Model`;
   a calibration variant of your own is one too, or the `Model` itself.
+- **The model side of an instrument is not the instrument.** What is intrinsic to a telescope (its
+  exposure format, calibration maps, the LVF fit, shipped data) lives in `selfcal.instruments.<name>`;
+  the terms a recipe applies to it are choices and live with the recipes: the SPHEREx ones in
+  `selfcal_scripts/spherex/terms.py` (`terms.frame_slope()`, a per-frame gradient along detector x
+  per subchannel; `terms.spectral_offsets(subchannels)`, a per-frame offset continuous across the
+  job's subchannels from hat functions of the position across the LVF arcs, read through the
+  variable the model registers as `sc.DetectorMap(terms.arc_position)`; `terms.line(name)`, a sky
+  term times a shipped line template). In every such call a data variable appears only inside an
+  `of=`; a function's parameter names are never variable names.
 
 ### The recipe
 
@@ -190,7 +195,7 @@ The pipeline's worker processes start fresh and import the run script again, so:
 ### Big fields
 
 ```python
-LINES = [spherex.line(n, damping=5e-3) for n in ("aromatic", "aliphatic", "plateau")]
+LINES = [terms.line(n, damping=5e-3) for n in ("aromatic", "aliphatic", "plateau")]
 MULTILINE = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
                       fit=sc.Fit(300, ignore_flags=[21], shot_noise_weights=True), coadd=None,
                       name="multiline3_SEP6")

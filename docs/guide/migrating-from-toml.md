@@ -158,7 +158,7 @@ A mode was a named model with its knobs in `[params]`. Each is a preset or a mod
 | `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, smooth=reg_weight, second_smooth=second_reg_weight)` |
 | `model` | `sc.Model(sky=[...], offsets=[...], variables={...}, weight=, priors=[...])` |
 
-The lines of the spectral modes (`[[params.lines]]`) are sky terms: `spherex.line(name, damping=)`
+The lines of the spectral modes (`[[params.lines]]`) are sky terms: `terms.line(name, damping=)` (`selfcal_scripts/spherex/terms.py`)
 for a shipped template, else `sc.Sky(name, times=sc.template(file))` or
 `sc.Sky(name, times=sc.gaussian(center, sigma=...))`; the catalogue line `pah_3p29` is
 `sc.Sky("pah_3p29", times=sc.catalog("pah_3p29"))`.

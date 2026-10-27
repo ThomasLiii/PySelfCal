@@ -4,7 +4,7 @@ one pass, on eight tiles balanced by frame count.
 
 The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
 two offset terms at NumCol 1, the hard degree-2 polynomial along the subchannels of the window (one per frame)
-and a free gradient along detector x per frame and subchannel (``spherex.frame_slope``); no damping or
+and a free gradient along detector x per frame and subchannel (``terms.frame_slope``); no damping or
 regularisation of any kind; shot-noise weights, the source-mask bit ignored, a 5-sigma clip; the default solver
 to convergence, at most 400 iterations; no mosaic. The tiles are solved one at a time, then stitched; ``ONLY``
 limits the run to the tiles listed (no stitch: a later run of every tile reuses their cals and stitches them).
