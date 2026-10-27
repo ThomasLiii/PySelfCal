@@ -120,7 +120,7 @@ trust: adopt a product only with the script of the config that made it. See
 | `task` | the action: `field.reproject`, `field.calibrate` (`tiles=`, `passes=`), `field.mosaic`; `precompute`: `spherex.precompute_lvf(detectors)` |
 | `mode` + `[params]`, `[model]` | the model, `sc.Model` or a preset (below) |
 | `output_dir` + `run_name`, `resolution_arcsec` | `sc.Field(path, instrument, pixel_scale)` |
-| `[instrument]` | `sc.SPHEREx(detector, num_col=, num_sub=, num_ch=, calib_dir=)`, `sc.Euclid(band=, chunks=, strips=, ...)`, `sc.Camera(shape, chunks=, sci_ext=, dq_ext=, tag=)`; the channel or window selection: `jobs=spherex.channel(n)`, `spherex.channels(first, last)`, `spherex.group(...)`, `spherex.window(name, subchannels=range(lo, hi + 1))` |
+| `[instrument]` | `sc.SPHEREx(detector, calib_dir=, lvf_dir=)`, `sc.Euclid(band=, chunks=, strips=, ...)`, `sc.Camera(shape, chunks=, sci_ext=, dq_ext=, tag=)`; SPHEREx's `num_sub`, `num_ch`, `num_col`: the model's chunk maps, `chunk_maps={"subchannel": chunks.subchannel_map(num_sub=, num_ch=, num_col=), "detector_column": sc.ChunkMap(chunks.detector_columns)}` (`selfcal_scripts/spherex/chunks.py`); the channel or window selection: `jobs=jobs.channel(n)`, `jobs.channels(first, last)`, `jobs.group(...)`, `jobs.window(name, range(lo, hi + 1))` (`selfcal_scripts/spherex/jobs.py`); a camera's `job_name`: `jobs=sc.Job(name)`; Euclid: `jobs=sc.Job(band)` |
 | `suffix` | `sc.Recipe(name=)`, without the leading `_` |
 | `[calibration] outlier_thresh`, `outlier_group_variable`, `outlier_group_edges`, `outlier_groups` | `sc.Fit(clip=sigma)`, `sc.Clip(sigma, variable=, edges=, per=)` |
 | `[calibration] apply_mask`, `ignore_list`, `apply_weight` | `sc.Fit(use_mask=, ignore_flags=, shot_noise_weights=)` |
@@ -155,13 +155,15 @@ A mode was a named model with its knobs in `[params]`. Each is a preset or a mod
 | `spectral` (`pahfit`) | `sc.spectral(lines, smooth=, poly_prior=)` |
 | `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, poly_prior=[..., sc.Poly(spectral_poly_degree, along="subchannel", window=range(lo, hi + 1), weight=spectral_poly_weight)])` |
 | `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | `sc.spectral(lines, polynomial=sc.Poly(spectral_poly_degree, window=range(lo, hi + 1), segments=...))` |
-| `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, smooth=reg_weight, second_smooth=second_reg_weight)` |
+| `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, along="subchannel", smooth=reg_weight, second_smooth=second_reg_weight)` |
 | `model` | `sc.Model(sky=[...], offsets=[...], variables={...}, weight=, priors=[...])` |
 
 The lines of the spectral modes (`[[params.lines]]`) are sky terms: `terms.line(name, damping=)` (`selfcal_scripts/spherex/terms.py`)
 for a shipped template, else `sc.Sky(name, times=sc.template(file))` or
 `sc.Sky(name, times=sc.gaussian(center, sigma=...))`; the catalogue line `pah_3p29` is
-`sc.Sky("pah_3p29", times=sc.catalog("pah_3p29"))`.
+`sc.Sky("pah_3p29", times=terms.pah_3p29())`, the Gaussian
+`sc.gaussian(3.29, width="bandwidth", intrinsic_var=2.890e-4, fwhm_to_sigma=2.355)` (the
+converter writes the Gaussian).
 
 A `[model]` table maps term by term:
 
@@ -173,7 +175,7 @@ A `[model]` table maps term by term:
 | `reg_weight`, `adjacency`, `poly`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `poly_prior=sc.Poly(...)`, `damping=`, `exact_group_rows=`, `render=` |
 | `mean_zero = true`; `exclude_degree`, `exclude_axis` | `exclude=sc.Poly(0)`, the hard constraint "no constant over the term's chunks"; `exclude=sc.Poly(exclude_degree, along=exclude_axis)` |
 | a `coefficient` or a `basis`: `{ variable, function = "pkg.mod:fn", params }` | `times=fn` or `basis=fn, n=` (the function itself), or `sc.Function(fn, of=variable, **params)` |
-| `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = name }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `sc.catalog(name)` |
+| `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = "pah_3p29" }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `terms.pah_3p29()` (no other catalogue name has a Python form) |
 | `[model.variables]` `header`, `per_frame`, `detector`, `sky`, `sky_cal`, `layer`, `function`, `frame_function` | `sc.Header`, `sc.PerFrame`, `sc.DetectorMap`, `sc.SkyMap`, `sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction` |
 | `scalar = true` (the default) / `false` | the offset term `sc.Offsets("scalar", on="detector")` after the others (one chunk, the whole detector) / none |
 | `weight` | `sc.Model(weight=)` |

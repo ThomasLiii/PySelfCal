@@ -10,8 +10,12 @@ import numpy as np
 
 import selfcal as sc
 from selfcal.instruments.spherex.settings import DETECTOR_SIZE, LINE_TEMPLATES, _DATA as LINE_TEMPLATE_DIR
+from selfcal.instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM
 
-__all__ = ['tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets', 'line']
+__all__ = ['tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets', 'line', 'pah_3p29']
+
+#: The intrinsic width of the PAH 3.29 um feature, as a variance in um^2, added in quadrature to the band width.
+PAH_INTRINSIC_VAR_UM2 = 2.890e-4
 
 
 def tilt(x, centre, half):
@@ -28,14 +32,16 @@ def frame_slope(name='xs_term', on='subchannel', per='frame', size=DETECTOR_SIZE
                       times=sc.Function(tilt, of='det_x', centre=(size - 1) / 2.0, half=size / 2.0))
 
 
-def arc_position(geometry):
-    """Each detector pixel's position across the LVF arcs, in subchannels: a detector map for
-    ``sc.DetectorMap``. The subchannel edges are the concentric circles of the arc fit
-    (``geometry.extra['lvf_params']``: centre ``xc``, ``yc``; ``geometry.extra['r_edges']``: the edges' radii),
-    so the position is the pixel's radius about the centre interpolated on the edges' radii against the edge
-    index: subchannel ``s`` spans ``s - 1`` to ``s``, and beyond the first and the last edge the position
-    continues linearly at the end intervals' rate."""
-    lvf, r_edges = geometry.extra['lvf_params'], np.asarray(geometry.extra['r_edges'], dtype=np.float64)
+def arc_position(geometry, map='subchannel'):
+    """Each detector pixel's position across the LVF arcs, in subchannels of the chunk map ``map``: a
+    detector map for ``sc.DetectorMap``. The subchannel edges are the concentric circles of the arc fit
+    (``geometry.extra['lvf_params']``: centre ``xc``, ``yc``; the map's ``extra['r_edges']``: the edges'
+    radii, :func:`selfcal_scripts.spherex.chunks.subchannels`), so the position is the pixel's radius about
+    the centre interpolated on the edges' radii against the edge index: subchannel ``s`` spans ``s - 1`` to
+    ``s``, and beyond the first and the last edge the position continues linearly at the end intervals'
+    rate."""
+    lvf = geometry.extra['lvf_params']
+    r_edges = np.asarray(geometry.chunk_maps[map].extra['r_edges'], dtype=np.float64)
     H, W = geometry.shape
     y, x = np.mgrid[0:H, 0:W].astype(np.float64)
     r = np.hypot(x - lvf['xc'], y - lvf['yc'])
@@ -75,3 +81,11 @@ def line(name, damping=None, *, file=None):
             raise ValueError(f"line({name!r}): no shipped template ({sorted(LINE_TEMPLATES)}); give file=")
         file = os.path.join(LINE_TEMPLATE_DIR, LINE_TEMPLATES[name])
     return sc.Sky(name, times=sc.template(file), damping=damping)
+
+
+def pah_3p29(center=None):
+    """The PAH 3.29 um feature as a sky coefficient: a Gaussian of the wavelength map centred on ``center``
+    (default 3.290 um) whose width per observation is the band width in quadrature with the feature's intrinsic
+    width (a fixed width instead: ``sc.gaussian(center, sigma=...)``)."""
+    return sc.gaussian(PAH_LINE_CENTER_UM if center is None else center, width='bandwidth',
+                       intrinsic_var=PAH_INTRINSIC_VAR_UM2, fwhm_to_sigma=2.355)

@@ -14,8 +14,8 @@ stitched cal, N-pass products) comes from :class:`RunContext`, so the pieces of 
 disagree about a file name.
 
 The engine talks to the instrument through its contract only
-(:class:`~selfcal.instruments.contract.Instrument`: the geometry, a job's geometry, the product
-tag, the frame variables and the optional renderers, maps and catalogue) and lowers the model
+(:class:`~selfcal.instruments.contract.Instrument`: the detector geometry, its default chunk maps,
+a job's geometry, the product tag, the frame variables, the mosaic's instrument maps) and lowers the model
 (:class:`~selfcal.models.spec.ModelSpec`) to the solver's objects; it never names a telescope.
 
 Edits here must keep calibration output byte-identical — run the gates
@@ -34,6 +34,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from selfcal.pipeline import pipeline_wrapper
+
+from ..config.base import ConfigError
 
 from . import staging
 
@@ -81,28 +83,65 @@ def geometry_is_pure(inst):
     return bool(getattr(inst, 'geometry_is_pure', False)) and None not in (declared, defined) and declared <= defined
 
 
-def instrument_geometry(inst, oversample):
+def chunk_map_specs(inst, model):
+    """The chunk maps of a run, as :class:`~selfcal.models.spec.ChunkMapSpec` in order (the first
+    primary): the model's, else the instrument's defaults
+    (:meth:`~selfcal.instruments.contract.Instrument.default_chunk_maps`)."""
+    from selfcal.models.spec import ChunkMapSpec
+    if model.chunk_maps:
+        return tuple(model.chunk_maps)
+    defaults = inst.default_chunk_maps()
+    if not defaults:
+        raise ConfigError(f"{type(inst).__name__} has no default chunk maps: the model names its own, "
+                          f"Model(chunk_maps={{name: sc.ChunkMap(fn, **params), ...}})")
+    return tuple(ChunkMapSpec(name=str(k), function=v.fn, tag=v.tag, params=dict(v.params))
+                 for k, v in defaults.items())
+
+
+def with_chunk_maps(geom, specs):
+    """``geom`` (a :class:`~selfcal.instruments.base.DetectorGeometry`) with the chunk maps
+    ``specs`` evaluated on it (:meth:`~selfcal.models.spec.ChunkMapSpec.evaluate`), named after
+    their keys, each map's ``grid`` replicated from its ``det`` when the function gave none; the
+    first is the primary one."""
+    from ..instruments.base import Chunks
+    from ..instruments.grid import upsample_chunk_map
+    maps = {}
+    for s in specs:
+        cm = s.evaluate(geom)
+        if not isinstance(cm, Chunks):
+            raise ConfigError(f"ChunkMap {s.name!r}: {s.function} returned {type(cm).__name__}, not sc.Chunks")
+        if tuple(np.shape(cm.det)) != tuple(geom.shape):
+            raise ConfigError(f"ChunkMap {s.name!r}: a map of shape {np.shape(cm.det)} on a {geom.shape} detector")
+        if cm.grid is None:
+            cm = replace(cm, grid=upsample_chunk_map(np.asarray(cm.det), int(geom.oversample)))
+        maps[s.name] = replace(cm, name=s.name)
+    return replace(geom, chunk_maps=maps, primary=next(iter(maps)))
+
+
+def instrument_geometry(inst, oversample, specs):
     """The detector geometry of ``inst`` sampled ``oversample`` times per pixel
-    (:meth:`~selfcal.instruments.contract.Instrument.geometry`).
+    (:meth:`~selfcal.instruments.contract.Instrument.geometry`) with the chunk maps ``specs``
+    evaluated on it (:func:`with_chunk_maps`).
 
     An action builds it once: its plan, its runs and an N-pass INIT share it through their
     contexts. The geometry of a pure instrument (:func:`geometry_is_pure`: the built-in ones) is
     also kept between actions: the last :data:`GEOMETRIES_KEPT`, each under the instrument's
-    settings, the oversampling, the path, size and time of each file its geometry reads
-    (``geometry_files()``) and the :data:`GEOMETRY_VARIABLES`; it is built again when any of them
-    changed, and each call returns a copy of its own, so no run sees another's changes. Any other
-    instrument's geometry is built at each call and returned as built (never kept, never copied)."""
+    settings, the oversampling, the chunk maps (their functions and parameters), the path, size
+    and time of each file its geometry reads (``geometry_files()``) and the
+    :data:`GEOMETRY_VARIABLES`; it is built again when any of them changed, and each call returns
+    a copy of its own, so no run sees another's changes. Any other instrument's geometry is built
+    at each call and returned as built (never kept, never copied)."""
     if not geometry_is_pure(inst):
-        return inst.geometry(oversample)
+        return with_chunk_maps(inst.geometry(oversample), specs)
     from ..config.base import encode
     from .products import fingerprint
-    key = (type(inst), fingerprint(encode(inst)), int(oversample),
+    key = (type(inst), fingerprint(encode(inst)), int(oversample), fingerprint([s.key() for s in specs]),
            tuple(_file_state(p) for p in inst.geometry_files()),
            tuple(os.environ.get(v) for v in GEOMETRY_VARIABLES))
     if key in _GEOMETRIES:
         _GEOMETRIES.move_to_end(key)
     else:
-        _GEOMETRIES[key] = inst.geometry(oversample)
+        _GEOMETRIES[key] = with_chunk_maps(inst.geometry(oversample), specs)
         while len(_GEOMETRIES) > GEOMETRIES_KEPT:
             _GEOMETRIES.popitem(last=False)
     return copy.deepcopy(_GEOMETRIES[key])
@@ -115,12 +154,13 @@ def instrument_geometry(inst, oversample):
 class RunContext:
     """Everything an engine run resolves once from its :class:`~selfcal.run.runspec.RunSpec`.
 
-    ``geom`` is the instrument's detector geometry (chunk maps with their axes, detector maps),
-    ``model`` the run's :class:`~selfcal.models.spec.ModelSpec`, checked against them, and
-    ``sky_damping`` each sky term's damping (every pass of the run uses it); per-job geometry
-    comes from :meth:`job_geometry`. The methods below lower the model to the solver's objects,
-    and the ``stem`` / ``cal_*`` / ``mosaic_*`` methods are the ONE place product names are
-    formed: ``<frame_tag>_<job.name><suffix>``.
+    ``geom`` is the instrument's detector geometry with the model's chunk maps evaluated on it
+    (:func:`with_chunk_maps`), ``model`` the run's :class:`~selfcal.models.spec.ModelSpec`,
+    checked against them, and ``sky_damping`` each sky term's damping (every pass of the run uses
+    it); per-job geometry comes from :meth:`job_geometry`. The methods below lower the model to
+    the solver's objects, and the ``stem`` / ``cal_*`` / ``mosaic_*`` methods are the ONE place
+    product names are formed: ``<frame_tag>_<job.name><suffix>``, where ``frame_tag`` is the
+    instrument's tag followed by the primary chunk map's.
     """
     spec: object
     inst: object
@@ -137,15 +177,22 @@ class RunContext:
         ``geom``: the detector geometry when the action has built it already (for another of its
         job groups, which share the instrument and the oversampling)."""
         from selfcal.models.spec import ModelSpec
+        from ..instruments.contract import check_job
         inst = spec.instrument
         pc = pipeline_wrapper.PipelineConfig(output_dir=spec.output_dir, run_name=spec.run_name,
                                              resolution_arcsec=spec.resolution_arcsec)
-        ctx = cls(spec=spec, inst=inst, pipeline_config=pc, frame_tag=inst.product_tag)
+        model = ModelSpec.from_config(spec.model) if spec.model is not None else None
+        specs = chunk_map_specs(inst, model) if model is not None else ()
+        tag = specs[0].tag if specs else ''
+        ctx = cls(spec=spec, inst=inst, pipeline_config=pc, frame_tag=f'{inst.product_tag}_{tag}' if tag
+                  else inst.product_tag)
         if need_geometry:
-            ctx.geom = geom if geom is not None else instrument_geometry(inst, spec.oversample)
-            ctx.model = ModelSpec.from_config(spec.model)
-            # every data variable, chunk map and axis, catalogue entry and prior term exists
-            ctx.model.check(ctx.geom, ctx.catalog(), frame_variables=ctx.frame_variable_names())
+            ctx.geom = geom if geom is not None else instrument_geometry(inst, spec.oversample, specs)
+            ctx.model = model
+            for job in spec.jobs:
+                check_job(job, ctx.geom.chunk_map)
+            # every data variable, chunk map and axis and prior term exists
+            ctx.model.check(ctx.geom, frame_variables=ctx.frame_variable_names())
             ctx.sky_damping = ctx.sky_model(log=_quiet).damp_weights(spec.setup['damp_weight'])
         return ctx
 
@@ -156,8 +203,8 @@ class RunContext:
 
     # ---- the jobs and their geometry -----------------------------------------------------
     def jobs(self):
-        """The run's jobs (:class:`~selfcal.instruments.contract.Job`): SPHEREx a channel, a group of
-        channels or a subchannel window each; a camera and Euclid one."""
+        """The run's jobs (:class:`~selfcal.instruments.contract.Job`), each a window of the primary
+        chunk map."""
         return tuple(self.spec.jobs)
 
     def single_job(self, what):
@@ -180,10 +227,6 @@ class RunContext:
         return str(getattr(self.inst, 'unit', '') or '')
 
     # ---- the model, lowered to the solver's objects --------------------------------------
-    def catalog(self):
-        """The instrument's named sky coefficients (``sc.catalog(name)``)."""
-        return dict(self.inst.coefficient_catalog())
-
     def frame_variable_names(self):
         """The names of the instrument's frame variables (``exposure``, ``detector``, ...)."""
         return tuple(self.inst.frame_variable_names())
@@ -206,14 +249,12 @@ class RunContext:
         grouped = any(t.kind == 'grouped' for t in self.model.offset)
         return self.model.build_offset_model(self.geom, len(frames),
                                              frame_groups=self.frame_groups(frames, variables) if grouped else None,
-                                             log=log, catalog=self.catalog(),
-                                             frame_variables=self.frame_variable_names())
+                                             log=log, frame_variables=self.frame_variable_names())
 
     def sky_model(self, log=print):
         """The solver's :class:`~selfcal.models.sky_model.SkyModel`: one component per sky term,
-        coefficients resolved against the data variables and the instrument's catalogue."""
-        return self.model.build_sky_model(self.geom, self.catalog(), log=log,
-                                          frame_variables=self.frame_variable_names())
+        coefficients resolved against the data variables."""
+        return self.model.build_sky_model(self.geom, log=log, frame_variables=self.frame_variable_names())
 
     def aux_maps(self):
         """``(det_aux list, aux_keys)``: the instrument's detector maps when the model reads data
@@ -234,8 +275,7 @@ class RunContext:
 
     def weight(self):
         """The model's observation weight (a function of data variables), or None."""
-        return self.model.build_weight(self.geom, self.catalog(), frame_variables=self.frame_variable_names(),
-                                       log=print)
+        return self.model.build_weight(self.geom, frame_variables=self.frame_variable_names(), log=print)
 
     def priors(self, variables, n_frames):
         """The model's priors as ``setup_lsqr(priors=...)`` callables."""
@@ -339,14 +379,22 @@ class RunContext:
 
     def mosaic_geometry(self, jobgeom):
         """``(chunk maps, offset renderers)`` of ``make_mosaic``: each offset term's chunk map on the
-        reference grid and the instrument's renderer of its offsets (None: constant over each
-        chunk)."""
+        reference grid and the renderer of its offsets for this job, the one the term names
+        (``Offsets(render=)``) else the map's default (:attr:`~selfcal.instruments.base.Chunks.render`);
+        None: constant over each chunk."""
         from selfcal.models.spec import chunk_map_of
         maps, funcs = [], []
         for term in self.model.offset:
             cm = chunk_map_of(term, self.geom)
             maps.append(cm.grid)
-            funcs.append(self.inst.offset_renderer(self.geom, jobgeom, map_name=cm.name, render=term.render))
+            name = term.render or cm.render
+            if name is None or name == 'constant':
+                funcs.append(None)
+                continue
+            if name not in cm.renderers:
+                raise ConfigError(f"offset term {term.name or cm.name!r}: the chunk map {cm.name!r} has no renderer "
+                                  f"{name!r} (it has {sorted(cm.renderers)})")
+            funcs.append(cm.renderers[name](cm, jobgeom))
         return maps, funcs
 
     def clip_group_edges(self):

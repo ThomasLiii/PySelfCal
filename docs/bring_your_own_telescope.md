@@ -20,9 +20,9 @@ data = Σ_j S_j[P] · c_j(v)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m, k] · φ_mk(
 Priors (damping, smoothness, polynomial shape, or any linear rows you write) regularise the solve,
 and hard constraints remove what an offset term must not carry (a constant, a polynomial along a
 chunk axis); the corrected frames are then coadded into a mosaic. Nothing in the solver knows a
-telescope. A telescope enters through an **instrument** (how raw exposures are read, how the
-detector is chunked, which detector maps and per-frame values it defines) and the calibration is a
-**model** (`sc.Model`). A new telescope, sky coefficient, offset set-up or prior is a function you
+telescope. A telescope enters through an **instrument** (how raw exposures are read, its detector,
+which detector maps and per-frame values it defines) and the calibration is a **model**
+(`sc.Model`: its terms and the chunk maps they live on). A new telescope, sky coefficient, offset set-up or prior is a function you
 write — never an edit of `selfcal`.
 
 ## 1. No code: `sc.Camera`
@@ -44,7 +44,7 @@ RECIPE = sc.Recipe(sc.continuum(smooth=0.1,                               # smoo
 
 if __name__ == "__main__":
     FIELD.reproject("/data/mycam/field1/*.fits", method="interp", padding=100)
-    print(FIELD.calibrate(RECIPE))
+    print(FIELD.calibrate(RECIPE, jobs=sc.Job("All")))      # one job: every chunk
 ```
 
 Products: `/data/runs/mycam_field1/reprojected/exp_*_det_00.h5`,
@@ -91,8 +91,8 @@ MODEL = sc.Model(
     priors=[sc.priors.frame_smoothness("chunks", "time", weight=0.2)])   # any linear rows
 ```
 
-`print(MODEL)` shows the model; `field.plan(recipe)` checks it against the instrument (every
-variable it reads, every chunk map and axis it names) and imports every function in a fresh worker
+`print(MODEL)` shows the model; `field.plan(recipe, jobs=...)` checks it against the instrument
+(every variable it reads, every chunk map and axis it names) and imports every function in a fresh worker
 process, in seconds, before anything runs.
 
 ### Data variables
@@ -120,10 +120,15 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
 * **Sky term**, `sc.Sky(name, times=c, damping=)`: `c` is a Python function of data variables
   (`sc.Function(fn, of=..., **params)` names them and binds parameters explicitly), a built-in
   shape — `sc.template(file)` (tabulated, e.g. a spectral line template npz), `sc.gaussian`,
-  `sc.linear` —, `sc.catalog(name)` for an instrument's named coefficient, or the name of a
-  variable, which then multiplies the map itself; omitted, the sky is constant. `damping` pulls the
+  `sc.linear` —, or the name of a variable, which then multiplies the map itself; omitted, the sky is constant. `damping` pulls the
   map toward zero, weighted by coverage.
-* **Offset term**, `sc.Offsets(name, on=, per=, ...)`: on a chunk map of the instrument (`on`;
+* **Chunk maps**, `sc.Model(chunk_maps={name: sc.ChunkMap(fn, tag=, **params)})`: the partitions of
+  the detector the offset terms live on, in order. The first is the primary map: the default `on`,
+  the map the jobs name their chunks on (`sc.Job(name, window={axis: range(lo, hi)})`), and the one
+  whose `tag` joins the product names. `fn(geometry, **params)` returns an `sc.Chunks`
+  ([section 4](#4-with-code-an-instrument)). A model that names none gets the instrument's default
+  maps (`sc.Camera`: its `grid` of `chunks` rectangles).
+* **Offset term**, `sc.Offsets(name, on=, per=, ...)`: on a chunk map of the model (`on`;
   default the primary map; `"detector"`: the whole detector as one chunk), shared by
   `per="frame"` (each frame its own), `per="all"` (all frames one) or `per=` any frame variable
   (frames with equal values); `times=φ` (one known function multiplying the offset at every
@@ -202,15 +207,22 @@ More set-ups the same machinery expresses (each a few lines and one function):
 
 ## 4. With code: an instrument
 
-For a real geometry, subclass `sc.Instrument`: a frozen dataclass whose fields are its settings,
-implementing `geometry(oversample)`; everything else has a default.
+For another exposure layout or detector, subclass `sc.Instrument`: a frozen dataclass whose
+fields are its settings, implementing `geometry(oversample)`, the detector; everything else has a
+default. The chunk maps are functions of that geometry (`mycam.py`, importable by the worker
+processes):
 
 ```python
 from dataclasses import dataclass
 
 import numpy as np
 import selfcal as sc
+from selfcal.instruments.camera import grid_chunks
 from selfcal.io.frames import frame_header_values
+
+
+def amplifiers(geometry, n):                          # a chunk map: n strips, one per amplifier
+    return sc.Chunks.rectangles(geometry.shape, (1, n), axes=("all", "amp"))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -219,11 +231,15 @@ class MyCam(sc.Instrument):
     tag: str = "MyCam"                                # product-name tag
     unit: str = "e-/s"                                # the mosaic's BUNIT
 
-    def geometry(self, oversample):                   # chunk maps (any int map, -1 = no chunk)
-        grid = sc.ChunkMap.rectangles("grid", (2048, 2048), (self.chunks, self.chunks))
-        amps = sc.ChunkMap.rectangles("amps", (2048, 2048), (1, 2), axes=("all", "amp"))
-        return sc.Geometry((2048, 2048), oversample, maps=[grid, amps],
+    def geometry(self, oversample):                   # the detector: its shape and per-pixel maps
+        return sc.Geometry((2048, 2048), oversample,
                            aux={"pix_angle": np.load("pix_angle.npy")})   # detector variables
+
+    # optional: the chunk maps of a model that names none, the first primary
+    def default_chunk_maps(self):
+        return {"grid": sc.ChunkMap(grid_chunks, tag=f"Chunks{self.chunks}x{self.chunks}",
+                                    chunks=(self.chunks, self.chunks)),
+                "amps": sc.ChunkMap(amplifiers, n=2)}
 
     def layout(self):                                 # how a raw exposure is read
         return sc.ExposureLayout(sci_ext=[1], dq_ext=[3], detector_ids=[0],
@@ -242,10 +258,12 @@ class MyCam(sc.Instrument):
 FIELD = sc.Field("/data/runs/mycam_field1", MyCam(chunks=16), pixel_scale=1.0)
 ```
 
-It may also override `default_jobs()` (the jobs a run makes), `job_geometry(geom, job)` (the
-valid pixels and weights of a job) and `frame_groups(frames)` (the groupings an offset term can
-share an offset over; default: the integer-valued frame variables). The engine receives the object
-itself and calls it only through these methods; there is no registry.
+It may also override `job_geometry(geom, job)` (the valid pixels and weights of a job; default: 1
+on the chunks of the primary map inside the job's window for the solve, inside its strict set for
+the mosaic, 0 elsewhere) and `frame_groups(frames)` (the groupings an offset term can share an
+offset over; default: the integer-valued frame variables). The engine receives the object itself
+and calls it only through these methods; there is no registry. The jobs are named at each action
+(`jobs=sc.Job("All")`, or jobs with a `window` on the primary map's axes).
 
 Each action (`plan`, `calibrate`, `mosaic`) builds the geometry once and shares it between its
 runs. A class whose geometry depends on nothing but its settings and the data files it names in
@@ -276,22 +294,37 @@ detector numbers; the reader interprets them. Give it to a camera (`sc.Camera(..
 or to an instrument's layout. The reprojection, the reference-frame definition and everything
 downstream use the reader; nothing else changes.
 
-Optional hooks, with defaults: `offset_renderer(geom, jobgeom, map_name=None, render=None)`
-(a smooth chunk-to-pixel rendering for the mosaic; a renderer that fills the chunks the mosaic
-zeroed, those below `sc.Coadd(min_chunk_coverage=)`, from the frame's other chunks says so with a
-true attribute `fills_invalid`; the pixels of a zeroed chunk that the frame observed and that
-nothing fills are left out of the coadd), `aux_coadds(geom)` and
-`finalize_mosaic(geom, mosaicker, maps, sigma)` (extra per-pixel maps to coadd), and
-`coefficient_catalog()` (named coefficients, for `sc.catalog(name)`). A chunk map other than
-rectangles is `sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...),
-adjacency_axes=(...))`: any integer map, `-1` for no chunk, with named axes for the priors and the
-axes a term's `smooth` follows by default (without them, `smooth` needs `smooth_along`; the plan
-refuses smoothing with no axis). The instruments of
+Optional hooks, with defaults: `aux_coadds(geom)` and
+`finalize_mosaic(geom, mosaicker, maps, sigma)` (extra per-pixel maps to coadd).
+
+**A chunk map of any shape** is a function `fn(geometry, **params)` that returns
+`sc.Chunks(det, axes, ...)`:
+
+* `det`: any integer map of the detector's shape, `-1` for no chunk;
+* `axes`: the named coordinates of its chunk grid (`sc.ChunkAxes.row_major(names, sizes, scans)`),
+  which the priors, the jobs' windows and the terms' `smooth` name; `adjacency_axes=`, the axes a
+  term's `smooth` follows by default (without them, `smooth` needs `smooth_along`; the plan refuses
+  smoothing with no axis); `spectral_axis=` and `group_axis=`, for the polynomial terms;
+* `grid=`: the map sampled `geometry.oversample` times per pixel along each axis, for the mosaic
+  (None: the engine replicates `det`); `extra=`: what the map's own functions read later;
+* `renderers={name: make}` and `render=`: how the mosaic draws the map's offsets. `make(chunks,
+  jobgeom)` returns the `renderer(chunk_map, offsets) -> image` of one job; `render` names the one
+  used unless an offset term names another (`sc.Offsets(render=name)`); None, or the name
+  `"constant"`: constant over each chunk. A renderer that fills the chunks the mosaic zeroed, those
+  below `sc.Coadd(min_chunk_coverage=)`, from the frame's other chunks says so with a true attribute
+  `fills_invalid`; the pixels of a zeroed chunk that the frame observed and that nothing fills are
+  left out of the coadd.
+
+A model names the function as `sc.ChunkMap(fn, tag=, **params)`, an instrument's
+`default_chunk_maps()` likewise; `sc.Chunks.rectangles(shape, chunks, axes=)` builds a grid of
+rectangles. The instruments of
 `tests/test_any_telescope.py` are small reference implementations. The built-in instruments are
 subclasses of `sc.Instrument` too: `selfcal/instruments/camera.py` (`sc.Camera`) is the minimal
-one, and `selfcal/instruments/spherex/settings.py` (`sc.SPHEREx`: spectral, non-rectangular
-chunks, wavelength maps) and `selfcal/instruments/euclid/settings.py` (`sc.Euclid`: 16 detectors
-per exposure, stripe and tilt maps) the full ones.
+one, and `selfcal/instruments/spherex/settings.py` (`sc.SPHEREx`: a reader of its own, wavelength
+maps, the LVF arc fit its chunk maps read) and `selfcal/instruments/euclid/settings.py`
+(`sc.Euclid`: 16 detectors per exposure, default grid, stripe and tilt maps with their renderers)
+the full ones. The SPHEREx chunk maps on the arcs, with their renderer, are model-side functions
+of the same kind, in `selfcal_scripts/spherex/chunks.py`.
 
 ## 5. Without images: write frames directly
 
@@ -335,7 +368,8 @@ directory holds the reference grid (`ref.fits`, written with `selfcal.geometry.w
 | data variables and their sources | `selfcal/models/variables.py` |
 | ready-made priors | `selfcal/priors.py` (`sc.priors`), over `selfcal/models/priors.py` |
 | generic offset-structure builders on chunk axes | `selfcal/models/offset_structure.py` |
-| the geometry types (`ChunkMap`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`) | `selfcal/instruments/base.py` |
+| the geometry types (`Chunks`, `DetectorGeometry`, `JobGeometry`, `ExposureLayout`) | `selfcal/instruments/base.py` |
+| the model's chunk maps (`sc.ChunkMap`) and the run engine that evaluates them | `selfcal/models/model.py`, `selfcal/run/engine.py` |
 | exposure readers, the frame file, header values | `selfcal/io/frames.py` |
 | the actions and the run engine behind them | `selfcal/run/` |
 | calibration-file reader | `selfcal/io/calfile.py` |

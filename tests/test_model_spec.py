@@ -15,9 +15,11 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import selfcal as sc  # noqa: E402
 from selfcal import _state  # noqa: E402
 from selfcal.models.spec import ModelSpec, OffsetTerm, SkyTerm  # noqa: E402
+from selfcal.run.engine import chunk_map_specs, with_chunk_maps  # noqa: E402
 from tests.synthetic_exposures import write_exposures  # noqa: E402
 
 CAMERA = sc.Camera((40, 60), chunks=(4, 6), dq_ext=2, tag='Spec')
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def _same_kwargs(a, b):
@@ -46,7 +48,7 @@ def _same_value(u, v, where):
 
 
 def test_model_table_equals_presets():
-    geom = CAMERA.geometry(1)
+    geom = with_chunk_maps(CAMERA.geometry(1), chunk_map_specs(CAMERA, ModelSpec()))     # the camera's default map
     n = 9
     # the continuum preset == a [model] table with a continuum term, one free offset term with no constant
     # and the per-frame scalar (the term of one chunk)
@@ -96,7 +98,7 @@ def test_a_model_with_a_soft_polynomial_runs(tmp_path):
                               sc.Offsets('scalar', on='detector')])
     result = field.calibrate(sc.Recipe(model, fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0,
                                                                                           instrument_maps=False),
-                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))
+                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)), jobs=ALL)
     assert len(result.cal_paths) == 1 and os.path.exists(result.cal_paths[0]) and len(result.mosaic_paths) == 1
 
 

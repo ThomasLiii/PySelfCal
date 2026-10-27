@@ -46,9 +46,9 @@ def _ref(fn):
     """How a function is handed to the model's data form: its import path, or the by-value object itself."""
     return fn if isinstance(fn, by_value) else function_ref(fn)
 
-__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
+__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
-           'Prior', 'Model', 'continuum', 'spectral', 'two_block']
+           'ChunkMap', 'Prior', 'Model', 'continuum', 'spectral', 'two_block']
 
 
 # =============================================================================== functions
@@ -216,26 +216,20 @@ class Variance(Function):
 
 @dataclass(frozen=True)
 class Shape(Config):
-    """A built-in function of one data variable: a tabulated curve, a Gaussian, a line, or a
-    named coefficient of the instrument. Built by :func:`template`, :func:`gaussian`,
-    :func:`linear` and :func:`catalog`."""
-    kind: Literal['template', 'gaussian', 'linear', 'catalog']
+    """A built-in function of one data variable: a tabulated curve, a Gaussian or a line. Built
+    by :func:`template`, :func:`gaussian` and :func:`linear`."""
+    kind: Literal['template', 'gaussian', 'linear']
     _: KW_ONLY
     of: str | None = 'wavelength'
     params: dict[str, Any] = field(default_factory=FrozenDict)
 
     def __repr__(self):
         params = ', '.join(f"{k}={v!r}" for k, v in self.params.items() if not isinstance(v, np.ndarray))
-        of = '' if self.kind == 'catalog' or self.of == 'wavelength' else f", of={self.of!r}"
-        if self.kind == 'catalog':
-            rest = {k: v for k, v in self.params.items() if k != 'catalog'}
-            return _call('catalog', (self.params['catalog'],), tuple(rest.items()))
+        of = '' if self.of == 'wavelength' else f", of={self.of!r}"
         return f"{self.kind}({params}{of})"
 
     def lower(self, n=None) -> dict:
         """The coefficient's data form."""
-        if self.kind == 'catalog':
-            return dict(self.params)
         out = {'variable': self.of, 'function': self.kind}
         out.update({k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in self.params.items()})
         return out
@@ -279,14 +273,6 @@ def gaussian(center, *, sigma=None, width=None, intrinsic_var=None, fwhm_to_sigm
 def linear(center, halfwidth, *, of='wavelength') -> Shape:
     """``(v - center) / halfwidth`` of the variable ``of``."""
     return Shape('linear', of=of, params={'center': float(center), 'halfwidth': float(halfwidth)})
-
-
-def catalog(name, **overrides) -> Shape:
-    """The instrument's named coefficient ``name`` (SPHEREx: ``"pah_3p29"``), with its factory's
-    parameters overridden by ``overrides`` (one given as None keeps the factory's default, so it
-    is left out)."""
-    return Shape('catalog', of=None, params={'catalog': str(name),
-                                             **{k: v for k, v in overrides.items() if v is not None}})
 
 
 def _as_function(value, what):
@@ -393,7 +379,7 @@ class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
     ``times``: the function (a Python function of data variables, :class:`Function`, a
-    built-in :func:`template` / :func:`gaussian` / :func:`linear` / :func:`catalog`, or the name
+    built-in :func:`template` / :func:`gaussian` / :func:`linear`, or the name
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
     coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
     0.3 for the others; 0 for none).
@@ -464,7 +450,7 @@ class Offsets(Config):
     frame; :class:`SkySignature`).
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
-    ``render``: which of the instrument's renderers draws the term on the mosaic.
+    ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
     ``name``: how priors refer to the term (default: the map's name).
     """
     name: str | None = None
@@ -797,6 +783,49 @@ class FrameFunction(_Source):
 
 
 # =============================================================================== priors
+# =============================================================================== chunk maps
+@dataclass(frozen=True, init=False)
+class ChunkMap(Config):
+    """A chunk map of the model, ``Model(chunk_maps={name: ChunkMap(fn, **params)})``: the function
+    ``fn(geometry, **params)`` returns the partition of the instrument's detector it builds, a
+    :class:`~selfcal.instruments.base.Chunks` on the detector geometry it is given. ``tag`` joins
+    the product name after the instrument's tag when the map is the primary one (the model's
+    first), so that the partition can be read off the name: ``cal_<instrument tag>_<tag>_<job><suffix>.h5``.
+    ``fn`` must be importable by the worker processes."""
+    fn: Callable
+    tag: str
+    params: dict[str, Any]
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, fn, *, tag='', **params):
+        what = f"ChunkMap({getattr(fn, '__name__', fn)})"
+        fn, params = _source_function(fn, params, what)
+        _check_params(fn, params, 1, what)
+        object.__setattr__(self, 'fn', fn)
+        object.__setattr__(self, 'tag', str(tag))
+        object.__setattr__(self, 'params', params)
+        self.__post_init__()
+
+    def __repr__(self):
+        return _call('ChunkMap', (_Named(_fn_name(self.fn)),),
+                     ((('tag', self.tag),) if self.tag else ()) + tuple(self.params.items()))
+
+    @classmethod
+    def _from_fields(cls, fn, tag, params):
+        return cls(fn, tag=tag, **dict(params))
+
+    def lower(self) -> dict:
+        """The map's data form (``{function, tag, params}``)."""
+        out = {'function': _ref(self.fn)}
+        if self.tag:
+            out['tag'] = self.tag
+        if self.params:
+            out['params'] = dict(self.params)
+        return out
+
+
 @dataclass(frozen=True, init=False)
 class Prior(Config):
     """Linear rows on the unknowns of ``terms`` (sky-term names, offset-term names):
@@ -853,9 +882,13 @@ class Prior(Config):
 # =============================================================================== the model
 @dataclass(frozen=True)
 class Model(Config):
-    """The model: sky terms, offset terms, data variables, an observation weight and priors.
+    """The model: chunk maps, sky terms, offset terms, data variables, an observation weight and
+    priors.
 
-    ``sky``: :class:`Sky` terms (at least one; default one constant sky). ``offsets``:
+    ``chunk_maps``: the partitions of the detector the offset terms live on, ``{name:
+    ChunkMap(fn, **params)}`` in order, the first one primary (the terms' default map, the jobs'
+    window and the mosaic's); none: the instrument's defaults (``sc.Camera``, ``sc.Euclid``; a
+    SPHEREx model names its own). ``sky``: :class:`Sky` terms (at least one; default one constant sky). ``offsets``:
     :class:`Offsets` terms (a per-frame scalar is one of them: ``Offsets('scalar', on='detector')``,
     one chunk, one value per frame). ``variables``: the
     model's own data variables, ``{name: source}`` (:class:`Header`, :class:`PerFrame`,
@@ -872,9 +905,16 @@ class Model(Config):
     variables: dict[str, _Source] = field(default_factory=FrozenDict)
     weight: Function | Shape | str | Callable | None = None
     priors: tuple[Prior, ...] = ()
+    chunk_maps: dict[str, ChunkMap] = added(FrozenDict(), since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'weight', _as_function(self.weight, 'Model(weight=...)'))
+        maps = {}
+        for k, v in self.chunk_maps.items():
+            if not isinstance(v, ChunkMap):
+                raise ConfigError(f"Model(chunk_maps={{{k!r}: ...}}): a ChunkMap(fn, **params), got {v!r}")
+            maps[str(k)] = v
+        object.__setattr__(self, 'chunk_maps', FrozenDict(maps))
         if not self.sky:
             raise ConfigError("Model(sky=...): at least one sky term")
         names = [t.name for t in self.sky]
@@ -901,6 +941,8 @@ class Model(Config):
     def lower(self, mosaic='full') -> dict:
         """The ``[model]`` table (:meth:`~selfcal.models.spec.ModelSpec.from_config`) of this model."""
         table = {'mosaic': mosaic, 'sky': [t.lower(d) for t, d in zip(self.sky, self.sky_dampings())]}
+        if self.chunk_maps:
+            table['chunk_maps'] = {k: v.lower() for k, v in self.chunk_maps.items()}
         if self.offsets:
             table['offset'] = [t.lower() for t in self.offsets]
         if self.variables:
@@ -959,11 +1001,11 @@ def spectral(lines, polynomial=None, smooth=None, poly_prior=None, damping=None)
     return Model(sky=(Sky(damping=damping),) + lines, offsets=offsets + (Offsets('scalar', on='detector'),))
 
 
-def two_block(second='readout', smooth=0.1, second_smooth=0.0, along='subchannel', damping=None) -> Model:
+def two_block(second, along, smooth=0.1, second_smooth=0.0, damping=None) -> Model:
     """A constant sky, an offset per frame and chunk of the primary map smoothed between
-    neighbours one step apart along ``along``, and a detector-fixed offset on the chunk map
-    ``second`` shared by every frame, with no constant (``exclude=Poly(0)``; ``second_smooth``: its
-    smoothness weight). No per-frame scalar."""
+    neighbours one step apart along the chunk axis ``along``, and a detector-fixed offset on the
+    chunk map ``second`` shared by every frame, with no constant (``exclude=Poly(0)``;
+    ``second_smooth``: its smoothness weight). No per-frame scalar."""
     return Model(sky=(Sky(damping=damping),),
                  offsets=(Offsets(smooth=smooth, smooth_along=(along,), smooth_step=1),
                           Offsets(on=second, per='all', smooth=second_smooth, smooth_along=(), exclude=Poly(0))))

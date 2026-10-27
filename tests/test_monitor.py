@@ -429,6 +429,7 @@ def test_without_stop_the_fit_encodes_as_before():
 
 # =================================================================== through the API
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def _recipe(iterations=30, name='m', stop=None, **fit):
@@ -457,7 +458,7 @@ def _history(cal):
 def test_a_monitored_calibration_writes_the_same_cal_and_records_its_checks(field, caplog):
     recipe = _recipe(14, name='mon')
     with caplog.at_level(logging.INFO, logger='selfcal'):
-        res = field.calibrate(recipe, monitor=sc.Monitor(4, gradient=True))
+        res = field.calibrate(recipe, monitor=sc.Monitor(4, gradient=True), jobs=ALL)
     cal = res.cal_paths[0]
     out = caplog.text
     assert 'monitor at iteration 12: |b - A x| = ' in out and 'large scale (degree 2): continuum rms' in out
@@ -473,10 +474,11 @@ def test_a_monitored_calibration_writes_the_same_cal_and_records_its_checks(fiel
     assert entry['monitor']['every'] == 4 and entry['monitor']['checks'] == 4 and entry['monitor']['last']['itn'] == 12
     assert 'stop_rule' not in entry
     # the same cal, byte for byte, without the monitor; the same fingerprint; the plan's book agrees
-    (job,) = field.instrument.default_jobs()
-    assert field.plan(recipe, monitor=4).book.cal(job, field.frames) == field.plan(recipe).book.cal(job, field.frames)
-    assert 'monitor     every 4 iterations: |b - A x|, the sky terms' in str(field.plan(recipe, monitor=4))
-    again = field.calibrate(recipe, overwrite=True).cal_paths[0]
+    job = ALL
+    assert field.plan(recipe, jobs=ALL, monitor=4).book.cal(job, field.frames) == \
+        field.plan(recipe, jobs=ALL).book.cal(job, field.frames)
+    assert 'monitor     every 4 iterations: |b - A x|, the sky terms' in str(field.plan(recipe, monitor=4, jobs=ALL))
+    again = field.calibrate(recipe, overwrite=True, jobs=ALL).cal_paths[0]
     assert open(again, 'rb').read() == saved and products.read_sidecar(again)['fingerprint'] == side
     assert 'check_itn' not in _history(again)
     # a rerun of the monitored action replays the monitor
@@ -485,9 +487,9 @@ def test_a_monitored_calibration_writes_the_same_cal_and_records_its_checks(fiel
 
 
 def test_monitors_continue_across_a_warm_start(field):
-    first = field.calibrate(_recipe(12, name='ws_first'), monitor=sc.Monitor(4))
+    first = field.calibrate(_recipe(12, name='ws_first'), monitor=sc.Monitor(4), jobs=ALL)
     h1 = _history(first.cal_paths[0])
-    more = field.calibrate(_recipe(8, name='ws_more'), start=first, monitor=sc.Monitor(4))
+    more = field.calibrate(_recipe(8, name='ws_more'), start=first, monitor=sc.Monitor(4), jobs=ALL)
     h2 = _history(more.cal_paths[0])
     assert list(h2['check_itn']) == [0, 4, 8] and list(h2['check_iteration']) == [12, 16, 20]
     # the continuation's first check is the start: the large scales of the first solve's last check
@@ -499,7 +501,7 @@ def test_monitors_continue_across_a_warm_start(field):
 def test_the_stop_record_in_the_cal_the_record_and_the_log(field, caplog):
     stop = sc.Stop(gradient=sc.GradientRule(1e-3, window=5), min_iterations=8)
     with caplog.at_level(logging.INFO, logger='selfcal'):
-        res = field.calibrate(_recipe(300, name='stopped', stop=stop), monitor=sc.Monitor(5))
+        res = field.calibrate(_recipe(300, name='stopped', stop=stop), monitor=sc.Monitor(5), jobs=ALL)
     cal = res.cal_paths[0]
     out = caplog.text
     with CalFile(cal) as c:
@@ -520,18 +522,19 @@ def test_the_stop_record_in_the_cal_the_record_and_the_log(field, caplog):
     h = _history(cal)
     assert h['stop_gradient'].shape == h['itn'].shape and h['stop_holds'][n] and not h['stop_holds'][:n].any()
     # the rules enter the cal's inputs (a cal without them is another product)
-    (job,) = field.instrument.default_jobs()
+    job = ALL
     plain = _recipe(300, name='stopped')
     a = products.cal_inputs(field, _recipe(300, name='stopped', stop=stop), job, field.frames)
     b = products.cal_inputs(field, plain, job, field.frames)
     assert products.fingerprint(a) != products.fingerprint(b) and 'stop' not in json.dumps(b['fit'])
     assert ("stop        the largest |A^T r| over 5 iterations at most 0.001 of its start; not before iteration 8; "
             "the solver's tolerance tests off (tolerance=0 unused: a Stop without solver_tests)") \
-        in str(field.plan(_recipe(300, name='stopped', stop=stop)))
+        in str(field.plan(_recipe(300, name='stopped', stop=stop), jobs=ALL))
     loose = sc.Recipe(sc.continuum(), fit=sc.Fit(300, stop=stop), coadd=None, numerics=NUMERICS, name='stopped')
-    assert "the solver's tolerance tests off (atol, btol (tolerance=1e-06) and conlim unused" in str(field.plan(loose))
+    assert "the solver's tolerance tests off (atol, btol (tolerance=1e-06) and conlim unused" in \
+        str(field.plan(loose, jobs=ALL))
     kept = loose.replace(fit=sc.Fit(300, stop=stop.replace(solver_tests=True)))
-    shown = str(field.plan(kept))
+    shown = str(field.plan(kept, jobs=ALL))
     assert "tolerance tests off" not in shown and "the solver's tests compatible, least_squares, condition" in shown
 
 
@@ -539,7 +542,8 @@ def test_snapshots_monitors_and_a_stop_together(field):
     """Snapshots every 4 iterations until the rule ends the solve (none at or after it); the monitor's
     checks and the rule's values in one history; the solution is that of a plain solve of that length."""
     stop = sc.Stop(gradient=sc.GradientRule(1e-3, window=5), min_iterations=8)
-    res = field.calibrate(_recipe(300, name='together', stop=stop), snapshots=sc.Snapshots(4), monitor=sc.Monitor(4))
+    res = field.calibrate(_recipe(300, name='together', stop=stop), jobs=ALL, snapshots=sc.Snapshots(4),
+                          monitor=sc.Monitor(4))
     cal = res.cal_paths[0]
     with CalFile(cal) as c:
         n = c.solve['iterations']
@@ -548,7 +552,7 @@ def test_snapshots_monitors_and_a_stop_together(field):
     assert snaps == [f'{stem}_it{k:04d}.h5' for k in range(4, n, 4)]
     h = _history(cal)
     assert list(h['check_itn']) == list(range(0, n + 1, 4)) and h['stop_holds'][n]
-    exact = field.calibrate(_recipe(n, name='together_exact')).cal_paths[0]
+    exact = field.calibrate(_recipe(n, name='together_exact'), jobs=ALL).cal_paths[0]
     with h5py.File(cal, 'r') as a, h5py.File(exact, 'r') as b:
         for name in ('sky/continuum', 'offsets/map_0', 'offsets/map_1'):
             assert _same(a[name][()], b[name][()]), name
@@ -557,7 +561,7 @@ def test_snapshots_monitors_and_a_stop_together(field):
 def test_tiles_are_monitored_one_history_each(field):
     tiles = sc.Tiles((1, 2), overlap=10, names=('W', 'E'))
     t = field.calibrate(_recipe(6, name='tmon'), tiles=tiles, monitor=sc.Monitor(3),
-                        compute=field.compute.replace(stage_dir='toy_tiles_mon', memory_guard=False))
+                        compute=field.compute.replace(stage_dir='toy_tiles_mon', memory_guard=False), jobs=ALL)
     for e in json.load(open(t.record))['solves']:
         h = np.load(e['history_file'])
         assert list(h['check_itn']) == [0, 3, 6] and e['monitor']['checks'] == 3
@@ -566,12 +570,12 @@ def test_tiles_are_monitored_one_history_each(field):
 def test_a_rule_that_cannot_fire_is_a_note_of_the_plan(field, caplog):
     stop = sc.Stop(large_scale=sc.LargeScaleRule(1e-3, every=10))
     with caplog.at_level(logging.WARNING, logger='selfcal.run.plan'):
-        plan = field.plan(_recipe(5, name='never', stop=stop))
+        plan = field.plan(_recipe(5, name='never', stop=stop), jobs=ALL)
     assert ('note        stop rules: the large-scale rule cannot hold before iteration 20, after the iteration '
             'limit (5)') in str(plan)
     assert any('the large-scale rule cannot hold' in r.getMessage() for r in caplog.records)
-    assert not [n for n in field.plan(_recipe(40, name='never', stop=stop)).notes if 'stop rules' in n]
-    res = field.calibrate(_recipe(5, name='never', stop=stop), monitor=False, snapshots=False)
+    assert not [n for n in field.plan(_recipe(40, name='never', stop=stop), jobs=ALL).notes if 'stop rules' in n]
+    res = field.calibrate(_recipe(5, name='never', stop=stop), monitor=False, snapshots=False, jobs=ALL)
     with CalFile(res.cal_paths[0]) as c:
         assert c.solve['iterations'] == 5 and c.solve['stop_rule'] == 'none'
     record = json.load(open(res.record))
@@ -581,9 +585,9 @@ def test_a_rule_that_cannot_fire_is_a_note_of_the_plan(field, caplog):
 def test_a_mosaic_takes_no_monitor(field):
     from selfcal.run.plan import make_plan
     with pytest.raises(ConfigError, match='only a calibration'):
-        make_plan(field, 'mosaic', _recipe(5).replace(coadd=sc.Coadd()), monitor=sc.Monitor(2))
+        make_plan(field, 'mosaic', _recipe(5).replace(coadd=sc.Coadd()), jobs=ALL, monitor=sc.Monitor(2))
     with pytest.raises(ConfigError, match='degree 3'):
-        field.plan(_recipe(20, stop=sc.Stop(large_scale=1e-3)), monitor=sc.Monitor(large_scale=3))
+        field.plan(_recipe(20, stop=sc.Stop(large_scale=1e-3)), monitor=sc.Monitor(large_scale=3), jobs=ALL)
 
 
 def test_history_files_of_old_solves_read_as_before(tmp_path):

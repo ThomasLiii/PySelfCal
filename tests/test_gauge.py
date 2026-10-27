@@ -33,6 +33,7 @@ from selfcal.io.frames import frame_header_values  # noqa: E402
 
 FIT = sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12)
 COADD = sc.Coadd(clip=None, use_mask=False)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 BANDS = (H, 1)                       # one full-width band per detector row: a constant and a slope per row can
                                      # carry any plane exactly, so the gauge freedom is exact (SPHEREx's
                                      # subchannel bands are ~6 rows: nearly so)
@@ -228,7 +229,7 @@ def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
 
     from selfcal.core.gauge import move_into_offsets, polynomial
     field, sky, truth = toy_field(tmp_path)
-    plain = field.calibrate(sc.Recipe(model(), fit=FIT, coadd=None, numerics=NUMERICS, name='plain'))
+    plain = field.calibrate(sc.Recipe(model(), fit=FIT, coadd=None, numerics=NUMERICS, name='plain'), jobs=ALL)
     g_true, H_true = np.array([3e-3, -2e-3]), np.zeros((2, 2))
     hidden = str(tmp_path / 'hidden.h5')
     shutil.copyfile(plain.cal_paths[0], hidden)
@@ -263,8 +264,9 @@ def test_gauge_moves_the_absorbed_polynomial_into_the_sky(tmp_path):
     assert np.allclose(dg, g_true, rtol=0.1, atol=1e-4), (dg, g_true)
     assert np.abs(dH).max() < 1e-7, dH
     fit = sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12, gauge=sc.Gauge('slope'))
-    gauged0 = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged0'))
-    gauged = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged'), start=hidden)
+    gauged0 = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged0'), jobs=ALL)
+    gauged = field.calibrate(sc.Recipe(model(), fit=fit, coadd=COADD, numerics=NUMERICS, name='gauged'), jobs=ALL,
+                             start=hidden)
     with gauged0.cal() as c0g:
         s0g, cov0 = c0g.sky(0), c0g.sky_coverage(0)
     with gauged.cal() as c1:
@@ -292,10 +294,10 @@ def test_gauge_through_the_offsets_agrees_with_the_map(tmp_path, degree):
     field, sky, truth = toy_field(tmp_path, n_exp=24, seed=5)
     on_map = field.calibrate(sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12,
                                                              gauge=sc.Gauge('slope', degree=degree)), coadd=COADD,
-                                       numerics=NUMERICS, name='map'))
+                                       numerics=NUMERICS, name='map'), jobs=ALL)
     via = field.calibrate(sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12,
                                                           gauge=sc.Gauge('slope', degree=degree, apply='offsets')),
-                                    coadd=COADD, numerics=NUMERICS, name='off'))
+                                    coadd=COADD, numerics=NUMERICS, name='off'), jobs=ALL)
     with on_map.cal() as c0, via.cal() as c1:
         assert np.allclose(c0.sky(0), c1.sky(0), equal_nan=True)
         assert not np.array_equal(c0.offsets[1], c1.offsets[1])          # the offsets moved
@@ -317,9 +319,9 @@ def test_a_mosaic_of_a_gauged_cal(tmp_path):
     field, _, _ = toy_field(tmp_path, n_exp=24, seed=5)
     recipe = sc.Recipe(model(), fit=sc.Fit(400, clip=None, use_mask=False, tolerance=1e-12, gauge=sc.Gauge('slope')),
                        coadd=COADD, numerics=NUMERICS, name='gauged')
-    made = field.calibrate(recipe)
-    again = field.mosaic(recipe.replace(name='again'), cal=made)
-    ungauged_fit = field.mosaic(recipe.replace(fit=recipe.fit.replace(gauge=None), name='nogauge'), cal=made)
+    made = field.calibrate(recipe, jobs=ALL)
+    again = field.mosaic(recipe.replace(name='again'), cal=made, jobs=ALL)
+    ungauged_fit = field.mosaic(recipe.replace(fit=recipe.fit.replace(gauge=None), name='nogauge'), cal=made, jobs=ALL)
     with made.cal() as cal:
         assert np.any(np.asarray(cal.gauge['g']) != 0)                  # the maps differ without the gauge
     with made.mosaic() as m0, again.mosaic() as m1, ungauged_fit.mosaic() as m2:
@@ -343,7 +345,7 @@ def test_a_mosaic_of_a_gauged_cal(tmp_path):
     assert 'GAUGEG1' not in fits.getheader(made.mosaic_paths[0], 'STD_MAP')
     for kw in (dict(tiles=sc.Tiles(grid=(2, 1))), dict(passes=sc.Passes(3))):
         with pytest.raises(sc.ConfigError, match='post-solve gauge'):
-            lower(field, recipe, **kw)
+            lower(field, recipe, jobs=ALL, **kw)
 
 
 def test_the_plan_names_the_gauge_and_the_weight():

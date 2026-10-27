@@ -23,8 +23,8 @@ identical to the real-data run — only the sky values change, not the coverage.
 `inject_simulated_sky.py` copies every frame whole (so `sub_mapping`, `sub_bitmask`,
 `sub_foot`, `ref_coords`, WCS headers, and the **filename** are unchanged) and
 overwrites only `sub_data`. Because the filenames are kept, the `exp_<n>_det_<n>.h5`
-indices still parse, and the SPHEREx LVF geometry (chunk maps, per-pixel
-wavelengths) that `sc.SPHEREx(N)` rebuilds still lines up.
+indices still parse, and the SPHEREx LVF geometry (the per-pixel wavelengths of
+`sc.SPHEREx(N)`, the recipe's chunk maps on its arcs) still lines up.
 
 The frames are **Zstd-compressed HDF5**, so any code that reads/writes them must
 `import hdf5plugin` (a `selfcal` dependency). The kit scripts do.
@@ -33,10 +33,10 @@ The frames are **Zstd-compressed HDF5**, so any code that reads/writes them must
 
 You provide only the frames, the `ref.fits`, and (if you are injecting one) the
 simulated sky. You do **not**
-provide chunk maps, valid masks, or wavelengths — the instrument, `sc.SPHEREx(N)`,
-rebuilds the chunk maps and valid masks from the detector number plus the LVF
-parameters shipped inside the package (`selfcal/instruments/spherex/data/lvf_params/`),
-and reads the per-pixel wavelength maps (the `*BC_Band<N>.fits` / `*BW_Band<N>.fits`
+provide chunk maps, valid masks, or wavelengths — the recipe's chunk maps are
+rebuilt from the detector number plus the LVF parameters shipped inside the package
+(`selfcal/instruments/spherex/data/lvf_params/`), the job's valid pixels from its
+channel, and the instrument, `sc.SPHEREx(N)`, reads the per-pixel wavelength maps (the `*BC_Band<N>.fits` / `*BW_Band<N>.fits`
 band-centre / band-width files) from `sc.SPHEREx(calib_dir=)`, by default
 `$SELFCAL_SPHEREX_CALIB_DIR`, else the SPHEREx calibration directory of the
 processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
@@ -44,8 +44,8 @@ processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
 ## The recipe
 
 `RECIPE` in `transfer_function.py` is the production recipe of 2026-10, unchanged:
-`SLOPE_GAUGE` of `selfcal_scripts/recipes/spherex.py`, on
-`sc.SPHEREx(detector, num_col=1, num_ch=17)`:
+`SLOPE_GAUGE` of `selfcal_scripts/recipes/spherex.py`, on its chunk maps
+`maps(num_ch=17, num_col=1)` (17 channels of 10 subchannels, one column) of `sc.SPHEREx(detector)`:
 
 - the model: per frame, a constant per subchannel (mean zero over the frame) and a
   free gradient along detector x (`selfcal_scripts.spherex.terms.frame_slope()`: `(det_x - 1019.5) / 1020`
@@ -82,10 +82,11 @@ work by both forms before the TOML form was removed with selfcal's TOML support.
 ## Channels
 
 Each SPHEREx detector is a linear variable filter; the production recipe splits it
-into 17 spectral channels (`num_ch = 17`, each the width of two of the 34 science
+into 17 spectral channels (`num_ch=17` of its chunk maps, each the width of two of the 34 science
 channels), and each channel is an independent calibration + mosaic at its
 wavelength. The kit runs a **single** channel (default `Ch9`, the channel of the
-transfer-function campaign of 2026-10; the job `spherex.channel(N)`) — enough to
+transfer-function campaign of 2026-10; the job `jobs.channel(N)` of
+`selfcal_scripts/spherex/jobs.py`) — enough to
 characterize the transfer function without 17× the compute. Valid channel indices
 are 1..17; pick with `--channel N`.
 

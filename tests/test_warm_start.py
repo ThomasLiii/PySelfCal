@@ -44,6 +44,7 @@ from tests.synthetic_exposures import (  # noqa: E402
 )
 
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def plane(det_x, det_y):
@@ -130,9 +131,10 @@ def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
     """cal -> x0 -> cal reproduces every dataset exactly: the solve's solution is its starting vector."""
     field, _ = toy
     tag = f'rt_{model}_{int(float32)}'
-    source = field.calibrate(_recipe(MODELS[model], 15, name=tag, float32=float32)).cal_paths[0]   # a real solve
+    source = field.calibrate(_recipe(MODELS[model], 15, name=tag, float32=float32),     # a real solve
+                             jobs=ALL).cal_paths[0]
     _no_solve(monkeypatch)                                                  # then the solution is the start
-    again = field.calibrate(_recipe(MODELS[model], 15, name=tag + '_again', float32=float32), start=source)
+    again = field.calibrate(_recipe(MODELS[model], 15, name=tag + '_again', float32=float32), start=source, jobs=ALL)
     a, b = _items(source), _items(again.cal_paths[0])
     assert sorted(a) == sorted(b)
     for name in a:
@@ -147,14 +149,15 @@ def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
 @pytest.mark.parametrize('method', ['lsqr', 'cgls'])
 def test_a_warm_start_from_the_least_squares_solution_stays_there(toy, method):
     field, _ = toy
-    exact = field.calibrate(_recipe(MODELS['times'], 400, name=f'exact_{method}', method=method))
+    exact = field.calibrate(_recipe(MODELS['times'], 400, name=f'exact_{method}', method=method), jobs=ALL)
     first = _solve(exact.cal_paths[0])
     if method == 'lsqr':
         # the least-squares solution: |A^T r| / (|A| |r|) below float32's epsilon, the floor the float32 products set
         # (LSQR's estimates; the floor depends on the BLAS kernel; CGLS's anorm is a lower bound of |A| and its
         # gradient the true one, at the same floor)
         assert np.load(first['history_file'])['test2'][-1] < np.finfo(np.float32).eps
-    more = field.calibrate(_recipe(MODELS['times'], 20, name=f'exact_more_{method}', method=method), start=exact)
+    more = field.calibrate(_recipe(MODELS['times'], 20, name=f'exact_more_{method}', method=method), jobs=ALL,
+                           start=exact)
     then = _solve(more.cal_paths[0])
     h = np.load(then['history_file'])
     eps = np.finfo(np.float32).eps
@@ -173,16 +176,16 @@ def test_a_variant_starts_from_an_earlier_solution(toy, caplog):
     import logging
     field, _ = toy
     model = MODELS['times']
-    masked = field.calibrate(_recipe(model, 10, name='masked'))
+    masked = field.calibrate(_recipe(model, 10, name='masked'), jobs=ALL)
     with caplog.at_level(logging.INFO, logger='selfcal.core.warm_start'):
-        unmasked = field.calibrate(_recipe(model, 10, name='unmasked', use_mask=False), start=masked)
+        unmasked = field.calibrate(_recipe(model, 10, name='unmasked', use_mask=False), start=masked, jobs=ALL)
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith('warm start from')]
     started_zero = int(line.split(' of them zero')[0].rsplit(' ', 1)[1])
     dropped = int(line.split(' source values of columns inactive now')[0].rsplit(' ', 1)[1])
     assert started_zero > 0 and dropped == 0, line           # more pixels have data without the mask
     caplog.clear()
     with caplog.at_level(logging.INFO, logger='selfcal.core.warm_start'):
-        field.calibrate(_recipe(model, 10, name='masked_again'), start=unmasked)
+        field.calibrate(_recipe(model, 10, name='masked_again'), start=unmasked, jobs=ALL)
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith('warm start from')]
     assert int(line.split(' source values of columns inactive now')[0].rsplit(' ', 1)[1]) > 0, line
 
@@ -191,26 +194,27 @@ def test_a_variant_starts_from_an_earlier_solution(toy, caplog):
 def test_a_cal_of_another_system_is_refused(toy):
     field, wide = toy
     model = MODELS['times']
-    source = field.calibrate(_recipe(model, 10, name='src')).cal_paths[0]
+    source = field.calibrate(_recipe(model, 10, name='src'), jobs=ALL).cal_paths[0]
     frames = field.frames
     # other frames, another frame order: before the solve is set up (the plan)
     with pytest.raises(ConfigError, match='solved on 12 frames, this solve has 8'):
-        field.calibrate(_recipe(model, 5, name='r_frames'), frames=8, start=source)
+        field.calibrate(_recipe(model, 5, name='r_frames'), frames=8, start=source, jobs=ALL)
     with pytest.raises(ConfigError, match='the same 12 frames in another order'):
-        field.calibrate(_recipe(model, 5, name='r_order'), frames=frames[::-1], start=source)
+        field.calibrate(_recipe(model, 5, name='r_order'), frames=frames[::-1], start=source, jobs=ALL)
     with pytest.raises(ConfigError, match=r"sky terms: \['continuum'\] \(the source\) vs \['continuum', 'ramp'\]"):
-        field.calibrate(_recipe(MODELS['spectral'].replace(offsets=model.offsets), 5, name='r_sky'), start=source)
+        field.calibrate(_recipe(MODELS['spectral'].replace(offsets=model.offsets), 5, name='r_sky'), jobs=ALL,
+                        start=source)
     # another model (the same number of terms, the slope term on another chunk map), another grid,
     # other column counts: when the solve is set up
     other_map = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', on='detector', times=xtilde),
                                        model.offsets[2]))
     with pytest.raises(ConfigError, match='offset map 1: another chunk map'):
-        field.calibrate(_recipe(other_map, 5, name='r_model'), start=source)
+        field.calibrate(_recipe(other_map, 5, name='r_model'), start=source, jobs=ALL)
     with pytest.raises(ConfigError, match='the grid: sky'):
-        wide.calibrate(_recipe(model, 5, name='r_grid'), start=source)
+        wide.calibrate(_recipe(model, 5, name='r_grid'), start=source, jobs=ALL)
     two = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', basis=plane, n=2), model.offsets[2]))
     with pytest.raises(ConfigError, match=r'offset map 1: \(12, 16\) values in the source, \(12, 32\) in this solve'):
-        field.calibrate(_recipe(two, 5, name='r_columns'), start=source)
+        field.calibrate(_recipe(two, 5, name='r_columns'), start=source, jobs=ALL)
     # none of them left a cal behind
     assert not [p for p in os.listdir(os.path.join(field.path, 'calibration')) if p.startswith('cal_') and '_r_' in p]
 
@@ -223,27 +227,27 @@ def test_a_cal_of_another_system_is_refused(toy):
             del f['solve'].attrs[k]
     assert WarmStart(legacy).recorded is None and WarmStart(source).recorded is not None
     with pytest.raises(ConfigError, match='the grid: sky'):
-        wide.calibrate(_recipe(model, 5, name='r_grid_legacy'), start=legacy)
-    ok = field.calibrate(_recipe(model, 5, name='from_legacy'), start=legacy)
+        wide.calibrate(_recipe(model, 5, name='r_grid_legacy'), start=legacy, jobs=ALL)
+    ok = field.calibrate(_recipe(model, 5, name='from_legacy'), start=legacy, jobs=ALL)
     assert _solve(ok.cal_paths[0])['start_from'] == legacy
     # its contents cannot show how frames share offsets: the starting vector checks it
     shared = model.replace(offsets=(model.offsets[0], sc.Offsets('xslope', per='all', times=xtilde), model.offsets[2]))
     with pytest.raises(ConfigError, match='offset map 1 of the source does not share its offsets'):
-        field.calibrate(_recipe(shared, 5, name='r_grouping_legacy'), start=legacy)
+        field.calibrate(_recipe(shared, 5, name='r_grouping_legacy'), start=legacy, jobs=ALL)
     with pytest.raises(ConfigError, match=r'offsets\[1\]\.groups: 12 \(the source\) vs 1 \(this solve\)'):
-        field.calibrate(_recipe(shared, 5, name='r_grouping'), start=source)
+        field.calibrate(_recipe(shared, 5, name='r_grouping'), start=source, jobs=ALL)
 
     # the cal this calibration writes is no start
     with pytest.raises(ConfigError, match='a cal this calibration writes'):
-        field.calibrate(_recipe(model, 10, name='src'), start=source, overwrite=True)
+        field.calibrate(_recipe(model, 10, name='src'), start=source, overwrite=True, jobs=ALL)
 
 
 def test_a_model_whose_offsets_cannot_be_read_back_is_refused(toy):
     field, _ = toy
-    source = field.calibrate(_recipe(sc.continuum(), 5, name='poly_src')).cal_paths[0]
+    source = field.calibrate(_recipe(sc.continuum(), 5, name='poly_src'), jobs=ALL).cal_paths[0]
     poly = sc.Model(offsets=[sc.Offsets(polynomial=sc.Poly(1, along='row', each='col', window=range(0, 4)))])
     with pytest.raises(ConfigError, match='polynomial basis'):
-        field.plan(_recipe(poly, 5, name='poly'), start=source)
+        field.plan(_recipe(poly, 5, name='poly'), start=source, jobs=ALL)
 
 
 # =================================================================== continuations, provenance, reruns
@@ -251,9 +255,9 @@ def test_a_model_whose_offsets_cannot_be_read_back_is_refused(toy):
 def test_iterations_accumulate_and_the_start_is_recorded(toy):
     field, _ = toy
     model = MODELS['times']
-    first = field.calibrate(_recipe(model, 12, name='it12'))
-    second = field.calibrate(_recipe(model, 8, name='it20'), start=first)
-    third = field.calibrate(_recipe(model, 5, name='it25'), start=second.cal_paths[0])
+    first = field.calibrate(_recipe(model, 12, name='it12'), jobs=ALL)
+    second = field.calibrate(_recipe(model, 8, name='it20'), start=first, jobs=ALL)
+    third = field.calibrate(_recipe(model, 5, name='it25'), start=second.cal_paths[0], jobs=ALL)
     s1, s2, s3 = (_solve(r.cal_paths[0]) for r in (first, second, third))
     assert (s1['iterations'], s1['iterations_total']) == (12, 12) and 'start_from' not in s1
     assert (s2['iterations'], s2['iterations_total']) == (8, 20)
@@ -270,7 +274,7 @@ def test_iterations_accumulate_and_the_start_is_recorded(toy):
         {k: s3[k] for k in ('start_from', 'start_identity', 'iterations', 'iterations_total')}
     # the plan says where each job starts
     assert f"start       {third.jobs[0].name}: {second.cal_paths[0]}" in str(
-        field.plan(_recipe(model, 5, name='it25'), start=second))
+        field.plan(_recipe(model, 5, name='it25'), start=second, jobs=ALL))
     # a rerun replays the start: the same cal, byte for byte
     saved = open(third.cal_paths[0], 'rb').read()
     redone = sc.rerun(third.record, overwrite=True)
@@ -280,24 +284,24 @@ def test_iterations_accumulate_and_the_start_is_recorded(toy):
 
 def test_tiles_and_passes_take_no_start(toy):
     field, _ = toy
-    source = field.calibrate(_recipe(sc.continuum(), 5, name='nostart')).cal_paths[0]
+    source = field.calibrate(_recipe(sc.continuum(), 5, name='nostart'), jobs=ALL).cal_paths[0]
     recipe = _recipe(sc.continuum(), 5, name='tiled')
     with pytest.raises(ConfigError, match='a tiled or an N-pass calibration takes no start'):
-        field.plan(recipe, tiles=sc.Tiles((1, 2), overlap=10), start=source)
+        field.plan(recipe, tiles=sc.Tiles((1, 2), overlap=10), start=source, jobs=ALL)
     with pytest.raises(ConfigError, match='a tiled or an N-pass calibration takes no start'):
-        field.plan(recipe, passes=sc.Passes(3), start=source)
+        field.plan(recipe, passes=sc.Passes(3), start=source, jobs=ALL)
     with pytest.raises(ConfigError, match='a tiled or an N-pass calibration takes no start'):
-        lower(field, recipe, tiles=sc.Tiles((1, 2), overlap=10), start=source)
+        lower(field, recipe, jobs=ALL, tiles=sc.Tiles((1, 2), overlap=10), start=source)
     with pytest.raises(ConfigError, match='only a calibration starts from a cal'):
         from selfcal.run.plan import make_plan
-        make_plan(field, 'mosaic', recipe.replace(coadd=sc.Coadd()), start=source)
+        make_plan(field, 'mosaic', recipe.replace(coadd=sc.Coadd()), jobs=ALL, start=source)
 
 
 def test_the_fingerprint_holds_the_start_only_when_given(toy, tmp_path):
     field, _ = toy
     recipe = _recipe(sc.continuum(), 5, name='fp')
-    source = field.calibrate(recipe.replace(name='fp_src')).cal_paths[0]
-    (job,) = field.instrument.default_jobs()
+    source = field.calibrate(recipe.replace(name='fp_src'), jobs=ALL).cal_paths[0]
+    job = ALL
     plain = products.cal_inputs(field, recipe, job, field.frames)
     assert 'start' not in plain
     ident = products.start_identity(source)
@@ -306,8 +310,8 @@ def test_the_fingerprint_holds_the_start_only_when_given(toy, tmp_path):
     assert started == {**plain, 'start': ident}
     assert products.fingerprint(started) != products.fingerprint(plain)
     # the plan's book: the start only for a calibration that has one
-    assert 'start' not in field.plan(recipe).book.cal(job, field.frames)
-    assert field.plan(recipe, start=source).book.cal(job, field.frames)['start'] == ident
+    assert 'start' not in field.plan(recipe, jobs=ALL).book.cal(job, field.frames)
+    assert field.plan(recipe, start=source, jobs=ALL).book.cal(job, field.frames)['start'] == ident
     # a copy (no sidecar) is the same cal by its bytes; a sidecar no longer current is not trusted
     copy = tmp_path / 'copy.h5'
     shutil.copy(source, copy)
@@ -315,14 +319,14 @@ def test_the_fingerprint_holds_the_start_only_when_given(toy, tmp_path):
     shutil.copy(products.sidecar_path(source), products.sidecar_path(copy))
     assert 'sha256' in products.start_identity(copy)
     # the made cal's sidecar holds the start
-    made = field.calibrate(recipe.replace(name='fp_made'), start=source).cal_paths[0]
+    made = field.calibrate(recipe.replace(name='fp_made'), start=source, jobs=ALL).cal_paths[0]
     assert products.read_sidecar(made)['inputs']['start'] == ident
 
 
 def test_one_cal_starts_one_job(toy):
     field, _ = toy
     from selfcal.run.lower import start_paths
-    source = field.calibrate(_recipe(sc.continuum(), 5, name='jobs_src'))
+    source = field.calibrate(_recipe(sc.continuum(), 5, name='jobs_src'), jobs=ALL)
     (job,) = source.jobs
     assert start_paths(source, source.jobs) == {job.name: source.cal_paths[0]}
     assert start_paths({job: source.cal_paths[0]}, source.jobs) == {job.name: source.cal_paths[0]}
@@ -340,26 +344,26 @@ def test_a_continued_cal_can_be_mosaicked(toy):
     records), and its mosaic equals the one ``calibrate`` makes with a coadd from the same start."""
     field, _ = toy
     model = MODELS['times']
-    source = field.calibrate(_recipe(model, 6, name='mos_src'))
+    source = field.calibrate(_recipe(model, 6, name='mos_src'), jobs=ALL)
     recipe = _recipe(model, 4, name='mos_more')
-    more = field.calibrate(recipe, start=source)
+    more = field.calibrate(recipe, start=source, jobs=ALL)
     coadd = sc.Coadd(clip=None, std=False)
-    plan = field.plan(recipe.replace(coadd=coadd), action='mosaic')
+    plan = field.plan(recipe.replace(coadd=coadd), action='mosaic', jobs=ALL)
     assert {p.kind: p.state for p in plan.products} == {'cal': 'current', 'mosaic': 'missing'}
     (job,) = more.jobs
     assert plan.book.cal(job, field.frames, path=more.cal_paths[0]) == \
         products.read_sidecar(more.cal_paths[0])['inputs']
     saved = open(more.cal_paths[0], 'rb').read()
-    mosaic = field.mosaic(recipe.replace(coadd=coadd)).mosaic_paths[0]
+    mosaic = field.mosaic(recipe.replace(coadd=coadd), jobs=ALL).mosaic_paths[0]
     assert open(more.cal_paths[0], 'rb').read() == saved                         # the cal is not solved again
-    both = field.calibrate(recipe.replace(coadd=coadd, name='mos_both'), start=source).mosaic_paths[0]
+    both = field.calibrate(recipe.replace(coadd=coadd, name='mos_both'), start=source, jobs=ALL).mosaic_paths[0]
     from astropy.io import fits
     with fits.open(mosaic) as a, fits.open(both) as b:
         for x, y in zip(a, b):
             assert x.name == y.name and (x.data is None or x.data.tobytes() == y.data.tobytes()), x.name
     # a calibration without the start is another product (refused, not silently reused)
     with pytest.raises(ConfigError, match=r'start: .* -> <absent>'):
-        field.calibrate(recipe)
+        field.calibrate(recipe, jobs=ALL)
     # the start a cal records, from its sidecar or (without one) its solve group
     ident = products.start_identity(source.cal_paths[0])
     assert products.recorded_start(more.cal_paths[0]) == ident
@@ -371,7 +375,7 @@ def test_a_continued_cal_can_be_mosaicked(toy):
 
 # =================================================================== identities compared as JSON
 def test_identities_compare_in_their_json_form(toy, monkeypatch):
-    """A job whose value holds a nested tuple and numpy scalars is recorded as JSON (lists; what
+    """A job key holding a nested tuple and numpy scalars is recorded as JSON (lists; what
     ``default=str`` makes of the scalars); the plan's check and the solve's check compare the recorded
     identity with the computed one in that form, so the start is accepted (and another job refused)."""
     from selfcal.core.warm_start import _normalised, contents_problems
@@ -380,19 +384,18 @@ def test_identities_compare_in_their_json_form(toy, monkeypatch):
 
     def odd_key(job):
         out = real(job)
-        out['value'] = ((1, np.int64(2)), (np.float32(0.5), 'x'))
+        out['window'] = {'col': ((1, np.int64(2)), (np.float32(0.5), 'x'))}
         return out
     monkeypatch.setattr(products, 'job_key', odd_key)
     model = MODELS['times']
-    source = field.calibrate(_recipe(model, 5, name='odd_src')).cal_paths[0]
-    (job,) = field.instrument.default_jobs()
-    key = odd_key(job)
+    source = field.calibrate(_recipe(model, 5, name='odd_src'), jobs=ALL).cal_paths[0]
+    key = odd_key(ALL)
     recorded = json.loads(_solve(source)['system_identity'])['job']
-    assert recorded['value'] == [[1, '2'], ['0.5', 'x']] and recorded == _normalised(key)
+    assert recorded['window'] == {'col': [[1, '2'], ['0.5', 'x']]} and recorded == _normalised(key)
     assert contents_problems(source, job=key) == []
-    more = field.calibrate(_recipe(model, 3, name='odd_more'), start=source)      # the plan's and the solve's checks
+    more = field.calibrate(_recipe(model, 3, name='odd_more'), jobs=ALL, start=source)  # the plan's, the solve's checks
     assert _solve(more.cal_paths[0])['iterations_total'] == 8
-    other = dict(key, value=((1, np.int64(3)), (np.float32(0.5), 'x')))
+    other = dict(key, window={'col': ((1, np.int64(3)), (np.float32(0.5), 'x'))})
     (problem,) = contents_problems(source, job=other)
-    assert problem.startswith('the job: ') and "[[1, '2'], ['0.5', 'x']]} (the source)" in problem
-    assert "[[1, '3'], ['0.5', 'x']]} (this solve)" in problem
+    assert problem.startswith('the job: ') and "[[1, '2'], ['0.5', 'x']]}} (the source)" in problem
+    assert "[[1, '3'], ['0.5', 'x']]}} (this solve)" in problem

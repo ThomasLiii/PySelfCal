@@ -42,7 +42,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -59,7 +59,7 @@ from .offset_structure import (
 from .sky_model import Coefficient, ImportedFunction, NoiseVariance, SkyComponent, SkyModel
 from .variables import BUILTIN_VARIABLES, Derived, FrameFunction, VariableSet
 
-__all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'VariableSpec', 'PriorSpec', 'ModelSpec',
+__all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'VariableSpec', 'PriorSpec', 'ChunkMapSpec', 'ModelSpec',
            'build_coefficient', 'resolve_variable', 'load_function', 'chunk_map_of']
 
 BUILTIN_FUNCTIONS = ('template', 'gaussian', 'linear')
@@ -178,10 +178,9 @@ class SkyTerm:
         {variable = "wavelength",                  # data variable(s) the coefficient reads
          function = "template" | "gaussian" | "linear" | "package.module:name",
          <the function's parameters>}             # inline, or under params = {...}
-        {catalog = "pah_3p29", <overrides>}        # a named coefficient of the instrument
 
     ``name`` (the product name of the map) defaults to ``continuum`` for a
-    constant term and to the catalogue entry for a catalogue coefficient.
+    constant term; a term with a coefficient names itself.
     ``damp_weight``: the term's Tikhonov prior (None = the solver default). ``exclude``: a hard
     constraint on the map's shape, ``"package.module:function"`` (or the function itself) returning
     the excluded shapes ``(pixels, r)`` from the grid's pixel coordinates ``(u, v)`` (see
@@ -198,8 +197,6 @@ class SkyTerm:
         if name is None:
             if c is None:
                 name = 'continuum'
-            elif isinstance(c, dict) and 'catalog' in c:
-                name = str(c['catalog'])
             else:
                 raise ValueError(f"a sky term with a coefficient needs a name: {c!r}")
         object.__setattr__(self, 'name', str(name))
@@ -252,8 +249,8 @@ class OffsetTerm:
     (:meth:`ModelSpec.signature_exclusions`).
     ``exact_group_rows``: for fixed/grouped terms, emit the adjacency rows once
     per group instead of once per frame (exact; far fewer rows). ``render``:
-    which of the instrument's offset renderers draws the
-    term on the mosaic. ``name``: how priors refer to the term (default: the
+    which of the chunk map's renderers draws the term on the mosaic (default
+    the map's own). ``name``: how priors refer to the term (default: the
     map's name)."""
     map: str | None = None
     kind: str = 'free'
@@ -374,8 +371,33 @@ class PriorSpec:
 # the model
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
+class ChunkMapSpec:
+    """One chunk map of the model: ``function`` (an import path ``package.module:name``, or the
+    function itself) called as ``function(geometry, **params)`` on the instrument's detector
+    geometry returns the partition, a :class:`~selfcal.instruments.base.Chunks`; ``tag`` joins the
+    product name when the map is the primary one."""
+    name: str
+    function: object
+    tag: str = ''
+    params: dict = field(default_factory=dict)
+
+    def evaluate(self, geom):
+        """The map on ``geom``: ``function(geom, **params)``."""
+        return load_function(self.function)(geom, **dict(self.params))
+
+    def key(self):
+        """The map as plain data (what the run engine keeps an evaluated geometry under)."""
+        fn = self.function
+        ref = fn if isinstance(fn, str) else f"{getattr(fn, '__module__', '')}:{getattr(fn, '__qualname__', repr(fn))}"
+        return {'name': self.name, 'function': ref, 'tag': self.tag, 'params': _hashable(self.params)}
+
+
+@dataclass(frozen=True)
 class ModelSpec:
-    """A self-calibration model: sky and offset terms, variables, weight, priors.
+    """A self-calibration model: chunk maps, sky and offset terms, variables, weight, priors.
+
+    ``chunk_maps`` holds the model's chunk maps (:class:`ChunkMapSpec`, in order, the first
+    primary; none: the instrument's defaults, which the run engine supplies).
 
     ``sky`` holds the sky terms (:class:`SkyTerm`; at least one, by default one
     constant ``continuum`` term) and ``offset`` the offset terms
@@ -404,8 +426,13 @@ class ModelSpec:
     variables: tuple = ()
     weight: object = None
     priors: tuple = ()
+    chunk_maps: tuple = ()
 
     def __post_init__(self):
+        maps = self.chunk_maps
+        if isinstance(maps, dict):
+            maps = tuple(ChunkMapSpec(name=str(k), **dict(v)) for k, v in maps.items())
+        object.__setattr__(self, 'chunk_maps', tuple(maps))
         object.__setattr__(self, 'sky', tuple(
             t if isinstance(t, SkyTerm) else _sky_term(t) for t in self.sky))
         object.__setattr__(self, 'offset', tuple(
@@ -425,11 +452,13 @@ class ModelSpec:
     # ---- from a config table -------------------------------------------------------
     @classmethod
     def from_config(cls, table: dict) -> ModelSpec:
-        """The ``[model]`` table: ``sky = [{name=..., coefficient={...}, damp_weight=...}, ...]``,
+        """The ``[model]`` table: ``chunk_maps = {name = {function=..., tag=..., params={...}}}``,
+        ``sky = [{name=..., coefficient={...}, damp_weight=...}, ...]``,
         ``offset = [{map=..., kind=..., coefficient/basis={...}, poly=[...]}, ...]``,
         ``variables = {name = {<source> = ..., ...}}``, ``weight = {variable, function, ...}``,
         ``prior = [{term(s)=..., function=..., weight=..., <params>}, ...]``, ``mosaic``."""
         t = dict(table)
+        chunk_maps = t.pop('chunk_maps', None) or {}
         if 'scalar' in t:
             raise ValueError("[model] scalar: the per-frame scalar is an offset term, "
                              "offset = [{map = 'detector', name = 'scalar'}] (sc.Offsets('scalar', on='detector'))")
@@ -440,13 +469,14 @@ class ModelSpec:
         weight = t.pop('weight', None)
         priors = t.pop('prior', None) or t.pop('priors', None) or []
         if t:
-            raise ValueError(f"unknown [model] keys {sorted(t)}; expected sky / offset / variables / "
+            raise ValueError(f"unknown [model] keys {sorted(t)}; expected chunk_maps / sky / offset / variables / "
                              f"weight / prior / mosaic")
         return cls(sky=tuple(_sky_term(dict(s)) for s in sky),
                    offset=tuple(OffsetTerm(**dict(o)) for o in offset), mosaic=mosaic,
                    variables=tuple(VariableSpec.from_config(k, v) for k, v in dict(variables).items()),
                    weight=None if weight is None else dict(weight),
-                   priors=tuple(PriorSpec.from_config(p) for p in priors))
+                   priors=tuple(PriorSpec.from_config(p) for p in priors),
+                   chunk_maps=dict(chunk_maps))
 
     # ---- properties ------------------------------------------------------------------------
     @property
@@ -475,8 +505,7 @@ class ModelSpec:
 
     def referenced_variables(self) -> set:
         """The data-variable names the model's functions read by name: sky and
-        offset coefficients and bases, the weight, derived variables' inputs
-        (a catalogue coefficient reads the instrument's own maps)."""
+        offset coefficients and bases, the weight, derived variables' inputs."""
         out = set()
 
         def add(c):
@@ -521,12 +550,12 @@ class ModelSpec:
             out.append(n if raw.count(n) == 1 or self.offset[i].name else f'{n}{raw[:i].count(n)}')
         return out
 
-    def check(self, geom, catalog=None, frame_variables=()):
+    def check(self, geom, frame_variables=()):
         """Raise a clear error when the model refers to something the instrument
         or the model does not provide: a data variable, a chunk map, a chunk
-        axis, a catalogue entry, a prior's term or function."""
+        axis, a prior's term or function."""
         known = self._known(frame_variables)
-        self.build_sky_model(geom, catalog, log=lambda *a, **k: None, frame_variables=frame_variables)
+        self.build_sky_model(geom, log=lambda *a, **k: None, frame_variables=frame_variables)
         for v in self.variables:
             if v.scope == 'derived':
                 for i in v.inputs:
@@ -547,10 +576,9 @@ class ModelSpec:
             if term.kind == 'grouped' and term.groups not in known + ('exposure', 'detector'):
                 raise ValueError(f"offset term on {cm.name!r} groups frames by {term.groups!r}, which is not a "
                                  f"frame variable (known: {sorted(set(known) - set(BUILTIN_VARIABLES))})")
-            self._offset_function(term, geom, catalog, known, log=lambda *a, **k: None)
+            self._offset_function(term, geom, known, log=lambda *a, **k: None)
         if self.weight is not None:
-            build_coefficient(self.weight, geom, catalog=catalog, name='weight', log=lambda *a, **k: None,
-                              known=known)
+            build_coefficient(self.weight, geom, name='weight', log=lambda *a, **k: None, known=known)
         terms = set(t.name for t in self.sky) | set(self.offset_names(geom))
         for p in self.priors:
             bad = [t for t in p.terms if t not in terms]
@@ -560,32 +588,30 @@ class ModelSpec:
             p.callable()
 
     # ---- lowering: sky ---------------------------------------------------------------------
-    def build_sky_model(self, geom, catalog=None, log=print, frame_variables=()) -> SkyModel:
+    def build_sky_model(self, geom, log=print, frame_variables=()) -> SkyModel:
         """The solver's SkyModel: one component per term, coefficients resolved
-        against the data variables and the instrument's coefficient catalogue."""
+        against the data variables."""
         known = self._known(frame_variables)
         comps = []
         for term in self.sky:
             coeff = None if term.coefficient is None else build_coefficient(
-                term.coefficient, geom, catalog=catalog, name=term.name, log=log, known=known)
+                term.coefficient, geom, name=term.name, log=log, known=known)
             comps.append(SkyComponent(name=term.name, coefficient=coeff,
                                       damp_weight=None if term.damp_weight is None else float(term.damp_weight)))
         return SkyModel(tuple(comps))
 
-    def build_weight(self, geom, catalog=None, frame_variables=(), log=print):
+    def build_weight(self, geom, frame_variables=(), log=print):
         """The observation weight (a Coefficient of data variables), or None."""
         if self.weight is None:
             return None
-        return build_coefficient(self.weight, geom, catalog=catalog, name='weight', log=log,
-                                 known=self._known(frame_variables))
+        return build_coefficient(self.weight, geom, name='weight', log=log, known=self._known(frame_variables))
 
     # ---- lowering: offsets -------------------------------------------------------------------
-    def build_offset_model(self, geom, n_frames, frame_groups=None, log=print, catalog=None,
-                           frame_variables=()) -> OffsetModel:
+    def build_offset_model(self, geom, n_frames, frame_groups=None, log=print, frame_variables=()) -> OffsetModel:
         """``frame_groups``: ``{name: per-frame values}`` the grouped terms group by
         (the instrument's groupings and the solve's frame variables)."""
         known = self._known(tuple(frame_variables) + tuple(frame_groups or ()))
-        blocks = [self._offset_block(term, geom, n_frames, frame_groups or {}, log, catalog, known)
+        blocks = [self._offset_block(term, geom, n_frames, frame_groups or {}, log, known)
                   for term in self.offset]
         return OffsetModel(blocks)
 
@@ -691,7 +717,7 @@ class ModelSpec:
             out.append((cols, deg(k), term.name or term.map or 'primary', (cols - base) % nc))
         return out
 
-    def _offset_function(self, term, geom, catalog, known, log):
+    def _offset_function(self, term, geom, known, log):
         """The term's known functions of data variables as a Basis (None: none)."""
         spec = term.coefficient if term.coefficient is not None else term.basis
         if spec is None:
@@ -702,13 +728,12 @@ class ModelSpec:
         if term.basis is not None:
             spec = dict(spec)
             n = int(spec.pop('n', 1))
-        coeff = build_coefficient(spec, geom, catalog=catalog, name=term.name or term.map or 'offset',
-                                  log=log, known=known)
+        coeff = build_coefficient(spec, geom, name=term.name or term.map or 'offset', log=log, known=known)
         return Basis(coeff, n)
 
-    def _offset_block(self, term, geom, n_frames, frame_groups, log, catalog=None, known=()):
+    def _offset_block(self, term, geom, n_frames, frame_groups, log, known=()):
         cm = _chunk_map(term, geom)
-        basis = self._offset_function(term, geom, catalog, known, log)
+        basis = self._offset_function(term, geom, known, log)
         if term.kind == 'polybasis':
             axis = term.axis or cm.spectral_axis
             group = term.group_axis or cm.group_axis
@@ -910,7 +935,7 @@ def _chunk_map(term, geom):
             cm, name=DETECTOR_MAP, det=np.zeros(cm.det.shape, dtype=np.int32),
             grid=np.zeros(cm.grid.shape, dtype=np.int32),
             axes=ChunkAxes.row_major((DETECTOR_MAP,), (1,), ('both',)), adjacency_axes=(),
-            spectral_axis=None, group_axis=None)
+            spectral_axis=None, group_axis=None, renderers={}, render=None, extra={})
     raise ValueError(f"offset term map {term.map!r} is not a chunk map of the instrument "
                      f"({sorted(geom.chunk_maps)}; or {DETECTOR_MAP!r} for the whole detector)")
 
@@ -945,7 +970,7 @@ def resolve_variable(name, geom, known=()):
     return key
 
 
-def build_coefficient(spec, geom, catalog=None, name=None, log=print, known=()) -> Coefficient:
+def build_coefficient(spec, geom, name=None, log=print, known=()) -> Coefficient:
     """A :class:`~selfcal.models.sky_model.Coefficient` from its config form (see
     :class:`SkyTerm`), with variable names resolved against the instrument and
     the ``known`` variables."""
@@ -956,20 +981,14 @@ def build_coefficient(spec, geom, catalog=None, name=None, log=print, known=()) 
     kind = spec.pop('kind', None)           # 'variance': the coefficient is a noise variance (sc.Variance)
     if kind not in (None, 'variance'):
         raise ValueError(f"unknown coefficient kind {kind!r} (None or 'variance')")
-    coef = _build_coefficient(spec, geom, catalog, name, log, known)
+    coef = _build_coefficient(spec, geom, name, log, known)
     return NoiseVariance(coef.variable, coef.function) if kind == 'variance' else coef
 
 
-def _build_coefficient(spec, geom, catalog, name, log, known):
-    if 'catalog' in spec:
-        entry = spec.pop('catalog')
-        cat = catalog or {}
-        if entry not in cat:
-            raise ValueError(f"coefficient catalogue entry {entry!r} unknown (the instrument has {sorted(cat)})")
-        return cat[entry](**spec)
+def _build_coefficient(spec, geom, name, log, known):
     if 'variable' not in spec:
         raise ValueError(f"a coefficient needs `variable` (and a `function`; none = the variable "
-                         f"itself), or `catalog`: {spec}")
+                         f"itself): {spec}")
     variable = spec.pop('variable')
     function = spec.pop('function', 'selfcal.models.variables:identity')
     params = dict(spec.pop('params', None) or {})

@@ -5,8 +5,12 @@
     field = sc.Field("outputs/nep_d3", sc.SPHEREx(3), pixel_scale=6.2, compute=ORCA)
     if __name__ == "__main__":
         field.reproject("exposures/*.fits")
-        print(field.plan(RECIPE, jobs=spherex.channel(17)))
-        result = field.calibrate(RECIPE, jobs=spherex.channels(1, 34))
+        print(field.plan(RECIPE, jobs=JOBS))
+        result = field.calibrate(RECIPE, jobs=JOBS)
+
+Every action names its ``jobs``, one :class:`~selfcal.instruments.contract.Job` each (the chunks of the
+recipe's primary chunk map it solves, its name part of every product name): ``sc.Job("All")`` for the
+whole map, or the jobs an instrument's model side builds (a SPHEREx channel's).
 
 The folder ``path`` holds ``ref.fits`` (the reference grid), ``reprojected/`` (the frames),
 ``calibration/`` and ``mosaic/`` (the products), ``logs/`` and ``records/`` (one log and one
@@ -223,7 +227,7 @@ class Field(Config):
         return wcs_helper.load_from_fits(os.path.join(self.path, 'ref.fits'))
 
     # ---- actions ----------------------------------------------------------------------------
-    def plan(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False, compute=None,
+    def plan(self, recipe=None, *, jobs, tiles=None, passes=None, frames=None, overwrite=False, compute=None,
              action='calibrate', start=None, snapshots=None, monitor=None):
         """What :meth:`calibrate` (or ``action="mosaic"``) would do, checked: a printable
         :class:`~selfcal.run.plan.Plan`, listing each product and whether it would be made, reused
@@ -274,12 +278,12 @@ class Field(Config):
         return RunSpec(task='reproject', field=self, instrument=self.instrument, output_dir=os.path.dirname(self.path),
                        run_name=self.name, resolution_arcsec=self.pixel_scale, reproject=reproject)
 
-    def calibrate(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False,
+    def calibrate(self, recipe=None, *, jobs, tiles=None, passes=None, frames=None, overwrite=False,
                   compute=None, start=None, snapshots=None, monitor=None) -> Result:
         """Solve ``recipe`` (a :class:`~selfcal.run.recipe.Recipe`, or a bare model) for each job,
         and coadd each job's mosaic when the recipe has a coadd.
 
-        ``jobs``: the instrument's jobs (default: its own; SPHEREx names them). ``tiles``: solve
+        ``jobs``: the jobs to solve, one :class:`~selfcal.instruments.contract.Job` each. ``tiles``: solve
         tile by tile and stitch (:class:`~selfcal.run.schedule.Tiles`); ``passes``: the N-pass
         alternating solve (:class:`~selfcal.run.schedule.Passes`). ``frames``: None (every
         frame), a number (the first ``n``), a directory (its frames, read in place) or a list of
@@ -324,7 +328,7 @@ class Field(Config):
             settings['monitor'] = plan.monitor
         return self._run('calibrate', plan, recipe, settings)
 
-    def mosaic(self, recipe=None, *, jobs=None, cal=None, frames=None, overwrite=False, compute=None) -> Result:
+    def mosaic(self, recipe=None, *, jobs, cal=None, frames=None, overwrite=False, compute=None) -> Result:
         """Coadd each job's mosaic from its existing cal file, or from ``cal`` (a cal file or a
         :class:`~selfcal.run.result.Result`, e.g. a solution on another grid; its frames without a
         frame file here are dropped). A current mosaic is reused unless ``overwrite``."""
@@ -340,7 +344,7 @@ class Field(Config):
                     'compute': plan.compute, 'overwrite': overwrite}
         return self._run('mosaic', plan, recipe, settings)
 
-    def adopt(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, compute=None) -> list[str]:
+    def adopt(self, recipe=None, *, jobs, tiles=None, passes=None, frames=None, compute=None) -> list[str]:
         """Record existing products as made by ``recipe`` (products made before records existed, or
         by a TOML run): each product the matching :meth:`calibrate` would make that exists without a
         sidecar is checked (its frames, sky terms, offset maps and detector shape; a mosaic's maps)
@@ -381,7 +385,7 @@ class Field(Config):
                               + '\n  '.join(problems))
         return adopted
 
-    def submit(self, recipe=None, *, jobs=None, tiles=None, passes=None, frames=None, overwrite=False,
+    def submit(self, recipe=None, *, jobs, tiles=None, passes=None, frames=None, overwrite=False,
                compute=None, start=None, snapshots=None, monitor=None) -> Submitted:
         """Plan :meth:`calibrate` now (every check), then run it detached in its own session, so it
         outlives this process and its terminal. The run is the rerun of a request written to
@@ -423,7 +427,7 @@ class Field(Config):
                                     start_new_session=True, cwd=os.getcwd())
         return Submitted(request=request, console=console, pid=proc.pid, process=proc)
 
-    def result(self, recipe=None, *, jobs=None, tiles=None, passes=None) -> Result:
+    def result(self, recipe=None, *, jobs, tiles=None, passes=None) -> Result:
         """The products ``recipe`` made (or would make) for ``jobs``, as a
         :class:`~selfcal.run.result.Result`, without running anything."""
         recipe = as_recipe(recipe)

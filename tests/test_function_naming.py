@@ -1,6 +1,6 @@
 """The library states which data variables a function reads: every ``Function`` / ``Variance`` it builds passes
 ``of=``, no function it offers as a basis or coefficient takes a parameter named after a built-in variable, and
-the model side of SPHEREx (its terms) is not in the instrument module."""
+the model side of SPHEREx (its terms, chunk maps and jobs) is not in the instrument module."""
 import ast
 import importlib
 import os
@@ -50,9 +50,19 @@ def test_no_library_function_has_a_parameter_named_after_a_coordinate_variable()
 
 
 def test_the_spherex_instrument_module_holds_no_model_terms():
-    for name in ('frame_slope', 'spectral_offsets', 'arc_position', 'line', 'tilt'):
+    from selfcal.instruments.spherex import settings
+    assert settings.__all__ == ['SPHEREx', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor']
+    assert all(getattr(spherex, n) is getattr(settings, n) for n in settings.__all__)
+    for name in ('frame_slope', 'spectral_offsets', 'arc_position', 'line', 'tilt', 'pah_3p29',
+                 'channel', 'channels', 'group', 'window', 'SUBCH_WINDOWS'):
         assert not hasattr(spherex, name), name
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module('selfcal.models.bases')
-    from selfcal_scripts.spherex import terms
-    assert all(callable(getattr(terms, n)) for n in ('tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets', 'line'))
+    assert not hasattr(sc, 'catalog')
+    for module in ('selfcal.models.bases', 'selfcal.instruments.spherex.line_catalog'):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module)
+    from selfcal_scripts.spherex import chunks, jobs, terms
+    assert all(callable(getattr(terms, n)) for n in ('tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets',
+                                                     'line', 'pah_3p29'))
+    assert all(callable(getattr(chunks, n)) for n in ('subchannels', 'subchannel_map', 'detector_columns', 'readouts',
+                                                      'arc_renderer'))
+    assert all(callable(getattr(jobs, n)) for n in ('channel', 'channels', 'group', 'window'))

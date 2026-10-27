@@ -322,8 +322,7 @@ class SkyModel:
         variable ``wavelength_key``; its per-observation sigma comes from the
         variable ``width_key`` (FWHM / ``fwhm_to_sigma``, in quadrature with
         ``intrinsic_var``) when that variable is supplied to the solve,
-        else the scalar ``sigma``. Instrument catalogues wrap this with
-        their constants (SPHEREx: ``instruments.spherex.line_catalog``).
+        else the scalar ``sigma``.
         """
         from .profiles import GaussianProfile, QuadratureSigma
         sigma_source = None

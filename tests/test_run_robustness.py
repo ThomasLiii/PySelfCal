@@ -28,6 +28,8 @@ from selfcal.io.atomic import sweep_partials  # noqa: E402
 from selfcal.run import products, records  # noqa: E402
 from tests.synthetic_exposures import DET, N_CHUNK_SIDE, REF_ARCSEC, write_exposures  # noqa: E402
 
+ALL = sc.Job('All')                     # the camera's job: every chunk
+
 
 @pytest.fixture(scope='module')
 def toy():
@@ -62,30 +64,30 @@ def test_a_product_written_again_after_its_sidecar_is_changed(tmp_path):
 
 def test_a_mosaic_whose_cal_is_gone_is_made_again(toy):
     recipe = _recipe(15, name='gone')
-    first = toy.calibrate(recipe)
+    first = toy.calibrate(recipe, jobs=ALL)
     products.remove_product(first.cal_paths[0])
-    plan = toy.plan(recipe)
+    plan = toy.plan(recipe, jobs=ALL)
     states = {p.kind: p.state for p in plan.products}
     assert states == {'cal': 'missing', 'mosaic': 'replace'}
-    again = toy.calibrate(recipe)
+    again = toy.calibrate(recipe, jobs=ALL)
     assert products.check(again.mosaic_paths[0], products.read_sidecar(again.mosaic_paths[0])['inputs'])[0] == 'current'
 
 
 # ------------------------------------------------------------------------------- records and reruns
 def test_two_actions_in_one_second_keep_two_records(toy):
     recipe = _recipe(15, name='twice')
-    toy.calibrate(recipe)
-    a = toy.mosaic(recipe)
-    b = toy.mosaic(recipe)
+    toy.calibrate(recipe, jobs=ALL)
+    a = toy.mosaic(recipe, jobs=ALL)
+    b = toy.mosaic(recipe, jobs=ALL)
     assert a.record != b.record and os.path.exists(a.record) and os.path.exists(b.record)
 
 
 def test_rerun_overwrite_makes_a_mosaic_again_and_keeps_the_cwd(toy):
     recipe = _recipe(15, name='remosaic')
-    made = toy.calibrate(recipe)
+    made = toy.calibrate(recipe, jobs=ALL)
     mosaic = made.mosaic_paths[0]
     before_bytes = open(mosaic, 'rb').read()
-    record = toy.mosaic(recipe).record
+    record = toy.mosaic(recipe, jobs=ALL).record
     assert json.load(open(record))['products']['sidecars_written'] == []      # reused, not written
     cwd = os.getcwd()
     redone = sc.rerun(record, overwrite=True)
@@ -102,7 +104,7 @@ def test_submit_refuses_settings_a_detached_run_cannot_rebuild(toy):
                      variables={'known': sc.SkyMap(np.ones(toy.reference()[1]))})
     recipe = sc.Recipe(model, fit=sc.Fit(10), coadd=None, numerics=sc.Numerics(2, batch=4), name='arrays')
     with pytest.raises(ConfigError, match='could not rebuild'):
-        toy.submit(recipe)
+        toy.submit(recipe, jobs=ALL)
     assert not [f for f in os.listdir(os.path.join(toy.path, 'records')) if f.startswith('submit_')
                 and 'arrays' in open(os.path.join(toy.path, 'records', f)).read()]
 
@@ -119,7 +121,7 @@ def test_a_run_script_function_reaches_the_worker_processes(toy, tmp_path):
         "RECIPE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.001), sc.Sky('ramp', times=ramp)],\n"
         "                            offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),\n"
         "                   fit=sc.Fit(10), coadd=None, numerics=sc.Numerics(2, batch=4), name='script_fn')\n\n"
-        "if __name__ == '__main__':\n    print(FIELD.calibrate(RECIPE))\n")
+        "if __name__ == '__main__':\n    print(FIELD.calibrate(RECIPE, jobs=sc.Job('All')))\n")
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in (_REPO, os.environ.get('PYTHONPATH')) if p))
     proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=600, env=env)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
@@ -159,8 +161,10 @@ def test_a_function_by_value_counts_by_what_it_computes(tmp_path):
     assert a.sha256 != b.sha256 and a.digest == b.digest and a == b
 
 
-def test_catalog_overrides_left_at_none_are_the_defaults():
-    assert sc.catalog('pah_3p29', center=None, sigma=None) == sc.catalog('pah_3p29')
+def test_line_arguments_left_at_none_are_the_defaults():
+    from selfcal_scripts.spherex import terms as T
+    assert T.pah_3p29(center=None) == T.pah_3p29()
+    assert products.fingerprint(encode(T.pah_3p29(center=None))) == products.fingerprint(encode(T.pah_3p29()))
 
 
 # ------------------------------------------------------------------------------- interrupted writes, compare

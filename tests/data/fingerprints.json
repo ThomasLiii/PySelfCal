@@ -2,7 +2,7 @@
  "about": "tests/test_fingerprints.py: the canonical inputs and fingerprint of each product. Regenerating this file makes the sidecar of every product whose inputs changed 'different': do it only on purpose.",
  "products": {
   "camera_maps/cal": {
-   "fingerprint": "ce9d4145b4aa896e490cf468bf6b807f88137b3da8187240d80785fff7f6462e",
+   "fingerprint": "801681501cf157c1c6b0c8fbed9f5b0fa752857b15be9d9ad4e5c84c7f376833",
    "inputs": {
     "fit": {
      "clip": {
@@ -59,7 +59,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -72,9 +71,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -148,7 +147,7 @@
    }
   },
   "camera_maps/mosaic": {
-   "fingerprint": "a8e0f5fe4d2fe9478da002f0bf0039103bf5de1efc53be6a94892f1dbc913918",
+   "fingerprint": "a16618c29facc2dcc8e7d6544d7cee34a10c1ad74ae9b0855d853327b4016ad8",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -194,7 +193,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -207,9 +205,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -282,7 +280,7 @@
    }
   },
   "coadd_settings/cal": {
-   "fingerprint": "743f8ec6b3f1d5bc47af00aa06cf7dc37919bcc6083fde53642f952c9754dde6",
+   "fingerprint": "2fb908ceb7fc806e2b47c0ceb2aa4a3aca20c6e9e7c4d5c773089a50cba6b1a4",
    "inputs": {
     "fit": {
      "clip": {
@@ -322,7 +320,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -335,9 +332,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -411,7 +408,7 @@
    }
   },
   "coadd_settings/mosaic": {
-   "fingerprint": "e18f4ed6504cbb3e11e10940d50f16087a591b4f097645c68e4bebe381a56a82",
+   "fingerprint": "be4f256f56097f2cf6c733255f2312760786e6d3f2c9d6c3e66203a2a75ab7b7",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -447,7 +444,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -460,9 +456,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -535,7 +531,7 @@
    }
   },
   "continuum_smooth_poly/cal": {
-   "fingerprint": "0fe17808995357231970812bf3b79c3cfe40ad83f1b56876a60b98110b334a76",
+   "fingerprint": "efcd140b70bb40fbad2915528023de0fd9732e6a55c6fa25ee7cfac723b6db79",
    "inputs": {
     "fit": {
      "clip": {
@@ -575,7 +571,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -588,9 +583,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -674,7 +669,7 @@
    }
   },
   "continuum_smooth_poly/mosaic": {
-   "fingerprint": "48b1b46941f30486f24b1fe26a09414ca96335550226a87653078668666ff8c7",
+   "fingerprint": "e55920fc2a92603837eccc114c590a8ae558bb37c745a0232d08da8413ce3eaf",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -703,7 +698,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -716,9 +710,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -801,7 +795,7 @@
    }
   },
   "euclid/cal": {
-   "fingerprint": "671087adbadd570ee681dca59459d872c62717f5885356f0ec715f05082fb064",
+   "fingerprint": "1a674df9aa9ab46f42143ee7307eb734552ab5b5408bbacb6d2b5783a569b5a2",
    "inputs": {
     "fit": {
      "clip": {
@@ -858,9 +852,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "Y",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -934,7 +928,7 @@
    }
   },
   "euclid/mosaic": {
-   "fingerprint": "6ab276ef88e7ce30057a72d718b99a0e8e78ab2dc8f31c6925fb8977e7b59f88",
+   "fingerprint": "d480599c455e6ba70cc42a13775a47c8f498359452f18924a5327d1958668b31",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -980,9 +974,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "Y",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1055,7 +1049,7 @@
    }
   },
   "fit_clip_edges/cal": {
-   "fingerprint": "0576c76722ad30b1e66bd8488c1c49645b16de086d035e884c58af84a5da0309",
+   "fingerprint": "062a2524452e4289d228f8e7f11419713597df069e1ff449410547fb498c89d5",
    "inputs": {
     "fit": {
      "clip": {
@@ -1095,20 +1089,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -1179,7 +1200,7 @@
    }
   },
   "fit_clip_mapping/cal": {
-   "fingerprint": "6d049d39dc89292b3c6d92e800c649f6f17e6351459767af4d7c9740c0008b80",
+   "fingerprint": "44663c6953b4abf13de2e456c764d90ea8ebe100cbc928f06e46f52e477e8f0e",
    "inputs": {
     "fit": {
      "clip": {
@@ -1241,7 +1262,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1254,9 +1274,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1330,7 +1350,7 @@
    }
   },
   "fit_clip_per_chunk/cal": {
-   "fingerprint": "44a4e92dd6f0984e3dd2d55d1038a4e656eb9a6fb9e4b3a5f884c63885986ec7",
+   "fingerprint": "6a606e22ac047fc35b1fd5c41a4ad68e59b5271bc672b541474d9b7acb426637",
    "inputs": {
     "fit": {
      "clip": {
@@ -1370,7 +1390,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1383,9 +1402,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1459,7 +1478,7 @@
    }
   },
   "fit_gauge/cal": {
-   "fingerprint": "158c0866e0a3fa05cbef55205219a37c4943603b371e64caf1e6c8aa0700e4f2",
+   "fingerprint": "829dfe658d3b1135fc2fb6e84cadff83a2b196f00c4a57805856276ecf07aab8",
    "inputs": {
     "fit": {
      "clip": {
@@ -1510,7 +1529,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1523,9 +1541,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1599,7 +1617,7 @@
    }
   },
   "fit_gauge/mosaic": {
-   "fingerprint": "39625a4d0f24cfa89908d3efd99e42277e2fb1080151d65a1e153b174c234abb",
+   "fingerprint": "0d2c2820ee9e2b88cd07f9a17f7167e3d8109190a041e2ede5d08cc5ef9d544c",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -1628,7 +1646,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1641,9 +1658,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1716,7 +1733,7 @@
    }
   },
   "fit_no_clip/cal": {
-   "fingerprint": "b257d1a94f3977810e5e9f44791d48dbb817445eeb504b4130ed7509d2777a2d",
+   "fingerprint": "fb9b9abe7f68c3c9d361b8e6f621cfa7f4885d0d8914d7db57cf76bf39ae643e",
    "inputs": {
     "fit": {
      "clip": null,
@@ -1766,9 +1783,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "H",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1842,7 +1859,7 @@
    }
   },
   "fit_no_clip/mosaic": {
-   "fingerprint": "057315690ffee36441fd8fc01d32f53e5985326216dc48d35eee1dce7c4f9946",
+   "fingerprint": "d4c7a3e77ca6abe40708d23341778147acb1c34954cde5ad641ec8bd8ab1a7d3",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -1888,9 +1905,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "H",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1963,7 +1980,7 @@
    }
   },
   "fit_settings/cal": {
-   "fingerprint": "270b33853f1930e4fad56a551b1b4b59928c071f4812f6560e0934df490ff092",
+   "fingerprint": "3d5e6d715eace213539460ddbf88dfb3e4fe76f4b67e6bd6f23c1de82b0008be",
    "inputs": {
     "fit": {
      "clip": {
@@ -2014,20 +2031,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -2098,7 +2142,7 @@
    }
   },
   "model_with_everything/cal": {
-   "fingerprint": "cc202c526ee6cb80505ef948ee2acc9a40e8f859041e648d463060c6c0a4e9e3",
+   "fingerprint": "54682ca4eb7b7e2a9c5c329ce6bbd0234510dab3532fa5ac1b366186fe27765d",
    "inputs": {
     "fit": {
      "clip": {
@@ -2140,9 +2184,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -2515,7 +2559,7 @@
    }
   },
   "model_with_everything/mosaic": {
-   "fingerprint": "9aeca0489cce15c80ef6d0ff061b9dea7837b9cd8266bd1879ad4e223885b5ca",
+   "fingerprint": "ac729aa8bcfc6ed0c1e1aa9e423d19a43eaad6610d2194a233fec30fc190c034",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -2546,9 +2590,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -2920,7 +2964,7 @@
    }
   },
   "numerics/cal": {
-   "fingerprint": "9a0893fe3554d96d662e4bcd0b13d411d1a2dd9eb5d0b07911be112cebb537d4",
+   "fingerprint": "8d37324ccee6a753cf857632dcd685e25deca69e6a1f447a1b84bd9fbea4d4d9",
    "inputs": {
     "fit": {
      "clip": {
@@ -2960,7 +3004,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -2973,9 +3016,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -3049,7 +3092,7 @@
    }
   },
   "numerics/mosaic": {
-   "fingerprint": "6bdb15d29f997244e87bd1f471a8cb1ad31446ced82cde9792d5d373e4e47183",
+   "fingerprint": "c8a05775ee42a41f97075508a5dd6d1f0ec3ba2297ff526017f491e0ee21e018",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -3078,7 +3121,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -3091,9 +3133,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -3166,7 +3208,7 @@
    }
   },
   "passes_default/cal": {
-   "fingerprint": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+   "fingerprint": "ae14cc20ae5e18d7c0614b7ba05744f27bd5bdb7e823e194cfa88c982adff7db",
    "inputs": {
     "fit": {
      "clip": {
@@ -3202,21 +3244,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -3308,10 +3371,10 @@
    }
   },
   "passes_default/pass 2 off": {
-   "fingerprint": "5f4884259bbb2069d6f6d3d82e149a304105b6f4738e68ec251427a4d94c27ce",
+   "fingerprint": "f5f344de2e1a197caa1b34679852cc4632d0208a39c88546d3962afffcf4fc5e",
    "inputs": {
     "index": 2,
-    "init": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+    "init": "ae14cc20ae5e18d7c0614b7ba05744f27bd5bdb7e823e194cfa88c982adff7db",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3343,10 +3406,10 @@
    }
   },
   "passes_default/pass 3 sky": {
-   "fingerprint": "9fabf7295d596b0d346c1884e3d97f7751b889a4e444cdfba62c5ea2fe1bcab7",
+   "fingerprint": "e311fd46d66b8f29e19f36acf3e0bdab03dd15aed7308acfec93ef742c2d0e1b",
    "inputs": {
     "index": 3,
-    "init": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+    "init": "ae14cc20ae5e18d7c0614b7ba05744f27bd5bdb7e823e194cfa88c982adff7db",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3378,7 +3441,7 @@
    }
   },
   "passes_init_sigma/cal": {
-   "fingerprint": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+   "fingerprint": "895a3ae2346c613a52da1e3bc4a8bd847097f12294c3c283457b38101adf6fa0",
    "inputs": {
     "fit": {
      "clip": {
@@ -3414,21 +3477,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -3520,10 +3604,10 @@
    }
   },
   "passes_init_sigma/pass 2 off": {
-   "fingerprint": "a94abdb5a322dd8f38196d94e426458dc89fcd0707b3fc9ecd7f6cd5d6734522",
+   "fingerprint": "587472699af93574c8d9049333ba31ea6fe606e8b7c90a4c5cc578d23c06fcc5",
    "inputs": {
     "index": 2,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "895a3ae2346c613a52da1e3bc4a8bd847097f12294c3c283457b38101adf6fa0",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3555,10 +3639,10 @@
    }
   },
   "passes_init_sigma/pass 3 sky": {
-   "fingerprint": "edc78a92656bcf6b9893d242019dba87917bd459ecc77315a6788e0b8286d2ff",
+   "fingerprint": "0ba62f9016de18019c7d345a7d358f95d6f03a94c9b93f9976d87081db068ecf",
    "inputs": {
     "index": 3,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "895a3ae2346c613a52da1e3bc4a8bd847097f12294c3c283457b38101adf6fa0",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3590,10 +3674,10 @@
    }
   },
   "passes_init_sigma/pass 4 off": {
-   "fingerprint": "862f66f424e42e04ec4ac4b80d0b3bef747b124f50d2a3507b0bf55dbddcf01c",
+   "fingerprint": "835170a2af68466d46020fbda6c22e9d95d51c9ae3e69efa0d2006f9e9d56236",
    "inputs": {
     "index": 4,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "895a3ae2346c613a52da1e3bc4a8bd847097f12294c3c283457b38101adf6fa0",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3625,10 +3709,10 @@
    }
   },
   "passes_init_sigma/pass 5 sky": {
-   "fingerprint": "6faa510c7409242d0e19326f0ecbce8641b4eabf8a60b7574df3933d0d08e1ca",
+   "fingerprint": "0317a476b31e0bc13fa29fe62dda3fb9ecb404069c3c6f6d274637eb97e4fe3d",
    "inputs": {
     "index": 5,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "895a3ae2346c613a52da1e3bc4a8bd847097f12294c3c283457b38101adf6fa0",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3660,7 +3744,7 @@
    }
   },
   "passes_settings/cal": {
-   "fingerprint": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+   "fingerprint": "e4be481bb7e68a2824f2a0a1ba5ea70d1c024233091bc1800b63081791ccdfef",
    "inputs": {
     "fit": {
      "clip": {
@@ -3703,21 +3787,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -3809,10 +3914,10 @@
    }
   },
   "passes_settings/pass 2 sky": {
-   "fingerprint": "7c6cca5b83bce8d0b772ddbb2d87f16204d220902712bb351f0aae6d0f819414",
+   "fingerprint": "67ebe4e28cfbf57e97240798425e570f9acf85e8a4ecc5cb7881b348eab65248",
    "inputs": {
     "index": 2,
-    "init": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+    "init": "e4be481bb7e68a2824f2a0a1ba5ea70d1c024233091bc1800b63081791ccdfef",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3854,10 +3959,10 @@
    }
   },
   "passes_settings/pass 3 off": {
-   "fingerprint": "df732f9e5a7be8a6842ab928b7332dcac272a8588adfbb7724b10d0d0392c064",
+   "fingerprint": "77ea933148d64e9ef6acaabebd9ce1fc410680f6af0de69ba078d44ab96230eb",
    "inputs": {
     "index": 3,
-    "init": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+    "init": "e4be481bb7e68a2824f2a0a1ba5ea70d1c024233091bc1800b63081791ccdfef",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3899,7 +4004,7 @@
    }
   },
   "plan camera maps/calibration/cal_Toy_Chunks4x4_All_m.h5": {
-   "fingerprint": "36865e87f6031f815265eed936c054cb617220a0a95c16fc9255ad081cce4095",
+   "fingerprint": "04d81e8ba7cce368c6ca4914c33085aade55d7e418bae2e7ca4777939d3ecdaa",
    "inputs": {
     "fit": {
      "clip": {
@@ -3956,7 +4061,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -3969,9 +4073,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4047,7 +4151,7 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_m.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_E.h5": {
-   "fingerprint": "f6e55028fc13dc1ad96d651fbb66ccc59d42544588f26826421ee786ab559758",
+   "fingerprint": "5356456975a83c8523cb6a0b4bdd870d5a4238d31bd5773c715f2c25e88ebde4",
    "inputs": {
     "fit": {
      "clip": {
@@ -4087,7 +4191,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4100,9 +4203,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4189,7 +4292,7 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_E.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_W.h5": {
-   "fingerprint": "a9b0dfc2981af925479953c9c879f4ead01b0666f0a4026557810d54a2b137d0",
+   "fingerprint": "98a228962168ded0e7ea0e37c26d7ef0c9651a6b317d15ecc239556eba896f3c",
    "inputs": {
     "fit": {
      "clip": {
@@ -4229,7 +4332,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4242,9 +4344,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4331,20 +4433,20 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_W.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_stitched.h5": {
-   "fingerprint": "847de0eba626bbfcad585c5620ca3437b23802a2ffa77781b5b1670f13e81dba",
+   "fingerprint": "eb0fe606c065572373a00d9f7d361936e350bda20a87319d62970f2ba618a500",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "f6e55028fc13dc1ad96d651fbb66ccc59d42544588f26826421ee786ab559758",
-     "W": "a9b0dfc2981af925479953c9c879f4ead01b0666f0a4026557810d54a2b137d0"
+     "E": "5356456975a83c8523cb6a0b4bdd870d5a4238d31bd5773c715f2c25e88ebde4",
+     "W": "98a228962168ded0e7ea0e37c26d7ef0c9651a6b317d15ecc239556eba896f3c"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Toy_Chunks4x4_All_t_stitched.h5"
   },
   "plan camera/calibration/cal_Toy_Chunks4x4_All_c.h5": {
-   "fingerprint": "b9a5b35534dfb031ddf05b04bafd8fddd24de786c8456e94028b2a726e022597",
+   "fingerprint": "63359a2ca8270288c4accd8e1d1eb7f33c1435fcfbfbc92ab3dc3708e7fa60e1",
    "inputs": {
     "fit": {
      "clip": {
@@ -4384,7 +4486,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4397,9 +4498,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4479,7 +4580,7 @@
    "path": "mosaic/mosaic_Toy_Chunks4x4_All_c.fits"
   },
   "plan euclid/calibration/cal_EDFN_J_e.h5": {
-   "fingerprint": "928a46e7e3dd22c92d003ff9537e0ca8b5bd3c3d2f6088b97cc25b30bf415466",
+   "fingerprint": "a2e0e4278852aebcd336be930066e71f8a760374ea28db1a17378f1cb753aede",
    "inputs": {
     "fit": {
      "clip": {
@@ -4536,9 +4637,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "J",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4618,7 +4719,7 @@
    "path": "mosaic/mosaic_EDFN_J_e.fits"
   },
   "plan prism passes/calibration/cal_Prism_All_np.h5": {
-   "fingerprint": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+   "fingerprint": "efc3f7cce2ba9e8c29d69fe9761f07f2b30d85a526e54306ce610f6701ac47b1",
    "inputs": {
     "fit": {
      "clip": {
@@ -4660,9 +4761,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4757,10 +4858,10 @@
    "path": "calibration/cal_Prism_All_np.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
-   "fingerprint": "35d40ade18cf1909eeb26cc891e2d90b75bee31d7243fde0ec6a7ca8316c8771",
+   "fingerprint": "6c3443604ad6cafdda530d1149fd756b68b641fdbe5dc9adda7843635991a336",
    "inputs": {
     "index": 2,
-    "init": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+    "init": "efc3f7cce2ba9e8c29d69fe9761f07f2b30d85a526e54306ce610f6701ac47b1",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4794,10 +4895,10 @@
    "path": "calibration/cal_Prism_All_np_pass2off.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
-   "fingerprint": "5a41446322bbf886d0dab53831402c5f8f14ccd626e92347ca8929a5162f312a",
+   "fingerprint": "6d4e40a8378a49cca0449e5c4370c820ba0faef7b7ce0d639dd163e807c6f0fe",
    "inputs": {
     "index": 3,
-    "init": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+    "init": "efc3f7cce2ba9e8c29d69fe9761f07f2b30d85a526e54306ce610f6701ac47b1",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4831,7 +4932,7 @@
    "path": "calibration/cal_Prism_All_np_pass3sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
-   "fingerprint": "318375ad78ebcf03dc47020b587796bd0f5a0a796989a9e7d5dc212077aa4cee",
+   "fingerprint": "d712179faf51e01f846bb07090fd08c89ff7913162a827f5c61bdae89a23ef10",
    "inputs": {
     "fit": {
      "clip": {
@@ -4873,9 +4974,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4981,7 +5082,7 @@
    "path": "calibration/cal_Prism_All_tp_north.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
-   "fingerprint": "8119d5bbd4f32586f8c4476dda84aab4cb9a89720baf6baa1cdf4bb6c04ace2b",
+   "fingerprint": "e6730a70225e816d7e3784eaca7049c73f3d852752210d41fbb436974f9c11e3",
    "inputs": {
     "fit": {
      "clip": {
@@ -5023,9 +5124,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -5131,23 +5232,23 @@
    "path": "calibration/cal_Prism_All_tp_south.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
-   "fingerprint": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+   "fingerprint": "b9790030ae63fd6023309969db47e2a0e88c75662bb3b6df1d98ac014580b5ee",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "318375ad78ebcf03dc47020b587796bd0f5a0a796989a9e7d5dc212077aa4cee",
-     "south": "8119d5bbd4f32586f8c4476dda84aab4cb9a89720baf6baa1cdf4bb6c04ace2b"
+     "north": "d712179faf51e01f846bb07090fd08c89ff7913162a827f5c61bdae89a23ef10",
+     "south": "e6730a70225e816d7e3784eaca7049c73f3d852752210d41fbb436974f9c11e3"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Prism_All_tp_stitched.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
-   "fingerprint": "6dd071444b181581742f24e8c2a5ed66ff09a8d3d63fae2dbabc3945c0bc79e8",
+   "fingerprint": "aaba5e48b0d121086437004a5a7b360c740cb3e19af136a92fec2f5fdd6445f6",
    "inputs": {
     "index": 2,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "b9790030ae63fd6023309969db47e2a0e88c75662bb3b6df1d98ac014580b5ee",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5181,10 +5282,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
-   "fingerprint": "2e6a97273262da20b17c61021c56af9050c3e873420ccd51e2bda2012b82b484",
+   "fingerprint": "1e53e0b68ad95045dec4ad953e1fc651e49f9158e4bc40b6158e801784b60a9e",
    "inputs": {
     "index": 3,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "b9790030ae63fd6023309969db47e2a0e88c75662bb3b6df1d98ac014580b5ee",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5218,10 +5319,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
-   "fingerprint": "e52bbc59fcfc26eaebcdf6edff87ebdc1b43c4085f582ba66eb2d32d3f0a5cea",
+   "fingerprint": "6fc66083c0de266a241c4f30086e3ff960131e8ce99872ca1e5f2ef15448c5bf",
    "inputs": {
     "index": 4,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "b9790030ae63fd6023309969db47e2a0e88c75662bb3b6df1d98ac014580b5ee",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5255,7 +5356,7 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
   },
   "spectral_lines/cal": {
-   "fingerprint": "7a3020f4c25a76c7438c0c228df160aa8e504fee9d6cbfa5010ef92fe0ae508c",
+   "fingerprint": "c4b13d84910c5db4ef213e7cb537a2b1094b931ef829248e47eefd8d06178b5e",
    "inputs": {
     "fit": {
      "clip": {
@@ -5291,21 +5392,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Multiline3",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5429,11 +5551,13 @@
        "damping": 0.3,
        "name": "pah",
        "times": {
-        "kind": "catalog",
-        "of": null,
+        "kind": "gaussian",
+        "of": "wavelength",
         "params": {
-         "catalog": "pah_3p29",
-         "center": 3.29
+         "center": 3.29,
+         "fwhm_to_sigma": 2.355,
+         "intrinsic_var": 0.000289,
+         "width": "bandwidth"
         },
         "type": "selfcal.models.model:Shape"
        },
@@ -5500,7 +5624,7 @@
    }
   },
   "spectral_soft_poly/cal": {
-   "fingerprint": "005be42cea874dd3dc8c2b8edc969982f65192f2c288711f6488b54ca4d02724",
+   "fingerprint": "48b67a02a1b5856bdb033df2169f558adead2fc355a38905b0c37a63a9601353",
    "inputs": {
     "fit": {
      "clip": {
@@ -5536,21 +5660,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "W",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5653,7 +5798,7 @@
    }
   },
   "spectral_soft_poly/mosaic": {
-   "fingerprint": "d2516333ba52bcda673c094c0ae881beca2b2c3847d953bd5a9517b935538a79",
+   "fingerprint": "86a6cf94ae5930e354a5b81e2b8a422e6ae4a8472706ba8f0081ee52b7b7f6fb",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -5678,21 +5823,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "W",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5794,7 +5960,7 @@
    }
   },
   "spherex_channel/cal": {
-   "fingerprint": "c9baf3a3c05c5b1d86dd5ee28cc63b2850b47d0cb89f8247439e7b324bceced5",
+   "fingerprint": "8778e4c640b672b4e4d34fce185252b3448041d4551fb971a44d045187bba604",
    "inputs": {
     "fit": {
      "clip": {
@@ -5830,20 +5996,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5914,7 +6107,7 @@
    }
   },
   "spherex_channel/mosaic": {
-   "fingerprint": "1279d8f428823a9472b9f8436608bab4e01a1c630bd73608cebe10a2f3d531b3",
+   "fingerprint": "60407d943302e95eb2de0bab396ea82a98246f355e082e56c240083ab8d5cf50",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -5939,20 +6132,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6022,7 +6242,7 @@
    }
   },
   "spherex_group_two_block/cal": {
-   "fingerprint": "d61aa26d9f8a2eedb585b275f87004e3d4dfcbe154e27fe584fb35f034e4697b",
+   "fingerprint": "2e9f61517d6e82a3d59ee163c9ec2f47000cf106aef50e78f06ce31344ab0b6d",
    "inputs": {
     "fit": {
      "clip": {
@@ -6058,21 +6278,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17-18",
-     "value": [
-      17,
-      18
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       181
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       182
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6145,7 +6399,7 @@
    }
   },
   "spherex_group_two_block/mosaic": {
-   "fingerprint": "607bab125ea467d24541021e5293950403b83a377c1d237dfd6c30282f33b1e6",
+   "fingerprint": "92de227d740448599f96569257905b1413a13b74c5b5306bff4644a563af41db",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -6170,21 +6424,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17-18",
-     "value": [
-      17,
-      18
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       181
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       182
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6256,7 +6544,7 @@
    }
   },
   "spherex_settings_window/cal": {
-   "fingerprint": "f181c3243c487703a58d9b93ab9917fea21a6d104482de9c0cf968c5805f1b08",
+   "fingerprint": "0e059bee7ba96913bbea58f8ddcd02eaf0715697ddadba3067a5d18a0c551487",
    "inputs": {
     "fit": {
      "clip": {
@@ -6292,21 +6580,42 @@
      "calib_dir": "/data/spherex/calibration",
      "detector": 3,
      "lvf_dir": "/data/spherex/lvf",
-     "num_ch": 34,
-     "num_col": 10,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 10,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol10",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6377,7 +6686,7 @@
    }
   },
   "spherex_settings_window/mosaic": {
-   "fingerprint": "53552f4b97f660f98e93704b4c33b4f1c6d5db1ee8c69cbbc456c5864ee44a22",
+   "fingerprint": "bb0d9c3fd15e0b3881de29b00715e885e18735894e3c0ccfd2082f189fa943df",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -6402,21 +6711,42 @@
      "calib_dir": "/data/spherex/calibration",
      "detector": 3,
      "lvf_dir": "/data/spherex/lvf",
-     "num_ch": 34,
-     "num_col": 10,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 10,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol10",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6486,10 +6816,10 @@
    }
   },
   "tiles_boxes_passes/pass 2 off": {
-   "fingerprint": "2716db3e76354d39df2be747262d38bd5c05605ee276fd929e5eadcc009d5161",
+   "fingerprint": "6c1eeec3880c9c57a9bc8006047c4dbdb9211022bf15839559bdbae6a294b248",
    "inputs": {
     "index": 2,
-    "init": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+    "init": "8042e25eafa56fd06425c932134f4b77d98df441e5fea45e65dda488b4816d7b",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6521,10 +6851,10 @@
    }
   },
   "tiles_boxes_passes/pass 3 sky": {
-   "fingerprint": "ebe9572e528a8588c2a2db2208ebfb5bf255f3d37f3aa5f1bbf1c9af665b177f",
+   "fingerprint": "08dd75c9c465f9001e6ef7ff2050c3ba7d6af449501b0ec35cead4fc21f1feea",
    "inputs": {
     "index": 3,
-    "init": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+    "init": "8042e25eafa56fd06425c932134f4b77d98df441e5fea45e65dda488b4816d7b",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6556,18 +6886,18 @@
    }
   },
   "tiles_boxes_passes/stitched": {
-   "fingerprint": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+   "fingerprint": "8042e25eafa56fd06425c932134f4b77d98df441e5fea45e65dda488b4816d7b",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "1fcbef38f0220f122a904ba1927c9a4695090610b7ad5b80dc5071a6709a9ff2",
-     "south": "a5cb34dbf351d6263deb02b2633be1b2c74f0554fdfeabcc71f2963eff6cc3b2"
+     "north": "209992c0bc563a7d54d8999173d9d742831a207e30ca587158d380949f383d29",
+     "south": "6668c95a098d5293ea17179fbc503511185a3569bcee4554d3e3ee3ebf4ef1bd"
     }
    }
   },
   "tiles_boxes_passes/tile north": {
-   "fingerprint": "1fcbef38f0220f122a904ba1927c9a4695090610b7ad5b80dc5071a6709a9ff2",
+   "fingerprint": "209992c0bc563a7d54d8999173d9d742831a207e30ca587158d380949f383d29",
    "inputs": {
     "fit": {
      "clip": {
@@ -6603,21 +6933,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6720,7 +7071,7 @@
    }
   },
   "tiles_boxes_passes/tile south": {
-   "fingerprint": "a5cb34dbf351d6263deb02b2633be1b2c74f0554fdfeabcc71f2963eff6cc3b2",
+   "fingerprint": "6668c95a098d5293ea17179fbc503511185a3569bcee4554d3e3ee3ebf4ef1bd",
    "inputs": {
     "fit": {
      "clip": {
@@ -6756,21 +7107,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6873,18 +7245,18 @@
    }
   },
   "tiles_grid/stitched": {
-   "fingerprint": "4d620d2b25e7d1fced6491deccd8262f367b0aeb3c0ea397679dcd0beb41315f",
+   "fingerprint": "9e0a06b2b9cad62e7404cd45a9045f48b2ad7a934150818d19b710a839aff52e",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "fa4a76050473634d55d74ded4b1efe975e8eacc0e16dcfe7b20c01ec4d643377",
-     "W": "427c27b2c615ceb6d040e4f87479280638f02997db0472a4a18dad30f500a2a8"
+     "E": "8c5d498faf73f21e952af35b07af653784b1f4e5668018959bc1d04642036ad1",
+     "W": "57de0a2ac5764167138a7bf51c9ab00d6e567e6002687695634603a4ba0b70c1"
     }
    }
   },
   "tiles_grid/tile E": {
-   "fingerprint": "fa4a76050473634d55d74ded4b1efe975e8eacc0e16dcfe7b20c01ec4d643377",
+   "fingerprint": "8c5d498faf73f21e952af35b07af653784b1f4e5668018959bc1d04642036ad1",
    "inputs": {
     "fit": {
      "clip": {
@@ -6924,7 +7296,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -6937,9 +7308,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7024,7 +7395,7 @@
    }
   },
   "tiles_grid/tile W": {
-   "fingerprint": "427c27b2c615ceb6d040e4f87479280638f02997db0472a4a18dad30f500a2a8",
+   "fingerprint": "57de0a2ac5764167138a7bf51c9ab00d6e567e6002687695634603a4ba0b70c1",
    "inputs": {
     "fit": {
      "clip": {
@@ -7064,7 +7435,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7077,9 +7447,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7164,20 +7534,20 @@
    }
   },
   "tiles_grid_named_by_the_engine/stitched": {
-   "fingerprint": "7571aec84a9e427410a320f5509c94f243ac43d34e4a5140ea7c9f2cb2aede43",
+   "fingerprint": "9c73aea969275dfb3a01daa6ec58e38ddc274085b71d95b54427ac5f19bb96c2",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "r0c0": "08c81fc5bf6712f29e75528b4be7e53cce48651732f31b96cb7816f2beeca147",
-     "r0c1": "ae80c4826266029c89e9afda51b8ebd9c5a53e3a4144ca933bf17867a48a76c8",
-     "r1c0": "4793213339c9ce583af2901244eea54b0109cd5eac6143742d6e628237bcb4e0",
-     "r1c1": "ddd8116071568c1803a7be70d6ddbddba01f199699f2fef7e87ab5209b26f1b3"
+     "r0c0": "286200276cad87a391b448239ef3a91fe4eb765f92a5631859e78fdf4fbbff60",
+     "r0c1": "52c9a82889c4fc842bbbc7c7a4500100802dcc5e89abd6aedf53d724aff03a47",
+     "r1c0": "3226fa33e8bced5b937badc0a28829dc4618e303967d4bc636bd686bd7bd0303",
+     "r1c1": "371e418e76daf3c8d07d067d7cc79f4fab64ac22247f2f4606a1fbe6fec4bc0f"
     }
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c0": {
-   "fingerprint": "08c81fc5bf6712f29e75528b4be7e53cce48651732f31b96cb7816f2beeca147",
+   "fingerprint": "286200276cad87a391b448239ef3a91fe4eb765f92a5631859e78fdf4fbbff60",
    "inputs": {
     "fit": {
      "clip": {
@@ -7217,7 +7587,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7230,9 +7599,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7317,7 +7686,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c1": {
-   "fingerprint": "ae80c4826266029c89e9afda51b8ebd9c5a53e3a4144ca933bf17867a48a76c8",
+   "fingerprint": "52c9a82889c4fc842bbbc7c7a4500100802dcc5e89abd6aedf53d724aff03a47",
    "inputs": {
     "fit": {
      "clip": {
@@ -7357,7 +7726,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7370,9 +7738,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7457,7 +7825,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c0": {
-   "fingerprint": "4793213339c9ce583af2901244eea54b0109cd5eac6143742d6e628237bcb4e0",
+   "fingerprint": "3226fa33e8bced5b937badc0a28829dc4618e303967d4bc636bd686bd7bd0303",
    "inputs": {
     "fit": {
      "clip": {
@@ -7497,7 +7865,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7510,9 +7877,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7597,7 +7964,7 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c1": {
-   "fingerprint": "ddd8116071568c1803a7be70d6ddbddba01f199699f2fef7e87ab5209b26f1b3",
+   "fingerprint": "371e418e76daf3c8d07d067d7cc79f4fab64ac22247f2f4606a1fbe6fec4bc0f",
    "inputs": {
     "fit": {
      "clip": {
@@ -7637,7 +8004,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7650,9 +8016,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7737,7 +8103,7 @@
    }
   },
   "two_block_settings/cal": {
-   "fingerprint": "9b3fad3e34b372563cef69da37466385f6e986d0b40e555da59a0fc4aa44e2c1",
+   "fingerprint": "b3fb88a8b0b6ef16038493922c495082293f1e41d1e23319b0a42284e97c1e05",
    "inputs": {
     "fit": {
      "clip": {
@@ -7773,20 +8139,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch3",
-     "value": [
-      3
-     ]
+     "strict": {
+      "subchannel": [
+       21,
+       31
+      ]
+     },
+     "window": {
+      "subchannel": [
+       20,
+       32
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -7859,7 +8260,7 @@
    }
   },
   "user_instrument/cal": {
-   "fingerprint": "0d02a1efce3dd32247cc3836f049b24f27476278082c05d248a15a7bc791a304",
+   "fingerprint": "d94ce9ebc36abbee438318dd3592647c8721f1e8cedf9b6caf4734761dc1da29",
    "inputs": {
     "fit": {
      "clip": {
@@ -7901,9 +8302,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7977,7 +8378,7 @@
    }
   },
   "user_instrument/mosaic": {
-   "fingerprint": "53b398e350f5563aebe3f71d81b099eb1aea77ce00e0ad7f3cc5027f0d1ef652",
+   "fingerprint": "12ec6a679c7a3d80f03a263d2dd5603d2966b22ad5fc2e3084f05932bbbb8631",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -8008,9 +8409,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -8083,7 +8484,7 @@
    }
   },
   "variance_weight/cal": {
-   "fingerprint": "e4fdea841f80c7457385ac1adea338df14a580d74ec5ed95023c9ffe195847b4",
+   "fingerprint": "0f2427c2bbc7eff736fa737cc53c3902a05c0539e4b8d6ea963b931288bbda40",
    "inputs": {
     "fit": {
      "clip": {
@@ -8123,7 +8524,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -8136,9 +8536,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -8180,7 +8580,7 @@
    }
   },
   "variance_weight/mosaic": {
-   "fingerprint": "f668cf4452bf78efe9835189e87e131532ca36ae31609209ea91d4311a31ec66",
+   "fingerprint": "37c1d38d2708fd8d9a63d92ff62cacd6e3b23c0bcb78a04693209cadd8ad70a1",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -8209,7 +8609,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -8222,9 +8621,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {

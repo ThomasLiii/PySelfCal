@@ -101,7 +101,8 @@ Swap detector = change `--detector`, `--frames`, `--ref`, `--run-name`.
 **Another recipe.** The recipe is Python: `RECIPE` in
 [`transfer_function.py`](transfer_function.py) is the production recipe
 (`SLOPE_GAUGE` in [`recipes/spherex.py`](../recipes/spherex.py)), solved on 17
-channels and one column (`NUM_CH, NUM_COL = 17, 1` next to it). Copy the script
+channels and one column (its model's chunk maps, `maps(num_ch=17, num_col=1)` of
+the same file; `NUM_CH = 17` next to it is the number of channels). Copy the script
 and change `RECIPE` under a name of its own (the products carry it, so they do
 not collide with the production recipe's):
 
@@ -109,12 +110,13 @@ not collide with the production recipe's):
 RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=None), name="nogauge")       # no gauge
 RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=sc.Gauge("xs_term", degree=2)),
                              name="quadgauge")                                              # the quadratic gauge
-RECIPE, NUM_CH, NUM_COL = POLY_K1, 34, 10       # the NumCol 10 fiducial of 2026-05 (from recipes/spherex.py)
+RECIPE, NUM_CH = POLY_K1, 34       # the NumCol 10 fiducial of 2026-05 (from recipes/spherex.py): 34 channels x 10 columns
 ```
 
 Settings are checked as they are built; the [Python API guide](../../docs/guide/python-api.md)
-lists them. (The chunk axes belong to the instrument: `NUM_CH` and `NUM_COL`
-build `sc.SPHEREx(detector, num_col=NUM_COL, num_ch=NUM_CH)` in `setup()`.)
+lists them. (The chunk maps belong to the recipe: its model carries the partition
+it is solved on, and `setup()` builds the detector, `sc.SPHEREx(detector)`, and the
+job, `jobs.channel(channel)` of `selfcal_scripts/spherex/jobs.py`.)
 
 The kit's TOML form (`run_transfer_function.sh` filling `transfer_function.toml`)
 was removed with selfcal's TOML support; the script above makes the same products.

@@ -1,20 +1,16 @@
-"""SPHEREx as settings: ``sc.SPHEREx(detector)``, its jobs and its geometry.
-
-A job is one map: a spectral channel (:func:`channel`), several channels solved together
-(:func:`group`), or a window of subchannels (:func:`window`)::
-
-    from selfcal.instruments import spherex
-    jobs = spherex.channels(1, 34)                     # 34 jobs, Ch1 .. Ch34
-    jobs = spherex.window("Multiline3", subchannels=range(200, 321))
+"""SPHEREx as settings: ``sc.SPHEREx(detector)``, what is intrinsic to the instrument.
 
 :class:`SPHEREx` implements the instrument contract
-(:class:`~selfcal.instruments.contract.Instrument`): every LVF / subchannel specific of a run
-(the stripped (arc) chunk map with its ``(subchannel, column)`` axes, the H2RG readout-channel
-map, the ``BC`` / ``BW`` wavelength maps, the subchannel masks of a job, the smooth arc offset
-renderer, the wavelength coadd of the mosaic, the FINAST astrometry filter) lives here.
+(:class:`~selfcal.instruments.contract.Instrument`): the L2b exposure layout and reader (the
+``VARIANCE`` as the frame layer ``variance``, the FINAST astrometry filter), the detector's
+band-centre and band-width maps (``BC`` / ``BW``, the wavelength and its width), the LVF arc fit
+every chunk map on the arcs reads (``geometry.extra['lvf_params']``), and the wavelength coadd of
+the mosaic. The chunk maps a model solves on (the arcs cut into subchannels and columns, the
+detector columns, the readout channels), the jobs (a channel, a window of subchannels) and the
+terms are the model's: ``selfcal_scripts/spherex/{chunks,jobs,terms}.py`` build them.
 
-:func:`line` is a sky term with one of the shipped line templates; :func:`precompute_lvf` fits
-the LVF arcs the geometry reads; :func:`zodi_anchor` fits a calibration's zodiacal-light anchor.
+:func:`precompute_lvf` fits the LVF arcs the geometry reads; :func:`zodi_anchor` fits a
+calibration's zodiacal-light anchor.
 """
 from __future__ import annotations
 
@@ -22,9 +18,6 @@ import glob
 import logging
 import os
 from dataclasses import KW_ONLY, dataclass
-from functools import partial
-
-import numpy as np
 
 from ...config import (
     ENV_LVF_PARAMS_DIR,
@@ -33,11 +26,8 @@ from ...config import (
     resolve_path,
 )
 from ...config.base import ConfigError
-from ...models.offset_structure import ChunkAxes
-from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
-from ..contract import Instrument, Job
-from ..grid import upsample_chunk_map
-from .adapter import SUBCH_WINDOWS, make_column_chunk_map, make_readout_chunk_map
+from ..base import DetectorGeometry, ExposureLayout
+from ..contract import Geometry, Instrument
 from .exposures import read_l2b
 from .spherex_utility import (
     _LVF_PARAMS_DIR,
@@ -45,13 +35,10 @@ from .spherex_utility import (
     DEFAULT_CHANNEL_FILE,
     load_calibration,
     load_lvf_params,
-    make_spherex_stripped_offset_map,
-    make_stripped_chunk_map,
-    make_stripped_chunk_valid_mask,
 )
 from .wavemap import wav_coadd
 
-__all__ = ['SPHEREx', 'channel', 'channels', 'group', 'window', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor']
+__all__ = ['SPHEREx', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor']
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +58,12 @@ LINE_TEMPLATES = {
 
 @dataclass(frozen=True)
 class SPHEREx(Instrument):
-    """A SPHEREx detector (1 to 6): its LVF chunk map of ``num_ch`` channels x ``num_sub``
-    subchannels x ``num_col`` columns, and its wavelength maps. ``calib_dir`` / ``lvf_dir``:
-    the directories of the calibration maps and of the LVF parameters (default: the
-    ``SELFCAL_SPHEREX_CALIB_DIR`` / ``SELFCAL_LVF_PARAMS_DIR`` variables, else the defaults)."""
+    """A SPHEREx detector (1 to 6): its L2b exposures, its band-centre and band-width maps and its
+    LVF arc fit. ``calib_dir`` / ``lvf_dir``: the directories of the calibration maps and of the
+    LVF parameters (default: the ``SELFCAL_SPHEREX_CALIB_DIR`` / ``SELFCAL_LVF_PARAMS_DIR``
+    variables, else the defaults). Products are named ``cal_Detector<n>_<primary map tag>_<job>...``."""
     detector: int
     _: KW_ONLY
-    num_col: int = 3
-    num_sub: int = 10
-    num_ch: int = 34
     calib_dir: str | None = None
     lvf_dir: str | None = None
 
@@ -92,35 +76,13 @@ class SPHEREx(Instrument):
     def _validate(self):
         if self.detector not in range(1, 7):
             raise ConfigError(f"SPHEREx(detector={self.detector}): 1 to 6")
-        for k in ('num_col', 'num_sub', 'num_ch'):
-            if getattr(self, k) < 1:
-                raise ConfigError(f"SPHEREx({k}={getattr(self, k)}): at least 1")
 
     @property
     def product_tag(self) -> str:
-        return f"Detector{self.detector}_NumSub{self.num_sub}_NumCh{self.num_ch}_NumCol{self.num_col}"
-
-    def default_jobs(self):
-        raise ConfigError("SPHEREx runs name their maps: jobs=spherex.channel(17), spherex.channels(1, 34), "
-                          "spherex.group(17, 18) or spherex.window(\"Aromatic\")")
+        return f"Detector{self.detector}"
 
     def default_ignore_flags(self):
         return ()
-
-    def check_jobs(self, jobs):
-        for j in jobs:
-            if not isinstance(j, Job) or j.kind not in ('channels', 'window'):
-                raise ConfigError(f"SPHEREx: a job is spherex.channel(...), .group(...) or .window(...), got {j!r}")
-            if j.kind == 'channels':
-                bad = [c for c in j.value if not 1 <= c <= self.num_ch]
-                if bad:
-                    raise ConfigError(f"SPHEREx: channels {bad} outside 1..{self.num_ch}")
-            else:
-                lo, hi = j.value
-                n_sub = self.num_sub * self.num_ch + 2
-                if not 0 <= lo < hi <= n_sub:
-                    raise ConfigError(f"SPHEREx: window {j.name!r} = subchannels {lo}..{hi - 1}, outside "
-                                      f"0..{n_sub - 1}")
 
     # ---- the contract -------------------------------------------------------------------
     def layout(self) -> ExposureLayout:
@@ -135,42 +97,17 @@ class SPHEREx(Instrument):
             cache_tag=f"finast_D{self.detector}", reader=read_l2b)
 
     def geometry(self, oversample=1) -> DetectorGeometry:
-        """The LVF parameters, the ``BC`` / ``BW`` maps, the stripped chunk map at detector and
-        grid resolution with its (subchannel, column) axes, the readout-channel map and the
-        per-detector-column map ``detector_column`` (one chunk per column; no adjacency on either:
-        that is the model's). ``calib_dir`` / ``lvf_dir`` choose the directories of the
+        """The detector: the ``BC`` / ``BW`` maps as the aux maps (the wavelength and its width)
+        and, in ``extra``, the LVF arc fit ``lvf_params`` and the ``detector`` number, which a
+        chunk map on the arcs reads. ``calib_dir`` / ``lvf_dir`` choose the directories of the
         calibration maps and the LVF parameters (default: see
         :func:`~selfcal.instruments.spherex.spherex_utility.load_lvf_params`)."""
-        det, ns, nch, ncol = self.detector, self.num_sub, self.num_ch, self.num_col
+        det = self.detector
         lvf_params = load_lvf_params(f'lvf_params_D{det}.npy', input_dir=self.lvf_dir)
         det_BC, det_BW = load_calibration(
             band=det, calibration_dir=self.calib_dir)     # None: $SELFCAL_SPHEREX_CALIB_DIR, else the default
-        # The stripped maps read BC from $SELFCAL_SPHEREX_CALIB_DIR / the default, never from
-        # calib_dir: what every product was made with.
-        grid_chunk_map, _, _, _ = make_stripped_chunk_map(
-            det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
-            oversample_factor=oversample, lvf_params=lvf_params)
-        det_chunk_map, _, r_edges, x_edges = make_stripped_chunk_map(
-            det, num_subchannels=ns, num_channels=nch, num_columns=ncol,
-            oversample_factor=1, lvf_params=lvf_params)
-        n_sub = (int(det_chunk_map.max()) + 1) // int(ncol)      # == ns * nch + 2 (padding subchannels)
-        # The chunk encoding chunk = subchannel * num_col + column, expressed
-        # ONCE as chunk axes: subchannels change along y (arcs), columns along x.
-        sub_axes = ChunkAxes.row_major(('subchannel', 'column'), (n_sub, int(ncol)), ('y', 'x'))
-        stripped = ChunkMap(name='subchannel', det=det_chunk_map, grid=grid_chunk_map, axes=sub_axes,
-                            adjacency_axes=('column',), spectral_axis='subchannel', group_axis='column')
-        det_ro, n_ro = make_readout_chunk_map(det_chunk_map.shape)
-        readout = ChunkMap(name='readout', det=det_ro, grid=upsample_chunk_map(det_ro, oversample),
-                           axes=ChunkAxes.row_major(('readout',), (n_ro,), ('x',)))
-        det_col, n_col = make_column_chunk_map(det_chunk_map.shape)
-        columns = ChunkMap(name='detector_column', det=det_col, grid=upsample_chunk_map(det_col, oversample),
-                           axes=ChunkAxes.row_major(('detector_column',), (n_col,), ('x',)))
-        return DetectorGeometry(
-            shape=det_chunk_map.shape,
-            chunk_maps={'subchannel': stripped, 'readout': readout, 'detector_column': columns},
-            primary='subchannel', aux={'BC': det_BC, 'BW': det_BW}, wavelength_key='BC', width_key='BW',
-            extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
-                   'num_sub': ns, 'num_ch': nch, 'num_col': ncol})
+        return Geometry(det_BC.shape, oversample, aux={'BC': det_BC, 'BW': det_BW}, wavelength='BC', width='BW',
+                        extra={'lvf_params': lvf_params, 'detector': det})
 
     def geometry_files(self):
         """The files :meth:`geometry` reads, resolved as its loaders resolve them: the LVF arc fit,
@@ -186,69 +123,6 @@ class SPHEREx(Instrument):
         files.append(resolve_path(None, env_var=ENV_SPHEREX_CHANNEL_FILE, default=DEFAULT_CHANNEL_FILE,
                                   must_exist=False))
         return tuple(files)
-
-    def job_geometry(self, geom, job) -> JobGeometry:
-        """Return the valid masks and the solve and mosaic weights of one job's subchannels.
-
-        A ``'window'`` job (``value = (lo, hi)``) selects subchannels ``lo`` to
-        ``hi - 1``, indexed over all ``num_sub * num_ch + 2`` subchannels of the
-        stripped map (``0`` and the last are the padding subchannels). A
-        ``'channels'`` job selects the ``num_sub`` subchannels of each listed
-        channel (numbered from 1), and its padded set adds one subchannel on each
-        side, which overlaps the neighbouring channels for stitching; a window
-        job's padded and strict sets are the same. A selected subchannel is
-        selected in every column. Any other ``kind`` raises ``ValueError``.
-
-        ``det_valid_weight``, the solve's weight, is the padded set's 0/1 mask on
-        the detector grid (float64 for a channel job, boolean for a window job). The mosaic's
-        ``grid_valid_weight`` (float32, on the primary map's ``grid``) is the strict set's 0/1
-        mask: every valid pixel weighs the same, so the mosaic's weights are the solve's and
-        its mean map is the solved sky term. (Until 2026-10-15 it tapered the strict set
-        linearly toward its edges, which narrowed each map pixel's effective bandpass from the
-        strip's top hat to a triangle and evened the effective wavelength over the map, for
-        14 % more noise rms; measured on NEP D3 Ch9, the wavelength scatter it removed was ten
-        times below the pixel noise, so it was dropped.) ``chunk_valid`` / ``chunk_valid_strict``
-        hold the padded / strict sets per chunk of the primary map, and ``det_valid_mask`` /
-        ``grid_valid_mask`` the strict set on the two grids."""
-        ns, nch, ncol = self.num_sub, self.num_ch, self.num_col
-        det_chunk_map = geom.chunk_map.det
-        grid_chunk_map = geom.chunk_map.grid
-        kw = dict(num_subchannels=ns, num_channels=nch, num_columns=ncol)
-        if job.kind == 'window':
-            lo, hi = job.value
-            sel = dict(subch=np.arange(lo, hi))
-        elif job.kind == 'channels':
-            sel = dict(ch=job.value)
-        else:
-            raise ValueError(f"unknown job kind {job.kind!r}")
-        cvm_pad = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=1)
-        cvm = make_stripped_chunk_valid_mask(**sel, **kw, subchannel_padding=0)
-        det_valid_mask = cvm[det_chunk_map]
-        det_valid_mask_padded = cvm_pad[det_chunk_map]
-        grid_valid_mask = cvm[grid_chunk_map]
-        grid_valid_weight = np.asarray(grid_valid_mask, dtype=bool).astype(np.float32)
-        # The solve weights every pixel of the padded window equally (the
-        # padding subchannels overlap the neighbouring jobs for stitching); the
-        # mosaic every pixel of the strict window.
-        return JobGeometry(det_valid_weight=det_valid_mask_padded, grid_valid_weight=grid_valid_weight,
-                           chunk_valid=cvm_pad, chunk_valid_strict=cvm,
-                           det_valid_mask=det_valid_mask, grid_valid_mask=grid_valid_mask)
-
-    def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
-        """The smooth subchannel-arc offset renderer of the primary (stripped) map, for one job's
-        mosaic, whatever ``render`` asks for (it fills a frame's zeroed chunks from its others:
-        ``fills_invalid``); ``None`` (block-constant) for the other maps."""
-        if map_name not in (None, geom.primary):
-            return None
-        ns, nch, ncol = self.num_sub, self.num_ch, self.num_col
-        x = geom.extra
-        renderer = partial(
-            make_spherex_stripped_offset_map,
-            chunk_valid_mask=jobgeom.chunk_valid_strict,
-            lvf_params=x['lvf_params'], r_edges=x['r_edges'], x_edges=x['x_edges'],
-            tot_subchannels=ns * nch + 2, num_columns=ncol, fill_invalid=True)
-        renderer.fills_invalid = True
-        return renderer
 
     @staticmethod
     def aux_coadds(geom):
@@ -278,56 +152,6 @@ class SPHEREx(Instrument):
         logger.info(f"Wavelength coaddition finished in {time.time() - t00:.2f} seconds.")
         mm.append_maps({'wav_mean_map': {'data': wav_mean, 'unit': 'um'},
                         'wav_std_map': {'data': wav_std, 'unit': 'um'}})
-
-    @staticmethod
-    def coefficient_catalog():
-        """Return the catalogue of named SPHEREx coefficients; its one entry is ``pah_3p29``.
-
-        ``pah_3p29``
-        (:func:`~selfcal.instruments.spherex.line_catalog.pah_3p29_coefficient`)
-        is a Gaussian of the band-centre map ``BC`` at the PAH 3.29 um feature,
-        whose per-observation width combines the band-width map ``BW`` with the
-        intrinsic PAH width. A sky term selects it with ``sc.catalog("pah_3p29")``, optionally
-        overriding the factory's ``center`` and ``sigma`` (um). Each call returns a new copy of
-        :data:`~selfcal.instruments.spherex.line_catalog.CATALOG`."""
-        from .line_catalog import CATALOG
-        return dict(CATALOG)
-
-
-def channel(c) -> Job:
-    """The job of spectral channel ``c`` (1 to 34): products ``..._Ch<c>...``."""
-    return group(c)
-
-
-def channels(first, last=None) -> tuple:
-    """One job per channel: ``channels(1, 34)`` (first to last, inclusive), or ``channels([3, 17])``."""
-    if last is None:
-        return tuple(channel(int(c)) for c in first)
-    return tuple(channel(c) for c in range(int(first), int(last) + 1))
-
-
-def group(*chans) -> Job:
-    """One job over several channels solved together: ``group(17, 18)`` -> ``Ch17-18``."""
-    chans = tuple(int(c) for c in chans)
-    if not chans:
-        raise ConfigError("spherex.group(): at least one channel")
-    return Job('Ch' + '-'.join(map(str, chans)), kind='channels', value=chans)
-
-
-def window(name, subchannels=None) -> Job:
-    """The job of a window of subchannels (``range(lo, hi)``, indexed over the 342 subchannels
-    of the LVF map); a preset window by name alone (``"Aromatic"``, ``"Aliphatic"``)."""
-    if subchannels is None:
-        if name not in SUBCH_WINDOWS:
-            raise ConfigError(f"spherex.window({name!r}): not a preset window ({sorted(SUBCH_WINDOWS)}); "
-                              f"give subchannels=range(lo, hi)")
-        lo, hi = SUBCH_WINDOWS[name]
-    else:
-        if not isinstance(subchannels, range) or subchannels.step != 1:
-            raise ConfigError(f"spherex.window({name!r}, subchannels=...): a range of subchannels, "
-                              f"e.g. range(200, 321)")
-        lo, hi = subchannels.start, subchannels.stop
-    return Job(str(name), kind='window', value=(int(lo), int(hi)))
 
 
 def precompute_lvf(detectors, *, output_dir=None, calib_dir=None, num_sub=10, num_ch=34):

@@ -236,8 +236,7 @@ def _frame_source(field, frames, compute, scratch, tiles):
 
 def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None, frames=None, cal=None,
           compute=None, start=None, snapshots=None, monitor=None) -> list[RunSpec]:
-    """The engine runs of one action: a :class:`~selfcal.run.runspec.RunSpec` per group of jobs the
-    instrument runs together (SPHEREx: its channel jobs, then its window jobs).
+    """The engine runs of one action: one :class:`~selfcal.run.runspec.RunSpec` over its jobs.
 
     ``task``: ``"cal"`` (with ``tiles``: tiled; with ``passes``: the N-pass solve) or ``"mosaic"``
     (of the cal ``cal``, default each job's own). ``frames``: None (the field's frames), a number
@@ -252,8 +251,10 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     snapshots, monitor = as_snapshots(snapshots), as_monitor(monitor)
     compute = compute or field.compute
     inst = field.instrument
-    jobs = tuple(inst.default_jobs()) if jobs is None else ((jobs,) if not isinstance(jobs, (list, tuple))
-                                                            else tuple(jobs))
+    if jobs is None:
+        raise ConfigError("jobs=: name the jobs of the action, one sc.Job each (sc.Job('All') solves every chunk of "
+                          "the primary map; selfcal_scripts.spherex.jobs builds a SPHEREx channel's)")
+    jobs = (jobs,) if not isinstance(jobs, (list, tuple)) else tuple(jobs)
     inst.check_jobs(jobs)
     if start is not None and (task != 'cal' or tiles is not None or passes is not None):
         raise ConfigError("calibrate(start=...): a warm start continues a plain calibration, one solve per job; "
@@ -269,15 +270,12 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             and (tiles is not None or passes is not None)):
         raise ConfigError("Fit(gauge=...): the post-solve gauge is applied by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
-    groups = {}
-    for j in jobs:
-        groups.setdefault(j.kind, []).append(j)
     model, coadd = recipe.model, recipe.coadd
     mosaic = 'none' if coadd is None else ('full' if coadd.instrument_maps else 'no_wav')
     scratch = _scratch(field, recipe, compute, tiles, passes)
     source, frames_dir = _frame_source(field, frames, compute, scratch, tiles)
     out = []
-    for group in groups.values():
+    for group in (jobs,):
         spec = RunSpec(
             task='npass' if passes is not None else task, field=field, instrument=inst,
             output_dir=os.path.dirname(field.path), run_name=field.name, resolution_arcsec=field.pixel_scale,

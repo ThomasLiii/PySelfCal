@@ -62,8 +62,9 @@ recipe = sc.Recipe(sc.continuum(smooth=0.1),     # sky + offsets smooth between 
 
 if __name__ == "__main__":
     field.reproject("/data/mycam/field1/*.fits")   # the reference grid; every exposure resampled onto it
-    print(field.plan(recipe))                       # what will run, checked; nothing is computed
-    result = field.calibrate(recipe)                # solve, then coadd the mosaic
+    job = sc.Job("All")                             # one solve over every chunk of the camera's grid
+    print(field.plan(recipe, jobs=job))             # what will run, checked; nothing is computed
+    result = field.calibrate(recipe, jobs=job)      # solve, then coadd the mosaic
 ```
 
 Every setting is checked when it is built, so a misspelt keyword or an impossible value stops the
@@ -72,12 +73,13 @@ script at the line that made it. The field's actions:
 | Action | What it does | Writes |
 | --- | --- | --- |
 | `field.reproject(exposures)` | Reads the raw exposures, defines the reference grid and resamples every frame onto it | `ref.fits`, `reprojected/exp_*_det_*.h5` |
-| `field.calibrate(recipe)` | Builds and solves the system for each job, then coadds its mosaic. `tiles=` solves the field tile by tile and stitches the tiles; `passes=` runs the N-pass alternating solve | `calibration/cal_*.h5`, `mosaic/mosaic_*.fits` |
-| `field.mosaic(recipe, cal=)` | Coadds the frames with an existing calibration | `mosaic/mosaic_*.fits` |
-| `field.plan(recipe)` | Checks what `calibrate` would do without computing anything: the frames, the model against the instrument, each product (made, reused or refused) | nothing |
+| `field.calibrate(recipe, jobs=)` | Builds and solves the system for each job, then coadds its mosaic. `tiles=` solves the field tile by tile and stitches the tiles; `passes=` runs the N-pass alternating solve | `calibration/cal_*.h5`, `mosaic/mosaic_*.fits` |
+| `field.mosaic(recipe, jobs=, cal=)` | Coadds the frames with an existing calibration | `mosaic/mosaic_*.fits` |
+| `field.plan(recipe, jobs=)` | Checks what `calibrate` would do without computing anything: the frames, the model against the instrument, each product (made, reused or refused) | nothing |
 | `spherex.precompute_lvf(detectors)` | SPHEREx's rarely needed geometry generator | the LVF arc parameters, `lvf_params_D<n>.npy` |
 
-A job is one unit of the instrument's loop (a SPHEREx channel or window; a camera has one, `All`).
+A job is one solve over chunks of the model's primary chunk map, named in every action
+(`sc.Job("All")`: every chunk; a SPHEREx channel or window of subchannels).
 Paths are relative to the field's directory. The run above writes
 `calibration/cal_MyCam_Chunks8x8_All.h5` (the sky map, the offsets of every frame and chunk, the
 per-frame scalars among them, and the coverage; read it with `result.cal()` or

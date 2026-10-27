@@ -115,7 +115,7 @@ def _producers():
 
     def quickstart():
         module = importlib.import_module('examples.quickstart.quickstart')
-        return _action_views(module.FIELD, module.RECIPE, {})
+        return _action_views(module.FIELD, module.RECIPE, dict(getattr(module, 'RUN', {})))
 
     def transfer_function():
         tf = importlib.import_module('selfcal_scripts.transfer_function.transfer_function')

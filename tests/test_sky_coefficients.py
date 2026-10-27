@@ -129,15 +129,18 @@ def test_config_form():
     c = build_coefficient({'variable': ['u', 'wavelength'], 'function': 'tests.test_sky_coefficients:two_var',
                            'params': {'scale': 3.0}}, g)
     assert c.variable == ('u', 'BC') and np.allclose(c.evaluate({'u': np.ones(2), 'BC': np.full(2, 2.0)}), 6.0)
-    cat = {'mine': lambda center=None: Coefficient('BC', GaussianProfile(center=center or 1.0, sigma=0.1))}
-    assert build_coefficient({'catalog': 'mine', 'center': 2.0}, g, catalog=cat).function.center == 2.0
-    assert SkyTerm(coefficient={'catalog': 'mine'}).name == 'mine' and SkyTerm().name == 'continuum'
+    assert SkyTerm().name == 'continuum' and SkyTerm('line', coefficient={'variable': 'u'}).name == 'line'
+    try:
+        SkyTerm(coefficient={'variable': 'u'})
+        raise AssertionError('expected a ValueError for a term with a coefficient and no name')
+    except ValueError as e:
+        assert 'needs a name' in str(e), str(e)
     for bad, msg in (({'variable': 'nope', 'function': 'linear', 'center': 0, 'halfwidth': 1}, 'nope'),
                      ({'variable': 'u', 'function': 'mystery'}, 'mystery'),
                      ({'variable': ['u', 'BC'], 'function': 'linear', 'center': 0, 'halfwidth': 1}, 'one variable'),
-                     ({'catalog': 'absent'}, 'absent')):
+                     ({'catalog': 'pah_3p29'}, 'needs `variable`')):            # a named coefficient: no such form
         try:
-            build_coefficient(bad, g, catalog=cat)
+            build_coefficient(bad, g)
             raise AssertionError(f'expected a ValueError for {bad}')
         except ValueError as e:
             assert msg in str(e), (msg, str(e))
@@ -181,7 +184,7 @@ def test_arbitrary_coefficient_end_to_end():
                               sc.Sky('shaped', times=sc.Function(shape, of='u', power=2.0, offset=0.2), damping=1e-4)],
                          offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])
         res = field.calibrate(sc.Recipe(model, fit=sc.Fit(400, clip=8.0, tolerance=1e-12), coadd=None,
-                                        numerics=sc.Numerics(2, batch=4)))
+                                        numerics=sc.Numerics(2, batch=4)), jobs=sc.Job('All'))
         with CalFile(res.cal_paths[0]) as cal:
             assert cal.sky_names == ['continuum', 'shaped']
             got = cal.sky('shaped')

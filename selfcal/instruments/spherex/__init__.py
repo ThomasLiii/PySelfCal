@@ -7,34 +7,26 @@ changes across them. The chunk maps therefore cut the detector into subchannels
 
 - :mod:`~selfcal.instruments.spherex.settings`: SPHEREx as settings of the Python API:
   :class:`~selfcal.instruments.spherex.settings.SPHEREx`, which implements the instrument
-  contract (the run's geometry, a job's masks and weights, the mosaic's renderer and
-  wavelength maps, the exposure layout), its jobs
-  (:func:`~selfcal.instruments.spherex.settings.channel`,
-  :func:`~selfcal.instruments.spherex.settings.channels`,
-  :func:`~selfcal.instruments.spherex.settings.group`,
-  :func:`~selfcal.instruments.spherex.settings.window`),
-  :func:`~selfcal.instruments.spherex.settings.line`,
-  :func:`~selfcal.instruments.spherex.settings.precompute_lvf` and
-  :func:`~selfcal.instruments.spherex.settings.zodi_anchor` (available from this package:
-  ``spherex.channel(17)``).
+  contract (the exposure layout, the band-centre and band-width maps, the LVF arc fit, the
+  mosaic's wavelength maps), :func:`~selfcal.instruments.spherex.settings.precompute_lvf` and
+  :func:`~selfcal.instruments.spherex.settings.zodi_anchor` (available from this package). The
+  chunk maps on the arcs, the jobs and the terms a model applies are built beside the recipes,
+  in ``selfcal_scripts/spherex/``.
 - :mod:`~selfcal.instruments.spherex.exposures`: the L2b exposure reader
   (:func:`~selfcal.instruments.spherex.exposures.read_l2b`: ``IMAGE``, ``FLAGS`` and the
   ``VARIANCE`` as the frame layer ``variance``) and
   :func:`~selfcal.instruments.spherex.exposures.l2b_variance`.
-- :mod:`~selfcal.instruments.spherex.adapter`: the named subchannel windows and the
-  readout-channel map.
+- :mod:`~selfcal.instruments.spherex.adapter`: the detector-column and readout-channel maps.
 - :mod:`~selfcal.instruments.spherex.spherex_utility`: the LVF geometry: the ``BC`` /
   ``BW`` maps, the arc fit (``lvf_params``), the stripped chunk maps and valid masks,
   the smooth arc offset renderer, adjacency and polynomial chains.
-- :mod:`~selfcal.instruments.spherex.line_catalog`: named sky-term coefficients
-  (``pah_3p29``).
 - :mod:`~selfcal.instruments.spherex.wavemap`: the standalone coadd of the mosaic's
   wavelength maps.
 
 Package data: the per-detector arc fits ``data/lvf_params/lvf_params_D<n>.npy`` and
 the line templates ``data/line_templates/*.npz``.
 """
-_SETTINGS = ('SPHEREx', 'channel', 'channels', 'group', 'window', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor')
+_SETTINGS = ('SPHEREx', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor')
 
 
 def __getattr__(name):

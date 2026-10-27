@@ -71,14 +71,20 @@ def band_ids():
     return np.repeat((np.arange(DET) * N_BAND // DET)[:, None], DET, axis=1).astype(np.int32)
 
 
+def band_columns(geometry):
+    """The primary chunk map: a chunk per band and column (:func:`chunk_ids`)."""
+    return sc.Chunks(chunk_ids(), sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x')),
+                     adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+
+
+def bands(geometry):
+    """A second chunk map: a chunk per band (:func:`band_ids`)."""
+    return sc.Chunks(band_ids(), sc.ChunkAxes.row_major(('band',), (N_BAND,), ('y',)), adjacency_axes=('band',),
+                     spectral_axis='band')
+
+
 def geometry(oversample):
-    det = chunk_ids()
-    lvf = sc.ChunkMap('lvf', det, det, axes=sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x')),
-                      adjacency_axes=('col',), spectral_axis='band', group_axis='col')
-    bands = band_ids()
-    band = sc.ChunkMap('band', bands, bands, axes=sc.ChunkAxes.row_major(('band',), (N_BAND,), ('y',)),
-                       adjacency_axes=('band',), spectral_axis='band')
-    return sc.Geometry((DET, DET), oversample, maps=[lvf, band],
+    return sc.Geometry((DET, DET), oversample,
                        aux={'wave': wavelength(), 'width': np.full((DET, DET), 0.02, np.float32)},
                        wavelength='wave', width='width')
 
@@ -90,6 +96,9 @@ class ToyInstrument(sc.Instrument):
 
     def geometry(self, oversample=1):
         return geometry(oversample)
+
+    def default_chunk_maps(self):
+        return {'lvf': sc.ChunkMap(band_columns), 'band': sc.ChunkMap(bands)}
 
 
 def sky_truth():
@@ -168,7 +177,7 @@ def solve(root, kind, init_iterations, n=5):
     passes = sc.Passes(n, order='offset_first', sky_clip=NO_CLIP,
                        offset=sc.Refit(clip=NO_CLIP, min_pixels=0))
     field = sc.Field(field_dir, ToyInstrument(), PIX)
-    field.calibrate(recipe, passes=passes,
+    field.calibrate(recipe, jobs=sc.Job('All'), passes=passes,
                     compute=sc.Compute(os.path.join(root, kind, f'scratch_{name}'), workers=2, stage=None))
     cal_dir = os.path.join(field_dir, 'calibration')
     stem = f'cal_{TAG}_All_{name}'

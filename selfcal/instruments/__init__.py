@@ -6,6 +6,6 @@ An instrument is a settings object of the Python API (:mod:`selfcal.instruments.
 subclass of ``sc.Instrument`` of your own. The run engine calls its methods; the geometry it
 returns is made of the types of :mod:`~selfcal.instruments.base`.
 """
-from .base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry  # noqa: F401
+from .base import Chunks, DetectorGeometry, ExposureLayout, JobGeometry  # noqa: F401
 
-__all__ = ['ChunkMap', 'DetectorGeometry', 'JobGeometry', 'ExposureLayout']
+__all__ = ['Chunks', 'DetectorGeometry', 'JobGeometry', 'ExposureLayout']

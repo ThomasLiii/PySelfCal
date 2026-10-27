@@ -7,9 +7,12 @@ so the row assembly, rewired onto SkyModel, stays byte-identical.
 """
 import numpy as np
 
+import selfcal as sc
 from selfcal.models.profiles import GaussianProfile, TemplateProfile, QuadratureSigma
 from selfcal.models.sky_model import SkyModel, ContinuumComponent
+from selfcal.models.spec import build_coefficient
 from selfcal.instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM, LINE_SIGMA_UM
+from selfcal_scripts.spherex import terms as T
 
 
 def _legacy_G_per_pixel(lam, bw, center):
@@ -83,8 +86,8 @@ def test_skymodel_continuum_only():
 
 
 def test_skymodel_continuum_plus_pah():
-    from selfcal.instruments.spherex.line_catalog import pah_3p29
-    sm = pah_3p29()
+    sm = SkyModel.continuum_plus_gaussian_line('pah_3p29', PAH_LINE_CENTER_UM, LINE_SIGMA_UM, wavelength_key='BC',
+                                               width_key='BW', fwhm_to_sigma=2.355, intrinsic_var=2.890e-4)
     assert sm.n_blocks == 2
     assert sm.names == ['continuum', 'pah_3p29']
     assert sm.aux_requirements == ('BC', 'BW')
@@ -96,9 +99,25 @@ def test_skymodel_continuum_plus_pah():
     got = line.coefficients({'BC': lam, 'BW': bw})
     ref = _legacy_G_per_pixel(lam, bw, PAH_LINE_CENTER_UM)
     assert np.array_equal(got, ref)
-    # Default center/σ are the SPHEREx PAH constants.
     assert line.coefficient.function.center == PAH_LINE_CENTER_UM
     assert line.coefficient.function.sigma == LINE_SIGMA_UM
+
+
+def test_the_pah_3p29_term_is_the_legacy_gaussian():
+    """``terms.pah_3p29()`` is the Gaussian of the band centre ``BC`` centred on 3.290 um whose sigma is the band
+    width ``BW`` in quadrature with the PAH's intrinsic width: the legacy per-pixel G, bitwise."""
+    rng = np.random.default_rng(4)
+    lam = (3.0 + 0.6 * rng.random((40, 50))).astype(np.float32)
+    bw = (0.05 + 0.1 * rng.random((40, 50))).astype(np.float32)
+    geom = sc.Geometry(lam.shape, aux={'BC': lam, 'BW': bw}, wavelength='BC', width='BW')
+    shape = T.pah_3p29()
+    assert shape == sc.gaussian(3.29, width='bandwidth', intrinsic_var=2.890e-4, fwhm_to_sigma=2.355)
+    assert T.pah_3p29(center=None) == shape and T.pah_3p29(center=3.3).params['center'] == 3.3
+    coef = build_coefficient(shape.lower(), geom, name='pah_3p29')
+    assert coef.variable == 'BC' and coef.function.sigma_source.fwhm_key == 'BW'
+    assert coef.function.center == PAH_LINE_CENTER_UM
+    got = coef.evaluate({'BC': lam.ravel(), 'BW': bw.ravel()})
+    assert np.array_equal(got, _legacy_G_per_pixel(lam.ravel(), bw.ravel(), PAH_LINE_CENTER_UM))
 
 
 def test_skymodel_rejects_duplicate_names():

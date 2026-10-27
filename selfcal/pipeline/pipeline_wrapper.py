@@ -1723,7 +1723,7 @@ class Mosaicker(Reprojector):
         num_chunks_m)`` array per map) are zeroed where the per-map
         coverage fraction falls below ``valid_chunk_thresh``. A renderer whose
         ``fills_invalid`` is true fills a frame's zeroed chunks from its other
-        chunks of that map (:meth:`~selfcal.instruments.contract.Instrument.offset_renderer`);
+        chunks of that map (:attr:`~selfcal.instruments.base.Chunks.renderers`);
         a chunk the frame observed (a fraction above 0) but below the threshold,
         which nothing fills (another renderer, or a frame with no chunk of the
         map above the threshold), leaves the coadd: its pixels in that frame are

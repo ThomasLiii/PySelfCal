@@ -1,9 +1,10 @@
 """A camera as settings: ``sc.Camera(shape, chunks=...)``, any imager without code.
 
-A detector of ``shape`` pixels cut into a grid of rectangular chunks, read from FITS files
-(or by your own ``reader``); optionally with per-pixel detector maps and per-frame header
-values as data variables. Most cameras need nothing else; a camera with another chunk geometry
-subclasses :class:`~selfcal.instruments.contract.Instrument`.
+A detector of ``shape`` pixels, read from FITS files (or by your own ``reader``); optionally with
+per-pixel detector maps and per-frame header values as data variables. Its default chunk map cuts
+the detector into a grid of ``chunks`` rectangles (:func:`grid_chunks`); a model may name its own
+maps instead (``sc.Model(chunk_maps=...)``). Most cameras need nothing else; a camera with another
+exposure layout subclasses :class:`~selfcal.instruments.contract.Instrument`.
 """
 from __future__ import annotations
 
@@ -14,17 +15,25 @@ import numpy as np
 
 from ..config.base import ConfigError, FrozenDict
 from ..config.functions import function_ref
-from ..models.model import Header
-from .base import ExposureLayout
-from .contract import ChunkMap, Geometry, Instrument, Job
+from ..models.model import ChunkMap, Header
+from .base import Chunks, ExposureLayout
+from .contract import Geometry, Instrument
 
-__all__ = ['Camera']
+__all__ = ['Camera', 'grid_chunks']
+
+
+def grid_chunks(geometry, chunks) -> Chunks:
+    """``ny x nx`` rectangular chunks over the detector (``chunks`` = (rows, cols); chunk id
+    ``row * nx + col``; :meth:`~selfcal.instruments.base.Chunks.rectangles`). Its axes are ``row``
+    (scanned vertically) and ``col`` (horizontally); the standard offset block regularises along
+    both, and ``row`` is the default group axis of a polynomial-basis offset term."""
+    return Chunks.rectangles(geometry.shape, chunks)
 
 
 @dataclass(frozen=True)
 class Camera(Instrument):
-    """An imager: a detector of ``shape`` = (rows, cols) pixels in ``chunks`` = (rows, cols)
-    rectangular chunks (one number: square).
+    """An imager: a detector of ``shape`` = (rows, cols) pixels, by default in ``chunks`` = (rows,
+    cols) rectangular chunks (one number: square; the map ``grid``).
 
     Exposure files: the science image in FITS extension ``sci_ext``, the data-quality mask in
     ``dq_ext`` (None: every pixel valid), the reference grid from the WCS of ``reference_ext``
@@ -32,9 +41,8 @@ class Camera(Instrument):
     header_only=False)`` returning :class:`~selfcal.io.frames.ExposureData`. ``detector_maps``:
     per-pixel data variables (``{name: array}``, the detector's shape); ``headers``: per-frame data
     variables read from each frame's header (``{name: "KEYWORD"}`` or ``sc.Header(...)``).
-    ``tag``: the products' tag (default ``Grid<rows>x<cols>``; products are named
-    ``cal_<tag>_Chunks<ny>x<nx>_<job>...``); ``unit``: the mosaic's ``BUNIT``; ``job``: the job's
-    name.
+    ``tag``: the products' tag (default ``Grid<rows>x<cols>``; with the default map the products
+    are named ``cal_<tag>_Chunks<ny>x<nx>_<job>...``); ``unit``: the mosaic's ``BUNIT``.
     """
     shape: tuple[int, int]
     _: KW_ONLY
@@ -47,7 +55,6 @@ class Camera(Instrument):
     headers: dict[str, Any] = field(default_factory=FrozenDict)
     tag: str | None = None
     unit: str = ''
-    job: str = 'All'
 
     # A constant, not a setting (without an annotation it is no dataclass field): the geometry reads
     # the settings only (the detector maps are arrays, fingerprinted by their content), so the engine
@@ -76,27 +83,20 @@ class Camera(Instrument):
 
     @property
     def product_tag(self) -> str:
-        ny, nx = self.chunks
-        return f"{self.tag if self.tag is not None else f'Grid{self.shape[0]}x{self.shape[1]}'}_Chunks{ny}x{nx}"
-
-    def default_jobs(self):
-        return (Job(self.job),)
-
-    def check_jobs(self, jobs):
-        if len(jobs) != 1 or jobs[0].name != self.job:
-            raise ConfigError(f"Camera: one job, {self.job!r}; got {[getattr(j, 'name', j) for j in jobs]}")
+        return self.tag if self.tag is not None else f'Grid{self.shape[0]}x{self.shape[1]}'
 
     # ---- the contract -------------------------------------------------------------------
     def geometry(self, oversample=1):
-        """One ``ny x nx`` rectangular chunk map named ``grid`` (``int32``, chunk id ``row * nx +
-        col``; :meth:`~selfcal.instruments.base.ChunkMap.rectangles`), replicated onto the
-        reference grid in ``oversample x oversample`` blocks. Its axes are ``row`` (scanned
-        vertically) and ``col`` (horizontally); the standard offset block regularises along both,
-        and ``row`` is the default group axis of a polynomial-basis offset term. The detector maps
-        are the aux maps (``float32``); there is no wavelength map."""
-        grid = ChunkMap.rectangles('grid', self.shape, self.chunks)
-        return Geometry(self.shape, oversample, maps=[grid],
+        """The detector: its shape, the detector maps as the aux maps (``float32``); there is no
+        wavelength map."""
+        return Geometry(self.shape, oversample,
                         aux={k: np.asarray(v, dtype=np.float32) for k, v in self.detector_maps.items()})
+
+    def default_chunk_maps(self):
+        """The one map ``grid``, ``chunks`` rectangles (:func:`grid_chunks`), tagged
+        ``Chunks<ny>x<nx>``."""
+        ny, nx = self.chunks
+        return {'grid': ChunkMap(grid_chunks, tag=f'Chunks{ny}x{nx}', chunks=(ny, nx))}
 
     def layout(self) -> ExposureLayout:
         """A file holding one detector: the science image in ``sci_ext``, the data-quality mask in
