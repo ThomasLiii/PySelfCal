@@ -354,6 +354,46 @@ def frame_slope(name='xs_term', per='frame'):
     return Offsets(name, on='subchannel', per=per, times=Function(tilt, of='det_x', centre=(n - 1) / 2.0, half=n / 2.0))
 
 
+def arc_position(geometry):
+    """Each detector pixel's position across the LVF arcs, in subchannels: a detector map for
+    :class:`~selfcal.models.model.DetectorMap`. The subchannel edges are the concentric circles of the
+    arc fit (``geometry.extra['lvf_params']``: centre ``xc``, ``yc``; ``geometry.extra['r_edges']``: the
+    edges' radii), so the position is the pixel's radius about the centre interpolated on the edges'
+    radii against the edge index: subchannel ``s`` spans ``s - 1`` to ``s``, and beyond the first and the
+    last edge the position continues linearly at the end intervals' rate."""
+    lvf, r_edges = geometry.extra['lvf_params'], np.asarray(geometry.extra['r_edges'], dtype=np.float64)
+    H, W = geometry.shape
+    y, x = np.mgrid[0:H, 0:W].astype(np.float64)
+    r = np.hypot(x - lvf['xc'], y - lvf['yc'])
+    k = np.arange(r_edges.size, dtype=np.float64)
+    u = np.interp(r, r_edges, k)
+    lo, hi = r < r_edges[0], r > r_edges[-1]
+    u[lo] = (r[lo] - r_edges[0]) / (r_edges[1] - r_edges[0])
+    u[hi] = k[-1] + (r[hi] - r_edges[-1]) / (r_edges[-1] - r_edges[-2])
+    return u
+
+
+def _hats(arc_position, first, last):
+    """The hat functions on the subchannel edges ``first`` to ``last``: each is 1 at its edge and falls
+    linearly to 0 at the neighbouring edges (:func:`spectral_offsets`)."""
+    return [np.clip(1.0 - np.abs(arc_position - k), 0.0, None) for k in range(first, last + 1)]
+
+
+def spectral_offsets(subchannels, name='spectral', per='frame'):
+    """An offset term that is a continuous, piecewise-linear function of the position across the LVF
+    arcs per frame (``per``): one coefficient per frame and subchannel edge of ``subchannels`` (a range
+    of subchannel indices, the job's: ``spherex.channel(c)`` covers ``num_sub * (c - 1)`` to
+    ``num_sub * c + 1``), times the hat function of that edge (:func:`_hats`), on the whole detector.
+    In place of per-subchannel constants it follows a background that varies within a subchannel
+    (an airglow line's edge), with no step between subchannels; continuity holds by the basis, with
+    no constraint and no weight. The model needs the variable ``arc_position``:
+    ``variables={'arc_position': sc.DetectorMap(spherex.arc_position)}``."""
+    from ...models.model import Function, Offsets
+    first, last = int(subchannels.start) - 1, int(subchannels.stop) - 1
+    return Offsets(name, on='detector', per=per, basis=Function(_hats, of='arc_position', first=first, last=last),
+                   n=last - first + 1)
+
+
 def precompute_lvf(detectors, *, output_dir=None, calib_dir=None, num_sub=10, num_ch=34):
     """Fit and save the LVF arc parameters ``lvf_params_D<n>.npy`` of each detector in
     ``detectors`` (into ``output_dir``; default: ``$SELFCAL_LVF_PARAMS_DIR``, else the package's

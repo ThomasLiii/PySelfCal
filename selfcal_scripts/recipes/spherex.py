@@ -136,6 +136,23 @@ SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
     fit=SUBCH_VARWEIGHT_COLUMNS.fit.replace(min_observations=2),
     name='subch_varweight_columns_final')
 
+
+def continuous_final(channel, num_sub=10):
+    """SUBCH_VARWEIGHT_COLUMNS_FINAL for one channel job (``spherex.channel(channel)``) with its per-frame
+    subchannel constants replaced by ``spherex.spectral_offsets``: a continuous, piecewise-linear function of the
+    position across the LVF arcs, one coefficient per frame and subchannel edge of the job (its ``num_sub``
+    subchannels and the one on each side: ``num_sub + 3`` edges), so a background that varies within a
+    subchannel (an airglow line's edge) is followed without steps. The x-slopes and the shared column offsets
+    are the final recipe's. Products carry 'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the
+    channel recipe from the weak-mode work on)."""
+    base = SUBCH_VARWEIGHT_COLUMNS_FINAL
+    offsets = (spherex.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2)),) + tuple(
+        o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
+    model = base.model.replace(offsets=offsets,
+                               variables={**dict(base.model.variables), 'arc_position': sc.DetectorMap(spherex.arc_position)})
+    return base.replace(model=model, name=base.name + '_continuous')
+
+
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
