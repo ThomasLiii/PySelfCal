@@ -21,6 +21,7 @@ if _REPO not in sys.path:
 from selfcal.core.constraint_builders import ConstraintBlock, as_constraint_block  # noqa: E402
 from selfcal.core.layout import SystemLayout                                                   # noqa: E402
 from selfcal.geometry.map_helper import _parse_chunk_map, chunk_to_det                           # noqa: E402
+from selfcal.instruments.base import Chunks                                                     # noqa: E402
 from selfcal.models.offset_model import Basis, OffsetBlock, OffsetModel, as_basis_values        # noqa: E402
 from selfcal.models.offset_structure import ChunkAxes                                           # noqa: E402
 from selfcal.models.priors import TermInfo, frame_smoothness, sky_smoothness, toward_variable   # noqa: E402
@@ -50,23 +51,8 @@ def first_row_value(frame):
 
 
 # ---------------------------------------------------------------------------
-# a tiny geometry (duck-typed like DetectorGeometry)
+# a tiny geometry (duck-typed like DetectorGeometry, with an evaluated chunk map)
 # ---------------------------------------------------------------------------
-@dataclasses.dataclass(frozen=True)
-class _CM:
-    name: str
-    det: np.ndarray
-    grid: np.ndarray
-    axes: object
-    adjacency_axes: tuple = ('row', 'col')
-    spectral_axis: str = None
-    group_axis: str = 'row'
-
-    @property
-    def n_chunks(self):
-        return int(self.det.max()) + 1
-
-
 @dataclasses.dataclass(frozen=True)
 class _Geom:
     shape: tuple
@@ -84,7 +70,8 @@ class _Geom:
 def _geom():
     det = np.repeat(np.repeat(np.arange(6).reshape(2, 3), 4, axis=0), 4, axis=1).astype(np.int32)  # 8 x 12
     axes = ChunkAxes.row_major(('row', 'col'), (2, 3), ('y', 'x'))
-    return _Geom(shape=det.shape, chunk_maps={'grid': _CM('grid', det, det, axes)},
+    grid = Chunks(det, axes, grid=det, name='grid', adjacency_axes=('row', 'col'), group_axis='row')
+    return _Geom(shape=det.shape, chunk_maps={'grid': grid},
                  aux={'u': np.linspace(0, 1, det.size, dtype=np.float32).reshape(det.shape)})
 
 

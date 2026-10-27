@@ -37,6 +37,7 @@ from selfcal.run.lower import solver_options  # noqa: E402
 from tests.synthetic_exposures import DET, N_CHUNK_SIDE, REF_ARCSEC, write_exposures  # noqa: E402
 
 N = 25            # the fixed iteration count of the toy solves
+ALL = sc.Job('All')   # the camera's job: every chunk
 
 
 def _system(dtype=np.float64, m=400, n=60, seed=0):
@@ -250,7 +251,7 @@ def test_a_calibration_records_its_solve(tmp_path, method):
     numerics = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
     recipe = sc.Recipe(sc.continuum(), fit=sc.Fit(N, tolerance=0, method=method), coadd=None, numerics=numerics,
                        name='exact')
-    result = field.calibrate(recipe)
+    result = field.calibrate(recipe, jobs=ALL)
     cal = result.cal_paths[0]
     with CalFile(cal) as c:
         solve = c.solve
@@ -279,13 +280,14 @@ def test_a_calibration_records_its_solve(tmp_path, method):
     assert {k: entry[k] for k in solve} == solve and entry['wall_s'] >= 0
 
     # the default tolerance stops this solve before its 200 iterations
-    loose = field.calibrate(recipe.replace(fit=sc.Fit(200, method=method), name='loose'))
+    loose = field.calibrate(recipe.replace(fit=sc.Fit(200, method=method), name='loose'), jobs=ALL)
     with CalFile(loose.cal_paths[0]) as c:
         assert c.solve['iterations'] < 200 and c.solve['istop'] in (1, 2) and c.solve['conlim'] == 1e8
 
     # a tiled solve: one entry and one history per tile; the stitched cal has no solve of its own
     tiles = sc.Tiles((1, 2), overlap=10, names=('W', 'E'))
-    t = field.calibrate(recipe, tiles=tiles, compute=field.compute.replace(stage_dir='toy_tiles', memory_guard=False))
+    t = field.calibrate(recipe, jobs=ALL, tiles=tiles,
+                        compute=field.compute.replace(stage_dir='toy_tiles', memory_guard=False))
     with open(t.record) as f:
         entries = json.load(f)['solves']
     assert sorted(e['tile'] for e in entries) == ['E', 'W']
@@ -319,8 +321,8 @@ def test_a_calibration_parks_the_right_hand_side_in_its_scratch_area(tmp_path, m
         field = sc.Field(tmp_path / 'out' / name, camera, REF_ARCSEC, compute=compute)
         field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
         where = str(where or os.path.join(field.path, 'scratch'))
-        assert field.plan(recipe).contexts[0].solve_scratch() == where
-        cal = field.calibrate(recipe).cal_paths[0]
+        assert field.plan(recipe, jobs=ALL).contexts[0].solve_scratch() == where
+        cal = field.calibrate(recipe, jobs=ALL).cal_paths[0]
         assert used[-1] == where and not [p for p in os.listdir(where) if p.startswith('selfcal_parked_')]
         with CalFile(cal) as c:
             assert np.isfinite(c.solve['true_residual']) and c.solve['true_residual'] > 0

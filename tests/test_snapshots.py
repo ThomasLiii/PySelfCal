@@ -56,6 +56,7 @@ from tests.synthetic_exposures import (  # noqa: E402
 pytestmark = pytest.mark.filterwarnings('ignore:overflow encountered in cast:RuntimeWarning')
 
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 MODELS = {
     'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('xslope', times=xtilde),
                                sc.Offsets('scalar', on='detector')]),
@@ -234,7 +235,7 @@ def test_a_snapshot_is_the_cal_of_that_many_iterations(field, model, method):
     """Snapshots at 4, 8, 12 of a 14-iteration solve (none at 14); each holds exactly the datasets a solve
     of that many iterations writes."""
     recipe = _recipe(MODELS[model], 14, name=f'sn_{model}_{method}', method=method)
-    res = field.calibrate(recipe, snapshots=sc.Snapshots(4))
+    res = field.calibrate(recipe, snapshots=sc.Snapshots(4), jobs=ALL)
     cal = res.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     assert _snaps(cal) == [f'{stem}_it0004.h5', f'{stem}_it0008.h5', f'{stem}_it0012.h5']
@@ -242,7 +243,7 @@ def test_a_snapshot_is_the_cal_of_that_many_iterations(field, model, method):
     for it in (4, 12):
         snap = os.path.join(_snapdir(cal), f'{stem}_it{it:04d}.h5')
         exact = field.calibrate(recipe.replace(fit=recipe.fit.replace(iterations=it),
-                                               name=f'sn_{model}_{method}_{it}')).cal_paths[0]
+                                               name=f'sn_{model}_{method}_{it}'), jobs=ALL).cal_paths[0]
         a, b = _items(snap), _items(exact)
         assert sorted(a) == sorted(b)
         for name in a:
@@ -267,10 +268,11 @@ def test_the_coverage_is_read_where_the_setup_parked_it(field, monkeypatch, tmp_
     monkeypatch.setenv('SELFCAL_SPILL_DIR', str(tmp_path))
     recipe = _recipe(MODELS['spectral'], 7, name='parked')
     with caplog.at_level(logging.INFO):
-        cal = field.calibrate(recipe, snapshots=sc.Snapshots(5)).cal_paths[0]
+        cal = field.calibrate(recipe, snapshots=sc.Snapshots(5), jobs=ALL).cal_paths[0]
     assert any('Spilling pixel state' in r.getMessage() and 'CSR build' in r.getMessage() for r in caplog.records)
     snap = os.path.join(_snapdir(cal), os.path.basename(cal)[:-len('.h5')] + '_it0005.h5')
-    exact = field.calibrate(recipe.replace(fit=recipe.fit.replace(iterations=5), name='parked_5')).cal_paths[0]
+    exact = field.calibrate(recipe.replace(fit=recipe.fit.replace(iterations=5), name='parked_5'),
+                            jobs=ALL).cal_paths[0]
     a, b = _items(snap), _items(exact)
     assert sorted(a) == sorted(b) and all(a[k] == b[k] for k in a)
     assert any(k.startswith('sky_separability/') for k in a)
@@ -279,12 +281,12 @@ def test_the_coverage_is_read_where_the_setup_parked_it(field, monkeypatch, tmp_
 
 def test_a_warm_start_from_a_snapshot_and_cumulative_names(field):
     model = MODELS['times']
-    first = field.calibrate(_recipe(model, 12, name='cu_first'), snapshots=sc.Snapshots(5))
+    first = field.calibrate(_recipe(model, 12, name='cu_first'), snapshots=sc.Snapshots(5), jobs=ALL)
     cal = first.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     snap10 = os.path.join(_snapdir(cal), f'{stem}_it0010.h5')
     # a snapshot is a valid start (the warm start's checks accept it: frames, model, grid, identity)
-    more = field.calibrate(_recipe(model, 12, name='cu_more'), start=snap10, snapshots=4)
+    more = field.calibrate(_recipe(model, 12, name='cu_more'), start=snap10, snapshots=4, jobs=ALL)
     mcal = more.cal_paths[0]
     mstem = os.path.basename(mcal)[:-len('.h5')]
     assert _snaps(mcal) == [f'{mstem}_it0014.h5', f'{mstem}_it0018.h5']     # 10 + 4, 10 + 8 (not 10 + 12)
@@ -294,14 +296,14 @@ def test_a_warm_start_from_a_snapshot_and_cumulative_names(field):
     final = _solve(mcal)
     assert (final['iterations'], final['iterations_total'], final['start_from']) == (12, 22, snap10)
     # the continuation from the snapshot is the continuation from a cal of 10 iterations
-    ten = field.calibrate(_recipe(model, 10, name='cu_ten')).cal_paths[0]
-    again = field.calibrate(_recipe(model, 12, name='cu_again'), start=ten).cal_paths[0]
+    ten = field.calibrate(_recipe(model, 10, name='cu_ten'), jobs=ALL).cal_paths[0]
+    again = field.calibrate(_recipe(model, 12, name='cu_again'), start=ten, jobs=ALL).cal_paths[0]
     a, b = _items(mcal), _items(again)
     assert all(a[k] == b[k] for k in a) and sorted(a) == sorted(b)
 
 
 def test_keep_the_last_snapshots(field):
-    res = field.calibrate(_recipe(MODELS['times'], 20, name='keep'), snapshots=sc.Snapshots(3, keep=2))
+    res = field.calibrate(_recipe(MODELS['times'], 20, name='keep'), snapshots=sc.Snapshots(3, keep=2), jobs=ALL)
     cal = res.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     assert _snaps(cal) == [f'{stem}_it0015.h5', f'{stem}_it0018.h5']
@@ -313,11 +315,11 @@ def test_keep_the_last_snapshots(field):
 def test_a_snapshot_mosaics_like_the_cal_of_that_many_iterations(field):
     coadd = sc.Coadd(clip=None, std=False)
     model = MODELS['times']
-    res = field.calibrate(_recipe(model, 10, name='mos_src'), snapshots=sc.Snapshots(6))
+    res = field.calibrate(_recipe(model, 10, name='mos_src'), snapshots=sc.Snapshots(6), jobs=ALL)
     cal = res.cal_paths[0]
     snap = os.path.join(_snapdir(cal), os.path.basename(cal)[:-len('.h5')] + '_it0006.h5')
-    from_snap = field.mosaic(_recipe(model, 10, name='mos_snap', coadd=coadd), cal=snap).mosaic_paths[0]
-    six = field.calibrate(_recipe(model, 6, name='mos_six', coadd=coadd)).mosaic_paths[0]
+    from_snap = field.mosaic(_recipe(model, 10, name='mos_snap', coadd=coadd), cal=snap, jobs=ALL).mosaic_paths[0]
+    six = field.calibrate(_recipe(model, 6, name='mos_six', coadd=coadd), jobs=ALL).mosaic_paths[0]
     from astropy.io import fits
     with fits.open(from_snap) as a, fits.open(six) as b:
         assert len(a) == len(b) and len(a) > 1
@@ -329,28 +331,28 @@ def test_a_snapshot_mosaics_like_the_cal_of_that_many_iterations(field):
 
 def test_the_final_cal_is_the_same_with_and_without_snapshots(field):
     recipe = _recipe(MODELS['spectral'], 9, name='same')
-    with_snaps = field.calibrate(recipe, snapshots=sc.Snapshots(2)).cal_paths[0]
+    with_snaps = field.calibrate(recipe, snapshots=sc.Snapshots(2), jobs=ALL).cal_paths[0]
     saved = open(with_snaps, 'rb').read()
     side = products.read_sidecar(with_snaps)['fingerprint']
     shutil.rmtree(_snapdir(with_snaps))
-    without = field.calibrate(recipe, overwrite=True).cal_paths[0]
+    without = field.calibrate(recipe, overwrite=True, jobs=ALL).cal_paths[0]
     assert without == with_snaps and open(without, 'rb').read() == saved            # byte for byte
     assert products.read_sidecar(without)['fingerprint'] == side                    # the same inputs
     assert _snaps(without) == []
     # a current cal is reused, unsolved: it writes no snapshots
-    field.calibrate(recipe, snapshots=sc.Snapshots(2))
+    field.calibrate(recipe, snapshots=sc.Snapshots(2), jobs=ALL)
     assert _snaps(without) == [] and open(without, 'rb').read() == saved
 
 
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')
 def test_not_in_the_fingerprint_and_replayed_by_a_rerun(field):
     recipe = _recipe(sc.continuum(), 6, name='fp_snap')
-    (job,) = field.instrument.default_jobs()
-    plan = field.plan(recipe, snapshots=sc.Snapshots(2, keep=1))
-    assert plan.book.cal(job, field.frames) == field.plan(recipe).book.cal(job, field.frames)
+    job = ALL
+    plan = field.plan(recipe, snapshots=sc.Snapshots(2, keep=1), jobs=ALL)
+    assert plan.book.cal(job, field.frames) == field.plan(recipe, jobs=ALL).book.cal(job, field.frames)
     assert 'snapshots   every 2 iterations, the last 1 kept, in ' in str(plan)
-    assert 'none: the solve runs 6' in str(field.plan(recipe, snapshots=6))
-    res = field.calibrate(recipe, snapshots=sc.Snapshots(2, keep=1))
+    assert 'none: the solve runs 6' in str(field.plan(recipe, snapshots=6, jobs=ALL))
+    res = field.calibrate(recipe, snapshots=sc.Snapshots(2, keep=1), jobs=ALL)
     cal = res.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     assert _snaps(cal) == [f'{stem}_it0004.h5']
@@ -368,12 +370,12 @@ def test_tiles_passes_and_mosaics_take_no_snapshots(field):
     recipe = _recipe(sc.continuum(), 5, name='nosnap')
     for kw in (dict(tiles=sc.Tiles((1, 2), overlap=10)), dict(passes=sc.Passes(3))):
         with pytest.raises(ConfigError, match='a tiled or an N-pass calibration takes none'):
-            field.plan(recipe, snapshots=sc.Snapshots(2), **kw)
+            field.plan(recipe, jobs=ALL, snapshots=sc.Snapshots(2), **kw)
         with pytest.raises(ConfigError, match='a tiled or an N-pass calibration takes none'):
-            lower(field, recipe, snapshots=sc.Snapshots(2), **kw)
+            lower(field, recipe, jobs=ALL, snapshots=sc.Snapshots(2), **kw)
     from selfcal.run.plan import make_plan
     with pytest.raises(ConfigError, match="only a calibration's solve writes snapshots"):
-        make_plan(field, 'mosaic', recipe.replace(coadd=sc.Coadd()), snapshots=sc.Snapshots(2))
+        make_plan(field, 'mosaic', recipe.replace(coadd=sc.Coadd()), jobs=ALL, snapshots=sc.Snapshots(2))
 
 
 def test_a_snapshot_that_cannot_be_written_is_skipped(field, monkeypatch, caplog):
@@ -385,7 +387,7 @@ def test_a_snapshot_that_cannot_be_written_is_skipped(field, monkeypatch, caplog
         return real(self, f, iterate)
     monkeypatch.setattr(pipeline_wrapper.Calibrator, 'write_cal_solution', flaky)
     with caplog.at_level(logging.ERROR, logger='selfcal.core.snapshots'):
-        res = field.calibrate(_recipe(sc.continuum(), 7, name='flaky'), snapshots=sc.Snapshots(2))
+        res = field.calibrate(_recipe(sc.continuum(), 7, name='flaky'), snapshots=sc.Snapshots(2), jobs=ALL)
     cal = res.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     assert _snaps(cal) == [f'{stem}_it0002.h5', f'{stem}_it0006.h5']
@@ -400,7 +402,7 @@ def test_any_error_of_a_snapshot_or_its_template_leaves_the_solve_going(field, m
     logged, recorded and skipped; a template that cannot be written turns the solve's snapshots off. The
     solve goes on either way, and its cal is the one a solve without snapshots writes."""
     recipe = _recipe(MODELS['times'], 7, name='bugs')
-    plain = field.calibrate(recipe.replace(name='bugs_plain')).cal_paths[0]
+    plain = field.calibrate(recipe.replace(name='bugs_plain'), jobs=ALL).cal_paths[0]
     real = pipeline_wrapper.Calibrator.write_cal_solution
 
     def buggy(self, f, iterate):
@@ -410,7 +412,7 @@ def test_any_error_of_a_snapshot_or_its_template_leaves_the_solve_going(field, m
     with monkeypatch.context() as m:
         m.setattr(pipeline_wrapper.Calibrator, 'write_cal_solution', buggy)
         with caplog.at_level(logging.ERROR, logger='selfcal.core.snapshots'):
-            res = field.calibrate(recipe, snapshots=sc.Snapshots(2))
+            res = field.calibrate(recipe, snapshots=sc.Snapshots(2), jobs=ALL)
     cal = res.cal_paths[0]
     stem = os.path.basename(cal)[:-len('.h5')]
     assert _snaps(cal) == [f'{stem}_it0004.h5', f'{stem}_it0006.h5']
@@ -427,7 +429,7 @@ def test_any_error_of_a_snapshot_or_its_template_leaves_the_solve_going(field, m
     with monkeypatch.context() as m:
         m.setattr(pipeline_wrapper.Calibrator, 'write_cal_static', no_template)
         with caplog.at_level(logging.ERROR, logger='selfcal.core.snapshots'):
-            res = field.calibrate(recipe.replace(name='bugs_template'), snapshots=sc.Snapshots(2))
+            res = field.calibrate(recipe.replace(name='bugs_template'), snapshots=sc.Snapshots(2), jobs=ALL)
     cal = res.cal_paths[0]
     assert _snaps(cal) == [] and not [p for p in os.listdir(_snapdir(cal)) if '_static-' in p]
     assert any('this solve writes no snapshots and goes on' in r.getMessage() for r in caplog.records)

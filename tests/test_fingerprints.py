@@ -11,11 +11,13 @@ canonical inputs and the fingerprint of each product must equal the golden:
 
 * from the settings (``products.cal_inputs``, ``mosaic_inputs``, ``stitched_inputs`` and
   ``pass_inputs`` with the ``Book``'s tile key, chained by fingerprint as the ``Book`` chains them),
-  on fixed frame lists and jobs: the instruments ``sc.SPHEREx``, ``sc.Euclid``, ``sc.Camera`` and
+  on fixed frame lists and jobs (a camera's ``sc.Job('All')``, a Euclid band, SPHEREx channel, group
+  and window jobs): the instruments ``sc.SPHEREx``, ``sc.Euclid``, ``sc.Camera`` and
   :class:`Prism` (an ``sc.Instrument`` subclass of this module); the models ``sc.continuum``,
-  ``sc.spectral`` (template, Gaussian, catalogue, tabulated and linear lines, damping set and left
-  unset), ``sc.two_block`` and an ``sc.Model`` with every kind of term, data-variable source,
-  function (by name and ``sc.by_value``), weight and prior; ``sc.Fit`` with every kind of clip and
+  ``sc.spectral`` (template, Gaussian, the PAH 3.29 um Gaussian, tabulated and linear lines, damping
+  set and left unset), ``sc.two_block`` and an ``sc.Model`` with every kind of term, data-variable
+  source, function (by name and ``sc.by_value``), weight and prior, the SPHEREx models with the chunk
+  maps of the recipes (and a readout map); ``sc.Fit`` with every kind of clip and
   with hooks; ``sc.Coadd``; ``sc.Numerics``; ``sc.Passes`` with ``sc.Refit``; ``sc.Tiles`` (a grid
   and boxes, both assignments, a halo);
 * through the plan (``field.plan(...).products``) on synthetic fields: the engine's share of the
@@ -57,10 +59,12 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import selfcal as sc  # noqa: E402
-from selfcal.instruments import spherex  # noqa: E402
-from selfcal_scripts.spherex import terms as T  # noqa: E402
 from selfcal.io.frames import standard_frame_path, write_frame  # noqa: E402
 from selfcal.run import products  # noqa: E402
+from selfcal_scripts.recipes.spherex import maps  # noqa: E402
+from selfcal_scripts.spherex import chunks as C  # noqa: E402
+from selfcal_scripts.spherex import jobs  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fingerprints.json')
 WRITE_VARIABLE = 'SELFCAL_WRITE_FINGERPRINT_GOLDEN'
@@ -72,6 +76,7 @@ SOLVED_FINGERPRINT = '0ddba11' + '0' * 57    # the sidecar fingerprint of the so
 REF_SHAPE = (120, 160)                 # the reference grid of every field
 PIXEL_SCALE = 6.2
 SUBCHANNEL = sc.ChunkGroups.along('subchannel')
+ALL = sc.Job('All')                    # the job of a camera and of Prism: every chunk
 
 
 # ============================================================================
@@ -153,6 +158,17 @@ class Scale:
         return ctx.sub_data * self.factor
 
 
+def band_columns(geometry, bands=8, cols=2):
+    """Prism's chunk map: ``bands`` bands up the detector (the spectral axis) x ``cols`` columns (the
+    group axis)."""
+    h, w = geometry.shape
+    rows = np.arange(h) * bands // h
+    columns = np.arange(w) * cols // w
+    det = (rows[:, None] * cols + columns[None, :]).astype(np.int32)
+    axes = sc.ChunkAxes.row_major(('band', 'col'), (bands, cols), ('y', 'x'))
+    return sc.Chunks(det, axes, adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+
+
 @dataclass(frozen=True, kw_only=True)
 class Prism(sc.Instrument):
     """A spectral imager of this module: a 32 x 48 detector cut into ``bands`` bands up the detector
@@ -165,14 +181,11 @@ class Prism(sc.Instrument):
     capabilities = ('wavelength', 'spectral_axis')
 
     def geometry(self, oversample=1):
-        rows = np.arange(32) * self.bands // 32
-        cols = np.arange(48) * self.cols // 48
-        det = (rows[:, None] * self.cols + cols[None, :]).astype(np.int32)
-        axes = sc.ChunkAxes.row_major(('band', 'col'), (self.bands, self.cols), ('y', 'x'))
-        lvf = sc.ChunkMap('lvf', det, det, axes=axes, adjacency_axes=('col',), spectral_axis='band',
-                          group_axis='col')
         wave = np.broadcast_to(np.linspace(1.0, 1.5, 32, dtype=np.float32)[:, None], (32, 48)).copy()
-        return sc.Geometry((32, 48), oversample, maps=[lvf], aux={'wave': wave}, wavelength='wave')
+        return sc.Geometry((32, 48), oversample, aux={'wave': wave}, wavelength='wave')
+
+    def default_chunk_maps(self):
+        return {'lvf': sc.ChunkMap(band_columns, bands=self.bands, cols=self.cols)}
 
     def layout(self):
         return sc.ExposureLayout(sci_ext=[1], dq_ext=[2], detector_ids=[0], ref_use_ext=(1,),
@@ -186,7 +199,7 @@ class Prism(sc.Instrument):
 if __name__ != MODULE:
     sys.modules[MODULE] = sys.modules[__name__]
     for _obj in (ramp, season, bump, centred, plane, inverse_sigma, qe_map, frame_phase, night, quiet, known_sky,
-                 gains_sum_to_zero, subtract_dark, Scale, Prism):
+                 gains_sum_to_zero, subtract_dark, Scale, band_columns, Prism):
         _obj.__module__ = MODULE
 
 
@@ -250,7 +263,7 @@ def lines():
             T.line('aliphatic', 5e-3),
             sc.Sky('broad', times=sc.gaussian(3.40, width='bandwidth', intrinsic_var=2.89e-4)),
             sc.Sky('narrow', times=sc.gaussian(3.30, sigma=0.02), damping=0.0),
-            sc.Sky('pah', times=sc.catalog('pah_3p29', center=3.29)),
+            sc.Sky('pah', times=T.pah_3p29(center=3.29)),
             sc.Sky('tabulated', times=sc.template(x=[3.2, 3.3, 3.4], y=[0.0, 1.0, 0.0])),
             sc.Sky('tilt', times=sc.linear(3.3, 0.1))]
 
@@ -288,23 +301,35 @@ class Case:
     name: str
     instrument: object
     recipe: object
-    job: object = None
+    job: object = ALL
     passes: object = None
     tiles: object = None
     tile_frames: tuple = ()
 
 
+def on(model, **partition):
+    """``model`` on the SPHEREx recipes' chunk maps (:func:`maps` of ``partition``)."""
+    return model.replace(chunk_maps=maps(**partition))
+
+
+def with_readouts(model):
+    """``model`` on the channel recipes' chunk maps and the readout channels (``readout``)."""
+    return model.replace(chunk_maps={**maps(), 'readout': sc.ChunkMap(C.readouts)})
+
+
 def cases(files):
-    polybasis = sc.spectral([T.line('aromatic', 5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
-    aromatic = spherex.window('Aromatic')
+    polybasis = on(sc.spectral([T.line('aromatic', 5e-3)], polynomial=sc.Poly(2, window=range(200, 321))),
+                   num_ch=34, num_col=3)
+    aromatic = jobs.window('Aromatic')
     return [
-        # the instruments, each with its default job where it has one
-        Case('spherex_channel', sc.SPHEREx(4), sc.Recipe(sc.continuum(), name='c'), spherex.channel(17)),
-        Case('spherex_settings_window', sc.SPHEREx(3, num_col=10, calib_dir='/data/spherex/calibration',
-                                                   lvf_dir='/data/spherex/lvf'),
-             sc.Recipe(sc.continuum(), coadd=sc.Coadd(oversample=2), name='w'), aromatic),
-        Case('spherex_group_two_block', sc.SPHEREx(4), sc.Recipe(sc.two_block(), name='k2'), spherex.group(17, 18)),
-        Case('euclid', sc.Euclid(band='Y', chunks=40, strips=40), sc.Recipe(sc.continuum(), name='e')),
+        # the instruments, each with a job of its own
+        Case('spherex_channel', sc.SPHEREx(4), sc.Recipe(on(sc.continuum()), name='c'), jobs.channel(17)),
+        Case('spherex_settings_window',
+             sc.SPHEREx(3, calib_dir='/data/spherex/calibration', lvf_dir='/data/spherex/lvf'),
+             sc.Recipe(on(sc.continuum(), num_ch=34, num_col=10), coadd=sc.Coadd(oversample=2), name='w'), aromatic),
+        Case('spherex_group_two_block', sc.SPHEREx(4), sc.Recipe(with_readouts(sc.two_block('readout', 'subchannel')),
+                                                                 name='k2'), jobs.group(17, 18)),
+        Case('euclid', sc.Euclid(band='Y', chunks=40, strips=40), sc.Recipe(sc.continuum(), name='e'), sc.Job('Y')),
         Case('camera_maps', sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Toy', detector_maps={'qe': QE},
                                       headers={'temp': 'TEMP'}), sc.Recipe(sc.continuum(), name='c')),
         Case('user_instrument', Prism(), sc.Recipe(sc.continuum(), name='p')),
@@ -312,15 +337,17 @@ def cases(files):
         Case('continuum_smooth_poly', CAMERA,
              sc.Recipe(sc.continuum(smooth=0.3, poly_prior=sc.Poly(1, weight=0.5)), name='cp')),
         Case('spectral_lines', sc.SPHEREx(4),
-             sc.Recipe(sc.spectral(lines(), polynomial=sc.Poly(2, window=range(200, 321))), coadd=None,
-                       name='lines'), spherex.window('Multiline3', subchannels=range(200, 321))),
+             sc.Recipe(on(sc.spectral(lines(), polynomial=sc.Poly(2, window=range(200, 321))), num_ch=34, num_col=3),
+                       coadd=None, name='lines'), jobs.window('Multiline3', range(200, 321))),
         Case('spectral_soft_poly', sc.SPHEREx(4),
-             sc.Recipe(sc.spectral([T.line('aromatic', 5e-3)], smooth=0.2,
-                                   poly_prior=sc.Poly(3, along='subchannel', window=range(200, 321)), damping=0.05),
-                       name='soft'), spherex.window('W', subchannels=range(200, 321))),
+             sc.Recipe(on(sc.spectral([T.line('aromatic', 5e-3)], smooth=0.2,
+                                      poly_prior=sc.Poly(3, along='subchannel', window=range(200, 321)), damping=0.05),
+                          num_ch=34, num_col=3),
+                       name='soft'), jobs.window('W', range(200, 321))),
         Case('two_block_settings', sc.SPHEREx(4),
-             sc.Recipe(sc.two_block('readout', smooth=0.2, second_smooth=0.05, along='subchannel', damping=0.2),
-                       coadd=None, name='k2s'), spherex.channel(3)),
+             sc.Recipe(with_readouts(sc.two_block('readout', 'subchannel', smooth=0.2, second_smooth=0.05,
+                                                  damping=0.2)),
+                       coadd=None, name='k2s'), jobs.channel(3)),
         Case('model_with_everything', Prism(), sc.Recipe(model_with_everything(files), name='all')),
         Case('variance_weight', CAMERA, sc.Recipe(sc.Model(weight=sc.shot_noise()), name='nv')),
         Case('fit_gauge', CAMERA, sc.Recipe(sc.Model(offsets=[sc.Offsets(),
@@ -329,13 +356,15 @@ def cases(files):
                                               name='gq')),
         # the fit
         Case('fit_settings', sc.SPHEREx(4),
-             sc.Recipe(sc.continuum(), fit=sc.Fit(120, clip=sc.Clip(4.0, per=SUBCHANNEL), ignore_flags=(3, 21),
-                                                  tolerance=(1e-7, 1e-9), method='lsmr', damp=1e-6, precondition=False,
-                                                  float32=False, shot_noise_weights=True, use_mask=False,
-                                                  line_fisher_threshold=5.0, frame_hook=subtract_dark,
-                                                  raw_frame_hook=Scale(2.0)),
-                       coadd=None, name='fit'), spherex.channel(17)),
-        Case('fit_no_clip', sc.Euclid(band='H'), sc.Recipe(sc.continuum(), fit=sc.Fit(clip=None), name='nc')),
+             sc.Recipe(on(sc.continuum()),
+                       fit=sc.Fit(120, clip=sc.Clip(4.0, per=SUBCHANNEL), ignore_flags=(3, 21),
+                                  tolerance=(1e-7, 1e-9), method='lsmr', damp=1e-6, precondition=False,
+                                  float32=False, shot_noise_weights=True, use_mask=False,
+                                  line_fisher_threshold=5.0, frame_hook=subtract_dark,
+                                  raw_frame_hook=Scale(2.0)),
+                       coadd=None, name='fit'), jobs.channel(17)),
+        Case('fit_no_clip', sc.Euclid(band='H'), sc.Recipe(sc.continuum(), fit=sc.Fit(clip=None), name='nc'),
+             sc.Job('H')),
         Case('fit_clip_per_chunk', CAMERA,
              sc.Recipe(sc.continuum(), fit=sc.Fit(clip=sc.Clip(3.0, per='chunk')), coadd=None, name='pc')),
         Case('fit_clip_mapping', CAMERA,
@@ -343,8 +372,8 @@ def cases(files):
                                                                                                map='grid'))),
                        coadd=None, name='pm')),
         Case('fit_clip_edges', sc.SPHEREx(4),
-             sc.Recipe(sc.continuum(), fit=sc.Fit(clip=sc.Clip(3.0, edges=(3.2, 3.3, 3.4), variable='wavelength')),
-                       coadd=None, name='pe'), spherex.channel(17)),
+             sc.Recipe(on(sc.continuum()), fit=sc.Fit(clip=sc.Clip(3.0, edges=(3.2, 3.3, 3.4), variable='wavelength')),
+                       coadd=None, name='pe'), jobs.channel(17)),
         # the coadd and the numerics
         Case('coadd_settings', CAMERA,
              sc.Recipe(sc.continuum(), coadd=sc.Coadd(None, std=False, use_mask=False, ignore_flags=(1,),
@@ -415,7 +444,7 @@ def settings_entries(field_dir, files):
     out = {}
     for case in cases(files):
         field = sc.Field(field_dir, case.instrument, PIXEL_SCALE)
-        job = case.job or case.instrument.default_jobs()[0]
+        job = case.job
         if case.tiles is None:
             init = products.cal_inputs(field, case.recipe, job, FRAMES, passes=case.passes)
             out[f'{case.name}/cal'] = _entry(init)
@@ -466,15 +495,17 @@ def plan_entries(root):
     camera_maps = camera.replace(instrument=sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Toy', detector_maps={'qe': QE},
                                                       headers={'temp': 'TEMP'}))
     plans = [
-        ('plan camera', camera, camera.plan(sc.Recipe(sc.continuum(), name='c'))),
+        ('plan camera', camera, camera.plan(sc.Recipe(sc.continuum(), name='c'), jobs=ALL)),
         ('plan camera tiles', camera, camera.plan(
-            sc.Recipe(sc.continuum(), coadd=None, name='t'),
+            sc.Recipe(sc.continuum(), coadd=None, name='t'), jobs=ALL,
             tiles=sc.Tiles((1, 2), overlap=10, names=('W', 'E'), assign='overlap', halo=4))),
-        ('plan camera maps', camera_maps, camera_maps.plan(sc.Recipe(sc.continuum(), coadd=None, name='m'))),
-        ('plan euclid', euclid, euclid.plan(sc.Recipe(sc.continuum(), name='e'))),
-        ('plan prism passes', prism, prism.plan(sc.Recipe(SPECTRAL, coadd=None, name='np'), passes=sc.Passes(3))),
+        ('plan camera maps', camera_maps, camera_maps.plan(sc.Recipe(sc.continuum(), coadd=None, name='m'), jobs=ALL)),
+        ('plan euclid', euclid, euclid.plan(sc.Recipe(sc.continuum(), name='e'), jobs=sc.Job('J'))),
+        ('plan prism passes', prism, prism.plan(sc.Recipe(SPECTRAL, coadd=None, name='np'), jobs=ALL,
+                                                passes=sc.Passes(3))),
         ('plan prism tiles passes', prism, prism.plan(
-            sc.Recipe(SPECTRAL, coadd=None, name='tp'), passes=sc.Passes(4, order='sky_first', sky_merge='stitch'),
+            sc.Recipe(SPECTRAL, coadd=None, name='tp'), jobs=ALL,
+            passes=sc.Passes(4, order='sky_first', sky_merge='stitch'),
             tiles=sc.Tiles(boxes={'north': (0, 70, 0, 160), 'south': (50, 120, 0, 160)}))),
     ]
     out = {}

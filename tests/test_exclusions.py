@@ -8,6 +8,8 @@ import scipy.sparse as sp
 import selfcal as sc
 from selfcal.core.projector import ColumnProjector
 from selfcal.core.solve import apply_lsqr
+from selfcal.models.spec import ModelSpec
+from selfcal.run.engine import chunk_map_specs, with_chunk_maps
 
 from test_deflation import _shared_system  # noqa: E402  (the toy: per-frame chunk offsets + columns shared by every frame)
 
@@ -118,7 +120,7 @@ def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
                + grad[k, 0] * gx + grad[k, 1] * gy + rng.normal(0, 1.0) + rng.normal(0, 0.01, (H, W)))
         write_exposure(tmp_path / 'exposures' / f'toy_exp_{k:03d}.fits', img, ox, oy, {'TEMP': temp[k]})
     cam = sc.Camera((H, W), chunks=CHUNKS, tag='Toy')
-    axes = cam.geometry(1).chunk_map.axes
+    axes = with_chunk_maps(cam.geometry(1), chunk_map_specs(cam, ModelSpec())).chunk_map.axes   # its default map's
     along = axes.names[1]                                                 # the chunk columns
     field = sc.Field(tmp_path / 'toy_run', cam, PIX, compute=TWO_WORKERS)
     field.reproject(tmp_path / 'exposures' / 'toy_exp_*.fits', method='interp', padding=8)
@@ -127,7 +129,7 @@ def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
                               sc.Offsets('gradient', on='detector', basis=plane, n=2),
                               sc.Offsets('scalar', on='detector')],
                      variables={'temperature': sc.Header('TEMP')})
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=sc.Job('All'))
     with result.cal() as cal:
         got = np.asarray(cal.offsets[0][0], dtype=np.float64).reshape(ny, nx)
     t = np.linspace(-1, 1, nx)

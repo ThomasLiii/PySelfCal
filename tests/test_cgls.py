@@ -222,6 +222,7 @@ def test_the_settings():
 
 # =================================================================== through the API
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 @pytest.fixture(scope='module')
@@ -243,11 +244,11 @@ def _recipe(iterations=30, name='c', **fit):
 
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')
 def test_a_default_calibration_runs_cgls_and_matches_lsqr(field):
-    (job,) = field.instrument.default_jobs()
-    book = lambda r: field.plan(r).book.cal(job, field.frames)          # noqa: E731
+    job = ALL
+    book = lambda r: field.plan(r, jobs=ALL).book.cal(job, field.frames)          # noqa: E731
     assert book(_recipe(30, name='same')) != book(_recipe(30, name='same', method='lsqr'))
-    cal_c = field.calibrate(_recipe(60, name='c60')).cal_paths[0]
-    cal_l = field.calibrate(_recipe(60, name='l60', method='lsqr')).cal_paths[0]
+    cal_c = field.calibrate(_recipe(60, name='c60'), jobs=ALL).cal_paths[0]
+    cal_l = field.calibrate(_recipe(60, name='l60', method='lsqr'), jobs=ALL).cal_paths[0]
     with CalFile(cal_c) as c, CalFile(cal_l) as l:
         assert c.solve['method'] == 'cgls' and l.solve['method'] == 'lsqr'
         sc_, sl = np.nan_to_num(np.asarray(c.sky(0), dtype=np.float64)), np.nan_to_num(np.asarray(l.sky(0), dtype=np.float64))
@@ -255,7 +256,7 @@ def test_a_default_calibration_runs_cgls_and_matches_lsqr(field):
     d = (sc_ - sl)[covered]
     assert np.sqrt(np.mean((d - d.mean()) ** 2)) < 1e-3 * np.std(sl[covered])
     # a long solve stays at the solution
-    cal_long = field.calibrate(_recipe(300, name='c300')).cal_paths[0]
+    cal_long = field.calibrate(_recipe(300, name='c300'), jobs=ALL).cal_paths[0]
     with CalFile(cal_long) as c:
         s300 = np.nan_to_num(np.asarray(c.sky(0), dtype=np.float64))
     d = (s300 - sc_)[covered]

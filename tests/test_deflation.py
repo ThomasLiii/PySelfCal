@@ -478,6 +478,7 @@ def test_the_space_is_orthonormal_and_diagonalises_the_normal_matrix():
 
 # =================================================================== through the API
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def _recipe(iterations=30, name='d', **fit):
@@ -500,15 +501,15 @@ def field():
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')
 def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     import logging
-    (job,) = field.instrument.default_jobs()
-    book = lambda r: field.plan(r).book.cal(job, field.frames)          # noqa: E731
+    job = ALL
+    book = lambda r: field.plan(r, jobs=ALL).book.cal(job, field.frames)          # noqa: E731
     plain, deflated = _recipe(20, name='same'), _recipe(20, name='same', deflate=sc.Deflate(2))
     assert book(plain) != book(deflated)                    # the setting is part of the fingerprint when given
     assert book(plain) == book(_recipe(20, name='same', deflate=None))
     assert 'deflate     14 patterns (cosine, order 2) of every sky term' in str(field.plan(
-        _recipe(20, name='d1', deflate=sc.Deflate(2))))
+        _recipe(20, name='d1', deflate=sc.Deflate(2)), jobs=ALL))
     with caplog.at_level(logging.INFO, logger='selfcal'):
-        res = field.calibrate(_recipe(20, name='d1', deflate=sc.Deflate(2)), monitor=sc.Monitor(5))
+        res = field.calibrate(_recipe(20, name='d1', deflate=sc.Deflate(2)), monitor=sc.Monitor(5), jobs=ALL)
     assert 'Deflation: ' in caplog.text and 'directions solved directly' in caplog.text and 'off |b|^2' in caplog.text
     cal = res.cal_paths[0]
     with h5py.File(cal, 'r') as f:
@@ -520,7 +521,7 @@ def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     assert entry['deflation']['patterns'] == 14 and entry['deflation_s'] >= 0
     # closer to the converged sky than plain iterations, and still there far past convergence
     def sky(recipe):
-        with CalFile(field.calibrate(recipe).cal_paths[0]) as c:
+        with CalFile(field.calibrate(recipe, jobs=ALL).cal_paths[0]) as c:
             return np.nan_to_num(np.asarray(c.sky(0), dtype=np.float64))
 
     ref = sky(_recipe(300, name='ref64', float32=False))

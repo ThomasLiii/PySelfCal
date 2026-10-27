@@ -8,7 +8,7 @@ rows in chunk 0 when ``n`` did not divide the detector (a 10 x 10 detector with
 import numpy as np
 
 from selfcal.geometry.map_helper import make_grid_chunk_map
-from selfcal.instruments.camera import Camera
+from selfcal.instruments.camera import Camera, grid_chunks
 from selfcal.instruments.grid import rect_grid_chunk_map
 
 
@@ -48,7 +48,10 @@ def test_rect_grid_matches_square_and_any_size():
 
 
 def test_camera_chunk_count():
-    cm = Camera((10, 10), chunks=(4, 4)).geometry(1).chunk_map
+    camera = Camera((10, 10), chunks=(4, 4))
+    (default,) = camera.default_chunk_maps().values()
+    assert default.fn is grid_chunks and default.params == {'chunks': (4, 4)} and default.tag == 'Chunks4x4'
+    cm = grid_chunks(camera.geometry(1), (4, 4))
     assert cm.n_chunks == 16 and len(np.unique(cm.det)) == 16
 
 

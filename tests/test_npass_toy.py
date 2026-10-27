@@ -3,7 +3,8 @@
 The instrument: a 64 x 64 detector cut into 16 bands (the spectral axis of the chunk map, 4 rows
 each) x 2 columns (the group axis), with a wavelength map rising smoothly up the detector (and
 curving a little across it): an ``sc.Instrument`` subclass whose geometry is :func:`toy_geometry`
-(everything else is the contract's defaults).
+and whose default chunk map is :func:`toy_band_columns` (everything else is the contract's
+defaults); the run's job is every chunk, ``sc.Job('All')``.
 
 The data: 20 frames written directly on a 96 x 96 reference grid (no reprojection), each the sky
 ``S_0 + S_1 * gauss(wavelength)`` (a continuum and one line) seen at a random pointing, plus a
@@ -84,26 +85,30 @@ def toy_chunk_ids():
     return (rows[:, None] * N_COL + cols[None, :]).astype(np.int32)
 
 
-def toy_geometry(oversample):
-    """The detector geometry: one chunk map whose axes are the band (spectral) and the column
-    (group), the wavelength map and a constant width map."""
-    det = toy_chunk_ids()
+def toy_band_columns(geometry):
+    """The chunk map (:func:`toy_chunk_ids`): its axes are the band (spectral) and the column (group)."""
     axes = sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x'))
-    lvf = sc.ChunkMap('lvf', det, det, axes=axes, adjacency_axes=('col',), spectral_axis='band',
-                      group_axis='col')
-    return sc.Geometry((DET, DET), oversample, maps=[lvf],
+    return sc.Chunks(toy_chunk_ids(), axes, adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+
+
+def toy_geometry(oversample):
+    """The detector geometry: the wavelength map and a constant width map."""
+    return sc.Geometry((DET, DET), oversample,
                        aux={'wave': toy_wavelength(), 'width': np.full((DET, DET), 0.02, np.float32)},
                        wavelength='wave', width='width')
 
 
 @dataclass(frozen=True, kw_only=True)
 class ToySpectrograph(sc.Instrument):
-    """The geometry; jobs, layout, job geometry and frame variables are the contract's defaults."""
+    """The geometry and its chunk map; layout, job geometry and frame variables are the contract's defaults."""
     tag: str = TAG
     capabilities = ('wavelength', 'spectral_axis')
 
     def geometry(self, oversample=1):
         return toy_geometry(oversample)
+
+    def default_chunk_maps(self):
+        return {'lvf': sc.ChunkMap(toy_band_columns)}
 
 
 # ============================================================================
@@ -283,7 +288,7 @@ def test_npass_schedule(toy, schedule):
     expected += [f'{stem}_pass{i}off_all.h5' for i, t in enumerate(schedule.pass_types, start=2) if t == 'off']
 
     field = sc.Field(field_dir, ToySpectrograph(), PIX)
-    result = field.calibrate(schedule.recipe, passes=schedule.passes,
+    result = field.calibrate(schedule.recipe, jobs=sc.Job('All'), passes=schedule.passes,
                              compute=sc.Compute(os.path.join(root, f'scratch_py_{schedule.name}'), workers=2, stage=None))
     assert sorted(result.passes) == list(range(1, schedule.passes.n + 1))
     cal_dir = os.path.join(field_dir, 'calibration')
