@@ -115,7 +115,11 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 - **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
   `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
   `sc.two_block(second="readout")`; `spherex.line("aromatic", damping=5e-3)` is a sky term with
-  a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
+  a shipped line template; `spherex.frame_slope()` is a per-frame gradient along detector x per
+  subchannel, and `spherex.spectral_offsets(subchannels)` a per-frame offset continuous across the
+  job's subchannels (hat functions of the position across the LVF arcs, the variable
+  `arc_position`: `variables={"arc_position": sc.DetectorMap(spherex.arc_position)}`), in place of
+  per-subchannel constants. `sc.continuum` and `sc.spectral` end their offset terms with the
   per-frame scalar; `sc.two_block` has none. A preset is a plain function that returns a `Model`;
   a calibration variant of your own is one too, or the `Model` itself.
 
