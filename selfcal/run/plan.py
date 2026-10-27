@@ -2,7 +2,7 @@
 
 ``field.plan(recipe, jobs=...)`` (and every action, first) lowers the settings onto the engine
 (:class:`~selfcal.run.runspec.RunSpec`), resolves each engine run (the instrument's geometry, the
-model checked against it: data variables, chunk maps and axes, catalogue entries, prior terms),
+model checked against it: data variables, chunk maps and axes, prior terms),
 finds the frames and the existing products, and checks that the worker processes can import
 every function the run sends them. It takes seconds and computes nothing; printing the plan shows
 what the action will do. The action then runs on the plan's resolved runs (:attr:`Plan.contexts`).

@@ -18,7 +18,7 @@ tilings of [`selfcal_scripts/recipes/`](selfcal_scripts/recipes/):
 ./selfcal_scripts/run.sh selfcal_scripts/runs/<run>.py --dry-run   # the plan only (selfcal plan)
 ```
 
-The knobs below are named by the Python settings that carry them (`sc.SPHEREx`, `sc.Offsets`,
+The knobs below are named by the Python settings that carry them (`sc.ChunkMap`, `sc.Offsets`,
 `sc.Sky`, `sc.Fit`, `sc.Coadd`, `sc.Numerics`, `sc.Compute`, `sc.Tuning`, `sc.Tiles`, `sc.Passes`)
 and, where it helps, by the keyword of the library call they reach (`Calibrator.setup_lsqr`,
 `apply_lsqr`, `Mosaicker.make_mosaic`). TOML run configs are no longer run;
@@ -47,7 +47,9 @@ For `sc.continuum` (K=2: the primary chunk map, then `"detector"`) the model is 
 
 ## Calibration pipeline tuning
 
-Chunk geometry (`sc.SPHEREx(detector, num_sub=, num_ch=, num_col=)`):
+Chunk geometry (the model's SPHEREx subchannel map, `chunks.subchannel_map(num_sub=, num_ch=, num_col=)`
+of [`selfcal_scripts/spherex/chunks.py`](selfcal_scripts/spherex/chunks.py), which `maps(num_sub=,
+num_ch=, num_col=)` of the recipes names with the detector-column map):
 
 - `num_sub`, `num_ch` (`NumSub`, `NumCh` in the product names) — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
@@ -437,16 +439,18 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   elements). Each element depends only on its own inputs, so the split is
   bit-identical; the reductions (norms) stay one ordered pass.
 
-`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from the instrument's `offset_renderer` (`sc.Offsets(render=)` chooses among them). A frame's chunk whose coverage fraction (`offset_coverage_frac`, over the chunk's pixels inside the solve's window) is below `valid_chunk_thresh` (`sc.Coadd(min_chunk_coverage=)`) has its offset zeroed. A renderer with a true attribute `fills_invalid` (the SPHEREx primary renderer, `make_spherex_stripped_offset_map`, and the Euclid grid spline) fills it from the frame's other chunks of that map; a zeroed chunk with a fraction above 0 that nothing fills (another renderer, or a frame with no chunk of the map above the threshold) is left out of the coadd: its pixels in that frame get no weight. A chunk of fraction 0 (no pixel inside the solve's window) keeps its zero offset.
+`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from its chunk map (`sc.Chunks(renderers=, render=)`; `sc.Offsets(render=)` chooses among them). A frame's chunk whose coverage fraction (`offset_coverage_frac`, over the chunk's pixels inside the solve's window) is below `valid_chunk_thresh` (`sc.Coadd(min_chunk_coverage=)`) has its offset zeroed. A renderer with a true attribute `fills_invalid` (the SPHEREx subchannel map's renderer, `make_spherex_stripped_offset_map`, and the Euclid grid spline) fills it from the frame's other chunks of that map; a zeroed chunk with a fraction above 0 that nothing fills (another renderer, or a frame with no chunk of the map above the threshold) is left out of the coadd: its pixels in that frame get no weight. A chunk of fraction 0 (no pixel inside the solve's window) keeps its zero offset.
 
-**Channel / window selection** is the action's `jobs=`: `spherex.channel(17)` (one
-channel), `spherex.channels(1, 34)` (one job per channel), `spherex.group(17, 18)` (one
-map over several channels), `spherex.window("Aromatic")` / `spherex.window("Aliphatic")`
-(the named subchannel windows 225–235 / 249–259, covering the PAH bands), or
-`spherex.window(name, subchannels=range(lo, hi))` (an explicit subchannel range, e.g.
-the PAHfit windows `range(210, 250)` / `range(200, 260)`). The SPHEREx product tag is
-`Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}`, so cal filenames are deterministically
-`cal_{tag}_{job}_{name}.h5` (job = `Ch<n>` or the window name; `name` the recipe's).
+**Channel / window selection** is the action's `jobs=`, built by
+[`selfcal_scripts/spherex/jobs.py`](selfcal_scripts/spherex/jobs.py) on the `subchannel` axis of
+the primary map: `jobs.channel(17)` (one channel), `jobs.channels(1, 34)` (one job per channel),
+`jobs.group(17, 18)` (one map over several channels), `jobs.window("Aromatic")` /
+`jobs.window("Aliphatic")` (the named subchannel windows 225–235 / 249–259, covering the PAH
+bands), or `jobs.window(name, range(lo, hi))` (an explicit subchannel range, e.g. the PAHfit
+windows `range(210, 250)` / `range(200, 260)`). The SPHEREx product tag is the instrument's
+`Detector{D}` followed by the primary map's tag, `NumSub{S}_NumCh{C}_NumCol{Co}`, so cal filenames
+are deterministically `cal_Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}_{job}_{name}.h5` (job = `Ch<n>`
+or the window name; `name` the recipe's).
 
 ## Advanced Calibrator solve modes
 
@@ -465,7 +469,8 @@ parentheses):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — `sc.two_block(second="readout")`).
+  stripes — `sc.two_block(second="readout", along="subchannel")` on a model whose chunk maps
+  include `"readout"`, `chunks.readouts` of `selfcal_scripts/spherex/chunks.py`).
 - **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
   `det_groups_list[m]` also. Fixes the spatial pattern from a
   previously-solved `(num_groups, num_chunks_m)` template and solves only

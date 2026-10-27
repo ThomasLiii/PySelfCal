@@ -16,6 +16,8 @@ import os
 
 import numpy as np
 
+from .products import job_key
+
 __all__ = ['engine_view', 'diff']
 
 N_FRAMES = 137          # frames of the probe frame list the offset model is lowered over
@@ -164,7 +166,7 @@ def engine_view(spec):
         jg = ctx.job_geometry(job0)
         frames = [f'/probe/exp_{i:04d}_det_{i % 16:02d}.h5' for i in range(N_FRAMES)]
         om = ctx.offset_model(frames)
-    view['jobs'] = _canon([(j.name, j.kind, j.value) for j in jobs])
+    view['jobs'] = _canon([job_key(j) for j in jobs])
     view['frame_tag'] = ctx.frame_tag
     view['unit'] = ctx.unit
     view['run'] = [spec.output_dir and os.path.join(spec.output_dir, spec.run_name), spec.resolution_arcsec]

@@ -1,24 +1,11 @@
-"""Helpers of the SPHEREx geometry: the named subchannel windows and the readout-channel map.
+"""Helpers of the SPHEREx geometry: the detector-column and readout-channel maps.
 
-Everything SPHEREx-LVF-specific of a run (the stripped (arc) chunk map and its ``(subchannel,
-column)`` chunk axes, the H2RG readout-channel map, the BC/BW wavelength maps, a job's subchannel
-masks, the smooth arc offset renderer, the LVF wavelength coadd, the FINAST astrometry filter) is
-the contract of :class:`~selfcal.instruments.spherex.settings.SPHEREx`; it builds its chunk maps
-with these.
+The chunk maps a model solves on are built from these by the model side (``selfcal_scripts/spherex/chunks.py``);
+the LVF arc maps and their renderer are in :mod:`~selfcal.instruments.spherex.spherex_utility`.
 """
 from __future__ import annotations
 
 import numpy as np
-
-# Named subchannel windows -> (inclusive-low, exclusive-high) subch index range.
-# Aromatic/Aliphatic are stable; the PAH-fit window is run-dependent (different
-# production runs have chosen different subchannel ranges), so it is NOT a
-# global preset — such runs give the window's subchannels explicitly
-# (spherex.window(name, subchannels=range(lo, hi))).
-SUBCH_WINDOWS = {
-    'Aromatic': (225, 236),
-    'Aliphatic': (249, 260),
-}
 
 
 def make_column_chunk_map(det_shape=(2040, 2040)):

@@ -187,11 +187,11 @@ def _instrument(field):
 
 
 def job_key(job) -> dict:
-    """A job (the API's or the engine's) as plain data."""
-    value = job.value
-    if isinstance(value, (list, tuple)):
-        value = [int(v) if isinstance(v, (int, np.integer)) else v for v in value]
-    return {'name': job.name, 'kind': job.kind, 'value': value}
+    """A job as plain data: its name and, per axis, the ``[start, stop]`` of its window and of its
+    strict set (None: every chunk / the window)."""
+    def ranges(sel):
+        return None if sel is None else {str(k): [int(r.start), int(r.stop)] for k, r in sel.items()}
+    return {'name': job.name, 'window': ranges(job.window), 'strict': ranges(job.strict)}
 
 
 def solve_fit(recipe, passes=None, instrument=None):

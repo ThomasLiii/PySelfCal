@@ -2,8 +2,10 @@
 
 :class:`Euclid` implements the instrument contract
 (:class:`~selfcal.instruments.contract.Instrument`): the exposure layout of 16 detectors per
-file, the grid, stripe and tilt chunk maps, the optional detector-edge taper and the mosaic
-renderers (the helpers are in :mod:`~selfcal.instruments.euclid.adapter`).
+file, the optional detector-edge taper, and the default chunk maps a model gets when it names
+none: the square grid (:func:`grid_cells`), the row and column stripes (:func:`strips`) and the
+tilted stripes (:func:`tilt_strips`), each with its mosaic renderers (the helpers are in
+:mod:`~selfcal.instruments.euclid.adapter`).
 """
 from __future__ import annotations
 
@@ -15,10 +17,10 @@ import numpy as np
 
 from ...config.base import ConfigError
 from ...geometry.map_helper import make_grid_chunk_map
+from ...models.model import ChunkMap
 from ...models.offset_structure import ChunkAxes
-from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
-from ..contract import Instrument, Job
-from ..grid import upsample_chunk_map
+from ..base import Chunks, ExposureLayout, JobGeometry
+from ..contract import Geometry, Instrument
 from . import conventions as ec
 from .adapter import (
     _strip_axes,
@@ -29,17 +31,75 @@ from .adapter import (
     make_strip_offset_map,
 )
 
-__all__ = ['Euclid']
+__all__ = ['Euclid', 'grid_cells', 'strips', 'tilt_strips']
+
+
+# ---- the mosaic renderers of the maps: make(chunks, jobgeom) -> renderer(chunk_map, offsets) -> image
+def _spline(chunks, jobgeom):
+    """A mean-preserving 2-D spline through the cells' offsets
+    (:func:`~selfcal.instruments.euclid.adapter.make_grid_offset_map`); zeroed cells are filled from
+    their neighbours."""
+    renderer = partial(make_grid_offset_map, n_side=chunks.extra['n_side'], det_shape=chunks.extra['det_shape'])
+    renderer.fills_invalid = True
+    return renderer
+
+
+def _strip(chunks, jobgeom):
+    """Constant over each strip (:func:`~selfcal.instruments.euclid.adapter.make_free_strip_offset_map`)."""
+    return partial(make_free_strip_offset_map, det_shape=chunks.extra['det_shape'])
+
+
+def _ramp(chunks, jobgeom):
+    """A line fitted to the strip values along the strips' scan direction
+    (:func:`~selfcal.instruments.euclid.adapter.make_strip_offset_map`)."""
+    return partial(make_strip_offset_map, axis=1 if chunks.extra['scan'] == 'x' else 0,
+                   det_shape=chunks.extra['det_shape'])
+
+
+# ---- the chunk maps
+def grid_cells(geometry, n) -> Chunks:
+    """``n x n`` square cells (chunk id ``row * n + col``) with the axes ``row`` and ``col``,
+    regularised along both by default, ``row`` the group axis; when ``n`` does not divide the
+    detector side (40 and 60 divide 2040), the cell sides differ by at most one pixel
+    (:func:`~selfcal.geometry.map_helper.make_grid_chunk_map`). Rendered by ``spline`` (the
+    default) or constant over each cell."""
+    n = int(n)
+    det = make_grid_chunk_map(tuple(geometry.shape), n)                     # int64, chunk = row * n + col
+    return Chunks(det, ChunkAxes.row_major(('row', 'col'), (n, n), ('y', 'x')), adjacency_axes=('row', 'col'),
+                  spectral_axis=None, group_axis='row', renderers={'spline': _spline}, render='spline',
+                  extra={'n_side': n, 'det_shape': tuple(geometry.shape)})
+
+
+def strips(geometry, n, scan) -> Chunks:
+    """``n`` strips across the detector, vertical ones (``scan='x'``: columns, for the per-frame
+    readout stripes) or horizontal ones (``'y'``), with the axes ``strip`` and ``all`` (a single
+    group) and no default adjacency. Rendered by ``strip`` (constant over each strip, the default)
+    or ``ramp`` (a line along the scan direction)."""
+    n = int(n)
+    xs, ys = make_strip_chunk_maps(n, tuple(geometry.shape))
+    return Chunks(xs if scan == 'x' else ys, _strip_axes(n, scan), group_axis='all',
+                  renderers={'strip': _strip, 'ramp': _ramp}, render='strip',
+                  extra={'scan': scan, 'det_shape': tuple(geometry.shape)})
+
+
+def tilt_strips(geometry, n, scan) -> Chunks:
+    """:func:`strips` whose ``strip`` axis is the spectral axis, so that a degree-1 ``polybasis``
+    term on one is a single linear ramp per frame; rendered by ``ramp`` (the default) or
+    ``strip``."""
+    cm = strips(geometry, n, scan)
+    return Chunks(cm.det, cm.axes, group_axis='all', spectral_axis='strip', renderers=cm.renderers, render='ramp',
+                  extra=cm.extra)
 
 
 @dataclass(frozen=True)
 class Euclid(Instrument):
     """Euclid NISP: ``detectors`` detectors of ``det_shape`` pixels per exposure, in the photometric
-    ``band``. Chunk maps: a square grid of ``chunks`` x ``chunks`` (primary), row and column stripes
-    of ``strips`` (default ``chunks``) and tilted stripes of ``tilt_strips``; detector edges are
-    zeroed over ``edge_zero_px`` and tapered over ``edge_ramp_px``. ``reference_ext``: the
-    extensions whose WCS define the reference grid. ``tag``: the products' tag (with the band:
-    ``cal_EDFN_Y<suffix>.h5``). One job, named after the band."""
+    ``band``. Its default chunk maps: a square grid of ``chunks`` x ``chunks`` (``grid``, primary),
+    row and column stripes of ``strips`` (default ``chunks``; ``col_strips``, ``row_strips``) and
+    tilted stripes of ``tilt_strips`` (``col_tilt``, ``row_tilt``); detector edges are zeroed over
+    ``edge_zero_px`` and tapered over ``edge_ramp_px``. ``reference_ext``: the extensions whose WCS
+    define the reference grid. ``tag``: the products' tag (with the band as the job's name:
+    ``cal_EDFN_Y<suffix>.h5``)."""
     _: KW_ONLY
     band: Literal['Y', 'J', 'H'] = 'Y'
     chunks: int = 40
@@ -69,15 +129,8 @@ class Euclid(Instrument):
     def product_tag(self) -> str:
         return self.tag
 
-    def default_jobs(self):
-        return (Job(self.band),)
-
     def default_ignore_flags(self):
         return tuple(ec.DQ_IGNORE)
-
-    def check_jobs(self, jobs):
-        if len(jobs) != 1 or jobs[0].name != self.band:
-            raise ConfigError(f"Euclid: one job, the band ({self.band!r}); got {[getattr(j, 'name', j) for j in jobs]}")
 
     # ---- the contract -------------------------------------------------------------------
     def layout(self) -> ExposureLayout:
@@ -99,48 +152,21 @@ class Euclid(Instrument):
             cache_tag=f"euclid_{self.band}",
             default_ignore_bits=tuple(ec.DQ_IGNORE))
 
-    def geometry(self, oversample=1) -> DetectorGeometry:
-        """Return the five chunk maps of a NISP detector, the square ``grid`` being primary.
+    def geometry(self, oversample=1):
+        """The detector: ``det_shape`` pixels (default 2040 x 2040), no aux maps (the sky is
+        broadband)."""
+        return Geometry(tuple(int(v) for v in self.det_shape), oversample)
 
-        - ``grid``: ``chunks`` x ``chunks`` square cells (default 40; chunk id
-          ``row * chunks + col``) with the axes ``row`` and ``col``, regularised along
-          both by default. When ``chunks`` does not divide the detector side (40 and
-          60 divide 2040), the cell sides differ by at most one pixel
-          (:func:`~selfcal.geometry.map_helper.make_grid_chunk_map`).
-        - ``col_strips`` / ``row_strips``: ``strips`` (default ``chunks``) vertical /
-          horizontal strips, for the per-frame readout stripes.
-        - ``col_tilt`` / ``row_tilt``: ``tilt_strips`` (default 60) strips whose
-          ``strip`` axis is the spectral axis, so that a degree-1 ``polybasis`` term
-          on one is a single linear ramp per frame.
-
-        The strip maps have the axes ``strip`` and ``all`` (a single group) and no
-        default adjacency. The maps are ``int64``. The detector is ``det_shape`` pixels
-        (default 2040 x 2040); each map is also built on the reference grid, every detector
-        pixel replicated into an ``oversample`` x ``oversample`` block. There are no aux maps
-        (the sky is broadband); ``extra`` holds ``n_side``, ``n_strips``, ``n_tilt`` and
-        ``det_shape`` for the renderers."""
-        det_shape = tuple(int(v) for v in self.det_shape)
-        n = int(self.chunks)
-        n_strips = int(self.strips if self.strips is not None else n)
-        n_tilt = int(self.tilt_strips)
-        o = int(oversample)
-        grid = make_grid_chunk_map(det_shape, n)                     # int64, chunk = row * n + col
-        maps = {'grid': ChunkMap(name='grid', det=grid, grid=upsample_chunk_map(grid, o),
-                                 axes=ChunkAxes.row_major(('row', 'col'), (n, n), ('y', 'x')),
-                                 adjacency_axes=('row', 'col'), spectral_axis=None, group_axis='row')}
-        xs, ys = make_strip_chunk_maps(n_strips, det_shape)
-        maps['col_strips'] = ChunkMap(name='col_strips', det=xs, grid=upsample_chunk_map(xs, o),
-                                      axes=_strip_axes(n_strips, 'x'), group_axis='all')
-        maps['row_strips'] = ChunkMap(name='row_strips', det=ys, grid=upsample_chunk_map(ys, o),
-                                      axes=_strip_axes(n_strips, 'y'), group_axis='all')
-        xt, yt = make_strip_chunk_maps(n_tilt, det_shape)
-        maps['col_tilt'] = ChunkMap(name='col_tilt', det=xt, grid=upsample_chunk_map(xt, o),
-                                    axes=_strip_axes(n_tilt, 'x'), spectral_axis='strip', group_axis='all')
-        maps['row_tilt'] = ChunkMap(name='row_tilt', det=yt, grid=upsample_chunk_map(yt, o),
-                                    axes=_strip_axes(n_tilt, 'y'), spectral_axis='strip', group_axis='all')
-        return DetectorGeometry(shape=det_shape, chunk_maps=maps, primary='grid',
-                                extra={'n_side': n, 'n_strips': n_strips, 'n_tilt': n_tilt,
-                                       'det_shape': det_shape})
+    def default_chunk_maps(self):
+        """The five maps of a NISP detector, the square ``grid`` primary: ``grid``
+        (:func:`grid_cells` of ``chunks``), ``col_strips`` / ``row_strips`` (:func:`strips` of
+        ``strips``) and ``col_tilt`` / ``row_tilt`` (:func:`tilt_strips` of ``tilt_strips``)."""
+        n_strips = int(self.strips if self.strips is not None else self.chunks)
+        return {'grid': ChunkMap(grid_cells, n=int(self.chunks)),
+                'col_strips': ChunkMap(strips, n=n_strips, scan='x'),
+                'row_strips': ChunkMap(strips, n=n_strips, scan='y'),
+                'col_tilt': ChunkMap(tilt_strips, n=int(self.tilt_strips), scan='x'),
+                'row_tilt': ChunkMap(tilt_strips, n=int(self.tilt_strips), scan='y')}
 
     def job_geometry(self, geom, job) -> JobGeometry:
         """Return the job's pixel weights: 1 everywhere, or an optional taper at the detector edges.
@@ -163,41 +189,3 @@ class Euclid(Instrument):
         n = geom.chunk_map.n_chunks
         return JobGeometry(det_valid_weight=det_w, grid_valid_weight=grid_w,
                            chunk_valid=np.ones(n, dtype=bool), chunk_valid_strict=np.ones(n, dtype=bool))
-
-    def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
-        """Return the function that draws one chunk map's offsets for the mosaic, or ``None``.
-
-        The mosaic calls it per frame as ``renderer(chunk_map, offsets)`` and
-        subtracts the image it returns. ``render`` (an offset term's ``render``)
-        picks the renderer; when it is ``None`` the map does (``map_name=None`` is the
-        primary map, ``grid``):
-
-        - ``'spline'``, the default for ``grid``:
-          :func:`~selfcal.instruments.euclid.adapter.make_grid_offset_map`, a
-          mean-preserving 2-D spline;
-        - ``'strip'``, the default for ``col_strips`` / ``row_strips``:
-          :func:`~selfcal.instruments.euclid.adapter.make_free_strip_offset_map`, constant
-          over each strip;
-        - ``'ramp'``, the default for ``col_tilt`` / ``row_tilt``:
-          :func:`~selfcal.instruments.euclid.adapter.make_strip_offset_map`, a line fitted
-          to the strip values, along x for a map whose name starts with ``col`` and along y
-          otherwise;
-        - ``'constant'``, or a map with no default: ``None``, which the mosaic renders
-          constant over each chunk.
-
-        Any other ``render`` raises ``ValueError``; ``jobgeom`` is not read."""
-        det_shape = geom.extra['det_shape']
-        name = map_name or geom.primary
-        render = render or {'grid': 'spline', 'col_strips': 'strip', 'row_strips': 'strip',
-                            'col_tilt': 'ramp', 'row_tilt': 'ramp'}.get(name)
-        if render == 'spline':
-            renderer = partial(make_grid_offset_map, n_side=geom.extra['n_side'], det_shape=det_shape)
-            renderer.fills_invalid = True                 # zeroed grid cells filled from their neighbours
-            return renderer
-        if render == 'strip':
-            return partial(make_free_strip_offset_map, det_shape=det_shape)
-        if render == 'ramp':
-            return partial(make_strip_offset_map, axis=1 if name.startswith('col') else 0, det_shape=det_shape)
-        if render in (None, 'constant'):
-            return None
-        raise ValueError(f"unknown renderer {render!r} for map {name!r} (spline | strip | ramp | constant)")

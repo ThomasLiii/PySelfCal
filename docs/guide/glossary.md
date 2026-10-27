@@ -41,8 +41,8 @@ lists its datasets. See
 SPHEREx: one of the `num_ch` wavelength bands across a detector, each `num_sub`
 [subchannels](#subchannel) wide. Its edges come from the 17 channels per detector of the SPHEREx
 channel table, interpolated (`num_ch` must be a multiple of 17; 34 splits each table channel in
-two). Channels are numbered from 1 and are the usual SPHEREx jobs (`jobs=spherex.channel(n)` or
-`spherex.channels(first, last)`; job name `Ch<n>`).
+two). Channels are numbered from 1 and are the usual SPHEREx jobs (`jobs=jobs.channel(n)` or
+`jobs.channels(first, last)`, `selfcal_scripts/spherex/jobs.py`; job name `Ch<n>`).
 
 ## CGLS { #cgls }
 
@@ -70,8 +70,10 @@ term). See [Chunk maps and chunk axes](concepts.md#chunk-maps-and-chunk-axes).
 ## Chunk map { #chunk-map }
 
 An integer image on the detector grid whose value at each pixel is the id of its chunk (`-1`: no
-chunk). An instrument defines one or more by name ([`ChunkMap`][selfcal.instruments.base.ChunkMap])
-and marks one as primary; the name `"detector"` makes the whole detector one chunk. Examples: a
+chunk). The model names one or more ([`ChunkMap`][selfcal.models.model.ChunkMap], a function of the
+detector geometry that returns a [`Chunks`][selfcal.instruments.base.Chunks]), the first one
+primary; a model that names none gets the instrument's default maps. The name `"detector"` makes
+the whole detector one chunk. Examples: a
 camera's rectangles, the SPHEREx `subchannel` arcs cut into columns, the Euclid stripes. See
 [Chunk maps and chunk axes](concepts.md#chunk-maps-and-chunk-axes).
 
@@ -85,9 +87,8 @@ To combine the corrected frames into one map, pixel by pixel, as weighted means;
 A known function of data variables that multiplies a term: `c_j(v)` of a sky term
 (`sc.Sky(times=...)`), `φ(v)` of an offset term (`sc.Offsets(times=...)`). It is any importable
 Python function whose parameters name the variables it reads (or `sc.Function(fn, of=...,
-**params)`), a built-in shape (`sc.template(file)`, a tabulated function; `sc.gaussian`;
-`sc.linear`), or a named coefficient of the instrument (SPHEREx: `sc.catalog("pah_3p29")`). A term
-without one has `c = 1`. See [The model](concepts.md#the-model).
+**params)`) or a built-in shape (`sc.template(file)`, a tabulated function; `sc.gaussian`;
+`sc.linear`). A term without one has `c = 1`. See [The model](concepts.md#the-model).
 
 ## Coverage { #coverage }
 
@@ -96,7 +97,7 @@ and per frame and chunk (`offset_coverage/map_<m>`, with `offset_coverage_frac/m
 fraction of the chunk's pixels the frame covered, counted over the pixels the job can observe; 0
 for a chunk with none of them). The damping rows are weighted by it, and the mosaic sets to zero the
 offset of a frame and chunk whose covered fraction is below `sc.Coadd(min_chunk_coverage=)`. When
-the fraction is above 0, the instrument's renderer fills that chunk in from the frame's other chunks
+the fraction is above 0, the chunk map's renderer fills that chunk in from the frame's other chunks
 where it can, and the chunk's pixels in that frame are left out of the coadd otherwise. See
 [The mosaic](concepts.md#the-mosaic).
 
@@ -186,9 +187,10 @@ Written by the reprojection or by [`write_frame`][selfcal.io.frames.write_frame]
 
 ## Frame tag { #frame-tag }
 
-The instrument's part of every product name: `Detector<d>_NumSub<s>_NumCh<c>_NumCol<k>` for
-SPHEREx, `<tag>_Chunks<ny>x<nx>` for `sc.Camera`, `sc.Euclid(tag=)` (default `EDFN`) for Euclid. See
-[stem](#stem).
+The start of every product name: the instrument's tag, followed by the primary
+[chunk map](#chunk-map)'s `tag` when it has one. `Detector<d>_NumSub<s>_NumCh<c>_NumCol<k>` for
+SPHEREx on the subchannel map, `<tag>_Chunks<ny>x<nx>` for `sc.Camera` on its default grid,
+`sc.Euclid(tag=)` (default `EDFN`; its default maps have no tag) for Euclid. See [stem](#stem).
 
 ## Frame variable { #frame-variable }
 
@@ -244,8 +246,8 @@ unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the c
    the mosaic). It receives a [`FrameContext`][selfcal.core.subframe.FrameContext] and returns the
    frame's values (a `frame_hook` may also return new weights). Euclid's `StarMask` and
    `ResidualMask` (`selfcal.instruments.euclid.hooks`) are ready-made.
-2. An optional method of an [`sc.Instrument`][selfcal.instruments.contract.Instrument]: the offset
-   renderer, the auxiliary coadds, the mosaic finaliser and the coefficient catalogue.
+2. An optional method of an [`sc.Instrument`][selfcal.instruments.contract.Instrument]: the
+   auxiliary coadds and the mosaic finaliser.
 
 See [Masks, outliers and weights](concepts.md#masks-outliers-and-weights) and
 [4. With code: an instrument](../bring_your_own_telescope.md#4-with-code-an-instrument).
@@ -260,18 +262,20 @@ spectral ones in the solve as well
 
 ## Instrument { #instrument }
 
-The description of a telescope: how its exposures are read, how its detector is chunked, which
-detector maps and per-frame values it defines. Every instrument implements the contract of
-[`sc.Instrument`][selfcal.instruments.contract.Instrument], the only way the run engine calls it:
-`sc.Camera(...)` describes a single-detector FITS camera without code; `sc.SPHEREx(detector)` and
-`sc.Euclid(...)` are built in; another telescope is a subclass whose `geometry()` gives its chunk
-maps (the rest has defaults). See [Bring your own telescope](../bring_your_own_telescope.md).
+The description of a telescope: how its exposures are read, its detector, which detector maps and
+per-frame values it defines, and the chunk maps a model that names none gets. Every instrument
+implements the contract of [`sc.Instrument`][selfcal.instruments.contract.Instrument], the only way
+the run engine calls it: `sc.Camera(...)` describes a single-detector FITS camera without code;
+`sc.SPHEREx(detector)` and `sc.Euclid(...)` are built in; another telescope is a subclass whose
+`geometry()` gives its detector (the rest has defaults). See [Bring your own telescope](../bring_your_own_telescope.md).
 
 ## Job { #job }
 
-One unit of an instrument's loop; each job has its own solve, cal file and mosaic. SPHEREx: a
-channel, a group of channels or a subchannel window; a camera: one job, `All`; Euclid: one job
-named after its `band`. See
+One solve of an action, with its own cal file and mosaic: `sc.Job(name, window=, strict=)`, a name
+and the chunks of the primary [chunk map](#chunk-map) it covers (a range per chunk axis;
+`sc.Job("All")`: every chunk). Every action names its jobs (`jobs=`). A camera: one job, `All`;
+Euclid: one job named after its `band`; SPHEREx: a channel, a group of channels or a subchannel
+window (`selfcal_scripts/spherex/jobs.py`). See
 [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
 
 ## Line floor { #line-floor }
@@ -337,7 +341,8 @@ large-scale [stop rule](#stop-rule) and [monitor](#monitor) watch it.
 
 ## NumCol, NumSub, NumCh { #numcol }
 
-The SPHEREx chunk-geometry settings `sc.SPHEREx(num_col=, num_sub=, num_ch=)`, which appear in
+The parameters of the SPHEREx subchannel chunk map (`chunks.subchannel_map(num_sub, num_ch,
+num_col)` of `selfcal_scripts/spherex/chunks.py`; `maps(...)` of the recipes), which appear in
 product names as `NumCol<k>`, `NumSub<s>` and `NumCh<c>`: `num_ch`
 [channels](#channel) per detector, `num_sub` [subchannels](#subchannel) per channel, `num_col`
 vertical columns per subchannel. `num_col` is the main knob for how much spatial structure the
@@ -373,10 +378,11 @@ read-out stripes, a pattern fixed to the detector. See [The problem](concepts.md
 
 ## Offset renderer { #offset-renderer }
 
-The instrument hook that draws a frame's chunk offsets as a detector image for the mosaic. Default:
-constant over each chunk; SPHEREx: a mean-preserving spline in arc radius and detector x for the
-`subchannel` map; Euclid: a spline for `grid`, constant stripes, linear ramps. An offset term's
-`render` setting chooses among the instrument's renderers. See
+A function that draws a frame's chunk offsets as a detector image for the mosaic. A chunk map
+carries its renderers (`sc.Chunks(renderers=, render=)`). Default: constant over each chunk; the
+SPHEREx `subchannel` map: a mean-preserving spline in arc radius and detector x; Euclid: a spline
+for `grid`, constant stripes, linear ramps. An offset term's `render` setting chooses among its
+map's renderers. See
 [Chunk maps and chunk axes](concepts.md#chunk-maps-and-chunk-axes) and
 [The mosaic](concepts.md#the-mosaic).
 
@@ -542,7 +548,8 @@ from (`start=`) and read like any cal; it is not a product (no [sidecar](#sideca
 ## Stem { #stem }
 
 The common part of a job's product names, `<frame_tag>_<job>_<name>`, as in `cal_<stem>.h5` and
-`mosaic_<stem>.fits`: the instrument's [frame tag](#frame-tag), the [job](#job) name and the
+`mosaic_<stem>.fits`: the [frame tag](#frame-tag) (the instrument's and the primary chunk map's
+tags), the [job](#job) name and the
 recipe's `name`. See [From exposures to a mosaic](concepts.md#from-exposures-to-a-mosaic).
 
 ## Stitch { #stitch }
@@ -566,7 +573,7 @@ record and the log say which rule fired and what it measured. See
 SPHEREx: a strip of the detector between two neighbouring lines of constant wavelength, an arc of
 the [LVF](#lvf); `num_sub` per channel, with one padding subchannel at each end
 (`num_sub · num_ch + 2` in all). It is the `subchannel` axis, the spectral axis, of the SPHEREx
-chunk map; windows of subchannels are SPHEREx jobs (`spherex.window(name, subchannels=...)`).
+chunk map; windows of subchannels are SPHEREx jobs (`jobs.window(name, range(lo, hi))`).
 
 ## Tiling { #tiling }
 
@@ -579,9 +586,10 @@ See [Scaling up](concepts.md#scaling-up).
 
 The instrument's weight of each detector pixel for a job
 ([`JobGeometry`][selfcal.instruments.base.JobGeometry]): `det_valid_weight` for the solve and
-`grid_valid_weight`, on the oversampled detector grid, for the mosaic. SPHEREx: the job's
-subchannels (in the solve, one more on each side for a channel job) as 0/1 in both;
-Euclid: an optional taper at the detector edges. See
+`grid_valid_weight`, on the oversampled detector grid, for the mosaic. Default: 1 on the chunks
+of the primary map inside the job's window (the solve) or its strict set (the mosaic), 0
+elsewhere; a SPHEREx channel job keeps the channel's subchannels and one more on each side in the
+solve, the channel's own in the mosaic. Euclid: an optional taper at the detector edges. See
 [Masks, outliers and weights](concepts.md#masks-outliers-and-weights).
 
 ## Warm start { #warm-start }
