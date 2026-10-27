@@ -12,10 +12,9 @@ The frames of a tile and the matrix build's spill go to the NVMe (``site.NVME``)
 frame (460 GB measured for tile B01's 4,236 frames), so check the free space before a run.
 """
 import selfcal as sc
-from selfcal.instruments import spherex
-from selfcal_scripts.spherex import terms as T
+from selfcal_scripts.spherex import jobs, terms as T
 from selfcal_scripts.recipes.site import ORCA, OUTPUTS
-from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW
+from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW, maps
 
 #: The expanded NEP canvas (16631 x 16633 pixels, 25,421 frames) in six tiles of ~4,236 frames each.
 NEP_EXPANSION6_TILES = {
@@ -25,16 +24,16 @@ NEP_EXPANSION6_TILES = {
 #: The tiles this run solves (None: every tile, then the stitch).
 ONLY = None
 
-FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_NEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4, num_col=1), 6.2,
+FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_NEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4), 6.2,
                  compute=ORCA.replace(keep_staged=True, memory_guard=True))
 LINES = [T.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
-RECIPE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0), *LINES],
+RECIPE = sc.Recipe(sc.Model(chunk_maps=maps(num_ch=34, num_col=1), sky=[sc.Sky(damping=0.0), *LINES],
                             offsets=[sc.Offsets(polynomial=sc.Poly(2, window=MULTILINE3_WINDOW)),
                                      T.frame_slope('xslope')]),
                    fit=sc.Fit(400, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
                    coadd=None, numerics=sc.Numerics(32),
                    name='multiline3_xslope_NEPexp6_STITCHED_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg')
-RUN = dict(jobs=spherex.window('Multiline3', subchannels=MULTILINE3_WINDOW),
+RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW),
            tiles=sc.Tiles(boxes=NEP_EXPANSION6_TILES, only=ONLY,
                           tile_name='multiline3_xslope_NEPexp6_{tile}_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg',
                           stitched_name='{name}'))

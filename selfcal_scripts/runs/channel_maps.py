@@ -15,13 +15,13 @@ solve ended (``CalFile(cal).solve``: the chi-squared rule, or ``"none"`` at the 
 """
 import sys
 
-from selfcal.instruments import spherex
 from selfcal_scripts.recipes.spherex import CHANNEL_MAPS, nep
+from selfcal_scripts.spherex import jobs
 
-FIELDS = [nep(detector, num_col=1, num_ch=17) for detector in range(1, 7)]
+FIELDS = [nep(detector) for detector in range(1, 7)]
 RECIPE = CHANNEL_MAPS
 #: Ch9 is the campaign's (see above).
-RUN = dict(jobs=spherex.channels([c for c in range(1, 18) if c != 9]))
+RUN = dict(jobs=jobs.channels([c for c in range(1, 18) if c != 9]))
 
 if __name__ == '__main__':
     chosen = [int(a) for a in sys.argv[1:]] or range(1, 7)

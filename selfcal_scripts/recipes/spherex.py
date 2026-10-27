@@ -3,55 +3,69 @@
 Shared by the run scripts (``selfcal_scripts/runs/``), the gates, the transfer-function kit and
 the notebooks::
 
-    from selfcal.instruments import spherex
-from selfcal_scripts.spherex import terms as T
+    from selfcal_scripts.spherex import jobs
     from selfcal_scripts.recipes.spherex import CHANNEL_MAPS, nep
 
     if __name__ == "__main__":
-        nep(3, num_col=1, num_ch=17).calibrate(CHANNEL_MAPS, jobs=spherex.channels(1, 17))
+        nep(3).calibrate(CHANNEL_MAPS, jobs=jobs.channels(1, 17))
 
+A field is the detector alone (``sc.SPHEREx(detector)``); the partition of the detector a recipe solves
+on is the recipe's (:func:`maps`: the LVF subchannels, ``NumSub10_NumCh17_NumCol1`` for the channel maps,
+and the detector columns), and the jobs name their subchannels on it (``selfcal_scripts.spherex.jobs``).
 A recipe's ``name`` is its products' suffix, so the names below are those of the existing
 products; ``field.result(recipe, jobs=...)`` finds them. The recipes of products made before
 2026-10-13 name their solver, LSQR (CGLS has been the default since), so they still describe how
 those products were made.
 """
 import selfcal as sc
-from selfcal.instruments import spherex
-from selfcal_scripts.spherex import terms as T
 from selfcal.models.variables import identity
+from selfcal_scripts.spherex import chunks as C, terms as T
 
 from .site import ORCA, OUTPUTS
 
-__all__ = ['nep', 'sep', 'nep_qr2', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT', 'SLOPE_GAUGE_COLUMNS',
-           'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+__all__ = ['nep', 'sep', 'nep_qr2', 'maps', 'on_maps', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT',
+           'SLOPE_GAUGE_COLUMNS', 'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'SUBCH_VARWEIGHT_COLUMNS',
+           'SUBCH_VARWEIGHT_COLUMNS_FINAL', 'continuous_final', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
            'pahfit_tiled']
 
 
 # ---------------------------------------------------------------------------------------------- fields
-def nep(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
+def nep(detector, compute=ORCA, outputs=OUTPUTS):
     """The NEP deep field (2026W17 data), 6.2" pixels."""
-    return sc.Field(f'{outputs}/SPHEREx_NEP_2026W17_D{detector}_6p2arcsec',
-                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_NEP_2026W17_D{detector}_6p2arcsec', sc.SPHEREx(detector), 6.2,
+                    compute=compute)
 
 
-def sep(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
+def sep(detector, compute=ORCA, outputs=OUTPUTS):
     """The SEP deep field (2025 data), 6.2" pixels."""
-    return sc.Field(f'{outputs}/SPHEREx_SEP_2025_D{detector}_6p2arcsec',
-                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_SEP_2025_D{detector}_6p2arcsec', sc.SPHEREx(detector), 6.2, compute=compute)
 
 
-def nep_qr2(detector, num_col=3, num_ch=34, compute=ORCA, outputs=OUTPUTS):
+def nep_qr2(detector, compute=ORCA, outputs=OUTPUTS):
     """The NEP QR2 data set, 6.2" pixels (the continuum gates' field)."""
-    return sc.Field(f'{outputs}/SPHEREx_nep_qr2_det{detector}_6p2arcsec',
-                    sc.SPHEREx(detector, num_col=num_col, num_ch=num_ch), 6.2, compute=compute)
+    return sc.Field(f'{outputs}/SPHEREx_nep_qr2_det{detector}_6p2arcsec', sc.SPHEREx(detector), 6.2, compute=compute)
+
+
+# ---------------------------------------------------------------------------------------------- chunk maps
+def maps(num_sub=10, num_ch=17, num_col=1):
+    """The chunk maps of the recipes: the LVF arcs cut into ``num_ch`` channels of ``num_sub``
+    subchannels and ``num_col`` columns (``subchannel``, primary: the products carry its tag
+    ``NumSub<num_sub>_NumCh<num_ch>_NumCol<num_col>``) and the detector columns (``detector_column``)."""
+    return {'subchannel': C.subchannel_map(num_sub, num_ch, num_col), 'detector_column': sc.ChunkMap(C.detector_columns)}
+
+
+def on_maps(recipe, num_sub=10, num_ch=17, num_col=1):
+    """``recipe`` solved on :func:`maps` of another partition (the multi-line fits: 34 channels, 1 or 3
+    columns); its name, fit and coadd unchanged."""
+    return recipe.replace(model=recipe.model.replace(chunk_maps=maps(num_sub, num_ch, num_col)))
 
 
 # ---------------------------------------------------------------------------------------------- channel maps
 #: The channel-map recipe from 2026-09-29 to 2026-10-14 (its maps: Detectors 1 to 4, Detector 5 channels 1 to 16):
-#: NumCol 3, no column polynomial (the transfer function showed NumCol 10 with a linear column polynomial
-#: overfits), a 2x oversampled coadd.
-NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
+#: NumCol 3 over 34 channels, no column polynomial (the transfer function showed NumCol 10 with a linear column
+#: polynomial overfits), a 2x oversampled coadd.
+NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1).replace(chunk_maps=maps(num_ch=34, num_col=3)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
@@ -63,7 +77,7 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
 #: (``sc.shot_noise()``), deflated CGLS to the chi-squared stop, the post-solve plane gauge applied on
 #: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
 #: ignored). The gate `production` runs it on 100 frames of the qr2 set.
-SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
+SLOPE_GAUGE = sc.Recipe(sc.Model(chunk_maps=maps(num_ch=17, num_col=1), sky=[sc.Sky(damping=0.0)],
                                  offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), T.frame_slope(),
                                           sc.Offsets('scalar', on='detector')],
                                  weight=sc.shot_noise()),
@@ -75,9 +89,8 @@ SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
                         name='slope_gauge')
 
 #: The fiducial channel maps since 2026-10-14: the transfer function's recipe (SLOPE_GAUGE, solved on 17
-#: channels and one column: ``nep(detector, num_col=1, num_ch=17)``), the mosaics also carrying the
-#: wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same name and the same cal; the mosaic's other maps
-#: are SLOPE_GAUGE's.
+#: channels and one column), the mosaics also carrying the wavelength maps (WAV_MEAN_MAP, WAV_STD_MAP). The same
+#: name and the same cal; the mosaic's other maps are SLOPE_GAUGE's.
 CHANNEL_MAPS = SLOPE_GAUGE.replace(coadd=SLOPE_GAUGE.coadd.replace(instrument_maps=True))
 
 #: SLOPE_GAUGE weighted by the L2b ``VARIANCE`` instead of the shot-noise proxy (2026-10-15, the covariance
@@ -89,7 +102,7 @@ SLOPE_GAUGE_VARWEIGHT = SLOPE_GAUGE.replace(
     name='slope_gauge_varweight')
 
 #: The shared-column term (the quadrant-bowl work, 2026-10-17): one constant per detector column
-#: (2,040) shared by EVERY frame, on the SPHEREx ``detector_column`` chunk map. It holds the
+#: (2,040) shared by EVERY frame, on the ``detector_column`` chunk map. It holds the
 #: survey-mean detector-fixed pattern along x that the per-frame subchannel constants + x-slope do
 #: not represent and that one-sided coverage amplifies into a footprint's outskirts (the D2 bulge,
 #: the quadrant rims). The deflation eliminates the shared columns by a Schur complement.
@@ -117,7 +130,7 @@ SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
 #: post-solve gauge; deflated CGLS to the chi-squared stop; the coadd as SLOPE_GAUGE's (inverse-variance weights,
 #: VAR_MAP). The weak-mode runs add a single-observation drop (a workspace frame hook).
 SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
-    sc.Model(sky=[sc.Sky(damping=0.0)],
+    sc.Model(chunk_maps=maps(num_ch=17, num_col=1), sky=[sc.Sky(damping=0.0)],
              offsets=[sc.Offsets(on='subchannel'), T.frame_slope(),
                       sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(1))],
              variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
@@ -139,15 +152,16 @@ SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
     name='subch_varweight_columns_final')
 
 
-def continuous_final(channel, num_sub=10):
-    """SUBCH_VARWEIGHT_COLUMNS_FINAL for one channel job (``spherex.channel(channel)``) with its per-frame
-    subchannel constants replaced by ``terms.spectral_offsets``: a continuous, piecewise-linear function of the
-    position across the LVF arcs, one coefficient per frame and subchannel edge of the job (its ``num_sub``
-    subchannels and the one on each side: ``num_sub + 3`` edges), so a background that varies within a
-    subchannel (an airglow line's edge) is followed without steps. The x-slopes and the shared column offsets
-    are the final recipe's. Products carry 'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the
-    channel recipe from the weak-mode work on)."""
-    base = SUBCH_VARWEIGHT_COLUMNS_FINAL
+def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
+    """SUBCH_VARWEIGHT_COLUMNS_FINAL on :func:`maps` of ``num_sub`` x ``num_ch`` x ``num_col``, for one channel job
+    (``jobs.channel(channel)``) with its per-frame subchannel constants replaced by ``terms.spectral_offsets``: a
+    continuous, piecewise-linear function of the position across the LVF arcs, one coefficient per frame and
+    subchannel edge of the job (its ``num_sub`` subchannels and the one on each side: ``num_sub + 3`` edges), so
+    a background that varies within a subchannel (an airglow line's edge) is followed without steps. The
+    x-slopes and the shared column offsets are the final recipe's. Products carry
+    'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the channel recipe from the weak-mode work
+    on)."""
+    base = on_maps(SUBCH_VARWEIGHT_COLUMNS_FINAL, num_sub, num_ch, num_col)
     offsets = (T.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2), position='arc_position'),) + tuple(
         o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
     model = base.model.replace(offsets=offsets,
@@ -155,8 +169,8 @@ def continuous_final(channel, num_sub=10):
     return base.replace(model=model, name=base.name + '_continuous')
 
 
-#: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5).
-POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
+#: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5), 34 channels of 10 columns.
+POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)).replace(chunk_maps=maps(num_ch=34, num_col=10)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2_polyK1')
@@ -169,29 +183,32 @@ LINES3 = [T.line(name, damping=5e-3) for name in ('aromatic', 'aliphatic', 'plat
 #: Clip within each subchannel's chunks (the N-pass passes' clip).
 SUBCHANNEL = sc.ChunkGroups.along('subchannel')
 
-#: The subchannel window of the multi-line fits (3.1 to 3.6 um on Detector 4).
+#: The subchannel window of the multi-line fits (3.1 to 3.6 um on Detector 4, over 34 channels).
 MULTILINE3_WINDOW = range(200, 321)
 
 
 def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILINE3_WINDOW, degree=2,
-               segments=None):
-    """The multi-line recipe: a constant sky plus ``lines``, the offset a hard degree-``degree``
-    polynomial along the subchannels of ``window`` (per column), per-pixel shot-noise weights,
-    the source-mask bit ignored; no mosaic (tiled and N-pass runs)."""
-    return sc.Recipe(sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments)),
+               segments=None, num_ch=34, num_col=3):
+    """The multi-line recipe on :func:`maps` of 34 channels and ``num_col`` columns: a constant sky plus
+    ``lines``, the offset a hard degree-``degree`` polynomial along the subchannels of ``window`` (per column),
+    per-pixel shot-noise weights, the source-mask bit ignored; no mosaic (tiled and N-pass runs)."""
+    model = sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments))
+    return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
                      fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True,
                                 method='lsqr'),
                      coadd=None, numerics=sc.Numerics(threads), name=name)
 
 
-def pahfit_tiled(name, *, iterations):
-    """The tiled PAH 3.29 um recipe (2026-08): a constant sky plus the catalogue PAH line (damping 5e-3),
-    free offsets smoothed along the columns with a linear column polynomial and a cubic along the
-    subchannels 200-259 (weight 100), shot-noise weights, the source-mask bit ignored; no mosaic."""
-    model = sc.spectral([sc.Sky('pah_3p29', times=sc.catalog('pah_3p29'), damping=5e-3)],
+def pahfit_tiled(name, *, iterations, num_ch=34, num_col=3):
+    """The tiled PAH 3.29 um recipe (2026-08) on :func:`maps` of 34 channels and ``num_col`` columns: a constant
+    sky plus the PAH line (``terms.pah_3p29``, damping 5e-3), free offsets smoothed along the columns with a
+    linear column polynomial and a cubic along the subchannels 200-259 (weight 100), shot-noise weights, the
+    source-mask bit ignored; no mosaic."""
+    model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=5e-3)],
                         poly_prior=[sc.Poly(1, weight=0.5), sc.Poly(3, along='subchannel', window=range(200, 260),
                                                                   weight=100.0)])
-    return sc.Recipe(model, fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
+    return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
+                     fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
                      coadd=None, name=name)
 
 
