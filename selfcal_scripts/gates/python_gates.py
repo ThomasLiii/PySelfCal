@@ -14,6 +14,7 @@ import numpy as np  # noqa: F401  (imported before selfcal on purpose: the actio
 
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal_scripts.spherex import terms as T
 
 OUTPUTS = '/mnt/md124/thomasli/selfcal/outputs'
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the tree under test
@@ -23,7 +24,7 @@ E2E_FIXTURE = f'{FIXTURES}/qr2_d3_frames300'        # D3 qr2: 300 frames (e2e; p
 PAH_FIXTURE = f'{FIXTURES}/pahfit_sanity'           # D4: 150 frames (spectral, npass3, tiles)
 
 SUBCHANNEL = sc.ChunkGroups.along('subchannel')           # clip within each subchannel's chunks
-LINES = [spherex.line(n, damping=5e-3) for n in ('aromatic', 'aliphatic', 'plateau')]
+LINES = [T.line(n, damping=5e-3) for n in ('aromatic', 'aliphatic', 'plateau')]
 MULTILINE3 = spherex.window('Multiline3', subchannels=range(200, 321))   # the multi-line job (npass3, tiles)
 
 QR2_D3 = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', sc.SPHEREx(3), 6.2)

@@ -18,6 +18,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import selfcal as sc  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 from selfcal import _state  # noqa: E402
 from selfcal.config import ConfigError  # noqa: E402
 from selfcal.io.atomic import atomic_path, is_partial  # noqa: E402
@@ -452,8 +453,8 @@ def test_a_template_is_fingerprinted_by_content_not_path(tmp_path):
     from selfcal.instruments.spherex.settings import _DATA, LINE_TEMPLATES
     copy = tmp_path / 'aromatic_copy.npz'
     shutil.copy(os.path.join(_DATA, LINE_TEMPLATES['aromatic']), copy)
-    a = sc.spectral([spherex.line('aromatic')], polynomial=sc.Poly(2, window=range(200, 321)))
-    b = sc.spectral([spherex.line('aromatic', file=str(copy))], polynomial=sc.Poly(2, window=range(200, 321)))
+    a = sc.spectral([T.line('aromatic')], polynomial=sc.Poly(2, window=range(200, 321)))
+    b = sc.spectral([T.line('aromatic', file=str(copy))], polynomial=sc.Poly(2, window=range(200, 321)))
     from selfcal.config.base import encode
     ca, cb = (products.content_addressed(encode(products.resolved_model(m))) for m in (a, b))
     assert ca == cb

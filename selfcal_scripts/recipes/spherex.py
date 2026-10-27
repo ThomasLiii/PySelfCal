@@ -4,6 +4,7 @@ Shared by the run scripts (``selfcal_scripts/runs/``), the gates, the transfer-f
 the notebooks::
 
     from selfcal.instruments import spherex
+from selfcal_scripts.spherex import terms as T
     from selfcal_scripts.recipes.spherex import CHANNEL_MAPS, nep
 
     if __name__ == "__main__":
@@ -16,6 +17,7 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal_scripts.spherex import terms as T
 from selfcal.models.variables import identity
 
 from .site import ORCA, OUTPUTS
@@ -62,7 +64,7 @@ NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),
 #: the map (``sc.Gauge``: the plane is a freedom of the model, a quadratic only nearly one); the coadd weighted the same way (mean, std, 2-sigma clipped mean, flag 21
 #: ignored). The gate `production` runs it on 100 frames of the qr2 set.
 SLOPE_GAUGE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
-                                 offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), spherex.frame_slope(),
+                                 offsets=[sc.Offsets(on='subchannel', exclude=sc.Poly(0)), T.frame_slope(),
                                           sc.Offsets('scalar', on='detector')],
                                  weight=sc.shot_noise()),
                         fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
@@ -116,7 +118,7 @@ SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
 #: VAR_MAP). The weak-mode runs add a single-observation drop (a workspace frame hook).
 SUBCH_VARWEIGHT_COLUMNS = sc.Recipe(
     sc.Model(sky=[sc.Sky(damping=0.0)],
-             offsets=[sc.Offsets(on='subchannel'), spherex.frame_slope(),
+             offsets=[sc.Offsets(on='subchannel'), T.frame_slope(),
                       sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(1))],
              variables={'variance': sc.Layer()}, weight=sc.Variance(identity, of='variance')),
     fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
@@ -139,17 +141,17 @@ SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
 
 def continuous_final(channel, num_sub=10):
     """SUBCH_VARWEIGHT_COLUMNS_FINAL for one channel job (``spherex.channel(channel)``) with its per-frame
-    subchannel constants replaced by ``spherex.spectral_offsets``: a continuous, piecewise-linear function of the
+    subchannel constants replaced by ``terms.spectral_offsets``: a continuous, piecewise-linear function of the
     position across the LVF arcs, one coefficient per frame and subchannel edge of the job (its ``num_sub``
     subchannels and the one on each side: ``num_sub + 3`` edges), so a background that varies within a
     subchannel (an airglow line's edge) is followed without steps. The x-slopes and the shared column offsets
     are the final recipe's. Products carry 'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the
     channel recipe from the weak-mode work on)."""
     base = SUBCH_VARWEIGHT_COLUMNS_FINAL
-    offsets = (spherex.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2)),) + tuple(
+    offsets = (T.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2), position='arc_position'),) + tuple(
         o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
     model = base.model.replace(offsets=offsets,
-                               variables={**dict(base.model.variables), 'arc_position': sc.DetectorMap(spherex.arc_position)})
+                               variables={**dict(base.model.variables), 'arc_position': sc.DetectorMap(T.arc_position)})
     return base.replace(model=model, name=base.name + '_continuous')
 
 
@@ -162,7 +164,7 @@ POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)),
 
 # ---------------------------------------------------------------------------------------------- PAH lines
 #: The three PAH features of the multi-line fits, with the shipped realistic templates.
-LINES3 = [spherex.line(name, damping=5e-3) for name in ('aromatic', 'aliphatic', 'plateau')]
+LINES3 = [T.line(name, damping=5e-3) for name in ('aromatic', 'aliphatic', 'plateau')]
 
 #: Clip within each subchannel's chunks (the N-pass passes' clip).
 SUBCHANNEL = sc.ChunkGroups.along('subchannel')

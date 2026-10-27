@@ -452,7 +452,7 @@ touches) are dropped before the solve.
 ## Preset { #preset }
 
 A model built from a few settings: `sc.continuum`, `sc.spectral` and `sc.two_block`, and SPHEREx's
-line terms (`spherex.line`). A preset is a plain function that returns an `sc.Model`; a calibration
+line terms (`selfcal_scripts.spherex.terms.line`). A preset is a plain function that returns an `sc.Model`; a calibration
 variant of your own is written the same way. The named modes of the old TOML configs map to these
 ([Migrating from TOML](migrating-from-toml.md#modes)). See [The model](concepts.md#the-model).
 

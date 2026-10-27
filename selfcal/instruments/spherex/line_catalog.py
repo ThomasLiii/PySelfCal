@@ -21,19 +21,19 @@ FWHM_TO_SIGMA = 2.355
 def pah_3p29_coefficient(center=None, sigma=None) -> Coefficient:
     """The PAH 3.29 um coefficient of the wavelength map (``BC``, width ``BW``)."""
     return Coefficient('BC', GaussianProfile(
-        center_um=PAH_LINE_CENTER_UM if center is None else center,
-        sigma_um=LINE_SIGMA_UM if sigma is None else sigma,
+        center=PAH_LINE_CENTER_UM if center is None else center,
+        sigma=LINE_SIGMA_UM if sigma is None else sigma,
         sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=FWHM_TO_SIGMA,
-                                     intrinsic_var_um2=PAH_INTRINSIC_VAR_UM2)))
+                                     intrinsic_var=PAH_INTRINSIC_VAR_UM2)))
 
 
 def pah_3p29(line_center=None, line_sigma=None) -> SkyModel:
     """A constant term + the ``pah_3p29`` term: the ``pahfit`` sky, as a SkyModel."""
     return SkyModel.continuum_plus_gaussian_line(
         name='pah_3p29',
-        center_um=PAH_LINE_CENTER_UM if line_center is None else line_center,
-        sigma_um=LINE_SIGMA_UM if line_sigma is None else line_sigma,
-        width_key='BW', fwhm_to_sigma=FWHM_TO_SIGMA, intrinsic_var_um2=PAH_INTRINSIC_VAR_UM2,
+        center=PAH_LINE_CENTER_UM if line_center is None else line_center,
+        sigma=LINE_SIGMA_UM if line_sigma is None else line_sigma,
+        width_key='BW', fwhm_to_sigma=FWHM_TO_SIGMA, intrinsic_var=PAH_INTRINSIC_VAR_UM2,
         wavelength_key='BC')
 
 

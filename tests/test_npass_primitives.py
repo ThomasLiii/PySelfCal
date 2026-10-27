@@ -34,8 +34,8 @@ def _sky_model(J):
     comps = [ContinuumComponent()]
     for j in range(1, J):
         comps.append(SkyComponent(name=f"line{j}",
-                                  coefficient=Coefficient("BC", GaussianProfile(center_um=LC + 0.03 * (j - 1),
-                                                                                sigma_um=0.03))))
+                                  coefficient=Coefficient("BC", GaussianProfile(center=LC + 0.03 * (j - 1),
+                                                                                sigma=0.03))))
     return SkyModel(tuple(comps))
 
 

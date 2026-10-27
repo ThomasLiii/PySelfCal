@@ -33,7 +33,6 @@ from ...config import (
     resolve_path,
 )
 from ...config.base import ConfigError
-from ...models.model import Sky, template
 from ...models.offset_structure import ChunkAxes
 from ..base import ChunkMap, DetectorGeometry, ExposureLayout, JobGeometry
 from ..contract import Instrument, Job
@@ -52,8 +51,7 @@ from .spherex_utility import (
 )
 from .wavemap import wav_coadd
 
-__all__ = ['SPHEREx', 'channel', 'channels', 'group', 'window', 'line', 'frame_slope', 'LINE_TEMPLATES',
-           'precompute_lvf', 'zodi_anchor']
+__all__ = ['SPHEREx', 'channel', 'channels', 'group', 'window', 'LINE_TEMPLATES', 'precompute_lvf', 'zodi_anchor']
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +60,8 @@ _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'line_t
 #: Pixels per side of a SPHEREx detector (the frames are 2040 x 2040).
 DETECTOR_SIZE = 2040
 
-#: The shipped line templates (``data/line_templates``): name -> file.
+#: The shipped line templates (``data/line_templates``, the directory ``_DATA``): name -> file; a sky term on one
+#: is ``selfcal_scripts.spherex.terms.line(name)``.
 LINE_TEMPLATES = {
     'aromatic': 'aromatic_3p289.npz',
     'aliphatic': 'aliphatic_3p400.npz',
@@ -329,69 +328,6 @@ def window(name, subchannels=None) -> Job:
                               f"e.g. range(200, 321)")
         lo, hi = subchannels.start, subchannels.stop
     return Job(str(name), kind='window', value=(int(lo), int(hi)))
-
-
-def line(name, damping=None, *, file=None) -> Sky:
-    """A sky term times one of the shipped line templates of the wavelength
-    (:data:`LINE_TEMPLATES`: ``aromatic``, ``aliphatic``, ``plateau``), or the template ``file``."""
-    if file is None:
-        if name not in LINE_TEMPLATES:
-            raise ConfigError(f"spherex.line({name!r}): no shipped template ({sorted(LINE_TEMPLATES)}); "
-                              f"give file=")
-        file = os.path.join(_DATA, LINE_TEMPLATES[name])
-    return Sky(name, times=template(file), damping=damping)
-
-
-def frame_slope(name='xs_term', per='frame'):
-    """An offset term that is a free gradient along detector x per subchannel: one coefficient per
-    frame (``per``) and subchannel, times :func:`selfcal.models.bases.tilt` of the detector
-    column, -1 at the left edge and +1 at the right (the 2040-pixel detector: centre 1019.5, half
-    width 1020). With the subchannel constants it is the per-frame gradient model whose gauge
-    :class:`~selfcal.run.recipe.Gauge` fixes: ``sc.Fit(gauge=sc.Gauge(name))``."""
-    from ...models.bases import tilt
-    from ...models.model import Function, Offsets
-    n = DETECTOR_SIZE
-    return Offsets(name, on='subchannel', per=per, times=Function(tilt, of='det_x', centre=(n - 1) / 2.0, half=n / 2.0))
-
-
-def arc_position(geometry):
-    """Each detector pixel's position across the LVF arcs, in subchannels: a detector map for
-    :class:`~selfcal.models.model.DetectorMap`. The subchannel edges are the concentric circles of the
-    arc fit (``geometry.extra['lvf_params']``: centre ``xc``, ``yc``; ``geometry.extra['r_edges']``: the
-    edges' radii), so the position is the pixel's radius about the centre interpolated on the edges'
-    radii against the edge index: subchannel ``s`` spans ``s - 1`` to ``s``, and beyond the first and the
-    last edge the position continues linearly at the end intervals' rate."""
-    lvf, r_edges = geometry.extra['lvf_params'], np.asarray(geometry.extra['r_edges'], dtype=np.float64)
-    H, W = geometry.shape
-    y, x = np.mgrid[0:H, 0:W].astype(np.float64)
-    r = np.hypot(x - lvf['xc'], y - lvf['yc'])
-    k = np.arange(r_edges.size, dtype=np.float64)
-    u = np.interp(r, r_edges, k)
-    lo, hi = r < r_edges[0], r > r_edges[-1]
-    u[lo] = (r[lo] - r_edges[0]) / (r_edges[1] - r_edges[0])
-    u[hi] = k[-1] + (r[hi] - r_edges[-1]) / (r_edges[-1] - r_edges[-2])
-    return u
-
-
-def _hats(arc_position, first, last):
-    """The hat functions on the subchannel edges ``first`` to ``last``: each is 1 at its edge and falls
-    linearly to 0 at the neighbouring edges (:func:`spectral_offsets`)."""
-    return [np.clip(1.0 - np.abs(arc_position - k), 0.0, None) for k in range(first, last + 1)]
-
-
-def spectral_offsets(subchannels, name='spectral', per='frame'):
-    """An offset term that is a continuous, piecewise-linear function of the position across the LVF
-    arcs per frame (``per``): one coefficient per frame and subchannel edge of ``subchannels`` (a range
-    of subchannel indices, the job's: ``spherex.channel(c)`` covers ``num_sub * (c - 1)`` to
-    ``num_sub * c + 1``), times the hat function of that edge (:func:`_hats`), on the whole detector.
-    In place of per-subchannel constants it follows a background that varies within a subchannel
-    (an airglow line's edge), with no step between subchannels; continuity holds by the basis, with
-    no constraint and no weight. The model needs the variable ``arc_position``:
-    ``variables={'arc_position': sc.DetectorMap(spherex.arc_position)}``."""
-    from ...models.model import Function, Offsets
-    first, last = int(subchannels.start) - 1, int(subchannels.stop) - 1
-    return Offsets(name, on='detector', per=per, basis=Function(_hats, of='arc_position', first=first, last=last),
-                   n=last - first + 1)
 
 
 def precompute_lvf(detectors, *, output_dir=None, calib_dir=None, num_sub=10, num_ch=34):

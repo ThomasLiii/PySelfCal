@@ -3,7 +3,7 @@ PAH fit over the Multiline3 window with a free x-slope offset term, on six tiles
 
 The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
 two offset terms at NumCol 1, the hard degree-2 polynomial along the subchannels of the window (one per frame)
-and a free gradient along detector x per frame and subchannel (``spherex.frame_slope``); no damping or
+and a free gradient along detector x per frame and subchannel (``terms.frame_slope``); no damping or
 regularisation of any kind; shot-noise weights, the source-mask bit ignored, a 5-sigma clip; the default solver
 to convergence, at most 400 iterations; no mosaic. The tiles are solved one at a time; ``ONLY`` limits the run
 to the tiles listed (no stitch: a later run of every tile reuses their cals and stitches them).
@@ -13,6 +13,7 @@ frame (460 GB measured for tile B01's 4,236 frames), so check the free space bef
 """
 import selfcal as sc
 from selfcal.instruments import spherex
+from selfcal_scripts.spherex import terms as T
 from selfcal_scripts.recipes.site import ORCA, OUTPUTS
 from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW
 
@@ -26,10 +27,10 @@ ONLY = None
 
 FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_NEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4, num_col=1), 6.2,
                  compute=ORCA.replace(keep_staged=True, memory_guard=True))
-LINES = [spherex.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
+LINES = [T.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
 RECIPE = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.0), *LINES],
                             offsets=[sc.Offsets(polynomial=sc.Poly(2, window=MULTILINE3_WINDOW)),
-                                     spherex.frame_slope('xslope')]),
+                                     T.frame_slope('xslope')]),
                    fit=sc.Fit(400, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
                    coadd=None, numerics=sc.Numerics(32),
                    name='multiline3_xslope_NEPexp6_STITCHED_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg')

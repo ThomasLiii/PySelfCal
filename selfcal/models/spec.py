@@ -1013,7 +1013,7 @@ def _builtin(function, p, geom, name, log, known=()):
         else:
             need('x', 'y')
             x, y = p['x'], p['y']
-        return TemplateProfile(wave_um=np.asarray(x, float), values=np.asarray(y, float))
+        return TemplateProfile(x=np.asarray(x, float), values=np.asarray(y, float))
     if function == 'gaussian':
         # exp(-(v - center)^2 / 2 sigma^2); sigma = sqrt((w / fwhm_to_sigma)^2 + intrinsic_var)
         # per observation when `width` names a data variable w, else the scalar `sigma`.
@@ -1022,11 +1022,11 @@ def _builtin(function, p, geom, name, log, known=()):
         if p.get('width') is not None:
             source = QuadratureSigma(fwhm_key=resolve_variable(p['width'], geom, known),
                                      fwhm_to_sigma=float(p.get('fwhm_to_sigma', 2.355)),
-                                     intrinsic_var_um2=float(p.get('intrinsic_var') or 0.0))
+                                     intrinsic_var=float(p.get('intrinsic_var') or 0.0))
         elif p.get('sigma') is None:
             raise ValueError(f"gaussian coefficient of term {name!r} needs `sigma` or `width`")
-        return GaussianProfile(center_um=float(p['center']),
-                               sigma_um=None if p.get('sigma') is None else float(p['sigma']),
+        return GaussianProfile(center=float(p['center']),
+                               sigma=None if p.get('sigma') is None else float(p['sigma']),
                                sigma_source=source)
     need('center', 'halfwidth')                   # linear: (v - center) / halfwidth
-    return LinearProfile(center_um=float(p['center']), halfwidth_um=float(p['halfwidth']))
+    return LinearProfile(center=float(p['center']), halfwidth=float(p['halfwidth']))

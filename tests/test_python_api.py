@@ -31,6 +31,7 @@ from selfcal import _state  # noqa: E402
 from selfcal.config import Config, ConfigError  # noqa: E402
 from selfcal.config.base import added, encode, type_name  # noqa: E402
 from selfcal.instruments import spherex  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 from selfcal.io.calfile import CalFile  # noqa: E402
 from selfcal.run.engine import RunContext  # noqa: E402
 from selfcal.run.lower import lower  # noqa: E402
@@ -158,7 +159,7 @@ def test_model_lowers_to_the_model_table():
 def test_presets_and_their_rules():
     m = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, weight=0.5), damping=0.001)
     assert m.lower()['offset'][0]['poly'] == [{'axis': None, 'degree': 1, 'weight': 0.5}]
-    s = sc.spectral([spherex.line('aromatic', damping=5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
+    s = sc.spectral([T.line('aromatic', damping=5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
     assert s.spectral_window() == (200, 320)
     assert s.lower()['offset'][0]['kind'] == 'polybasis'
     with pytest.raises(ConfigError, match='takes no smooth'):

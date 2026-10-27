@@ -88,12 +88,12 @@ def test_historical_spelling_is_bit_identical():
     rng = np.random.default_rng(0)
     obs = {'BC': rng.uniform(3.1, 3.5, 10000).astype(np.float32),
            'BW': rng.uniform(0.02, 0.06, 10000).astype(np.float32)}
-    prof = GaussianProfile(center_um=3.29, sigma_um=0.02,
-                           sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355, intrinsic_var_um2=2.89e-4))
+    prof = GaussianProfile(center=3.29, sigma=0.02,
+                           sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355, intrinsic_var=2.89e-4))
     old = SpectralComponent(name='pah', profile=prof, wavelength_key='BC').coefficients(obs)
     new = SkyComponent('pah', Coefficient('BC', prof)).coefficients(obs)
     assert old.dtype == new.dtype and old.tobytes() == new.tobytes()
-    tmpl = TemplateProfile(wave_um=np.linspace(3.0, 3.6, 61), values=np.exp(-np.linspace(-3, 3, 61) ** 2))
+    tmpl = TemplateProfile(x=np.linspace(3.0, 3.6, 61), values=np.exp(-np.linspace(-3, 3, 61) ** 2))
     old = SpectralComponent(name='t', profile=tmpl).coefficients(obs)
     new = SkyComponent('t', Coefficient('BC', tmpl)).coefficients(obs)
     assert old.tobytes() == new.tobytes()
@@ -129,8 +129,8 @@ def test_config_form():
     c = build_coefficient({'variable': ['u', 'wavelength'], 'function': 'tests.test_sky_coefficients:two_var',
                            'params': {'scale': 3.0}}, g)
     assert c.variable == ('u', 'BC') and np.allclose(c.evaluate({'u': np.ones(2), 'BC': np.full(2, 2.0)}), 6.0)
-    cat = {'mine': lambda center=None: Coefficient('BC', GaussianProfile(center_um=center or 1.0, sigma_um=0.1))}
-    assert build_coefficient({'catalog': 'mine', 'center': 2.0}, g, catalog=cat).function.center_um == 2.0
+    cat = {'mine': lambda center=None: Coefficient('BC', GaussianProfile(center=center or 1.0, sigma=0.1))}
+    assert build_coefficient({'catalog': 'mine', 'center': 2.0}, g, catalog=cat).function.center == 2.0
     assert SkyTerm(coefficient={'catalog': 'mine'}).name == 'mine' and SkyTerm().name == 'continuum'
     for bad, msg in (({'variable': 'nope', 'function': 'linear', 'center': 0, 'halfwidth': 1}, 'nope'),
                      ({'variable': 'u', 'function': 'mystery'}, 'mystery'),

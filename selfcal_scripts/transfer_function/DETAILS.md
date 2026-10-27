@@ -48,7 +48,7 @@ processing host (`/data3/SPHEREx/SpecCal_202509/ParameterFiles`).
 `sc.SPHEREx(detector, num_col=1, num_ch=17)`:
 
 - the model: per frame, a constant per subchannel (mean zero over the frame) and a
-  free gradient along detector x (`spherex.frame_slope()`: `(det_x - 1019.5) / 1020`
+  free gradient along detector x (`selfcal_scripts.spherex.terms.frame_slope()`: `(det_x - 1019.5) / 1020`
   times one number per frame and subchannel), the sky undamped; no adjacency,
   no polynomial, no prior
 - the weights (`sc.shot_noise()`): every observation's variance is
