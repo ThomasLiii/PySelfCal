@@ -1303,10 +1303,13 @@ class Calibrator(Reprojector):
         return pbl[m] if pbl is not None else None
 
     def _stored_by_group(self, m) -> bool:
-        """Whether map ``m`` is written once per group of frames (``Offsets(store='groups')``: ``offset_rows``, set
-        by the run engine) instead of once per frame."""
-        rows = getattr(self, 'offset_rows', None)
-        return rows is not None and m < len(rows) and rows[m] == 'groups'
+        """Whether map ``m`` is written once per group of frames, with each frame's group: a term whose offsets
+        groups of frames share (its frames do not each have their own; ``per='all'`` or a frame variable). A
+        template map (an amplitude per frame) and a polynomial-basis map are written per frame."""
+        if self.det_templates[m] is not None or self._poly_basis_for(m) is not None:
+            return False
+        ftg = np.asarray(self.frame_to_groups[m])
+        return not (int(self.num_offset_groups_list[m]) == ftg.size and np.array_equal(ftg, np.arange(ftg.size)))
 
     def _write_frame_groups(self, f, K):
         """``offset_frame_group/map_<m>``: each frame's group, for the maps stored once per group."""

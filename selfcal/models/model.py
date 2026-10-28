@@ -466,7 +466,8 @@ class Offsets(Config):
     ``on``: the chunk map (None: the instrument's primary map; ``"detector"``: the whole
     detector as one chunk). ``per``: who shares an offset: ``"frame"`` (each frame its own),
     ``"all"`` (every frame the same: a detector-fixed pattern), or a frame variable (frames with
-    equal values: ``"detector"``, ``"exposure"``, a night, a filter).
+    equal values: ``"detector"``, ``"exposure"``, a night, a filter). The cal file holds a shared term's
+    offsets once per group of frames, with each frame's group (:class:`~selfcal.io.calfile.CalFile`).
 
     Known functions: ``times`` (one function of data variables multiplying the offset at every
     observation), or ``basis`` with ``n`` functions (the unknowns become one coefficient per
@@ -492,10 +493,6 @@ class Offsets(Config):
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
-    ``store``: how the cal file holds the term's offsets: ``'frames'`` (one row per frame, a shared term's row
-    repeated in each; the default) or ``'groups'`` (one row per group of frames that share them, with each frame's
-    group: a term shared by every frame is a single row), for a term shared by groups of frames (``per`` other than
-    ``'frame'``). The readers give the same per-frame offsets either way (:class:`~selfcal.io.calfile.CalFile`).
     ``name``: how priors refer to the term (default: the map's name).
     """
     name: str | None = None
@@ -514,7 +511,6 @@ class Offsets(Config):
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
-    store: str = added('frames', since='2026-10')
 
     def _validate(self):
         label = f"Offsets({self.name!r})" if self.name else "Offsets()"
@@ -566,10 +562,6 @@ class Offsets(Config):
         for k in ('smooth', 'damping'):
             if getattr(self, k) < 0:
                 raise ConfigError(f"{label}: {k} is at least 0")
-        if self.store not in ('frames', 'groups'):
-            raise ConfigError(f"{label}: store= is 'frames' (one row per frame) or 'groups' (one row per group of frames)")
-        if self.store == 'groups' and self.per == 'frame':
-            raise ConfigError(f"{label}: store='groups' is for a term shared by groups of frames (per= other than 'frame')")
 
     @property
     def term_name(self) -> str:
@@ -603,8 +595,6 @@ class Offsets(Config):
         out['damp'] = float(self.damping)
         if self.render is not None:
             out['render'] = self.render
-        if self.store != 'frames':
-            out['store'] = self.store
         if self.name is not None:
             out['name'] = self.name
         if self.times is not None:

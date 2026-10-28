@@ -14,9 +14,9 @@ The starting vector is in the solver's full (uncompacted) column layout and in p
   solve start at 0;
 * each offset term's block ``offsets/map_<m>``, frame-major. A term shared by groups of frames
   (``per="all"`` or a frame variable) stores its group's offsets on every frame of the group: they
-  are read from the group's first frame, after checking that every frame of the group holds them;
-  stored once per group (``Offsets(store='groups')``, with ``offset_frame_group/map_<m>``), they are
-  read as stored when the grouping is this solve's, else expanded per frame first.
+  are read from the group's first frame, after checking that every frame of the group holds them
+  (cals written before 2026-10-28); stored once per group (with ``offset_frame_group/map_<m>``), they
+  are read as stored when the grouping is this solve's, else expanded per frame first.
   A term with ``n`` basis functions holds ``n`` coefficients per chunk, as stored.
 
 A cal file that holds a separate per-frame scalar (``frame_scalar``, an older layout; a per-frame scalar

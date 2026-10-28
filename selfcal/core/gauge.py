@@ -266,6 +266,11 @@ def gauge_cal(cal_path, frames, ref_wcs, *, slope_map, constant_map, centre, hal
                 sky_name = 'continuum'
         sky = f[f'sky/{sky_name}'][:].astype(np.float64)
         cov = f[f'sky_coverage/{sky_name}'][:]
+        grouped = [m for m in (constant_map, slope_map)
+                   if 'offset_frame_group' in f and f'map_{m}' in f['offset_frame_group']]
+        if grouped:
+            raise ValueError(f"the gauge moves per-frame offsets; map(s) {grouped} of {cal_path} are shared by groups "
+                             f"of frames (stored once per group)")
         c = f[f'offsets/map_{constant_map}'][:].astype(np.float64)
         b = f[f'offsets/map_{slope_map}'][:].astype(np.float64)
         ocov = f[f'offset_coverage/map_{slope_map}'][:].astype(np.float64)

@@ -505,6 +505,9 @@ def merge_offset_cals(pieces, out, *, attrs=None):
             if "frame_scalar" in f:
                 raise ValueError(f"merge_offset_cals: {os.path.basename(path)} holds a separate per-frame scalar "
                                  f"(frame_scalar), an older layout that is not read")
+            if "offset_frame_group" in f:
+                raise ValueError(f"merge_offset_cals: {os.path.basename(path)} holds offsets shared by groups of frames "
+                                 f"(offset_frame_group): an OFFSET pass takes per-frame terms only")
             names += [r.decode() if isinstance(r, bytes) else str(r) for r in f["reproj_list"][()]]
     bases = [os.path.basename(n) for n in names]
     if len(set(bases)) != len(bases):

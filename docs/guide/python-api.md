@@ -175,8 +175,8 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
   constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
   any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
-  frame. `store="groups"` writes a term shared by groups of frames to the cal once per group instead of
-  once per frame (the readers expand it)
+  frame. The cal holds a term shared by groups of frames once per group, with each frame's group (the
+  readers expand it per frame)
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds

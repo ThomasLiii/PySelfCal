@@ -634,7 +634,6 @@ def setup_job(ctx, jobgeom, *, frame_dir, frames=None, **options):
     glob."""
     spec = ctx.spec
     cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=frame_dir)
-    cc.offset_rows = ctx.model.offset_rows()          # how the cal holds each offset term (Offsets(store=))
     if frames is not None:
         cc.reproj_list = list(frames)
     n_frames = len(cc.reproj_list)

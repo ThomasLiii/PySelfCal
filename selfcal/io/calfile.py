@@ -14,11 +14,12 @@ The pipeline writes several HDF5 layouts (documented in PIPELINE.md):
 * **stitched** cals and **N-pass OFFSET products** carry a subset (no offsets
   / no sky respectively).
 
-A term shared by groups of frames may be stored once per group
-(``Offsets(store='groups')``): ``offsets/map_<m>``, ``offset_coverage/map_<m>`` and
-``offset_coverage_frac/map_<m>`` then hold one row per group, and
+A term shared by groups of frames (``per='all'`` or a frame variable) is stored once
+per group: ``offsets/map_<m>``, ``offset_coverage/map_<m>`` and
+``offset_coverage_frac/map_<m>`` hold one row per group, and
 ``offset_frame_group/map_<m>`` each frame's group (``offsets/map_<m>`` carries the
-attribute ``rows = 'groups'``).
+attribute ``rows = 'groups'``). Cals written before 2026-10-28 repeat the group's row on
+each of its frames.
 
 ``CalFile`` hides those differences: ``sky(name)``, ``offsets`` (a list per
 map, expanded per frame), ``reproj_list`` ... resolve on any of them, and the

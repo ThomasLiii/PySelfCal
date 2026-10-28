@@ -662,17 +662,20 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
   (cals solved since 2026-10-08; see [The `solve` group](#the-solve-group) below)
 
 **Groups (one dataset per map):**
-- `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
+- `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets (a term shared by groups of frames: one row per group, below)
 - `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map); for a map whose offsets multiply `n_basis > 1` functions, `(num_frames, num_chunks_m * n_basis)`, each function's count taken over the pixels where it is not zero
 - `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of the chunk's pixels covered per frame, counted over the chunk's pixels inside the solve's window (the detector pixels the job can observe; 0 for a chunk with no pixel inside it; `sc.Coadd(min_chunk_coverage=)` compares it) (float32 ones for a template or polynomial-basis map)
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
 - a per-frame scalar (`sc.Offsets("scalar", on="detector")`) is an offset map like the others: `offsets/map_{m}` is `(num_frames, 1)`, its chunk map all zeros
-- a map whose term is stored once per group of frames (`sc.Offsets(store="groups")`, for a term shared by groups of
-  frames) holds one row per group in `offsets/map_{m}` (attr `rows = "groups"`), `offset_coverage/map_{m}` and
-  `offset_coverage_frac/map_{m}`, and each frame's group in `offset_frame_group/map_{m}` `(num_frames,)` int32; a
-  term shared by every frame is then a single row. `CalFile.offsets` (and the coverage properties) expand it per
-  frame; `CalFile.rows(group)` gives it as stored, a `selfcal.io.calfile.FrameRows` (each frame's row on demand),
-  which the mosaic and the per-observation subtraction keep compact
+- a map whose term groups of frames share (`per="all"`, or a frame variable: the frames of a group have the same
+  offsets) holds each group's offsets once: one row per group in `offsets/map_{m}` (attr `rows = "groups"`),
+  `offset_coverage/map_{m}` and `offset_coverage_frac/map_{m}`, and each frame's group in
+  `offset_frame_group/map_{m}` `(num_frames,)` int32 (a term every frame shares is a single row; a term fixed within
+  two subsets of the frames, two rows and a 0/1 label per frame). Cals written before 2026-10-28 repeat the group's row
+  on every frame of it, with no `offset_frame_group`. `CalFile.offsets` (and the coverage properties) expand either
+  per frame; `CalFile.rows(group)` gives the map as stored, a `selfcal.io.calfile.FrameRows` (each frame's row on
+  demand), which the mosaic and the per-observation subtraction keep compact. Template and polynomial-basis maps
+  (an amplitude or coefficients per frame) and per-frame terms are one row per frame
 - a map whose offset term carries known functions of data variables (a `coefficient` or a
   `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
   num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the
