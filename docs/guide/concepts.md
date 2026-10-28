@@ -296,6 +296,13 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   named terms, a term with one offset per detector column only those constant along each column. The
   named terms must read detector-plane variables only (`det_x`, `det_y`, detector maps and variables
   derived from them).
+- Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
+  columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
+  say), their couplings to the other offsets are applied through the system's matrix and their part
+  of the response is solved by conjugate gradients, to the rounding of the products. That solve
+  cannot find a direction the data do not see between the shared columns and the other offsets:
+  remove such a gauge in the model (`exclude=sc.Overlap(...)`), or the solution sets it differently
+  from the minimum-norm one.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.
