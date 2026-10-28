@@ -254,7 +254,9 @@ class OffsetTerm:
     ``exact_group_rows``: for fixed/grouped terms, emit the adjacency rows once
     per group instead of once per frame (exact; far fewer rows). ``render``:
     which of the chunk map's renderers draws the term on the mosaic (default
-    the map's own). ``name``: how priors refer to the term (default: the
+    the map's own). ``store``: how the cal file holds the term (``'frames'``:
+    one row per frame; ``'groups'``: one row per group of frames, for a fixed or
+    grouped term). ``name``: how priors refer to the term (default: the
     map's name)."""
     map: str | None = None
     kind: str = 'free'
@@ -276,6 +278,7 @@ class OffsetTerm:
     signature_degree: int | str | None = None
     exclude_overlap: tuple | None = None
     render: str | None = None
+    store: str = 'frames'
     coefficient: object = None
     basis: object = None
     name: str | None = None
@@ -302,6 +305,10 @@ class OffsetTerm:
                 raise ValueError("exclude_degree is at least 0")
             if self.kind == 'polybasis' or self.n_basis != 1:
                 raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
+        if self.store not in ('frames', 'groups'):
+            raise ValueError(f"store is 'frames' or 'groups', got {self.store!r}")
+        if self.store == 'groups' and self.kind not in ('fixed', 'grouped'):
+            raise ValueError("store='groups' applies to a term shared by groups of frames (fixed / grouped)")
         if self.exclude_overlap is not None:
             object.__setattr__(self, 'exclude_overlap', tuple(self.exclude_overlap))
             if self.kind == 'polybasis' or self.n_basis != 1:
@@ -832,6 +839,10 @@ class ModelSpec:
         for n in names:
             get(n)
         return out
+
+    def offset_rows(self) -> list[str]:
+        """How the cal file holds each offset term (``Offsets(store=)``): ``'frames'`` or ``'groups'``, in term order."""
+        return [t.store for t in self.offset]
 
     def shared_columns(self, layout) -> np.ndarray:
         """The full-layout columns of the offset terms that groups of frames share (``fixed``: every frame, ``grouped``:

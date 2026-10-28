@@ -103,9 +103,9 @@ class BasisOffsetSubtractor:
         self.variables = variables
         self.oversample_factor = oversample_factor
         with CalFile(cal_path) as cal:
-            offs = cal.offsets
+            offs = cal.rows('offsets', 'offset')                 # as stored: a map shared by groups of frames stays compact
             names = [os.path.basename(p) for p in cal.reproj_list]
-            self.rows = {m: np.asarray(offs[m]) for m, _, _ in self.terms}
+            self.rows = {m: offs[m] for m, _, _ in self.terms}
         self.index = {n: i for i, n in enumerate(names)}
         fn = names if frame_names is None else [os.path.basename(p) for p in frame_names]
         self.var_index = {n: i for i, n in enumerate(fn)}

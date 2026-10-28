@@ -14,7 +14,9 @@ The starting vector is in the solver's full (uncompacted) column layout and in p
   solve start at 0;
 * each offset term's block ``offsets/map_<m>``, frame-major. A term shared by groups of frames
   (``per="all"`` or a frame variable) stores its group's offsets on every frame of the group: they
-  are read from the group's first frame, after checking that every frame of the group holds them.
+  are read from the group's first frame, after checking that every frame of the group holds them;
+  stored once per group (``Offsets(store='groups')``, with ``offset_frame_group/map_<m>``), they are
+  read as stored when the grouping is this solve's, else expanded per frame first.
   A term with ``n`` basis functions holds ``n`` coefficients per chunk, as stored.
 
 A cal file that holds a separate per-frame scalar (``frame_scalar``, an older layout; a per-frame scalar
@@ -261,6 +263,8 @@ class WarmStart:
                 for m in range(K):
                     shape = tuple(f['offsets'][f'map_{m}'].shape)
                     want_shape = (system.n_frames, system.stored_columns(m))
+                    if 'offset_frame_group' in f and f'map_{m}' in f['offset_frame_group']:      # stored once per group
+                        want_shape = (int(L.num_offset_groups_list[m]), system.stored_columns(m))
                     if frames and shape != want_shape:
                         out.append(f"offset map {m}: {shape} values in the source, {want_shape} in this solve")
                     basis = cal.offset_basis(m)
@@ -323,10 +327,16 @@ class WarmStart:
                 ng, nc = int(L.num_offset_groups_list[m]), int(L.num_chunks_list[m])
                 block = x0[L.offset_slice(m)].reshape(ng, nc)
                 ftg = np.asarray(L.frame_to_group_list[m])
-                if ng == n and np.array_equal(ftg, np.arange(n)):
+                grouped = 'offset_frame_group' in f and f'map_{m}' in f['offset_frame_group']
+                if grouped and np.array_equal(f['offset_frame_group'][f'map_{m}'][()], ftg):
+                    ds.read_direct(block)                   # one row per group, as stored, the same grouping
+                    continue
+                if ng == n and np.array_equal(ftg, np.arange(n)) and not grouped:
                     ds.read_direct(block)                   # one row per frame, as stored
                     continue
                 stored = ds[()]
+                if grouped:                                 # one row per group of another numbering: per frame first
+                    stored = stored[f['offset_frame_group'][f'map_{m}'][()]]
                 first = np.empty(ng, dtype=np.int64)
                 first[ftg[::-1]] = np.arange(n)[::-1]          # each group's first frame
                 rows = stored[first]
