@@ -169,6 +169,23 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
     return base.replace(model=model, name=base.name + '_continuous')
 
 
+def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
+    """:func:`continuous_final` with its column constants shared by every frame replaced by one constant per
+    detector pixel shared by every frame, over the job's subchannels and the one beyond each end (the pixels the
+    bilinear sampling of the job's observations reaches): a detector-fixed pattern of any shape, such as a dark
+    current's pixel-to-pixel structure. It carries no pattern that the per-frame spectral term or the x-slopes can
+    make the same way in every frame (``exclude=sc.Overlap('spectral', 'xs_term')``); every column pattern is
+    one of its patterns, so the column term goes. Products carry 'subch_varweight_pixels_final_continuous'."""
+    base = continuous_final(channel, num_sub, num_ch, num_col)
+    first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
+    offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
+        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term')),)
+    maps = {'subchannel': base.model.chunk_maps['subchannel'],
+            'pixel': C.pixel_map(first, last, num_sub, num_ch, num_col)}
+    return base.replace(model=base.model.replace(offsets=offsets, chunk_maps=maps),
+                        name='subch_varweight_pixels_final_continuous')
+
+
 #: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5), 34 channels of 10 columns.
 POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)).replace(chunk_maps=maps(num_ch=34, num_col=10)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
