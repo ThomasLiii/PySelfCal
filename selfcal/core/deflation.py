@@ -126,10 +126,14 @@ _EXTRACT_ENTRIES = 1 << 24
 _BLAS_THREADS = 6
 #: The block conjugate gradients on the shared columns' Schur complement (:class:`_SharedSolve`) stop when every
 #: right-hand side's residual is below this fraction of it (the rounding of float64 products over many frames, as the
-#: direct solves reach), when float64 resolves no further progress (:meth:`_SharedSolve._cg`), or after
-#: :data:`_SHARED_MAXITER` iterations.
+#: direct solves reach), after :data:`_SHARED_STALL` steps in a row without a new smallest largest residual (the
+#: iterate with the smallest one kept), or after :data:`_SHARED_MAXITER` iterations.
 _SHARED_RTOL = 1e-12
 _SHARED_MAXITER = 1000
+#: Steps without a new smallest largest residual after which the block conjugate gradients stop: in finite precision
+#: the block loses its search directions and the residual stops falling, at 1e-11 to 5e-8 relative on a per-pixel
+#: term of 398 to 17,907 frames, after 9 to 11 steps; an interim value, to be replaced with the deflation's design.
+_SHARED_STALL = 3
 
 
 def axis_functions(basis, order, n) -> np.ndarray:
@@ -738,7 +742,7 @@ class _SharedSolve:
     ``C`` plus them is factorised. The column constraints on the offsets (``project``) hold exactly: a group within the
     shared columns projects the Schur complement and the iteration (``P S P``), a group within the others the blocks of
     ``D`` (:class:`_BlockFactor`). For a right-hand side in the range of ``G``, the iteration started from zero gives the
-    response of minimum norm in the shared columns, to :data:`_SHARED_RTOL` or as far as float64 resolves.
+    response of minimum norm in the shared columns, to :data:`_SHARED_RTOL` or until the iteration stalls.
     :meth:`solve` serves any right-hand side (the response to the patterns, and the signature exclusion's)."""
 
     def __init__(self, defl, storage, Gff, Ghh, hub, n_off, n_sky_S, project=None):
@@ -854,10 +858,9 @@ class _SharedSolve:
         (the norm of that column's whole right-hand side, the offsets' ``R``): one search space for all of them, so a
         slow direction they share is found once. Each step's block is made S-orthonormal and the directions it no
         longer adds (below :data:`DEPENDENT` of the largest) are dropped. It stops when every column's residual is
-        below :data:`_SHARED_RTOL`; or, once the energy ``1/2 x^T S x - b^T x`` of the divided columns (which the
-        iteration lowers at every step) no longer falls in float64, at the first step that does not lower the largest
-        residual, keeping the iterate with the smallest one (float64 resolves no further progress); or after
-        :data:`_SHARED_MAXITER` steps. Returns ``(x, iterations)``."""
+        below :data:`_SHARED_RTOL`; after :data:`_SHARED_STALL` steps in a row without a new smallest largest residual,
+        keeping the iterate with the smallest one; when no search direction is left; or after :data:`_SHARED_MAXITER`
+        steps. Returns ``(x, iterations)``."""
         n, k = b.shape
         x = np.zeros((n, k))
         sc = np.maximum(np.asarray(scale, dtype=np.float64), 1e-300)
@@ -868,7 +871,7 @@ class _SharedSolve:
         bb = np.array(b[:, cols], dtype=np.float64) / sc[cols]
         xb, r = np.zeros_like(bb), bb.copy()
         best, best_x = np.inf, xb.copy()
-        energy, settled, stop, it = 0.0, False, 'iterations', 0
+        stale, stop, it = 0, 'iterations', 0
         p = self._precondition(r)
         t0 = time.perf_counter()
         while it < _SHARED_MAXITER:
@@ -877,7 +880,7 @@ class _SharedSolve:
             w, V = np.linalg.eigh(0.5 * (g + g.T))
             keep = w > DEPENDENT * max(float(w.max()), 1e-300)
             if not keep.any():
-                stop = 'rounding'
+                stop = 'no direction left'
                 break
             T = V[:, keep] / np.sqrt(w[keep])                     # p T is S-orthonormal
             pn, qn = p @ T, q @ T
@@ -890,28 +893,26 @@ class _SharedSolve:
             logger.info(f"Deflation: the shared offset columns' response, iteration {it}: largest relative residual "
                         f"{top:.2e} over {cols.size} right-hand side(s), {int(keep.sum())} search direction(s) "
                         f"({time.perf_counter() - t0:.0f} s)")
-            lower = top < best
-            if lower:
-                best = top
+            if top < best:
+                best, stale = top, 0
                 best_x[...] = xb
+            else:
+                stale += 1
             if top <= _SHARED_RTOL:
                 stop = 'tolerance'
                 break
-            if settled and not lower:
-                stop = 'rounding'
+            if stale >= _SHARED_STALL:
+                stop = 'stalled'
                 break
-            e = -0.5 * float(np.einsum('ij,ij->', xb, bb) + np.einsum('ij,ij->', xb, r))
-            settled = settled or e >= energy
-            energy = e
             z = self._precondition(r)
             p = z - pn @ (qn.T @ z)                                 # S-orthogonal to the last block
         if stop == 'iterations':
             self.converged = False
             logger.warning(f"Deflation: the shared offset columns' response stopped after {it} iterations, the largest "
                            f"relative residual {best:.2e} above the tolerance {_SHARED_RTOL:g}")
-        elif stop == 'rounding':
-            logger.info(f"Deflation: the shared offset columns' response: float64 resolves no further progress after "
-                        f"{it} iterations; the iterate with the largest relative residual {best:.2e} kept")
+        elif stop != 'tolerance':
+            logger.info(f"Deflation: the shared offset columns' response: {stop} after {it} iterations; the iterate "
+                        f"with the largest relative residual {best:.2e} kept")
         self.stops.append(stop)
         x[:, cols] = best_x * sc[cols]
         return x, it
