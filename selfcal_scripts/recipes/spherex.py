@@ -175,12 +175,11 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     bilinear sampling of the job's observations reaches): a detector-fixed pattern of any shape, such as a dark
     current's pixel-to-pixel structure. It carries no pattern that the per-frame spectral term or the x-slopes can
     make the same way in every frame (``exclude=sc.Overlap('spectral', 'xs_term')``); every column pattern is
-    one of its patterns, so the column term goes. The cal holds it once (``store='groups'``), not once per frame.
-    Products carry 'subch_varweight_pixels_final_continuous'."""
+    one of its patterns, so the column term goes. Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)
     first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
     offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
-        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term'), store='groups'),)
+        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term')),)
     maps = {'subchannel': base.model.chunk_maps['subchannel'],
             'pixel': C.pixel_map(first, last, num_sub, num_ch, num_col)}
     return base.replace(model=base.model.replace(offsets=offsets, chunk_maps=maps),
