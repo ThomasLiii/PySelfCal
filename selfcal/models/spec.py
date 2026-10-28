@@ -647,9 +647,10 @@ class ModelSpec:
         :class:`~selfcal.core.layout.SystemLayout` of the assembled system. Empty without ``exclude``
         terms (the historical recipes). A sky term's ``exclude`` gives one group over the term's pixel
         columns with the shapes it returns (orthonormalised), evaluated at the grid's pixel coordinates.
-        An offset term's ``exclude_overlap`` gives, per group, the term's chunks over the pixels of
-        ``window`` (the job's per-pixel valid weight on the detector grid, ``> 0``; None: every pixel) and
-        an orthonormal basis of the patterns it shares with the named terms (:meth:`_overlap`)."""
+        An offset term's ``exclude_overlap`` gives, per group, the term's chunks over the pixels the job's
+        observations reach (``window``, the job's per-pixel valid weight on the detector grid, ``> 0``, and the
+        one pixel around it that bilinear sampling touches; None: every pixel) and an orthonormal basis of the
+        patterns it shares with the named terms (:meth:`_overlap`)."""
         out = []
         H, W = (int(v) for v in layout.ref_shape)
         for j, term in enumerate(self.sky):
@@ -722,9 +723,10 @@ class ModelSpec:
 
     def _overlap(self, m, geom, window, log):
         """``(chunks, P)``: the patterns offset term ``m`` shares with the terms its ``exclude_overlap`` names,
-        as directions over its chunks. ``chunks`` are the term's chunk ids on the pixels of ``window``
-        (``> 0``; None: every pixel) and ``P`` ``(len(chunks), k)`` an orthonormal basis of the term's
-        coefficients that make a fixed pattern of the named terms there.
+        as directions over its chunks. ``chunks`` are the term's chunk ids on the pixels the job's
+        observations reach (``window > 0`` and the one pixel around it; None: every pixel) and ``P``
+        ``(len(chunks), k)`` an orthonormal basis of the term's coefficients that make a fixed pattern of the
+        named terms there.
 
         Over those pixels, the term makes the patterns ``a[chunk(p)] f(p)`` (``f`` its function, 1 without
         one); a named term with ``n`` functions ``g_k`` on its own chunk map makes, with the same coefficients
@@ -744,7 +746,11 @@ class ModelSpec:
         det = np.asarray(cm.det).ravel()
         inside = det >= 0
         if window is not None:
-            inside &= np.asarray(window).ravel() > 0
+            # the window and the pixels around it that the job's observations reach: an observation is solved when
+            # its bilinear sample of the window is above zero, so its four detector neighbours lie within one pixel of it
+            from scipy.ndimage import binary_dilation
+            reach = binary_dilation(np.asarray(window) > 0, structure=np.ones((3, 3), dtype=bool))
+            inside &= reach.ravel()
         pix = np.flatnonzero(inside)
         chunk_ids, cid = np.unique(det[pix], return_inverse=True)
         known = self._known(())

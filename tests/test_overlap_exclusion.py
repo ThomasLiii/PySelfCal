@@ -110,7 +110,9 @@ def test_the_window_limits_the_pixels():
     window[:, : W // 2] = 1.0
     excl = _exclusions(_model('pixels', sc.Overlap('gradient', 'scalar')), window=window)
     (cols, Q), = excl
-    inside = np.flatnonzero(window.ravel() > 0)
+    reach = np.zeros((H, W))
+    reach[:, : W // 2 + 1] = 1.0                       # the window and the column its observations' bilinear samples reach
+    inside = np.flatnonzero(reach.ravel() > 0)
     assert np.array_equal(cols[0] - BASE, inside)
     y, x = np.mgrid[0:H, 0:W].astype(np.float64)
     gx, gy = gradient(x, y)
