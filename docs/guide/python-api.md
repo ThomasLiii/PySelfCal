@@ -173,7 +173,9 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
   value per frame. `exclude=sc.SkySignature(k)` keeps a per-frame term from taking up the smooth sky
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
-  constant); it needs `sc.Fit(deflate=...)`
+  constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
+  any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
+  frame
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds

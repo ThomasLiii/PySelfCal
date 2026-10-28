@@ -587,7 +587,7 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     watch = {} if spec.monitor is None else {'monitor': spec.monitor}
     if snapshots is not None:
         watch['snapshots'] = snapshots
-    exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout)      # the terms' hard constraints, if any
+    exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout, window=jobgeom.det_valid_weight)   # the terms' hard constraints, if any
     signatures = ctx.model.signature_exclusions(cc.layout)             # the terms that may not carry a sky signature
     cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
                   exclusions=exclusions or None, signatures=signatures or None)

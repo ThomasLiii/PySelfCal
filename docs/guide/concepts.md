@@ -286,6 +286,16 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
   too) but the constant, instead of the polynomials up to a degree.
+- `sc.Offsets(exclude=sc.Overlap('a', 'b'))`: the term carries no detector pattern that the offset
+  terms `a` and `b` can also make with the same coefficients in every frame (their fixed patterns).
+  Two terms that can make the same pattern leave the data unable to say which holds it; with the
+  exclusion it goes to `a` and `b`. The shared patterns are the intersection of the two terms'
+  pattern spaces over the detector pixels of the job, computed from the terms' chunk maps and their
+  functions at each pixel centre: a term with one offset per detector pixel gives up every fixed
+  pattern of the named terms, a term with one offset per detector column only those constant along
+  each column (for a constant and a gradient along x, the same constraint as `exclude=sc.Poly(1)`).
+  The named terms must read detector-plane variables only (`det_x`, `det_y`, detector maps and
+  variables derived from them).
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.

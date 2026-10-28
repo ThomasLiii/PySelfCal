@@ -46,7 +46,7 @@ def _ref(fn):
     """How a function is handed to the model's data form: its import path, or the by-value object itself."""
     return fn if isinstance(fn, by_value) else function_ref(fn)
 
-__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets',
+__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets', 'Overlap',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
            'ChunkMap', 'Prior', 'Model', 'continuum', 'spectral', 'two_block']
 
@@ -375,6 +375,45 @@ class SkySignature(Config):
 
 
 @dataclass(frozen=True)
+class Overlap(Config):
+    """What an offset term may not carry (``Offsets(exclude=Overlap('a', 'b'))``): any detector pattern that the
+    named offset terms of the model can also make with the same coefficients in every frame (their fixed patterns).
+
+    Two terms that can make the same detector pattern leave the data unable to say which of them holds it: an exact
+    degeneracy, settled otherwise by where the solver starts. With this exclusion the term gives up the shared
+    patterns to the named terms (a hard constraint by reparametrisation, no row and no weight). The shared patterns
+    are the intersection of the two terms' pattern spaces over the detector pixels of the job's solve, computed
+    exactly from the terms themselves (their chunk maps and their functions at each pixel centre), so a term with
+    one offset per detector pixel gives up every fixed pattern of the named terms, and a term with one offset per
+    detector column only those that are constant along each column. The named terms' functions must read
+    detector-plane variables only (the built-in ``det_x``, ``det_y``, detector maps, and variables derived from
+    them): a function of per-frame or per-observation data makes no fixed pattern. ``terms``: the names of the
+    other offset terms (:attr:`Offsets.term_name`).
+    """
+    terms: tuple[str, ...]
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, *terms):
+        object.__setattr__(self, 'terms', tuple(terms))
+        self.__post_init__()
+
+    def __repr__(self):
+        return _call('Overlap', self.terms)
+
+    @classmethod
+    def _from_fields(cls, terms):
+        return cls(*terms)
+
+    def _validate(self):
+        if not self.terms or not all(isinstance(t, str) and t for t in self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: the names of one or more offset terms of the model")
+        if len(set(self.terms)) != len(self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: a term named twice")
+
+
+@dataclass(frozen=True)
 class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
@@ -447,7 +486,9 @@ class Offsets(Config):
     the data can place it: other terms or the sky. ``exclude=SkySignature(k)`` is a hard
     constraint of another kind: the term carries no part of its response to the sky polynomials
     of degree 1 to k (a per-frame slope term that would otherwise absorb a sky plane in every
-    frame; :class:`SkySignature`).
+    frame; :class:`SkySignature`). ``exclude=Overlap('a', 'b')`` is a hard constraint of a third kind: the term
+    carries no detector pattern that the named offset terms can also make with the same coefficients in every frame
+    (:class:`Overlap`), so the two never share a pattern the data cannot split.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
@@ -465,7 +506,7 @@ class Offsets(Config):
     smooth_step: int | None = None
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
-    exclude: Poly | SkySignature | None = added(None, since='2026-10')
+    exclude: Poly | SkySignature | Overlap | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -500,10 +541,13 @@ class Offsets(Config):
             if self.per == 'all':
                 raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
                                   "a term shared by every frame is the same in every frame: nothing to constrain")
+        elif isinstance(self.exclude, Overlap):
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: exclude=Overlap(...) applies to a term of one unknown per chunk (not polynomial= or basis=)")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
-                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis) or a SkySignature(degree)")
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis), a SkySignature(degree) or an Overlap(terms)")
             bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
             if bad:
                 raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
@@ -536,6 +580,8 @@ class Offsets(Config):
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
             if isinstance(self.exclude, SkySignature):
                 out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+            elif isinstance(self.exclude, Overlap):
+                out['exclude_overlap'] = list(self.exclude.terms)
             elif self.exclude is not None:
                 out['exclude_degree'] = int(self.exclude.degree)
                 out['exclude_axis'] = self.exclude.along
@@ -926,6 +972,13 @@ class Model(Config):
         dup = sorted({n for n in explicit if explicit.count(n) > 1} | (set(explicit) & set(names)))
         if dup:
             raise ConfigError(f"Model: term names used twice: {dup}")
+        for t in self.offsets:
+            if isinstance(t.exclude, Overlap):
+                bad = [n for n in t.exclude.terms if n not in off or n == t.term_name]
+                if bad:
+                    raise ConfigError(f"Model: Offsets({t.term_name!r}, exclude={t.exclude!r}) names {bad}, which "
+                                      f"{'is' if len(bad) == 1 else 'are'} not another offset term of the model "
+                                      f"(the offset terms: {off})")
         known = set(names) | set(off)
         for p in self.priors:
             bad = [t for t in p.terms if t not in known]

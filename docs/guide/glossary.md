@@ -236,7 +236,10 @@ all of a group's chunks. The solver imposes it exactly by reparametrisation
 ([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), with no weight; a chunk with no
 unknown in the solve (no observation and no prior row on it) drops out. It applies to a term of one
 unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the chunk term of
-`sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar). See
+`sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar).
+`sc.Offsets(exclude=sc.Overlap('a', 'b'))` is the same kind of restriction with directions taken from
+the model itself: the term carries no detector pattern that the offset terms `a` and `b` can make
+with the same coefficients in every frame. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Hook { #hook }
