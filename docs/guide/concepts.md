@@ -299,7 +299,9 @@ Hard constraints settle a direction without any row or weight, by removing it fr
 - Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
   columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
   say), their couplings to the other offsets are applied through the system's matrix and their part
-  of the response is solved by conjugate gradients, to the rounding of the products. That solve
+  of the response is solved by block conjugate gradients (one search space for all the patterns), to
+  the rounding of the products or as far as float64 resolves. Patterns of the shared columns that no
+  observation sees (neighbouring pixels the sampling cannot tell apart) leave that solve. It
   cannot find a direction the data do not see between the shared columns and the other offsets:
   remove such a gauge in the model (`exclude=sc.Overlap(...)`), or the solution sets it differently
   from the minimum-norm one.

@@ -2,11 +2,12 @@
 with more shared columns than a dense Schur complement holds, their couplings to the other offsets are applied through
 the matrix and their part of the response solved by conjugate gradients. On the toy of :mod:`test_deflation` (a
 column pattern every frame shares), forced through that path, the pairing, the deflation space and the solution are
-those of the dense path, with and without a constraint on the shared columns."""
+those of the dense path, with and without a constraint on the shared columns, and when the shared columns' own normal matrix is singular."""
 import json
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 
 import selfcal as sc
 import selfcal.core.deflation as D
@@ -82,3 +83,22 @@ def test_few_shared_columns_keep_the_dense_path():
     x1, r1 = _solve(system, deflate=sc.Deflate(3, basis='polynomial'), iter_lim=300, shared=cols)
     assert np.array_equal(x0, x1)
     assert 'shared_columns' not in json.loads(r1.deflation)
+
+
+def test_a_singular_normal_matrix_of_the_shared_columns_leaves_its_unseen_patterns_out(monkeypatch):
+    """A shared column observed exactly as another (a copy): their difference is a pattern no observation sees, so the
+    shared columns' normal matrix is singular and its LU fails. The iterative solve leaves that pattern out of the
+    response (its minimum-norm choice there) and factorises the rest; the response is otherwise the dense path's, and
+    the solution fits the data as the dense path's does. (The two differ along that pattern, which no observation sees:
+    the deflation's coefficients are not compared.)"""
+    A, b, npix, grid, shared = _shared_system(frames=200)
+    n = A.shape[1]
+    A = sp.hstack([A, A[:, [n - shared]]], format='csr')            # a copy of the first shared column
+    system = (A, b, npix, grid)
+    cols = np.arange(n - shared, n + 1)
+    P = np.vstack([_fixed_patterns(shared), np.zeros((1, 2 * (shared // 4)))])
+    (x_dense, d_dense), (x_iter, d_iter) = _both(system, cols, monkeypatch, exclusions=[(cols[None, :], P)])
+    s = d_iter['shared_columns']
+    assert s['unseen_patterns'] == 1 and s['converged']
+    assert d_iter['pairing_residual'] < 1e-10
+    assert np.linalg.norm(A @ (x_iter - x_dense)) < 1e-7 * np.linalg.norm(A @ x_dense)

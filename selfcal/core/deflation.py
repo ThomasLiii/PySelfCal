@@ -124,9 +124,10 @@ _EXTRACT_ENTRIES = 1 << 24
 #: products, the Schur complement's batches): OpenBLAS serialises concurrent calls on its buffer lock, so more threads
 #: run slower, and each batch in flight holds its own buffers.
 _BLAS_THREADS = 6
-#: The conjugate gradients on the shared columns' Schur complement (:class:`_SharedSolve`) stop for a right-hand side
-#: when its residual is below this fraction of the right-hand side (the rounding of float64 products over many
-#: frames, as the direct solves reach), or after :data:`_SHARED_MAXITER` iterations.
+#: The block conjugate gradients on the shared columns' Schur complement (:class:`_SharedSolve`) stop when every
+#: right-hand side's residual is below this fraction of it (the rounding of float64 products over many frames, as the
+#: direct solves reach), when float64 resolves no further progress (:meth:`_SharedSolve._cg`), or after
+#: :data:`_SHARED_MAXITER` iterations.
 _SHARED_RTOL = 1e-12
 _SHARED_MAXITER = 1000
 
@@ -679,6 +680,50 @@ def _split_entries(ip, ci, dd, keep, newpos, buf, tag):
     return ip2, ci2, dd2
 
 
+def _null_patterns(C):
+    """An orthonormal basis (columns) of the patterns that ``C``, sparse, positive semi-definite and with a positive
+    diagonal, maps to zero to rounding: the eigenvectors of ``C`` scaled to unit diagonal whose eigenvalues are below
+    :data:`DEPENDENT` of a bound on the largest (the block solves' rule for a direction the data do not see), found by
+    shift-invert Lanczos about a small negative shift from a fixed start, the search widened until a larger eigenvalue
+    turns up."""
+    from scipy.sparse import diags
+    from scipy.sparse.linalg import eigsh
+    s = 1.0 / np.sqrt(np.asarray(C.diagonal(), dtype=np.float64))
+    Cn = (diags(s) @ C @ diags(s)).tocsc()
+    top = float(abs(Cn).sum(axis=1).max())                 # bounds the largest eigenvalue
+    n = Cn.shape[0]
+    v0 = np.random.default_rng(0).standard_normal(n)
+    k = min(16, n - 1)
+    while True:
+        mu, W = eigsh(Cn, k=k, sigma=-DEPENDENT * top, which='LM', v0=v0)
+        null = mu < DEPENDENT * top
+        if not null.all() or k >= n - 1:
+            break
+        k = min(2 * k, n - 1)
+    return np.linalg.qr(s[:, None] * W[:, null])[0]
+
+
+def _join_patterns(projector, N):
+    """``projector`` (a :class:`~selfcal.core.projector.ColumnProjector` over the shared columns, or None) with the
+    columns of ``N`` (orthonormal, over the same columns) excluded as well: ``N`` and every group its entries touch
+    become one group."""
+    from .projector import _DROP
+    support = np.flatnonzero(np.abs(N).max(axis=1) > _DROP * float(np.abs(N).max()))
+    groups = [] if projector is None else list(projector.groups)
+    hit = [np.isin(c[c >= 0], support).any() for c, _ in groups]
+    cols = np.unique(np.concatenate([support] + [c[c >= 0] for (c, _), h in zip(groups, hit) if h]))
+    dirs = [N[cols]]
+    for (c, Q), h in zip(groups, hit):
+        if h:
+            for row, q in zip(c, Q):
+                E = np.zeros((cols.size, q.shape[1]))
+                E[np.searchsorted(cols, row[row >= 0])] = q[row >= 0]
+                dirs.append(E)
+    U, sv, _ = np.linalg.svd(np.hstack(dirs), full_matrices=False)
+    U = U[:, sv > _DROP * float(sv.max())]
+    return ColumnProjector([g for g, h in zip(groups, hit) if not h] + [(cols[None, :], U[None, :, :])])
+
+
 class _SharedSolve:
     """``G^+ R`` for the offsets' normal matrix ``G = B_off^T B_off`` when many of its columns are shared by many
     frames (``hub``, offset-space indices: more than a dense Schur complement can hold), without forming their
@@ -686,12 +731,14 @@ class _SharedSolve:
 
     With ``G = [[D, B], [B^T, C]]`` (``D``: the other columns, ``Gff``, block-diagonal by frame; ``C``: the shared
     columns among themselves, ``Ghh``; ``B = B_F^T B_H``: the couplings, never formed), the shared columns' part solves
-    the Schur complement ``S X_H = R_H - B^T D^+ R_F``, ``S = C - B^T D^+ B``, by conjugate gradients preconditioned by
-    ``C`` (a sparse LU factorisation; its diagonal when that fails), every product with ``B`` or ``B^T`` one sweep over
-    the matrix (:meth:`_sweep`); then ``X_F = D^+ (R_F - B X_H)``. The column constraints on the offsets (``project``)
-    hold exactly: a group within the shared columns projects the Schur complement and the iteration (``P S P``), a group
-    within the others the blocks of ``D`` (:class:`_BlockFactor`). For a right-hand side in the range of ``G``, the
-    iteration started from zero gives the response of minimum norm in the shared columns, to :data:`_SHARED_RTOL`.
+    the Schur complement ``S X_H = R_H - B^T D^+ R_F``, ``S = C - B^T D^+ B``, by block conjugate gradients
+    (:meth:`_cg`) preconditioned by ``C``'s sparse LU factorisation, every product with ``B`` or ``B^T`` one sweep over
+    the matrix (:meth:`_sweep`); then ``X_F = D^+ (R_F - B X_H)``. When ``C`` is singular, the patterns of the shared
+    columns no observation sees (exact freedoms, :func:`_null_patterns`) leave the solve as the constraints' do, and
+    ``C`` plus them is factorised. The column constraints on the offsets (``project``) hold exactly: a group within the
+    shared columns projects the Schur complement and the iteration (``P S P``), a group within the others the blocks of
+    ``D`` (:class:`_BlockFactor`). For a right-hand side in the range of ``G``, the iteration started from zero gives the
+    response of minimum norm in the shared columns, to :data:`_SHARED_RTOL` or as far as float64 resolves.
     :meth:`solve` serves any right-hand side (the response to the patterns, and the signature exclusion's)."""
 
     def __init__(self, defl, storage, Gff, Ghh, hub, n_off, n_sky_S, project=None):
@@ -721,15 +768,29 @@ class _SharedSolve:
         self.D = _BlockFactor(Gff, ColumnProjector(groups_f).mapped(self.fpos) if groups_f else None)
         self.Gff = Gff.tocsr()
         self.C = Ghh.tocsr()
+        self._diag, self.null = None, 0
         try:
             self._lu = splu(self.C.tocsc())
-            self._diag = None
+            kind = "their normal matrix's sparse LU"
         except RuntimeError:
-            self._lu = None
-            d = np.asarray(self.C.diagonal(), dtype=np.float64)
-            self._diag = np.where(d > 0, d, 1.0)
+            from .projector import _DROP
+            N = _null_patterns(self.C)
+            self.null = int(N.shape[1])
+            if self.null:
+                self.ph = _join_patterns(self.ph, N)
+                Ns = csr_matrix(np.where(np.abs(N) > _DROP * float(np.abs(N).max()), N, 0.0))
+                self._lu = splu((self.C + (Ns @ Ns.T) * float(np.median(self.C.diagonal()))).tocsc())
+                kind = (f"their normal matrix is singular: {self.null} pattern(s) no observation sees left out of the "
+                        f"solve, the sparse LU of the rest")
+            else:
+                self._lu = None
+                d = np.asarray(self.C.diagonal(), dtype=np.float64)
+                self._diag = np.where(d > 0, d, 1.0)
+                kind = "their normal matrix's diagonal (its LU failed, and no pattern it maps to zero was found)"
+                logger.warning(f"Deflation: the shared offset columns' preconditioner: {kind}")
+        logger.info(f"Deflation: the shared offset columns' preconditioner: {kind}")
         self.descs = _piece_index(storage)
-        self.iterations, self.history, self.converged, self.sweeps = [], [], True, 0
+        self.iterations, self.history, self.converged, self.sweeps, self.stops = [], [], True, 0, []
         self.gdiag = np.zeros(n_off)
         self.gdiag[self.F] = Gff.diagonal()
         self.gdiag[self.H] = self.C.diagonal()
@@ -789,53 +850,70 @@ class _SharedSolve:
         return out
 
     def _cg(self, b, scale):
-        """Conjugate gradients on ``P S P x = P b`` for every column of ``b`` at once (each its own recurrence): a
-        column stops when its residual is below :data:`_SHARED_RTOL` of ``scale`` (the norm of that column's whole
-        right-hand side, the offsets' ``R``: a shared part at the rounding level of it is done at once); the others go
-        on. Returns ``(x, iterations)``."""
+        """Block conjugate gradients on ``P S P x = P b`` for the columns of ``b`` together, each divided by ``scale``
+        (the norm of that column's whole right-hand side, the offsets' ``R``): one search space for all of them, so a
+        slow direction they share is found once. Each step's block is made S-orthonormal and the directions it no
+        longer adds (below :data:`DEPENDENT` of the largest) are dropped. It stops when every column's residual is
+        below :data:`_SHARED_RTOL`; or, once the energy ``1/2 x^T S x - b^T x`` of the divided columns (which the
+        iteration lowers at every step) no longer falls in float64, at the first step that does not lower the largest
+        residual, keeping the iterate with the smallest one (float64 resolves no further progress); or after
+        :data:`_SHARED_MAXITER` steps. Returns ``(x, iterations)``."""
         n, k = b.shape
         x = np.zeros((n, k))
-        r = np.array(b, dtype=np.float64, copy=True)
-        bnorm = np.maximum(np.asarray(scale, dtype=np.float64), 1e-300)
-        active = np.flatnonzero(np.linalg.norm(r, axis=0) > _SHARED_RTOL * bnorm)
-        if active.size == 0:
+        sc = np.maximum(np.asarray(scale, dtype=np.float64), 1e-300)
+        cols = np.flatnonzero(np.linalg.norm(b, axis=0) > _SHARED_RTOL * sc)
+        if cols.size == 0:
+            self.stops.append('tolerance')
             return x, 0
-        z = self._precondition(r[:, active])
-        p = np.zeros((n, k))
-        p[:, active] = z
-        rz = np.zeros(k)
-        rz[active] = np.einsum('ij,ij->j', r[:, active], z)
-        it = 0
+        bb = np.array(b[:, cols], dtype=np.float64) / sc[cols]
+        xb, r = np.zeros_like(bb), bb.copy()
+        best, best_x = np.inf, xb.copy()
+        energy, settled, stop, it = 0.0, False, 'iterations', 0
+        p = self._precondition(r)
         t0 = time.perf_counter()
-        while active.size and it < _SHARED_MAXITER:
-            q = self._schur(p[:, active])
-            pq = np.einsum('ij,ij->j', p[:, active], q)
-            ok = pq > 0                                            # a direction the data do not see: that column is done
-            alpha = np.where(ok, rz[active] / np.where(ok, pq, 1.0), 0.0)
-            x[:, active] += alpha * p[:, active]
-            r[:, active] -= alpha * q
-            it += 1
-            rel = np.linalg.norm(r[:, active], axis=0) / bnorm[active]
-            self.history.append(float(rel.max()))
-            logger.info(f"Deflation: the shared offset columns' response, iteration {it}: largest relative residual "
-                        f"{rel.max():.2e} over {active.size} right-hand side(s) ({time.perf_counter() - t0:.0f} s)")
-            if np.any(~ok & (rel > _SHARED_RTOL)):
-                self.converged = False
-                logger.warning(f"Deflation: the shared offset columns' response met a direction the data do not see "
-                               f"with {int(np.sum(~ok & (rel > _SHARED_RTOL)))} right-hand side(s) above the tolerance")
-            keep = active[(rel > _SHARED_RTOL) & ok]
-            if keep.size == 0:
-                active = keep
+        while it < _SHARED_MAXITER:
+            q = self._schur(p)
+            g = p.T @ q
+            w, V = np.linalg.eigh(0.5 * (g + g.T))
+            keep = w > DEPENDENT * max(float(w.max()), 1e-300)
+            if not keep.any():
+                stop = 'rounding'
                 break
-            zk = self._precondition(r[:, keep])
-            rz_new = np.einsum('ij,ij->j', r[:, keep], zk)
-            p[:, keep] = zk + (rz_new / rz[keep]) * p[:, keep]
-            rz[keep] = rz_new
-            active = keep
-        if active.size:
+            T = V[:, keep] / np.sqrt(w[keep])                     # p T is S-orthonormal
+            pn, qn = p @ T, q @ T
+            alpha = pn.T @ r
+            xb += pn @ alpha
+            r -= qn @ alpha
+            it += 1
+            top = float(np.linalg.norm(r, axis=0).max())
+            self.history.append(top)
+            logger.info(f"Deflation: the shared offset columns' response, iteration {it}: largest relative residual "
+                        f"{top:.2e} over {cols.size} right-hand side(s), {int(keep.sum())} search direction(s) "
+                        f"({time.perf_counter() - t0:.0f} s)")
+            lower = top < best
+            if lower:
+                best = top
+                best_x[...] = xb
+            if top <= _SHARED_RTOL:
+                stop = 'tolerance'
+                break
+            if settled and not lower:
+                stop = 'rounding'
+                break
+            e = -0.5 * float(np.einsum('ij,ij->', xb, bb) + np.einsum('ij,ij->', xb, r))
+            settled = settled or e >= energy
+            energy = e
+            z = self._precondition(r)
+            p = z - pn @ (qn.T @ z)                                 # S-orthogonal to the last block
+        if stop == 'iterations':
             self.converged = False
-            logger.warning(f"Deflation: the shared offset columns' response stopped after {it} iterations with "
-                           f"{active.size} right-hand side(s) above the tolerance {_SHARED_RTOL:g}")
+            logger.warning(f"Deflation: the shared offset columns' response stopped after {it} iterations, the largest "
+                           f"relative residual {best:.2e} above the tolerance {_SHARED_RTOL:g}")
+        elif stop == 'rounding':
+            logger.info(f"Deflation: the shared offset columns' response: float64 resolves no further progress after "
+                        f"{it} iterations; the iterate with the largest relative residual {best:.2e} kept")
+        self.stops.append(stop)
+        x[:, cols] = best_x * sc[cols]
         return x, it
 
     def solve(self, R, pool=None):
@@ -864,7 +942,7 @@ class _SharedSolve:
     def info(self):
         return {'blocks': self.D.blocks, 'largest': self.D.largest, 'zero_eigenvalues': self.D.zero, 'hubs': self.nH,
                 'shared_columns': self.H, 'iterations': list(self.iterations), 'converged': bool(self.converged),
-                'sweeps': int(self.sweeps), 'gdiag': self.gdiag, 'factor': self}
+                'stops': list(self.stops), 'sweeps': int(self.sweeps), 'gdiag': self.gdiag, 'factor': self}
 
 
 
@@ -1474,8 +1552,8 @@ class Deflation:
             f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
             f"{info['zero_eigenvalues']} zero eigenvalues"
             + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
-            + (f", solved by conjugate gradients in {'+'.join(str(i) for i in info['iterations'])} iterations ({info['sweeps']} sweeps over the "
-               f"matrix{'' if info['converged'] else ', NOT converged'})" if 'iterations' in info else '')
+            + (f", solved by block conjugate gradients in {'+'.join(str(i) for i in info['iterations'])} iterations ({info['sweeps']} sweeps over the "
+               f"matrix; stopped at {', '.join(info['stops'])}{'' if info['converged'] else ', NOT converged'})" if 'iterations' in info else '')
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
             f"|B z| / |B F| from {self.nullness.min():.2e} to {self.nullness.max():.2e}; {self.kept} of {k} "
             f"directions kept ({self.gauges} gauge or dependent left out); passes {t_pass1:.1f} s (the offsets' normal "
@@ -2051,6 +2129,7 @@ class Deflation:
         if self.shared_solve is not None:                                                          # the shared offset columns' iterative solve
             ss = self.shared_solve
             out['shared_columns'] = {'columns': int(ss.nH), 'iterations': list(ss.iterations), 'converged': bool(ss.converged),
+                                     'stops': list(ss.stops), 'unseen_patterns': int(ss.null),
                                      'sweeps': int(ss.sweeps), 'relative_residuals': [float(v) for v in ss.history],
                                      'tolerance': _SHARED_RTOL}
         return out
