@@ -1505,17 +1505,19 @@ class Deflation:
             def images(r0, r1, prepared, buf):
                 nr = r1 - r0
                 U = buf.take('U', (nr, k + 1))
+                Uk = buf.take('Uk', (nr, k))             # contiguous, as the kernels write (a column slice of U is not)
                 for lip, pos, d64, sky, off, _oid in prepared:
                     if pos is not None:
-                        _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
+                        _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, Uk)
                         continue
                     # a piece of one kind, its entries as stored against its part of the patterns; the pieces come
                     # in column order and a row's sky entries before its offset entries, so each row's sum is that
                     # of the whole row
                     if sky is not None:
-                        _sparsetools.csr_matvecs(nr, n_sky_S, k, sky[0], sky[1], sky[2], Zt[:n_sky_S], U[:, :k])
+                        _sparsetools.csr_matvecs(nr, n_sky_S, k, sky[0], sky[1], sky[2], Zt[:n_sky_S], Uk)
                     if off is not None:
-                        _sparsetools.csr_matvecs(nr, nS - n_sky_S, k, off[0], off[1], off[2], Zt[n_sky_S:], U[:, :k])
+                        _sparsetools.csr_matvecs(nr, nS - n_sky_S, k, off[0], off[1], off[2], Zt[n_sky_S:], Uk)
+                U[:, :k] = Uk
                 pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
                 U[:, k] = bc
