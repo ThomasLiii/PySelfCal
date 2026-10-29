@@ -102,3 +102,50 @@ def test_a_singular_normal_matrix_of_the_shared_columns_leaves_its_unseen_patter
     assert s['unseen_patterns'] == 1 and s['converged']
     assert d_iter['pairing_residual'] < 1e-10
     assert np.linalg.norm(A @ (x_iter - x_dense)) < 1e-7 * np.linalg.norm(A @ x_dense)
+
+
+def test_the_signature_solve_starts_from_the_response_solves_search_space(tmp_path, monkeypatch):
+    """A term with a sky-signature exclusion makes the deflation solve the shared columns twice (the response, then
+    the signature's Lagrange form, the same operator): the second solve starts from the first's search space and keeps
+    its blocks S-orthogonal to it. It converges, and its outcome is the second solve's from scratch: the same
+    constraint, and the same fit to the precision of the solves."""
+    import h5py
+
+    from test_offset_rows import _field, pixel_chunks
+    from test_any_telescope import COADD, FIT, NUMERICS, plane
+
+    monkeypatch.setattr(D, '_SCHUR_MAX', 0)
+    field = _field(tmp_path)
+    model = sc.Model(chunk_maps={'pixels': sc.ChunkMap(pixel_chunks)}, sky=[sc.Sky(damping=1e-4)],
+                     offsets=[sc.Offsets('pattern', on='pixels', per='all', exclude=sc.Overlap('gradient', 'scalar')),
+                              sc.Offsets('gradient', on='detector', basis=plane, n=2, exclude=sc.SkySignature('all')),
+                              sc.Offsets('scalar', on='detector')])
+
+    def run(name):
+        recipe = sc.Recipe(model, fit=FIT.replace(deflate=sc.Deflate(3, basis='polynomial')), coadd=COADD,
+                           numerics=NUMERICS, name=name)
+        res = field.calibrate(recipe, jobs=sc.Job('All'))
+        with h5py.File(res.cal_paths[0], 'r') as f:
+            d = json.loads(dict(f['solve'].attrs)['deflation'])
+            solved = {k: f['offsets'][k][()] for k in f['offsets']}
+        return d, solved
+
+    d_new, x_new = run('recycled')
+    init = D._SharedSolve.__init__
+
+    def without(self, *a, **k):
+        init(self, *a, **k)
+        self._keep = False
+
+    monkeypatch.setattr(D._SharedSolve, '__init__', without)
+    d_old, x_old = run('from_scratch')
+    s_new, s_old = d_new['shared_columns'], d_old['shared_columns']
+    assert len(s_new['iterations']) == 2 and len(s_old['iterations']) == 2       # the response and the signature
+    assert s_new['converged'] and s_old['converged']
+    assert s_new['iterations'][0] == s_old['iterations'][0]                      # the first solve is the same
+    assert s_new['iterations'][1] <= s_old['iterations'][1]
+    (sig_new,), (sig_old,) = d_new['signature_exclusions'], d_old['signature_exclusions']
+    assert sig_new['directions'] == sig_old['directions']
+    assert sig_new['constraint_held'] < 1e-10 and sig_old['constraint_held'] < 1e-10
+    for k in x_old:
+        np.testing.assert_allclose(x_new[k], x_old[k], rtol=1e-5, atol=1e-6 * np.abs(x_old[k]).max())

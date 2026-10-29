@@ -867,6 +867,7 @@ class _SharedSolve:
         self.descs = _piece_index(storage)
         self.spans = [sp for sp in _piece_spans(storage, defl._cuts) if sp[1] > defl._sky_end]   # not sky only
         self.iterations, self.history, self.converged, self.sweeps, self.stops = [], [], True, 0, []
+        self._space, self._keep = None, True             # the first solve's search space (_cg), kept for the next
         self.gdiag = np.zeros(n_off)
         self.gdiag[self.F] = Gff.diagonal()
         self.gdiag[self.H] = self.C.diagonal()
@@ -932,7 +933,13 @@ class _SharedSolve:
         longer adds (below :data:`DEPENDENT` of the largest) are dropped. It stops when every column's residual is
         below :data:`_SHARED_RTOL`; after :data:`_SHARED_STALL` steps in a row without a new smallest largest residual,
         keeping the iterate with the smallest one; when no search direction is left; or after :data:`_SHARED_MAXITER`
-        steps. Returns ``(x, iterations)``."""
+        steps. Returns ``(x, iterations)``.
+
+        The first call keeps its S-orthonormal search blocks ``W`` and their images ``S W``. A later call (the sky
+        signature exclusion's: the same operator, other right-hand sides) starts from the Galerkin solution in their
+        span, ``x0 = W (W^T S W)^+ W^T b``, its residual from the kept images (no product with ``S``), and keeps every
+        new search block S-orthogonal to that span (deflated conjugate gradients): the directions the first call found
+        slow are not searched again. :meth:`release` drops the space."""
         n, k = b.shape
         x = np.zeros((n, k))
         sc = np.maximum(np.asarray(scale, dtype=np.float64), 1e-300)
@@ -942,9 +949,22 @@ class _SharedSolve:
             return x, 0
         bb = np.array(b[:, cols], dtype=np.float64) / sc[cols]
         xb, r = np.zeros_like(bb), bb.copy()
+        space, keep_blocks, blocks = self._space, self._space is None and self._keep, []
+        if space is not None:
+            W, SW, Mi = space
+            c = Mi @ (W.T @ bb)
+            xb += W @ c
+            r -= SW @ c
+            logger.info(f"Deflation: the shared offset columns' response starts from the first solve's search space "
+                        f"({W.shape[1]} directions): largest relative residual "
+                        f"{float(np.linalg.norm(r, axis=0).max()):.2e} over {cols.size} right-hand side(s)")
+
+        def deflated(v):                                   # v made S-orthogonal to the kept space
+            return v if space is None else v - W @ (Mi @ (SW.T @ v))
+
         best, best_x = np.inf, xb.copy()
         stale, stop, it = 0, 'iterations', 0
-        p = self._precondition(r)
+        p = deflated(self._precondition(r))
         t0 = time.perf_counter()
         while it < _SHARED_MAXITER:
             q = self._schur(p)
@@ -956,6 +976,8 @@ class _SharedSolve:
                 break
             T = V[:, keep] / np.sqrt(w[keep])                     # p T is S-orthonormal
             pn, qn = p @ T, q @ T
+            if keep_blocks:
+                blocks.append((pn, qn))
             alpha = pn.T @ r
             xb += pn @ alpha
             r -= qn @ alpha
@@ -976,8 +998,8 @@ class _SharedSolve:
             if stale >= _SHARED_STALL:
                 stop = 'stalled'
                 break
-            z = self._precondition(r)
-            p = z - pn @ (qn.T @ z)                                 # S-orthogonal to the last block
+            z = deflated(self._precondition(r))
+            p = z - pn @ (qn.T @ z)                                 # S-orthogonal to the last block (and the kept space)
         if stop == 'iterations':
             self.converged = False
             logger.warning(f"Deflation: the shared offset columns' response stopped after {it} iterations, the largest "
@@ -986,8 +1008,19 @@ class _SharedSolve:
             logger.info(f"Deflation: the shared offset columns' response: {stop} after {it} iterations; the iterate "
                         f"with the largest relative residual {best:.2e} kept")
         self.stops.append(stop)
+        if keep_blocks and blocks:
+            W = np.hstack([pb for pb, _ in blocks])
+            SW = np.hstack([qb for _, qb in blocks])
+            M = W.T @ SW
+            w, V = np.linalg.eigh(0.5 * (M + M.T))
+            ok = w > DEPENDENT * max(float(w.max()), 1e-300)
+            self._space = (W, SW, (V[:, ok] / w[ok]) @ V[:, ok].T)
         x[:, cols] = best_x * sc[cols]
         return x, it
+
+    def release(self):
+        """Drop the search space the first solve kept (:meth:`_cg`): no later solve reuses it."""
+        self._space, self._keep = None, False
 
     def solve(self, R, pool=None):
         """``G^+ R`` (``R``: ``(n_off, k)``), ``(X, info)`` as :func:`_block_pinv_solve` returns them."""
@@ -1432,6 +1465,8 @@ class Deflation:
             del res
             if signatures:
                 X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
+            if self.shared_solve is not None:
+                self.shared_solve.release()                       # no later solve: the kept search space goes
             Zt[n_sky_S:, :] = -X                                  # the paired patterns (pass 2 reads them)
             del G, R, X
             t_pair = time.perf_counter() - t
