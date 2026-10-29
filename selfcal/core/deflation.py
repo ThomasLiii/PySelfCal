@@ -2040,23 +2040,33 @@ class Deflation:
 
     def _forward(self, storage, v, fn):
         """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
-        chunks, each exactly as a single sweep computes it)."""
+        chunks, each exactly as a single sweep computes it), the chunks read in pieces of one kind as the other passes
+        read them."""
         descs = _piece_index(storage)
+        spans = _piece_spans(storage, self._cuts)
+        n_sky_S, nS = self.n_sky_S, self.nS
         slots = {}                                                # one per thread, for this sweep
 
         def chunk(desc):
             buf = slots.get(threading.get_ident())
             if buf is None:
                 buf = slots[threading.get_ident()] = _Slot()
-            r0, r1, pieces = _piece(storage, desc, buf=buf)
+            r0, r1, pieces = _piece(storage, desc, buf=buf, spans=spans)
             nr = r1 - r0
             acc = buf.get('acc', nr, np.float64)
             acc.fill(0.0)
             for ti, (lip, cols, data) in enumerate(pieces):
-                pos = cols if self._colmap is None else np.maximum(self._colmap[cols], 0)   # -1: zero entries
-                d64 = buf.get(f'{ti}d64', data.size, np.float64)
-                np.copyto(d64, data)
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, v, acc)
+                _l, pos, d64, sky, off, _o = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti,
+                                                            span=spans[ti], sky_end=self._sky_end)
+                if pos is not None:
+                    _sparsetools.csr_matvec(nr, nS, lip, pos, d64, v, acc)
+                    continue
+                # the pieces in column order, a row's sky entries before its offset entries: each row's sum is the
+                # whole row's
+                if sky is not None:
+                    _sparsetools.csr_matvec(nr, n_sky_S, sky[0], sky[1], sky[2], v[:n_sky_S], acc)
+                if off is not None:
+                    _sparsetools.csr_matvec(nr, nS - n_sky_S, off[0], off[1], off[2], v[n_sky_S:], acc)
             fn(r0, r1, acc)                                       # consumed here (the buffer is the thread's next chunk's)
 
         if self._pool is None:
