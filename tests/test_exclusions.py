@@ -59,6 +59,25 @@ def test_projector_removes_the_directions_in_physical_units_and_is_a_projector()
     assert np.abs(P[act[cols[1]]].T @ (M[act][cm[a]] * yc[cm[a]])).max() < 1e-12
 
 
+def test_a_column_without_data_drops_out_as_an_inactive_one():
+    """A column a coverage floor keeps in the layout with zeroed entries (``no_data``) leaves the basis as a
+    compacted-away column does: the projector leaves its value alone and acts on the others as the projector built
+    with the column inactive."""
+    rng = np.random.default_rng(1)
+    P = _poly_basis(12, 1)
+    cols = np.array([np.arange(20, 32), np.arange(40, 52)])
+    M = rng.uniform(0.5, 2, 60)
+    empty = np.array([23, 41, 50])
+    pr = ColumnProjector.build([(cols, P)], None, M, 60, no_data=empty)
+    act = np.ones(60, bool); act[empty] = False
+    ref = ColumnProjector.build([(cols, P)], act, M[act], int(act.sum()))
+    assert pr.columns.tolist() == [c for c in cols.ravel() if c not in empty]
+    y = rng.normal(size=60)
+    z = pr.apply(y.copy())
+    assert np.array_equal(z[empty], y[empty])
+    np.testing.assert_allclose(z[act], ref.apply(y[act].copy()), rtol=0, atol=1e-13)
+
+
 @pytest.mark.parametrize('deflate', [None, sc.Deflate(2)])
 def test_the_solve_honours_the_constraint_exactly_and_is_the_constrained_least_squares(tmp_path, deflate):
     system = _shared_system(frames=40, shared=16, seed=5)

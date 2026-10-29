@@ -156,6 +156,21 @@ def _make_parallel_operator(A_csr, n_threads, promote=False):
     return op
 
 
+def _columns_without_data(A, n_cols, chunk=64_000_000):
+    """The columns of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`) with no nonzero entry, sorted:
+    a coverage floor (``setup_lsqr(min_observations=)``) keeps its columns in the layout with zeroed entries."""
+    seen = np.zeros(int(n_cols), dtype=bool)
+    if isinstance(A, ColSplitCSR):
+        parts = [(int(A.cuts[t]), A.sub[b][t][0], A.sub[b][t][1]) for b in range(A.nblocks) for t in range(A.nranges)]
+    else:
+        parts = [(0, blk.data, blk.indices) for blk in (A.blocks if isinstance(A, BlockCSR) else (A,))]
+    for c0, d, i in parts:
+        for s in range(0, d.size, chunk):
+            cols = i[s:s + chunk][d[s:s + chunk] != 0]
+            seen[cols + c0 if c0 else cols] = True
+    return np.flatnonzero(~seen)
+
+
 def _iter_global_entry_chunks(blocks, chunk_size, join=True):
     """Yield (data, cols) pairs cut at GLOBAL entry-stream boundaries.
 
@@ -1162,6 +1177,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             del _slots
 
             col_norms = np.sqrt(col_sq_norm)
+            no_data = np.flatnonzero(col_norms == 0) if exclusions else None
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
@@ -1219,6 +1235,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             M = None
             x0_solver = x0_compressed
             x0_compressed = None
+            no_data = _columns_without_data(A, n_active) if exclusions else None
 
         proj = None
         sig = None
@@ -1251,7 +1268,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         if held is not None and deflate is not None and len(held):
             held_s = solver_columns(held)
         if exclusions:
-            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
+            # a column without data (a coverage floor's) has no unknown in the constraints: in them it would take
+            # the value that lifts them off the others
+            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active,
+                                         no_data=no_data)
             if x0_solver is not None:
                 proj.apply(x0_solver)
             logger.info(f"Column constraints: {proj} (the solver runs on A P: no row, no weight)")

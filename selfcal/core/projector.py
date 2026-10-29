@@ -13,7 +13,9 @@ costs nothing against the matrix itself.
 The constraint is stated on the physical unknowns ``x``; the solver's are the column-scaled and
 compacted ones, ``x = M y`` on the active columns. :meth:`ColumnProjector.build` turns the stated
 directions ``P_x`` of a group into the solver's: ``Q = orth(M_g P_x)`` over the group's active columns
-(an inactive column, compacted away, has no unknown and drops out of the basis).
+(an inactive column, compacted away, has no unknown and drops out of the basis; so does a column without data,
+which a coverage floor keeps in the layout with zeroed entries: in the constraint it would take the value that
+lifts the constraint off the group's other columns).
 """
 from __future__ import annotations
 
@@ -61,12 +63,13 @@ class ColumnProjector:
 
     # ---------------------------------------------------------------------------------------- building
     @classmethod
-    def build(cls, exclusions, active_mask, scale, n_cols) -> 'ColumnProjector':
+    def build(cls, exclusions, active_mask, scale, n_cols, no_data=None) -> 'ColumnProjector':
         """From ``exclusions``, a list of ``(cols, P)`` in the full column layout (``cols`` ``(G, n)``,
         ``P`` ``(n, r)`` the excluded directions, the same for every group), the projector in the solver's
         coordinates: ``active_mask`` (None: no compaction) maps full columns to the compact ones,
         ``scale`` (None: unscaled) is the solver's column scale ``M`` (``x = M y``), ``n_cols`` the
-        solver's column count."""
+        solver's column count, ``no_data`` (None: none) the solver columns without data, which drop out as
+        inactive ones do."""
         if active_mask is not None:
             cmap = np.full(len(active_mask), -1, dtype=np.int64)
             cmap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
@@ -79,6 +82,8 @@ class ColumnProjector:
             if cols.ndim == 1:
                 cols = cols[None, :]
             ci = cols if cmap is None else np.where(cols >= 0, cmap[np.maximum(cols, 0)], -1)
+            if no_data is not None and len(no_data):
+                ci = np.where(np.isin(ci, no_data), -1, ci)    # a column without data drops out as an inactive one
             if (ci >= n_cols).any():
                 raise ValueError("ColumnProjector.build: a column index beyond the solver's columns")
             m = np.ones(ci.shape) if scale is None else np.where(ci >= 0, np.asarray(scale, dtype=np.float64)[np.maximum(ci, 0)], 0.0)
