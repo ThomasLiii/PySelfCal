@@ -119,6 +119,8 @@ _SCHUR_MAX = 1 << 14
 _SCHUR_BATCH = 1 << 26
 #: Elements per thread block of the projections.
 _MIN_BLOCK = 1 << 18
+#: Columns of a pattern made per task when the patterns are built (the task's temporaries: a few arrays of this length).
+_PATTERN_COLUMNS = 1 << 22
 #: Sky columns per call when a chunk's column sums are made and added in the second pass (each adding thread's
 #: buffer holds this many columns of the products).
 _ADD_COLUMNS = 1 << 16
@@ -920,8 +922,14 @@ class _SharedSolve:
 
         parts = defl._over_chunks(self.descs, work)
         total = parts[0]
-        for p in parts[1:]:
-            total += p
+        if len(parts) > 1:                                 # each element: the threads' sums in thread order
+            step = max(1, -(-total.shape[0] // len(parts)))
+
+            def add(j):
+                a, c = j * step, min(total.shape[0], (j + 1) * step)
+                for p in parts[1:]:
+                    total[a:c] += p[a:c]
+            defl._wait(defl._submit(add, -(-total.shape[0] // step)))
         self.sweeps += 1
         return total
 
@@ -1164,21 +1172,25 @@ class _Slot:
         return b[:size]
 
 
-def _combine_rows_in_place(M, C, cols=1 << 20):
-    """``C M`` written over ``M`` (``C`` square, k x k; ``M`` k x n, C order), a column block at a time; returns ``M``."""
-    for a in range(0, M.shape[1], cols):
+def _combine_rows_in_place(M, C, cols=1 << 20, pool=None):
+    """``C M`` written over ``M`` (``C`` square, k x k; ``M`` k x n, C order), a column block at a time (the blocks in
+    ``pool`` when given); returns ``M``."""
+    def block(a):
         c = min(M.shape[1], a + cols)
         M[:, a:c] = C @ M[:, a:c]
+    list(_bounded_map(pool, block, range(0, M.shape[1], cols)))
     return M
 
 
-def _transform_in_place(M, T, cols=1 << 20):
+def _transform_in_place(M, T, cols=1 << 20, pool=None):
     """``T^T M`` written over the first ``T.shape[1]`` rows of ``M`` (k x n, C order), a column block at a
-    time; returns those rows (contiguous)."""
+    time (the blocks in ``pool`` when given); returns those rows (contiguous)."""
     kk = T.shape[1]
-    for a in range(0, M.shape[1], cols):
+
+    def block(a):
         c = min(M.shape[1], a + cols)
         M[:kk, a:c] = T.T @ M[:, a:c]
+    list(_bounded_map(pool, block, range(0, M.shape[1], cols)))
     return M[:kk]
 
 
@@ -1303,9 +1315,15 @@ class Deflation:
             raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
         self.labels = labels
         Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
-        for i, (sel, gx, gy, x0, y0) in enumerate(rows_of):
-            Z[i, sel] = (gx[ix[sel] - x0] * gy[iy[sel] - y0]) * col_norm[sel]
-        del rows_of, term_of, iy, ix
+        blocks = [(i, a) for i, row in enumerate(rows_of) for a in range(0, row[0].size, _PATTERN_COLUMNS)]
+
+        def pattern(t):                           # a block of one pattern's columns per task, over the threads
+            i, a = blocks[t]
+            sel, gx, gy, x0, y0 = rows_of[i]
+            sb = sel[a:a + _PATTERN_COLUMNS]
+            Z[i, sb] = (gx[ix[sb] - x0] * gy[iy[sb] - y0]) * col_norm[sb]
+        self._wait(self._submit(pattern, len(blocks)))
+        del rows_of, term_of, iy, ix, blocks
         self._colmap = None
         if self.S is not None:
             cm = np.full(n, -1, dtype=_IDX)
@@ -1365,7 +1383,7 @@ class Deflation:
             # the offsets' response R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product
             # per row chunk).
             t = time.perf_counter()
-            Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
+            Zt = self._copied(Z.T)                                # (nS, k): the kernels' vector layout
             del Z                                                 # the one layout until pass 2 has read it
             descs = _piece_index(storage)
             spans = _piece_spans(storage, self._cuts)
@@ -1529,9 +1547,9 @@ class Deflation:
                 bnorm2 += bn
             del acc2
             ATb = np.ascontiguousarray(NZb[:, k])
-            NZ = np.ascontiguousarray(NZb[:, :k].T)               # one copy, into the layout the grams read
+            NZ = self._copied(NZb[:, :k].T)                       # one copy, into the layout the grams read
             del NZb
-            Z = np.ascontiguousarray(Zt.T)                        # the patterns, one per row again
+            Z = self._copied(Zt.T)                                # the patterns, one per row again
             del Zt
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
@@ -1640,8 +1658,8 @@ class Deflation:
                 NZx = NZsel - coef @ NQ
                 del Zsel, NZsel, NQ, Rq
             # the re-basing: Z' = C Z (the offsets' parts follow), N' Z' = Pc (C N Z), E' = C E C^T, GZ' = C GZ C^T
-            Z = _combine_rows_in_place(Z, C)
-            NZ = _combine_rows_in_place(NZ, C)
+            Z = _combine_rows_in_place(Z, C, pool=self._pool)
+            NZ = _combine_rows_in_place(NZ, C, pool=self._pool)
             if extra:
                 Z = np.concatenate([Z, Zx], axis=0)
                 NZ = np.concatenate([NZ, NZx], axis=0)
@@ -1702,8 +1720,8 @@ class Deflation:
             self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
         # V = T^T Z and W = T^T N Z (one direction per row), in place: the setup's peak stays at the two arrays.
-        self.V = _transform_in_place(Z, T)
-        self.W = _transform_in_place(NZ, T)
+        self.V = _transform_in_place(Z, T, pool=self._pool)
+        self.W = _transform_in_place(NZ, T, pool=self._pool)
         del Z, NZ
         # Kept in the products' precision when that is float32 (half the traffic of every projection; the
         # arithmetic stays float64 and the rounding is that of the products: a converged float32 solve stays as
@@ -1717,7 +1735,7 @@ class Deflation:
                              "would drift")
         self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
         if self.store == np.float32:
-            self.V, self.W = self.V.astype(np.float32), self.W.astype(np.float32)
+            self.V, self.W = self._copied(self.V, np.float32), self._copied(self.W, np.float32)
         # The space's least-squares amplitudes.
         self.c_star = (self.V @ ATb) / self.lam
         del ATb
@@ -1986,10 +2004,18 @@ class Deflation:
             t_wall[0] += time.perf_counter() - t0
             if extra is not None:
                 extra.extend(pt[3] for pt in parts)
-            for _g, _U, off, _x in parts:
-                if off is not None:
-                    touched, sums = off
-                    out[n_sky_S + touched] += sums
+            offs = [pt[2] for pt in parts if pt[2] is not None]
+            if offs:
+                ostep = max(1, -(-n_off // nt))
+
+                def add_off(j):                            # each offset column: the chunks' sums in chunk order
+                    lo, hi = j * ostep, min(n_off, (j + 1) * ostep)
+                    for touched, sums in offs:
+                        i0, i1 = (int(v) for v in np.searchsorted(touched, (lo, hi)))
+                        if i1 > i0:
+                            out[n_sky_S + touched[i0:i1]] += sums[i0:i1]
+                self._wait(self._submit(add_off, -(-n_off // ostep)))
+                del offs
             # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
             # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
             samp = np.concatenate([g[0][::997] for g, _U, _o, _x in parts if g is not None]
@@ -2104,6 +2130,23 @@ class Deflation:
         for q in parts[1:]:
             out += q
         return 0.5 * (out + out.T) if A is B else out
+
+    def _copied(self, M, dtype=None, block=1 << 20):
+        """A C-ordered copy of the 2-D ``M`` (in ``dtype``; default ``M``'s), a block of its long side per thread: the
+        bytes of ``np.ascontiguousarray(M, dtype)``, made in parallel (the deflation's arrays have a column per solver
+        column: gigabytes)."""
+        out = np.empty(M.shape, dtype=M.dtype if dtype is None else dtype)
+        axis = int(M.shape[1] > M.shape[0])
+        n = M.shape[axis]
+
+        def part(j):
+            a, c = j * block, min(n, (j + 1) * block)
+            if axis:
+                out[:, a:c] = M[:, a:c]
+            else:
+                out[a:c] = M[a:c]
+        self._wait(self._submit(part, -(-n // block)))
+        return out
 
     def _map(self, fn):
         if self._blas_pool is None or len(self._blocks) == 1:
