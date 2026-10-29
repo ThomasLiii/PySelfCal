@@ -54,6 +54,45 @@ def test_a_piece_holds_the_stored_entries_of_its_columns():
                         assert np.array_equal(vals[got], want.data[sl][keep]), name
 
 
+def test_an_offset_piece_with_columns_outside_the_space_keeps_its_entries():
+    """The deflation's space leaves out the columns without data (a coverage floor's zeros), here the first, a middle
+    and the last offset column: an offset piece (the columns past the storage's first offset column) is mapped through
+    the column map, and its offset entries, columns and values, are those the whole chunk sorted by kind gives; a chunk
+    with an entry at a left-out column (a zero) is sorted as a whole chunk is. The sky piece likewise."""
+    rng = np.random.default_rng(2)
+    nr, n_sky, n = 40, 10, 20
+    colmap = np.full(n, -1, dtype=D._IDX)
+    keep = np.array([c for c in range(n) if c not in (3, 10, 14, 19)])
+    colmap[keep] = np.arange(keep.size)
+    n_sky_S = int(np.count_nonzero(keep < n_sky))
+    for with_zero in (False, True):
+        rows = []
+        for i in range(nr):
+            c = np.sort(np.concatenate([rng.choice(n_sky, 1), rng.choice([11, 12, 13, 15, 16, 17, 18], 3, replace=False)]))
+            if with_zero and i == 7:
+                c = np.sort(np.append(c, 14))
+            rows.append(c)
+        ip = np.concatenate([[0], np.cumsum([r.size for r in rows])]).astype(D._IDX)
+        cols = np.concatenate(rows).astype(D._IDX)
+        vals = rng.standard_normal(cols.size).astype(np.float32)
+        vals[~np.isin(cols, keep)] = 0.0                              # a left-out column holds zeros
+        _l, _p, _d, sky_m, off_m, _o = D._prepare_piece(nr, ip, cols, vals, colmap, n_sky_S, buf=D._Slot())
+        for lo, hi in ((0, n_sky), (n_sky, n)):
+            sel = (cols >= lo) & (cols < hi)
+            pip = np.concatenate([[0], np.cumsum([np.count_nonzero((r >= lo) & (r < hi)) for r in rows])]).astype(D._IDX)
+            _l, _p, _d, sky_p, off_p, oid = D._prepare_piece(nr, pip, cols[sel], vals[sel], colmap, n_sky_S,
+                                                              buf=D._Slot(), span=(lo, hi), sky_end=n_sky)
+            if lo == 0:
+                assert off_p is None and oid is None
+                assert np.array_equal(sky_p[1][sky_p[2] != 0], sky_m[1][sky_m[2] != 0])
+                continue
+            assert (oid is None) == with_zero                          # a zero entry: the piece sorted as a chunk
+            for a, b in zip(off_p, off_m):
+                assert np.array_equal(a, b)
+            if oid is not None:
+                assert oid == (0, keep.size - n_sky_S) and off_p[1].min() >= oid[0] and off_p[1].max() < oid[1]
+
+
 def _solved(cal):
     """Every solved dataset of a cal file (the sky maps, the offsets and their coverages), by path."""
     out = {}

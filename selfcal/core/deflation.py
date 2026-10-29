@@ -895,7 +895,8 @@ class _SharedSolve:
                 dsts = []
                 for ti, (lip, cols, data) in enumerate(pieces):
                     _lip, _pos, _d64, _sky, oc, oid = _prepare_piece(nr, lip, cols, data, defl._colmap, n_sky_S,
-                                                                     buf=slot, tag=ti, span=self.spans[ti])
+                                                                     buf=slot, tag=ti, span=self.spans[ti],
+                                                                     sky_end=defl._sky_end)
                     if oc is None:
                         continue
                     ip, ci, dd = oc
@@ -1052,7 +1053,7 @@ class _SharedSolve:
 
 
 
-def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0, span=None):
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0, span=None, sky_end=None):
     """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off, oid)`` with
     ``pos`` the solver columns of every entry (None for a piece of one kind, below), ``d64`` the values,
     ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over the chunk's rows (None: none),
@@ -1060,28 +1061,36 @@ def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0, span=None):
     ``(a, b)`` of the offset space that holds every column of ``off`` (None: unknown), :data:`_IDX` / float64 and in
     storage order, written into the buffers of ``buf`` (a :class:`_Slot`; ``tag`` tells a chunk's pieces apart).
 
-    ``span`` ``(lo, hi)``: the piece's column range in the storage's numbering (:func:`_piece_spans`). A piece that
-    holds offset columns only, which the deflation's space numbers consecutively (the passes read a chunk in pieces of
-    one kind), is used as given: its columns shifted into the offset space (one addition, none when the shift is 0),
-    its values cast; a piece of sky columns only likewise, mapped through ``colmap``. Otherwise a row's offset entries
-    are those at or past ``n_sky_S``: they are counted by a running sum of the offset mask and selected by
-    ``np.compress``."""
+    ``span`` ``(lo, hi)``: the piece's column range in the storage's numbering (:func:`_piece_spans`), and ``sky_end``
+    the storage's first offset column: a piece on one side of it holds columns of one kind (the passes read a chunk in
+    such pieces). An offset piece is used as given, its columns moved into the offset space: shifted when the
+    deflation's space holds every column of its range (one addition, none when the shift is 0), mapped through
+    ``colmap`` when the space leaves some out and the chunk has no entry there; a sky piece is mapped through
+    ``colmap``; the values are cast. Otherwise (and for an offset piece with entries at a column outside the space,
+    which hold zeros) a row's offset entries are those at or past ``n_sky_S``: they are counted by a running sum of the
+    offset mask and selected by ``np.compress``."""
     n = int(cols.size)
     d64 = buf.get(f'{tag}d64', n, np.float64)
     np.copyto(d64, data)
-    if span is not None and int(span[1]) > int(span[0]):
+    if span is not None and sky_end is not None and int(span[1]) > int(span[0]):
         lo, hi = int(span[0]), int(span[1])
-        first = lo if colmap is None else int(colmap[lo])
-        last = hi - 1 if colmap is None else int(colmap[hi - 1])
-        if first >= n_sky_S and last - first == hi - 1 - lo:            # offset columns only, numbered consecutively
-            shift = first - lo - n_sky_S
-            if shift:
-                oc = buf.get(f'{tag}offcols', n, _IDX)
-                np.add(cols, shift, out=oc, casting='unsafe')
-            else:
-                oc = cols
-            return lip, None, d64, None, (lip, oc, d64), (lo + shift, hi + shift)
-        if last < n_sky_S:                                                # sky columns only
+        if lo >= sky_end:                                                   # offset columns only
+            first = lo if colmap is None else int(colmap[lo])
+            last = hi - 1 if colmap is None else int(colmap[hi - 1])
+            if first >= 0 and last - first == hi - 1 - lo:                 # every one in the space: a shift
+                shift = first - lo - n_sky_S
+                if shift:
+                    oc = buf.get(f'{tag}offcols', n, _IDX)
+                    np.add(cols, shift, out=oc, casting='unsafe')
+                else:
+                    oc = cols
+                return lip, None, d64, None, (lip, oc, d64), (lo + shift, hi + shift)
+            oc = np.take(colmap, cols, out=buf.get(f'{tag}offcols', n, _IDX))
+            kept = colmap[lo:hi][colmap[lo:hi] >= 0]
+            if kept.size and (n == 0 or int(oc.min()) >= 0):              # no entry at a column the space leaves out
+                oc -= n_sky_S
+                return lip, None, d64, None, (lip, oc, d64), (int(kept[0]) - n_sky_S, int(kept[-1]) + 1 - n_sky_S)
+        elif hi <= sky_end:                                                 # sky columns only
             pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
             if colmap is not None:
                 np.maximum(pos, 0, out=pos)
@@ -1371,7 +1380,8 @@ class Deflation:
                     offs = []
                     for ti, (lip, cols, data) in enumerate(pieces):
                         _lip, _pos, _d64, sky, oc, oid = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
-                                                                        buf=slot, tag=ti, span=spans[ti])
+                                                                        buf=slot, tag=ti, span=spans[ti],
+                                                                        sky_end=self._sky_end)
                         if sky is not None:
                             # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
                             # keep their order, so the sums are those of the whole piece
@@ -1839,7 +1849,8 @@ class Deflation:
                 offs = []
                 for ti, (lip, cols, data) in enumerate(pieces):
                     _lip, _pos, _d64, sky, oc, _oid = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
-                                                                     buf=slot, tag=ti, span=spans[ti])
+                                                                     buf=slot, tag=ti, span=spans[ti],
+                                                                     sky_end=self._sky_end)
                     if sky is not None:
                         _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
                     if oc is not None:
@@ -1948,7 +1959,7 @@ class Deflation:
             buf = slots[i]
             r0, r1, pieces = _piece(storage, desc, buf=buf, spans=spans)
             prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti,
-                                       span=spans[ti])
+                                       span=spans[ti], sky_end=self._sky_end)
                         for ti, (lip, cols, data) in enumerate(pieces)]
             del pieces
             out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
