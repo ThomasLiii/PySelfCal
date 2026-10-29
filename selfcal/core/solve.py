@@ -156,19 +156,21 @@ def _make_parallel_operator(A_csr, n_threads, promote=False):
     return op
 
 
-def _columns_without_data(A, n_cols, chunk=64_000_000):
-    """The columns of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`) with no nonzero entry, sorted:
-    a coverage floor (``setup_lsqr(min_observations=)``) keeps its columns in the layout with zeroed entries."""
-    seen = np.zeros(int(n_cols), dtype=bool)
+def _column_squares(A, n_cols, chunk=64_000_000):
+    """The sum of the squared entries of each column of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`),
+    float64: zero for a column without data (a coverage floor, ``setup_lsqr(min_observations=)``, keeps its columns in
+    the layout with zeroed entries); the columns' information for a constraint measured with it."""
+    sq = np.zeros(int(n_cols), dtype=np.float64)
     if isinstance(A, ColSplitCSR):
         parts = [(int(A.cuts[t]), A.sub[b][t][0], A.sub[b][t][1]) for b in range(A.nblocks) for t in range(A.nranges)]
     else:
         parts = [(0, blk.data, blk.indices) for blk in (A.blocks if isinstance(A, BlockCSR) else (A,))]
     for c0, d, i in parts:
         for s in range(0, d.size, chunk):
-            cols = i[s:s + chunk][d[s:s + chunk] != 0]
-            seen[cols + c0 if c0 else cols] = True
-    return np.flatnonzero(~seen)
+            v = d[s:s + chunk].astype(np.float64)
+            idx = i[s:s + chunk]
+            sq += np.bincount(idx + c0 if c0 else idx, weights=v * v, minlength=sq.size)[:sq.size]
+    return sq
 
 
 def _iter_global_entry_chunks(blocks, chunk_size, join=True):
@@ -1095,6 +1097,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             if x0_compressed is not None and not keep64:
                 x0_compressed = x0_compressed.astype(np.float32)
 
+        # an exclusion measured with the columns' information (Overlap(weights='information')) needs their squared norms
+        weighted = bool(exclusions) and any(len(e) > 2 and e[2] is not None for e in exclusions)
         if precondition:
             logger.info("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
@@ -1178,6 +1182,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
 
             col_norms = np.sqrt(col_sq_norm)
             no_data = np.flatnonzero(col_norms == 0) if exclusions else None
+            information = col_sq_norm if weighted else None
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
@@ -1235,7 +1240,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             M = None
             x0_solver = x0_compressed
             x0_compressed = None
-            no_data = _columns_without_data(A, n_active) if exclusions else None
+            if exclusions:
+                information = _column_squares(A, n_active)
+                no_data = np.flatnonzero(information == 0)
+                if not weighted:
+                    information = None
 
         proj = None
         sig = None
@@ -1271,7 +1280,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # a column without data (a coverage floor's) has no unknown in the constraints: in them it would take
             # the value that lifts them off the others
             proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active,
-                                         no_data=no_data)
+                                         no_data=no_data, information=information)
+            information = None
             if x0_solver is not None:
                 proj.apply(x0_solver)
             logger.info(f"Column constraints: {proj} (the solver runs on A P: no row, no weight)")

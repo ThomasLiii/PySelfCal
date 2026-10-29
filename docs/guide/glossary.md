@@ -239,7 +239,8 @@ unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the c
 `sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar).
 `sc.Offsets(exclude=sc.Overlap('a', 'b'))` is the same kind of restriction with directions taken from
 the model itself: the term carries no detector pattern that the offset terms `a` and `b` can make
-with the same coefficients in every frame. See
+with the same coefficients in every frame (`weights='information'`: measured with each offset's
+information). See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Hook { #hook }

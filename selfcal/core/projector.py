@@ -15,7 +15,10 @@ compacted ones, ``x = M y`` on the active columns. :meth:`ColumnProjector.build`
 directions ``P_x`` of a group into the solver's: ``Q = orth(M_g P_x)`` over the group's active columns
 (an inactive column, compacted away, has no unknown and drops out of the basis; so does a column without data,
 which a coverage floor keeps in the layout with zeroed entries: in the constraint it would take the value that
-lifts the constraint off the group's other columns).
+lifts the constraint off the group's other columns). A group measured with the columns' information (the
+exclusion's third element ``'information'``) states ``P_x^T F x = 0``, ``F`` the columns' information (the sum of
+their squared entries): in the solver's unknowns ``Q = orth(F_g M_g P_x)``, so a column the data barely see weighs
+little in the constraint and cannot carry it for the others.
 """
 from __future__ import annotations
 
@@ -63,22 +66,27 @@ class ColumnProjector:
 
     # ---------------------------------------------------------------------------------------- building
     @classmethod
-    def build(cls, exclusions, active_mask, scale, n_cols, no_data=None) -> 'ColumnProjector':
-        """From ``exclusions``, a list of ``(cols, P)`` in the full column layout (``cols`` ``(G, n)``,
-        ``P`` ``(n, r)`` the excluded directions, the same for every group), the projector in the solver's
-        coordinates: ``active_mask`` (None: no compaction) maps full columns to the compact ones,
+    def build(cls, exclusions, active_mask, scale, n_cols, no_data=None, information=None) -> 'ColumnProjector':
+        """From ``exclusions``, a list of ``(cols, P)`` or ``(cols, P, 'information')`` in the full column layout
+        (``cols`` ``(G, n)``, ``P`` ``(n, r)`` the excluded directions, the same for every group), the projector in
+        the solver's coordinates: ``active_mask`` (None: no compaction) maps full columns to the compact ones,
         ``scale`` (None: unscaled) is the solver's column scale ``M`` (``x = M y``), ``n_cols`` the
         solver's column count, ``no_data`` (None: none) the solver columns without data, which drop out as
-        inactive ones do."""
+        inactive ones do, ``information`` the solver columns' information (their squared norms, unscaled),
+        needed by an exclusion measured with it."""
         if active_mask is not None:
             cmap = np.full(len(active_mask), -1, dtype=np.int64)
             cmap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
         else:
             cmap = None
         groups = []
-        for cols, P in exclusions:
-            cols = np.asarray(cols, dtype=np.int64)
-            P = np.asarray(P, dtype=np.float64)
+        for ex in exclusions:
+            cols, P = np.asarray(ex[0], dtype=np.int64), np.asarray(ex[1], dtype=np.float64)
+            weights = ex[2] if len(ex) > 2 else None
+            if weights not in (None, 'information'):
+                raise ValueError(f"ColumnProjector.build: an exclusion's weights are None or 'information', not {weights!r}")
+            if weights is not None and information is None:
+                raise ValueError("ColumnProjector.build: an exclusion measured with the columns' information needs it")
             if cols.ndim == 1:
                 cols = cols[None, :]
             ci = cols if cmap is None else np.where(cols >= 0, cmap[np.maximum(cols, 0)], -1)
@@ -87,6 +95,8 @@ class ColumnProjector:
             if (ci >= n_cols).any():
                 raise ValueError("ColumnProjector.build: a column index beyond the solver's columns")
             m = np.ones(ci.shape) if scale is None else np.where(ci >= 0, np.asarray(scale, dtype=np.float64)[np.maximum(ci, 0)], 0.0)
+            if weights is not None:                           # P_x^T F x = 0: the directions F M P_x in the solver's unknowns
+                m = m * np.asarray(information)[np.maximum(ci, 0)].astype(np.float64)
             m[ci < 0] = 0.0                                   # an inactive column has no unknown
             A = m[:, :, None] * P[None, :, :]                 # (G, n, r): the directions in solver units
             U, s, _ = np.linalg.svd(A, full_matrices=False)

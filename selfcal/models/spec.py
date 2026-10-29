@@ -250,7 +250,8 @@ class OffsetTerm:
     constraint, the term carries no detector pattern that the named offset terms
     can make with the same coefficients in every frame (their fixed patterns), the
     intersection of the two pattern spaces over the job's pixels
-    (:meth:`ModelSpec.column_exclusions`).
+    (:meth:`ModelSpec.column_exclusions`); ``exclude_overlap_weights``
+    ``'information'``: those patterns measured with each offset's information.
     ``exact_group_rows``: for fixed/grouped terms, emit the adjacency rows once
     per group instead of once per frame (exact; far fewer rows). ``render``:
     which of the chunk map's renderers draws the term on the mosaic (default
@@ -275,6 +276,7 @@ class OffsetTerm:
     exclude_axis: str | None = None
     signature_degree: int | str | None = None
     exclude_overlap: tuple | None = None
+    exclude_overlap_weights: str | None = None
     min_observations: int | None = None
     render: str | None = None
     coefficient: object = None
@@ -309,6 +311,9 @@ class OffsetTerm:
                 raise ValueError("exclude_overlap applies to a free / fixed / grouped term with one unknown per chunk")
             if self.exclude_degree is not None:
                 raise ValueError("a term takes one exclusion: exclude_degree or exclude_overlap")
+        if self.exclude_overlap_weights is not None and (self.exclude_overlap is None
+                                                         or self.exclude_overlap_weights != 'information'):
+            raise ValueError("exclude_overlap_weights is 'information', with exclude_overlap")
         if self.signature_degree is not None and self.signature_degree != 'all' \
                 and not 1 <= int(self.signature_degree) <= 2:
             raise ValueError("signature_degree is 1, 2 (the deflation's polynomial patterns go to degree 2) or 'all'")
@@ -644,7 +649,8 @@ class ModelSpec:
 
     def column_exclusions(self, geom, layout, window=None, log=print) -> list:
         """The terms' hard constraints as the solver takes them (``apply_lsqr(exclusions=...)``):
-        ``[(cols, P), ...]`` with ``cols`` ``(G, n)`` the full-layout columns of each offset group's
+        ``[(cols, P), ...]`` (``(cols, P, 'information')`` for an exclusion measured with each column's information,
+        ``exclude_overlap_weights``) with ``cols`` ``(G, n)`` the full-layout columns of each offset group's
         chunks along one line of the excluded axis and ``P`` ``(n, k + 1)`` an orthonormal basis of
         the polynomials of degree <= k in the chunks' coordinate along that axis (degree 0 with no
         axis: one line of all the map's chunks, ``P`` the constant). ``layout`` is the
@@ -680,7 +686,7 @@ class ModelSpec:
                 if P.shape[1]:
                     n_chunks, n_groups = int(layout.num_chunks_list[m]), int(layout.num_offset_groups_list[m])
                     cols = int(layout.col_bases[m]) + (np.arange(n_groups, dtype=np.int64)[:, None] * n_chunks) + chunks[None, :]
-                    out.append((cols, P))
+                    out.append((cols, P) if term.exclude_overlap_weights is None else (cols, P, term.exclude_overlap_weights))
                 continue
             if term.exclude_degree is None:
                 continue
@@ -796,8 +802,8 @@ class ModelSpec:
         a, _ = project(shared)
         P = np.linalg.qr(a)[0] if a.shape[1] else a
         log(f"[model] {names[m]}: exclude=Overlap{tuple(term.exclude_overlap)}: {P.shape[1]} shared pattern(s) "
-            f"over {pix.size} pixels ({chunk_ids.size} chunks; the named terms make {Q.shape[1]} fixed patterns there)",
-            flush=True)
+            f"over {pix.size} pixels ({chunk_ids.size} chunks; the named terms make {Q.shape[1]} fixed patterns there)"
+            + ("; measured with each offset's information" if term.exclude_overlap_weights else ""), flush=True)
         return chunk_ids.astype(np.int64), P
 
     def _detector_values(self, names, geom, pix, term_name):

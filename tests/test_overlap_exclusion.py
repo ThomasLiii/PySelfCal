@@ -149,6 +149,16 @@ def test_the_option_lowers_and_is_validated():
         _model('pixels', sc.Overlap('gradient', 'nothing'))
     with pytest.raises(ConfigError, match='not another offset term'):
         _model('pixels', sc.Overlap('shared'))
+    weighted = sc.Overlap('gradient', 'scalar', weights='information')
+    assert sc.Offsets('shared', on='pixels', per='all', exclude=weighted).lower()['exclude_overlap_weights'] == 'information'
+    assert 'exclude_overlap_weights' not in t.lower()
+    assert repr(weighted) == "Overlap('gradient', 'scalar', weights='information')"
+    assert decode(encode(weighted)) == weighted and weighted != sc.Overlap('gradient', 'scalar')
+    with pytest.raises(ConfigError):
+        sc.Overlap('gradient', weights='fisher')
+    (ex,) = _exclusions(_model('pixels', weighted))
+    assert len(ex) == 3 and ex[2] == 'information'
+    assert len(_exclusions(_model('pixels', sc.Overlap('gradient', 'scalar')))[0]) == 2
 
 
 def test_a_per_pixel_pattern_without_the_per_frame_terms_patterns_end_to_end(tmp_path):
@@ -186,3 +196,64 @@ def test_a_per_pixel_pattern_without_the_per_frame_terms_patterns_end_to_end(tmp
     r, slope = agreement(got, truth - Q @ (Q.T @ truth), demean=False)
     print(f"per-pixel pattern without the frames' patterns: r = {r:.4f}, slope {slope:.3f}")
     assert r > 0.99 and abs(slope - 1) < 0.05, (r, slope)
+
+
+#: Detector pixels (row, column) of the camera toy that every frame sees with a weight of 1e-3.
+WEAK = ((3, 5), (7, 40), (12, 20), (20, 55), (25, 10), (30, 33), (36, 60), (41, 2), (44, 47), (15, 30))
+
+
+def weak_weight(det_x, det_y):
+    """A model weight of 1, and 1e-3 at the detector pixels :data:`WEAK`: their observations barely count."""
+    r, c = np.rint(np.asarray(det_y)).astype(np.int64), np.rint(np.asarray(det_x)).astype(np.int64)
+    out = np.ones(np.shape(det_x))
+    for rr, cc in WEAK:
+        out[(r == rr) & (c == cc)] = 1e-3
+    return out
+
+
+def test_offsets_the_data_barely_see_cannot_carry_the_constraint(tmp_path):
+    """The end-to-end toy above with ten pixels every frame sees with a weight of 1e-3, no sky damping. Counted alike,
+    the per-pixel term carries no constant or gradient over all its pixels, while the other pixels hold a share of
+    them that the ten cancel (their values cost the fit almost nothing). Measured with each offset's information
+    (``Overlap(weights='information')``) the other pixels hold none; the pattern's remaining structure is recovered
+    either way."""
+    from test_any_telescope import COADD, FIT, NUMERICS, PIX, REF, TWO_WORKERS, agreement, plane, true_sky, write_exposure
+    from test_any_telescope import H as TH
+    from test_any_telescope import W as TW
+    rng = np.random.default_rng(7)
+    sky = true_sky()
+    y, x = np.mgrid[0:TH, 0:TW].astype(np.float64)
+    gx, gy = plane(x, y)
+    pattern = rng.normal(0, 0.05, (TH, TW)) + 0.4 * gx + 0.03
+    for k in range(48):
+        oy, ox = rng.integers(0, REF - TH), rng.integers(0, REF - TW)
+        g = rng.normal(0, 0.3, 2)
+        img = sky[oy:oy + TH, ox:ox + TW] + pattern + g[0] * gx + g[1] * gy + rng.normal(0, 1.0) + rng.normal(0, 0.01, (TH, TW))
+        write_exposure(tmp_path / 'exposures' / f'toy_exp_{k:03d}.fits', img, ox, oy, {})
+    field = sc.Field(tmp_path / 'toy_run', sc.Camera((TH, TW), tag='Toy'), PIX, compute=TWO_WORKERS)
+    field.reproject(tmp_path / 'exposures' / 'toy_exp_*.fits', method='interp', padding=8)
+    weak = np.zeros(TH * TW, dtype=bool)
+    for r, c in WEAK:
+        weak[r * TW + c] = True
+    Q = np.linalg.qr(np.stack([np.ones(TH * TW), gx.ravel(), gy.ravel()], axis=1))[0]
+    Qb = np.linalg.qr(Q[~weak])[0]
+    truth = pattern.ravel()[~weak]
+    moments = {}
+    for weights in (None, 'information'):
+        model = sc.Model(chunk_maps={'pixels': sc.ChunkMap(pixel_chunks)}, sky=[sc.Sky(damping=0.0)],
+                         offsets=[sc.Offsets('pattern', on='pixels', per='all',
+                                             exclude=sc.Overlap('gradient', 'scalar', weights=weights)),
+                                  sc.Offsets('gradient', on='detector', basis=plane, n=2),
+                                  sc.Offsets('scalar', on='detector')], weight=weak_weight)
+        result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS, name=f'weights_{weights}'),
+                                 jobs=sc.Job('All'))
+        with result.cal() as cal:
+            got = np.asarray(cal.offsets[0][0], dtype=np.float64)
+        scale = np.abs(got).max()
+        moments[weights] = (np.abs(Q.T @ got).max() / scale, np.abs(Qb.T @ got[~weak]).max() / scale)
+        bulk = got[~weak]
+        r, slope = agreement(bulk - Qb @ (Qb.T @ bulk), truth - Qb @ (Qb.T @ truth), demean=False)
+        assert r > 0.99 and abs(slope - 1) < 0.05, (weights, r, slope)
+    every, others = moments[None]
+    assert every < 1e-6 and others > 1e-4, moments                 # the constraint on paper; the others hold a share
+    assert moments['information'][1] < 1e-6, moments               # the others hold none

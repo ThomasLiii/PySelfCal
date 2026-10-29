@@ -295,7 +295,14 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   at each pixel centre: a term with one offset per detector pixel gives up every fixed pattern of the
   named terms, a term with one offset per detector column only those constant along each column. The
   named terms must read detector-plane variables only (`det_x`, `det_y`, detector maps and variables
-  derived from them).
+  derived from them). By default every offset counts alike in the constraint. A term with many offsets
+  can include some the data barely see (detector pixels that only the corners of the observations'
+  bilinear sampling reach): those can take large values that cancel a shared pattern the other offsets
+  hold, at almost no cost to the fit, so the constraint holds only on paper and the solve wanders along
+  that direction. `sc.Overlap('a', 'b', weights='information')` measures the shared patterns with each
+  offset's information (the sum of its squared weighted entries, as the solver scales its columns): an
+  offset the data barely see then weighs almost nothing in the constraint and an offset without data
+  drops out. The constraint stays exact and needs no threshold.
 - Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
   columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
   say), their couplings to the other offsets are applied through the system's matrix and their part

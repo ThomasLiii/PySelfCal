@@ -389,28 +389,41 @@ class Overlap(Config):
     detector-plane variables only (the built-in ``det_x``, ``det_y``, detector maps, and variables derived from
     them): a function of per-frame or per-observation data makes no fixed pattern. ``terms``: the names of the
     other offset terms (:attr:`Offsets.term_name`).
+
+    ``weights``: how the term's offsets count when the shared patterns are measured. None (the default): every offset
+    alike. ``'information'``: each offset by its information, the sum of its squared weighted entries in the solve
+    (how strongly the data see it). Counted alike, a few offsets the data barely see (a detector pixel that only the
+    corners of the observations' bilinear sampling reach) can take large values that cancel a shared pattern the
+    other offsets hold, at almost no cost to the fit, and the constraint then holds only on paper; weighted by their
+    information they cannot. An offset without data has no weight and drops out. Either way the constraint is exact
+    (it settles the same exact degeneracy) and needs no threshold.
     """
     terms: tuple[str, ...]
+    weights: str | None = added(None, since='2026-10')
 
     def __new__(cls, *args, **kwargs):
         return object.__new__(cls)
 
-    def __init__(self, *terms):
+    def __init__(self, *terms, weights=None):
         object.__setattr__(self, 'terms', tuple(terms))
+        object.__setattr__(self, 'weights', weights)
         self.__post_init__()
 
     def __repr__(self):
-        return _call('Overlap', self.terms)
+        return _call('Overlap', self.terms, (('weights', self.weights),) if self.weights is not None else ())
 
     @classmethod
-    def _from_fields(cls, terms):
-        return cls(*terms)
+    def _from_fields(cls, terms, weights=None):
+        return cls(*terms, weights=weights)
 
     def _validate(self):
         if not self.terms or not all(isinstance(t, str) and t for t in self.terms):
             raise ConfigError(f"Overlap{self.terms!r}: the names of one or more offset terms of the model")
         if len(set(self.terms)) != len(self.terms):
             raise ConfigError(f"Overlap{self.terms!r}: a term named twice")
+        if self.weights not in (None, 'information'):
+            raise ConfigError(f"Overlap(weights={self.weights!r}): None (every offset alike) or 'information' (each by "
+                              f"how strongly the data see it)")
 
 
 @dataclass(frozen=True)
@@ -596,6 +609,8 @@ class Offsets(Config):
                 out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
             elif isinstance(self.exclude, Overlap):
                 out['exclude_overlap'] = list(self.exclude.terms)
+                if self.exclude.weights is not None:
+                    out['exclude_overlap_weights'] = self.exclude.weights
             elif self.exclude is not None:
                 out['exclude_degree'] = int(self.exclude.degree)
                 out['exclude_axis'] = self.exclude.along

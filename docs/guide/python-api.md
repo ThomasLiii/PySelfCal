@@ -175,7 +175,8 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
   constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
   any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
-  frame. `min_observations=2`: the term's offsets a single observation sees leave the solve (value 0),
+  frame (`weights="information"`: measured with each offset's information, so offsets the data barely
+  see cannot carry the constraint for the others). `min_observations=2`: the term's offsets a single observation sees leave the solve (value 0),
   as `sc.Fit(min_observations=)` does for sky pixels. The cal holds a term shared by groups of frames
   once per group, with each frame's group (the readers expand it per frame)
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
