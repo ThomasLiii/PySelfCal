@@ -179,37 +179,60 @@ def _piece_index(storage, rows=_ROWS):
     return out
 
 
-def _piece(storage, desc, buf=None):
-    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (from 0) per piece; one
-    piece per column range of a ColSplitCSR, one otherwise; int64 indices. ``buf`` (a :class:`_Slot`): the indptr
-    and the column ids are written into its buffers, in :data:`_IDX` (the same values; nothing allocated per
-    chunk)."""
+def _piece(storage, desc, buf=None, spans=None):
+    """One row chunk: ``(r0, r1, [(indptr, column ids, data), ...])`` with a local indptr (from 0) per piece, the
+    pieces of ``spans`` (:func:`_piece_spans`; default: one per column range of a ColSplitCSR, one otherwise) in
+    order; int64 indices. A piece narrower than the storage's range that holds it is taken out of the range by scipy's
+    compiled submatrix routine (two passes over the chunk's entries there), its entries in storage order. ``buf`` (a
+    :class:`_Slot`): the indptr and the column ids are written into its buffers, in :data:`_IDX` (the same values)."""
     bi, lr0, lr1 = desc
-
-    def local(ip, s0, idx, s1, cut, t):
-        if buf is None:
-            return ip[lr0:lr1 + 1].astype(np.int64) - s0, idx[s0:s1].astype(np.int64) + cut
-        lip = buf.get(f'lip{t}', lr1 - lr0 + 1, _IDX)
-        np.subtract(ip[lr0:lr1 + 1], s0, out=lip, casting='unsafe')
-        cols = buf.get(f'cols{t}', s1 - s0, _IDX)
-        np.add(idx[s0:s1], cut, out=cols, casting='unsafe')
-        return lip, cols
-
     if isinstance(storage, ColSplitCSR):
-        base = int(storage.row_bounds[bi])
-        out = []
-        for t, (d, idx, ip) in enumerate(storage.sub[bi]):
+        base, nrows = int(storage.row_bounds[bi]), int(storage.row_bounds[bi + 1] - storage.row_bounds[bi])
+        ranges, cuts = storage.sub[bi], storage.cuts
+    else:
+        blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
+        bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
+        blk, base, nrows = blocks[bi], int(bounds[bi]), blocks[bi].shape[0]
+        ranges, cuts = [(blk.data, blk.indices, blk.indptr)], (0, storage.shape[1])
+    out = []
+    for p, (lo, hi, t) in enumerate(_piece_spans(storage) if spans is None else spans):
+        d, idx, ip = ranges[t]
+        a, b = int(cuts[t]), int(cuts[t + 1])
+        if (lo, hi) == (a, b):
             s0, s1 = int(ip[lr0]), int(ip[lr1])
-            lip, cols = local(ip, s0, idx, s1, int(storage.cuts[t]), t)
-            out.append((lip, cols, d[s0:s1]))
-        return base + lr0, base + lr1, out
-    blocks = storage.blocks if isinstance(storage, BlockCSR) else [storage]
-    bounds = storage.row_bounds if isinstance(storage, BlockCSR) else (0,)
-    blk, base = blocks[bi], bounds[bi]
-    ip = blk.indptr
-    s0, s1 = int(ip[lr0]), int(ip[lr1])
-    lip, cols = local(ip, s0, blk.indices, s1, 0, 0)
-    return int(base) + lr0, int(base) + lr1, [(lip, cols, blk.data[s0:s1])]
+            lip, cols, vals, first = ip[lr0:lr1 + 1], idx[s0:s1], d[s0:s1], a
+        else:                                             # the column ids come back from lo
+            lip, cols, vals = _sparsetools.get_csr_submatrix(nrows, b - a, ip, idx, d, lr0, lr1, lo - a, hi - a)
+            first = lo
+        if buf is None:
+            out.append((lip.astype(np.int64) - int(lip[0]), cols.astype(np.int64) + first, vals))
+            continue
+        li = buf.get(f'lip{p}', lr1 - lr0 + 1, _IDX)
+        np.subtract(lip, lip[0], out=li, casting='unsafe')
+        co = buf.get(f'cols{p}', cols.size, _IDX)
+        np.add(cols, first, out=co, casting='unsafe')
+        out.append((li, co, vals))
+    return base + lr0, base + lr1, out
+
+
+def _piece_spans(storage, cuts=None):
+    """The pieces :func:`_piece` gives each chunk, as ``(lo, hi, t)``: the piece's column range ``lo:hi`` in the
+    storage's numbering, and the storage's column range ``t`` (of a ColSplitCSR; 0 otherwise) that holds it. Without
+    ``cuts``, a piece per range; with ``cuts`` (increasing column boundaries, from 0 to the column count), a piece per
+    part of a range between two cuts. A piece's range is what :func:`_prepare_piece` reads its kind from."""
+    if isinstance(storage, ColSplitCSR):
+        ranges = [(int(storage.cuts[t]), int(storage.cuts[t + 1])) for t in range(storage.nranges)]
+    else:
+        ranges = [(0, int(storage.shape[1]))]
+    if cuts is None:
+        return [(a, b, t) for t, (a, b) in enumerate(ranges)]
+    out = []
+    for t, (a, b) in enumerate(ranges):
+        for lo, hi in zip(cuts[:-1], cuts[1:]):
+            lo, hi = max(a, int(lo)), min(b, int(hi))
+            if hi > lo:
+                out.append((lo, hi, t))
+    return out
 
 
 def _pieces(storage, rows=_ROWS):
@@ -668,10 +691,29 @@ class _BlockFactor:
         return X
 
 
-def _split_entries(ip, ci, dd, keep, newpos, buf, tag):
+def _split_entries(ip, ci, dd, keep, newpos, buf, tag, span=None):
     """The entries of a chunk's offset csr ``(ip, ci, dd)`` (rows over the chunk, columns in the offset space) at the
     columns where ``keep`` (a mask over the offset columns) holds, as a csr over the renumbered columns ``newpos``:
-    ``(indptr, columns, values)`` in the buffers of ``buf`` (a :class:`_Slot`), in storage order."""
+    ``(indptr, columns, values)`` in the buffers of ``buf`` (a :class:`_Slot`), in storage order. ``span`` ``(a, b)``:
+    every column of ``ci`` lies in ``a:b`` (a piece of one kind, :func:`_prepare_piece`); when ``keep`` holds on all
+    of them and ``newpos`` numbers them consecutively, the entries are used as stored, their columns shifted (no pass
+    over the values), and when it holds on none of them the result is empty; otherwise the entries are compressed."""
+    if span is not None:
+        a, b = int(span[0]), int(span[1])
+        if b > a:
+            k = keep[a:b]
+            if not k.any():
+                ip0 = buf.get(f'{tag}ip2', ip.size, _IDX)
+                ip0.fill(0)
+                return ip0, ci[:0], dd[:0]
+            if k.all():
+                shift = int(newpos[a]) - a
+                if int(newpos[b - 1]) - (b - 1) == shift:
+                    if shift == 0:
+                        return ip, ci, dd
+                    ci2 = buf.get(f'{tag}ci2', ci.size, _IDX)
+                    np.add(ci, shift, out=ci2, casting='unsafe')
+                    return ip, ci2, dd
     m = np.take(keep, ci, out=buf.get(f'{tag}keep', ci.size, np.bool_))
     c = buf.get(f'{tag}cnt', ci.size + 1, _IDX)
     c[0] = 0
@@ -726,6 +768,35 @@ def _join_patterns(projector, N):
     U, sv, _ = np.linalg.svd(np.hstack(dirs), full_matrices=False)
     U = U[:, sv > _DROP * float(sv.max())]
     return ColumnProjector([g for g, h in zip(groups, hit) if not h] + [(cols[None, :], U[None, :, :])])
+
+
+def _joined(parts, nr, ncols):
+    """One csr over a chunk's rows from its pieces' ``(indptr, columns, values)``, in piece order (None when they hold
+    no entry): each row's entries of the first piece, then the second's, ... -- the pieces are column ranges in
+    order, so each row's entries stay in column order, every entry kept (explicit zeros too) and none summed: the
+    csr a single piece of the whole row would give. The products a chunk's offset entries make among themselves
+    (``B^T B``) need the chunk's entries whole: a product per piece would lose the terms between pieces."""
+    parts = [p for p in parts if p[1].size]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        ip, ci, dd = parts[0]
+        return csr_matrix((dd, ci, ip), shape=(nr, ncols))
+    counts = [np.diff(np.asarray(ip, dtype=np.int64)) for ip, _ci, _dd in parts]
+    ip_out = np.zeros(nr + 1, dtype=np.int64)
+    np.cumsum(np.sum(counts, axis=0), out=ip_out[1:])
+    n = int(ip_out[-1])
+    ci_out = np.empty(n, dtype=parts[0][1].dtype)
+    dd_out = np.empty(n, dtype=np.float64)
+    before = np.zeros(nr, dtype=np.int64)                 # each row's entries placed by the earlier pieces
+    for (ip, ci, dd), c in zip(parts, counts):
+        ip = np.asarray(ip, dtype=np.int64)
+        rows = np.repeat(np.arange(nr, dtype=np.int64), c)
+        dest = ip_out[:-1][rows] + before[rows] + (np.arange(ci.size, dtype=np.int64) - ip[:-1][rows])
+        ci_out[dest] = ci
+        dd_out[dest] = dd
+        before += c
+    return csr_matrix((dd_out, ci_out, ip_out), shape=(nr, ncols))
 
 
 class _SharedSolve:
@@ -794,6 +865,7 @@ class _SharedSolve:
                 logger.warning(f"Deflation: the shared offset columns' preconditioner: {kind}")
         logger.info(f"Deflation: the shared offset columns' preconditioner: {kind}")
         self.descs = _piece_index(storage)
+        self.spans = [sp for sp in _piece_spans(storage, defl._cuts) if sp[1] > defl._sky_end]   # not sky only
         self.iterations, self.history, self.converged, self.sweeps, self.stops = [], [], True, 0, []
         self.gdiag = np.zeros(n_off)
         self.gdiag[self.F] = Gff.diagonal()
@@ -816,19 +888,19 @@ class _SharedSolve:
             out = np.zeros((n_dst, k))
             slot = _Slot()
             for desc in my:
-                r0, r1, pieces = _piece(storage, desc, buf=slot)
+                r0, r1, pieces = _piece(storage, desc, buf=slot, spans=self.spans)
                 nr = r1 - r0
                 Y = slot.take('Y', (nr, k))
                 dsts = []
                 for ti, (lip, cols, data) in enumerate(pieces):
-                    _lip, _pos, _d64, _sky, oc = _prepare_piece(nr, lip, cols, data, defl._colmap, n_sky_S,
-                                                                buf=slot, tag=ti)
+                    _lip, _pos, _d64, _sky, oc, oid = _prepare_piece(nr, lip, cols, data, defl._colmap, n_sky_S,
+                                                                     buf=slot, tag=ti, span=self.spans[ti])
                     if oc is None:
                         continue
                     ip, ci, dd = oc
-                    sip, sci, sdd = _split_entries(ip, ci, dd, keep_s, pos_s, slot, f'{ti}s')
+                    sip, sci, sdd = _split_entries(ip, ci, dd, keep_s, pos_s, slot, f'{ti}s', span=oid)
                     _sparsetools.csr_matvecs(nr, n_src, k, sip, sci, sdd, V, Y)
-                    dsts.append(_split_entries(ip, ci, dd, keep_d, pos_d, slot, f'{ti}d'))
+                    dsts.append(_split_entries(ip, ci, dd, keep_d, pos_d, slot, f'{ti}d', span=oid))
                 for dip, dci, ddd in dsts:
                     _sparsetools.csc_matvecs(n_dst, nr, k, dip, dci, ddd, Y, out)
             return out
@@ -947,21 +1019,45 @@ class _SharedSolve:
 
 
 
-def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0):
-    """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off)`` with ``pos``
-    the solver columns, ``d64`` the values, ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over
-    the chunk's rows (None: none) and ``off = (indptr, offset columns, values)`` the offset entries likewise (None:
-    none), :data:`_IDX` / float64 and in storage order, written into the buffers of ``buf`` (a :class:`_Slot`;
-    ``tag`` tells a chunk's pieces apart). A row's offset entries are those at or past ``n_sky_S``: they are
-    counted by a running sum of the offset mask and selected by ``np.compress``."""
+def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0, span=None):
+    """A piece's entries as the passes read them, computed once per chunk: ``(lip, pos, d64, sky, off, oid)`` with
+    ``pos`` the solver columns of every entry (None for a piece of one kind, below), ``d64`` the values,
+    ``sky = (indptr, columns, values, rows)`` the sky entries as a csr over the chunk's rows (None: none),
+    ``off = (indptr, offset columns, values)`` the offset entries likewise (None: none) and ``oid`` the range
+    ``(a, b)`` of the offset space that holds every column of ``off`` (None: unknown), :data:`_IDX` / float64 and in
+    storage order, written into the buffers of ``buf`` (a :class:`_Slot`; ``tag`` tells a chunk's pieces apart).
+
+    ``span`` ``(lo, hi)``: the piece's column range in the storage's numbering (:func:`_piece_spans`). A piece that
+    holds offset columns only, which the deflation's space numbers consecutively (the passes read a chunk in pieces of
+    one kind), is used as given: its columns shifted into the offset space (one addition, none when the shift is 0),
+    its values cast; a piece of sky columns only likewise, mapped through ``colmap``. Otherwise a row's offset entries
+    are those at or past ``n_sky_S``: they are counted by a running sum of the offset mask and selected by
+    ``np.compress``."""
     n = int(cols.size)
+    d64 = buf.get(f'{tag}d64', n, np.float64)
+    np.copyto(d64, data)
+    if span is not None and int(span[1]) > int(span[0]):
+        lo, hi = int(span[0]), int(span[1])
+        first = lo if colmap is None else int(colmap[lo])
+        last = hi - 1 if colmap is None else int(colmap[hi - 1])
+        if first >= n_sky_S and last - first == hi - 1 - lo:            # offset columns only, numbered consecutively
+            shift = first - lo - n_sky_S
+            if shift:
+                oc = buf.get(f'{tag}offcols', n, _IDX)
+                np.add(cols, shift, out=oc, casting='unsafe')
+            else:
+                oc = cols
+            return lip, None, d64, None, (lip, oc, d64), (lo + shift, hi + shift)
+        if last < n_sky_S:                                                # sky columns only
+            pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
+            if colmap is not None:
+                np.maximum(pos, 0, out=pos)
+            return lip, None, d64, (lip, pos, d64, np.repeat(np.arange(nr, dtype=_IDX), np.diff(lip))), None, None
     pos = cols if colmap is None else np.take(colmap, cols, out=buf.get(f'{tag}pos', n, _IDX))
     if colmap is not None:
         # A column outside the space (-1) holds only zero entries (the columns a coverage floor left without data):
         # sent to column 0, the products read a valid column and the zero value keeps every one of them exact.
         np.maximum(pos, 0, out=pos)
-    d64 = buf.get(f'{tag}d64', n, np.float64)
-    np.copyto(d64, data)
     o = buf.get(f'{tag}o', n, np.bool_)
     np.greater_equal(pos, n_sky_S, out=o)
     c = buf.get(f'{tag}c', n + 1, _IDX)                  # c[j]: offset entries among the first j
@@ -988,7 +1084,7 @@ def _prepare_piece(nr, lip, cols, data, colmap, n_sky_S, buf, tag=0):
         sv = buf.get(f'{tag}skyvals', n - n_off, np.float64)
         np.compress(no, d64, out=sv)
         sky = (ips, sc, sv, np.repeat(np.arange(nr, dtype=_IDX), np.diff(ips)))
-    return lip, pos, d64, sky, off
+    return lip, pos, d64, sky, off, None
 
 
 class _Slot:
@@ -1195,6 +1291,16 @@ class Deflation:
             hub = np.unique(sp[sp >= n_sky_S] - n_sky_S)
             if hub.size <= _SCHUR_MAX:
                 hub = None
+        # The pieces the passes read a chunk in (_piece_spans): its sky columns, and its offset columns (those groups of
+        # frames share apart from the others, when they are solved iteratively). A piece of one kind needs no sorting
+        # of its entries (_prepare_piece, _split_entries).
+        cuts = [0, n_sky, n]
+        if hub is not None:
+            in_shared = np.zeros(n - n_sky, dtype=bool)
+            sh = np.asarray(shared, dtype=np.int64)
+            in_shared[sh[sh >= n_sky] - n_sky] = True
+            cuts[2:2] = (np.flatnonzero(in_shared[1:] != in_shared[:-1]) + 1 + n_sky).tolist()
+        self._cuts, self._sky_end = cuts, n_sky
         self.shared_solve = None
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)"
@@ -1209,6 +1315,7 @@ class Deflation:
             Zt = np.ascontiguousarray(Z.T)                        # (nS, k): the kernels' vector layout
             del Z                                                 # the one layout until pass 2 has read it
             descs = _piece_index(storage)
+            spans = _piece_spans(storage, self._cuts)
 
             if hub is not None:
                 is_hub = np.zeros(n_off, dtype=bool)
@@ -1225,42 +1332,50 @@ class Deflation:
                 t_g = 0.0
                 slot = _Slot()                                    # this share's chunk buffers, reused chunk to chunk
                 for desc in my:
-                    r0, r1, pieces = _piece(storage, desc, buf=slot)
+                    r0, r1, pieces = _piece(storage, desc, buf=slot, spans=spans)
                     nr = r1 - r0
                     U = slot.take('U', (nr, k))
                     offs = []
                     for ti, (lip, cols, data) in enumerate(pieces):
-                        _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
-                                                                   buf=slot, tag=ti)
+                        _lip, _pos, _d64, sky, oc, oid = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                                        buf=slot, tag=ti, span=spans[ti])
                         if sky is not None:
                             # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
                             # keep their order, so the sums are those of the whole piece
                             _sparsetools.csr_matvecs(nr, nS, k, sky[0], sky[1], sky[2], Zt, U)
                         if oc is not None:
-                            offs.append(oc)
+                            offs.append((oc, oid))
                     sky_norm2 += np.einsum('ij,ij->j', U, U)
-                    for ti, (ip, ci, dd) in enumerate(offs):
+                    for (ip, ci, dd), _oid in offs:
                         _sparsetools.csc_matvecs(n_off, nr, k, ip, ci, dd, U, Rt)
-                        tg = time.perf_counter()
-                        if hub is None:
-                            sub = csr_matrix((dd, ci, ip), shape=(nr, n_off))
-                            g = (sub.T @ sub).tocsr()            # the chunk's share of the offsets' normal matrix
+                    tg = time.perf_counter()
+                    if hub is None:
+                        # the chunk's share of the offsets' normal matrix, from its offset entries whole (the pieces
+                        # joined: a product per piece would lose the terms between pieces)
+                        sub = _joined([oc for oc, _o in offs], nr, n_off)
+                        if sub is not None:
+                            g = (sub.T @ sub).tocsr()
                             g.sum_duplicates()
                             Gt = g if Gt is None else Gt + g     # the thread's running sum, in chunk order
                             del g, sub
-                        else:
-                            # the other columns among themselves and the shared ones among themselves; their couplings
-                            # are left to the iterative solve
-                            fi = _split_entries(ip, ci, dd, ~is_hub, fpos, slot, f'g{ti}f')
-                            hi = _split_entries(ip, ci, dd, is_hub, hpos, slot, f'g{ti}h')
-                            sf = csr_matrix((fi[2].copy(), fi[1].copy(), fi[0].copy()), shape=(nr, n_off - hub.size))
-                            sh = csr_matrix((hi[2].copy(), hi[1].copy(), hi[0].copy()), shape=(nr, hub.size))
-                            gf, gh = (sf.T @ sf).tocsr(), (sh.T @ sh).tocsr()
-                            gf.sum_duplicates()
-                            gh.sum_duplicates()
-                            Gt = (gf, gh) if Gt is None else (Gt[0] + gf, Gt[1] + gh)
-                            del gf, gh, sf, sh
-                        t_g += time.perf_counter() - tg
+                    elif offs:
+                        # the other columns among themselves and the shared ones among themselves; their couplings
+                        # are left to the iterative solve
+                        parts_f, parts_h = [], []
+                        for ti, ((ip, ci, dd), oid) in enumerate(offs):
+                            fi = _split_entries(ip, ci, dd, ~is_hub, fpos, slot, f'g{ti}f', span=oid)
+                            hi = _split_entries(ip, ci, dd, is_hub, hpos, slot, f'g{ti}h', span=oid)
+                            parts_f.append((fi[0].copy(), fi[1].copy(), fi[2].copy()))
+                            parts_h.append((hi[0].copy(), hi[1].copy(), hi[2].copy()))
+                        sf = _joined(parts_f, nr, n_off - hub.size)
+                        sh = _joined(parts_h, nr, hub.size)
+                        gf = (sf.T @ sf).tocsr() if sf is not None else csr_matrix((n_off - hub.size,) * 2)
+                        gh = (sh.T @ sh).tocsr() if sh is not None else csr_matrix((hub.size,) * 2)
+                        gf.sum_duplicates()
+                        gh.sum_duplicates()
+                        Gt = (gf, gh) if Gt is None else (Gt[0] + gf, Gt[1] + gh)
+                        del gf, gh, sf, sh
+                    t_g += time.perf_counter() - tg
                     del U, offs
                 return sky_norm2, Rt, Gt, t_g
 
@@ -1334,8 +1449,17 @@ class Deflation:
             def images(r0, r1, prepared, buf):
                 nr = r1 - r0
                 U = buf.take('U', (nr, k + 1))
-                for lip, pos, d64, _sky, _off in prepared:
-                    _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
+                for lip, pos, d64, sky, off, _oid in prepared:
+                    if pos is not None:
+                        _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, U[:, :k])
+                        continue
+                    # a piece of one kind, its entries as stored against its part of the patterns; the pieces come
+                    # in column order and a row's sky entries before its offset entries, so each row's sum is that
+                    # of the whole row
+                    if sky is not None:
+                        _sparsetools.csr_matvecs(nr, n_sky_S, k, sky[0], sky[1], sky[2], Zt[:n_sky_S], U[:, :k])
+                    if off is not None:
+                        _sparsetools.csr_matvecs(nr, nS - n_sky_S, k, off[0], off[1], off[2], Zt[n_sky_S:], U[:, :k])
                 pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
                 U[:, k] = bc
@@ -1668,18 +1792,19 @@ class Deflation:
         Qt = np.zeros((nS, q))
         Qt[:n_sky_S] = Qh
         descs = _piece_index(storage)
+        spans = _piece_spans(storage, self._cuts)
 
         def sweep(my):
             Rt = np.zeros((n_off, q))
             slot = _Slot()
             for desc in my:
-                r0, r1, pieces = _piece(storage, desc, buf=slot)
+                r0, r1, pieces = _piece(storage, desc, buf=slot, spans=spans)
                 nr = r1 - r0
                 U = slot.take('U', (nr, q))
                 offs = []
                 for ti, (lip, cols, data) in enumerate(pieces):
-                    _lip, _pos, _d64, sky, oc = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
-                                                               buf=slot, tag=ti)
+                    _lip, _pos, _d64, sky, oc, _oid = _prepare_piece(nr, lip, cols, data, self._colmap, n_sky_S,
+                                                                     buf=slot, tag=ti, span=spans[ti])
                     if sky is not None:
                         _sparsetools.csr_matvecs(nr, nS, q, sky[0], sky[1], sky[2], Qt, U)
                     if oc is not None:
@@ -1720,6 +1845,7 @@ class Deflation:
         added in chunk order, so the result does not depend on the thread count."""
         out = np.zeros((self.nS, m))
         descs = _piece_index(storage)
+        spans = _piece_spans(storage, self._cuts)
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
         n_off = self.nS - n_sky_S
 
@@ -1731,7 +1857,7 @@ class Deflation:
             nr = r1 - r0
             sky = []
             off = None
-            ocs = [oc for _lip, _pos, _d64, _sk, oc in prepared if oc is not None]
+            ocs = [oc for _lip, _pos, _d64, _sk, oc, _o in prepared if oc is not None]
             if ocs:
                 # The chunk's offset columns numbered compactly, their sums in a buffer of that size: each the same
                 # sum, in the same order; a column the chunk does not touch gets no addition (its zero changed nothing).
@@ -1750,7 +1876,7 @@ class Deflation:
                     np.take(cmap, ci, out=local)
                     _sparsetools.csc_matvecs(touched.size, nr, m, ip, local, dd, U, sums)
                 off = (touched, sums)
-            for _lip, _pos, _d64, sk, oc in prepared:
+            for _lip, _pos, _d64, sk, oc, _o in prepared:
                 if sk is not None:
                     sky.append((sk[1], sk[3], sk[2]))
             grouped = None
@@ -1785,8 +1911,9 @@ class Deflation:
             i, desc = i_desc
             t0 = time.perf_counter()
             buf = slots[i]
-            r0, r1, pieces = _piece(storage, desc, buf=buf)
-            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti)
+            r0, r1, pieces = _piece(storage, desc, buf=buf, spans=spans)
+            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti,
+                                       span=spans[ti])
                         for ti, (lip, cols, data) in enumerate(pieces)]
             del pieces
             out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
@@ -2089,8 +2216,16 @@ class Deflation:
             np.copyto(r, b[r0:r1], casting='unsafe')
             acc = buf.get('resid_acc', nr, np.float64)
             acc.fill(0.0)
-            for lip, pos, d64, _sky, _off in prepared:
-                _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, xS, acc)
+            n_sky_S = self.n_sky_S
+            for lip, pos, d64, sky, off, _oid in prepared:
+                if pos is not None:
+                    _sparsetools.csr_matvec(nr, self.nS, lip, pos, d64, xS, acc)
+                    continue
+                # a piece of one kind, as stored (the pieces in column order: each row's sum is the whole row's)
+                if sky is not None:
+                    _sparsetools.csr_matvec(nr, n_sky_S, sky[0], sky[1], sky[2], xS[:n_sky_S], acc)
+                if off is not None:
+                    _sparsetools.csr_matvec(nr, self.nS - n_sky_S, off[0], off[1], off[2], xS[n_sky_S:], acc)
             r -= acc
             return r.reshape(nr, 1), None
 

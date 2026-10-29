@@ -186,7 +186,7 @@ def test_the_deflation_reads_no_column_outside_its_space():
     lip = np.array([0, 2, 4], dtype=_IDX)
     cols = np.array([1, 3, 0, 4], dtype=np.int32)        # row 0: the outside column (value 0) and an offset; row 1: sky, offset
     data = np.array([0.0, 2.0, 1.5, 3.0], dtype=np.float32)
-    _lip, pos, d64, sky, off = _prepare_piece(2, lip, cols, data, colmap, 2, buf=_Slot())
+    _lip, pos, d64, sky, off, _oid = _prepare_piece(2, lip, cols, data, colmap, 2, buf=_Slot())
     assert (pos >= 0).all() and list(pos) == [0, 2, 0, 3]
     ips, sc, sv, rows = sky
     assert list(sc) == [0, 0] and list(sv) == [0.0, 1.5] and list(rows) == [0, 1]
