@@ -179,11 +179,13 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     (``Deflate(offsets=('spectral', 'xs_term'))``): the per-pixel constants follow none of the non-constant sky
     patterns, which cross the detector differently in every frame, and holding their response at zero leaves out the
     iterative solve of their couplings (real D2 / D6 Ch9: 252 / 442 s of deflation, the maps the same as with it solved
-    but for the zero point). Products carry 'subch_varweight_pixels_final_continuous'."""
+    but for the zero point). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
+    D6 Ch9: 11 / 59 pixels): such a pixel's constant fits that one observation exactly and informs nothing else.
+    Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)
     first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
     offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
-        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term')),)
+        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term'), min_observations=2),)
     maps = {'subchannel': base.model.chunk_maps['subchannel'],
             'pixel': C.pixel_map(first, last, num_sub, num_ch, num_col)}
     return base.replace(model=base.model.replace(offsets=offsets, chunk_maps=maps),
