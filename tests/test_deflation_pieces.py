@@ -105,19 +105,23 @@ def _solved(cal):
     return out
 
 
-def _solve_both(tmp_path, monkeypatch, fit):
+def _whole_ranges(monkeypatch):
+    whole = D._piece_spans
+    monkeypatch.setattr(D, '_piece_spans', lambda storage, cuts=None: whole(storage))
+
+
+def _solve_both(tmp_path, monkeypatch, fit, between=_whole_ranges):
     """The toy of test_offset_rows (a term every frame shares, then two per-frame terms) solved with ``fit`` on the
-    partitioned storage twice: the passes reading pieces of one kind (as they do), and reading each column range whole
-    (``_piece_spans`` without its cuts: every entry sorted by kind in the passes). The two cals' solved datasets and the
-    two mosaics' maps."""
+    partitioned storage twice, ``between(monkeypatch)`` changing the deflation between the two (by default: the passes
+    reading pieces of one kind, as they do, then reading each column range whole: ``_piece_spans`` without its cuts,
+    every entry sorted by kind in the passes). The two cals' solved datasets and the two mosaics' maps."""
     field = _field(tmp_path)
     recipe = _recipe('all').replace(fit=fit)
     for k, v in PARTITIONED.items():
         monkeypatch.setenv(k, v)
     r1 = field.calibrate(recipe, jobs=sc.Job('All'))
-    whole = D._piece_spans
-    monkeypatch.setattr(D, '_piece_spans', lambda storage, cuts=None: whole(storage))
-    r2 = field.calibrate(recipe.replace(name='rows_all_whole'), jobs=sc.Job('All'))
+    between(monkeypatch)
+    r2 = field.calibrate(recipe.replace(name='rows_all_second'), jobs=sc.Job('All'))
     out = []
     for r in (r1, r2):
         (cal,), (mos,) = r.cal_paths, r.mosaic_paths
@@ -149,3 +153,12 @@ def test_the_iterative_shared_solve_does_not_depend_on_the_pieces(tmp_path, monk
     from test_any_telescope import FIT
     monkeypatch.setattr(D, '_SCHUR_MAX', 0)
     _assert_same(*_solve_both(tmp_path, monkeypatch, FIT.replace(deflate=sc.Deflate(3, basis='polynomial'))))
+
+
+def test_the_sweeps_do_not_depend_on_their_row_blocks(tmp_path, monkeypatch):
+    """The shared columns' iterative solve forced: its sweeps' two products made a chunk at a time (one block: the toy's
+    chunks are smaller than _SWEEP_ROWS) and seven rows at a time give the same bytes."""
+    from test_any_telescope import FIT
+    monkeypatch.setattr(D, '_SCHUR_MAX', 0)
+    _assert_same(*_solve_both(tmp_path, monkeypatch, FIT.replace(deflate=sc.Deflate(3, basis='polynomial')),
+                              between=lambda mp: mp.setattr(D, '_SWEEP_ROWS', 7)))

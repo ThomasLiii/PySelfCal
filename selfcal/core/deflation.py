@@ -100,6 +100,10 @@ DEPENDENT = 1e-12
 POLY_ALWAYS = 2
 #: Rows of the matrix per chunk of the float64 passes.
 _ROWS = 1 << 21
+#: Rows per block of a sweep's two products (:meth:`_SharedSolve._sweep`): the forward product of a block's rows stays
+#: in the core's cache for the transposed product, instead of a chunk's going through memory. The order of the work
+#: only, not of any sum.
+_SWEEP_ROWS = 1 << 14
 #: Index dtype of the passes' chunk buffers (the storages index with int32: every column and chunk entry fits).
 _IDX = np.int32
 #: Connected blocks of offset columns up to this size are solved densely (larger ones by MINRES, unless
@@ -874,7 +878,8 @@ class _SharedSolve:
 
     def _sweep(self, V, src, dst):
         """``B_dst^T (B_src V)`` over every row chunk, ``src``, ``dst`` in ``('F', 'H')`` (``V``: ``(n_src, k)``):
-        each chunk's offset entries split into the two sets; the threads' partial sums added in thread order."""
+        each chunk's offset entries split into the two sets, the two products made a block of :data:`_SWEEP_ROWS`
+        rows at a time; the threads' partial sums added in thread order."""
         defl, storage, n_sky_S = self.defl, self.storage, self.n_sky_S
         keep_s = self.is_hub if src == 'H' else ~self.is_hub
         keep_d = self.is_hub if dst == 'H' else ~self.is_hub
@@ -891,8 +896,7 @@ class _SharedSolve:
             for desc in my:
                 r0, r1, pieces = _piece(storage, desc, buf=slot, spans=self.spans)
                 nr = r1 - r0
-                Y = slot.take('Y', (nr, k))
-                dsts = []
+                srcs, dsts = [], []
                 for ti, (lip, cols, data) in enumerate(pieces):
                     _lip, _pos, _d64, _sky, oc, oid = _prepare_piece(nr, lip, cols, data, defl._colmap, n_sky_S,
                                                                      buf=slot, tag=ti, span=self.spans[ti],
@@ -900,11 +904,18 @@ class _SharedSolve:
                     if oc is None:
                         continue
                     ip, ci, dd = oc
-                    sip, sci, sdd = _split_entries(ip, ci, dd, keep_s, pos_s, slot, f'{ti}s', span=oid)
-                    _sparsetools.csr_matvecs(nr, n_src, k, sip, sci, sdd, V, Y)
+                    srcs.append(_split_entries(ip, ci, dd, keep_s, pos_s, slot, f'{ti}s', span=oid))
                     dsts.append(_split_entries(ip, ci, dd, keep_d, pos_d, slot, f'{ti}d', span=oid))
-                for dip, dci, ddd in dsts:
-                    _sparsetools.csc_matvecs(n_dst, nr, k, dip, dci, ddd, Y, out)
+                Y = slot.take('Y', (min(nr, _SWEEP_ROWS), k))
+                for s0 in range(0, nr, _SWEEP_ROWS):                 # a row's sums, and a column's, in their order
+                    s1 = min(nr, s0 + _SWEEP_ROWS)
+                    Yb = Y[:s1 - s0]
+                    if s0:
+                        Yb.fill(0.0)
+                    for sip, sci, sdd in srcs:
+                        _sparsetools.csr_matvecs(s1 - s0, n_src, k, sip[s0:s1 + 1], sci, sdd, V, Yb)
+                    for dip, dci, ddd in dsts:
+                        _sparsetools.csc_matvecs(n_dst, s1 - s0, k, dip[s0:s1 + 1], dci, ddd, Yb, out)
             return out
 
         parts = defl._over_chunks(self.descs, work)
