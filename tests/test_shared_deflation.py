@@ -149,3 +149,38 @@ def test_the_signature_solve_starts_from_the_response_solves_search_space(tmp_pa
     assert sig_new['constraint_held'] < 1e-10 and sig_old['constraint_held'] < 1e-10
     for k in x_old:
         np.testing.assert_allclose(x_new[k], x_old[k], rtol=1e-5, atol=1e-6 * np.abs(x_old[k]).max())
+
+
+def test_the_offset_terms_left_out_of_the_deflation_keep_the_solution(tmp_path):
+    """Deflate(offsets=('gradient', 'scalar')): the response of the term every frame shares ('pattern', not listed) held
+    at zero (no solve of its couplings: the per-frame block solve alone), the term still in the deflation's space. The
+    least-squares problem is the same: after the same iterations (both stop at the limit, on the way to it) the two
+    residuals agree to 1e-6 and the solutions to 1e-3 of each dataset's largest value; the record counts the held
+    columns. A name the model does not have is refused."""
+    import h5py
+
+    from test_offset_rows import _field, _recipe
+    from test_any_telescope import FIT
+
+    field = _field(tmp_path)
+    fit = FIT.replace(deflate=sc.Deflate(3, basis='polynomial'))
+    out = {}
+    for name, offsets in (('all', None), ('perframe', ('gradient', 'scalar'))):
+        recipe = _recipe('all').replace(fit=fit.replace(deflate=fit.deflate.replace(offsets=offsets)),
+                                        name=f'deflate_{name}')
+        res = field.calibrate(recipe, jobs=sc.Job('All'))
+        with h5py.File(res.cal_paths[0], 'r') as f:
+            attrs = dict(f['solve'].attrs)
+            solved = {f'{g}/{k}': f[g][k][()] for g in ('sky', 'offsets') for k in f[g]}
+        out[name] = (json.loads(attrs['deflation']), float(attrs['r1norm']), solved)
+    assert out['perframe'][0]['held_columns'] > 0 and 'held_columns' not in out['all'][0]
+    assert abs(out['perframe'][1] - out['all'][1]) <= 1e-6 * out['all'][1]
+    a, b = out['all'][2], out['perframe'][2]
+    assert set(a) == set(b)
+    for k in a:
+        np.testing.assert_allclose(b[k], a[k], rtol=0, atol=1e-3 * max(float(np.nanmax(np.abs(a[k]))), 1e-30),
+                                   err_msg=k)
+    bad = _recipe('all').replace(fit=fit.replace(deflate=fit.deflate.replace(offsets=('gradient', 'nosuch'))),
+                                 name='deflate_bad')
+    with pytest.raises(ValueError, match='nosuch'):
+        field.calibrate(bad, jobs=sc.Job('All'))

@@ -833,6 +833,17 @@ class ModelSpec:
             get(n)
         return out
 
+    def offset_columns(self, layout, names, geom=None) -> np.ndarray:
+        """The full-layout columns of the offset terms ``names`` (as priors name them, :meth:`offset_names`); a name the
+        model does not have is refused."""
+        known = self.offset_names(geom)
+        bad = [t for t in names if t not in known]
+        if bad:
+            raise ValueError(f"offset terms {bad} are not in the model (its offset terms: {known})")
+        out = [np.arange(int(layout.col_bases[m]), int(layout.col_bases[m + 1]), dtype=np.int64)
+               for m, name in enumerate(known) if name in names]
+        return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
+
     def shared_columns(self, layout) -> np.ndarray:
         """The full-layout columns of the offset terms that groups of frames share (``fixed``: every frame, ``grouped``:
         frames with equal values of a frame variable), for the deflation, which applies their couplings to the other

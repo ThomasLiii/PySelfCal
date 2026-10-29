@@ -805,6 +805,47 @@ def _joined(parts, nr, ncols):
     return csr_matrix((dd_out, ci_out, ip_out), shape=(nr, ncols))
 
 
+class _HeldSolve:
+    """``G^+ R`` for the offsets ``F`` (offset-space indices) alone, every other offset held at zero (the terms
+    ``Deflate(offsets=)`` leaves out): the block solve on their normal matrix ``Gff`` (block-diagonal by frame when they
+    are the per-frame terms), under the column constraints within them; a constraint group within the held columns
+    holds for zero. :meth:`solve` serves any right-hand side (the response to the patterns, and the signature
+    exclusion's)."""
+
+    def __init__(self, Gff, F, n_off, project=None, pool=None):
+        is_F = np.zeros(n_off, dtype=bool)
+        is_F[F] = True
+        self.F, self.n_off, self.nH, self.pool, self.Gff = np.asarray(F), int(n_off), int(n_off - len(F)), pool, Gff
+        fpos = np.full(n_off, -1, dtype=_IDX)
+        fpos[self.F] = np.arange(self.F.size)
+        groups = []
+        if project is not None:
+            for cols, Q in project.groups:
+                real = cols[cols >= 0]
+                if is_F[real].all():
+                    groups.append((cols, Q))
+                elif is_F[real].any():
+                    raise ValueError("a column constraint couples offset columns Deflate(offsets=) leaves out to those it "
+                                     "lists: not supported")
+        self.project = ColumnProjector(groups).mapped(fpos) if groups else None
+        self.gdiag = np.zeros(n_off)
+        self.gdiag[self.F] = Gff.diagonal()
+
+    def solve(self, R, pool=None):
+        """``(X, info)`` as :func:`_block_pinv_solve` returns them, ``X`` zero at the held columns."""
+        R = np.asarray(R, dtype=np.float64)
+        X = np.zeros((self.n_off, R.shape[1]))
+        X[self.F], info = _block_pinv_solve(self.Gff, R[self.F], project=self.project,
+                                            pool=self.pool if pool is None else pool)
+        return X, dict(info, held=self.nH, gdiag=self.gdiag, factor=self)
+
+    def residual(self, X, R):
+        """``R - G X`` on the offsets solved for (zero at the held columns, whose equations are not solved)."""
+        res = np.zeros_like(X)
+        res[self.F] = R[self.F] - self.Gff @ X[self.F]
+        return res
+
+
 class _SharedSolve:
     """``G^+ R`` for the offsets' normal matrix ``G = B_off^T B_off`` when many of its columns are shared by many
     frames (``hub``, offset-space indices: more than a dense Schur complement can hold), without forming their
@@ -822,13 +863,17 @@ class _SharedSolve:
     response of minimum norm in the shared columns, to :data:`_SHARED_RTOL` or until the iteration stalls.
     :meth:`solve` serves any right-hand side (the response to the patterns, and the signature exclusion's)."""
 
-    def __init__(self, defl, storage, Gff, Ghh, hub, n_off, n_sky_S, project=None):
+    def __init__(self, defl, storage, Gff, Ghh, hub, n_off, n_sky_S, project=None, held=None):
         from scipy.sparse.linalg import splu
         self.defl, self.storage, self.n_off, self.n_sky_S = defl, storage, int(n_off), int(n_sky_S)
         is_hub = np.zeros(n_off, dtype=bool)
         is_hub[hub] = True
         self.is_hub = is_hub
-        self.F, self.H = np.flatnonzero(~is_hub), np.flatnonzero(is_hub)
+        is_F = ~is_hub                                 # the other offsets solved for; those held at zero in neither set
+        if held is not None:
+            is_F[held] = False
+        self.is_F = is_F
+        self.F, self.H = np.flatnonzero(is_F), np.flatnonzero(is_hub)
         self.nF, self.nH = int(self.F.size), int(self.H.size)
         self.fpos = np.full(n_off, -1, dtype=_IDX)
         self.fpos[self.F] = np.arange(self.nF)
@@ -838,9 +883,11 @@ class _SharedSolve:
         if project is not None:
             for cols, Q in project.groups:
                 real = cols[cols >= 0]
+                if not (is_hub[real] | is_F[real]).any():
+                    continue                                # within the held columns: zero holds it
                 if is_hub[real].all():
                     groups_h.append((cols, Q))
-                elif not is_hub[real].any():
+                elif is_F[real].all():
                     groups_f.append((cols, Q))
                 else:
                     raise ValueError("a column constraint couples shared offset columns to the others: not supported "
@@ -883,8 +930,8 @@ class _SharedSolve:
         each chunk's offset entries split into the two sets, the two products made a block of :data:`_SWEEP_ROWS`
         rows at a time; the threads' partial sums added in thread order."""
         defl, storage, n_sky_S = self.defl, self.storage, self.n_sky_S
-        keep_s = self.is_hub if src == 'H' else ~self.is_hub
-        keep_d = self.is_hub if dst == 'H' else ~self.is_hub
+        keep_s = self.is_hub if src == 'H' else self.is_F
+        keep_d = self.is_hub if dst == 'H' else self.is_F
         pos_s = self.hpos if src == 'H' else self.fpos
         pos_d = self.hpos if dst == 'H' else self.fpos
         n_src = self.nH if src == 'H' else self.nF
@@ -1213,7 +1260,7 @@ class Deflation:
     :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
 
     def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1,
-                 projector=None, signatures=None, shared=None):
+                 projector=None, signatures=None, shared=None, held=None):
         t0 = time.perf_counter()
         self.settings = settings
         self.exclusion_info = None                    # Deflate(exclude=): the degenerate directions excluded (record)
@@ -1354,28 +1401,46 @@ class Deflation:
         # The offset columns that groups of frames share (``shared``: the model's terms per group of frames, solver
         # columns): when more of them have data than a dense Schur complement can hold (_SCHUR_MAX), their couplings to
         # the other offsets are never formed and their part of the response is solved iteratively (_SharedSolve);
-        # otherwise the offsets' normal matrix is formed whole, as before.
+        # otherwise the offsets' normal matrix is formed whole, as before. The offset columns of the terms
+        # Deflate(offsets=) leaves out (``held``, solver columns) keep a zero response: they leave the solve (and its
+        # shared columns), the others' solve runs alone (_HeldSolve; _SharedSolve when shared columns remain many).
+        cmh = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
+
+        def offset_indices(cols):                 # solver columns -> the offset space's (those in the space)
+            sp_ = cmh[np.asarray(cols, dtype=np.int64)]
+            return np.unique(sp_[sp_ >= n_sky_S] - n_sky_S)
+
+        held_off = offset_indices(held) if held is not None and len(held) else None
+        if held_off is not None and held_off.size == 0:
+            held_off = None
         hub = None
         if shared is not None and len(shared):
-            cmh = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
-            sp = cmh[np.asarray(shared, dtype=np.int64)]
-            hub = np.unique(sp[sp >= n_sky_S] - n_sky_S)
+            hub = offset_indices(shared)
+            if held_off is not None:
+                hub = np.setdiff1d(hub, held_off)
             if hub.size <= _SCHUR_MAX:
                 hub = None
         # The pieces the passes read a chunk in (_piece_spans): its sky columns, and its offset columns (those groups of
-        # frames share apart from the others, when they are solved iteratively). A piece of one kind needs no sorting
-        # of its entries (_prepare_piece, _split_entries).
+        # frames share when they are solved iteratively, and those held at zero, apart from the others). A piece of one
+        # kind needs no sorting of its entries (_prepare_piece, _split_entries).
         cuts = [0, n_sky, n]
-        if hub is not None:
-            in_shared = np.zeros(n - n_sky, dtype=bool)
-            sh = np.asarray(shared, dtype=np.int64)
-            in_shared[sh[sh >= n_sky] - n_sky] = True
-            cuts[2:2] = (np.flatnonzero(in_shared[1:] != in_shared[:-1]) + 1 + n_sky).tolist()
+        if hub is not None or held_off is not None:
+            kind = np.zeros(n - n_sky, dtype=np.int8)
+            if hub is not None:
+                sh = np.asarray(shared, dtype=np.int64)
+                kind[sh[sh >= n_sky] - n_sky] = 1
+            if held_off is not None:
+                hc = np.asarray(held, dtype=np.int64)
+                kind[hc[hc >= n_sky] - n_sky] = 2
+            cuts[2:2] = (np.flatnonzero(kind[1:] != kind[:-1]) + 1 + n_sky).tolist()
         self._cuts, self._sky_end = cuts, n_sky
         self.shared_solve = None
+        self.held_columns = 0 if held_off is None else int(held_off.size)
         logger.info(f"Deflation: {k} patterns ({basis}, order {order}) of {len(terms)} sky term(s) on {nS} "
                     f"columns ({n_sky_S} sky, {n_off} offset and other)"
-                    + (f"; {hub.size} offset columns shared by many frames, solved iteratively" if hub is not None else ''))
+                    + ('' if hub is None else f"; {hub.size} offset columns shared by many frames, solved iteratively")
+                    + ('' if held_off is None else f"; {held_off.size} offset columns of the terms Deflate(offsets=) "
+                       "leaves out, their response held at zero"))
         try:
             # Pass 1 (float64, one sweep over the matrix for all the patterns at once, scipy's multi-vector kernels:
             # the matrix is read once, not once per pattern; the row chunks over the threads, each thread's partial
@@ -1388,13 +1453,22 @@ class Deflation:
             descs = _piece_index(storage)
             spans = _piece_spans(storage, self._cuts)
 
-            if hub is not None:
+            split = hub is not None or held_off is not None
+            if split:
+                # the offsets the response is solved for apart (F), the shared ones solved iteratively (H), those held
+                # at zero in neither
                 is_hub = np.zeros(n_off, dtype=bool)
-                is_hub[hub] = True
+                if hub is not None:
+                    is_hub[hub] = True
+                is_F = ~is_hub
+                if held_off is not None:
+                    is_F[held_off] = False
+                nF = int(is_F.sum())
                 fpos = np.full(n_off, -1, dtype=_IDX)
-                fpos[~is_hub] = np.arange(n_off - hub.size)
+                fpos[is_F] = np.arange(nF)
                 hpos = np.full(n_off, -1, dtype=_IDX)
-                hpos[hub] = np.arange(hub.size)
+                if hub is not None:
+                    hpos[hub] = np.arange(hub.size)
 
             def pass1(my):
                 sky_norm2 = np.zeros(k)
@@ -1421,7 +1495,7 @@ class Deflation:
                     for (ip, ci, dd), _oid in offs:
                         _sparsetools.csc_matvecs(n_off, nr, k, ip, ci, dd, U, Rt)
                     tg = time.perf_counter()
-                    if hub is None:
+                    if not split:
                         # the chunk's share of the offsets' normal matrix, from its offset entries whole (the pieces
                         # joined: a product per piece would lose the terms between pieces)
                         sub = _joined([oc for oc, _o in offs], nr, n_off)
@@ -1431,22 +1505,26 @@ class Deflation:
                             Gt = g if Gt is None else Gt + g     # the thread's running sum, in chunk order
                             del g, sub
                     elif offs:
-                        # the other columns among themselves and the shared ones among themselves; their couplings
-                        # are left to the iterative solve
+                        # the F columns among themselves and the shared ones among themselves (their couplings left to
+                        # the iterative solve); the held columns in neither
                         parts_f, parts_h = [], []
                         for ti, ((ip, ci, dd), oid) in enumerate(offs):
-                            fi = _split_entries(ip, ci, dd, ~is_hub, fpos, slot, f'g{ti}f', span=oid)
-                            hi = _split_entries(ip, ci, dd, is_hub, hpos, slot, f'g{ti}h', span=oid)
+                            fi = _split_entries(ip, ci, dd, is_F, fpos, slot, f'g{ti}f', span=oid)
                             parts_f.append((fi[0].copy(), fi[1].copy(), fi[2].copy()))
-                            parts_h.append((hi[0].copy(), hi[1].copy(), hi[2].copy()))
-                        sf = _joined(parts_f, nr, n_off - hub.size)
-                        sh = _joined(parts_h, nr, hub.size)
-                        gf = (sf.T @ sf).tocsr() if sf is not None else csr_matrix((n_off - hub.size,) * 2)
-                        gh = (sh.T @ sh).tocsr() if sh is not None else csr_matrix((hub.size,) * 2)
+                            if hub is not None:
+                                hi = _split_entries(ip, ci, dd, is_hub, hpos, slot, f'g{ti}h', span=oid)
+                                parts_h.append((hi[0].copy(), hi[1].copy(), hi[2].copy()))
+                        sf = _joined(parts_f, nr, nF)
+                        gf = (sf.T @ sf).tocsr() if sf is not None else csr_matrix((nF, nF))
                         gf.sum_duplicates()
-                        gh.sum_duplicates()
-                        Gt = (gf, gh) if Gt is None else (Gt[0] + gf, Gt[1] + gh)
-                        del gf, gh, sf, sh
+                        gh = None
+                        if hub is not None:
+                            sh = _joined(parts_h, nr, hub.size)
+                            gh = (sh.T @ sh).tocsr() if sh is not None else csr_matrix((hub.size,) * 2)
+                            gh.sum_duplicates()
+                            del sh
+                        Gt = (gf, gh) if Gt is None else (Gt[0] + gf, None if hub is None else Gt[1] + gh)
+                        del gf, gh, sf
                     t_g += time.perf_counter() - tg
                     del U, offs
                 return sky_norm2, Rt, Gt, t_g
@@ -1478,22 +1556,33 @@ class Deflation:
                 out.sum_duplicates()
                 return out
 
-            if hub is None:
+            if not split:
                 G = tree_sum(gthreads, (n_off, n_off))
             else:
                 G = None
-                Gff = tree_sum([g[0] for g in gthreads], (n_off - hub.size,) * 2)
-                Ghh = tree_sum([g[1] for g in gthreads], (hub.size,) * 2)
+                Gff = tree_sum([g[0] for g in gthreads], (nF, nF))
+                Ghh = None if hub is None else tree_sum([g[1] for g in gthreads], (hub.size,) * 2)
             del gthreads
             t_g += time.perf_counter() - tg
             t_pass1 = time.perf_counter() - t
             t = time.perf_counter()
             ex = getattr(self.settings, 'exclude', None)
-            if hub is None:
+            if held_off is not None:
+                for cols, _k, name, _chunk in (signatures or []):
+                    if np.isin(offset_indices(cols), held_off).any():
+                        raise ValueError(f"Offsets({name!r}, exclude=SkySignature(...)): its signature is its response to "
+                                         "the patterns, so Deflate(offsets=) must list the term")
+            if not split:
                 X, info = _block_pinv_solve(G, R.T, project=self._proj_off, pool=self._pool)
                 res = G @ (-X) + R.T
+            elif hub is None:
+                held_solve = _HeldSolve(Gff, np.flatnonzero(is_F), n_off, project=self._proj_off, pool=self._pool)
+                del Gff
+                X, info = held_solve.solve(R.T)
+                res = held_solve.residual(X, R.T)
             else:
-                self.shared_solve = _SharedSolve(self, storage, Gff, Ghh, hub, n_off, n_sky_S, project=self._proj_off)
+                self.shared_solve = _SharedSolve(self, storage, Gff, Ghh, hub, n_off, n_sky_S, project=self._proj_off,
+                                                 held=held_off)
                 del Gff, Ghh
                 X, info = self.shared_solve.solve(R.T)
                 res = self.shared_solve.residual(X, R.T)
@@ -1753,6 +1842,7 @@ class Deflation:
             f"Deflation: offset response solved on {info['blocks']} blocks (largest {info['largest']}, "
             f"{info['zero_eigenvalues']} zero eigenvalues"
             + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
+            + (f"; {info['held']} columns shared by groups of frames held at zero" if info.get('held') else '')
             + (f", solved by block conjugate gradients in {'+'.join(str(i) for i in info['iterations'])} iterations ({info['sweeps']} sweeps over the "
                f"matrix; stopped at {', '.join(info['stops'])}{'' if info['converged'] else ', NOT converged'})" if 'iterations' in info else '')
             + f"), normal-equation residual {self.pairing_residual:.1e}; "
@@ -2364,6 +2454,8 @@ class Deflation:
                 'coefficients': [float(v) for v in self.c_star]}                                   # the kept directions' solved amplitudes, in kept order
         if self.signature_info is not None:
             out['signature_exclusions'] = self.signature_info                                      # Offsets(exclude=SkySignature): the terms constrained
+        if self.held_columns:                                                                      # Deflate(offsets=)
+            out['held_columns'] = self.held_columns                                                # their response held at zero
         if self.shared_solve is not None:                                                          # the shared offset columns' iterative solve
             ss = self.shared_solve
             out['shared_columns'] = {'columns': int(ss.nH), 'iterations': list(ss.iterations), 'converged': bool(ss.converged),

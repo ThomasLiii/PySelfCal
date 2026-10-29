@@ -590,8 +590,14 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
     exclusions = ctx.model.column_exclusions(ctx.geom, cc.layout, window=jobgeom.det_valid_weight)   # the terms' hard constraints, if any
     signatures = ctx.model.signature_exclusions(cc.layout)             # the terms that may not carry a sky signature
     shared = ctx.model.shared_columns(cc.layout)                       # the offsets groups of frames share (the deflation's)
+    deflate, held = ctx.solve_options().get('deflate'), None
+    if deflate is not None and getattr(deflate, 'offsets', None) is not None:  # the terms the deflation does not solve for
+        names = ctx.model.offset_names(ctx.geom)
+        ctx.model.offset_columns(cc.layout, deflate.offsets, ctx.geom)  # refuses a name the model does not have
+        held = ctx.model.offset_columns(cc.layout, [t for t in names if t not in deflate.offsets], ctx.geom)
     cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
-                  exclusions=exclusions or None, signatures=signatures or None, shared=shared if shared.size else None)
+                  exclusions=exclusions or None, signatures=signatures or None, shared=shared if shared.size else None,
+                  held=held if held is not None and held.size else None)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record

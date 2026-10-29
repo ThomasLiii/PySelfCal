@@ -857,7 +857,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None, signatures=None, shared=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None, shared=None, held=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -974,6 +974,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         The offset columns (full layout) that groups of frames share, for the deflation: when many of them
         have data, it solves their part of the offsets' response iteratively instead of forming their
         couplings (:class:`~selfcal.core.deflation.Deflation`, :meth:`~selfcal.models.spec.ModelSpec.shared_columns`).
+    held : array of int, optional
+        The offset columns (full layout) of the terms ``Deflate(offsets=)`` leaves out: the deflation holds their
+        response to its patterns at zero (:class:`~selfcal.core.deflation.Deflation`).
 
     Returns
     -------
@@ -1231,14 +1234,22 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
                 sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
-        shared_s = None
-        if shared is not None and deflate is not None and len(shared):
-            shared_s = np.asarray(shared, dtype=np.int64)
+        def solver_columns(cols):
+            # full-layout columns -> solver columns (the active ones)
+            c = np.asarray(cols, dtype=np.int64)
             if active_mask is not None:
                 smap = np.full(len(active_mask), -1, dtype=np.int64)
                 smap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
-                shared_s = smap[shared_s]
-                shared_s = shared_s[shared_s >= 0]
+                c = smap[c]
+                c = c[c >= 0]
+            return c
+
+        shared_s = None
+        if shared is not None and deflate is not None and len(shared):
+            shared_s = solver_columns(shared)
+        held_s = None
+        if held is not None and deflate is not None and len(held):
+            held_s = solver_columns(held)
         if exclusions:
             proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
             if x0_solver is not None:
@@ -1335,7 +1346,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj,
-                                 signatures=sig, shared=shared_s)
+                                 signatures=sig, shared=shared_s, held=held_s)
                 if defl.projector is not proj:
                     proj = defl.projector
                     logger.info(f"Column constraints with the deflation's additions: {proj}")

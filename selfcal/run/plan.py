@@ -144,6 +144,9 @@ def describe_deflate(deflate) -> str:
     """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
     rule = ''
+    if getattr(deflate, 'offsets', None) is not None:
+        rule += ('; the response of the offset terms ' + ', '.join(deflate.offsets) + ' only (the others held at zero, '
+                 'left in the space)')
     ex = getattr(deflate, 'exclude', None)
     if ex is not None:
         rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '
