@@ -490,6 +490,11 @@ class Offsets(Config):
     frame; :class:`SkySignature`). ``exclude=Overlap('a', 'b')`` is a hard constraint of a third kind: the term
     carries no detector pattern that the named offset terms can also make with the same coefficients in every frame
     (:class:`Overlap`), so the two never share a pattern the data cannot split.
+    ``min_observations``: the term's offsets that fewer observations than this see leave the solve, as
+    ``Fit(min_observations=)`` does for sky pixels (2: an offset seen once fits that observation exactly and informs
+    no other unknown): their rows are zeroed in the solve and they keep no value (0), and the mosaic still uses those
+    observations, with that offset at zero. A hard constraint on the term (``exclude=``) holds on the observed offsets.
+    One unknown per chunk (not ``polynomial=`` or ``basis=``). None (the default): off.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
@@ -508,6 +513,7 @@ class Offsets(Config):
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
     exclude: Poly | SkySignature | Overlap | None = added(None, since='2026-10')
+    min_observations: int | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -556,6 +562,13 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
         for p in self.poly_prior:
             p.lower_soft(label)
+        if self.min_observations is not None:
+            m = self.min_observations
+            if isinstance(m, bool) or not isinstance(m, (int, np.integer)) or m < 2:
+                raise ConfigError(f"{label}: min_observations is an integer of at least 2, or None")
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: min_observations applies to a term of one unknown per chunk "
+                                  f"(not polynomial= or basis=)")
         if self.exact_group_rows and self.per == 'frame':
             raise ConfigError(f"{label}: exact_group_rows applies to a shared term (per='all' or a frame "
                               f"variable)")
@@ -593,6 +606,8 @@ class Offsets(Config):
             if kind == 'grouped':
                 out['groups'] = self.per
         out['damp'] = float(self.damping)
+        if self.min_observations is not None:
+            out['min_observations'] = int(self.min_observations)
         if self.render is not None:
             out['render'] = self.render
         if self.name is not None:

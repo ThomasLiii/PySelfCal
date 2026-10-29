@@ -356,7 +356,13 @@ Compare quantities that a change of gauge leaves alone:
   zeroes those pixels' rows as it places them (values and right-hand side), with no extra pass over
   the frames; the pixels' columns stay without data (coverage 0, value 0, outside the deflation's
   patterns), so every other unknown gets the solution without those rows. The mosaic still covers
-  them. Off by default.
+  them. Off by default. `sc.Offsets(..., min_observations=2)` does the same for one offset term with
+  one unknown per chunk (a chunk a single observation sees: for a term per detector pixel, a pixel
+  next to masked ones): judged on the same counts, its rows zeroed in the same pass, its offsets left
+  at zero, which the mosaic then applies to those observations. A hard constraint on the term
+  (`exclude=`) holds on the observed offsets alone: an offset without data left in the constraint
+  would take whatever value cancels it. Both floors judge the counts the build collates, and those
+  counts stand: a zeroed row still counts in the coverage of its other columns.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
   the same in the mosaic; for example Euclid's star mask

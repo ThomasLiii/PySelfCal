@@ -52,7 +52,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
-| `sc.Fit(min_observations=2)` | leave out of the solve the sky pixels a single observation covers |
+| `sc.Fit(min_observations=2)`, `sc.Offsets(min_observations=2)` | leave out of the solve the sky pixels, or a term's offsets, a single observation covers |
 | `sc.Result` | the products, with readers |
 
 ### Instruments
@@ -175,8 +175,9 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
   constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
   any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
-  frame. The cal holds a term shared by groups of frames once per group, with each frame's group (the
-  readers expand it per frame)
+  frame. `min_observations=2`: the term's offsets a single observation sees leave the solve (value 0),
+  as `sc.Fit(min_observations=)` does for sky pixels. The cal holds a term shared by groups of frames
+  once per group, with each frame's group (the readers expand it per frame)
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds

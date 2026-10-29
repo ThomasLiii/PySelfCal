@@ -529,7 +529,8 @@ class Fit(Config):
     counted over the observations the solve uses (after the masks, the clip if any and the weights) by
     the matrix build itself; those observations are set to zero in the matrix and the right-hand side,
     the pixels' columns are left without data (coverage 0, value 0 in the solution, outside the
-    deflation's patterns), and the coadd still covers them (None: every pixel).
+    deflation's patterns), and the coadd still covers them (None: every pixel). An offset term's own floor is
+    :class:`~selfcal.models.model.Offsets` ``min_observations``.
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).

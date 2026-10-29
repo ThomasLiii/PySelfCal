@@ -275,6 +275,7 @@ class OffsetTerm:
     exclude_axis: str | None = None
     signature_degree: int | str | None = None
     exclude_overlap: tuple | None = None
+    min_observations: int | None = None
     render: str | None = None
     coefficient: object = None
     basis: object = None
@@ -636,6 +637,9 @@ class ModelSpec:
         exact = [m for m, t in enumerate(self.offset) if t.exact_group_rows]
         if exact:
             kw['group_adjacency_maps'] = exact
+        floors = [t.min_observations for t in self.offset]
+        if any(f is not None for f in floors):
+            kw['offset_min_observations'] = floors
         return kw
 
     def column_exclusions(self, geom, layout, window=None, log=print) -> list:
