@@ -11,8 +11,9 @@ it can represent exactly:
 =========== =======================================================================================
 plain       a free offset per chunk with no constant over a frame's chunks (``exclude=Poly(0)``) and
             the per-frame scalar (the term of one chunk)
-poly_slope  a quadratic along the bands per column, a free x-slope per band (``times`` a function of
-            the detector column, as SPHEREx's ``frame_slope``) and the scalar
+poly_slope  the first two Chebyshev shapes of the band index per column (a ``basis`` of two known
+            functions of a detector map), a free x-slope per band (``times`` a function of the
+            detector column, as SPHEREx's ``frame_slope``) and the scalar
 =========== =======================================================================================
 
 For each, the joint objective (the weighted residual of the data against the sky and offsets the
@@ -74,13 +75,32 @@ def band_ids():
 def band_columns(geometry):
     """The primary chunk map: a chunk per band and column (:func:`chunk_ids`)."""
     return sc.Chunks(chunk_ids(), sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x')),
-                     adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+                     adjacency_axes=('col',), spectral_axis='band')
 
 
 def bands(geometry):
     """A second chunk map: a chunk per band (:func:`band_ids`)."""
     return sc.Chunks(band_ids(), sc.ChunkAxes.row_major(('band',), (N_BAND,), ('y',)), adjacency_axes=('band',),
                      spectral_axis='band')
+
+
+def columns(geometry):
+    """A third chunk map: a chunk per column, the map of the polynomial offset term."""
+    return sc.Chunks(chunk_ids() % N_COL, sc.ChunkAxes.row_major(('col',), (N_COL,), ('x',)))
+
+
+def band_position(geometry):
+    """The band index of every detector pixel: the coordinate the polynomial offsets are in (a detector map)."""
+    return band_ids().astype(np.float32)
+
+
+def band_shapes(band, degree, lo, hi):
+    """The Chebyshev shapes ``T_1 .. T_degree`` of the band over ``lo .. hi``, each minus its mean over the
+    bands (no constant: the frame's level is the scalar's)."""
+    from numpy.polynomial import chebyshev as C
+    x = 2.0 * (np.asarray(band, dtype=np.float64) - lo) / (hi - lo) - 1.0
+    centre = C.chebvander(2.0 * (np.arange(lo, hi + 1) - lo) / (hi - lo) - 1.0, int(degree))[:, 1:].mean(axis=0)
+    return C.chebvander(x, int(degree))[..., 1:] - centre
 
 
 def geometry(oversample):
@@ -98,7 +118,7 @@ class ToyInstrument(sc.Instrument):
         return geometry(oversample)
 
     def default_chunk_maps(self):
-        return {'lvf': sc.ChunkMap(band_columns), 'band': sc.ChunkMap(bands)}
+        return {'lvf': sc.ChunkMap(band_columns), 'band': sc.ChunkMap(bands), 'column': sc.ChunkMap(columns)}
 
 
 def sky_truth():
@@ -156,11 +176,13 @@ def model_of(kind):
     if kind == 'plain':
         offsets = [sc.Offsets(exclude=sc.Poly(0))]
     elif kind == 'poly_slope':
-        offsets = [sc.Offsets(polynomial=sc.Poly(2, window=range(0, N_BAND))),
+        offsets = [sc.Offsets('poly', on='column', n=2,
+                              basis=sc.Function(band_shapes, of='band_pos', degree=2, lo=0, hi=N_BAND - 1)),
                    sc.Offsets('slope', on='band', times=sc.Function(tilt, of='det_x', centre=CENTRE, half=HALF))]
     else:
         offsets = [sc.Offsets(per='all', exclude=sc.Poly(0))]
-    return sc.Model(sky=sky, offsets=offsets + [sc.Offsets('scalar', on='detector')])
+    return sc.Model(sky=sky, offsets=offsets + [sc.Offsets('scalar', on='detector')],
+                    variables={'band_pos': sc.DetectorMap(band_position)} if kind == 'poly_slope' else {})
 
 
 NO_CLIP = sc.Clip(1e6)          # noise-free data: nothing is an outlier
@@ -195,20 +217,28 @@ def sky_of(path):
 def offsets_on_detector(path):
     """``{frame name: detector offset}`` of a cal or an OFFSET product, rendered here (the toy's frames
     map detector pixels one to one): each map's stored values on its chunk map (the bands' map for 16
-    values per frame, the band x column map for 32, the one-chunk map of the scalar for 1), times
-    ``tilt(det_x)`` for a map of known functions."""
+    chunks, the band x column map for 32, the columns' map for 2, the one-chunk map of the scalar), and
+    for a map of known functions (``n_basis`` coefficients per chunk, columns ``chunk * n_basis + k``)
+    the coefficients times the functions: ``tilt(det_x)`` on the bands' map, the band shapes on the
+    columns' map."""
     det_x = np.mgrid[0:DET, 0:DET][1].astype(np.float64)
-    maps = {N_BAND: band_ids(), N_BAND * N_COL: chunk_ids(), 1: np.zeros((DET, DET), dtype=np.int64)}
+    band = band_ids()
+    maps = {N_BAND: band, N_BAND * N_COL: chunk_ids(), N_COL: chunk_ids() % N_COL,
+            1: np.zeros((DET, DET), dtype=np.int64)}
+    functions = {N_BAND: tilt(det_x, CENTRE, HALF)[..., None], N_COL: band_shapes(band, 2, 0, N_BAND - 1)}
     out = {}
     with h5py.File(path, 'r') as f:
         names = [os.path.basename(r.decode() if isinstance(r, bytes) else r) for r in f['reproj_list'][()]]
-        rows = [(f['offsets'][f'map_{m}'][()].astype(np.float64), 'n_basis' in f['offsets'][f'map_{m}'].attrs)
-                for m in range(int(f.attrs['num_maps']))]
+        rows = [(f['offsets'][f'map_{m}'][()].astype(np.float64),
+                 int(f['offsets'][f'map_{m}'].attrs.get('n_basis', 0))) for m in range(int(f.attrs['num_maps']))]
     for i, name in enumerate(names):
         total = np.zeros((DET, DET))
-        for values, with_function in rows:
-            term = values[i][maps[values.shape[1]]]
-            total += term * tilt(det_x, CENTRE, HALF) if with_function else term
+        for values, n_basis in rows:
+            if n_basis:
+                chunks = values.shape[1] // n_basis
+                total += (values[i].reshape(chunks, n_basis)[maps[chunks]] * functions[chunks]).sum(axis=-1)
+            else:
+                total += values[i][maps[values.shape[1]]]
         out[name] = total
     return out
 

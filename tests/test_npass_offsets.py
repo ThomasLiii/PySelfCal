@@ -6,7 +6,8 @@ pass's system of ``test_npass_primitives`` (the sky held fixed and subtracted, o
 per-frame scalar, the offset term of one chunk):
 
 * the frames' normal equations and the constraint rows are the matrix's normal equations;
-* the direct solution is the least-squares solution of the matrix (a polynomial-basis offset);
+* the direct solution is the least-squares solution of the matrix (a polynomial offset per column, a
+  basis of one function of the subchannel coordinate);
 * where a frame's columns are not all determined (free chunk offsets beside the scalar), it is the
   limit of the column-scaled iterative solve from the engine's start, ``x0 + D (A D)^+ (b - A x0)``,
   computed here on the whole dense matrix;
@@ -26,7 +27,8 @@ import pytest  # noqa: E402
 from selfcal.core.solution import compute_x0_from_Ab  # noqa: E402
 from selfcal.core.system import setup_lsqr  # noqa: E402
 from selfcal.geometry.map_helper import chunk_to_det  # noqa: E402
-from selfcal.models.offset_basis import cheb_shape_basis  # noqa: E402
+from selfcal.models.offset_model import Basis  # noqa: E402
+from selfcal.models.sky_model import Coefficient  # noqa: E402
 from selfcal.npass import offsets as npass_offsets  # noqa: E402
 from selfcal.npass.offsets import SkySubtractor, normal_equations, solve_frames  # noqa: E402
 from tests.test_npass_primitives import DET, REF, _make_frames, _setup, sky_cal_of  # noqa: E402
@@ -39,10 +41,26 @@ def chunk_map():
     return ((det_y * N_SUB) // DET[0]) * N_COL + (det_x * N_COL) // DET[1]
 
 
-def poly_basis():
-    return {"degree": 1, "num_groups": N_COL, "coord_lo": 0, "coord_hi": N_SUB - 1,
-            "chunk_coord": np.arange(N_SUB * N_COL) // N_COL,
-            "chunk_group": np.arange(N_SUB * N_COL) % N_COL}
+def column_map():
+    """A chunk per detector column half: the map of a term with one polynomial per column."""
+    det_x = np.mgrid[0:DET[0], 0:DET[1]][1]
+    return (det_x * N_COL) // DET[1]
+
+
+def coord_map():
+    """The subchannel index of every detector pixel, the coordinate the polynomial offsets are in (a detector map)."""
+    det_y = np.mgrid[0:DET[0], 0:DET[1]][0]
+    return ((det_y * N_SUB) // DET[0]).astype(np.float32)
+
+
+def shape(coord):
+    """The degree-1 Chebyshev shape of the subchannel coordinate over the subchannels 0 .. N_SUB - 1 (no constant:
+    the per-frame scalar holds the level)."""
+    return 2.0 * np.asarray(coord, dtype=np.float64) / (N_SUB - 1) - 1.0
+
+
+#: The polynomial offset: a per-frame, per-column coefficient times the shape of the coordinate.
+POLY_BASIS = Basis(Coefficient('coord', shape), 1)
 
 
 @pytest.fixture(scope="module")
@@ -50,12 +68,11 @@ def field(tmp_path_factory):
     """30 frames of a 2-term sky plus a per-frame polynomial offset and level, and the sky subtracter."""
     tmp = str(tmp_path_factory.mktemp("npass_offsets"))
     rng = np.random.default_rng(11)
-    cm, pb = chunk_map(), poly_basis()
-    B = cheb_shape_basis(pb["chunk_coord"].astype(float), 1, 0, N_SUB - 1)
     n_frames = 30
     a = 0.05 * rng.standard_normal((n_frames, N_COL))
     s = 0.1 * rng.standard_normal(n_frames)
-    frame_offsets = [chunk_to_det(cm, chunk_data=a[k][pb["chunk_group"]] * B[:, 0] + s[k]) for k in range(n_frames)]
+    col, sh = column_map(), shape(coord_map())
+    frame_offsets = [a[k][col] * sh + s[k] for k in range(n_frames)]
     paths, bc_det, truth, sky_model = _make_frames(tmp, rng, 2, n_frames=n_frames, offsets=frame_offsets,
                                                    bc_jitter=0.0)
     subtract = SkySubtractor(sky_cal_of(tmp, truth, sky_model), sky_model, export_dir=os.path.join(tmp, "exp"),
@@ -66,9 +83,9 @@ def field(tmp_path_factory):
 def fixed_sky(field, **kw):
     """The OFFSET pass's system of ``field`` (``kw``: the offset model, and ``reduce``)."""
     return setup_lsqr(field["paths"], REF, sky_model=field["sky_model"],
-                      det_aux=[field["bc_det"], np.full(DET, 0.03)], max_workers=2, batch_size=7,
-                      apply_mask=True, apply_weight=True, outlier_thresh=100.0, postprocess_func=field["subtract"],
-                      fixed_sky=True, **kw)
+                      det_aux=[field["bc_det"], np.full(DET, 0.03), coord_map()], aux_keys=['BC', 'BW', 'coord'],
+                      max_workers=2, batch_size=7, apply_mask=True, apply_weight=True, outlier_thresh=100.0,
+                      postprocess_func=field["subtract"], fixed_sky=True, **kw)
 
 
 def dense(r):
@@ -103,7 +120,7 @@ def one_chunk():
     return np.zeros(DET, dtype=np.int64)
 
 
-POLY = dict(chunk_maps=[chunk_map(), one_chunk()], poly_basis_list=[poly_basis(), None])
+POLY = dict(chunk_maps=[column_map(), one_chunk()], basis_list=[POLY_BASIS, None])
 FREE = dict(chunk_maps=[chunk_map(), one_chunk()])
 
 

@@ -48,7 +48,7 @@ def subchannels(geometry, num_sub=10, num_ch=17, num_col=1):
     n_sub = (int(det_map.max()) + 1) // int(num_col)      # == num_sub * num_ch + 2 (padding subchannels)
     axes = ChunkAxes.row_major(('subchannel', 'column'), (n_sub, int(num_col)), ('y', 'x'))
     return sc.Chunks(det_map, axes, grid=grid_map, adjacency_axes=('column',), spectral_axis='subchannel',
-                     group_axis='column', renderers={'arcs': arc_renderer}, render='arcs',
+                     renderers={'arcs': arc_renderer}, render='arcs',
                      extra={'lvf_params': lvf_params, 'r_edges': r_edges, 'x_edges': x_edges,
                             'num_sub': int(num_sub), 'num_ch': int(num_ch), 'num_col': int(num_col)})
 

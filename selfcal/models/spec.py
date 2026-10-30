@@ -20,8 +20,8 @@ frame on one reference pixel ``P``, seen at a detector position)::
   optionally times ``n`` known functions ``φ_k(v)`` of data variables
   (``coefficient`` = one function, ``basis`` = several: a pattern times the
   temperature, a per-frame gradient in detector coordinates, a gain times a
-  previous sky), or a Chebyshev polynomial along a chunk axis (``polybasis``).
-  Priors: smoothness along chunk axes, polynomial shape, Tikhonov ``damp``;
+  previous sky).
+  Priors: smoothness along chunk axes, Tikhonov ``damp``;
   hard constraints: no polynomial of a degree along a chunk axis (``exclude``).
   A per-frame scalar is the O term of one chunk (map ``"detector"``), one value
   per frame.
@@ -49,21 +49,15 @@ import numpy as np
 from selfcal.config.base import import_name
 
 from .offset_model import Basis, OffsetBlock, OffsetModel
-from .offset_structure import (
-    ChunkAxes,
-    adjacency_along,
-    adjacency_union,
-    poly_basis_along,
-    poly_chains_along,
-)
+from .offset_structure import ChunkAxes, adjacency_along, adjacency_union
 from .sky_model import Coefficient, ImportedFunction, NoiseVariance, SkyComponent, SkyModel
 from .variables import BUILTIN_VARIABLES, Derived, FrameFunction, VariableSet
 
-__all__ = ['SkyTerm', 'OffsetTerm', 'PolyConstraint', 'VariableSpec', 'PriorSpec', 'ChunkMapSpec', 'ModelSpec',
+__all__ = ['SkyTerm', 'OffsetTerm', 'VariableSpec', 'PriorSpec', 'ChunkMapSpec', 'ModelSpec',
            'build_coefficient', 'resolve_variable', 'load_function', 'chunk_map_of']
 
 BUILTIN_FUNCTIONS = ('template', 'gaussian', 'linear')
-OFFSET_KINDS = ('free', 'polybasis', 'fixed', 'grouped')
+OFFSET_KINDS = ('free', 'fixed', 'grouped')
 VARIABLE_SOURCES = ('header', 'per_frame', 'detector', 'sky', 'sky_cal', 'layer', 'function', 'frame_function')
 DETECTOR_MAP = 'detector'          # the built-in single-chunk map (the whole detector)
 
@@ -203,19 +197,6 @@ class SkyTerm:
 
 
 @dataclass(frozen=True)
-class PolyConstraint:
-    """A soft polynomial constraint: along ``axis`` the offset is pulled toward a
-    degree-``degree`` polynomial (finite-difference rows of weight ``weight``),
-    optionally only over the window ``[lo, hi]`` of that axis. ``axis=None``: the
-    first axis the term is smoothed along (the standard term's default)."""
-    axis: str | None = None
-    degree: int = 1
-    weight: float = 1.0
-    lo: int | None = None
-    hi: int | None = None
-
-
-@dataclass(frozen=True)
 class OffsetTerm:
     """One offset block on the chunk map ``map`` (None = the instrument's primary
     map; ``"detector"`` = the whole detector as one chunk unless the instrument
@@ -224,10 +205,7 @@ class OffsetTerm:
     Sharing: ``kind='free'`` — an offset per (frame, chunk); ``'fixed'`` — one
     offset vector shared by every frame (a detector-fixed pattern);
     ``'grouped'`` — one per group of frames with equal values of ``groups``
-    (any frame variable: ``detector``, ``exposure``, a night, a filter, ...);
-    ``'polybasis'`` — the offset IS a degree-``degree`` Chebyshev in ``axis``
-    (default: the map's spectral axis) per value of ``group_axis`` over
-    ``[lo, hi]``, optionally piecewise on ``segments``.
+    (any frame variable: ``detector``, ``exposure``, a night, a filter, ...).
 
     Known functions of data variables: ``coefficient`` (one function, the
     sky-term form ``{variable, function, params}``) multiplies the offset at
@@ -236,8 +214,8 @@ class OffsetTerm:
 
     Priors: ``reg_weight`` pulls chunks that neighbour along the ``adjacency``
     axes together (None = the map's default axes; ``()`` = none;
-    ``adjacency_step`` restricts pairs to that difference), ``poly`` adds soft
-    polynomial constraints, ``damp`` is Tikhonov damping toward zero.
+    ``adjacency_step`` restricts pairs to that difference), ``damp`` is Tikhonov
+    damping toward zero.
     ``exclude_degree`` / ``exclude_axis``: a hard constraint, the term has no
     polynomial of that degree along the axis (per line of the other axes, per
     group), imposed by reparametrisation in the solver
@@ -262,13 +240,6 @@ class OffsetTerm:
     reg_weight: float = 0.0
     adjacency: tuple | None = None
     adjacency_step: int | None = None
-    poly: tuple = ()
-    axis: str | None = None
-    group_axis: str | None = None
-    degree: int | None = None
-    lo: int | None = None
-    hi: int | None = None
-    segments: tuple | None = None
     damp: float = 0.0
     groups: str | None = None
     exact_group_rows: bool = False
@@ -286,29 +257,23 @@ class OffsetTerm:
     def __post_init__(self):
         if self.kind not in OFFSET_KINDS:
             raise ValueError(f"offset term kind must be one of {OFFSET_KINDS}, got {self.kind!r}")
-        object.__setattr__(self, 'poly', tuple(
-            p if isinstance(p, PolyConstraint) else PolyConstraint(**p) for p in self.poly))
         if self.adjacency is not None:
             object.__setattr__(self, 'adjacency', tuple(self.adjacency))
-        if self.kind == 'polybasis' and self.degree is None:
-            raise ValueError("a polybasis offset term needs a degree")
         if self.kind == 'grouped' and not self.groups:
             raise ValueError("a grouped offset term needs `groups` (a frame variable, e.g. 'detector')")
         if self.exact_group_rows and self.kind not in ('fixed', 'grouped'):
             raise ValueError("exact_group_rows applies to fixed / grouped terms")
         if self.coefficient is not None and self.basis is not None:
             raise ValueError("an offset term takes `coefficient` (one function) or `basis` (several), not both")
-        if self.basis is not None and self.kind == 'polybasis':
-            raise ValueError("a polybasis term takes a `coefficient`, not a `basis`")
         if self.exclude_degree is not None:
             if int(self.exclude_degree) < 0:
                 raise ValueError("exclude_degree is at least 0")
-            if self.kind == 'polybasis' or self.n_basis != 1:
-                raise ValueError("exclude applies to a free / fixed / grouped term with one unknown per chunk")
+            if self.n_basis != 1:
+                raise ValueError("exclude applies to a term with one unknown per chunk")
         if self.exclude_overlap is not None:
             object.__setattr__(self, 'exclude_overlap', tuple(self.exclude_overlap))
-            if self.kind == 'polybasis' or self.n_basis != 1:
-                raise ValueError("exclude_overlap applies to a free / fixed / grouped term with one unknown per chunk")
+            if self.n_basis != 1:
+                raise ValueError("exclude_overlap applies to a term with one unknown per chunk")
             if self.exclude_degree is not None:
                 raise ValueError("a term takes one exclusion: exclude_degree or exclude_overlap")
         if self.exclude_overlap_weights is not None and (self.exclude_overlap is None
@@ -580,13 +545,7 @@ class ModelSpec:
         for term in self.offset:
             cm = _chunk_map(term, geom)
             names = list(cm.axes.names) if cm.axes is not None else []
-            smooth_axes = cm.adjacency_axes if term.adjacency is None else tuple(term.adjacency)
-            if any(p.axis is None for p in term.poly) and not smooth_axes:
-                raise ValueError(f"offset term on {cm.name!r}: a polynomial constraint without an axis follows "
-                                 f"the term's first smoothing axis, and the term is smoothed along none")
-            axes = list(term.adjacency or ()) + [p.axis for p in term.poly if p.axis is not None]
-            if term.kind == 'polybasis':
-                axes += [term.axis or cm.spectral_axis, term.group_axis or cm.group_axis]
+            axes = list(term.adjacency or ())
             bad = [a for a in axes if a not in names]
             if bad:
                 raise ValueError(f"offset term on {cm.name!r} names axes {bad}; the map's axes are {names}")
@@ -680,8 +639,6 @@ class ModelSpec:
             out.append((cols, P))
         for m, term in enumerate(self.offset):
             if term.exclude_overlap is not None:
-                if layout.det_template_arr_list[m] is not None:
-                    raise ValueError(f"offset term {self.offset_names(geom)[m]!r}: exclude does not apply to a template term")
                 chunks, P = self._overlap(m, geom, window, log)
                 if P.shape[1]:
                     n_chunks, n_groups = int(layout.num_chunks_list[m]), int(layout.num_offset_groups_list[m])
@@ -703,8 +660,6 @@ class ModelSpec:
                                  f"{axes.names}); only degree 0, the constant, takes every chunk at once")
             if axis is not None and axis not in axes:
                 raise ValueError(f"offset term on map {cm.name!r}: no chunk axis {axis!r} (axes: {axes.names})")
-            if layout.det_template_arr_list[m] is not None:
-                raise ValueError(f"offset term on map {cm.name!r}: exclude does not apply to a template term")
             n_chunks = int(layout.num_chunks_list[m])
             n_groups = int(layout.num_offset_groups_list[m])
             base = int(layout.col_bases[m])
@@ -784,8 +739,6 @@ class ModelSpec:
         cols = []
         for n in term.exclude_overlap:
             t = self.offset[index[n]]
-            if t.kind == 'polybasis':
-                raise ValueError(f"offset term {names[m]!r}: exclude_overlap names {n!r}, a polynomial-basis term")
             g = values(index[n])
             c_det = np.asarray(_chunk_map(t, geom).det).ravel()[pix]
             for c in np.unique(c_det[c_det >= 0]):
@@ -891,18 +844,6 @@ class ModelSpec:
     def _offset_block(self, term, geom, n_frames, frame_groups, log, known=()):
         cm = _chunk_map(term, geom)
         basis = self._offset_function(term, geom, known, log)
-        if term.kind == 'polybasis':
-            axis = term.axis or cm.spectral_axis
-            group = term.group_axis or cm.group_axis
-            if axis is None or group is None or term.lo is None or term.hi is None:
-                raise ValueError(f"polybasis term on map {cm.name!r} needs axis, group_axis, lo, hi")
-            pb = poly_basis_along(cm.axes, axis, group, int(term.degree), int(term.lo), int(term.hi),
-                                  segments=term.segments)
-            log(f"[model] {cm.name}: polynomial-basis offset, degree {term.degree} in {axis!r} per "
-                f"{group!r} over [{term.lo}, {term.hi}]"
-                + (f", {len(term.segments)} segments" if term.segments else ""), flush=True)
-            return OffsetBlock(chunk_map=cm.det, poly_basis=pb, basis=basis)
-        # free / fixed / grouped: adjacency + soft polynomials
         axes = cm.adjacency_axes if term.adjacency is None else tuple(term.adjacency)
         if term.adjacency_step is not None:
             if len(axes) != 1:
@@ -910,26 +851,11 @@ class ModelSpec:
             adj = adjacency_along(cm.det, cm.axes, axes[0], step=int(term.adjacency_step))
         else:
             adj = adjacency_union(cm.det, cm.axes, axes) if axes else None
-        groups = []
-        for pc in term.poly:
-            axis = pc.axis if pc.axis is not None else (axes[0] if axes else None)
-            if axis is None:
-                raise ValueError(f"offset term on {cm.name!r}: a polynomial constraint without an axis follows "
-                                 f"the term's first smoothing axis, and the term is smoothed along none")
-            size = cm.axes[axis].size
-            if size < pc.degree + 2:
-                log(f"[model] axis {axis!r} has {size} values < degree+2={pc.degree + 2}: "
-                    f"skipping the (vacuous) polynomial constraint along it.")
-                continue
-            chains, stencil = poly_chains_along(cm.axes, axis, int(pc.degree), pc.lo, pc.hi)
-            groups.append({'chains': chains, 'stencil': stencil, 'weight': pc.weight})
         nb = 1 if basis is None else basis.n
         if nb > 1:
-            # Unknowns are (chunk, function): chunk pairs / chains act per function.
+            # Unknowns are (chunk, function): chunk pairs act per function.
             if adj is not None:
                 adj = tuple(np.concatenate([np.asarray(a) * nb + k for k in range(nb)]) for a in adj)
-            groups = [{'chains': np.concatenate([np.asarray(g['chains']) * nb + k for k in range(nb)]),
-                       'stencil': g['stencil'], 'weight': g['weight']} for g in groups]
         det_groups = None
         if term.kind == 'fixed':
             det_groups = np.zeros(n_frames, dtype=int)
@@ -944,9 +870,8 @@ class ModelSpec:
         if basis is not None:
             log(f"[model] {cm.name}: offset times {basis.n} function(s) "
                 f"{basis.coefficient.describe()}", flush=True)
-        return OffsetBlock(
-            chunk_map=cm.det, adj_info=adj, reg_weight=term.reg_weight,
-            poly_constraints=groups or None, det_groups=det_groups, basis=basis)
+        return OffsetBlock(chunk_map=cm.det, adj_info=adj, reg_weight=term.reg_weight, det_groups=det_groups,
+                           basis=basis)
 
     # ---- lowering: variables -------------------------------------------------------------------
     def build_variables(self, geom, frames, *, ref_shape=None, ref_wcs=None, frame_variables=None,
@@ -1097,7 +1022,7 @@ def _chunk_map(term, geom):
             cm, name=DETECTOR_MAP, det=np.zeros(cm.det.shape, dtype=np.int32),
             grid=np.zeros(cm.grid.shape, dtype=np.int32),
             axes=ChunkAxes.row_major((DETECTOR_MAP,), (1,), ('both',)), adjacency_axes=(),
-            spectral_axis=None, group_axis=None, renderers={}, render=None, extra={})
+            spectral_axis=None, renderers={}, render=None, extra={})
     raise ValueError(f"offset term map {term.map!r} is not a chunk map of the instrument "
                      f"({sorted(geom.chunk_maps)}; or {DETECTOR_MAP!r} for the whole detector)")
 

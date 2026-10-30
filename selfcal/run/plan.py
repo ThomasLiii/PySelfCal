@@ -479,16 +479,12 @@ def _check_starts(plan):
     """What can be checked of a warm start before the solve is set up: each start is a cal of the
     action's frames (in its order), sky terms on its reference grid, offset terms on their chunk
     maps and job, and none is a cal the action writes; the model's offsets can be read back (no
-    polynomial basis)."""
+    passes)."""
     from ..core.warm_start import contents_problems
     from ..models.spec import chunk_map_of
     from .lower import reference_shape
     from .products import job_key
     model = plan.recipe.model
-    if any(getattr(t, 'polynomial', None) is not None for t in model.offsets):
-        raise ConfigError("calibrate(start=...): an offset term with a polynomial basis (Offsets(polynomial=...)) "
-                          "cannot be continued: its cal holds the offsets the polynomial expands to, not the "
-                          "polynomial's coefficients")
     made = {os.path.abspath(p.path) for p in plan.products if p.kind == 'cal'}
     frames = [os.path.basename(f) for f in plan.frame_list] or None
     try:

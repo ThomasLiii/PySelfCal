@@ -341,9 +341,9 @@ class CalFile:
     def offset_coverage(self) -> list[np.ndarray]:
         """Per-map ``(n_frames, n_chunks)`` counts of the observations of each offset.
 
-        Template and polynomial-basis maps, whose unknowns are not one per chunk,
-        store ones. A map whose offsets multiply ``n_basis > 1`` functions
-        (:meth:`offset_basis`) has ``n_chunks * n_basis`` columns, one per unknown.
+        A map whose offsets multiply ``n_basis > 1`` functions (:meth:`offset_basis`) has
+        ``n_chunks * n_basis`` columns, one per unknown. (The template and polynomial-basis maps of
+        cals written before 2026-10-30 store ones.)
         """
         return self._per_map('offset_coverage', 'offset_coverage')
 
@@ -351,9 +351,8 @@ class CalFile:
     def offset_coverage_frac(self) -> list[np.ndarray]:
         """Per-map ``(n_frames, n_chunks)`` coverage as a fraction of each chunk's pixels.
 
-        :attr:`offset_coverage` divided by the chunk's size in detector pixels.
-        Template and polynomial-basis maps store ones; a map with ``n_basis > 1``
-        functions stores its :attr:`offset_coverage` counts undivided, as floats.
+        :attr:`offset_coverage` divided by the chunk's size in detector pixels. A map with
+        ``n_basis > 1`` functions stores its :attr:`offset_coverage` counts undivided, as floats.
         """
         return self._per_map('offset_coverage_frac', 'offset_coverage_frac')
 

@@ -243,14 +243,6 @@ def test_a_cal_of_another_system_is_refused(toy):
         field.calibrate(_recipe(model, 10, name='src'), start=source, overwrite=True, jobs=ALL)
 
 
-def test_a_model_whose_offsets_cannot_be_read_back_is_refused(toy):
-    field, _ = toy
-    source = field.calibrate(_recipe(sc.continuum(), 5, name='poly_src'), jobs=ALL).cal_paths[0]
-    poly = sc.Model(offsets=[sc.Offsets(polynomial=sc.Poly(1, along='row', each='col', window=range(0, 4)))])
-    with pytest.raises(ConfigError, match='polynomial basis'):
-        field.plan(_recipe(poly, 5, name='poly'), start=source, jobs=ALL)
-
-
 # =================================================================== continuations, provenance, reruns
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')
 def test_iterations_accumulate_and_the_start_is_recorded(toy):

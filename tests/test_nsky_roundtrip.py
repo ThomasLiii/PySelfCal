@@ -31,7 +31,6 @@ def _make_stub(x, ref_shape, num_frames, num_chunks, sky_model, pixel_counts, pi
     cc.num_sky_blocks = sky_model.n_blocks
     cc.pixel_counts = pixel_counts
     cc.pixel_fisher = pixel_fisher
-    cc.det_templates = [None]
     cc.frame_to_groups = [np.arange(num_frames)]
     cc.sky_model = sky_model
     cc.line_fisher_threshold = None

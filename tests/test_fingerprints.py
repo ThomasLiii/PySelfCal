@@ -166,7 +166,7 @@ def band_columns(geometry, bands=8, cols=2):
     columns = np.arange(w) * cols // w
     det = (rows[:, None] * cols + columns[None, :]).astype(np.int32)
     axes = sc.ChunkAxes.row_major(('band', 'col'), (bands, cols), ('y', 'x'))
-    return sc.Chunks(det, axes, adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+    return sc.Chunks(det, axes, adjacency_axes=('col',), spectral_axis='band')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -254,7 +254,7 @@ def write_settings_files(directory):
 # ============================================================================
 QE = np.linspace(0.8, 1.2, 64 * 64, dtype=np.float32).reshape(64, 64)
 CAMERA = sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Toy')
-SPECTRAL = sc.spectral([sc.Sky('line', times=sc.gaussian(1.25, sigma=0.08))], polynomial=sc.Poly(2, window=range(0, 8)))
+SPECTRAL = sc.spectral([sc.Sky('line', times=sc.gaussian(1.25, sigma=0.08))])
 
 
 def lines():
@@ -276,8 +276,7 @@ def model_with_everything(files):
              sc.Sky('season', times=season),
              sc.Sky('bump', times=sc.by_value(bump)),
              sc.Sky('scaled', times='qe', damping=0.5)],
-        offsets=[sc.Offsets('chunks', smooth=0.05, smooth_along=('band',), smooth_step=1, exclude=sc.Poly(0),
-                            poly_prior=(sc.Poly(1, along='band', window=range(0, 8), weight=0.2),)),
+        offsets=[sc.Offsets('chunks', smooth=0.05, smooth_along=('band',), smooth_step=1, exclude=sc.Poly(0)),
                  sc.Offsets('thermal', per='all', times=centred, exclude=sc.Poly(0), exact_group_rows=True),
                  sc.Offsets('gradient', on='detector', basis=plane, n=2, damping=1e-3),
                  sc.Offsets('nightly', per='night', smooth=0.1, render='block')],
@@ -318,8 +317,7 @@ def with_readouts(model):
 
 
 def cases(files):
-    polybasis = on(sc.spectral([T.line('aromatic', 5e-3)], polynomial=sc.Poly(2, window=range(200, 321))),
-                   num_ch=34, num_col=3)
+    polybasis = on(sc.spectral([T.line('aromatic', 5e-3)]), num_ch=34, num_col=3)
     aromatic = jobs.window('Aromatic')
     return [
         # the instruments, each with a job of its own
@@ -334,15 +332,12 @@ def cases(files):
                                       headers={'temp': 'TEMP'}), sc.Recipe(sc.continuum(), name='c')),
         Case('user_instrument', Prism(), sc.Recipe(sc.continuum(), name='p')),
         # the models
-        Case('continuum_smooth_poly', CAMERA,
-             sc.Recipe(sc.continuum(smooth=0.3, poly_prior=sc.Poly(1, weight=0.5)), name='cp')),
+        Case('continuum_smooth', CAMERA, sc.Recipe(sc.continuum(smooth=0.3), name='cs')),
         Case('spectral_lines', sc.SPHEREx(4),
-             sc.Recipe(on(sc.spectral(lines(), polynomial=sc.Poly(2, window=range(200, 321))), num_ch=34, num_col=3),
-                       coadd=None, name='lines'), jobs.window('Multiline3', range(200, 321))),
-        Case('spectral_soft_poly', sc.SPHEREx(4),
-             sc.Recipe(on(sc.spectral([T.line('aromatic', 5e-3)], smooth=0.2,
-                                      poly_prior=sc.Poly(3, along='subchannel', window=range(200, 321)), damping=0.05),
-                          num_ch=34, num_col=3),
+             sc.Recipe(on(sc.spectral(lines()), num_ch=34, num_col=3), coadd=None, name='lines'),
+             jobs.window('Multiline3', range(200, 321))),
+        Case('spectral_smooth', sc.SPHEREx(4),
+             sc.Recipe(on(sc.spectral([T.line('aromatic', 5e-3)], smooth=0.2, damping=0.05), num_ch=34, num_col=3),
                        name='soft'), jobs.window('W', range(200, 321))),
         Case('two_block_settings', sc.SPHEREx(4),
              sc.Recipe(with_readouts(sc.two_block('readout', 'subchannel', smooth=0.2, second_smooth=0.05,

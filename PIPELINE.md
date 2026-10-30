@@ -69,16 +69,16 @@ recipe the transfer function was measured with, on 17 channels and one column (t
 gradient model, the shot-noise weights, deflated CGLS to the chi-squared stop, the post-solve plane
 gauge and the weighted coadd, below), with the wavelength maps in the mosaics;
 [`selfcal_scripts/runs/channel_maps.py`](selfcal_scripts/runs/channel_maps.py) makes them
-(`launch/channel_maps.sh [detectors]`). The production recipe of the NumCol 10 era, `POLY_K1`
-(the channel maps of 2026-09-29 to 2026-10-14 used `NUMCOL3`: NumCol 3, no column polynomial),
-with the production machine of `selfcal_scripts/recipes/site.py`:
+(`launch/channel_maps.sh [detectors]`). The shape of a recipe, in the form of the NumCol 10 era's
+(whose soft column polynomial went with the soft polynomial prior on 2026-10-30; the channel maps of
+2026-09-29 to 2026-10-14 used `NUMCOL3`: NumCol 3), with the production machine of
+`selfcal_scripts/recipes/site.py`:
 
 ```python
 import selfcal as sc
 
-POLY_K1 = sc.Recipe(
-    sc.continuum(smooth=0.1,                     # adjacency smoothness between neighbouring chunks
-                 poly_prior=sc.Poly(1, weight=0.5)),   # the linear column polynomial; omit for none
+SMOOTH = sc.Recipe(
+    sc.continuum(smooth=0.1),                    # adjacency smoothness between neighbouring chunks
     fit=sc.Fit(50, clip=5.0, method="lsqr"),     # its solver (CGLS is the default since 2026-10);
                                                  # shot_noise_weights=True in the PAH fits
     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),   # drop the source-mask bit
@@ -116,8 +116,7 @@ real sky curvature out of the map. `selfcal.core.gauge` has the computation.
 
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
 (the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
-lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
-`det_groups_list=` / `det_templates=`, deprecated — they remain the native
+lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `det_groups_list=`, deprecated — they remain the native
 arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
 
 ```python
@@ -137,8 +136,6 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`; `sc.Offsets(smooth=, smooth_along=)`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `selfcal/instruments/spherex/spherex_utility.py` (the run engine builds the same pairs from a term's `smooth_along` axes with `selfcal.models.offset_structure.adjacency_along`):
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
-
-- **`poly_constraints_list[m]`** (`poly_constraints`; `sc.Offsets(poly_prior=sc.Poly(...))`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
 - **`exclusions`** (not a block field: `apply_lsqr(exclusions=)`; `sc.Offsets(exclude=sc.Poly(k, along=))`, turned into them by `ModelSpec.column_exclusions(geom, layout)`) — hard constraints: a term carries no polynomial of degree ≤ k along a chunk axis, per line of the other axes and per group of frames (`exclude=sc.Poly(0)` with no `along`: no constant over all of a group's chunks). Each is `(cols, P)`, `cols` `(G, n)` the full-layout columns of each group's chunks along one line and `P` `(n, r)` the excluded directions. The solver imposes them exactly by reparametrisation (`selfcal.core.projector.ColumnProjector`: it iterates only on unknowns that satisfy them), with no row and no weight, and imposes them on the start too; a column the compaction dropped (no entry in any row: an unobserved chunk with no prior row on it) drops out of its constraint. The N-pass OFFSET pass applies them in its direct solve (`solve_frames(exclusions=)`).
 
@@ -209,9 +206,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   (`system`, `system_identity`); a cal solved before 2026-10-08 has none and is checked by its
   contents only (frames, sky terms, chunk maps, column counts, grid shape), with a warning. The
   plan checks the frames, sky terms, grid shape, chunk maps and job before the solve is set up,
-  the solve the rest. Not supported: an offset term with a hard polynomial basis
-  (`Offsets(polynomial=...)`; its cal holds the offsets the polynomial expands to, not the
-  coefficients), and tiled or N-pass runs (refused). The start's identity (its product
+  the solve the rest. Not supported: tiled or N-pass runs (refused). The start's identity (its product
   fingerprint, or the hash of its bytes when it has no current sidecar) enters the new cal's
   fingerprint (the key is absent without a start, so every other cal keeps its fingerprint);
   the new cal records `start_from` (its path), `start_identity` and `iterations_total` (the
@@ -470,11 +465,6 @@ parentheses):
   detector-fixed pattern shared across all frames (e.g., readout-channel
   stripes — `sc.two_block(second="readout", along="subchannel")` on a model whose chunk maps
   include `"readout"`, `chunks.readouts` of `selfcal_scripts/spherex/chunks.py`).
-- **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
-  `det_groups_list[m]` also. Fixes the spatial pattern from a
-  previously-solved `(num_groups, num_chunks_m)` template and solves only
-  one scalar amplitude `alpha` per frame. Spatial regularization rows are
-  skipped automatically for this map.
 - **Hard constraints via `apply_lsqr(exclusions=)`** (not a block field;
   `sc.Offsets(exclude=...)` in a model). Each excludes the polynomials
   of a degree from a map's offsets along a chunk axis, per group, exactly
@@ -502,9 +492,9 @@ d_i = Σ_j S_j(p(i))·c_j(v_i) + O_k(i) + ε_i
 
 J sky blocks `S_j` (continuum + line amplitudes; `c_j` = e.g. the line template at the
 observation's wavelength) and the frame's offset `O_k`: **whatever offset terms the recipe's
-model has** -- per-chunk values, a polynomial along a chunk axis (`sc.Poly`, segmented or not),
-templates, coefficients of known functions of data variables (`times=` / `basis=`, e.g. the
-x-slope of `terms.frame_slope`, the hat functions of `terms.spectral_offsets` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
+model has** -- per-chunk values, coefficients of known functions of data variables (`times=` /
+`basis=`, e.g. the x-slope of `terms.frame_slope`, the hat functions of `terms.spectral_offsets`, the
+Chebyshev polynomial of `terms.spectral_polynomial` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
 with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
 of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script
@@ -555,7 +545,7 @@ global sky, the offsets of different frames are independent (a term of one frame
 only that frame's data), so solving every frame on its own gives exactly the full-field solution,
 with no tile gauge and no seam (the tiles only batch the frames).
 
-**The offset terms must resolve the window** (the model's `sc.Poly(segments=)`). On the SEP, one
+**The offset terms must resolve the window.** On the SEP, one
 degree-4 polynomial over the 121-subchannel multi-line window (200–320) captured 3–5× less of the
 per-frame structure at the ~15-subchannel scale in the aromatic band than over the 60-subchannel
 aromatic window (200–259): the wide fit is constrained by the red-end data, so red-end residuals
@@ -564,10 +554,12 @@ projects onto the adjacent line templates as frame-coherent stripes (0.64 ×10�
 64–1024 px in the dim sky, aromatic–aliphatic stripe correlation +0.52, identical whether the
 per-pixel model is J=2 or J=4). Raising the global degree is *not* the answer — degree 8 over 121
 subchannels extrapolated to ±200 MJy/sr in frames with partial red-end coverage.
-`sc.Poly(4, window=range(200, 321), segments=((200, 259), (260, 320)))` fits an independent shape
-on each range, with nothing to extrapolate. (Until 2026-10 the OFFSET pass refitted a polynomial of
-its own, `sc.Refit(degree, segments=)`; it now refits the model's terms, so the polynomial is the
-model's, in the INIT and every pass.)
+Two polynomial terms, `terms.spectral_polynomial(range(200, 260), 4)` and
+`terms.spectral_polynomial(range(260, 321), 4)`, fit an independent shape on each range, with nothing
+to extrapolate. (Until 2026-10 the OFFSET pass refitted a polynomial of its own, `sc.Refit(degree,
+segments=)`; it now refits the model's terms, so the polynomial is the model's, in the INIT and every
+pass. Until 2026-10-30 the polynomial was the engine's own polynomial-basis offset, `Offsets(polynomial=
+sc.Poly(degree, window=, segments=))`; it is now a basis of functions like any other term.)
 
 **Ordering matters when INIT is tiled** (`sc.Passes(order=)`, default
 `offset_first`). Each INIT tile is an independent joint solve, so it picks its own

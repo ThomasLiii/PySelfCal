@@ -1,7 +1,7 @@
 """Composable builders for the global LSQR constraint blocks.
 
 These are the constraint rows appended in the parent process *after* the data
-rows (per-frame adjacency / polynomial constraints are emitted inside the
+rows (the per-frame adjacency rows are emitted inside the
 worker and are not built by these helpers, except the grouped adjacency of
 ``group_adjacency_maps``). Each builder returns a :class:`ConstraintBlock`
 (or ``None`` when it would be empty); ``setup_lsqr`` appends them in a fixed

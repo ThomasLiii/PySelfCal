@@ -455,8 +455,8 @@ def test_a_template_is_fingerprinted_by_content_not_path(tmp_path):
     from selfcal.instruments.spherex.settings import _DATA, LINE_TEMPLATES
     copy = tmp_path / 'aromatic_copy.npz'
     shutil.copy(os.path.join(_DATA, LINE_TEMPLATES['aromatic']), copy)
-    a = sc.spectral([T.line('aromatic')], polynomial=sc.Poly(2, window=range(200, 321)))
-    b = sc.spectral([T.line('aromatic', file=str(copy))], polynomial=sc.Poly(2, window=range(200, 321)))
+    a = sc.spectral([T.line('aromatic')])
+    b = sc.spectral([T.line('aromatic', file=str(copy))])
     from selfcal.config.base import encode
     ca, cb = (products.content_addressed(encode(products.resolved_model(m))) for m in (a, b))
     assert ca == cb

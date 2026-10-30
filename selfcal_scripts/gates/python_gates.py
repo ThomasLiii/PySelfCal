@@ -38,10 +38,13 @@ TILES = {'T1': (4342, 6185, 4334, 8068), 'T2': (6135, 8237, 4334, 8068)}
 
 
 def multiline(name):
-    """Three lines, the hard polynomial over the window, 20 iterations, no mosaic (npass3, tiles)."""
-    return sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321)), damping=0.1).replace(chunk_maps=MAPS),
-                     fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
-                     name=name)
+    """Three lines, a degree-2 Chebyshev polynomial of the position across the arcs over the window per frame and
+    column (terms.spectral_polynomial), 20 iterations, no mosaic (npass3, tiles)."""
+    model = sc.Model(chunk_maps=MAPS, sky=[sc.Sky(damping=0.1), *LINES],
+                     offsets=[T.spectral_polynomial(range(200, 321), 2, on='detector_column')],
+                     variables={'arc_position': sc.DetectorMap(T.arc_position)})
+    return sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
+                     coadd=None, name=name)
 
 
 def continuum():
@@ -55,7 +58,7 @@ def continuum():
 def spectral():
     """The PAH 3.29 um line (terms.pah_3p29) on D4 in five columns, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=0.0)],
-                        poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=5))
+                        damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=5))
     recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return NEP_D4.calibrate(recipe, jobs=jobs.window('AromaticPAHfit', range(210, 250)),
@@ -64,7 +67,7 @@ def spectral():
 
 def e2e():
     """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=MAPS),
+    recipe = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1).replace(chunk_maps=MAPS),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
     compute = sc.Compute(f'{REPO}/cache', workers=48, stage='reuse', keep_staged=True)

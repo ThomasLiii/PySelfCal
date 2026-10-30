@@ -165,9 +165,9 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 - `sc.Offsets(name, on=, per=, ...)`: an offset per chunk of the chunk map `on` (default the
   primary map; `"detector"`: the whole detector), shared by `per` (`"frame"`, `"all"`, or a
   frame variable such as `"detector"`), optionally times one function (`times=`) or `n` basis
-  functions (`basis=`, `n=`), or a polynomial (`polynomial=sc.Poly(2, window=range(200, 321))`).
-  Priors: `smooth` along `smooth_along` (default the map's own axes), `poly_prior` (soft
-  `sc.Poly`), `damping`. A hard constraint, `exclude=sc.Poly(k, along=axis)`: the term carries no
+  functions (`basis=`, `n=`; an offset that is a polynomial in a coordinate is a basis of that
+  coordinate's polynomials, `n = degree + 1`). Priors: `smooth` along `smooth_along` (default the
+  map's own axes), `damping`. A hard constraint, `exclude=sc.Poly(k, along=axis)`: the term carries no
   polynomial of degree ≤ `k` along the axis (per group of frames), imposed exactly in the solver,
   with no row and no weight; `exclude=sc.Poly(0)` needs no `along` (no constant over all of a
   group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
@@ -190,8 +190,7 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   `sc.SolvedSky(cal)`, `sc.Layer()`, `sc.Derived(fn, of=)`, `sc.FrameFunction(fn)`.
 - **Priors**: `sc.priors.frame_smoothness(term, variable)`, `sc.priors.sky_smoothness(term)`,
   `sc.priors.toward(term, variable)`, or your own function wrapped in `sc.Prior(fn, terms)`.
-- **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
-  `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
+- **Presets**: `sc.continuum(smooth=0.1)`, `sc.spectral(lines, smooth=None)`,
   `sc.two_block(second, along)`; `terms.line("aromatic", damping=5e-3)` (the SPHEREx model side, below)
   is a sky term with a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
   per-frame scalar; `sc.two_block` has none. A preset is a plain function that returns a `Model`;
@@ -301,8 +300,10 @@ The pipeline's worker processes start fresh and import the run script again, so:
 
 ```python
 LINES = [terms.line(n, damping=5e-3) for n in ("aromatic", "aliphatic", "plateau")]
-MODEL = sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321)))
-MULTILINE = sc.Recipe(MODEL.replace(chunk_maps=maps(num_ch=34, num_col=3)),
+MODEL = sc.Model(chunk_maps=maps(num_ch=34, num_col=3), sky=[sc.Sky(), *LINES],
+                 offsets=[terms.spectral_polynomial(range(200, 321), 2, on="detector_column")],
+                 variables={"arc_position": sc.DetectorMap(terms.arc_position)})
+MULTILINE = sc.Recipe(MODEL,
                       fit=sc.Fit(300, ignore_flags=[21], shot_noise_weights=True), coadd=None,
                       name="multiline3_SEP6")
 result = sep.calibrate(MULTILINE, jobs=jobs.window("Multiline3", range(200, 321)),
@@ -344,8 +345,7 @@ functions), the same reference grid and the same job (the plan checks most of it
 solve is set up). A cal of an older layout that holds the per-frame scalar apart, in a dataset
 `frame_scalar`, is refused too: its offsets miss each frame's level. Columns with data now that
 the source left at zero start at zero; the log counts them. Plain calibrations only: `tiles=`
-and `passes=` take no start, and a model with a hard polynomial basis (`Offsets(polynomial=...)`) cannot be continued (its cal holds the offsets
-the polynomial expands to, not its coefficients). Give the continuation a name of its own: the
+and `passes=` take no start. Give the continuation a name of its own: the
 cal an action writes is never its start.
 
 The start is part of the new cal's inputs: its fingerprint (see below) holds the start's

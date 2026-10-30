@@ -1,7 +1,7 @@
 """Per-subframe LSQR row assembly (runs in the worker processes).
 
 ``_prep_lsqr`` emits one subframe's sparse rows (sky components, offsets,
-per-frame constraints); ``_prep_lsqr_batch_worker``
+per-frame smoothness rows); ``_prep_lsqr_batch_worker``
 reconstructs the shared-memory arrays once per batch and assembles that
 batch's rows. Companion modules: ``selfcal.core.system`` (dispatches
 ``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor and assembles the full
@@ -17,7 +17,6 @@ from scipy.sparse import csr_matrix
 
 from ..geometry.map_helper import check_invalid, find_outliers, find_outliers_grouped
 from ..io.reproj import FrameLoadError
-from ..models.offset_basis import eval_offset_basis, n_coef
 from ..models.variables import FrameObservations, ObservationVariables
 from .subframe import _prep_subframe
 
@@ -35,11 +34,8 @@ def _prep_lsqr(task_params):
     reg_weight_list = task_params['reg_weight_list']
     offset_regularization = task_params['offset_regularization']
     adj_info_list = task_params['adj_info_list']
-    poly_constraint_list = task_params['poly_constraint_list']
-    poly_basis_list = task_params.get('poly_basis_list') or [None] * len(task_params['chunk_maps'])
     frame_to_group_list = task_params['frame_to_group_list']
     col_bases = task_params['col_bases']
-    det_template_list = task_params['det_template_list']
     chunk_maps = task_params['chunk_maps']
     K = len(chunk_maps)
 
@@ -127,10 +123,8 @@ def _prep_lsqr(task_params):
         num_valid_pixels = valid_vals.shape[0]
 
         if num_valid_pixels == 0:
-            # Same arity as the success return (the caller unpacks 6 and skips
-            # on an empty b); off_counts is None, as it is whenever there is no
-            # per-offset bookkeeping to report.
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
+            # Same arity as the success return (the caller unpacks 5 and skips on an empty b).
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
@@ -225,35 +219,7 @@ def _prep_lsqr(task_params):
             sub_idx_m = sliced_m.col[nz_m]
             chunk_vals_m = sliced_m.data[nz_m]
             phi_m = basis_vals[m]
-            if det_template_list[m] is not None:
-                # Template mode: one alpha column per frame for this map
-                O_rows_parts.append(sub_idx_m)
-                O_cols_parts.append(np.full(len(chunk_idx_m), col_bases[m] + index, dtype=np.int64))
-                _tv = (valid_weight[sub_idx_m] * chunk_vals_m
-                       * det_template_list[m][group_idx_list[m], chunk_idx_m])
-                O_data_parts.append(_tv if phi_m is None else _tv * phi_m[sub_idx_m, 0])
-            elif poly_basis_list[m] is not None:
-                # Hard poly-basis: the offset is a polynomial in an abstract
-                # per-chunk COORDINATE (``chunk_coord``), independent per per-chunk
-                # GROUP (``chunk_group``, ``num_groups`` of them) — the instrument
-                # supplies both, so this core is encoding-agnostic. Each
-                # (chunk-contrib, obs) entry emits n_coef nnz into coeff columns
-                # a[frame, group, k], coefficient w * chunk_val * B_k(coord).
-                pb = poly_basis_list[m]
-                ng, ncf = int(pb['num_groups']), n_coef(pb)
-                coord = np.asarray(pb['chunk_coord'])[chunk_idx_m]
-                grp = np.asarray(pb['chunk_group'])[chunk_idx_m]
-                B = eval_offset_basis(coord, pb)                                 # (n, ncf)
-                w_cv = valid_weight[sub_idx_m] * chunk_vals_m                    # (n,)
-                if phi_m is not None:
-                    w_cv = w_cv * phi_m[sub_idx_m, 0]
-                base = col_bases[m] + (group_idx_list[m] * (ng * ncf))
-                coeff_base = grp * ncf                                           # + k below
-                for k in range(ncf):
-                    O_rows_parts.append(sub_idx_m)
-                    O_cols_parts.append(base + coeff_base + k)
-                    O_data_parts.append(w_cv * B[:, k])
-            elif phi_m is not None:
+            if phi_m is not None:
                 # Basis of n known functions of data variables: one unknown per
                 # (group, chunk, function), column g*(n_chunks*n) + c*n + k, entry
                 # w * chunk_val * phi_k(v), stored only where phi_k(v) is not zero (a
@@ -281,19 +247,13 @@ def _prep_lsqr(task_params):
 
         sub_b = valid_vals * valid_weight
 
-        # --- Spatial Regularization (Adjacency + polynomial-order constraints) ---
-        # One block per map; skipped for any map in template mode.
+        # --- Smoothness rows (adjacency) ---
+        # One block per map.
         reg_rows, reg_cols, reg_data, reg_b = [], [], [], []
         if offset_regularization:
             reg_rows_parts, reg_cols_parts, reg_data_parts, reg_b_parts = [], [], [], []
             reg_row_offset = num_valid_pixels
             for m in range(K):
-                if det_template_list[m] is not None:
-                    continue
-                if poly_basis_list[m] is not None:
-                    # Hard poly-basis carries no per-chunk adjacency/penalty rows —
-                    # the polynomial is exact (no weight knob).
-                    continue
                 offset_base_m = col_bases[m] + (group_idx_list[m] * num_chunks_list[m])
 
                 rw_m = reg_weight_list[m]
@@ -308,26 +268,6 @@ def _prep_lsqr(task_params):
                     reg_data_parts.append(np.tile([rw_m, -rw_m], num_constraints))
                     reg_b_parts.append(np.zeros(num_constraints))
                     reg_row_offset += num_constraints
-
-                # Polynomial-order constraints: λ · Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0
-                # per chain r. Generalizes the [1,-1] adjacency stencil to arbitrary
-                # length-L stencils on user-supplied chunk-id chains.
-                groups_m = poly_constraint_list[m]
-                if groups_m:
-                    for grp in groups_m:
-                        chains = grp['chains']
-                        stencil = grp['stencil']
-                        weight = grp['weight']
-                        if weight == 0 or chains.shape[0] == 0:
-                            continue
-                        num_chains, L = chains.shape
-                        reg_rows_parts.append(
-                            np.repeat(np.arange(num_chains) + reg_row_offset, L))
-                        reg_cols_parts.append((offset_base_m + chains).reshape(-1))
-                        reg_data_parts.append(
-                            np.tile(weight * stencil.astype(np.float64), num_chains))
-                        reg_b_parts.append(np.zeros(num_chains))
-                        reg_row_offset += num_chains
             if reg_rows_parts:
                 reg_rows = np.concatenate(reg_rows_parts)
                 reg_cols = np.concatenate(reg_cols_parts)
@@ -357,14 +297,7 @@ def _prep_lsqr(task_params):
         sub_cols = sub_cols.astype(np.int32)
         sub_data_vec = sub_data_vec.astype(np.float32)
         sub_b = sub_b[unique_rows]
-
-        off_counts = None
-        if task_params.get('merge_duplicates'):
-            ref_h, ref_w = task_params['ref_shape']
-            sub_rows, sub_cols, sub_data_vec, off_counts = _merge_subframe_duplicates(
-                sub_rows, sub_cols, sub_data_vec, len(sub_b), col_bases[-1],
-                task_params['num_sky_blocks'] * ref_h * ref_w)
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b)
 
     except FrameLoadError:
         raise                                   # a missing/corrupt frame is fatal, never silently dropped
@@ -376,34 +309,6 @@ def _prep_lsqr(task_params):
         traceback.print_exc()
         return None
 
-
-def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
-    """Merge duplicate (row, col) entries of ONE subframe, in the worker.
-
-    Template / hard-poly-basis offsets emit one entry per chunk-contrib into
-    the same per-frame column, so ~1/4 of a template-mode row's entries are
-    duplicates. Left in, they inflate every downstream buffer (batch spill
-    files, the CSR buffers setup_lsqr allocates and fills) by the same fraction until
-    the final matrix's duplicate merge. Merging here instead is bit-identical to merging there:
-    scipy's ``coo -> csr`` conversion is a stable row bucket (``coo_tocsr``
-    keeps each row's entries in emission order) followed by the very kernels
-    that final merge runs on the very same per-row sequences (``csr_sort_indices`` then
-    ``csr_sum_duplicates``, float32 arithmetic), and the global scatter is
-    stable too, so each row reaches that merge with the same entry sequence
-    either way. The stream returned is row-grouped and column-sorted; the final
-    merge then finds nothing to merge.
-
-    ``pixel_counts`` is defined on the PRE-merge stream (its offset-column
-    part feeds ``offset_damping_block``), so the pre-merge counts of every
-    column >= ``num_sky_eff`` are returned alongside as ``(col_ids, counts)``
-    (integers -> exactly reproducible in the main process).
-    """
-    off = cols >= num_sky_eff
-    off_ids, off_cnt = np.unique(cols[off], return_counts=True)
-    A = csr_matrix((data, (rows, cols)), shape=(n_rows, n_cols))
-    rows = np.repeat(np.arange(n_rows, dtype=np.int32), np.diff(A.indptr))
-    return (rows.astype(np.int32, copy=False), A.indices.astype(np.int32, copy=False),
-            A.data.astype(np.float32, copy=False), (off_ids.astype(np.int64), off_cnt))
 
 def chunk_group_of_pixels(chunk_contrib, chunk_groups, shape):
     """The group of each subframe pixel: ``chunk_groups`` of the chunk contributing most to it
@@ -493,12 +398,8 @@ def _prep_lsqr_batch_worker(batch_params):
                 result = _prep_lsqr(task_params)
                 if result is None or len(result[3]) == 0:
                     continue
-                sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+                sub_rows, sub_cols, sub_data, sub_b, num_rows = result
                 ids, cnt = np.unique(sub_cols, return_counts=True)
-                if off_counts is not None:
-                    num_sky_eff = task_params['num_sky_blocks'] * int(np.prod(task_params['ref_shape']))
-                    sky = ids < num_sky_eff
-                    ids, cnt = np.concatenate([ids[sky], off_counts[0]]), np.concatenate([cnt[sky], off_counts[1]])
                 out.append((task_params['index'], reduce(sub_rows, sub_cols, sub_data, sub_b, num_rows),
                             (ids.astype(np.int64), cnt.astype(np.int64))))
             return out
@@ -521,7 +422,6 @@ def _prep_lsqr_batch_worker(batch_params):
         batch_cols = []
         batch_data = []
         batch_b = []
-        off_ids_parts, off_cnt_parts = [], []
         batch_row_offset = 0
         n_entries = 0
 
@@ -534,12 +434,9 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows = result
             if len(sub_b) == 0:
                 continue
-            if off_counts is not None:
-                off_ids_parts.append(off_counts[0])
-                off_cnt_parts.append(off_counts[1])
 
             if spill_fhs is not None:
                 (sub_rows + batch_row_offset).tofile(spill_fhs[0])
@@ -566,17 +463,6 @@ def _prep_lsqr_batch_worker(batch_params):
                         pass
             return None
 
-        # Pre-merge offset-column counts (see _merge_subframe_duplicates):
-        # summed over the batch's subframes, shipped sparse (this batch's
-        # own frames' columns only).
-        offset_counts = None
-        if off_ids_parts:
-            _ids = np.concatenate(off_ids_parts)
-            _u, _inv = np.unique(_ids, return_inverse=True)
-            _tot = np.zeros(_u.size, dtype=np.int64)
-            np.add.at(_tot, _inv, np.concatenate(off_cnt_parts))
-            offset_counts = (_u, _tot)
-
         if spill_fhs is not None:
             for fh in spill_fhs:
                 fh.close()
@@ -586,8 +472,7 @@ def _prep_lsqr_batch_worker(batch_params):
             b_meta = (shm.name, cat_b.shape, cat_b.dtype.str)
             shm.close()
             return {'files': spill_paths, 'shm': [b_meta],
-                    'num_rows': batch_row_offset, 'n_entries': n_entries,
-                    'offset_counts': offset_counts}
+                    'num_rows': batch_row_offset, 'n_entries': n_entries}
 
         # Write results to shared memory to avoid pickle/pipe IPC overhead
         cat_rows = np.concatenate(batch_rows)
@@ -602,8 +487,7 @@ def _prep_lsqr_batch_worker(batch_params):
             result_shm.append((shm.name, arr.shape, arr.dtype.str))
             shm.close()
 
-        return {'shm': result_shm, 'num_rows': batch_row_offset,
-                'offset_counts': offset_counts}
+        return {'shm': result_shm, 'num_rows': batch_row_offset}
     finally:
         for shm in shm_handles:
             shm.close()

@@ -178,13 +178,19 @@ def noise_norm(paths, sigma=2e-3):
     return np.sqrt(total)
 
 
-def fixed_sky_fit(paths, sky_model, bc_det, det_chunk_map, poly_basis, hook):
-    """The OFFSET pass's system over ``paths`` -- a polynomial-basis offset per group plus a per-frame
-    scalar (an offset of one chunk), the sky held fixed (``hook`` subtracts it, or None) -- each frame's
-    rows reduced to its normal equations and solved directly. Returns ``(the true residual norm, the
+def shape_of_coord(coord):
+    """The degree-1 Chebyshev shape of the subchannel coordinate over 4 subchannels (no constant)."""
+    return 2.0 * np.asarray(coord, dtype=np.float64) / 3.0 - 1.0
+
+
+def fixed_sky_fit(paths, sky_model, bc_det, column_map, basis, coord_map, hook):
+    """The OFFSET pass's system over ``paths`` -- a polynomial offset per column (``basis``: a function of the
+    detector map ``coord_map``, the variable ``coord``, times a coefficient per frame and chunk of ``column_map``)
+    plus a per-frame scalar (an offset of one chunk), the sky held fixed (``hook`` subtracts it, or None) -- each
+    frame's rows reduced to its normal equations and solved directly. Returns ``(the true residual norm, the
     columns solved)``."""
-    r = setup_lsqr(paths, REF, chunk_maps=[det_chunk_map, np.zeros_like(det_chunk_map)],
-                   poly_basis_list=[poly_basis, None], sky_model=sky_model, det_aux=[bc_det, np.full(DET, 0.03)],
+    r = setup_lsqr(paths, REF, chunk_maps=[column_map, np.zeros_like(column_map)], basis_list=[basis, None],
+                   sky_model=sky_model, det_aux=[bc_det, np.full(DET, 0.03), coord_map], aux_keys=['BC', 'BW', 'coord'],
                    max_workers=2, batch_size=20, apply_mask=True, apply_weight=True, outlier_thresh=100.0,
                    postprocess_func=hook, fixed_sky=True, reduce=normal_equations)
     assert r.A is None                                                        # no matrix
@@ -197,28 +203,25 @@ def fixed_sky_fit(paths, sky_model, bc_det, det_chunk_map, poly_basis, hook):
 def test_fixed_sky_system_fits_the_offsets_alone(tmp_path):
     rng = np.random.default_rng(11)
     J = 2
-    # chunk map on the detector: 4 "subchannels" (row bands) x 2 columns
+    # 4 "subchannels" (row bands) x 2 columns: a degree-1 shape of the subchannel coordinate per column
     n_sub, ncol = 4, 2
     det_y, det_x = np.mgrid[0:DET[0], 0:DET[1]]
-    cm = ((det_y * n_sub) // DET[0]) * ncol + (det_x * ncol) // DET[1]
-    pb = {"degree": 1, "num_groups": ncol, "coord_lo": 0, "coord_hi": n_sub - 1,
-          "chunk_coord": np.arange(n_sub * ncol) // ncol,
-          "chunk_group": np.arange(n_sub * ncol) % ncol}
-    from selfcal.models.offset_basis import cheb_shape_basis
-    B = cheb_shape_basis(pb["chunk_coord"].astype(float), 1, 0, n_sub - 1)   # (chunks, 1)
+    col = (det_x * ncol) // DET[1]
+    coord = ((det_y * n_sub) // DET[0]).astype(np.float32)
+    from selfcal.models.offset_model import Basis
+    from selfcal.models.sky_model import Coefficient
+    basis = Basis(Coefficient('coord', shape_of_coord), 1)
     n_frames = 30
     a_true = 0.05 * rng.standard_normal((n_frames, ncol))
     s_true = 0.1 * rng.standard_normal(n_frames)
-    from selfcal.geometry.map_helper import chunk_to_det
-    offsets = [chunk_to_det(cm, chunk_data=a_true[k][pb["chunk_group"]] * B[:, 0] + s_true[k])
-               for k in range(n_frames)]
+    offsets = [a_true[k][col] * shape_of_coord(coord) + s_true[k] for k in range(n_frames)]
     paths, bc_det, truth, sky_model = _make_frames(str(tmp_path), rng, J, n_frames=n_frames,
                                                    offsets=offsets, bc_jitter=0.0)
     subtract = SkySubtractor(sky_cal_of(str(tmp_path), truth, sky_model), sky_model,
                              export_dir=str(tmp_path / "exp"), exclude_off_map=True)
-    rnorm, cols = fixed_sky_fit(paths, sky_model, bc_det, cm, pb, subtract)
+    rnorm, cols = fixed_sky_fit(paths, sky_model, bc_det, col, basis, coord, subtract)
     assert cols.min() >= J * REF[0] * REF[1]                                  # no sky unknowns
     noise = noise_norm(paths)
     assert 0.8 * noise < rnorm < 1.1 * noise, (rnorm, noise)                 # the offsets, down to the noise
-    rnorm_raw, _ = fixed_sky_fit(paths, sky_model, bc_det, cm, pb, None)       # the sky NOT subtracted
+    rnorm_raw, _ = fixed_sky_fit(paths, sky_model, bc_det, col, basis, coord, None)   # the sky NOT subtracted
     assert rnorm_raw > 20 * noise, (rnorm_raw, noise)

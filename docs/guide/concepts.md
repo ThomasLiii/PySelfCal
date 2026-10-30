@@ -121,11 +121,11 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   [`OffsetTerm`][selfcal.models.spec.OffsetTerm]): an offset per chunk of chunk map `m`, shared by
   the frames of a group `g_m`: `per="frame"` (each frame its own), `per="all"` (one for all frames:
   a pattern fixed to the detector) or `per=` a [frame variable](glossary.md#frame-variable) such
-  as `"detector"` (the frames with equal values share one). `polynomial=sc.Poly(...)` makes the
-  offset a polynomial along one chunk axis, fitted by its coefficients. `times=φ` multiplies the
+  as `"detector"` (the frames with equal values share one). `times=φ` multiplies the
   offset by a known function of data variables (a pattern times the detector temperature);
   `basis=` with `n=` functions gives `n` unknowns per chunk (a gradient across the detector in every
-  frame). With neither, `φ = 1`: the plain chunk offset.
+  frame; a polynomial in a coordinate, as the polynomials of that coordinate). With neither, `φ = 1`:
+  the plain chunk offset.
 - **Per-frame scalar**: one additive constant per frame, the offset term
   `sc.Offsets("scalar", on="detector")` (the map `"detector"` is the whole detector as one chunk).
   A model has one only if it lists it: `sc.continuum` and `sc.spectral` end with it, `sc.two_block`
@@ -189,14 +189,13 @@ the chunks: for each axis, the value of every chunk along it and the image direc
 neighbouring chunks differ in it. Priors and offset terms are written in axes ("smoothness along
 `column`", "a degree-3 polynomial along `subchannel`, one per `column`"), so a recipe runs on any
 instrument whose chunk map declares the axes it needs. A map also names its default adjacency
-axes, its *spectral axis* (along which the wavelength changes; none for a broadband instrument) and
-its *group axis* (one polynomial per value in a `polybasis` term).
+axes and its *spectral axis* (along which the wavelength changes; none for a broadband instrument).
 
 | instrument | chunk maps | axes |
 | --- | --- | --- |
-| `sc.Camera` | default `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both; group axis `row` |
-| `sc.SPHEREx` | no default; the recipes' maps (`selfcal_scripts/spherex/chunks.py`): `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `detector_column`: one chunk per detector column (a term on it shared by every frame, `per='all'`, is a detector-fixed column pattern); `readout`: one chunk per read-out channel of the detector | `subchannel` (spectral axis), `column` (group axis and default adjacency); `detector_column`; `readout` |
-| `sc.Euclid` | default `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes on which a degree-1 `polybasis` term is one linear ramp per frame | `row`, `col`; `strip`, `all` |
+| `sc.Camera` | default `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both |
+| `sc.SPHEREx` | no default; the recipes' maps (`selfcal_scripts/spherex/chunks.py`): `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `detector_column`: one chunk per detector column (a term on it shared by every frame, `per='all'`, is a detector-fixed column pattern); `readout`: one chunk per read-out channel of the detector | `subchannel` (spectral axis), `column` (default adjacency); `detector_column`; `readout` |
+| `sc.Euclid` | default `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes whose `strip` axis is the spectral axis | `row`, `col`; `strip`, `all` |
 
 Chunk size trades flexibility against noise: smaller chunks absorb finer offset structure, but
 fewer pixels constrain each unknown. For SPHEREx, `num_col` of the subchannel map is the main
@@ -233,7 +232,6 @@ The priors, and the rows each adds to the system:
 | prior | setting | rows |
 | --- | --- | --- |
 | adjacency smoothing | `sc.Offsets(smooth=w, smooth_along=axes)` (0 by default; the presets' `smooth`, default 0.1) | per frame and pair of neighbouring chunks `a`, `b`: `w · (O[a] − O[b]) = 0` |
-| polynomial constraint | `sc.Offsets(poly_prior=sc.Poly(degree, along=, window=, weight=))` | per frame and run of `degree + 2` consecutive chunks along the axis: `weight · Σ stencil · O = 0`, a finite difference that vanishes on polynomials of degree `degree` or less |
 | sky damping | `sc.Sky(damping=d)` (default none, `d` = 0) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
@@ -246,8 +244,8 @@ only for unknowns that satisfy it
 ([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), so there is no weight to choose,
 and what the term cannot carry goes where the data place it, to other terms or the sky.
 `exclude=sc.Poly(0)` needs no `along` on a map with several axes either: the term carries no
-constant over all of a group's chunks. In the chunk term of `sc.continuum` (and of `sc.spectral`
-without `polynomial=`) it moves each frame's mean offset into the frame's per-frame scalar, so the
+constant over all of a group's chunks. In the chunk term of `sc.continuum` and `sc.spectral` it
+moves each frame's mean offset into the frame's per-frame scalar, so the
 chunk offsets carry only structure within the frame. The constraint acts on the unknowns of the
 solve: a chunk that a frame never observed drops out of it, unless a prior row, such as a
 smoothness row, makes that chunk an unknown.
@@ -258,10 +256,9 @@ What each settles:
   one that makes the maps smallest, a level with no physical meaning. Like any Tikhonov term it also
   shrinks real structure toward zero, by an amount that grows with the weight.
 - The **adjacency smoothing** makes steps between neighbouring chunks costly, so smooth structure
-  goes to the sky rather than to offset ramps; the sky damping pushes the other way. A
-  **polynomial constraint** lets the offset follow a polynomial of its degree along its axis (a
-  degree-1 constraint along the columns leaves linear ramps free) and penalises the rest; a
-  [`polybasis`](glossary.md#polybasis) term makes that shape exact.
+  goes to the sky rather than to offset ramps; the sky damping pushes the other way. An offset
+  that should be a polynomial in a coordinate is written as one exactly, a `basis=` of that
+  coordinate's polynomials (`n = degree + 1`), with no weight.
 - `sc.Fit(damp=)` damps every unknown (default 0). With a limited number of iterations
   (`sc.Fit(iterations)`), LSQR also stops before it has
   moved far along weakly constrained directions, where the result then depends on the

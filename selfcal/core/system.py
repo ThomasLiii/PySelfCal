@@ -326,10 +326,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                ignore_list: list[int] | None = None, oversample_factor: int = 1,
                batch_size: int = 10, offset_regularization: bool = False,
                reg_weights: list[float] | None = None, adj_infos: list | None = None,
-               poly_constraints_list: list | None = None,
                det_groups_list: list | None = None,
-               det_templates: list | None = None,
-               poly_basis_list: list | None = None,
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
                weighted_damping: bool = False, damp_weight: float = 0.0,
@@ -398,7 +395,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
 
     The model is ``d_i = s(p_i) + Σ_m o^(m)[g_m(k), c_m(i)] + ε`` (``s`` the sky): K
     independent additive offset blocks, each with its own chunk map, frame-to-group
-    mapping, template and regularization. With K=1 the
+    mapping and smoothness rows. With K=1 the
     multi-map machinery reduces exactly to a plain single-chunk-map solve
     with no extra terms.
 
@@ -424,20 +421,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     adj_infos : list of tuple or None
         Per-map precomputed adjacency information (length K). Each entry is a
         ``(chunk_i, chunk_j)`` tuple or ``None``.
-    poly_constraints_list : list or None
-        Per-map polynomial-order constraint groups (length K). Each entry is
-        ``None`` (no poly constraints on this map) or a list of dicts, each
-        ``{'chains': (num_chains, L) int ndarray, 'stencil': (L,) float
-        ndarray, 'weight': float}``. The constraint is
-        ``λ · Σ_ℓ stencil[ℓ] · o[chains[r, ℓ]] = 0`` per chain r per frame.
-        Generalizes the constant-prior ``adj_infos`` (stencil=[1,-1]) to
-        arbitrary finite-difference operators. Skipped in template mode.
     det_groups_list : list or None
         Per-map frame→group labels (length K). Each entry is ``None`` (one
         group per frame) or an array of length num_frames.
-    det_templates : list or None
-        Per-map fixed spatial templates (length K). When set for map m, that
-        map solves only for a per-frame amplitude α[k] (block size = num_frames).
     sky_rhs_moments : bool, optional
         Also stream the per-pixel RIGHT-HAND-SIDE moments ``Σ (w·G_j)·(w·v)``
         for every sky block j (same per-batch bincount as the Fisher/cross
@@ -466,11 +452,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     batch_size : int, optional
         Number of subframes assembled per worker batch (default 10).
     offset_regularization : bool, optional
-        Enable the per-map adjacency/offset regularization rows.
-    poly_basis_list : list or None, optional
-        Per-map hard polynomial basis (length K). When set for map m, that map
-        solves for polynomial coefficients (shape-only: no constant; a frame's
-        level belongs to another map) rather than per-chunk offsets.
+        Enable the per-map adjacency (smoothness) rows.
     postprocess_func : callable or None, optional
         Optional per-subframe postprocessing hook run inside the worker.
     preprocess_func : callable or None, optional
@@ -598,38 +580,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     reg_weights = _default(reg_weights, 0.0)
     basis_list = _default(basis_list, None)
     adj_infos = _default(adj_infos, None)
-    poly_constraints_list = _default(poly_constraints_list, None)
     det_groups_list = _default(det_groups_list, None)
-    det_templates = _default(det_templates, None)
-    poly_basis_list = _default(poly_basis_list, None)
-
-    # Normalize and validate poly-constraint groups: each entry is None or a
-    # non-empty list of dicts; each dict has matching chains.shape[1] == len(stencil).
-    # Cast chains to int64 and stencil to float64 once here so workers don't
-    # re-cast per call.
-    normalized_poly = []
-    for m, groups in enumerate(poly_constraints_list):
-        if groups is None:
-            normalized_poly.append(None)
-            continue
-        norm_groups = []
-        for g_idx, grp in enumerate(groups):
-            chains = np.asarray(grp['chains'], dtype=np.int64)
-            stencil = np.asarray(grp['stencil'], dtype=np.float64)
-            weight = float(grp['weight'])
-            if chains.ndim != 2:
-                raise ValueError(
-                    f"poly_constraints_list[{m}][{g_idx}]['chains'] must be 2-D")
-            if stencil.ndim != 1:
-                raise ValueError(
-                    f"poly_constraints_list[{m}][{g_idx}]['stencil'] must be 1-D")
-            if chains.shape[1] != stencil.shape[0]:
-                raise ValueError(
-                    f"poly_constraints_list[{m}][{g_idx}]: chains.shape[1]="
-                    f"{chains.shape[1]} != len(stencil)={stencil.shape[0]}")
-            norm_groups.append({'chains': chains, 'stencil': stencil, 'weight': weight})
-        normalized_poly.append(norm_groups if norm_groups else None)
-    poly_constraints_list = normalized_poly
 
     # Adjacency tuples with all-empty arrays (e.g. NumCol=1 from
     # compute_column_adjacency) produce zero adjacency constraints anyway —
@@ -640,11 +591,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         for adj in adj_infos
     ]
     for name, arr in (('reg_weights', reg_weights), ('adj_infos', adj_infos),
-                      ('poly_constraints_list', poly_constraints_list),
-                      ('det_groups_list', det_groups_list),
-                      ('det_templates', det_templates),
-                      ('poly_basis_list', poly_basis_list),
-                      ('basis_list', basis_list)):
+                      ('det_groups_list', det_groups_list), ('basis_list', basis_list)):
         if len(arr) != K:
             raise ValueError(f"{name} must have length {K} (got {len(arr)})")
     if damp_offset_maps is not None:
@@ -743,28 +690,22 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                     f"damping {sky_model.damp_weights(damp_weight, damp_weight_line)}.")
 
     # --- Column layout (single source of truth: selfcal.core.layout.SystemLayout) ---
-    # SystemLayout computes the per-map group mapping, template normalization,
-    # col_bases, and the total column count. The
+    # SystemLayout computes the per-map group mapping, col_bases, and the total column count. The
     # Calibrator builds the same layout from the same inputs (see
     # pipeline_wrapper.Calibrator.setup_lsqr) so the parent-side and parse-side
     # column arithmetic can never drift.
     any_det_groups = any(g is not None for g in det_groups_list)
     layout = SystemLayout.build(
         ref_shape, chunk_maps, num_sky_blocks=num_sky_blocks, num_frames=num_frames,
-        det_groups_list=det_groups_list, det_templates=det_templates,
-        poly_basis_list=poly_basis_list, basis_list=basis_list)
+        det_groups_list=det_groups_list, basis_list=basis_list)
     frame_to_group_list = layout.frame_to_group_list
     num_offset_groups_list = layout.num_offset_groups_list
     num_chunks_list = layout.num_chunks_list
-    det_template_arr_list = layout.det_template_arr_list
     col_bases = layout.col_bases
     total_cols = layout.total_cols
 
     if any_det_groups:
         logger.info(f"Grouped offsets: {num_frames} frames -> groups {num_offset_groups_list}")
-    if any(t is not None for t in det_template_arr_list):
-        tmpl_indices = [m for m, t in enumerate(det_template_arr_list) if t is not None]
-        logger.info(f"Template mode for maps {tmpl_indices}: {num_frames} alpha unknowns each")
 
     common_params = {
         'chunk_maps': chunk_maps,
@@ -788,19 +729,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'reg_weight_list': [0.0 if m in group_adjacency_maps else rw
                             for m, rw in enumerate(reg_weights)],
         'adj_info_list': adj_infos,
-        'poly_constraint_list': poly_constraints_list,
-        'poly_basis_list': poly_basis_list,
         'postprocess_func': postprocess_func,
         'preprocess_func': preprocess_func,
         'frame_to_group_list': frame_to_group_list,
         'col_bases': col_bases,
-        'det_template_list': det_template_arr_list,
-        # Template / hard-poly-basis offsets emit duplicate (row, col)
-        # entries; merge them per subframe in the worker (bit-identical to
-        # the final matrix's duplicate merge, see assembly._merge_subframe_duplicates) so no
-        # downstream buffer is sized on the pre-merge stream.
-        'merge_duplicates': bool(any(t is not None for t in det_template_arr_list)
-                                 or any(pb is not None for pb in poly_basis_list)),
         'num_sky_blocks': num_sky_blocks,
         'sky_components': sky_model.components,
         'fixed_sky': bool(fixed_sky),
@@ -925,9 +857,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         # Same conditions as the worker-side per-frame rows it replaces.
         if offset_regularization:
             for m in group_adjacency_maps:
-                if (reg_weights[m] <= 0 or adj_infos[m] is None
-                        or det_template_arr_list[m] is not None
-                        or poly_basis_list[m] is not None):
+                if reg_weights[m] <= 0 or adj_infos[m] is None:
                     continue
                 blk = grouped_adjacency_block(m, adj_infos[m], reg_weights[m],
                                               num_chunks_list[m], frame_to_group_list[m],
@@ -1083,19 +1013,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         _cnt = np.bincount(_b_cols, minlength=total_cols)
         if _want_split:
             # Per-range entry totals for the partitioned layout, read off the
-            # histogram above BEFORE the pixel_counts adjustment below (which
-            # restores the pre-merge offset counts): summing it over the range
-            # cuts is exactly the number of entries this batch spilled into
-            # each range.
+            # histogram above: summing it over the range cuts is exactly the
+            # number of entries this batch spilled into each range.
             range_nnz_per_batch[batch_id] = np.add.reduceat(
                 _cnt, _full_cuts[:-1]).astype(np.int64)
-        _oc = result.get('offset_counts')
-        if _oc is not None:
-            # The worker merged duplicate offset entries; pixel_counts
-            # keeps the pre-merge contract for the offset columns from the
-            # counts it shipped (integers -> exact).
-            _cnt[num_sky_blocks * num_sky:] = 0
-            _cnt[_oc[0]] = _oc[1]
         # Per-batch row nnz over LOCAL row ids (0..num_rows-1). We
         # add the global row offsets later (batch_row_starts, cumulative across
         # batches). Keeping this batch-local is what lets the placement
@@ -1620,15 +1541,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     # Early column compaction: every "active" column (pixel_counts > 0) is
     # compacted now, so the solve runs in the active column space and
-    # apply_lsqr skips its full-nnz col_map gather. Template-mode maps are
-    # included (every template column is covered — one per frame with data
-    # rows — so the constraint guard below applies to them too): at a
-    # 1k-frame tile that is 38 M columns instead of 803 M, which removes
-    # ~17 GB of n-space vectors and is what makes the row-split transpose
-    # product's private buffers affordable. The compact solve is not
-    # byte-identical to the uncompacted one (n-space reductions regroup;
-    # ~5e-6 relative in the maps), which is why it used to be excluded for
-    # template modes under the byte-equality rule.
+    # apply_lsqr skips its full-nnz col_map gather: at a 1k-frame tile that is
+    # 38 M columns instead of 803 M, which removes ~17 GB of n-space vectors
+    # and is what makes the row-split transpose product's private buffers
+    # affordable. The compact solve is not byte-identical to the uncompacted
+    # one (n-space reductions regroup; ~5e-6 relative in the maps).
     # ----------------------------------------------------------------
     # Some runs still need the uncompacted path: constraint rows (damping,
     # priors) register coverage via the data rows, so columns they touch
@@ -1932,16 +1849,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         del indptr
         _blocks = [full_A]
         _blk_starts = [0]
-    # Sort indices within each row and merge duplicate (row, col) entries —
-    # per-row operations, so doing them block-wise is bit-identical to the
-    # unified matrix. Done by merge_duplicates_inplace rather than scipy's
-    # sort_indices()/sum_duplicates(): scipy's version ends in prune(), which
-    # COPIES every block's data/indices (a view smaller than half its base)
-    # while the pre-merge buffers stay pinned — a ~2x-CSR transient that was
-    # the process-lifetime memory peak for template-offset runs. The helper
-    # front-packs in place and shrinks the buffers with an in-place realloc.
-    # It needs sole ownership of the buffers (resize refuses otherwise), so
-    # our names are handed over through a list and dropped.
+    # Sort indices within each row (and merge duplicate (row, col) entries,
+    # of which the assembly emits none) — per-row operations, so doing them
+    # block-wise is bit-identical to the unified matrix. Done by
+    # merge_duplicates_inplace rather than scipy's sort_indices()/
+    # sum_duplicates(): scipy's version ends in prune(), which COPIES every
+    # block's data/indices (a view smaller than half its base) while the
+    # buffers stay pinned. The helper works in place and needs sole ownership
+    # of the buffers (resize refuses otherwise), so our names are handed over
+    # through a list and dropped.
     if not _partitioned:
         from .blockcsr import merge_duplicates_inplace
         _buf = [csr_data, csr_indices]
@@ -1989,11 +1905,11 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
     ``num_chunks_list`` (optional) is the *layout* column count per map — the
     number of offset columns actually allocated in ``pixel_counts``. For an
     ordinary per-chunk map this equals ``cm.max()+1`` (default when ``None``), so
-    behavior is byte-identical. For template / hard-poly-basis maps the offset
-    columns are amplitudes / polynomial coefficients, NOT one-per-chunk, so the
-    layout count must be used to slice + advance the cursor correctly; the caller
-    (``save_calibration``) overrides the coverage for those maps, so a
-    shape-correct placeholder frac is returned rather than a per-chunk division.
+    behavior is byte-identical. For a map whose offsets multiply a basis of
+    several functions the columns are one per chunk and function, NOT one per
+    chunk, so the layout count must be used to slice + advance the cursor
+    correctly; its coverage fraction is then the count itself, as a float
+    (no per-chunk division).
 
     ``window`` (a boolean map on the chunk maps' grid, or None): the detector
     pixels the solve can observe. A chunk's coverage fraction is then its count
@@ -2024,9 +1940,8 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
             chunk_sizes = np.bincount(cm[inside].ravel(), minlength=real_chunks)
             offset_valid_frac = np.where(chunk_sizes > 0, offset_coverage / np.maximum(chunk_sizes, 1), 0.0)
         else:
-            # Layout columns are not one-per-chunk (template alpha / poly-basis
-            # coeffs); the caller overrides this map's coverage, so a shape-correct
-            # placeholder avoids an ill-defined per-chunk division.
+            # Layout columns are one per chunk and basis function, not one per
+            # chunk: the count itself, as a float (no per-chunk division).
             offset_valid_frac = offset_coverage.astype(np.float64)
         offset_coverages.append(offset_coverage)
         offset_valid_fracs.append(offset_valid_frac)

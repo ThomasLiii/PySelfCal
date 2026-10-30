@@ -530,8 +530,8 @@
     }
    }
   },
-  "continuum_smooth_poly/cal": {
-   "fingerprint": "f60fb3616470c24b9a42949c878690892ae6c2fd921fb81974d23dd523129224",
+  "continuum_smooth/cal": {
+   "fingerprint": "a6a1758dc7b4c7392ce99522d18e6a31133f33e1468d2e5b496d17d0f5722172",
    "inputs": {
     "fit": {
      "clip": {
@@ -607,17 +607,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": null,
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.5,
-         "window": null
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.3,
@@ -668,8 +658,8 @@
     }
    }
   },
-  "continuum_smooth_poly/mosaic": {
-   "fingerprint": "c3385dca24d66488a97e978743c19640bb649b06b4ec7ac9dfef1f70bc164ba1",
+  "continuum_smooth/mosaic": {
+   "fingerprint": "cb0b88daf5f5038f23762fe644249837c96e53cd2979a0b5a4649ab985036e40",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -734,17 +724,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": null,
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.5,
-         "window": null
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.3,
@@ -2142,7 +2122,7 @@
    }
   },
   "model_with_everything/cal": {
-   "fingerprint": "91ea3dc7e4e3f30cef4785f6fe64f0e513e7cb562e08df511dfb94545554a525",
+   "fingerprint": "4667e762028e977e3bb80dcaa700be5f05f18302522708da7ad13619f8edec4a",
    "inputs": {
     "fit": {
      "clip": {
@@ -2208,23 +2188,7 @@
        "name": "chunks",
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "band",
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.2,
-         "window": {
-          "range": [
-           0,
-           8,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.05,
@@ -2559,7 +2523,7 @@
    }
   },
   "model_with_everything/mosaic": {
-   "fingerprint": "1b66cccb474435f62427b753e12db17aeb5ab645f3ed5f8ba39c33a6448942ba",
+   "fingerprint": "09e807b31d4a2f74d753bf3e897753e938917b4e817a6b906a34753718b7e2c6",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -2614,23 +2578,7 @@
        "name": "chunks",
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "band",
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.2,
-         "window": {
-          "range": [
-           0,
-           8,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.05,
@@ -3208,7 +3156,7 @@
    }
   },
   "passes_default/cal": {
-   "fingerprint": "be02e4806d40c1cbe00b4448948d416df25f1c63d9a2c420b2e6d0d0e5c1a94e",
+   "fingerprint": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
    "inputs": {
     "fit": {
      "clip": {
@@ -3285,28 +3233,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3371,10 +3314,10 @@
    }
   },
   "passes_default/pass 2 off": {
-   "fingerprint": "d3bcf5a559816250358dd403bbe887a3973f7318d7805d5fdc4c294986d07370",
+   "fingerprint": "f83b4a5fc87117e245e174c42e6c168fc9db3876f2cfa8120a89e14e4f96c48a",
    "inputs": {
     "index": 2,
-    "init": "be02e4806d40c1cbe00b4448948d416df25f1c63d9a2c420b2e6d0d0e5c1a94e",
+    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3406,10 +3349,10 @@
    }
   },
   "passes_default/pass 3 sky": {
-   "fingerprint": "e8ac5805b510afc7c33d12e7317dff6a451998063e898686b30498c24541ec00",
+   "fingerprint": "9328865f109c4f5de40a386a00a3686e117c8377b766dd27c7b76a792c91ade6",
    "inputs": {
     "index": 3,
-    "init": "be02e4806d40c1cbe00b4448948d416df25f1c63d9a2c420b2e6d0d0e5c1a94e",
+    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3441,7 +3384,7 @@
    }
   },
   "passes_init_sigma/cal": {
-   "fingerprint": "7c7a34de2dc552750e6464eb6dca90139cf333479cf977a313fe934337a3ade0",
+   "fingerprint": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
    "inputs": {
     "fit": {
      "clip": {
@@ -3518,28 +3461,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3604,10 +3542,10 @@
    }
   },
   "passes_init_sigma/pass 2 off": {
-   "fingerprint": "c6017d84722eccd69619567c7b0393e4cd21753daf278d1a20bd434e61f0795a",
+   "fingerprint": "761ab958c371056fc7a21e467614ef8136bbbb070f75dd472e3fa0f3643cbfaf",
    "inputs": {
     "index": 2,
-    "init": "7c7a34de2dc552750e6464eb6dca90139cf333479cf977a313fe934337a3ade0",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3639,10 +3577,10 @@
    }
   },
   "passes_init_sigma/pass 3 sky": {
-   "fingerprint": "64248c576982d6f6f1951dc89b20c8ae35f6b70eada87abf8631b762a4bd8e11",
+   "fingerprint": "a705181bd60dbc492d24abdc7dc59316cbeb76387b4a2e07cf03e2a0d9df3296",
    "inputs": {
     "index": 3,
-    "init": "7c7a34de2dc552750e6464eb6dca90139cf333479cf977a313fe934337a3ade0",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3674,10 +3612,10 @@
    }
   },
   "passes_init_sigma/pass 4 off": {
-   "fingerprint": "8ffcc444f8fda00646f10df8e3db2007dfc03ebdd65ad0d980418a0492fc9523",
+   "fingerprint": "b055dbceaedf1a54c5dd53623adfbef14c0ad9f468c875cc380a15f3f9458bdc",
    "inputs": {
     "index": 4,
-    "init": "7c7a34de2dc552750e6464eb6dca90139cf333479cf977a313fe934337a3ade0",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3709,10 +3647,10 @@
    }
   },
   "passes_init_sigma/pass 5 sky": {
-   "fingerprint": "650d0f7cac471de760266e49d19a78e67557f1f540acea486d5678a0c9d01634",
+   "fingerprint": "5093de25d7ef2a04a12cfcc2adc33119a0fa889b13ba1e34a129ef0c02d97270",
    "inputs": {
     "index": 5,
-    "init": "7c7a34de2dc552750e6464eb6dca90139cf333479cf977a313fe934337a3ade0",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3744,7 +3682,7 @@
    }
   },
   "passes_settings/cal": {
-   "fingerprint": "cb2d66e365fe06081dbfc90892bf68934a9d1e6047d47103c33382d040afc831",
+   "fingerprint": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
    "inputs": {
     "fit": {
      "clip": {
@@ -3828,28 +3766,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3914,10 +3847,10 @@
    }
   },
   "passes_settings/pass 2 sky": {
-   "fingerprint": "54f833b59cca6cf4623cfd5942843017f046ff45137fbc2764094d8bf3370efd",
+   "fingerprint": "181c33be695c7ac24fb90fb6200f1d45d1549267a4b30f8b58a7744d98c2fd07",
    "inputs": {
     "index": 2,
-    "init": "cb2d66e365fe06081dbfc90892bf68934a9d1e6047d47103c33382d040afc831",
+    "init": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3959,10 +3892,10 @@
    }
   },
   "passes_settings/pass 3 off": {
-   "fingerprint": "71a1323874f749d71ee045fb8ea4b8817e09e9e5dc402b2f1e4a7c1f7aa6ae14",
+   "fingerprint": "4079203f1a161a0f1f018566d480e32c0db9e43c719901293d6972d6e05fb7ae",
    "inputs": {
     "index": 3,
-    "init": "cb2d66e365fe06081dbfc90892bf68934a9d1e6047d47103c33382d040afc831",
+    "init": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4719,7 +4652,7 @@
    "path": "mosaic/mosaic_EDFN_J_e.fits"
   },
   "plan prism passes/calibration/cal_Prism_All_np.h5": {
-   "fingerprint": "11365e078deb132cecc76f51174314fd58d5905e3f3b4d5e83c343d807d90ef2",
+   "fingerprint": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
    "inputs": {
     "fit": {
      "clip": {
@@ -4772,28 +4705,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -4858,10 +4786,10 @@
    "path": "calibration/cal_Prism_All_np.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
-   "fingerprint": "396da1442f706712f20c199539318f8b10a37e303c1903c25ad1dc339fd1ab5b",
+   "fingerprint": "8e06b65daf93210452a72a0c2f2e6cd1eb4a20d4b7d3d15bd5c30ec8e770e1b8",
    "inputs": {
     "index": 2,
-    "init": "11365e078deb132cecc76f51174314fd58d5905e3f3b4d5e83c343d807d90ef2",
+    "init": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4895,10 +4823,10 @@
    "path": "calibration/cal_Prism_All_np_pass2off.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
-   "fingerprint": "610728d1472e577bdeb53bfa23e90880f00de5bf5b09b4150040b8c265798ddb",
+   "fingerprint": "498be05d6a262c8e95e38a154c9cbaad735d02c5889895d0ef49671801feef86",
    "inputs": {
     "index": 3,
-    "init": "11365e078deb132cecc76f51174314fd58d5905e3f3b4d5e83c343d807d90ef2",
+    "init": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4932,7 +4860,7 @@
    "path": "calibration/cal_Prism_All_np_pass3sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
-   "fingerprint": "c16d827a4056b5a9bf67a4f749fd2a3c4af4858a9b6708c9dbc5c03a1db8eef5",
+   "fingerprint": "0bc0fa6157da37454d6d4003e40703f1f59fcb75cfc5d0a0b343de5a5686a889",
    "inputs": {
     "fit": {
      "clip": {
@@ -4985,28 +4913,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -5082,7 +5005,7 @@
    "path": "calibration/cal_Prism_All_tp_north.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
-   "fingerprint": "0b373bb60770644b58087b24b3d168d9a8ad1e45505e5950995216fdb07e925b",
+   "fingerprint": "9cd3a6efcb4db9c846bdb34891341720e5f89dfdcf5aa5f9471f50e4f614e660",
    "inputs": {
     "fit": {
      "clip": {
@@ -5135,28 +5058,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -5232,23 +5150,23 @@
    "path": "calibration/cal_Prism_All_tp_south.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
-   "fingerprint": "074471f595509ed26f9481b86cf5dcfe08c7ece1394be0b4d7674b0812d35e90",
+   "fingerprint": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "c16d827a4056b5a9bf67a4f749fd2a3c4af4858a9b6708c9dbc5c03a1db8eef5",
-     "south": "0b373bb60770644b58087b24b3d168d9a8ad1e45505e5950995216fdb07e925b"
+     "north": "0bc0fa6157da37454d6d4003e40703f1f59fcb75cfc5d0a0b343de5a5686a889",
+     "south": "9cd3a6efcb4db9c846bdb34891341720e5f89dfdcf5aa5f9471f50e4f614e660"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Prism_All_tp_stitched.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
-   "fingerprint": "a775a182de3ffec845ce0cdf2eed2e90d6451ec16e6980d2d6b27623bcb6ec79",
+   "fingerprint": "679101538887026d0597289936cf6baf2c44453c17c092aec426956b45c97bd4",
    "inputs": {
     "index": 2,
-    "init": "074471f595509ed26f9481b86cf5dcfe08c7ece1394be0b4d7674b0812d35e90",
+    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5282,10 +5200,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
-   "fingerprint": "7bacf39cdc9da9051f024e24ea2bd63d9740089c76abd5944b1e14665458620d",
+   "fingerprint": "7c5f54ef384bf5c46d044a8b19a157899c5c69ff4e0aee62e7e4ce0ff24dc280",
    "inputs": {
     "index": 3,
-    "init": "074471f595509ed26f9481b86cf5dcfe08c7ece1394be0b4d7674b0812d35e90",
+    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5319,10 +5237,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
-   "fingerprint": "f92a4072c66e5b2437a3c64795970026782a4fb742224b8f8cbd0a110515bc68",
+   "fingerprint": "d6c015ee0d4a4a06572137a18345f5e8ec354e924deb33625524cbefa15163dc",
    "inputs": {
     "index": 4,
-    "init": "074471f595509ed26f9481b86cf5dcfe08c7ece1394be0b4d7674b0812d35e90",
+    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5356,7 +5274,7 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
   },
   "spectral_lines/cal": {
-   "fingerprint": "9978e972fd1ed24fcb799824a551342ff2120dd1938e19e595d9816d59eff352",
+   "fingerprint": "b8a555393a23f0e6f9cd9a6bf5e1972b9df6fc50e2ffc3fb0a60cb9a853846b2",
    "inputs": {
     "fit": {
      "clip": {
@@ -5433,28 +5351,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -5623,8 +5536,8 @@
     }
    }
   },
-  "spectral_soft_poly/cal": {
-   "fingerprint": "48b67a02a1b5856bdb033df2169f558adead2fc355a38905b0c37a63a9601353",
+  "spectral_smooth/cal": {
+   "fingerprint": "51f3d58233a23fbe0857493233c79b1ec57f49e546a8d1878769095a676a87ef",
    "inputs": {
     "fit": {
      "clip": {
@@ -5714,23 +5627,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "subchannel",
-         "degree": 3,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": null,
-         "window": {
-          "range": [
-           200,
-           321,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.2,
@@ -5797,8 +5694,8 @@
     }
    }
   },
-  "spectral_soft_poly/mosaic": {
-   "fingerprint": "86a6cf94ae5930e354a5b81e2b8a422e6ae4a8472706ba8f0081ee52b7b7f6fb",
+  "spectral_smooth/mosaic": {
+   "fingerprint": "ef60f1b47806b369a34b35c837f5efe3262f8bc5cb2045dd2bb72e9270ff7140",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -5877,23 +5774,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "subchannel",
-         "degree": 3,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": null,
-         "window": {
-          "range": [
-           200,
-           321,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.2,
@@ -6816,10 +6697,10 @@
    }
   },
   "tiles_boxes_passes/pass 2 off": {
-   "fingerprint": "59035921dd12d6c0d3f74ade9ff3c5d322a23b270f82161d08f3933629557bfe",
+   "fingerprint": "8cde6dd3d92874b80df63244632a34a41f2a93b1c4f91b6edb6362a985fed347",
    "inputs": {
     "index": 2,
-    "init": "b276e860ba4d2854596c72300c3767accf97751482bc287d69b8fbf60f5d960e",
+    "init": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6851,10 +6732,10 @@
    }
   },
   "tiles_boxes_passes/pass 3 sky": {
-   "fingerprint": "f246a4038f17af5754893c9e48a71922a6b7624bb938a770998394c846b9fdb8",
+   "fingerprint": "47d114804e8a472bec96c7c886f3be220961c1c5d3a79ae8273c118052d5ff9f",
    "inputs": {
     "index": 3,
-    "init": "b276e860ba4d2854596c72300c3767accf97751482bc287d69b8fbf60f5d960e",
+    "init": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6886,18 +6767,18 @@
    }
   },
   "tiles_boxes_passes/stitched": {
-   "fingerprint": "b276e860ba4d2854596c72300c3767accf97751482bc287d69b8fbf60f5d960e",
+   "fingerprint": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "7b3d0ff7d7c4aa18e9c9a7580d8a928ceb646a893c658aace9a7642280e9b5b8",
-     "south": "af075e08e36cb32435a284df036fbb2aacc787a90b335fd23b76e87aec70949d"
+     "north": "ccda3d454adb7e9ba95a77aadeb1ea1c87adc49fde1b4137baa580a9ebe47219",
+     "south": "04e10f9dd789b6d2364ac0c73710269269c8156292f2e3c7a6b065c57101c442"
     }
    }
   },
   "tiles_boxes_passes/tile north": {
-   "fingerprint": "7b3d0ff7d7c4aa18e9c9a7580d8a928ceb646a893c658aace9a7642280e9b5b8",
+   "fingerprint": "ccda3d454adb7e9ba95a77aadeb1ea1c87adc49fde1b4137baa580a9ebe47219",
    "inputs": {
     "fit": {
      "clip": {
@@ -6974,28 +6855,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -7071,7 +6947,7 @@
    }
   },
   "tiles_boxes_passes/tile south": {
-   "fingerprint": "af075e08e36cb32435a284df036fbb2aacc787a90b335fd23b76e87aec70949d",
+   "fingerprint": "04e10f9dd789b6d2364ac0c73710269269c8156292f2e3c7a6b065c57101c442",
    "inputs": {
     "fit": {
      "clip": {
@@ -7148,28 +7024,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,

@@ -133,10 +133,10 @@ def test_the_option_lowers_into_the_term_and_is_validated():
     t = sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(2))
     low = t.lower()
     assert low['exclude_degree'] == 2 and low['exclude_axis'] is None
-    with pytest.raises(Exception):
-        sc.Offsets(per='all', exclude=sc.Poly(2, weight=1.0))
-    with pytest.raises(Exception):
-        sc.Offsets(per='all', exclude=sc.Poly(1), polynomial=sc.Poly(1, window=range(0, 3)))
+    with pytest.raises(Exception, match='takes no window'):
+        sc.Offsets(per='all', exclude=sc.Poly(2, window=range(0, 3)))
+    with pytest.raises(Exception, match='not basis='):
+        sc.Offsets(per='all', exclude=sc.Poly(1), basis=sc.Function(np.sin, of='det_x'), n=2)
 
 
 def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):

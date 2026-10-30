@@ -10,9 +10,9 @@ SEP = sep(4, compute=ORCA.replace(stage_dir='reproj_nvme_SEP_D4_npass', memory_g
 FRAMES = '/mnt/md124/thomasli/selfcal/outputs/SPHEREx_SEP_2025_D4_6p2arcsec/reprojected'
 
 FIELD = SEP
-RECIPE = multiline3('multiline3_SEP6of_STITCHED_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2')
+RECIPE = multiline3('multiline3_SEP6of_STITCHED_iter300_cheb2_NumCol3_outThresh5_sigma2')
 RUN = dict(jobs=jobs.window('Multiline3', range(200, 321)),
-           tiles=sc.Tiles(boxes=SEP6_TILES, tile_name='multiline3_SEP6_{tile}_iter300_polybasisD2noortho_NumCol3_outThresh5_sigma2', stitched_name='{name}'),
+           tiles=sc.Tiles(boxes=SEP6_TILES, tile_name='multiline3_SEP6_{tile}_iter300_cheb2_NumCol3_outThresh5_sigma2', stitched_name='{name}'),
            passes=MULTILINE3_PASSES,
            frames=FRAMES)
 

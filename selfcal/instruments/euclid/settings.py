@@ -66,7 +66,7 @@ def grid_cells(geometry, n) -> Chunks:
     n = int(n)
     det = make_grid_chunk_map(tuple(geometry.shape), n)                     # int64, chunk = row * n + col
     return Chunks(det, ChunkAxes.row_major(('row', 'col'), (n, n), ('y', 'x')), adjacency_axes=('row', 'col'),
-                  spectral_axis=None, group_axis='row', renderers={'spline': _spline}, render='spline',
+                  spectral_axis=None, renderers={'spline': _spline}, render='spline',
                   extra={'n_side': n, 'det_shape': tuple(geometry.shape)})
 
 
@@ -77,17 +77,16 @@ def strips(geometry, n, scan) -> Chunks:
     or ``ramp`` (a line along the scan direction)."""
     n = int(n)
     xs, ys = make_strip_chunk_maps(n, tuple(geometry.shape))
-    return Chunks(xs if scan == 'x' else ys, _strip_axes(n, scan), group_axis='all',
+    return Chunks(xs if scan == 'x' else ys, _strip_axes(n, scan),
                   renderers={'strip': _strip, 'ramp': _ramp}, render='strip',
                   extra={'scan': scan, 'det_shape': tuple(geometry.shape)})
 
 
 def tilt_strips(geometry, n, scan) -> Chunks:
-    """:func:`strips` whose ``strip`` axis is the spectral axis, so that a degree-1 ``polybasis``
-    term on one is a single linear ramp per frame; rendered by ``ramp`` (the default) or
+    """:func:`strips` whose ``strip`` axis is the spectral axis; rendered by ``ramp`` (the default) or
     ``strip``."""
     cm = strips(geometry, n, scan)
-    return Chunks(cm.det, cm.axes, group_axis='all', spectral_axis='strip', renderers=cm.renderers, render='ramp',
+    return Chunks(cm.det, cm.axes, spectral_axis='strip', renderers=cm.renderers, render='ramp',
                   extra=cm.extra)
 
 
