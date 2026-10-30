@@ -239,7 +239,11 @@ BY_SUBCHANNEL = FINAL.replace(fit=FINAL.fit.replace(clip=sc.Clip(5.0, per=SUBCHA
 A recipe can also be a function of the job: `continuous_final(channel)` there is this recipe for one
 channel job, its per-frame subchannel constants replaced by `terms.spectral_offsets` of the job's
 subchannels (a function continuous across the subchannels):
-`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`.
+`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`. `pixels_final(channel)`, the final channel recipe,
+replaces its column constants with one constant per detector pixel shared by every frame
+(`sc.Offsets("pixels", on="pixel", per="all", exclude=sc.Overlap("spectral", "xs_term", weights="information"),
+min_observations=2)`), its deflation solving the per-frame terms' response alone
+(`sc.Deflate(offsets=("spectral", "xs_term"))`).
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver, its
 starting vector, per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the

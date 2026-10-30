@@ -160,7 +160,8 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
     a background that varies within a subchannel (an airglow line's edge) is followed without steps. The
     x-slopes and the shared column offsets are the final recipe's. Products carry
     'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the channel recipe from the weak-mode work
-    on)."""
+    on; from 2026-10-29 :func:`pixels_final`, which replaces its column constants with per-pixel ones, is the final
+    channel recipe)."""
     base = on_maps(SUBCH_VARWEIGHT_COLUMNS_FINAL, num_sub, num_ch, num_col)
     offsets = (T.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2), position='arc_position'),) + tuple(
         o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
@@ -170,7 +171,8 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
 
 
 def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
-    """:func:`continuous_final` with its column constants shared by every frame replaced by one constant per
+    """The final channel recipe (the user, 2026-10-29): :func:`continuous_final` with its column constants shared by
+    every frame replaced by one constant per
     detector pixel shared by every frame, over the job's subchannels and the one beyond each end (the pixels the
     bilinear sampling of the job's observations reaches): a detector-fixed pattern of any shape, such as a dark
     current's pixel-to-pixel structure. It carries no pattern that the per-frame spectral term or the x-slopes can
@@ -182,7 +184,9 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     patterns, which cross the detector differently in every frame, and holding their response at zero keeps their
     couplings to every frame's offsets out of the deflation (real D2 / D6 Ch9: 252 / 442 s of deflation). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
     D6 Ch9: 11 / 59 pixels): such a pixel's constant fits that one observation exactly and informs nothing else.
-    Products carry 'subch_varweight_pixels_final_continuous'."""
+    On real NEP W17 Ch9 frames the solve stops on the chi-squared rule (D2 at iteration 120, D6 at 160); on the D6
+    transfer-function scene with dark current, zodi and noise its r_l is continuous_final's within 0.004 in every
+    bin. Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)
     first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
     offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
