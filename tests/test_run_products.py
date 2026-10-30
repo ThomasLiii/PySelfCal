@@ -393,6 +393,23 @@ def test_converter_refuses_what_it_cannot_translate(tmp_path):
     assert any('compact_zero_columns' in n for n in kept.notes) and any('resume' in n for n in kept.notes)
 
 
+def test_converter_translates_the_variables(tmp_path):
+    """A ``[model.variables]`` entry becomes the variable's Python source: here a detector map of a function, read
+    by a sky term's coefficient."""
+    from selfcal.run.convert import from_toml
+    from tests.synthetic_exposures import x_ramp, xtilde
+    path = tmp_path / 'variables.toml'
+    path.write_text(f'task = "cal"\nmode = "model"\noutput_dir = "{tmp_path}"\nrun_name = "toy"\n'
+                    f'resolution_arcsec = 20.0\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "grid"\n'
+                    'detector_shape = [64, 64]\n\n[calibration]\nweighted_damping = false\n\n[model]\nscalar = true\n'
+                    'mosaic = "none"\n\n[[model.sky]]\nname = "continuum"\n\n[[model.sky]]\nname = "ramp"\n'
+                    'coefficient = { variable = "qe", function = "tests.synthetic_exposures:x_ramp" }\n\n'
+                    '[model.variables]\nqe = { detector = "tests.synthetic_exposures:xtilde" }\n')
+    model = from_toml(str(path)).recipe.model
+    assert model.variables == {'qe': sc.DetectorMap(xtilde)}
+    assert model.sky[1].times == sc.Function(x_ramp, of='qe')
+
+
 def test_converter_passes_the_zodi_anchor_only_its_keys(tmp_path):
     """A [zodi] table becomes spherex.zodi_anchor(result, ...) after the calibration, which takes the predictions
     (pred_dir) and the clip keys; any other key (the TOML engine ignored it) is refused."""

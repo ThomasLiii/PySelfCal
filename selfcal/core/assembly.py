@@ -13,7 +13,6 @@ import traceback
 from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
-from scipy.sparse import csr_matrix
 
 from ..geometry.map_helper import check_invalid, find_outliers, find_outliers_grouped
 from ..io.reproj import FrameLoadError

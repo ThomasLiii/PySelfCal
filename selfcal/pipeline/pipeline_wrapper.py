@@ -1389,7 +1389,6 @@ class Calibrator(Reprojector):
         """The parts of a cal that do not depend on the solution, from the pixel state:
         ``(sky_names, sky_coverages, sky_fishers, map_coverages, map_coverage_fracs)`` (the
         offsets' coverage expanded per frame, as the cal stores it)."""
-        num_frames = len(self.reproj_list)
         K = len(self.chunk_maps)
         sky_coverages, offset_coverages_layout, offset_valid_fracs_layout = (
             parse_pixel_counts_sky(

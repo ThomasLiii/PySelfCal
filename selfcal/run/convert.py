@@ -361,6 +361,27 @@ def _model_table(table):
     return t
 
 
+def _source(v):
+    p = dict(v.params)
+    if v.source == 'header':
+        return M.Header(v.value, default=v.default)
+    if v.source == 'per_frame':
+        return M.PerFrame(load_callable(v.value), of=tuple(v.inputs), **p)
+    if v.source == 'detector':
+        return M.DetectorMap(load_callable(v.value) if isinstance(v.value, str) and ':' in v.value
+                             and not os.path.exists(v.value) else v.value, **p)
+    if v.source == 'sky':
+        return M.SkyMap(load_callable(v.value) if isinstance(v.value, str) and ':' in v.value
+                        and not os.path.exists(v.value) else v.value, **p)
+    if v.source == 'sky_cal':
+        return M.SolvedSky(v.value, term=v.term)
+    if v.source == 'layer':
+        return M.Layer(None if v.value == v.name else v.value)
+    if v.source == 'function':
+        return M.Derived(load_callable(v.value), of=tuple(v.inputs), **p)
+    return M.FrameFunction(load_callable(v.value), **p)
+
+
 def _model_from_table(table, dampings, notes):
     from ..models.spec import ModelSpec
     spec = ModelSpec.from_config(_model_table(table))

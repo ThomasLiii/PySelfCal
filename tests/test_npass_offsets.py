@@ -26,7 +26,6 @@ import pytest  # noqa: E402
 
 from selfcal.core.solution import compute_x0_from_Ab  # noqa: E402
 from selfcal.core.system import setup_lsqr  # noqa: E402
-from selfcal.geometry.map_helper import chunk_to_det  # noqa: E402
 from selfcal.models.offset_model import Basis  # noqa: E402
 from selfcal.models.sky_model import Coefficient  # noqa: E402
 from selfcal.npass import offsets as npass_offsets  # noqa: E402
