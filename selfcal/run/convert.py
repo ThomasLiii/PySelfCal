@@ -27,7 +27,8 @@ from .schedule import Passes, Refit, Tiles
 
 __all__ = ['Converted', 'from_toml', 'convert_file']
 
-# library defaults of the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic)
+# the defaults the TOML runner gave the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic as they
+# were then; the library's damping defaults are 0 since 2026-10-29): a converted run reproduces the TOML run
 _CAL = dict(apply_mask=True, apply_weight=True, outlier_thresh=3.0, ignore_list=None, batch_size=10, max_workers=20,
             offset_regularization=False, weighted_damping=False, damp_weight=0.1, damp_weight_line=None,
             damp_offset=0.0)
@@ -507,7 +508,7 @@ def _sky_dampings(cal, n_terms, own, passes, table):
     """Each sky term's damping as the joint solve resolves it (``weighted_damping = false``: no
     damping rows, so 0.0 each); with N-pass SKY passes (``passes``), refuses a config whose SKY
     passes resolve one differently. The SKY pass reads the TOML's own ``[calibration]`` ``table``
-    (``damp_weight`` default 0.0, not ``setup_lsqr``'s 0.1; ``damp_weight_line`` default 0.0, not
+    (``damp_weight`` default 0.0, not the joint solve's 0.1; ``damp_weight_line`` default 0.0, not
     3 x) and ignores ``weighted_damping``; a term's own damping wins in both."""
     dw, dwl = float(cal['damp_weight']), cal['damp_weight_line']
     sky_dw, sky_dwl = float(table.get('damp_weight', 0.0)), table.get('damp_weight_line')

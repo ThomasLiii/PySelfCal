@@ -699,12 +699,12 @@ def test_every_pass_damps_the_sky_as_the_model_says():
                     jobs=ALL)
     ctx = RunContext.build(spec)
     assert ctx.sky_damping == model.sky_dampings() == [0.0, 0.0]          # Sky() leaves the sky undamped
-    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight, then 3 x damp_weight for the others
+    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight for the first, damp_weight_line for the others
     from dataclasses import replace
 
     from selfcal.models.sky_model import SkyModel
     plain = SkyModel(tuple(replace(c, damp_weight=None) for c in ctx.sky_model().components))
-    assert plain.damp_weights(0.1) == [0.1, 3.0 * 0.1] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
+    assert plain.damp_weights(0.1) == [0.1, 0.0] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -332,7 +332,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                poly_basis_list: list | None = None,
                postprocess_func: Callable | None = None,
                preprocess_func: Callable | None = None,
-               weighted_damping: bool = False, damp_weight: float = 0.1,
+               weighted_damping: bool = False, damp_weight: float = 0.0,
                damp_offset_maps: list[float] | None = None,
                group_adjacency_maps: list[int] | None = None,
                det_aux: list[np.ndarray] | None = None,
@@ -478,7 +478,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     weighted_damping : bool, optional
         Enable coverage-weighted Tikhonov damping of the sky blocks.
     damp_weight : float, optional
-        Coverage-weighted damping weight for the continuum sky block (default 0.1).
+        Coverage-weighted damping weight for the continuum sky block (default 0: none).
     damp_offset_maps : list of float or None, optional
         Coverage-weighted damping of the offset columns, per map (length K):
         map ``m`` is damped with weight ``damp_offset_maps[m]`` and maps with
@@ -498,7 +498,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         The names of the ``det_aux`` maps.
     damp_weight_line : float or None, optional
         Damping weight of the sky terms after the first that set none of their
-        own; defaults to ``3 * damp_weight`` when there are several terms.
+        own (default None: none).
     sky_model : SkyModel or None, optional
         The sky terms (each a map times a coefficient of data variables);
         defaults to one constant term.

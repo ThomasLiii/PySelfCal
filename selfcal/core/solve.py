@@ -865,7 +865,7 @@ def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter
 
 def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 ref_shape: tuple[int, int], x0: np.ndarray | None = None,
-                atol: float = 1e-05, btol: float = 1e-05, damp: float = 1e-2,
+                atol: float = 1e-05, btol: float = 1e-05, damp: float = 0.0,
                 iter_lim: int = 100, precondition: bool = True,
                 solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
                 active_mask: np.ndarray | None = None,
@@ -898,7 +898,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     btol : float, optional
         Relative tolerance passed to the solver (default 1e-05).
     damp : float, optional
-        Tikhonov damping applied by the solver (default 1e-2).
+        Tikhonov damping applied by the solver (default 0: none).
     iter_lim : int, optional
         Maximum solver iterations (default 100).
     precondition : bool, optional

@@ -293,11 +293,8 @@ class SkyModel:
     def damp_weights(self, damp_weight, damp_weight_line=None) -> list[float]:
         """Per-term Tikhonov weights, the one rule of every sky damping (the LSQR damping rows,
         the run engine's passes): a term's own ``damp_weight`` when set, else ``damp_weight`` for
-        the first term and ``damp_weight_line`` for the others. ``damp_weight_line`` defaults to
-        ``3 * damp_weight`` (a varying coefficient has a smaller average than 1, so ~3x more
-        shrinkage at the same data S/N); a weight left None is 0."""
-        if damp_weight_line is None and len(self.components) > 1 and damp_weight is not None:
-            damp_weight_line = 3.0 * damp_weight
+        the first term and ``damp_weight_line`` for the others; a weight left None is 0 (no
+        damping)."""
         out = []
         for j, comp in enumerate(self.components):
             w = getattr(comp, 'damp_weight', None)

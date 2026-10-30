@@ -747,7 +747,7 @@ class Calibrator(Reprojector):
                    det_groups_list: list | None = None, det_templates: list | None = None,
                    postprocess_func: Callable | None = None,
                    preprocess_func: Callable | None = None,
-                   weighted_damping: bool = False, damp_weight: float = 0.1,
+                   weighted_damping: bool = False, damp_weight: float = 0.0,
                    damp_offset_maps: list[float] | None = None,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
@@ -863,7 +863,7 @@ class Calibrator(Reprojector):
         weighted_damping : bool, optional
             Scale the LSQR damping per column by coverage.
         damp_weight : float, optional
-            Base damping weight applied to the offset columns.
+            Coverage-weighted damping weight of the first sky term (with ``weighted_damping``; default 0: none).
         damp_offset_maps : list of float or None, optional
             Per-map coverage-weighted offset damping (length K); maps with
             weight 0 stay free.
@@ -879,7 +879,7 @@ class Calibrator(Reprojector):
             historical ``['BC', 'BW']`` positional convention.
         damp_weight_line : float or None, optional
             Damping weight of the sky terms after the first that set none of
-            their own (default ``3 * damp_weight``).
+            their own (default None: none).
         batch_spill_dir : str or None, optional
             When set, workers stream each batch's bulk COO arrays to files
             under this directory instead of SharedMemory (byte-equal output,
@@ -1094,7 +1094,7 @@ class Calibrator(Reprojector):
          self.pixel_cross) = restore_pixel_state(spill_dir)
 
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
-                   btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
+                   btol: float = 1e-06, damp: float = 0.0, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
                    scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None,
@@ -1112,7 +1112,7 @@ class Calibrator(Reprojector):
         btol : float, optional
             Tolerance on the residual passed to the iterative solver.
         damp : float, optional
-            Tikhonov damping applied to the least-squares system.
+            Tikhonov damping applied to the least-squares system (default 0: none).
         iter_lim : int, optional
             Maximum solver iterations.
         precondition : bool, optional
