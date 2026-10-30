@@ -112,170 +112,55 @@ def _sample_maps(x, y, maps, H, W, out):
             out[a, i] = s
 
 
-@_jit
-def _make_row(k, P, xi, yi, wi, bz, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi, base_f,
-              use_cmap, col_map, use_scale, scale, keys, sums, oc, ov):
-    """The entries of one observation in column order, ``oc[:cnt]`` (solver columns) and ``ov[:cnt]`` (float32
-    values); returns ``cnt``. ``k`` is the observation's index in ``sky_vals`` and ``phi``; ``bz`` whether its
-    right-hand side is zero (an entry whose value is zero is kept only when it is not, as the build keeps them).
-
-    The sky terms first (``j * num_sky + P``, the value ``w * c_j`` made by the model's code), then each offset map:
-    the chunks of the corners on the detector, the corners' weights summed per chunk in storage order (float32, as
-    the product of the interpolation matrix and the chunk map's one-hot matrix sums them; a zero sum is dropped), the
-    chunks in ascending order, each with the value ``w * sum`` times every nonzero basis function (``nb[m]`` of them;
-    none: the value itself)."""
-    cnt = 0
-    for j in range(J):
-        v = sky_vals[j, k]
-        if v != 0 or not bz:
-            oc[cnt] = j * num_sky + P
-            ov[cnt] = v
-            cnt += 1
-    if K > 0 and np.isfinite(xi) and np.isfinite(yi):
-        p0, p1, p2, p3, cw0, cw1, cw2, cw3, ok0, ok1, ok2, ok3 = _corners(xi, yi, H, W)
-        for m in range(K):
-            ns = 0
-            for corner in range(4):
-                if corner == 0:
-                    ok, p, cw = ok0, p0, cw0
-                elif corner == 1:
-                    ok, p, cw = ok1, p1, cw1
-                elif corner == 2:
-                    ok, p, cw = ok2, p2, cw2
-                else:
-                    ok, p, cw = ok3, p3, cw3
-                if not ok:
-                    continue
-                kk = cmaps[m, p]
-                if kk < 0:
-                    continue
-                found = -1
-                for s in range(ns):
-                    if keys[s] == kk:
-                        found = s
-                        break
-                if found >= 0:
-                    sums[found] = np.float32(sums[found] + cw)
-                else:
-                    keys[ns] = kk
-                    sums[ns] = cw
-                    ns += 1
-            for a in range(ns):                         # ascending chunk ids (at most four: a selection sort)
-                mn = a
-                for b in range(a + 1, ns):
-                    if keys[b] < keys[mn]:
-                        mn = b
-                if mn != a:
-                    tk = keys[a]
-                    tv = sums[a]
-                    keys[a] = keys[mn]
-                    sums[a] = sums[mn]
-                    keys[mn] = tk
-                    sums[mn] = tv
-            nbm = nb[m]
-            b0 = base_f[m]
-            for s in range(ns):
-                cv = sums[s]
-                if cv == 0:
-                    continue
-                fw = np.float32(wi * cv)
-                if nbm == 0:
-                    if fw != 0 or not bz:
-                        oc[cnt] = b0 + keys[s]
-                        ov[cnt] = fw
-                        cnt += 1
-                else:
-                    o = nboff[m]
-                    for f in range(nbm):
-                        ph = phi[k, o + f]
-                        if ph == 0:
-                            continue
-                        v = np.float32(fw * ph)
-                        if v != 0 or not bz:
-                            oc[cnt] = b0 + keys[s] * nbm + f
-                            ov[cnt] = v
-                            cnt += 1
-    for s in range(cnt):
-        c = oc[s]
-        if use_cmap:
-            c = col_map[c]
-            oc[s] = c
-        if use_scale:
-            ov[s] = np.float32(ov[s] * scale[c])
-    return cnt
+_NO_I32 = np.zeros(0, dtype=np.int32)
+_NO_I64 = np.zeros(0, dtype=np.int64)
+_NO_F32 = np.zeros(0, dtype=np.float32)
+_NO_F64 = np.zeros(0, dtype=np.float64)
+_NO_U8 = np.zeros(0, dtype=np.uint8)
+_ZERO64 = np.float64(0.0)
 
 
 @_jit
-def _matvec(lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-            use_cmap, col_map, use_scale, scale, S, p, zero, out):
-    """``out[i - lo] = A[i] . p`` for the block's rows ``lo:hi``: each row's entries made and multiplied, the
-    products summed in column order from ``zero`` (a scalar of the dtype of the entries and ``p`` promoted: scipy's
-    ``csr_matvec`` on the stored row, which upcasts float32 entries for a float64 vector), the sum stored in
-    ``out``'s dtype; a row the coverage floor zeroed gives 0."""
+def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, kinds, H, W, nb, nboff,
+          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s):
+    """One pass over a block's rows ``lo:hi``: each row's entries made in column order and used as ``mode`` says.
+
+    ======  ===================================================================================================
+    0       ``out[i - lo] = A[i] . vec``: the products summed in column order from ``zero`` (a scalar of the
+            dtype of the entries and ``vec`` promoted: scipy's ``csr_matvec`` on the stored row, which upcasts
+            float32 entries for a float64 vector), the sum stored in ``out``'s dtype; a row the coverage floor
+            zeroed gives 0.
+    1       ``out[c] += A[i, c] * vec[i - lo]`` in row order (scipy's ``csc_matvec`` on the stored rows, in
+            ``out``'s dtype); a floored row adds nothing.
+    2       the rows padded: row ``i - lo`` holds ``counts[i - lo]`` entries from slot ``(i - lo) * S`` of
+            ``cols_s`` / ``vals_s`` (copied there from the row's scratch); a floored row keeps its entries with
+            the value +0.0, as the stored matrix keeps them.
+    3       ``out[i - lo]`` (a uint8 array): 1 when the row has an entry in a column of ``drop`` (a boolean over
+            the leading columns of the full layout; the coverage floor's columns), with the columns unmapped and
+            unscaled.
+    ======  ===================================================================================================
+
+    A row's entries: the sky terms first (``j * num_sky + P``, the value ``w * c_j`` made by the model's code:
+    ``sky_vals`` ``(J, n)`` at the row's ``i - lo``), then each offset map: the chunks of the bilinear corners on
+    the detector, the corners' weights summed per chunk in storage order (float32, as the product of the
+    interpolation matrix and the chunk map's one-hot matrix sums them; a zero sum is dropped), the chunks in
+    ascending order, each with the value ``w * sum`` times every nonzero basis function (``nb[m]`` of them, from
+    ``phi`` ``(sum nb, n)``; none: the value itself). An entry whose value is zero is kept only when the row's
+    right-hand side is not (``zb``: the rows whose right-hand side is zero), as the build keeps them. ``kinds[m]``
+    (:func:`_map_kind`) says what the map's form spares: 1, one chunk over the whole detector, so the corners'
+    weights sum straight into it; 2, every pixel its own chunk, so the corners are the chunks and storage order is
+    ascending order; 0, the chunk of each corner looked up and merged. Each entry's column goes through
+    ``col_map`` and its value is scaled by ``scale[column]`` (float32) as it is written, when ``use_cmap`` /
+    ``use_scale``. The corners are those of :func:`_corners`, written out here.
+
+    The row is built in this loop, not in a function called per row: such a call, with these arguments (every
+    array flattened into its fields), cost more per observation than the row's own work. The arguments a mode
+    does not use are empty arrays."""
     keys = np.empty(4, dtype=np.int64)
     sums = np.empty(4, dtype=np.float32)
     oc = np.empty(S, dtype=np.int32)
     ov = np.empty(S, dtype=np.float32)
-    f = np.searchsorted(frame_rows, lo, side='right') - 1
-    zi = np.searchsorted(zb, lo)
-    fi = np.searchsorted(fl, lo)
-    for i in range(lo, hi):
-        while i >= frame_rows[f + 1]:
-            f += 1
-        bz = zi < zb.shape[0] and zb[zi] == i
-        if bz:
-            zi += 1
-        floored = fi < fl.shape[0] and fl[fi] == i
-        if floored:
-            fi += 1
-        out[i - lo] = 0
-        if floored:
-            continue
-        cnt = _make_row(i - lo, P[i], x[i], y[i], w[i], bz, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-                        base[f], use_cmap, col_map, use_scale, scale, keys, sums, oc, ov)
-        acc = zero
-        for s in range(cnt):
-            acc = acc + ov[s] * p[oc[s]]
-        out[i - lo] = acc
-
-
-@_jit
-def _rmatvec(lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-             use_cmap, col_map, use_scale, scale, S, yv, buf):
-    """``buf[c] += A[i, c] * yv[i - lo]`` over the block's rows ``lo:hi`` in row order (scipy's ``csc_matvec`` on the
-    stored rows, in ``buf``'s dtype)."""
-    keys = np.empty(4, dtype=np.int64)
-    sums = np.empty(4, dtype=np.float32)
-    oc = np.empty(S, dtype=np.int32)
-    ov = np.empty(S, dtype=np.float32)
-    f = np.searchsorted(frame_rows, lo, side='right') - 1
-    zi = np.searchsorted(zb, lo)
-    fi = np.searchsorted(fl, lo)
-    for i in range(lo, hi):
-        while i >= frame_rows[f + 1]:
-            f += 1
-        bz = zi < zb.shape[0] and zb[zi] == i
-        if bz:
-            zi += 1
-        floored = fi < fl.shape[0] and fl[fi] == i
-        if floored:
-            fi += 1
-            continue
-        cnt = _make_row(i - lo, P[i], x[i], y[i], w[i], bz, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-                        base[f], use_cmap, col_map, use_scale, scale, keys, sums, oc, ov)
-        yi = yv[i - lo]
-        for s in range(cnt):
-            buf[oc[s]] += ov[s] * yi
-
-
-@_jit
-def _expand(lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-            use_cmap, col_map, use_scale, scale, S, counts, cols_s, vals_s):
-    """The rows ``lo:hi`` of a block, padded: row ``i - lo`` holds ``counts[i - lo]`` entries from slot
-    ``(i - lo) * S`` of ``cols_s`` / ``vals_s``. A row the coverage floor zeroed keeps its entries with the value
-    +0.0, as the stored matrix keeps them."""
-    keys = np.empty(4, dtype=np.int64)
-    sums = np.empty(4, dtype=np.float32)
+    L = drop.shape[0]
     f = np.searchsorted(frame_rows, lo, side='right') - 1
     zi = np.searchsorted(zb, lo)
     fi = np.searchsorted(fl, lo)
@@ -289,13 +174,189 @@ def _expand(lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, 
         if floored:
             fi += 1
         k = i - lo
-        a = k * S
-        cnt = _make_row(k, P[i], x[i], y[i], w[i], bz, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-                        base[f], use_cmap, col_map, use_scale, scale, keys, sums, cols_s[a:a + S], vals_s[a:a + S])
-        if floored:
-            for s in range(cnt):
-                vals_s[a + s] = np.float32(0.0)
-        counts[k] = cnt
+        if mode == 0:
+            out[k] = 0
+        if floored and mode != 2:
+            continue
+        Pi = P[i]
+        xi = x[i]
+        yi = y[i]
+        wi = w[i]
+        cnt = 0
+        for j in range(J):
+            v = sky_vals[j, k]
+            if v != 0 or not bz:
+                c = j * num_sky + Pi
+                if use_cmap:
+                    c = col_map[c]
+                if use_scale:
+                    v = np.float32(v * scale[c])
+                oc[cnt] = c
+                ov[cnt] = v
+                cnt += 1
+        if K > 0 and np.isfinite(xi) and np.isfinite(yi):
+            # the four bilinear corners in the interpolation matrix's storage order (top-left, top-right,
+            # bottom-left, bottom-right): float64 fractions of the coordinates, the weights cast to float32
+            r0 = np.int64(np.floor(yi))
+            c0 = np.int64(np.floor(xi))
+            r_frac = np.float64(yi) - np.float64(r0)
+            c_frac = np.float64(xi) - np.float64(c0)
+            rf_inv = 1.0 - r_frac
+            cf_inv = 1.0 - c_frac
+            cw0 = np.float32(rf_inv * cf_inv)
+            cw1 = np.float32(rf_inv * c_frac)
+            cw2 = np.float32(r_frac * cf_inv)
+            cw3 = np.float32(r_frac * c_frac)
+            in_r0 = r0 >= 0 and r0 < H
+            in_c0 = c0 >= 0 and c0 < W
+            in_r1 = r0 + 1 >= 0 and r0 + 1 < H
+            in_c1 = c0 + 1 >= 0 and c0 + 1 < W
+            ok0 = in_r0 and in_c0
+            ok1 = in_r0 and in_c1
+            ok2 = in_r1 and in_c0
+            ok3 = in_r1 and in_c1
+            p0 = r0 * W + c0
+            p1 = p0 + 1
+            p2 = p0 + W
+            p3 = p0 + W + 1
+            for m in range(K):
+                kind = kinds[m]
+                ns = 0
+                if kind == 1:
+                    if ok0:
+                        sums[0] = cw0
+                        ns = 1
+                    if ok1:
+                        if ns == 0:
+                            sums[0] = cw1
+                            ns = 1
+                        else:
+                            sums[0] = np.float32(sums[0] + cw1)
+                    if ok2:
+                        if ns == 0:
+                            sums[0] = cw2
+                            ns = 1
+                        else:
+                            sums[0] = np.float32(sums[0] + cw2)
+                    if ok3:
+                        if ns == 0:
+                            sums[0] = cw3
+                            ns = 1
+                        else:
+                            sums[0] = np.float32(sums[0] + cw3)
+                    keys[0] = cmaps[m, 0]
+                elif kind == 2:
+                    if ok0:
+                        keys[ns] = p0
+                        sums[ns] = cw0
+                        ns += 1
+                    if ok1:
+                        keys[ns] = p1
+                        sums[ns] = cw1
+                        ns += 1
+                    if ok2:
+                        keys[ns] = p2
+                        sums[ns] = cw2
+                        ns += 1
+                    if ok3:
+                        keys[ns] = p3
+                        sums[ns] = cw3
+                        ns += 1
+                else:
+                    for corner in range(4):
+                        if corner == 0:
+                            ok, pc, cw = ok0, p0, cw0
+                        elif corner == 1:
+                            ok, pc, cw = ok1, p1, cw1
+                        elif corner == 2:
+                            ok, pc, cw = ok2, p2, cw2
+                        else:
+                            ok, pc, cw = ok3, p3, cw3
+                        if not ok:
+                            continue
+                        kk = cmaps[m, pc]
+                        if kk < 0:
+                            continue
+                        found = -1
+                        for t in range(ns):
+                            if keys[t] == kk:
+                                found = t
+                                break
+                        if found >= 0:
+                            sums[found] = np.float32(sums[found] + cw)
+                        else:
+                            keys[ns] = kk
+                            sums[ns] = cw
+                            ns += 1
+                    for a in range(ns):                         # ascending chunk ids (at most four: a selection sort)
+                        mn = a
+                        for b in range(a + 1, ns):
+                            if keys[b] < keys[mn]:
+                                mn = b
+                        if mn != a:
+                            tk = keys[a]
+                            tv = sums[a]
+                            keys[a] = keys[mn]
+                            sums[a] = sums[mn]
+                            keys[mn] = tk
+                            sums[mn] = tv
+                nbm = nb[m]
+                b0 = base[f, m]
+                for t in range(ns):
+                    cv = sums[t]
+                    if cv == 0:
+                        continue
+                    fw = np.float32(wi * cv)
+                    if nbm == 0:
+                        if fw != 0 or not bz:
+                            c = b0 + keys[t]
+                            if use_cmap:
+                                c = col_map[c]
+                            v = fw
+                            if use_scale:
+                                v = np.float32(v * scale[c])
+                            oc[cnt] = c
+                            ov[cnt] = v
+                            cnt += 1
+                    else:
+                        o = nboff[m]
+                        for q in range(nbm):
+                            ph = phi[o + q, k]
+                            if ph == 0:
+                                continue
+                            v = np.float32(fw * ph)
+                            if v != 0 or not bz:
+                                c = b0 + keys[t] * nbm + q
+                                if use_cmap:
+                                    c = col_map[c]
+                                if use_scale:
+                                    v = np.float32(v * scale[c])
+                                oc[cnt] = c
+                                ov[cnt] = v
+                                cnt += 1
+        if mode == 0:
+            acc = zero
+            for t in range(cnt):
+                acc = acc + ov[t] * vec[oc[t]]
+            out[k] = acc
+        elif mode == 1:
+            yv = vec[k]
+            for t in range(cnt):
+                out[oc[t]] += ov[t] * yv
+        elif mode == 2:
+            a = k * S
+            for t in range(cnt):
+                cols_s[a + t] = oc[t]
+                vals_s[a + t] = np.float32(0.0) if floored else ov[t]
+            counts[k] = cnt
+        else:
+            hit = 0
+            for t in range(cnt):
+                c = oc[t]
+                if c < L and drop[c]:
+                    hit = 1
+                    break
+            out[k] = hit
 
 
 @_jit
@@ -311,37 +372,6 @@ def _compact(counts, S, cols_s, vals_s, indptr, cols, vals):
         for s in range(counts[k]):
             cols[a + s] = cols_s[o + s]
             vals[a + s] = vals_s[o + s]
-
-
-@_jit
-def _touching(lo, hi, P, x, y, w, frame_rows, base, zb, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-              S, drop, flags):
-    """``flags[i - lo]``: whether row ``i`` has an entry in a column of ``drop`` (a boolean over the leading
-    columns of the full layout; the coverage floor's columns)."""
-    keys = np.empty(4, dtype=np.int64)
-    sums = np.empty(4, dtype=np.float32)
-    oc = np.empty(S, dtype=np.int32)
-    ov = np.empty(S, dtype=np.float32)
-    no_map = np.empty(0, dtype=np.int32)
-    no_scale = np.empty(0, dtype=np.float32)
-    L = drop.shape[0]
-    f = np.searchsorted(frame_rows, lo, side='right') - 1
-    zi = np.searchsorted(zb, lo)
-    for i in range(lo, hi):
-        while i >= frame_rows[f + 1]:
-            f += 1
-        bz = zi < zb.shape[0] and zb[zi] == i
-        if bz:
-            zi += 1
-        cnt = _make_row(i - lo, P[i], x[i], y[i], w[i], bz, J, num_sky, sky_vals, K, cmaps, H, W, nb, nboff, phi,
-                        base[f], False, no_map, False, no_scale, keys, sums, oc, ov)
-        hit = False
-        for s in range(cnt):
-            c = oc[s]
-            if c < L and drop[c]:
-                hit = True
-                break
-        flags[i - lo] = hit
 
 
 @_jit
@@ -420,6 +450,17 @@ class _Block:
         return self.sky.nbytes + self.x.nbytes + self.y.nbytes + self.w.nbytes
 
 
+def _map_kind(cm):
+    """What a chunk map's form spares the loop (:func:`_pass`): 1 when one chunk covers the whole detector (no
+    pixel outside it), 2 when every pixel is its own chunk, 0 otherwise."""
+    cm = np.asarray(cm)
+    if cm.size and cm.min() == cm.max() and cm.min() >= 0:
+        return 1
+    if cm.size and np.array_equal(cm, np.arange(cm.size, dtype=cm.dtype)):
+        return 2
+    return 0
+
+
 class _Expansion:
     """The model's detector side, as the rows are made from it: the sky terms and their coefficients, the chunk
     maps and the offset bases, the detector maps the functions read and the other variable sources, the column
@@ -439,6 +480,7 @@ class _Expansion:
         self.K = K
         self.cmaps = (np.stack([np.asarray(cm).ravel() for cm in chunk_maps]).astype(np.int32)
                       if K else np.zeros((0, self.H * self.W), dtype=np.int32))
+        self.kinds = np.array([_map_kind(cm) for cm in self.cmaps], dtype=np.int64)
         self.bases = list(bases)
         self.nb = np.array([0 if bm is None or int(bm.n) == 0 else int(bm.n) for bm in self.bases], dtype=np.int64)
         self.nboff = np.zeros(K + 1, dtype=np.int64)
@@ -463,6 +505,9 @@ class _Expansion:
         for bm in self.bases:
             if bm is not None:
                 self.wanted.update(bm.variables)
+        #: Whether the observations' reference position is built for the functions: a sky map, a derived variable
+        #: (its inputs are its own) or ``sky_x`` / ``sky_y`` among the variables read.
+        self.needs_position = bool(self.sky_variables) or bool(self.derived) or bool(self.wanted & {'sky_x', 'sky_y'})
 
     def column_bases(self, frames):
         """``(nf, K)``: the column base of each frame's chunks per map (``col_bases[m] + group * chunks``)."""
@@ -474,11 +519,10 @@ class _Expansion:
 
     def values(self, block, lo, hi):
         """The sky entries' values ``(J, n)`` (``w * c_j``, float32: the build's ``S_data``) and the bases' values
-        ``(n, sum nb)`` (float32) of the block's rows ``lo:hi``, from the model's own functions on the rows'
-        observation variables."""
+        ``(sum nb, n)`` (float32, one function per contiguous row, each cast once from the function's values) of the
+        block's rows ``lo:hi``, from the model's own functions on the rows' observation variables."""
         n = hi - lo
         x, y, w = block.x[lo:hi], block.y[lo:hi], block.w[lo:hi]
-        P = block.sky[lo:hi].astype(np.int64)
         det = {'det_x': x, 'det_y': y}
         if self.aux_maps.shape[0]:
             aux = np.empty((self.aux_maps.shape[0], n), dtype=np.float32)
@@ -493,8 +537,13 @@ class _Expansion:
             for name, vals in self.frame_values.items():
                 v = vals[frame_of]
                 det[name] = v.astype(np.float64) if v.dtype.kind in 'biuf' else v
-        obs = ObservationVariables((P // self.ref_w, P % self.ref_w), ref_coords=(0, 0, 0, 0), detector=det,
-                                   sky=self.sky_variables, derived=self.derived)
+        if self.needs_position:
+            P = block.sky[lo:hi].astype(np.int64)
+            obs = ObservationVariables((P // self.ref_w, P % self.ref_w), ref_coords=(0, 0, 0, 0), detector=det,
+                                       sky=self.sky_variables, derived=self.derived)
+        else:                       # no variable reads the reference position: the stand-in only sets the length
+            obs = ObservationVariables((block.sky[lo:hi], block.sky[lo:hi]), ref_coords=None, detector=det,
+                                       sky={}, derived=self.derived)
         sky_vals = np.empty((self.J, n), dtype=np.float32)
         for j, comp in enumerate(self.components):
             if self.identity[j]:
@@ -502,12 +551,12 @@ class _Expansion:
             else:
                 sky_vals[j] = w * comp.coefficients(obs)             # the dtype of the product, then float32
         if self.nboff[-1]:
-            phi = np.empty((n, int(self.nboff[-1])), dtype=np.float32)
+            phi = np.empty((int(self.nboff[-1]), n), dtype=np.float32)
             for m, bm in enumerate(self.bases):
                 if self.nb[m]:
-                    phi[:, self.nboff[m]:self.nboff[m + 1]] = bm.evaluate(obs)
+                    bm.evaluate(obs, rows=True, out=phi[self.nboff[m]:self.nboff[m + 1]])
         else:
-            phi = np.zeros((n, 0), dtype=np.float32)
+            phi = np.zeros((0, n), dtype=np.float32)
         return sky_vals, phi
 
 
@@ -575,7 +624,7 @@ class ObservationTable:
         use_cmap = md.col_map is not None
         use_scale = scaled and self.scale is not None
         return (lo, hi, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, blk.fl, md.J, md.num_sky,
-                sky_vals, md.K, md.cmaps, md.H, md.W, md.nb, md.nboff, phi,
+                sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi,
                 use_cmap, md.col_map if use_cmap else np.zeros(0, dtype=np.int32),
                 use_scale, self.scale if use_scale else np.zeros(0, dtype=np.float32), md.S)
 
@@ -606,7 +655,8 @@ class ObservationTable:
             return
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
         for a, b in self._chunks(lo - base, hi - base):
-            _matvec(*self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)])
+            _pass(0, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
+                  _NO_I32, _NO_F32)
 
     def rmatvec_rows(self, bi, lo, hi, y_seg, buf):
         """``buf[c] += A[lo:hi, c]^T y_seg`` for the global rows ``lo:hi`` of block ``bi`` (the tail included), the
@@ -621,7 +671,8 @@ class ObservationTable:
                                     y_seg, buf)
             return
         for a, b in self._chunks(lo - base, hi - base):
-            _rmatvec(*self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], buf)
+            _pass(1, *self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], _ZERO64, buf, _NO_U8, _NO_I64,
+                  _NO_I32, _NO_F32)
 
     @staticmethod
     def _chunks(lo, hi, rows=_EVAL_ROWS):
@@ -653,7 +704,8 @@ class ObservationTable:
         for a, b in self._chunks(lo, hi):
             m = b - a
             cols_s, vals_s, counts = self._thread_scratch(m)
-            _expand(*self._args(bi, a, b, scaled=scaled), counts[:m], cols_s, vals_s)
+            _pass(2, *self._args(bi, a, b, scaled=scaled), _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts[:m], cols_s,
+                  vals_s)
             k = int(counts[:m].sum())
             ip, co, va = np.empty(m + 1, dtype=np.int32), np.empty(k, dtype=np.int32), np.empty(k, dtype=np.float32)
             _compact(counts[:m], S, cols_s, vals_s, ip, co, va)
@@ -805,11 +857,13 @@ class ObservationTable:
         def work(t):
             bi, lo, hi = t
             blk = self.blocks[bi]
-            flags = np.zeros(hi - lo, dtype=np.bool_)
+            flags = np.zeros(hi - lo, dtype=np.uint8)
             for a, b in self._chunks(lo, hi):
                 sky_vals, phi = md.values(blk, a, b)
-                _touching(a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, md.J, md.num_sky,
-                          sky_vals, md.K, md.cmaps, md.H, md.W, md.nb, md.nboff, phi, md.S, drop, flags[a - lo:b - lo])
+                _pass(3, a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, _NO_I64, md.J,
+                      md.num_sky, sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi, False,
+                      _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop, _NO_I64, _NO_I32,
+                      _NO_F32)
             return bi, lo + np.flatnonzero(flags)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
@@ -854,20 +908,20 @@ def warm_up():
     nb, nboff = np.array([1], np.int64), np.array([0, 1], np.int64)
     no_map, no_scale = np.zeros(0, np.int32), np.zeros(0, np.float32)
     S = 5
-    args = (0, 1, P, x, y, w, frame_rows, base, zb, fl, 1, 4, sky_vals, 1, cmaps, 2, 2, nb, nboff, phi,
+    kinds = np.zeros(1, np.int64)
+    args = (0, 1, P, x, y, w, frame_rows, base, zb, fl, 1, 4, sky_vals, 1, cmaps, kinds, 2, 2, nb, nboff, phi,
             False, no_map, False, no_scale, S)
     for pdt in (np.float32, np.float64):
         for odt in (np.float32, np.float64):
-            _matvec(*args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
-                    np.zeros(1, odt))
-        _rmatvec(*args, np.ones(1, pdt), np.zeros(S, pdt))
+            _pass(0, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
+        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
     counts = np.zeros(1, np.int64)
     cols_s, vals_s = np.zeros(S, np.int32), np.zeros(S, np.float32)
-    _expand(*args, counts, cols_s, vals_s)
+    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s)
     ip, co, va = np.zeros(2, np.int32), np.zeros(S, np.int32), np.zeros(S, np.float32)
     _compact(counts, S, cols_s, vals_s, ip, co, va)
-    _touching(0, 1, P, x, y, w, frame_rows, base, zb, 1, 4, sky_vals, 1, cmaps, 2, 2, nb, nboff, phi, S,
-              np.zeros(1, np.bool_), np.zeros(1, np.bool_))
+    _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32)
     _fold_sums(ip, co, va, np.zeros(1), 0, np.zeros(S), np.zeros(S))
     _sample_maps(x, y, np.zeros((1, HW), np.float32), 2, 2, np.zeros((1, 1), np.float32))
     _split_spans(ip, co, va, np.array([0, 2, S], np.int64), np.zeros((2, 2), np.int32), np.zeros(S, np.int32),
