@@ -82,6 +82,33 @@ def _valid_row_mask(coords_yx, grid_valid_weight):
     return out
 
 
+def _inside_row_mask(coords_yx, grid_valid_weight):
+    """Rows whose bilinear sample lies wholly inside ``grid_valid_weight > 0``: every grid pixel the sample reads
+    with a nonzero weight (the four corners ``(floor(y) + i, floor(x) + j)``, less a corner whose fractional
+    offset makes its weight zero) is on the grid and has a positive weight. A subset of :func:`_valid_row_mask`:
+    a row there reads at least one such pixel, and a row here reads no other."""
+    out = _valid_row_mask(coords_yx, grid_valid_weight)
+    idx = np.flatnonzero(out)
+    if idx.size == 0:
+        return out
+    y = np.asarray(coords_yx[0])[idx]
+    x = np.asarray(coords_yx[1])[idx]
+    inside = np.asarray(grid_valid_weight) > 0
+    H, W = inside.shape
+    r0 = np.floor(y).astype(np.int64)
+    c0 = np.floor(x).astype(np.int64)
+    dy, dx = y - r0, x - c0
+
+    def at(r, c):
+        on = (r >= 0) & (r < H) & (c >= 0) & (c < W)
+        v = np.zeros(r.shape, dtype=bool)
+        v[on] = inside[r[on], c[on]]
+        return v
+    out[idx] = (at(r0, c0) & ((dx == 0) | at(r0, c0 + 1)) & ((dy == 0) | at(r0 + 1, c0))
+                & ((dy == 0) | (dx == 0) | at(r0 + 1, c0 + 1)))
+    return out
+
+
 def _mask_bbox(mask2d):
     """``(r0, r1, c0, c1)`` bounding box of True in a 2-D mask (exclusive ends); None if empty."""
     rows = np.flatnonzero(mask2d.any(axis=1))
@@ -163,13 +190,21 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
                    # These arguments are accepted for compatibility/internal logic
                    # but might not be used depending on logic path
                    det_aux=None, postprocess_func=None, preprocess_func=None,
-                   extras=None, keep_raw=False):
+                   extras=None, keep_raw=False, window_edge='partial'):
     """
     Prepares data from a single file for co-addition or lsqr.
 
     ``keep_raw``: keep a copy of the frame's stored values and its flag bits, as
     read, for the data variables ``value`` and ``flags`` (``extras['raw_data']`` /
     ``extras['flags']`` and the hook context's ``raw_data`` / ``flags``).
+
+    ``window_edge``: the observations at the edge of ``grid_valid_weight > 0``.
+    ``'partial'``: an observation is kept when its bilinear sample of
+    ``grid_valid_weight`` is above zero, with that sample as a factor of its
+    weight, so an observation whose sampling straddles the edge reads the
+    detector pixels just outside it. ``'inside'``: only the observations whose
+    sampling lies wholly inside are kept (:func:`_inside_row_mask`); no
+    observation reads a pixel outside.
 
     Parameters
     ----------
@@ -313,7 +348,8 @@ def _prep_subframe(file, chunk_maps=None, apply_weight=False, apply_mask=False,
         # to be zero-contribution.
         valid_row_mask = None
         if grid_valid_weight is not None:
-            valid_row_mask = _valid_row_mask(coords_yx, grid_valid_weight)
+            valid_row_mask = (_inside_row_mask if window_edge == 'inside' else _valid_row_mask)(
+                coords_yx, grid_valid_weight)
             # Everything downstream is zero outside the bbox of the kept rows,
             # so the matrix (and the products below) cover the bbox only. Row
             # entries do not depend on the row's neighbours, so they are the
