@@ -854,14 +854,6 @@ class ModelSpec:
                for m, name in enumerate(known) if name in names]
         return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
 
-    def shared_columns(self, layout) -> np.ndarray:
-        """The full-layout columns of the offset terms that groups of frames share (``fixed``: every frame, ``grouped``:
-        frames with equal values of a frame variable), for the deflation, which applies their couplings to the other
-        offsets through the matrix when there are many of them (:class:`~selfcal.core.deflation.Deflation`)."""
-        out = [np.arange(int(layout.col_bases[m]), int(layout.col_bases[m + 1]), dtype=np.int64)
-               for m, term in enumerate(self.offset) if term.kind in ('fixed', 'grouped')]
-        return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
-
     def signature_exclusions(self, layout) -> list:
         """The terms whose response to smooth sky fields is excluded (``Offsets(exclude=SkySignature(k))``), as the
         solver takes them (``apply_lsqr(signatures=...)``): ``[(cols, k, name, chunk), ...]`` with ``cols`` the

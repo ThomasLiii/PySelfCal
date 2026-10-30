@@ -1,5 +1,5 @@
 """The deflation's passes read each row chunk in pieces of one kind of column (the sky; the offsets, with the columns
-groups of frames share apart from the others when those are solved iteratively), taken out of the storage's column
+of the terms Deflate(offsets=) leaves out apart from the others), taken out of the storage's column
 ranges (:func:`selfcal.core.deflation._piece`, :func:`selfcal.core.deflation._piece_spans`). A piece holds exactly the
 stored entries of its columns, in storage order, so the deflated products are, byte for byte, those of the passes
 reading each range whole and sorting its entries by kind."""
@@ -145,20 +145,3 @@ def test_the_deflated_products_do_not_depend_on_the_pieces(tmp_path, monkeypatch
     normal matrix is made from each chunk's offset entries joined whole."""
     from test_any_telescope import FIT
     _assert_same(*_solve_both(tmp_path, monkeypatch, FIT.replace(deflate=sc.Deflate(3, basis='polynomial'))))
-
-
-def test_the_iterative_shared_solve_does_not_depend_on_the_pieces(tmp_path, monkeypatch):
-    """The shared columns' iterative solve forced (every shared column a hub): its sweeps read the shared and the other
-    offset columns' pieces (no sky piece), taken by a shift; with the ranges whole, by compression. The same bytes."""
-    from test_any_telescope import FIT
-    monkeypatch.setattr(D, '_SCHUR_MAX', 0)
-    _assert_same(*_solve_both(tmp_path, monkeypatch, FIT.replace(deflate=sc.Deflate(3, basis='polynomial'))))
-
-
-def test_the_sweeps_do_not_depend_on_their_row_blocks(tmp_path, monkeypatch):
-    """The shared columns' iterative solve forced: its sweeps' two products made a chunk at a time (one block: the toy's
-    chunks are smaller than _SWEEP_ROWS) and seven rows at a time give the same bytes."""
-    from test_any_telescope import FIT
-    monkeypatch.setattr(D, '_SCHUR_MAX', 0)
-    _assert_same(*_solve_both(tmp_path, monkeypatch, FIT.replace(deflate=sc.Deflate(3, basis='polynomial')),
-                              between=lambda mp: mp.setattr(D, '_SWEEP_ROWS', 7)))

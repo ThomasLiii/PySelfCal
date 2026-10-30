@@ -394,9 +394,9 @@ class Deflate(Config):
     the term's name, else its map's); None (the default): every offset term. A term not listed keeps a zero response:
     the patterns' offsets are the listed terms' alone, and the others stay in the space, so the projections are those
     of the space the patterns and those responses span and the solution is the same least-squares solution; what the
-    other terms take of the patterns is left to the iterations. Leaving out a term shared by many frames (a constant
-    per detector pixel, say) leaves out the iterative solve of its couplings. A term's ``exclude=SkySignature`` is
-    made from the listed terms' response, and the term itself must be listed.
+    other terms take of the patterns is left to the iterations. A term with more offsets shared by many frames than
+    the deflation's dense Schur complement holds (16,384; a constant per detector pixel, say) is left out this way. A
+    term's ``exclude=SkySignature`` is made from the listed terms' response, and the term itself must be listed.
 
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown

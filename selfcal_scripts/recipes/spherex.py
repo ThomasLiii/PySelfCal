@@ -179,9 +179,8 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     held by the others; counted alike, 99.2 % of the real D2 Ch9 constants' variance lay along those patterns,
     held by S and L in mirror image); every column pattern is one of its patterns, so the column term goes. Its deflation solves the per-frame terms' response alone
     (``Deflate(offsets=('spectral', 'xs_term'))``): the per-pixel constants follow none of the non-constant sky
-    patterns, which cross the detector differently in every frame, and holding their response at zero leaves out the
-    iterative solve of their couplings (real D2 / D6 Ch9: 252 / 442 s of deflation, the maps the same as with it solved
-    but for the zero point). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
+    patterns, which cross the detector differently in every frame, and holding their response at zero keeps their
+    couplings to every frame's offsets out of the deflation (real D2 / D6 Ch9: 252 / 442 s of deflation). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
     D6 Ch9: 11 / 59 pixels): such a pixel's constant fits that one observation exactly and informs nothing else.
     Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)

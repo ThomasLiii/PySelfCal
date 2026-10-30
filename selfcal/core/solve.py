@@ -874,7 +874,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None, signatures=None, shared=None, held=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None, held=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -987,10 +987,6 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
         The responses come from the deflation's setup, which also adds the constraint to the column
         constraints (:meth:`~selfcal.core.deflation.Deflation._exclude_signatures`): needs ``deflate``.
-    shared : array of int, optional
-        The offset columns (full layout) that groups of frames share, for the deflation: when many of them
-        have data, it solves their part of the offsets' response iteratively instead of forming their
-        couplings (:class:`~selfcal.core.deflation.Deflation`, :meth:`~selfcal.models.spec.ModelSpec.shared_columns`).
     held : array of int, optional
         The offset columns (full layout) of the terms ``Deflate(offsets=)`` leaves out: the deflation holds their
         response to its patterns at zero (:class:`~selfcal.core.deflation.Deflation`).
@@ -1270,9 +1266,6 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 c = c[c >= 0]
             return c
 
-        shared_s = None
-        if shared is not None and deflate is not None and len(shared):
-            shared_s = solver_columns(shared)
         held_s = None
         if held is not None and deflate is not None and len(held):
             held_s = solver_columns(held)
@@ -1376,7 +1369,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj,
-                                 signatures=sig, shared=shared_s, held=held_s)
+                                 signatures=sig, held=held_s)
                 if defl.projector is not proj:
                     proj = defl.projector
                     logger.info(f"Column constraints with the deflation's additions: {proj}")

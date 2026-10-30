@@ -305,18 +305,12 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   drops out. The constraint stays exact and needs no threshold.
 - Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
   columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
-  say), their couplings to the other offsets are applied through the system's matrix and their part
-  of the response is solved by block conjugate gradients (one search space for all the patterns), to
-  the rounding of the products or until the iteration stops improving. Patterns of the shared columns that no
-  observation sees (neighbouring pixels the sampling cannot tell apart) leave that solve. It
-  cannot find a direction the data do not see between the shared columns and the other offsets:
-  remove such a gauge in the model (`exclude=sc.Overlap(...)`), or the solution sets it differently
-  from the minimum-norm one. `sc.Deflate(offsets=(...))` names the offset terms whose response the
-  deflation solves; the others keep a zero response and stay in the space. Listing the per-frame terms
-  alone leaves out the shared ones' iterative solve: the patterns' offsets are solved directly frame by
-  frame, and what the shared terms take of the patterns is left to the iterations. A shared offset fixed
-  on the detector cannot follow a sky pattern that crosses the detector differently in each frame, so
-  that share is small except along the sky's constant level.
+  say), the complement no longer fits in memory. `sc.Deflate(offsets=(...))` names the offset terms
+  whose response the deflation solves; the others keep a zero response and stay in the space. Listing
+  the per-frame terms alone leaves the shared ones out: the patterns' offsets are solved directly frame
+  by frame, and what the shared terms take of the patterns is left to the iterations. A shared offset
+  fixed on the detector cannot follow a sky pattern that crosses the detector differently in each
+  frame, so that share is small except along the sky's constant level.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.
