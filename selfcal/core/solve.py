@@ -1168,7 +1168,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # partial-sum tree is part of the byte-equal contract); a chunk
             # that straddles storage blocks comes as its blocks' slices, folded
             # one after another (the fold over their concatenation), never split.
-            def _chunk_pieces():
+            def _chunk_pieces(A):
                 """Each global chunk as [(col_offset, width, [(data, indices), ...])]:
                 one entry per column range for partitioned storage, a single
                 whole-width one otherwise."""
@@ -1232,14 +1232,14 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 from collections import deque
                 with ThreadPoolExecutor(max_workers=_win) as _ex:
                     _q = deque()
-                    for _k, _pieces in enumerate(_chunk_pieces()):
+                    for _k, _pieces in enumerate(_chunk_pieces(A)):
                         _q.append(_ex.submit(_partial, _pieces, _slots[_k % _win]))
                         if len(_q) >= _win:
                             _fold(_q.popleft().result())
                     while _q:
                         _fold(_q.popleft().result())
             else:
-                for _pieces in _chunk_pieces():
+                for _pieces in _chunk_pieces(A):
                     _fold(_partial(_pieces, _slots[0]))
             del _slots
 

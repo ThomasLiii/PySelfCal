@@ -9,7 +9,6 @@ with the coverage floors, in float32 and float64, at one and several threads). M
 offset basis, grouped offsets, frame and sky variables and a constraint block are covered; what the table refuses is
 checked too.
 """
-import os
 
 import numpy as np
 import pytest
@@ -374,8 +373,9 @@ def test_refusals(tmp_path):
 
 def test_through_the_api(tmp_path):
     """``sc.Compute(matrix='compact')`` on a camera: the cal's solution and pixel state are the stored run's."""
-    from tests.synthetic_exposures import DET as CAM, N_CHUNK_SIDE, REF_ARCSEC, write_exposures
     from selfcal.io.calfile import CalFile
+    from tests.synthetic_exposures import DET as CAM
+    from tests.synthetic_exposures import N_CHUNK_SIDE, REF_ARCSEC, write_exposures
     rng = np.random.default_rng(5)
     paths, _offsets, _scalars = write_exposures(str(tmp_path / 'exposures'), 10, rng)
     cam = sc.Camera((CAM, CAM), chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE), tag='Toy')

@@ -28,9 +28,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from scipy.sparse import _sparsetools, csr_matrix
 
-from .blockcsr import _csr_shell
-
 from ..models.variables import ObservationVariables
+from .blockcsr import _csr_shell
 
 try:
     from numba import njit as _njit

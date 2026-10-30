@@ -418,7 +418,8 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     n_obs = n_entries = 0
 
     def fold(r):
-        """One batch, in batch order: its moments added to the pixel state, its observations kept as a block."""
+        """One batch, in batch order: its moments added to the pixel state, its observations kept as a block;
+        returns its right-hand side."""
         nonlocal n_obs, n_entries
         shm = r['shm']
         sky, x, y, w, b = (_read_shm(shm[k]) for k in ('sky', 'x', 'y', 'w', 'b'))
@@ -435,9 +436,9 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
         frame_rows = np.array([f[1] for f in frames] + [frames[-1][2]], dtype=np.int64)
         blocks.append(_Block([f[0] for f in frames], frame_rows, sky, x, y, w, np.flatnonzero(b == 0),
                              r['n_entries']))
-        b_pieces.append(b)
         n_obs += int(r['num_rows'])
         n_entries += int(r['n_entries'])
+        return b
 
     try:
         with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
@@ -450,7 +451,7 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
                     r = pending.pop(next_id)
                     next_id += 1
                     if r is not None:
-                        fold(r)
+                        b_pieces.append(fold(r))
     finally:
         for shm in shm_objects:
             shm.close()
