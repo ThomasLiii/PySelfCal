@@ -15,7 +15,8 @@ from selfcal.instruments.spherex.adapter import make_column_chunk_map, make_read
 from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map, make_stripped_chunk_map
 from selfcal.models.offset_structure import ChunkAxes
 
-__all__ = ['subchannels', 'subchannel_map', 'detector_columns', 'readouts', 'pixels', 'pixel_map', 'arc_renderer']
+__all__ = ['subchannels', 'subchannel_map', 'columns', 'column_map', 'detector_columns', 'readouts', 'pixels',
+           'pixel_map', 'arc_renderer']
 
 
 def arc_renderer(chunks, jobgeom):
@@ -57,6 +58,24 @@ def subchannel_map(num_sub=10, num_ch=17, num_col=1) -> sc.ChunkMap:
     """:func:`subchannels` as a model's chunk map, tagged ``NumSub<num_sub>_NumCh<num_ch>_NumCol<num_col>``."""
     return sc.ChunkMap(subchannels, tag=f'NumSub{num_sub}_NumCh{num_ch}_NumCol{num_col}',
                        num_sub=int(num_sub), num_ch=int(num_ch), num_col=int(num_col))
+
+
+def columns(geometry, num_sub=10, num_ch=17, num_col=1):
+    """The ``num_col`` columns of the subchannel partition (:func:`subchannels` with the same arguments), one chunk
+    each: chunk id = the pixel's column index of that partition (``subchannel id % num_col``), -1 where the
+    partition has no subchannel; the axis ``column``, along x. An offset term on it per frame varies across the
+    columns and not across the arcs: the map of the multi-line fits' polynomial of the arc position per column."""
+    det, lvf_params = geometry.extra['detector'], geometry.extra['lvf_params']
+    det_map, _, _, _ = make_stripped_chunk_map(
+        det, num_subchannels=num_sub, num_channels=num_ch, num_columns=num_col,
+        oversample_factor=1, lvf_params=lvf_params)
+    col = np.where(det_map >= 0, det_map % int(num_col), -1).astype(det_map.dtype)
+    return sc.Chunks(col, ChunkAxes.row_major(('column',), (int(num_col),), ('x',)))
+
+
+def column_map(num_sub=10, num_ch=17, num_col=1) -> sc.ChunkMap:
+    """:func:`columns` as a model's chunk map (not tagged: never the primary map)."""
+    return sc.ChunkMap(columns, num_sub=int(num_sub), num_ch=int(num_ch), num_col=int(num_col))
 
 
 def detector_columns(geometry):

@@ -14,7 +14,7 @@ import numpy as np  # noqa: F401  (imported before selfcal on purpose: the actio
 
 import selfcal as sc
 from selfcal_scripts.recipes.spherex import maps
-from selfcal_scripts.spherex import jobs, terms as T
+from selfcal_scripts.spherex import chunks as C, jobs, terms as T
 
 OUTPUTS = '/mnt/md124/thomasli/selfcal/outputs'
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the tree under test
@@ -39,9 +39,11 @@ TILES = {'T1': (4342, 6185, 4334, 8068), 'T2': (6135, 8237, 4334, 8068)}
 
 def multiline(name):
     """Three lines, a degree-2 Chebyshev polynomial of the position across the arcs over the window per frame and
-    column (terms.spectral_polynomial), 20 iterations, no mosaic (npass3, tiles)."""
-    model = sc.Model(chunk_maps=MAPS, sky=[sc.Sky(damping=0.1), *LINES],
-                     offsets=[T.spectral_polynomial(range(200, 321), 2, on='detector_column')],
+    column of the partition (3 columns: the map ``column`` of chunks.columns; terms.spectral_polynomial), 20
+    iterations, no mosaic (npass3, tiles)."""
+    model = sc.Model(chunk_maps={**MAPS, 'column': C.column_map(num_ch=34, num_col=3)},
+                     sky=[sc.Sky(damping=0.1), *LINES],
+                     offsets=[T.spectral_polynomial(range(200, 321), 2, on='column')],
                      variables={'arc_position': sc.DetectorMap(T.arc_position)})
     return sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
                      coadd=None, name=name)

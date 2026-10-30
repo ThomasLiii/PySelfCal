@@ -214,14 +214,18 @@ def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILI
                num_ch=34, num_col=3):
     """The multi-line recipe on :func:`maps` of 34 channels and ``num_col`` columns: a constant sky (damping 0.1,
     the library default when the recipe was made) plus ``lines``, the offset a degree-``degree`` Chebyshev polynomial
-    of the position across the LVF arcs over the subchannels of ``window``, per frame and detector column
-    (:func:`selfcal_scripts.spherex.terms.spectral_polynomial`; its constant holds the frame's level), per-pixel
-    shot-noise weights, the source-mask bit ignored; no mosaic (tiled and N-pass runs). Until 2026-10-30 the
-    polynomial was the engine's own polynomial-basis offset without a constant, plus a per-frame scalar: the same
-    model, in the general form of the API."""
+    of the position across the LVF arcs over the subchannels of ``window``, per frame and per column of the
+    partition (``num_col`` of them, the map ``column`` of :func:`selfcal_scripts.spherex.chunks.columns`; one
+    polynomial per frame when ``num_col`` is 1) (:func:`selfcal_scripts.spherex.terms.spectral_polynomial`; its
+    constant holds the frame's level), per-pixel shot-noise weights, the source-mask bit ignored; no mosaic (tiled
+    and N-pass runs). Until 2026-10-30 the polynomial was the engine's own polynomial-basis offset per column group
+    without a constant, plus one scalar per frame; the general form gives each column its own constant instead
+    (two more unknowns per frame with three columns, none with one)."""
     chunk_maps = maps(num_ch=num_ch, num_col=num_col)
+    if num_col > 1:
+        chunk_maps = {**chunk_maps, 'column': C.column_map(num_ch=num_ch, num_col=num_col)}
     model = sc.Model(chunk_maps=chunk_maps, sky=[sc.Sky(damping=0.1), *lines],
-                     offsets=[T.spectral_polynomial(window, degree, on='detector_column' if num_col > 1 else 'detector')],
+                     offsets=[T.spectral_polynomial(window, degree, on='column' if num_col > 1 else 'detector')],
                      variables={'arc_position': sc.DetectorMap(T.arc_position)})
     return sc.Recipe(model, fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
                      coadd=None, numerics=sc.Numerics(threads), name=name)
