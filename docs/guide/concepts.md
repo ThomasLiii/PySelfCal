@@ -234,7 +234,7 @@ The priors, and the rows each adds to the system:
 | --- | --- | --- |
 | adjacency smoothing | `sc.Offsets(smooth=w, smooth_along=axes)` (0 by default; the presets' `smooth`, default 0.1) | per frame and pair of neighbouring chunks `a`, `b`: `w · (O[a] − O[b]) = 0` |
 | polynomial constraint | `sc.Offsets(poly_prior=sc.Poly(degree, along=, window=, weight=))` | per frame and run of `degree + 2` consecutive chunks along the axis: `weight · Σ stencil · O = 0`, a finite difference that vanishes on polynomials of degree `degree` or less |
-| sky damping | `sc.Sky(damping=d)` (default 0.1 for the first sky term, 0.3 for the others) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
+| sky damping | `sc.Sky(damping=d)` (default none, `d` = 0) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
 

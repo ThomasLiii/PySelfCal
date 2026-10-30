@@ -161,7 +161,7 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 
 - `sc.Sky(name, times=, damping=)`: a sky map times a known function of data variables
   (`times`; none: a constant sky). `damping` pulls the map toward zero, weighted by coverage
-  (default 0.1 for the first sky term, 0.3 for the others).
+  (default none: 0).
 - `sc.Offsets(name, on=, per=, ...)`: an offset per chunk of the chunk map `on` (default the
   primary map; `"detector"`: the whole detector), shared by `per` (`"frame"`, `"all"`, or a
   frame variable such as `"detector"`), optionally times one function (`times=`) or `n` basis

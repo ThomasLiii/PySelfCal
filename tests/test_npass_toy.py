@@ -298,8 +298,8 @@ def test_npass_schedule(toy, schedule):
         monitor = json.load(f)
     assert [(r['pass'], r['type']) for r in monitor] == \
         [(1, 'init')] + [(i, 'sky' if t == 'sky' else 'offset') for i, t in enumerate(schedule.pass_types, start=2)]
-    # the SKY passes damp each term as the INIT pass did
-    want = [0.02, 0.05] if schedule.name == 'offfirst' else [0.1, 0.3]
+    # the SKY passes damp each term as the INIT pass did (undamped unless the model sets a damping)
+    want = [0.02, 0.05] if schedule.name == 'offfirst' else [0.0, 0.0]
     for i, t in enumerate(schedule.pass_types, start=2):
         if t == 'sky' and schedule.passes.sky_merge == 'combine':
             with h5py.File(os.path.join(cal_dir, f'{stem}_pass{i}sky.h5'), 'r') as f:

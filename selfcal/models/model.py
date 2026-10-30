@@ -433,8 +433,7 @@ class Sky(Config):
     ``times``: the function (a Python function of data variables, :class:`Function`, a
     built-in :func:`template` / :func:`gaussian` / :func:`linear`, or the name
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
-    coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
-    0.3 for the others; 0 for none).
+    coverage-weighted pull of the map toward zero (None, the default, or 0: none).
 
     ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
     coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
@@ -1019,8 +1018,8 @@ class Model(Config):
 
     # ---- lowering -------------------------------------------------------------------------
     def sky_dampings(self) -> list[float]:
-        """Each sky term's damping, defaults resolved: 0.1 for the first term, 0.3 for the others."""
-        return [t.damping if t.damping is not None else (0.1 if j == 0 else 0.3) for j, t in enumerate(self.sky)]
+        """Each sky term's damping, the default (None) resolved to 0: no damping."""
+        return [t.damping if t.damping is not None else 0.0 for t in self.sky]
 
     def lower(self, mosaic='full') -> dict:
         """The ``[model]`` table (:meth:`~selfcal.models.spec.ModelSpec.from_config`) of this model."""

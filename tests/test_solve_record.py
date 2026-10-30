@@ -249,7 +249,7 @@ def test_a_calibration_records_its_solve(tmp_path, method):
                      REF_ARCSEC, compute=sc.Compute(str(tmp_path / 'cache'), workers=2, io_limit=4))
     field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
     numerics = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
-    recipe = sc.Recipe(sc.continuum(), fit=sc.Fit(N, tolerance=0, method=method), coadd=None, numerics=numerics,
+    recipe = sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(N, tolerance=0, method=method), coadd=None, numerics=numerics,
                        name='exact')
     result = field.calibrate(recipe, jobs=ALL)
     cal = result.cal_paths[0]

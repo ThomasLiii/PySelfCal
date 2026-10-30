@@ -87,8 +87,7 @@ ORCA = sc.Compute(scratch, workers=48, coadd_workers=48)        # workers tuned 
 # sc.Numerics() is production's: 48 solver threads, batches of 50 frames (tuned 2026-05 from 20)
 ```
 
-The sky damping is each sky term's `sc.Sky(damping=)`: 0.1 for the first term and 0.3 for the
-others unless given. The spectral recipes ignore bit 21 in the fit too
+The sky damping is each sky term's `sc.Sky(damping=)`: none (0) unless given. The spectral recipes ignore bit 21 in the fit too
 (`sc.Fit(ignore_flags=[21])`).
 
 Pixel weights: `sc.Fit(shot_noise_weights=True)` weights every row by `1/sqrt(|value|)` (the PAH

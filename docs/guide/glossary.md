@@ -104,8 +104,7 @@ where it can, and the chunk's pixels in that frame are left out of the coadd oth
 ## Damping { #damping }
 
 A Tikhonov prior that pulls unknowns toward zero. Sky terms, `sc.Sky(damping=d)`: one row
-`sqrt(d · coverage) · S[P] = 0` per covered pixel (default `d` 0.1 for the first term, 0.3 for the
-others). Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` is the
+`sqrt(d · coverage) · S[P] = 0` per covered pixel (default none, `d` = 0). Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` is the
 solver's own damping of every unknown. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 

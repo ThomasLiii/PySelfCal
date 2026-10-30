@@ -482,8 +482,9 @@ ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def _recipe(iterations=30, name='d', **fit):
-    return sc.Recipe(sc.continuum(), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None, numerics=NUMERICS,
-                     name=name)
+    # the sky damped (0.1): this toy's deflated and plain solves then reach the same solution in the iterations given
+    return sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None,
+                     numerics=NUMERICS, name=name)
 
 
 @pytest.fixture(scope='module')
