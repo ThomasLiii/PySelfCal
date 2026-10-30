@@ -54,6 +54,7 @@ from .projector import ColumnProjector
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
 from .monitor import Watch
+from .observations import ObservationTable
 from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
 from .spill import ParkedVector
@@ -160,6 +161,8 @@ def _column_squares(A, n_cols, chunk=64_000_000):
     """The sum of the squared entries of each column of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`),
     float64: zero for a column without data (a coverage floor, ``setup_lsqr(min_observations=)``, keeps its columns in
     the layout with zeroed entries); the columns' information for a constraint measured with it."""
+    if isinstance(A, ObservationTable):
+        return A.column_squares(chunk)
     sq = np.zeros(int(n_cols), dtype=np.float64)
     if isinstance(A, ColSplitCSR):
         parts = [(int(A.cuts[t]), A.sub[b][t][0], A.sub[b][t][1]) for b in range(A.nblocks) for t in range(A.nranges)]
@@ -784,6 +787,66 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False, promote=False
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
+def _make_table_operator(table, n_threads, promote=False):
+    """The SpMV operator of an :class:`~selfcal.core.observations.ObservationTable`.
+
+    ``A @ x``: the row pieces of :func:`_row_spans` in threads, each row's entries made and multiplied by the table's
+    loops (the constraint rows by scipy's kernel), the output in the entries' dtype, or the promoted one at one
+    thread or with ``promote`` (the block storages' regimes). ``A^T @ y``: the row-split scatter of
+    :func:`_make_rowsplit_rmatvec` with the table's rows as the scatter, so the same pieces, private buffers and
+    reduction order as the stored storages give the same bytes for the same thread count; a vector wider than the
+    entries goes through the sequential scatter in the promoted dtype, as there.
+    """
+    from .observations import warm_up
+    warm_up()
+    m, n = table.shape
+    dtype = table.dtype
+    threads = max(1, int(n_threads))
+    table.threads = threads
+    row_bounds = table.row_bounds
+    logger.info(f"Building SpMV operator over the observation table ({threads} threads, {table.nblocks} blocks)...")
+    pieces = _row_spans(row_bounds, m, threads)
+    executor = ThreadPoolExecutor(max_workers=threads)
+    promote_matvec = n_threads <= 1 or promote
+    _outs = {}
+
+    def _matvec(x):
+        # the output in the entries' dtype unless promoted (the block storages' regimes); the products in the
+        # promoted dtype of the entries and x, as scipy forms them, rounded on the store
+        od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
+        out = _out_buffer(_outs, m, od)
+        xs = np.ascontiguousarray(x)
+
+        def _work(piece):
+            for bi, lo, hi in piece[2]:
+                table.matvec_rows(bi, lo, hi, xs, out[lo:hi])
+        list(executor.map(_work, pieces))
+        return out
+
+    _rmv_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
+    _rowsplit, _rex = (None, None)
+    if _rmv_threads > 1:
+        _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows)
+
+    def _rmatvec(y):
+        if _rowsplit is not None and np.promote_types(dtype, y.dtype) == dtype:
+            return _rowsplit(y)
+        out_dtype = np.promote_types(dtype, y.dtype)
+        out = np.zeros(n, dtype=out_dtype)
+        yc = np.ascontiguousarray(y, dtype=out_dtype)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.rmatvec_rows(bi, lo, hi, yc[lo:hi], out)
+        return out
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
+    op._executor = executor
+    op._rmatvec_executor = _rex
+    op._table = table
+    return op
+
+
 _SOLVERS = ('lsqr', 'lsmr', 'cgls')
 # The pieces of b the final residual is accumulated over (float64 temporaries of 64 MB).
 _RESIDUAL_BLOCK = 1 << 23
@@ -1004,9 +1067,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         right-hand side LSQR overwrites is parked on disk for it,
         ``scratch_dir``; NaN when it could not be).
     """
-    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
+    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         raise TypeError(
-            "A must be a scipy.sparse.coo_matrix, csr_matrix, BlockCSR or ColSplitCSR")
+            "A must be a scipy.sparse.coo_matrix, csr_matrix, BlockCSR, ColSplitCSR or ObservationTable")
     if not isinstance(b, np.ndarray):
         raise TypeError("b must be a numpy array")
     if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
@@ -1050,9 +1113,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
 
     # ---- Pre-compacted fast path: setup_lsqr already dropped all-zero
     # ---- columns; A arrives as compact CSR (or int32 BlockCSR).
-    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         is_block = isinstance(A, BlockCSR)
         is_split = isinstance(A, ColSplitCSR)
+        is_table = isinstance(A, ObservationTable)
         if active_mask is not None:
             if num_cols_full is None:
                 raise ValueError(
@@ -1082,7 +1146,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                         _d, _i, _ip = A.sub[_b][_t]
                         if _d.dtype != np.float32:
                             A.sub[_b][_t] = (_d.astype(np.float32), _i, _ip)
-            else:
+            elif not is_table:                # the table's entries are float32 by construction
                 for _blk in (A.blocks if is_block else (A,)):
                     if _blk.data.dtype != np.float32:
                         _blk.data = _blk.data.astype(np.float32)
@@ -1110,6 +1174,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 whole-width one otherwise."""
                 if is_split:
                     yield from _iter_range_pieces_colsplit(A, chunk_size, join=False)
+                elif is_table:
+                    for _slices in A.entry_chunks(chunk_size):
+                        yield [(0, n_active, _slices)]
                 elif is_block:
                     for _slices in _iter_global_entry_chunks(A.blocks, chunk_size, join=False):
                         yield [(0, n_active, _slices)]
@@ -1197,6 +1264,15 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                         for start in range(0, _d.size, chunk_size):
                             _tiles.append(((_d, _i, _Mt), start,
                                            min(start + chunk_size, _d.size)))
+            elif is_table:
+                # the table scales every entry it makes (float32 M times the float32 entry, as the tiles below do);
+                # its stored constraint rows are scaled here
+                if M.dtype != np.float32:
+                    raise TypeError(f"the column scale is {M.dtype}, not float32")
+                A.scale = M
+                if A.tail is not None:
+                    for start in range(0, A.tail.data.size, chunk_size):
+                        _tiles.append((A.tail, start, min(start + chunk_size, A.tail.data.size)))
             else:
                 for _blk in (A.blocks if is_block else (A,)):
                     for start in range(0, _blk.data.size, chunk_size):
@@ -1418,8 +1494,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         elif vdt is not None:
             solve_kw['vectors'] = vdt
         try:
-            if is_block or is_split:
-                op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges, promote=promote)
+            if is_block or is_split or is_table:
+                op = (_make_table_operator(A_csr, n_threads, promote=promote) if is_table else
+                      _make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges, promote=promote)
                       if is_split else
                       _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned, promote=promote))
                 try:

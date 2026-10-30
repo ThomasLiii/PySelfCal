@@ -77,6 +77,7 @@ from scipy.sparse.linalg import LinearOperator, minres
 from selfcal.core.projector import ColumnProjector
 
 from .blockcsr import BlockCSR, ColSplitCSR
+from .observations import ObservationTable
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +143,11 @@ def axis_functions(basis, order, n) -> np.ndarray:
 
 def storage_of(operator, fallback=None):
     """The matrix storage behind one of :mod:`selfcal.core.solve`'s operators (a csr matrix, a
-    :class:`~selfcal.core.blockcsr.BlockCSR` or a :class:`~selfcal.core.blockcsr.ColSplitCSR`), or
-    ``fallback`` when the operator keeps none."""
+    :class:`~selfcal.core.blockcsr.BlockCSR`, a :class:`~selfcal.core.blockcsr.ColSplitCSR` or an
+    :class:`~selfcal.core.observations.ObservationTable`), or ``fallback`` when the operator keeps none."""
+    table = getattr(operator, '_table', None)
+    if table is not None:
+        return table
     if getattr(operator, '_AT_view', None) is not None:
         return operator._AT_view.T
     bcsr = getattr(operator, '_bcsr', None)
@@ -158,6 +162,8 @@ def storage_of(operator, fallback=None):
 
 def _piece_index(storage, rows=_ROWS):
     """The row chunks of the matrix as descriptors ``(block, lr0, lr1)`` (cheap: nothing is read), in row order."""
+    if isinstance(storage, ObservationTable):
+        return storage.piece_index(rows)
     if isinstance(storage, ColSplitCSR):
         sizes = [int(storage.row_bounds[bi + 1]) - int(storage.row_bounds[bi]) for bi in range(storage.nblocks)]
     else:
@@ -175,8 +181,11 @@ def _piece(storage, desc, buf=None, spans=None):
     pieces of ``spans`` (:func:`_piece_spans`; default: one per column range of a ColSplitCSR, one otherwise) in
     order; int64 indices. A piece narrower than the storage's range that holds it is taken out of the range by scipy's
     compiled submatrix routine (two passes over the chunk's entries there), its entries in storage order. ``buf`` (a
-    :class:`_Slot`): the indptr and the column ids are written into its buffers, in :data:`_IDX` (the same values)."""
+    :class:`_Slot`): the indptr and the column ids are written into its buffers, in :data:`_IDX` (the same values).
+    An observation table makes the chunk's rows (:meth:`~selfcal.core.observations.ObservationTable.piece`)."""
     bi, lr0, lr1 = desc
+    if isinstance(storage, ObservationTable):
+        return storage.piece(desc, buf=buf, spans=spans)
     if isinstance(storage, ColSplitCSR):
         base, nrows = int(storage.row_bounds[bi]), int(storage.row_bounds[bi + 1] - storage.row_bounds[bi])
         ranges, cuts = storage.sub[bi], storage.cuts
