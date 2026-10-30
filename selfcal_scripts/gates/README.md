@@ -7,7 +7,7 @@ the committed tree.
 
 The gates are Python: each is a function of `python_gates.py`, a calibration written with the
 [Python API](../../docs/guide/python-api.md) on a fixed set of frames
-(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | production | tiles`).
+(`python -m selfcal_scripts.gates.python_gates continuum | spectral | e2e | npass3 | euclid | production | compact | tiles`).
 Their products carry a `py` suffix. `run_gates.sh <tag> [gate ...]` runs, on this box (the paths
 to `/mnt/md124` and the fixtures are in `python_gates.py`), the steps named, compares each
 product with its golden and writes `gates_<tag>.log` to `$GATES_LOGDIR` (default
@@ -28,11 +28,12 @@ steps are `pytest` (the test suite, first), then the gates below; the default is
 | euclid | the EDFN recipe as an `sc.Model` on `sc.Euclid`, 3 exposures x 16 detectors | none: the field's 48 frames (`EDFN_Y_1p5arcsec_unifygolden/reprojected`) | `cal_EDFN_Y_golden_f64.h5`, `mosaic_EDFN_Y_golden_f64.fits` |
 | rerun | the continuum gate's record run again from the record alone (`selfcal rerun --overwrite RECORD`) | as continuum | the continuum golden |
 | production | the production recipe (`SLOPE_GAUGE`, `selfcal_scripts/recipes/spherex.py`) on D3 Ch9, NumCh17 x NumCol1: CGLS (the default solver) deflated, to the chi-squared stop; the weights `sc.shot_noise()`; the per-frame x-slope offsets; the post-solve plane gauge on the map; the weighted coadd (mean, std, 2-sigma clipped mean); the solve's monitor and snapshots | `qr2_d3_frames300`, the first 100 | `*_Ch9_production_golden_f64.{h5,fits}` |
+| compact | the production gate's recipe, frames and settings through the observation table (`sc.Compute(matrix='compact')`: the matrix never stored, the rows remade in compiled loops at every pass); compared with the production golden, so it has no golden of its own | `qr2_d3_frames300`, the first 100 | `*_Ch9_production_golden_f64.{h5,fits}` |
 | tiles | the npass3 recipe in two explicit tiles (`sc.Tiles(boxes=...)`, overlapping by 50 rows), solved one after the other and Fisher-stitched, as pass 1 of `sc.Passes(1)` | `pahfit_sanity` (150) | `*_Multiline3_tiles_{T1,T2,stitched}_golden_f64.h5` |
 
 The other gates name their solver, LSQR, and none is tiled: CGLS, its deflation and the
 chi-squared stop, the `sc.shot_noise()` weights, the x-slope offsets, the post-solve gauge, the
-weighted coadd, the monitor and the snapshots are gated by `production` alone, the tiled solve and
+weighted coadd, the monitor and the snapshots are gated by `production` alone (and, through the observation table, by `compact`), the tiled solve and
 its stitch by `tiles`.
 
 `python_gates.py` imports numpy before selfcal on purpose: the actions pin the threads
@@ -80,7 +81,7 @@ their files:
 | `script__<name>.json` | the run script `selfcal_scripts/runs/<name>.py` (a campaign's views by field) |
 | `example__quickstart.json` | `examples/quickstart/quickstart.py` |
 | `tool__transfer_function.json` | `selfcal_scripts/transfer_function/transfer_function.py` with its default inputs |
-| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `production`, `tiles`), its `Field.calibrate` call captured |
+| `gate__<name>.json` | each gate of `python_gates.py` (`continuum`, `spectral`, `e2e`, `npass3`, `euclid`, `production`, `compact`, `tiles`), its `Field.calibrate` call captured |
 
 The views read this machine's files (frame lists, reference grids, calibration data) and its CPU
 count (the default number of workers): compare views made on one machine.
