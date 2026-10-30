@@ -371,16 +371,18 @@ def test_refusals(tmp_path):
         sc.Compute(matrix='dense')
 
 
-def test_through_the_api(tmp_path):
-    """``sc.Compute(matrix='compact')`` on a camera: the cal's solution and pixel state are the stored run's."""
+@pytest.mark.parametrize('edge', ['partial', 'inside'])
+def test_through_the_api(tmp_path, edge):
+    """``sc.Compute(matrix='compact')`` on a camera: the cal's solution and pixel state are the stored run's, with
+    the observations at the window's edge kept (``window_edge='partial'``) or left out (``'inside'``)."""
     from selfcal.io.calfile import CalFile
     from tests.synthetic_exposures import DET as CAM
     from tests.synthetic_exposures import N_CHUNK_SIDE, REF_ARCSEC, write_exposures
     rng = np.random.default_rng(5)
     paths, _offsets, _scalars = write_exposures(str(tmp_path / 'exposures'), 10, rng)
     cam = sc.Camera((CAM, CAM), chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE), tag='Toy')
-    recipe = sc.Recipe(sc.continuum(smooth=0.0), fit=sc.Fit(20, tolerance=0, min_observations=2), coadd=None,
-                       numerics=sc.Numerics(2, batch=4), name='table')
+    recipe = sc.Recipe(sc.continuum(smooth=0.0), fit=sc.Fit(20, tolerance=0, min_observations=2, window_edge=edge),
+                       coadd=None, numerics=sc.Numerics(2, batch=4), name=f'table_{edge}')
     cals = {}
     for mode in ('stored', 'compact'):
         field = sc.Field(tmp_path / f'run_{mode}', cam, REF_ARCSEC,
