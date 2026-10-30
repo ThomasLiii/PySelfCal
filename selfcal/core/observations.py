@@ -41,9 +41,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = ['ObservationTable', 'require_numba']
 
-#: Rows of a data block made per task by the streams and the products (the per-thread scratch holds this many rows
-#: of entries); the deflation's chunks are cut to this size too.
+#: Rows of a data block per task of the streams and the coverage-floor pass.
 _TASK_ROWS = 1 << 19
+#: Rows per evaluation of the model's functions and per call of the loops: the functions' temporaries (a few arrays
+#: of this length per function) and the padded scratch of the expansion stay in cache at this size.
+_EVAL_ROWS = 1 << 16
 
 
 def require_numba():
@@ -484,7 +486,10 @@ class _Expansion:
             _sample_maps(x, y, self.aux_maps, self.H, self.W, aux)
             det.update(zip(self.aux_keys, aux))
         if self.frame_values or 'frame' in self.wanted:
-            frame_of = np.repeat(block.frames, np.diff(block.frame_rows))[lo:hi]
+            f0 = int(np.searchsorted(block.frame_rows, lo, side='right') - 1)
+            f1 = int(np.searchsorted(block.frame_rows, hi - 1, side='right'))
+            bounds = np.clip(block.frame_rows[f0:f1 + 1], lo, hi)
+            frame_of = np.repeat(block.frames[f0:f1], np.diff(bounds))
             det['frame'] = frame_of.astype(np.float64)
             for name, vals in self.frame_values.items():
                 v = vals[frame_of]
@@ -601,7 +606,8 @@ class ObservationTable:
                                   (hi - lo, self.shape[1])) @ p
             return
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
-        _matvec(*self._args(bi, lo - base, hi - base), p, zero, out)
+        for a, b in self._chunks(lo - base, hi - base):
+            _matvec(*self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)])
 
     def rmatvec_rows(self, bi, lo, hi, y_seg, buf):
         """``buf[c] += A[lo:hi, c]^T y_seg`` for the global rows ``lo:hi`` of block ``bi`` (the tail included), the
@@ -615,7 +621,13 @@ class ObservationTable:
             _sparsetools.csc_matvec(self.shape[1], hi - lo, self.tail.indptr[lr0:lr1 + 1], self.tail.indices, d,
                                     y_seg, buf)
             return
-        _rmatvec(*self._args(bi, lo - base, hi - base), y_seg, buf)
+        for a, b in self._chunks(lo - base, hi - base):
+            _rmatvec(*self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], buf)
+
+    @staticmethod
+    def _chunks(lo, hi, rows=_EVAL_ROWS):
+        """The row chunks ``(a, b)`` of ``lo:hi``, ``rows`` each."""
+        return [(a, min(hi, a + rows)) for a in range(lo, hi, rows)]
 
     def expand(self, bi, lo, hi, scaled=True, buf=None):
         """The rows ``lo:hi`` of block ``bi`` (local rows; the tail is block ``nblocks``) as CSR arrays ``(indptr,
@@ -637,16 +649,34 @@ class ObservationTable:
             va = buf.get('vals', vals.size, np.float32)
             np.copyto(va, vals)
             return li, co, va
-        cols_s, vals_s, counts = self._thread_scratch(n)
-        _expand(*self._args(bi, lo, hi, scaled=scaled), counts[:n], cols_s, vals_s)
-        total = int(counts[:n].sum())
+        S = self.model.S
+        parts, total = [], 0
+        for a, b in self._chunks(lo, hi):
+            m = b - a
+            cols_s, vals_s, counts = self._thread_scratch(m)
+            _expand(*self._args(bi, a, b, scaled=scaled), counts[:m], cols_s, vals_s)
+            k = int(counts[:m].sum())
+            ip, co, va = np.empty(m + 1, dtype=np.int32), np.empty(k, dtype=np.int32), np.empty(k, dtype=np.float32)
+            _compact(counts[:m], S, cols_s, vals_s, ip, co, va)
+            parts.append((ip, co, va))
+            total += k
+        if len(parts) == 1 and buf is None:
+            return parts[0]
         if buf is None:
             indptr, cols, vals = (np.empty(n + 1, dtype=np.int32), np.empty(total, dtype=np.int32),
                                   np.empty(total, dtype=np.float32))
         else:
             indptr, cols, vals = (buf.get('lip', n + 1, np.int32), buf.get('cols', total, np.int32),
                                   buf.get('vals', total, np.float32))
-        _compact(counts[:n], self.model.S, cols_s, vals_s, indptr, cols, vals)
+        indptr[0] = 0
+        o, r = 0, 0
+        for ip, co, va in parts:
+            m, k = ip.shape[0] - 1, co.shape[0]
+            np.add(ip[1:], np.int32(o), out=indptr[r + 1:r + m + 1])
+            cols[o:o + k] = co
+            vals[o:o + k] = va
+            o += k
+            r += m
         return indptr, cols, vals
 
     # ---- the deflation's and the start vector's reads ----------------------------------------------------------
@@ -776,10 +806,11 @@ class ObservationTable:
         def work(t):
             bi, lo, hi = t
             blk = self.blocks[bi]
-            sky_vals, phi = md.values(blk, lo, hi)
             flags = np.zeros(hi - lo, dtype=np.bool_)
-            _touching(lo, hi, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, md.J, md.num_sky,
-                      sky_vals, md.K, md.cmaps, md.H, md.W, md.nb, md.nboff, phi, md.S, drop, flags)
+            for a, b in self._chunks(lo, hi):
+                sky_vals, phi = md.values(blk, a, b)
+                _touching(a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, md.J, md.num_sky,
+                          sky_vals, md.K, md.cmaps, md.H, md.W, md.nb, md.nboff, phi, md.S, drop, flags[a - lo:b - lo])
             return bi, lo + np.flatnonzero(flags)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
