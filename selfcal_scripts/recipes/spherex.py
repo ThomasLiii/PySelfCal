@@ -64,8 +64,8 @@ def on_maps(recipe, num_sub=10, num_ch=17, num_col=1):
 # ---------------------------------------------------------------------------------------------- channel maps
 #: The channel-map recipe from 2026-09-29 to 2026-10-14 (its maps: Detectors 1 to 4, Detector 5 channels 1 to 16):
 #: NumCol 3 over 34 channels, no column polynomial (the transfer function showed NumCol 10 with a linear column
-#: polynomial overfits), a 2x oversampled coadd.
-NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1).replace(chunk_maps=maps(num_ch=34, num_col=3)),
+#: polynomial overfits), a 2x oversampled coadd; the sky damped with weight 0.1 (the library default of that time).
+NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=3)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2')
@@ -160,7 +160,8 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
     a background that varies within a subchannel (an airglow line's edge) is followed without steps. The
     x-slopes and the shared column offsets are the final recipe's. Products carry
     'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the channel recipe from the weak-mode work
-    on)."""
+    on; from 2026-10-29 :func:`pixels_final`, which replaces its column constants with per-pixel ones, is the final
+    channel recipe)."""
     base = on_maps(SUBCH_VARWEIGHT_COLUMNS_FINAL, num_sub, num_ch, num_col)
     offsets = (T.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2), position='arc_position'),) + tuple(
         o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
@@ -169,8 +170,38 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
     return base.replace(model=model, name=base.name + '_continuous')
 
 
-#: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5), 34 channels of 10 columns.
-POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)).replace(chunk_maps=maps(num_ch=34, num_col=10)),
+def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
+    """The final channel recipe (the user, 2026-10-29): :func:`continuous_final` with its column constants shared by
+    every frame replaced by one constant per
+    detector pixel shared by every frame, over the job's subchannels and the one beyond each end (the pixels the
+    bilinear sampling of the job's observations reaches): a detector-fixed pattern of any shape, such as a dark
+    current's pixel-to-pixel structure. It carries no pattern that the per-frame spectral term or the x-slopes can
+    make the same way in every frame (``exclude=sc.Overlap('spectral', 'xs_term', weights='information')``: measured
+    with each pixel's information, so the pixels the data barely see cannot take values that cancel such a pattern
+    held by the others; counted alike, 99.2 % of the real D2 Ch9 constants' variance lay along those patterns,
+    held by S and L in mirror image); every column pattern is one of its patterns, so the column term goes. Its deflation solves the per-frame terms' response alone
+    (``Deflate(offsets=('spectral', 'xs_term'))``): the per-pixel constants follow none of the non-constant sky
+    patterns, which cross the detector differently in every frame, and holding their response at zero keeps their
+    couplings to every frame's offsets out of the deflation (real D2 / D6 Ch9: 252 / 442 s of deflation). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
+    D6 Ch9: 11 / 59 pixels): such a pixel's constant fits that one observation exactly and informs nothing else.
+    On real NEP W17 Ch9 frames the solve stops on the chi-squared rule (D2 at iteration 120, D6 at 160); on the D6
+    transfer-function scene with dark current, zodi and noise its r_l is continuous_final's within 0.004 in every
+    bin. Products carry 'subch_varweight_pixels_final_continuous'."""
+    base = continuous_final(channel, num_sub, num_ch, num_col)
+    first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
+    offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
+        sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term', weights='information'),
+                   min_observations=2),)
+    maps = {'subchannel': base.model.chunk_maps['subchannel'],
+            'pixel': C.pixel_map(first, last, num_sub, num_ch, num_col)}
+    return base.replace(model=base.model.replace(offsets=offsets, chunk_maps=maps),
+                        fit=base.fit.replace(deflate=base.fit.deflate.replace(offsets=('spectral', 'xs_term'))),
+                        name='subch_varweight_pixels_final_continuous')
+
+
+#: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5), 34 channels of 10 columns; the sky
+#: damped with weight 0.1 (the library default of that time).
+POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=10)),
                     fit=sc.Fit(50, clip=5.0, method='lsqr'),
                     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
                     name='damp0p1_reg0p1_outThresh5_sigma2_polyK1')
@@ -189,10 +220,11 @@ MULTILINE3_WINDOW = range(200, 321)
 
 def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILINE3_WINDOW, degree=2,
                segments=None, num_ch=34, num_col=3):
-    """The multi-line recipe on :func:`maps` of 34 channels and ``num_col`` columns: a constant sky plus
-    ``lines``, the offset a hard degree-``degree`` polynomial along the subchannels of ``window`` (per column),
-    per-pixel shot-noise weights, the source-mask bit ignored; no mosaic (tiled and N-pass runs)."""
-    model = sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments))
+    """The multi-line recipe on :func:`maps` of 34 channels and ``num_col`` columns: a constant sky (damping 0.1,
+    the library default when the recipe was made) plus ``lines``, the offset a hard degree-``degree`` polynomial
+    along the subchannels of ``window`` (per column), per-pixel shot-noise weights, the source-mask bit ignored; no
+    mosaic (tiled and N-pass runs)."""
+    model = sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments), damping=0.1)
     return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
                      fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True,
                                 method='lsqr'),
@@ -201,12 +233,12 @@ def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILI
 
 def pahfit_tiled(name, *, iterations, num_ch=34, num_col=3):
     """The tiled PAH 3.29 um recipe (2026-08) on :func:`maps` of 34 channels and ``num_col`` columns: a constant
-    sky plus the PAH line (``terms.pah_3p29``, damping 5e-3), free offsets smoothed along the columns with a
-    linear column polynomial and a cubic along the subchannels 200-259 (weight 100), shot-noise weights, the
+    sky (damping 0.1) plus the PAH line (``terms.pah_3p29``, damping 5e-3), free offsets smoothed along the columns
+    with a linear column polynomial and a cubic along the subchannels 200-259 (weight 100), shot-noise weights, the
     source-mask bit ignored; no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=5e-3)],
                         poly_prior=[sc.Poly(1, weight=0.5), sc.Poly(3, along='subchannel', window=range(200, 260),
-                                                                  weight=100.0)])
+                                                                  weight=100.0)], damping=0.1)
     return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
                      fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
                      coadd=None, name=name)

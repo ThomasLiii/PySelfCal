@@ -267,7 +267,7 @@ class PassRunner:
                                reduce=normal_equations)
                 cc.x, summary = solve_frames(
                     cc.reduced, cc.constraint_blocks, cc.layout.total_cols, start=ctx.seed,
-                    exclusions=ctx.model.column_exclusions(ctx.geom, cc.layout) or None,
+                    exclusions=ctx.model.column_exclusions(ctx.geom, cc.layout, window=self.jobgeom.det_valid_weight) or None,
                     precondition=opts.get("precondition", True),
                     damp=opts.get("damp", 0.0), dtype=np.float32 if opts.get("use_float32") else np.float64)
                 cc.reduced = cc.constraint_blocks = None

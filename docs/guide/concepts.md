@@ -234,7 +234,7 @@ The priors, and the rows each adds to the system:
 | --- | --- | --- |
 | adjacency smoothing | `sc.Offsets(smooth=w, smooth_along=axes)` (0 by default; the presets' `smooth`, default 0.1) | per frame and pair of neighbouring chunks `a`, `b`: `w · (O[a] − O[b]) = 0` |
 | polynomial constraint | `sc.Offsets(poly_prior=sc.Poly(degree, along=, window=, weight=))` | per frame and run of `degree + 2` consecutive chunks along the axis: `weight · Σ stencil · O = 0`, a finite difference that vanishes on polynomials of degree `degree` or less |
-| sky damping | `sc.Sky(damping=d)` (default 0.1 for the first sky term, 0.3 for the others) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
+| sky damping | `sc.Sky(damping=d)` (default none, `d` = 0) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
 
@@ -286,6 +286,31 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
   too) but the constant, instead of the polynomials up to a degree.
+- `sc.Offsets(exclude=sc.Overlap('a', 'b'))`: the term carries no detector pattern that the offset
+  terms `a` and `b` can also make with the same coefficients in every frame (their fixed patterns).
+  Two terms that can make the same pattern leave the data unable to say which holds it; with the
+  exclusion it goes to `a` and `b`. The shared patterns are the intersection of the two terms'
+  pattern spaces over the detector pixels the job's observations reach (its window and the one pixel
+  around it that bilinear sampling touches), computed from the terms' chunk maps and their functions
+  at each pixel centre: a term with one offset per detector pixel gives up every fixed pattern of the
+  named terms, a term with one offset per detector column only those constant along each column. The
+  named terms must read detector-plane variables only (`det_x`, `det_y`, detector maps and variables
+  derived from them). By default every offset counts alike in the constraint. A term with many offsets
+  can include some the data barely see (detector pixels that only the corners of the observations'
+  bilinear sampling reach): those can take large values that cancel a shared pattern the other offsets
+  hold, at almost no cost to the fit, so the constraint holds only on paper and the solve wanders along
+  that direction. `sc.Overlap('a', 'b', weights='information')` measures the shared patterns with each
+  offset's information (the sum of its squared weighted entries, as the solver scales its columns): an
+  offset the data barely see then weighs almost nothing in the constraint and an offset without data
+  drops out. The constraint stays exact and needs no threshold.
+- Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
+  columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
+  say), the complement no longer fits in memory. `sc.Deflate(offsets=(...))` names the offset terms
+  whose response the deflation solves; the others keep a zero response and stay in the space. Listing
+  the per-frame terms alone leaves the shared ones out: the patterns' offsets are solved directly frame
+  by frame, and what the shared terms take of the patterns is left to the iterations. A shared offset
+  fixed on the detector cannot follow a sky pattern that crosses the detector differently in each
+  frame, so that share is small except along the sky's constant level.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.
@@ -332,7 +357,13 @@ Compare quantities that a change of gauge leaves alone:
   zeroes those pixels' rows as it places them (values and right-hand side), with no extra pass over
   the frames; the pixels' columns stay without data (coverage 0, value 0, outside the deflation's
   patterns), so every other unknown gets the solution without those rows. The mosaic still covers
-  them. Off by default.
+  them. Off by default. `sc.Offsets(..., min_observations=2)` does the same for one offset term with
+  one unknown per chunk (a chunk a single observation sees: for a term per detector pixel, a pixel
+  next to masked ones): judged on the same counts, its rows zeroed in the same pass, its offsets left
+  at zero, which the mosaic then applies to those observations. A hard constraint on the term
+  (`exclude=`) holds on the observed offsets alone: an offset without data left in the constraint
+  would take whatever value cancels it. Both floors judge the counts the build collates, and those
+  counts stand: a zeroed row still counts in the coverage of its other columns.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
   the same in the mosaic; for example Euclid's star mask

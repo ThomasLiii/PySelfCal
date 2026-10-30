@@ -238,8 +238,9 @@ def field():
 
 
 def _recipe(iterations=30, name='c', **fit):
-    return sc.Recipe(sc.continuum(), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None, numerics=NUMERICS,
-                     name=name)
+    # the sky damped (0.1) so that this toy converges in 60 iterations: a long solve then has a solution to stay at
+    return sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None,
+                     numerics=NUMERICS, name=name)
 
 
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')

@@ -156,6 +156,23 @@ def _make_parallel_operator(A_csr, n_threads, promote=False):
     return op
 
 
+def _column_squares(A, n_cols, chunk=64_000_000):
+    """The sum of the squared entries of each column of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`),
+    float64: zero for a column without data (a coverage floor, ``setup_lsqr(min_observations=)``, keeps its columns in
+    the layout with zeroed entries); the columns' information for a constraint measured with it."""
+    sq = np.zeros(int(n_cols), dtype=np.float64)
+    if isinstance(A, ColSplitCSR):
+        parts = [(int(A.cuts[t]), A.sub[b][t][0], A.sub[b][t][1]) for b in range(A.nblocks) for t in range(A.nranges)]
+    else:
+        parts = [(0, blk.data, blk.indices) for blk in (A.blocks if isinstance(A, BlockCSR) else (A,))]
+    for c0, d, i in parts:
+        for s in range(0, d.size, chunk):
+            v = d[s:s + chunk].astype(np.float64)
+            idx = i[s:s + chunk]
+            sq += np.bincount(idx + c0 if c0 else idx, weights=v * v, minlength=sq.size)[:sq.size]
+    return sq
+
+
 def _iter_global_entry_chunks(blocks, chunk_size, join=True):
     """Yield (data, cols) pairs cut at GLOBAL entry-stream boundaries.
 
@@ -848,7 +865,7 @@ def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter
 
 def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 ref_shape: tuple[int, int], x0: np.ndarray | None = None,
-                atol: float = 1e-05, btol: float = 1e-05, damp: float = 1e-2,
+                atol: float = 1e-05, btol: float = 1e-05, damp: float = 0.0,
                 iter_lim: int = 100, precondition: bool = True,
                 solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
                 active_mask: np.ndarray | None = None,
@@ -857,7 +874,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None, signatures=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None, held=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -881,7 +898,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     btol : float, optional
         Relative tolerance passed to the solver (default 1e-05).
     damp : float, optional
-        Tikhonov damping applied by the solver (default 1e-2).
+        Tikhonov damping applied by the solver (default 0: none).
     iter_lim : int, optional
         Maximum solver iterations (default 100).
     precondition : bool, optional
@@ -970,6 +987,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
         The responses come from the deflation's setup, which also adds the constraint to the column
         constraints (:meth:`~selfcal.core.deflation.Deflation._exclude_signatures`): needs ``deflate``.
+    held : array of int, optional
+        The offset columns (full layout) of the terms ``Deflate(offsets=)`` leaves out: the deflation holds their
+        response to its patterns at zero (:class:`~selfcal.core.deflation.Deflation`).
 
     Returns
     -------
@@ -1073,6 +1093,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             if x0_compressed is not None and not keep64:
                 x0_compressed = x0_compressed.astype(np.float32)
 
+        # an exclusion measured with the columns' information (Overlap(weights='information')) needs their squared norms
+        weighted = bool(exclusions) and any(len(e) > 2 and e[2] is not None for e in exclusions)
         if precondition:
             logger.info("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
@@ -1155,6 +1177,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             del _slots
 
             col_norms = np.sqrt(col_sq_norm)
+            no_data = np.flatnonzero(col_norms == 0) if exclusions else None
+            information = col_sq_norm if weighted else None
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
@@ -1212,6 +1236,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             M = None
             x0_solver = x0_compressed
             x0_compressed = None
+            if exclusions:
+                information = _column_squares(A, n_active)
+                no_data = np.flatnonzero(information == 0)
+                if not weighted:
+                    information = None
 
         proj = None
         sig = None
@@ -1227,8 +1256,25 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
                 sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
+        def solver_columns(cols):
+            # full-layout columns -> solver columns (the active ones)
+            c = np.asarray(cols, dtype=np.int64)
+            if active_mask is not None:
+                smap = np.full(len(active_mask), -1, dtype=np.int64)
+                smap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
+                c = smap[c]
+                c = c[c >= 0]
+            return c
+
+        held_s = None
+        if held is not None and deflate is not None and len(held):
+            held_s = solver_columns(held)
         if exclusions:
-            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
+            # a column without data (a coverage floor's) has no unknown in the constraints: in them it would take
+            # the value that lifts them off the others
+            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active,
+                                         no_data=no_data, information=information)
+            information = None
             if x0_solver is not None:
                 proj.apply(x0_solver)
             logger.info(f"Column constraints: {proj} (the solver runs on A P: no row, no weight)")
@@ -1323,7 +1369,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj,
-                                 signatures=sig)
+                                 signatures=sig, held=held_s)
                 if defl.projector is not proj:
                     proj = defl.projector
                     logger.info(f"Column constraints with the deflation's additions: {proj}")

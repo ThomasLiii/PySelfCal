@@ -14,6 +14,13 @@ The pipeline writes several HDF5 layouts (documented in PIPELINE.md):
 * **stitched** cals and **N-pass OFFSET products** carry a subset (no offsets
   / no sky respectively).
 
+A term shared by groups of frames (``per='all'`` or a frame variable) is stored once
+per group: ``offsets/map_<m>``, ``offset_coverage/map_<m>`` and
+``offset_coverage_frac/map_<m>`` hold one row per group, and
+``offset_frame_group/map_<m>`` each frame's group (``offsets/map_<m>`` carries the
+attribute ``rows = 'groups'``). Cals written before 2026-10-28 repeat the group's row on
+each of its frames.
+
 ``CalFile`` hides those differences: ``sky(name)``, ``offsets`` (a list per
 map, expanded per frame), ``reproj_list`` ... resolve on any of them, and the
 analysis scripts, the mosaicker and the N-pass readers all go through it. Reads
@@ -30,7 +37,45 @@ import h5py
 import hdf5plugin  # noqa: F401  (Blosc/Zstd-compressed datasets)
 import numpy as np
 
-__all__ = ['CalFile', 'open_cal']
+__all__ = ['CalFile', 'FrameRows', 'open_cal']
+
+
+class FrameRows:
+    """A per-frame table stored once per group of frames: ``values`` (one row per group) and ``frame_group`` (each
+    frame's group); frame ``i``'s row is ``values[frame_group[i]]``. An int index gives that frame's row (an array); a
+    slice, an index array or a mask the same table over those frames, still stored once per group; ``np.asarray``
+    expands it to one row per frame."""
+
+    def __init__(self, values, frame_group):
+        self.values = np.asarray(values)
+        self.frame_group = np.asarray(frame_group, dtype=np.int64)
+
+    @property
+    def shape(self):
+        return (int(self.frame_group.size),) + tuple(self.values.shape[1:])
+
+    @property
+    def dtype(self):
+        return self.values.dtype
+
+    @property
+    def ndim(self):
+        return self.values.ndim
+
+    def __len__(self):
+        return int(self.frame_group.size)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, (int, np.integer)):
+            return self.values[self.frame_group[idx]]
+        return FrameRows(self.values, self.frame_group[idx])
+
+    def __array__(self, dtype=None, copy=None):
+        out = self.values[self.frame_group]
+        return out if dtype is None else out.astype(dtype)
+
+    def __repr__(self):
+        return f"FrameRows({self.values.shape[0]} group row(s) for {len(self)} frames, {self.values.shape[1:]})"
 
 
 def _decode(v):
@@ -266,16 +311,30 @@ class CalFile:
         return 1 if 'offset' in f else 0
 
     def _per_map(self, group, legacy):
+        return [np.asarray(r) for r in self.rows(group, legacy)]
+
+    def rows(self, group, legacy=None) -> list:
+        """Per-map tables of ``group`` (``'offsets'``, ``'offset_coverage'``, ``'offset_coverage_frac'``,
+        ``'chunk_maps'``) as stored: an array, or a :class:`FrameRows` for a map stored once per group of frames
+        (``offset_frame_group/map_<m>``), which readers that only need some frames keep compact (``legacy``: the
+        single dataset of the legacy layout)."""
         f = self._f
         if group in f:
-            return [f[group][f'map_{m}'][()] for m in range(self.num_maps)]
+            out = []
+            for m in range(self.num_maps):
+                a = f[group][f'map_{m}'][()]
+                if group != 'chunk_maps' and 'offset_frame_group' in f and f'map_{m}' in f['offset_frame_group']:
+                    a = FrameRows(a, f['offset_frame_group'][f'map_{m}'][()])
+                out.append(a)
+            return out
         if legacy is not None and legacy in f:
             return [f[legacy][()]]
         return []
 
     @property
     def offsets(self) -> list[np.ndarray]:
-        """Per-map ``(n_frames, n_chunks)`` offsets, expanded per frame."""
+        """Per-map ``(n_frames, n_chunks)`` offsets, expanded per frame (:meth:`rows` keeps a map stored once per
+        group of frames as stored)."""
         return self._per_map('offsets', 'offset')
 
     @property

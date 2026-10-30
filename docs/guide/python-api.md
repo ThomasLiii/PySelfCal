@@ -52,7 +52,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
-| `sc.Fit(min_observations=2)` | leave out of the solve the sky pixels a single observation covers |
+| `sc.Fit(min_observations=2)`, `sc.Offsets(min_observations=2)` | leave out of the solve the sky pixels, or a term's offsets, a single observation covers |
 | `sc.Result` | the products, with readers |
 
 ### Instruments
@@ -161,7 +161,7 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 
 - `sc.Sky(name, times=, damping=)`: a sky map times a known function of data variables
   (`times`; none: a constant sky). `damping` pulls the map toward zero, weighted by coverage
-  (default 0.1 for the first sky term, 0.3 for the others).
+  (default none: 0).
 - `sc.Offsets(name, on=, per=, ...)`: an offset per chunk of the chunk map `on` (default the
   primary map; `"detector"`: the whole detector), shared by `per` (`"frame"`, `"all"`, or a
   frame variable such as `"detector"`), optionally times one function (`times=`) or `n` basis
@@ -173,7 +173,12 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
   group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
   value per frame. `exclude=sc.SkySignature(k)` keeps a per-frame term from taking up the smooth sky
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
-  constant); it needs `sc.Fit(deflate=...)`
+  constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
+  any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
+  frame (`weights="information"`: measured with each offset's information, so offsets the data barely
+  see cannot carry the constraint for the others). `min_observations=2`: the term's offsets a single observation sees leave the solve (value 0),
+  as `sc.Fit(min_observations=)` does for sky pixels. The cal holds a term shared by groups of frames
+  once per group, with each frame's group (the readers expand it per frame)
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds
@@ -234,7 +239,11 @@ BY_SUBCHANNEL = FINAL.replace(fit=FINAL.fit.replace(clip=sc.Clip(5.0, per=SUBCHA
 A recipe can also be a function of the job: `continuous_final(channel)` there is this recipe for one
 channel job, its per-frame subchannel constants replaced by `terms.spectral_offsets` of the job's
 subchannels (a function continuous across the subchannels):
-`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`.
+`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`. `pixels_final(channel)`, the final channel recipe,
+replaces its column constants with one constant per detector pixel shared by every frame
+(`sc.Offsets("pixels", on="pixel", per="all", exclude=sc.Overlap("spectral", "xs_term", weights="information"),
+min_observations=2)`), its deflation solving the per-frame terms' response alone
+(`sc.Deflate(offsets=("spectral", "xs_term"))`).
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver, its
 starting vector, per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the

@@ -105,7 +105,7 @@ def test_damp_weight_rule():
     m = SkyModel((ContinuumComponent(), SkyComponent('a', Coefficient('u', shape)),
                   SkyComponent('b', Coefficient('u', shape), damp_weight=0.02)))
     assert m.damp_weights(0.1, 0.3) == [0.1, 0.3, 0.02]
-    assert m.damp_weights(0.1, None) == [0.1, 3.0 * 0.1, 0.02]        # the terms after the first: 3 x by default
+    assert m.damp_weights(0.1, None) == [0.1, 0.0, 0.02]              # the terms after the first: undamped by default
     assert m.damp_weights(None) == [0.0, 0.0, 0.02]
     m2 = SkyModel((SkyComponent('sky', damp_weight=0.5),))
     assert m2.damp_weights(0.1) == [0.5]                  # the first term honours its own prior too

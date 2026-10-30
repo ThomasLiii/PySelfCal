@@ -290,8 +290,12 @@ def _exclusion_rows(exclusions, num_cols):
     if not exclusions:
         return None
     r, c, d, n = [], [], [], 0
-    for cols, P in exclusions:
-        cols = np.asarray(cols, dtype=np.int64)
+    for ex in exclusions:
+        if len(ex) > 2 and ex[2] is not None:
+            raise ValueError("an exclusion measured with the columns' information (Overlap(weights='information')) needs "
+                             "the engine's iterative solve: the OFFSET pass solves its blocks with unweighted constraints")
+        cols = np.asarray(ex[0], dtype=np.int64)
+        P = ex[1]
         P = np.asarray(P, dtype=np.float64)
         for g in range(cols.shape[0]):
             real = cols[g] >= 0
@@ -505,6 +509,9 @@ def merge_offset_cals(pieces, out, *, attrs=None):
             if "frame_scalar" in f:
                 raise ValueError(f"merge_offset_cals: {os.path.basename(path)} holds a separate per-frame scalar "
                                  f"(frame_scalar), an older layout that is not read")
+            if "offset_frame_group" in f:
+                raise ValueError(f"merge_offset_cals: {os.path.basename(path)} holds offsets shared by groups of frames "
+                                 f"(offset_frame_group): an OFFSET pass takes per-frame terms only")
             names += [r.decode() if isinstance(r, bytes) else str(r) for r in f["reproj_list"][()]]
     bases = [os.path.basename(n) for n in names]
     if len(set(bases)) != len(bases):

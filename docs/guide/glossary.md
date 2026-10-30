@@ -104,8 +104,7 @@ where it can, and the chunk's pixels in that frame are left out of the coadd oth
 ## Damping { #damping }
 
 A Tikhonov prior that pulls unknowns toward zero. Sky terms, `sc.Sky(damping=d)`: one row
-`sqrt(d · coverage) · S[P] = 0` per covered pixel (default `d` 0.1 for the first term, 0.3 for the
-others). Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` is the
+`sqrt(d · coverage) · S[P] = 0` per covered pixel (default none, `d` = 0). Offset terms, `sc.Offsets(damping=d)`: rows of the same form. `sc.Fit(damp=)` is the
 solver's own damping of every unknown. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
@@ -236,7 +235,11 @@ all of a group's chunks. The solver imposes it exactly by reparametrisation
 ([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), with no weight; a chunk with no
 unknown in the solve (no observation and no prior row on it) drops out. It applies to a term of one
 unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the chunk term of
-`sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar). See
+`sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar).
+`sc.Offsets(exclude=sc.Overlap('a', 'b'))` is the same kind of restriction with directions taken from
+the model itself: the term carries no detector pattern that the offset terms `a` and `b` can make
+with the same coefficients in every frame (`weights='information'`: measured with each offset's
+information). See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
 
 ## Hook { #hook }

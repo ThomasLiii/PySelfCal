@@ -7,6 +7,8 @@ k..k+H, so the first and last grid rows are observed once and the coverage grows
 outlier leave single observations inside the field too (the outlier only when the solve clips it, or when the
 model's weight is not finite there).
 """
+import os
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -186,7 +188,7 @@ def test_the_deflation_reads_no_column_outside_its_space():
     lip = np.array([0, 2, 4], dtype=_IDX)
     cols = np.array([1, 3, 0, 4], dtype=np.int32)        # row 0: the outside column (value 0) and an offset; row 1: sky, offset
     data = np.array([0.0, 2.0, 1.5, 3.0], dtype=np.float32)
-    _lip, pos, d64, sky, off = _prepare_piece(2, lip, cols, data, colmap, 2, buf=_Slot())
+    _lip, pos, d64, sky, off, _oid = _prepare_piece(2, lip, cols, data, colmap, 2, buf=_Slot())
     assert (pos >= 0).all() and list(pos) == [0, 2, 0, 3]
     ips, sc, sv, rows = sky
     assert list(sc) == [0, 0] and list(sv) == [0.0, 1.5] and list(rows) == [0, 1]
@@ -231,3 +233,112 @@ def test_the_setting_lowers_to_the_setup_keyword_and_validates():
         setup_lsqr([], GRID, min_observations=1)
     with pytest.raises(ValueError, match='matrix build'):
         setup_lsqr(['x.h5'], GRID, min_observations=2, moments_only=True)
+
+
+# ---------------------------------------------------------------------------------------------- Offsets(min_observations=)
+#: Detector pixels (row, column) of the toy below that one exposure alone observes.
+BAD = ((5, 7), (20, 30), (40, 60))
+
+
+def _toy(tmp_path):
+    """24 exposures of a 48 x 64 detector at random places on the sky (the toy telescope of test_any_telescope), each
+    the sky plus a pattern every exposure shares plus noise."""
+    from test_any_telescope import H as TH, PIX, REF, TWO_WORKERS, W as TW, true_sky, write_exposure
+    rng = np.random.default_rng(3)
+    sky = true_sky()
+    pattern = rng.normal(0, 0.05, (TH, TW))
+    for k in range(24):
+        oy, ox = rng.integers(0, REF - TH), rng.integers(0, REF - TW)
+        img = sky[oy:oy + TH, ox:ox + TW] + pattern + rng.normal(0, 0.01, (TH, TW))
+        write_exposure(tmp_path / 'exposures' / f'toy_exp_{k:03d}.fits', img, ox, oy, {})
+    field = sc.Field(tmp_path / 'toy', sc.Camera((TH, TW), tag='Toy'), PIX, compute=TWO_WORKERS)
+    field.reproject(tmp_path / 'exposures' / 'toy_exp_*.fits', method='interp', padding=8)
+    return field
+
+
+def exposure_number(frames):
+    """Each frame's exposure number, from its file name."""
+    return np.array([int(os.path.basename(f).split('_')[1]) for f in frames])
+
+
+def _at_bad(det_x, det_y):
+    r, c = np.rint(np.asarray(det_y)).astype(np.int64), np.rint(np.asarray(det_x)).astype(np.int64)
+    return np.logical_or.reduce([(r == rr) & (c == cc) for rr, cc in BAD])
+
+
+def seen_once(det_x, det_y, exposure):
+    """A model weight of 1, not finite at the detector pixels :data:`BAD` in every exposure but the first: those
+    observations leave the solve and the mosaic, and the first exposure alone observes the pixels."""
+    return np.where(_at_bad(det_x, det_y) & (np.asarray(exposure) > 0), np.nan, 1.0)
+
+
+def seen_never(det_x, det_y):
+    """A model weight of 1, not finite at the detector pixels :data:`BAD`."""
+    return np.where(_at_bad(det_x, det_y), np.nan, 1.0)
+
+
+def _pattern_recipe(name, weight, floor=None, iterations=500):
+    """The sky and one unknown per detector pixel shared by every frame, with no constant (``exclude=Poly(0)``: a hard
+    constraint, the sky's level the pattern cannot take), the pixels seen fewer than ``floor`` times left out (None:
+    none), the model's weight ``weight``; no clip, no damping: the solution is unique."""
+    from test_any_telescope import COADD, FIT, NUMERICS
+    from test_overlap_exclusion import pixel_chunks
+    model = sc.Model(chunk_maps={'pixels': sc.ChunkMap(pixel_chunks)}, sky=[sc.Sky(damping=0.0)],
+                     offsets=[sc.Offsets('pattern', on='pixels', per='all', exclude=sc.Poly(0), min_observations=floor)],
+                     variables={'exposure': sc.PerFrame(exposure_number)}, weight=weight)
+    return sc.Recipe(model, fit=FIT.replace(iterations=iterations, clip=None), coadd=COADD, numerics=NUMERICS, name=name)
+
+
+def _cal(result):
+    """The cal's offsets and the shared term's coverage (its one stored row), the mosaic's mean and weight."""
+    from astropy.io import fits
+
+    from selfcal.io.calfile import CalFile
+    (cal,), (mos,) = result.cal_paths, result.mosaic_paths
+    with CalFile(cal) as c:
+        out = {'offsets': [np.asarray(c.rows('offsets')[0].values, np.float64)],
+               'coverage': np.asarray(c.rows('offset_coverage')[0].values)}
+    with fits.open(mos) as h:
+        out['mean'], out['weight'] = (np.array(h[k].data, np.float64) for k in ('MEAN_MAP', 'MEAN_MAP_WEIGHT'))
+    return out
+
+
+def test_an_offset_observed_once_leaves_the_solve(tmp_path):
+    """``Offsets(min_observations=2)`` on a term every frame shares, one unknown per detector pixel, with a hard
+    constraint (``exclude=Poly(0)``). The pixels one exposure alone observes keep no value and no coverage, where
+    without the floor each fits its one observation; every other unknown is the solve's without those observations, so
+    the constraint holds on the observed pixels alone (a pixel without data left in it would take the value that lifts
+    it off the others: the sky's level); and the mosaic still uses those observations, with that offset at zero: one
+    more observation at their sky pixels, nowhere else."""
+    pix = [r * 64 + c for r, c in BAD]
+    field = _toy(tmp_path)
+    plain = _cal(field.calibrate(_pattern_recipe('plain', seen_once), jobs=sc.Job('All')))
+    floored = _cal(field.calibrate(_pattern_recipe('floored', seen_once, floor=2), jobs=sc.Job('All')))
+    ref = _cal(field.calibrate(_pattern_recipe('never', seen_never), jobs=sc.Job('All')))
+    assert np.flatnonzero(plain['coverage'][0] == 1).tolist() == pix and (plain['offsets'][0][0, pix] != 0).all()
+    assert (floored['coverage'][0, pix] == 0).all() and (floored['offsets'][0][0, pix] == 0).all()
+    np.testing.assert_array_equal(floored['coverage'], ref['coverage'])
+    np.testing.assert_allclose(floored['offsets'][0], ref['offsets'][0], rtol=0, atol=1e-6)     # float32 products
+    extra = np.nan_to_num(floored['weight']) - np.nan_to_num(ref['weight'])
+    assert np.count_nonzero(extra) == len(BAD) and (extra[extra != 0] > 0).all()
+    same = (extra == 0) & np.isfinite(ref['mean'])
+    np.testing.assert_allclose(floored['mean'][same], ref['mean'][same], rtol=1e-6, atol=0)          # float32 maps
+
+
+def test_the_offset_floor_lowers_per_map_and_validates():
+    from selfcal.config.base import ConfigError
+    from test_any_telescope import plane
+    model = sc.Model(offsets=[sc.Offsets(), sc.Offsets('scalar', on='detector', min_observations=3)])
+    assert model.spec().setup_kwargs()['offset_min_observations'] == [None, 3]
+    assert 'offset_min_observations' not in sc.Model(offsets=[sc.Offsets()]).spec().setup_kwargs()
+    for bad in (1, 0, 2.0, True, '2'):
+        with pytest.raises(ConfigError):
+            sc.Offsets(min_observations=bad)
+    with pytest.raises(ConfigError, match='one unknown per chunk'):
+        sc.Offsets('gradient', on='detector', basis=plane, n=2, min_observations=2)
+    cm = [np.zeros((H, W), np.int32)]
+    for bad in ([1], [2, None], [2.0]):
+        with pytest.raises(ValueError):
+            setup_lsqr(['x.h5'], GRID, chunk_maps=cm, offset_min_observations=bad)
+    with pytest.raises(ValueError, match='matrix build'):
+        setup_lsqr(['x.h5'], GRID, chunk_maps=cm, offset_min_observations=[2], moments_only=True)

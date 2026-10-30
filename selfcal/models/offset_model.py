@@ -68,8 +68,9 @@ class Basis:
         """The data variables the function is applied to, in argument order (always read)."""
         return self.coefficient.main_variables
 
-    def evaluate(self, obs) -> np.ndarray:
-        """The ``n`` functions at the observations of ``obs``, as an ``(n_obs, n)`` float32 array.
+    def evaluate(self, obs, dtype=np.float32) -> np.ndarray:
+        """The ``n`` functions at the observations of ``obs``, as an ``(n_obs, n)`` array of ``dtype`` (float32: the
+        solve's).
 
         ``obs`` maps variable names to one value per observation (one frame's
         :class:`~selfcal.models.variables.ObservationVariables`); ``n_obs`` is the
@@ -86,23 +87,23 @@ class Basis:
         n_obs = int(np.shape(x0)[0])
         f = c.function
         v = f.evaluate(x0, obs) if hasattr(f, 'evaluate') else f(*[obs[k] for k in names])
-        return as_basis_values(v, n_obs, self.n)
+        return as_basis_values(v, n_obs, self.n, dtype)
 
 
-def as_basis_values(v, n_obs, n):
-    """Normalise a basis function's result to ``(n_obs, n)`` float32."""
+def as_basis_values(v, n_obs, n, dtype=np.float32):
+    """Normalise a basis function's result to ``(n_obs, n)`` of ``dtype`` (float32: the solve's)."""
     if isinstance(v, (list, tuple)):
         if len(v) != n:
             raise ValueError(f"a basis of {n} functions returned {len(v)} columns")
         cols = [np.broadcast_to(np.asarray(c, dtype=np.float64), (n_obs,)) for c in v]
-        return np.stack(cols, axis=1).astype(np.float32)
+        return np.stack(cols, axis=1).astype(dtype)
     a = np.asarray(v)
     if a.ndim == 0 and n == 1:
-        return np.full((n_obs, 1), a, dtype=np.float32)
+        return np.full((n_obs, 1), a, dtype=dtype)
     if a.ndim == 1 and n == 1 and a.shape[0] == n_obs:
-        return a.astype(np.float32).reshape(n_obs, 1)
+        return a.astype(dtype).reshape(n_obs, 1)
     if a.ndim == 2 and a.shape == (n_obs, n):
-        return a.astype(np.float32)
+        return a.astype(dtype)
     raise ValueError(f"a basis of {n} function(s) over {n_obs} observations returned shape {a.shape}; "
                      f"expected ({n_obs}, {n}), {n} arrays" + (" or one array" if n == 1 else ""))
 

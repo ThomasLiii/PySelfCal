@@ -46,7 +46,7 @@ def _ref(fn):
     """How a function is handed to the model's data form: its import path, or the by-value object itself."""
     return fn if isinstance(fn, by_value) else function_ref(fn)
 
-__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets',
+__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets', 'Overlap',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
            'ChunkMap', 'Prior', 'Model', 'continuum', 'spectral', 'two_block']
 
@@ -375,14 +375,65 @@ class SkySignature(Config):
 
 
 @dataclass(frozen=True)
+class Overlap(Config):
+    """What an offset term may not carry (``Offsets(exclude=Overlap('a', 'b'))``): any detector pattern that the
+    named offset terms of the model can also make with the same coefficients in every frame (their fixed patterns).
+
+    Two terms that can make the same detector pattern leave the data unable to say which of them holds it: an exact
+    degeneracy, settled otherwise by where the solver starts. With this exclusion the term gives up the shared
+    patterns to the named terms (a hard constraint by reparametrisation, no row and no weight). The shared patterns
+    are the intersection of the two terms' pattern spaces over the detector pixels of the job's solve, computed
+    exactly from the terms themselves (their chunk maps and their functions at each pixel centre), so a term with
+    one offset per detector pixel gives up every fixed pattern of the named terms, and a term with one offset per
+    detector column only those that are constant along each column. The named terms' functions must read
+    detector-plane variables only (the built-in ``det_x``, ``det_y``, detector maps, and variables derived from
+    them): a function of per-frame or per-observation data makes no fixed pattern. ``terms``: the names of the
+    other offset terms (:attr:`Offsets.term_name`).
+
+    ``weights``: how the term's offsets count when the shared patterns are measured. None (the default): every offset
+    alike. ``'information'``: each offset by its information, the sum of its squared weighted entries in the solve
+    (how strongly the data see it). Counted alike, a few offsets the data barely see (a detector pixel that only the
+    corners of the observations' bilinear sampling reach) can take large values that cancel a shared pattern the
+    other offsets hold, at almost no cost to the fit, and the constraint then holds only on paper; weighted by their
+    information they cannot. An offset without data has no weight and drops out. Either way the constraint is exact
+    (it settles the same exact degeneracy) and needs no threshold.
+    """
+    terms: tuple[str, ...]
+    weights: str | None = added(None, since='2026-10')
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, *terms, weights=None):
+        object.__setattr__(self, 'terms', tuple(terms))
+        object.__setattr__(self, 'weights', weights)
+        self.__post_init__()
+
+    def __repr__(self):
+        return _call('Overlap', self.terms, (('weights', self.weights),) if self.weights is not None else ())
+
+    @classmethod
+    def _from_fields(cls, terms, weights=None):
+        return cls(*terms, weights=weights)
+
+    def _validate(self):
+        if not self.terms or not all(isinstance(t, str) and t for t in self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: the names of one or more offset terms of the model")
+        if len(set(self.terms)) != len(self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: a term named twice")
+        if self.weights not in (None, 'information'):
+            raise ConfigError(f"Overlap(weights={self.weights!r}): None (every offset alike) or 'information' (each by "
+                              f"how strongly the data see it)")
+
+
+@dataclass(frozen=True)
 class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
     ``times``: the function (a Python function of data variables, :class:`Function`, a
     built-in :func:`template` / :func:`gaussian` / :func:`linear`, or the name
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
-    coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
-    0.3 for the others; 0 for none).
+    coverage-weighted pull of the map toward zero (None, the default, or 0: none).
 
     ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
     coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
@@ -427,7 +478,8 @@ class Offsets(Config):
     ``on``: the chunk map (None: the instrument's primary map; ``"detector"``: the whole
     detector as one chunk). ``per``: who shares an offset: ``"frame"`` (each frame its own),
     ``"all"`` (every frame the same: a detector-fixed pattern), or a frame variable (frames with
-    equal values: ``"detector"``, ``"exposure"``, a night, a filter).
+    equal values: ``"detector"``, ``"exposure"``, a night, a filter). The cal file holds a shared term's
+    offsets once per group of frames, with each frame's group (:class:`~selfcal.io.calfile.CalFile`).
 
     Known functions: ``times`` (one function of data variables multiplying the offset at every
     observation), or ``basis`` with ``n`` functions (the unknowns become one coefficient per
@@ -447,7 +499,14 @@ class Offsets(Config):
     the data can place it: other terms or the sky. ``exclude=SkySignature(k)`` is a hard
     constraint of another kind: the term carries no part of its response to the sky polynomials
     of degree 1 to k (a per-frame slope term that would otherwise absorb a sky plane in every
-    frame; :class:`SkySignature`).
+    frame; :class:`SkySignature`). ``exclude=Overlap('a', 'b')`` is a hard constraint of a third kind: the term
+    carries no detector pattern that the named offset terms can also make with the same coefficients in every frame
+    (:class:`Overlap`), so the two never share a pattern the data cannot split.
+    ``min_observations``: the term's offsets that fewer observations than this see leave the solve, as
+    ``Fit(min_observations=)`` does for sky pixels (2: an offset seen once fits that observation exactly and informs
+    no other unknown): their rows are zeroed in the solve and they keep no value (0), and the mosaic still uses those
+    observations, with that offset at zero. A hard constraint on the term (``exclude=``) holds on the observed offsets.
+    One unknown per chunk (not ``polynomial=`` or ``basis=``). None (the default): off.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
@@ -465,7 +524,8 @@ class Offsets(Config):
     smooth_step: int | None = None
     poly_prior: tuple[Poly, ...] = ()
     polynomial: Poly | None = None
-    exclude: Poly | SkySignature | None = added(None, since='2026-10')
+    exclude: Poly | SkySignature | Overlap | None = added(None, since='2026-10')
+    min_observations: int | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
@@ -500,10 +560,13 @@ class Offsets(Config):
             if self.per == 'all':
                 raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
                                   "a term shared by every frame is the same in every frame: nothing to constrain")
+        elif isinstance(self.exclude, Overlap):
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: exclude=Overlap(...) applies to a term of one unknown per chunk (not polynomial= or basis=)")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
-                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis) or a SkySignature(degree)")
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis), a SkySignature(degree) or an Overlap(terms)")
             bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
             if bad:
                 raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
@@ -511,6 +574,13 @@ class Offsets(Config):
                 raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
         for p in self.poly_prior:
             p.lower_soft(label)
+        if self.min_observations is not None:
+            m = self.min_observations
+            if isinstance(m, bool) or not isinstance(m, (int, np.integer)) or m < 2:
+                raise ConfigError(f"{label}: min_observations is an integer of at least 2, or None")
+            if self.polynomial is not None or self.basis is not None:
+                raise ConfigError(f"{label}: min_observations applies to a term of one unknown per chunk "
+                                  f"(not polynomial= or basis=)")
         if self.exact_group_rows and self.per == 'frame':
             raise ConfigError(f"{label}: exact_group_rows applies to a shared term (per='all' or a frame "
                               f"variable)")
@@ -536,6 +606,10 @@ class Offsets(Config):
                        poly=[p.lower_soft('Offsets') for p in self.poly_prior])
             if isinstance(self.exclude, SkySignature):
                 out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+            elif isinstance(self.exclude, Overlap):
+                out['exclude_overlap'] = list(self.exclude.terms)
+                if self.exclude.weights is not None:
+                    out['exclude_overlap_weights'] = self.exclude.weights
             elif self.exclude is not None:
                 out['exclude_degree'] = int(self.exclude.degree)
                 out['exclude_axis'] = self.exclude.along
@@ -546,6 +620,8 @@ class Offsets(Config):
             if kind == 'grouped':
                 out['groups'] = self.per
         out['damp'] = float(self.damping)
+        if self.min_observations is not None:
+            out['min_observations'] = int(self.min_observations)
         if self.render is not None:
             out['render'] = self.render
         if self.name is not None:
@@ -926,6 +1002,13 @@ class Model(Config):
         dup = sorted({n for n in explicit if explicit.count(n) > 1} | (set(explicit) & set(names)))
         if dup:
             raise ConfigError(f"Model: term names used twice: {dup}")
+        for t in self.offsets:
+            if isinstance(t.exclude, Overlap):
+                bad = [n for n in t.exclude.terms if n not in off or n == t.term_name]
+                if bad:
+                    raise ConfigError(f"Model: Offsets({t.term_name!r}, exclude={t.exclude!r}) names {bad}, which "
+                                      f"{'is' if len(bad) == 1 else 'are'} not another offset term of the model "
+                                      f"(the offset terms: {off})")
         known = set(names) | set(off)
         for p in self.priors:
             bad = [t for t in p.terms if t not in known]
@@ -935,8 +1018,8 @@ class Model(Config):
 
     # ---- lowering -------------------------------------------------------------------------
     def sky_dampings(self) -> list[float]:
-        """Each sky term's damping, defaults resolved: 0.1 for the first term, 0.3 for the others."""
-        return [t.damping if t.damping is not None else (0.1 if j == 0 else 0.3) for j, t in enumerate(self.sky)]
+        """Each sky term's damping, the default (None) resolved to 0: no damping."""
+        return [t.damping if t.damping is not None else 0.0 for t in self.sky]
 
     def lower(self, mosaic='full') -> dict:
         """The ``[model]`` table (:meth:`~selfcal.models.spec.ModelSpec.from_config`) of this model."""

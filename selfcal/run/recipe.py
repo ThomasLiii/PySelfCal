@@ -390,6 +390,14 @@ class Deflate(Config):
     the same setup, and the solve runs on the constrained system. The post-solve plane gauge (``Fit(gauge=)``)
     then has nothing to move and is left off. None (the default): off.
 
+    ``offsets``: the offset terms whose response to the patterns the deflation solves, by name (as priors name them:
+    the term's name, else its map's); None (the default): every offset term. A term not listed keeps a zero response:
+    the patterns' offsets are the listed terms' alone, and the others stay in the space, so the projections are those
+    of the space the patterns and those responses span and the solution is the same least-squares solution; what the
+    other terms take of the patterns is left to the iterations. A term with more offsets shared by many frames than
+    the deflation's dense Schur complement holds (16,384; a constant per detector pixel, say) is left out this way. A
+    term's ``exclude=SkySignature`` is made from the listed terms' response, and the term itself must be listed.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -402,6 +410,7 @@ class Deflate(Config):
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
     exclude: Degenerate | None = added(None, since='2026-10')
+    offsets: tuple[str, ...] | None = added(None, since='2026-10')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
@@ -411,6 +420,11 @@ class Deflate(Config):
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
+        if self.offsets is not None:
+            offsets = (self.offsets,) if isinstance(self.offsets, str) else tuple(self.offsets)
+            if not all(isinstance(t, str) and t for t in offsets):
+                raise ConfigError(f"Deflate(offsets={self.offsets!r}): offset term names, or None for all")
+            object.__setattr__(self, 'offsets', offsets)
         if self.exclude is not None and not isinstance(self.exclude, Degenerate):
             raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:
@@ -515,7 +529,8 @@ class Fit(Config):
     counted over the observations the solve uses (after the masks, the clip if any and the weights) by
     the matrix build itself; those observations are set to zero in the matrix and the right-hand side,
     the pixels' columns are left without data (coverage 0, value 0 in the solution, outside the
-    deflation's patterns), and the coadd still covers them (None: every pixel).
+    deflation's patterns), and the coadd still covers them (None: every pixel). An offset term's own floor is
+    :class:`~selfcal.models.model.Offsets` ``min_observations``.
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).

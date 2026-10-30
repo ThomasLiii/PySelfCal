@@ -39,14 +39,14 @@ TILES = {'T1': (4342, 6185, 4334, 8068), 'T2': (6135, 8237, 4334, 8068)}
 
 def multiline(name):
     """Three lines, the hard polynomial over the window, 20 iterations, no mosaic (npass3, tiles)."""
-    return sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))).replace(chunk_maps=MAPS),
+    return sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321)), damping=0.1).replace(chunk_maps=MAPS),
                      fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                      name=name)
 
 
 def continuum():
     """D3 Ch17, 300 frames, no mosaic."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1).replace(chunk_maps=MAPS),
+    recipe = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1).replace(chunk_maps=MAPS),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'), coadd=None, name='unify_gate_py')
     return QR2_D3.calibrate(recipe, jobs=jobs.channel(17), frames=sc.frames_in(QR2_FIXTURE)[:300],
                             compute=sc.Compute(workers=48))
@@ -55,7 +55,7 @@ def continuum():
 def spectral():
     """The PAH 3.29 um line (terms.pah_3p29) on D4 in five columns, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=0.0)],
-                        poly_prior=sc.Poly(1, weight=0.5)).replace(chunk_maps=maps(num_ch=34, num_col=5))
+                        poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=5))
     recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return NEP_D4.calibrate(recipe, jobs=jobs.window('AromaticPAHfit', range(210, 250)),
@@ -64,7 +64,7 @@ def spectral():
 
 def e2e():
     """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5)).replace(chunk_maps=MAPS),
+    recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=MAPS),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
     compute = sc.Compute(f'{REPO}/cache', workers=48, stage='reuse', keep_staged=True)
@@ -82,7 +82,7 @@ def npass3():
 
 def euclid():
     """The EDFN stripe recipe on 3 exposures x 16 detectors."""
-    model = sc.Model(offsets=[
+    model = sc.Model(sky=[sc.Sky(damping=0.1)], offsets=[
         sc.Offsets(on='grid', per='detector', smooth=0.1, smooth_along=('row', 'col'), exclude=sc.Poly(0),
                    exact_group_rows=True),
         sc.Offsets(on='col_strips', smooth_along=(), damping=0.3),

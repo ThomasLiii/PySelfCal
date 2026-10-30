@@ -56,7 +56,8 @@ def plane(det_x, det_y):
 #: (``per="all"``) and a two-function basis; a spectral model with two sky blocks; each with a per-frame
 #: scalar (the term of one chunk).
 MODELS = {
-    'times': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('xslope', times=xtilde),
+    'times': sc.Model(sky=[sc.Sky(damping=0.1)],          # damped: the toy's solve converges in the iterations given
+                      offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('xslope', times=xtilde),
                                sc.Offsets('scalar', on='detector')]),
     'shared': sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)),
                                 sc.Offsets('pattern', per='all', exclude=sc.Poly(0)),

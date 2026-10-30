@@ -41,7 +41,7 @@ from ..core.spill import restore_pixel_state, spill_pixel_state
 from ..geometry import wcs_helper
 from ..io.atomic import atomic_path
 from ..io.cal_writer import write_sky_groups, write_sky_maps
-from ..io.calfile import CalFile
+from ..io.calfile import CalFile, FrameRows
 from ..io.reproj import load_reproj_file, parse_reproj_basename, reproj_basename
 from ..io.reprojection import batch_reproject
 from ..models.sky_model import SkyModel
@@ -747,7 +747,7 @@ class Calibrator(Reprojector):
                    det_groups_list: list | None = None, det_templates: list | None = None,
                    postprocess_func: Callable | None = None,
                    preprocess_func: Callable | None = None,
-                   weighted_damping: bool = False, damp_weight: float = 0.1,
+                   weighted_damping: bool = False, damp_weight: float = 0.0,
                    damp_offset_maps: list[float] | None = None,
                    group_adjacency_maps: list[int] | None = None,
                    det_aux: np.ndarray | None = None,
@@ -760,11 +760,13 @@ class Calibrator(Reprojector):
                    variables=None, weight_function=None, priors: list | None = None,
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
                    fixed_sky: bool = False, moments_only: bool = False, reduce=None,
-                   min_observations: int | None = None) -> None:
+                   min_observations: int | None = None, offset_min_observations: list | None = None) -> None:
         """Build the LSQR system for K chunk maps.
 
         ``min_observations``: the sky pixels observed fewer times than this leave
         the solve (``Fit(min_observations=)``; :func:`selfcal.core.system.setup_lsqr`).
+        ``offset_min_observations``: per offset map, its floor or None (``Offsets(min_observations=)``):
+        the offsets observed fewer times leave the solve the same way.
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms alone, and :meth:`save_calibration` writes the solved
@@ -861,7 +863,7 @@ class Calibrator(Reprojector):
         weighted_damping : bool, optional
             Scale the LSQR damping per column by coverage.
         damp_weight : float, optional
-            Base damping weight applied to the offset columns.
+            Coverage-weighted damping weight of the first sky term (with ``weighted_damping``; default 0: none).
         damp_offset_maps : list of float or None, optional
             Per-map coverage-weighted offset damping (length K); maps with
             weight 0 stay free.
@@ -877,7 +879,7 @@ class Calibrator(Reprojector):
             historical ``['BC', 'BW']`` positional convention.
         damp_weight_line : float or None, optional
             Damping weight of the sky terms after the first that set none of
-            their own (default ``3 * damp_weight``).
+            their own (default None: none).
         batch_spill_dir : str or None, optional
             When set, workers stream each batch's bulk COO arrays to files
             under this directory instead of SharedMemory (byte-equal output,
@@ -970,7 +972,7 @@ class Calibrator(Reprojector):
                 outlier_group_variable=outlier_group_variable,
                 outlier_chunk_groups=outlier_chunk_groups,
                 fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
-                min_observations=min_observations)
+                min_observations=min_observations, offset_min_observations=offset_min_observations)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -1092,11 +1094,11 @@ class Calibrator(Reprojector):
          self.pixel_cross) = restore_pixel_state(spill_dir)
 
     def apply_lsqr(self, x0: np.ndarray | None = None, atol: float = 1e-06,
-                   btol: float = 1e-06, damp: float = 1e-2, iter_lim: int = 300,
+                   btol: float = 1e-06, damp: float = 0.0, iter_lim: int = 300,
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
                    scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None,
-                   signatures=None) -> None:
+                   signatures=None, held=None) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1110,7 +1112,7 @@ class Calibrator(Reprojector):
         btol : float, optional
             Tolerance on the residual passed to the iterative solver.
         damp : float, optional
-            Tikhonov damping applied to the least-squares system.
+            Tikhonov damping applied to the least-squares system (default 0: none).
         iter_lim : int, optional
             Maximum solver iterations.
         precondition : bool, optional
@@ -1158,6 +1160,9 @@ class Calibrator(Reprojector):
             The model's hard constraints (:meth:`~selfcal.models.spec.ModelSpec.column_exclusions`,
             :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`;
             :func:`~selfcal.core.solve.apply_lsqr`).
+        held : array of int or None, optional
+            The offset columns of the terms ``Deflate(offsets=)`` leaves out: their response to the
+            deflation's patterns is held at zero (:func:`~selfcal.core.solve.apply_lsqr`).
 
         Returns
         -------
@@ -1214,7 +1219,7 @@ class Calibrator(Reprojector):
                         atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                         solver=solver, use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
                         num_cols_full=num_cols_full_local, conlim=conlim, return_record=True, exclusions=exclusions,
-                        signatures=signatures,
+                        signatures=signatures, held=held,
                         **snap)
                 finally:
                     if _spill_dir is not None:
@@ -1264,6 +1269,9 @@ class Calibrator(Reprojector):
             if 'offsets' in f:
                 K = int(f.attrs.get('num_maps', len(f['offsets'])))
                 offsets = [f['offsets'][f'map_{m}'][:] for m in range(K)]
+                if 'offset_frame_group' in f:          # maps stored once per group of frames: expanded per frame
+                    offsets = [o[f['offset_frame_group'][f'map_{m}'][()]] if f'map_{m}' in f['offset_frame_group'] else o
+                               for m, o in enumerate(offsets)]
                 chunk_maps = ([f['chunk_maps'][f'map_{m}'][:] for m in range(K)]
                               if 'chunk_maps' in f else [])
             else:
@@ -1295,6 +1303,27 @@ class Calibrator(Reprojector):
         L = getattr(self, 'layout', None)
         pbl = getattr(L, 'poly_basis_list', None) if L is not None else None
         return pbl[m] if pbl is not None else None
+
+    def _stored_by_group(self, m) -> bool:
+        """Whether map ``m`` is written once per group of frames, with each frame's group: a term whose offsets
+        groups of frames share (its frames do not each have their own; ``per='all'`` or a frame variable). A
+        template map (an amplitude per frame) and a polynomial-basis map are written per frame."""
+        if self.det_templates[m] is not None or self._poly_basis_for(m) is not None:
+            return False
+        ftg = np.asarray(self.frame_to_groups[m])
+        return not (int(self.num_offset_groups_list[m]) == ftg.size and np.array_equal(ftg, np.arange(ftg.size)))
+
+    def _write_frame_groups(self, f, K):
+        """``offset_frame_group/map_<m>``: each frame's group, for the maps stored once per group."""
+        maps = [m for m in range(K) if self._stored_by_group(m)]
+        if maps:
+            grp = f.require_group('offset_frame_group')
+            for m in maps:
+                grp.create_dataset(f'map_{m}', data=np.asarray(self.frame_to_groups[m], dtype=np.int32), compression='gzip')
+
+    def _offset_rows(self, m, det_offset_m):
+        """Map ``m``'s offsets as the cal stores them: per group for a map stored so, else per frame."""
+        return np.asarray(det_offset_m) if self._stored_by_group(m) else self._expand_offset(m, det_offset_m)
 
     def _expand_offset(self, m, det_offset_m):
         """Expand map ``m``'s grouped/template offsets to per-frame
@@ -1363,7 +1392,7 @@ class Calibrator(Reprojector):
 
         sky_names, sky_coverages, sky_fishers, map_coverages, map_coverage_fracs = self._cal_static(
             self.pixel_counts, self.pixel_fisher)
-        expanded_offsets = [self._expand_offset(m, det_offsets[m]) for m in range(K)]
+        expanded_offsets = [self._offset_rows(m, det_offsets[m]) for m in range(K)]
 
         # Non-destructive line masking: skymap_line is saved RAW. The
         # Fisher-info threshold (self.line_fisher_threshold) is saved as an
@@ -1398,6 +1427,8 @@ class Calibrator(Reprojector):
             basis_list = getattr(self, 'basis_list', None) or [None] * K
             for m in range(K):
                 ds_m = offsets_grp.create_dataset(f'map_{m}', data=expanded_offsets[m], compression='gzip')
+                if self._stored_by_group(m):
+                    ds_m.attrs['rows'] = 'groups'
                 if basis_list[m] is not None:
                     # The map's offsets are coefficients of known functions of data
                     # variables: per frame, n_chunks * n_basis values (chunk-major).
@@ -1406,6 +1437,7 @@ class Calibrator(Reprojector):
                 cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
                 frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
+            self._write_frame_groups(f, K)
             if getattr(self, 'solve_record', None) is not None:
                 # The record of the solve: attributes of a group (no dataset), so every
                 # dataset of the file is what it was before records existed.
@@ -1462,6 +1494,8 @@ class Calibrator(Reprojector):
                 # refine, not change, the fit.
                 cov_m = np.ones((num_frames, num_chunks_real), dtype=np.int32)
                 frac_m = np.ones((num_frames, num_chunks_real), dtype=np.float32)
+            elif self._stored_by_group(m):
+                cov_m, frac_m = offset_coverages_layout[m], offset_valid_fracs_layout[m]    # one row per group
             else:
                 cov_m = offset_coverages_layout[m][self.frame_to_groups[m]]
                 frac_m = offset_valid_fracs_layout[m][self.frame_to_groups[m]]
@@ -1498,6 +1532,7 @@ class Calibrator(Reprojector):
             cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
             frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
             cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
+        self._write_frame_groups(f, K)
 
     def write_cal_solution(self, f, iterate) -> None:
         """Write into the open HDF5 file ``f`` (holding :meth:`write_cal_static`'s parts) the parts
@@ -1520,7 +1555,9 @@ class Calibrator(Reprojector):
             ng, nc = int(L.num_offset_groups_list[m]), int(L.num_chunks_list[m])
             block = iterate.read(cursor, cursor + ng * nc).reshape(ng, nc)
             cursor += ng * nc
-            ds_m = offsets_grp.create_dataset(f'map_{m}', data=self._expand_offset(m, block), compression='gzip')
+            ds_m = offsets_grp.create_dataset(f'map_{m}', data=self._offset_rows(m, block), compression='gzip')
+            if self._stored_by_group(m):
+                ds_m.attrs['rows'] = 'groups'
             del block
             if basis_list[m] is not None:
                 ds_m.attrs['n_basis'] = int(basis_list[m].n)
@@ -1691,9 +1728,10 @@ class Mosaicker(Reprojector):
             names = cal.sky_names
             self.skymap_line_fisher = cal.sky_fisher(names[-1]) if len(names) > 1 else None
             cal.check_offsets_complete()
-            self.offsets = cal.offsets
-            self.offset_coverages = cal.offset_coverage
-            self.offset_coverage_fracs = cal.offset_coverage_frac
+            # a map stored once per group of frames stays so (a FrameRows): the coadd reads each frame's row from it
+            self.offsets = cal.rows('offsets', 'offset')
+            self.offset_coverages = cal.rows('offset_coverage', 'offset_coverage')
+            self.offset_coverage_fracs = cal.rows('offset_coverage_frac', 'offset_coverage_frac')
             self.cal_chunk_maps = cal.chunk_maps
         logger.info(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
@@ -1819,27 +1857,41 @@ class Mosaicker(Reprojector):
                         f"make_mosaic was called with {K} chunk_maps")
                 offset_lists_param = []
                 for m in range(K):
-                    off = self.offsets[m].copy()
-                    valid = self.offset_coverage_fracs[m] >= valid_chunk_thresh
+                    # A map stored once per group of frames (FrameRows) is prepared on its group rows, each weighted
+                    # by its frames where frames are counted, and handed to the coadd still so.
+                    grouped = isinstance(self.offsets[m], FrameRows)
+                    fg = self.offsets[m].frame_group if grouped else None
+                    nper = np.bincount(fg, minlength=self.offsets[m].values.shape[0]) if grouped else None
+                    off = (self.offsets[m].values if grouped else self.offsets[m]).copy()
+                    fracs = self.offset_coverage_fracs[m]
+                    fracs = fracs.values if isinstance(fracs, FrameRows) else fracs
+                    valid = fracs >= valid_chunk_thresh
                     if m == 0:
                         # Legacy compat: report mean_offset on map 0 only.
-                        self.mean_offset = (float(np.mean(off[valid]))
-                                            if np.any(valid) else 0.0)
+                        if grouped:
+                            n_valid = float(np.sum(nper[:, None] * valid))
+                            self.mean_offset = (float(np.sum(nper[:, None] * np.where(valid, off, 0.0))) / n_valid
+                                                if n_valid else 0.0)
+                        else:
+                            self.mean_offset = (float(np.mean(off[valid]))
+                                                if np.any(valid) else 0.0)
                         if normalize_offset:
                             off[valid] = off[valid] - self.mean_offset
                     off[~valid] = 0.0
                     # A chunk the frame observed too little that nothing refills leaves the coadd (NaN: its
                     # pixels get no weight); a chunk of fraction 0 (outside the solve's window) keeps its zero.
-                    drop = ~valid & (np.asarray(self.offset_coverage_fracs[m]) > 0)
+                    drop = ~valid & (np.asarray(fracs) > 0)
                     if det_offset_funcs is not None and getattr(det_offset_funcs[m], 'fills_invalid', False):
                         drop &= ~valid.any(axis=1, keepdims=True)
                     if drop.any():
                         off = off.astype(np.float64)
                         off[drop] = np.nan
-                        logger.info(f"Offset map {m}: {int(drop.sum())} chunk(s) of {int(drop.any(axis=1).sum())} "
+                        n_chunks = int(np.sum(nper[:, None] * drop)) if grouped else int(drop.sum())
+                        n_frames = int(nper[drop.any(axis=1)].sum()) if grouped else int(drop.any(axis=1).sum())
+                        logger.info(f"Offset map {m}: {n_chunks} chunk(s) of {n_frames} "
                                     f"frame(s) below the coverage fraction {valid_chunk_thresh} with nothing to fill "
                                     f"them: their pixels are left out of the coadd")
-                    offset_lists_param.append(off)
+                    offset_lists_param.append(FrameRows(off, fg) if grouped else off)
             else:
                 logger.warning("Warning: Calibration offsets not available. No offsets will be applied.")
 

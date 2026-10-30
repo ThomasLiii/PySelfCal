@@ -8,12 +8,14 @@ the mosaic's; its tag joins the product name, ``cal_Detector<d>_NumSub10_NumCh17
 """
 from functools import partial
 
+import numpy as np
+
 import selfcal as sc
 from selfcal.instruments.spherex.adapter import make_column_chunk_map, make_readout_chunk_map
 from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map, make_stripped_chunk_map
 from selfcal.models.offset_structure import ChunkAxes
 
-__all__ = ['subchannels', 'subchannel_map', 'detector_columns', 'readouts', 'arc_renderer']
+__all__ = ['subchannels', 'subchannel_map', 'detector_columns', 'readouts', 'pixels', 'pixel_map', 'arc_renderer']
 
 
 def arc_renderer(chunks, jobgeom):
@@ -69,3 +71,24 @@ def readouts(geometry):
     ``readout``, along x)."""
     det, n = make_readout_chunk_map(tuple(geometry.shape))
     return sc.Chunks(det, ChunkAxes.row_major(('readout',), (n,), ('x',)))
+
+
+def pixels(geometry, first, last, num_sub=10, num_ch=17, num_col=1):
+    """One chunk per detector pixel of the subchannels ``first`` to ``last`` (inclusive) of :func:`subchannels`
+    (``num_sub`` x ``num_ch`` x ``num_col``); every other pixel has none. Chunk ids run over the selected pixels in
+    row-major order (one axis, ``pixel``). An offset term on it shared by every frame is a detector-fixed pattern
+    of any shape over those subchannels."""
+    det_map, _, _, _ = make_stripped_chunk_map(
+        geometry.extra['detector'], num_subchannels=num_sub, num_channels=num_ch, num_columns=num_col,
+        oversample_factor=1, lvf_params=geometry.extra['lvf_params'])
+    sub = np.asarray(det_map) // int(num_col)
+    inside = (det_map >= 0) & (sub >= int(first)) & (sub <= int(last))
+    ids = np.full(det_map.shape, -1, dtype=np.int32)
+    ids[inside] = np.arange(int(inside.sum()), dtype=np.int32)
+    return sc.Chunks(ids, ChunkAxes.row_major(('pixel',), (int(inside.sum()),), ('both',)))
+
+
+def pixel_map(first, last, num_sub=10, num_ch=17, num_col=1) -> sc.ChunkMap:
+    """:func:`pixels` as a model's chunk map."""
+    return sc.ChunkMap(pixels, first=int(first), last=int(last), num_sub=int(num_sub), num_ch=int(num_ch),
+                       num_col=int(num_col))

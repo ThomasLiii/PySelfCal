@@ -163,7 +163,7 @@ def test_model_lowers_to_the_model_table():
                      variables={'temperature': sc.Header('TEMP'), 'night': sc.PerFrame(per_frame_index)},
                      priors=[sc.priors.frame_smoothness('thermal', 'temperature', weight=2.0)])
     t = model.lower()
-    assert [s['damp_weight'] for s in t['sky']] == [1e-4, 0.3]      # the second term's default
+    assert [s['damp_weight'] for s in t['sky']] == [1e-4, 0.0]      # the second term's default: undamped
     assert t['sky'][1]['coefficient'] == {'variable': 'wavelength', 'function': 'gaussian', 'center': 3.3,
                                           'sigma': 0.01}
     kinds = [(o['kind'], o.get('groups')) for o in t['offset']]
@@ -510,7 +510,8 @@ def test_a_run_through_the_api():
         assert field.reproject(os.path.join(exp_dir, 'toy_exp_*_D0.fits'), method='interp', padding=8) == \
             os.path.join(run_dir, 'reprojected')
         assert len(field.frames) == 12 and os.path.exists(os.path.join(run_dir, 'ref.fits'))
-        recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
+        # the sky damped (0.1): the toy's offsets are recovered in the 60 iterations given
+        recipe = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
                            numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4), name='t')
         plan = field.plan(recipe, jobs=ALL)
         assert 'cal_Toy_Chunks4x4_All_t.h5' in str(plan) and plan.frames[0] == 12
@@ -556,7 +557,7 @@ def test_a_nonsquare_camera_without_a_mask_runs(tmp_path):
     with h5py.File(field.frames[0], 'r') as f:
         assert int(f['sub_bitmask'][()].max()) == 0               # no mask: nothing flagged
     assert len(field.frames) == n and reprojected == os.path.join(field.path, 'reprojected')
-    result = field.calibrate(sc.Recipe(fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
+    result = field.calibrate(sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
                                        numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)), jobs=ALL)
     assert len(result.cal_paths) == 1 and len(result.mosaic_paths) == 1
     with CalFile(result.cal_paths[0]) as cal:
@@ -697,13 +698,13 @@ def test_every_pass_damps_the_sky_as_the_model_says():
     (spec,) = lower(sc.Field('/tmp/damping_field', sc.Camera((DET, DET)), 20.0), sc.Recipe(model, coadd=None),
                     jobs=ALL)
     ctx = RunContext.build(spec)
-    assert ctx.sky_damping == model.sky_dampings() == [0.1, 0.3]
-    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight, then 3 x damp_weight for the others
+    assert ctx.sky_damping == model.sky_dampings() == [0.0, 0.0]          # Sky() leaves the sky undamped
+    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight for the first, damp_weight_line for the others
     from dataclasses import replace
 
     from selfcal.models.sky_model import SkyModel
     plain = SkyModel(tuple(replace(c, damp_weight=None) for c in ctx.sky_model().components))
-    assert plain.damp_weights(0.1) == [0.1, 3.0 * 0.1] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
+    assert plain.damp_weights(0.1) == [0.1, 0.0] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
 
 
 @dataclass(frozen=True, kw_only=True)
