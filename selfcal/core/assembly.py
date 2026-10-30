@@ -59,6 +59,7 @@ def _prep_lsqr(task_params):
             grid_valid_weight=task_params['grid_valid_weight'],
             oversample_factor=task_params['oversample_factor'],
             valid_threshold=task_params['valid_threshold'],
+            window_edge=task_params.get('window_edge', 'partial'),
             postprocess_func=task_params['postprocess_func'],
             preprocess_func=task_params['preprocess_func'],
             extras=extras,

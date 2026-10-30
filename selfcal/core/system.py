@@ -347,7 +347,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                fixed_sky: bool = False, moments_only: bool = False,
                reduce: Callable | None = None,
                min_observations: int | None = None,
-               offset_min_observations: list | None = None) -> SetupResult:
+               offset_min_observations: list | None = None,
+               window_edge: str = 'partial') -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
@@ -416,6 +417,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         block entirely.
     grid_valid_weight : np.ndarray, optional
         Weight indicating valid pixels for each grid pixel.
+    window_edge : {'partial', 'inside'}, optional
+        The observations at the edge of ``grid_valid_weight > 0`` (the job's window).
+        ``'partial'`` (default): an observation whose bilinear sampling straddles the
+        edge is kept, its weight times its sample of ``grid_valid_weight``.
+        ``'inside'``: only the observations whose sampling lies wholly inside are kept
+        (:func:`selfcal.core.subframe._inside_row_mask`).
     reg_weights : list of float or None
         Per-map adjacency regularization weights (length K). Defaults to all 0.
     adj_infos : list of tuple or None
@@ -537,6 +544,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise TypeError("apply_mask must be a boolean")
     if not isinstance(apply_weight, bool):
         raise TypeError("apply_weight must be a boolean")
+    if window_edge not in ('partial', 'inside'):
+        raise ValueError(f"window_edge={window_edge!r}: 'partial' or 'inside'")
     if not (isinstance(outlier_thresh, (int, float, type(None))) and (outlier_thresh is None or outlier_thresh > 0)):
         raise ValueError("outlier_thresh must be a positive number or None")
     if not (isinstance(max_workers, int) and max_workers > 0):
@@ -715,6 +724,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         'ignore_list': ignore_list,
         'oversample_factor': oversample_factor,
         'valid_threshold': valid_threshold,
+        'window_edge': window_edge,
         'outlier_thresh': outlier_thresh,
         'outlier_group_edges': outlier_group_edges,
         'outlier_chunk_groups': None if outlier_chunk_groups is None else np.asarray(outlier_chunk_groups,
