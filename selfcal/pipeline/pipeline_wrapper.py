@@ -761,11 +761,13 @@ class Calibrator(Reprojector):
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
                    fixed_sky: bool = False, moments_only: bool = False, reduce=None,
                    min_observations: int | None = None, offset_min_observations: list | None = None,
-                   matrix: str = 'stored') -> None:
+                   matrix: str = 'stored', window_edge: str = 'partial') -> None:
         """Build the LSQR system for K chunk maps.
 
         ``min_observations``: the sky pixels observed fewer times than this leave
         the solve (``Fit(min_observations=)``; :func:`selfcal.core.system.setup_lsqr`).
+        ``window_edge``: the observations at the edge of ``grid_valid_weight > 0``,
+        ``'partial'`` or ``'inside'`` (``Fit(window_edge=)``; :func:`selfcal.core.system.setup_lsqr`).
         ``offset_min_observations``: per offset map, its floor or None (``Offsets(min_observations=)``):
         the offsets observed fewer times leave the solve the same way.
         ``matrix``: ``'stored'`` (the matrix's entries) or ``'compact'`` (an
@@ -977,7 +979,7 @@ class Calibrator(Reprojector):
                 outlier_chunk_groups=outlier_chunk_groups,
                 fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
                 min_observations=min_observations, offset_min_observations=offset_min_observations,
-                matrix=matrix)
+                matrix=matrix, window_edge=window_edge)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come

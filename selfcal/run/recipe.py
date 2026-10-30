@@ -531,6 +531,15 @@ class Fit(Config):
     the pixels' columns are left without data (coverage 0, value 0 in the solution, outside the
     deflation's patterns), and the coadd still covers them (None: every pixel). An offset term's own floor is
     :class:`~selfcal.models.model.Offsets` ``min_observations``.
+    ``window_edge``: the observations at the edge of the job's window (its detector pixels on the primary chunk
+    map). An observation samples the detector-plane quantities (the offsets, the data variables, the window
+    itself) bilinearly from the four detector pixels around its position, so one near the window's edge can read
+    pixels on both sides of it. ``'partial'`` (the default): such an observation is kept, its weight times the
+    share of its sampling inside the window, and it reads the offsets of the pixels just outside, which every
+    offset term covering them then has to model. ``'inside'``: only the observations whose sampling lies wholly
+    inside the window are kept, so the solve reads no detector pixel outside it and an offset term covering
+    exactly the window covers everything the solve reads; the observations straddling the edge (a strip one
+    detector pixel wide on each side) leave the solve. The coadd is not affected.
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -572,6 +581,7 @@ class Fit(Config):
     gauge: Gauge | None = added(None, since='2026-10')
     seed: Literal['separate', 'offsets', 'zero'] = added('separate', since='2026-10')
     min_observations: int | None = added(None, since='2026-10')
+    window_edge: Literal['partial', 'inside'] = added('partial', since='2026-10')
 
     def _validate(self):
         if self.seed not in ('separate', 'offsets', 'zero'):
@@ -582,6 +592,10 @@ class Fit(Config):
                                                   or not isinstance(self.min_observations, int)
                                                   or self.min_observations < 2):
             raise ConfigError(f"Fit(min_observations={self.min_observations!r}): an integer >= 2 (None: every pixel)")
+        if self.window_edge not in ('partial', 'inside'):
+            raise ConfigError(f"Fit(window_edge={self.window_edge!r}): 'partial' (an observation straddling the "
+                              f"window's edge kept with the share of its sampling inside) or 'inside' (only the "
+                              f"observations wholly inside the window)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:

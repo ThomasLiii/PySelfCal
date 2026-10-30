@@ -173,9 +173,15 @@ def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
 def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     """The final channel recipe (the user, 2026-10-29): :func:`continuous_final` with its column constants shared by
     every frame replaced by one constant per
-    detector pixel shared by every frame, over the job's subchannels and the one beyond each end (the pixels the
-    bilinear sampling of the job's observations reaches): a detector-fixed pattern of any shape, such as a dark
-    current's pixel-to-pixel structure. It carries no pattern that the per-frame spectral term or the x-slopes can
+    detector pixel shared by every frame, over the job's solved subchannels: a detector-fixed pattern of any shape,
+    such as a dark current's pixel-to-pixel structure. The solve keeps only the observations whose bilinear sampling
+    lies wholly inside those subchannels (``Fit(window_edge='inside')``), so it reads no detector pixel outside
+    them: the spectral hats then sum to 1 on every pixel the solve reads, and the sky mean is an exact gauge of the
+    per-frame terms, which the deflation leaves out. With the observations straddling the window's edge kept, they
+    read the pixels just outside, where the hats taper to zero; the sky mean's gauge then ran through the per-pixel
+    constants there, which the deflation holds at zero, so it kept the sky mean as a direction seen at 6e-4 of its
+    largest, and CGLS left the least-squares minimum along it after converging (D2 Ch9 noise-only simulations).
+    The per-pixel constants carry no pattern that the per-frame spectral term or the x-slopes can
     make the same way in every frame (``exclude=sc.Overlap('spectral', 'xs_term', weights='information')``: measured
     with each pixel's information, so the pixels the data barely see cannot take values that cancel such a pattern
     held by the others; counted alike, 99.2 % of the real D2 Ch9 constants' variance lay along those patterns,
@@ -184,18 +190,20 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     patterns, which cross the detector differently in every frame, and holding their response at zero keeps their
     couplings to every frame's offsets out of the deflation (real D2 / D6 Ch9: 252 / 442 s of deflation). The pixels a single observation sees leave the solve (``min_observations=2``; real D2 /
     D6 Ch9: 11 / 59 pixels): such a pixel's constant fits that one observation exactly and informs nothing else.
-    On real NEP W17 Ch9 frames the solve stops on the chi-squared rule (D2 at iteration 120, D6 at 160); on the D6
-    transfer-function scene with dark current, zodi and noise its r_l is continuous_final's within 0.004 in every
+    Made with the observations at the window's edge kept and the per-pixel constants one subchannel beyond it (main
+    9daeae0): on real NEP W17 Ch9 frames the solve stopped on the chi-squared rule (D2 at iteration 120, D6 at 160);
+    on the D6 transfer-function scene with dark current, zodi and noise its r_l is continuous_final's within 0.004 in every
     bin. Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)
-    first, last = num_sub * (channel - 1) - 1, num_sub * channel + 2
+    first, last = num_sub * (channel - 1), num_sub * channel + 1           # the job's solved subchannels
     offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
         sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term', weights='information'),
                    min_observations=2),)
     maps = {'subchannel': base.model.chunk_maps['subchannel'],
             'pixel': C.pixel_map(first, last, num_sub, num_ch, num_col)}
     return base.replace(model=base.model.replace(offsets=offsets, chunk_maps=maps),
-                        fit=base.fit.replace(deflate=base.fit.deflate.replace(offsets=('spectral', 'xs_term'))),
+                        fit=base.fit.replace(deflate=base.fit.deflate.replace(offsets=('spectral', 'xs_term')),
+                                             window_edge='inside'),
                         name='subch_varweight_pixels_final_continuous')
 
 
