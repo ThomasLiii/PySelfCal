@@ -376,7 +376,11 @@ Compare quantities that a change of gauge leaves alone:
       default 1 on the chunks of the primary map inside the job's window, 0 elsewhere (every chunk
       for `sc.Job("All")`; for a SPHEREx channel job, the channel's subchannels and one more
       subchannel on each side, shared with the neighbouring channels); for Euclid, an optional taper
-      at the detector edges (`edge_zero_px`, `edge_ramp_px`);
+      at the detector edges (`edge_zero_px`, `edge_ramp_px`). It is sampled bilinearly at the
+      observation's detector position, like every detector-plane quantity, so an observation whose
+      four sampled pixels straddle the window's edge gets the share inside and reads the offsets of
+      the pixels just outside; with `sc.Fit(window_edge='inside')` such an observation leaves the
+      solve, and the solve reads no detector pixel outside the window (the coadd is unchanged);
     - with `shot_noise_weights=True` (`sc.Fit`), `1 / sqrt(|data| + 1e-4)`, which weights bright
       pixels down as shot noise would;
     - the model's `weight` (`sc.Model(weight=...)`), a function of data variables (for example
