@@ -740,6 +740,10 @@ action (the worker start method, the parallel scatter, matrix block sizes, the v
 coadd's flush stripes, spill thresholds); each left at None defers to its environment variable.
 The transpose product's thread count changes the last bits, so it lives in the recipe:
 `sc.Numerics(rmatvec_threads=...)` (None: the solver's threads, capped by a 16 GB buffer).
+`sc.Numerics(gradient='recurrence')` lets CGLS carry its gradient along from the transpose product of the matvec's
+own result instead of recomputing it from the residual: on the observation table (`sc.Compute(matrix='compact')`)
+that product comes from the matvec's pass, so an iteration makes the rows once instead of twice. The two forms agree
+within rounding; the option is off by default.
 
 ### The command line
 

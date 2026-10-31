@@ -371,7 +371,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   integer coverage, Fisher and separability outputs are untouched. Measured
   on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
   (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
-  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`
+  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`; `sc.Numerics(gradient='recurrence')`
+  lets CGLS carry its gradient by recurrence from the transpose product of the matvec's own result, which the
+  observation table forms in the matvec's pass, so an iteration makes the rows once instead of twice (within rounding
+  of the two-pass form; off by default)
   pins it (the action sets `SELFCAL_PARALLEL_RMATVEC`), and `1` selects the
   sequential kernel — the byte-exact verification mode the pre-2026-09-10
   goldens were made with. In practice the count equals the solver's threads

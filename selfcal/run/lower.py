@@ -88,6 +88,11 @@ def solver_options(recipe) -> dict:
         out['deflate'] = fit.deflate
     if fit.vectors is not None:
         out['vectors'] = fit.vectors
+    if recipe.numerics.gradient != 'recomputed':
+        if fit.method != 'cgls':
+            raise ConfigError(f"Numerics(gradient={recipe.numerics.gradient!r}) is CGLS's (Fit(method='cgls')); "
+                              f"the recipe's method is {fit.method!r}")
+        out['gradient'] = recipe.numerics.gradient
     return out
 
 

@@ -122,7 +122,7 @@ _ZERO64 = np.float64(0.0)
 
 @_jit
 def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, kinds, H, W, nb, nboff,
-          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s):
+          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s, tbuf):
     """One pass over a block's rows ``lo:hi``: each row's entries made in column order and used as ``mode`` says.
 
     ======  ===================================================================================================
@@ -138,6 +138,11 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
     3       ``out[i - lo]`` (a uint8 array): 1 when the row has an entry in a column of ``drop`` (a boolean over
             the leading columns of the full layout; the coverage floor's columns), with the columns unmapped and
             unscaled.
+    4       mode 0 and, in the same pass, ``tbuf[c] += A[i, c] * out[i - lo]`` for the row's stored product: the
+            matvec and the transpose product of its result (``A^T A vec``) from one making of the rows, each
+            row's product taken back in ``out``'s dtype, as a transpose product of that vector would read it,
+            the products and sums of the scatter in float64 (``tbuf`` float64): a gradient carried by recurrence
+            keeps the rounding of every term it was built from, so this one is made in the vectors' precision.
     ======  ===================================================================================================
 
     A row's entries: the sky terms first (``j * num_sky + P``, the value ``w * c_j`` made by the model's code:
@@ -174,7 +179,7 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
         if floored:
             fi += 1
         k = i - lo
-        if mode == 0:
+        if mode == 0 or mode == 4:
             out[k] = 0
         if floored and mode != 2:
             continue
@@ -334,11 +339,15 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
                                 oc[cnt] = c
                                 ov[cnt] = v
                                 cnt += 1
-        if mode == 0:
+        if mode == 0 or mode == 4:
             acc = zero
             for t in range(cnt):
                 acc = acc + ov[t] * vec[oc[t]]
             out[k] = acc
+            if mode == 4:
+                qv = np.float64(out[k])
+                for t in range(cnt):
+                    tbuf[oc[t]] += np.float64(ov[t]) * qv
         elif mode == 1:
             yv = vec[k]
             for t in range(cnt):
@@ -656,7 +665,7 @@ class ObservationTable:
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
         for a, b in self._chunks(lo - base, hi - base):
             _pass(0, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32)
+                  _NO_I32, _NO_F32, _NO_F64)
 
     def rmatvec_rows(self, bi, lo, hi, y_seg, buf):
         """``buf[c] += A[lo:hi, c]^T y_seg`` for the global rows ``lo:hi`` of block ``bi`` (the tail included), the
@@ -672,7 +681,29 @@ class ObservationTable:
             return
         for a, b in self._chunks(lo - base, hi - base):
             _pass(1, *self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], _ZERO64, buf, _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32)
+                  _NO_I32, _NO_F32, _NO_F64)
+
+    def normal_rows(self, bi, lo, hi, p, out, buf):
+        """``out[:] = A[lo:hi] @ p`` and ``buf[c] += A[lo:hi, c]^T out`` from one making of the rows ``lo:hi`` of
+        block ``bi`` (the tail included): the matvec of :meth:`matvec_rows` and the transpose product of its
+        stored result in one pass, the latter's products and sums in float64 (``buf`` float64)."""
+        base = int(self.row_bounds[bi])
+        if bi == len(self.blocks):
+            lr0, lr1 = lo - base, hi - base
+            ip = self.tail.indptr[lr0:lr1 + 1]
+            s0, s1 = int(ip[0]), int(ip[-1])
+            out[...] = _csr_shell(self.tail.data[s0:s1], self.tail.indices[s0:s1], ip - np.int32(s0),
+                                  (hi - lo, self.shape[1])) @ p
+            d = self.tail.data
+            if d.dtype != buf.dtype:
+                d = d.astype(buf.dtype)
+            _sparsetools.csc_matvec(self.shape[1], hi - lo, self.tail.indptr[lr0:lr1 + 1], self.tail.indices, d,
+                                    np.ascontiguousarray(out, dtype=buf.dtype), buf)
+            return
+        zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
+        for a, b in self._chunks(lo - base, hi - base):
+            _pass(4, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
+                  _NO_I32, _NO_F32, buf)
 
     @staticmethod
     def _chunks(lo, hi, rows=_EVAL_ROWS):
@@ -705,7 +736,7 @@ class ObservationTable:
             m = b - a
             cols_s, vals_s, counts = self._thread_scratch(m)
             _pass(2, *self._args(bi, a, b, scaled=scaled), _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts[:m], cols_s,
-                  vals_s)
+                  vals_s, _NO_F64)
             k = int(counts[:m].sum())
             ip, co, va = np.empty(m + 1, dtype=np.int32), np.empty(k, dtype=np.int32), np.empty(k, dtype=np.float32)
             _compact(counts[:m], S, cols_s, vals_s, ip, co, va)
@@ -863,7 +894,7 @@ class ObservationTable:
                 _pass(3, a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, _NO_I64, md.J,
                       md.num_sky, sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi, False,
                       _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop, _NO_I64, _NO_I32,
-                      _NO_F32)
+                      _NO_F32, _NO_F64)
             return bi, lo + np.flatnonzero(flags)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
@@ -914,14 +945,17 @@ def warm_up():
     for pdt in (np.float32, np.float64):
         for odt in (np.float32, np.float64):
             _pass(0, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
-                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
-        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
+            _pass(4, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, np.zeros(S, odt))
+        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
     counts = np.zeros(1, np.int64)
     cols_s, vals_s = np.zeros(S, np.int32), np.zeros(S, np.float32)
-    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s)
+    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s, _NO_F64)
     ip, co, va = np.zeros(2, np.int32), np.zeros(S, np.int32), np.zeros(S, np.float32)
     _compact(counts, S, cols_s, vals_s, ip, co, va)
-    _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32)
+    _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32,
+          _NO_F64)
     _fold_sums(ip, co, va, np.zeros(1), 0, np.zeros(S), np.zeros(S))
     _sample_maps(x, y, np.zeros((1, HW), np.float32), 2, 2, np.zeros((1, 1), np.float32))
     _split_spans(ip, co, va, np.array([0, 2, S], np.int64), np.zeros((2, 2), np.int32), np.zeros(S, np.int32),
