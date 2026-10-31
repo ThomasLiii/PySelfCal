@@ -86,19 +86,6 @@ def _normalised(value):
     return json.loads(_canonical(value))
 
 
-def _plain(value):
-    """A polynomial-basis descriptor (or any dict with arrays) in JSON form, arrays by digest."""
-    if isinstance(value, dict):
-        return {str(k): _plain(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return {'array': _array_digest(value)}
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
-
 def _diff(a, b, path=''):
     """The differences between two identities, as ``path: a -> b`` lines."""
     if isinstance(a, dict) and isinstance(b, dict):
@@ -177,23 +164,22 @@ class System:
     def identity(self) -> dict:
         """The identity as plain data: the frames (in order), the grid, the sky terms, each offset
         term (its chunk map, chunks and columns, its groups of frames, its basis, template or
-        polynomial basis), the total column count, and ``extra`` (computed once)."""
+        the total column count, and ``extra`` (computed once)."""
         if self._identity is not None:
             return self._identity
         L = self.layout
         offsets = []
         for m in range(L.num_maps):
             cm = np.asarray(self.chunk_maps[m])
-            pb = (L.poly_basis_list or [None] * L.num_maps)[m]
-            tmpl = L.det_template_arr_list[m]
             n, desc = self.basis[m] if self.basis[m] is not None else (None, None)
+            # 'template' and 'polybasis' stay at None: the identity of the cals made before those two offset
+            # encodings were removed (2026-10-30) holds the keys, and a start from such a cal must still match
             offsets.append({
                 'chunk_map': _array_digest(cm.astype(np.int64)), 'chunks': int(cm.max()) + 1,
                 'columns': int(L.col_bases[m + 1] - L.col_bases[m]), 'groups': int(L.num_offset_groups_list[m]),
                 'grouping': _array_digest(np.asarray(L.frame_to_group_list[m], dtype=np.int64)),
                 'basis': None if n is None else {'n': n, 'function': desc},
-                'template': None if tmpl is None else _array_digest(tmpl),
-                'polybasis': None if pb is None else _plain(pb)})
+                'template': None, 'polybasis': None})
         out = {'version': IDENTITY_VERSION, 'frames': frames_identity(self.frames),
                'grid': grid_identity(L.ref_shape, self.wcs),
                'sky': [{'name': name, 'coefficient': coeff} for name, coeff in self.sky],
@@ -211,13 +197,8 @@ class System:
         return _digest(self.identity_json().encode())
 
     def stored_columns(self, m) -> int:
-        """The columns of offset map ``m`` as a cal stores them per frame: its unknowns per group,
-        except a template's or a polynomial basis's map, stored per chunk."""
-        L = self.layout
-        pb = (L.poly_basis_list or [None] * L.num_maps)[m]
-        if L.det_template_arr_list[m] is not None or pb is not None:
-            return int(np.asarray(self.chunk_maps[m]).max()) + 1
-        return int(L.num_chunks_list[m])
+        """The columns of offset map ``m`` as a cal stores them per frame: its unknowns per group."""
+        return int(self.layout.num_chunks_list[m])
 
 
 class WarmStart:
@@ -280,17 +261,7 @@ class WarmStart:
 
     def check(self, system: System):
         """Refuse (:class:`~selfcal.config.base.ConfigError`) a source that is not a solution of
-        ``system`` (:meth:`problems`), and a model whose offsets cannot be read back (a polynomial
-        basis, a template); otherwise bind the start to ``system``."""
-        L = system.layout
-        for m in range(L.num_maps):
-            if (L.poly_basis_list or [None] * L.num_maps)[m] is not None:
-                raise ConfigError(f"start={self.path}: offset term {m} has a polynomial basis "
-                                  f"(Offsets(polynomial=...)): its cal holds the offsets the polynomial expands "
-                                  f"to, not the polynomial's coefficients, so the solve cannot continue from it")
-            if L.det_template_arr_list[m] is not None:
-                raise ConfigError(f"start={self.path}: offset term {m} is a template amplitude: its cal holds "
-                                  f"the offsets the template expands to, not the amplitudes")
+        ``system`` (:meth:`problems`); otherwise bind the start to ``system``."""
         problems = self.problems(system)
         if problems:
             shown = '; '.join(problems[:8]) + (f' (+{len(problems) - 8} more)' if len(problems) > 8 else '')

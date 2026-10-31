@@ -52,11 +52,10 @@ def test_model_table_equals_presets():
     n = 9
     # the continuum preset == a [model] table with a continuum term, one free offset term with no constant
     # and the per-frame scalar (the term of one chunk)
-    preset = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, along='row', weight=0.5)).spec()
+    preset = sc.continuum(smooth=0.2).spec()
     spec = ModelSpec.from_config({
         'sky': [{'name': 'continuum'}],
-        'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'exclude_degree': 0,
-                    'poly': [{'axis': 'row', 'degree': 1, 'weight': 0.5}]},
+        'offset': [{'kind': 'free', 'reg_weight': 0.2, 'adjacency': ['row', 'col'], 'exclude_degree': 0},
                    {'map': 'detector', 'name': 'scalar'}]})
     _same_kwargs(preset.build_offset_model(geom, n), spec.build_offset_model(geom, n))
     assert [c.name for c in preset.build_sky_model(geom).components] == \
@@ -94,8 +93,7 @@ def test_a_model_with_a_soft_polynomial_runs(tmp_path):
     write_exposures(str(tmp_path / 'exposures'), 10, np.random.default_rng(5), det_shape=(40, 60), chunks=(4, 6))
     field = sc.Field(tmp_path / 'out' / 'model', CAMERA, 20.0, compute=sc.Compute(str(tmp_path / 'cache'), workers=2))
     field.reproject(str(tmp_path / 'exposures' / 'toy_exp_*_D0.fits'), method='interp', padding=8)
-    model = sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0), poly_prior=sc.Poly(1, along='col', weight=0.5)),
-                              sc.Offsets('scalar', on='detector')])
+    model = sc.Model(offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])
     result = field.calibrate(sc.Recipe(model, fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0,
                                                                                           instrument_maps=False),
                                        numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)), jobs=ALL)

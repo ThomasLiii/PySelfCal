@@ -19,7 +19,7 @@ changes across them. The chunk maps therefore cut the detector into subchannels
 - :mod:`~selfcal.instruments.spherex.adapter`: the detector-column and readout-channel maps.
 - :mod:`~selfcal.instruments.spherex.spherex_utility`: the LVF geometry: the ``BC`` /
   ``BW`` maps, the arc fit (``lvf_params``), the stripped chunk maps and valid masks,
-  the smooth arc offset renderer, adjacency and polynomial chains.
+  the smooth arc offset renderer and the subchannel adjacency.
 - :mod:`~selfcal.instruments.spherex.wavemap`: the standalone coadd of the mosaic's
   wavelength maps.
 

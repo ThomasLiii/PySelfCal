@@ -54,7 +54,7 @@ they did into the model and notes it:
 
 | TOML | Python |
 | --- | --- |
-| `offset_regularization = false` | every offset term without a hard polynomial gets `smooth=0` and no `poly_prior`: without the switch the engine built no smoothness or polynomial rows |
+| `offset_regularization = false` | every offset term gets `smooth=0`: without the switch the engine built no smoothness rows (nor the soft polynomial rows, removed on 2026-10-30) |
 | `weighted_damping = false` | every sky term gets `damping=0.0`: no sky damping rows |
 | a `basis` of one function | `sc.Offsets(times=...)`: one function is a coefficient (`basis=` takes at least two) |
 
@@ -151,10 +151,10 @@ A mode was a named model with its knobs in `[params]`. Each is a preset or a mod
 
 | mode (historical names) | Python |
 | --- | --- |
-| `continuum` | `sc.continuum(smooth=reg_weight, poly_prior=sc.Poly(poly_degree, along=poly_axis, weight=poly_weight))` |
-| `spectral` (`pahfit`) | `sc.spectral(lines, smooth=, poly_prior=)` |
-| `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, poly_prior=[..., sc.Poly(spectral_poly_degree, along="subchannel", window=range(lo, hi + 1), weight=spectral_poly_weight)])` |
-| `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | `sc.spectral(lines, polynomial=sc.Poly(spectral_poly_degree, window=range(lo, hi + 1), segments=...))` |
+| `continuum` | `sc.continuum(smooth=reg_weight)` (the soft column polynomial `poly_weight` was removed on 2026-10-30: dropped, with a note) |
+| `spectral` (`pahfit`) | `sc.spectral(lines, smooth=)` |
+| `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, smooth=)` (the soft spectral polynomial was removed on 2026-10-30: dropped, with a note) |
+| `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | none: the polynomial-basis offset was removed on 2026-10-30; the polynomial is a basis term, `terms.spectral_polynomial(range(lo, hi + 1), degree)` for SPHEREx (the converter refuses the mode) |
 | `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, along="subchannel", smooth=reg_weight, second_smooth=second_reg_weight)` |
 | `model` | `sc.Model(sky=[...], offsets=[...], variables={...}, weight=, priors=[...])` |
 
@@ -171,8 +171,8 @@ A `[model]` table maps term by term:
 | --- | --- |
 | `[[model.sky]]` `name`, `coefficient`, `damp_weight` | `sc.Sky(name, times=, damping=)` |
 | `[[model.offset]]` `map`, `kind = "free"` / `"fixed"` / `"grouped"` + `groups` | `sc.Offsets(on=map, per="frame")` / `per="all"` / `per=groups` |
-| `kind = "polybasis"`: `axis`, `group_axis`, `degree`, `lo`, `hi`, `segments` | `sc.Offsets(polynomial=sc.Poly(degree, along=, each=, window=range(lo, hi + 1), segments=))` |
-| `reg_weight`, `adjacency`, `poly`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `poly_prior=sc.Poly(...)`, `damping=`, `exact_group_rows=`, `render=` |
+| `kind = "polybasis"`; `poly` | refused: the polynomial-basis offset and the soft polynomial prior were removed on 2026-10-30 (a polynomial is a basis term, `sc.Offsets(basis=Function(...), n=)`) |
+| `reg_weight`, `adjacency`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `damping=`, `exact_group_rows=`, `render=` |
 | `mean_zero = true`; `exclude_degree`, `exclude_axis` | `exclude=sc.Poly(0)`, the hard constraint "no constant over the term's chunks"; `exclude=sc.Poly(exclude_degree, along=exclude_axis)` |
 | a `coefficient` or a `basis`: `{ variable, function = "pkg.mod:fn", params }` | `times=fn` or `basis=fn, n=` (the function itself), or `sc.Function(fn, of=variable, **params)` |
 | `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = "pah_3p29" }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `terms.pah_3p29()` (no other catalogue name has a Python form) |
@@ -196,7 +196,6 @@ dropped with a note instead (above).
 | `[lsqr] resume`, `keep_state` at other than their defaults | none: a solve starts from its warm start |
 | `[calibration] compact_zero_columns = false` | none: the zero columns are always compacted |
 | `[calibration] spectral_fit` (the old single-line shim) | a sky term with a coefficient, `sc.Sky(name, times=sc.gaussian(center, sigma=...))` |
-| a polynomial prior with only one of `lo`, `hi` | both bounds: `sc.Poly(degree, window=range(lo, hi + 1))` |
 | a `suffix` that does not start with `_` | `sc.Recipe(name=)`, joined to the product names with `_` |
 | `[tiling] frame_glob` other than every frame; a `[tiling] line` that disagrees with the model | none: a tiled run takes every frame of its directory, and the model decides which sky terms are stitched |
 | `[reproject] use_ext`, `sci_ext_list`, `dq_ext_list` that differ from the instrument's layout | the instrument's exposure layout: `sc.Camera(sci_ext=, dq_ext=, reference_ext=)`, or a subclass's `layout()` |

@@ -1,34 +1,19 @@
-"""OffsetModel / OffsetBlock — bundle the per-map offset configuration.
+"""OffsetModel / OffsetBlock: the per-map offset configuration of a solve.
 
-``setup_lsqr`` historically takes six parallel length-K lists, all indexed by
-the same map index ``m``::
+``setup_lsqr`` takes parallel length-K lists, all indexed by the same map index ``m``::
 
-    chunk_maps, det_groups_list, det_templates, reg_weights,
-    adj_infos, poly_constraints_list
+    chunk_maps, det_groups_list, reg_weights, adj_infos, basis_list
 
-Keeping those in lockstep by hand is error-prone in any multi-map
-configuration — e.g. a two-map setup must pair ``det_groups_list=[None, zeros]``
-in one list with ``reg_weights=[w, 0.0]`` in another (see the ``sc.two_block``
-model for a real two-map instance). ``OffsetModel`` bundles
-each map's configuration into one :class:`OffsetBlock` so a multi-map setup
-reads as cohesive blocks.
+``OffsetModel`` bundles each map's configuration into one :class:`OffsetBlock`, and
+:meth:`OffsetModel.to_setup_kwargs` expands it back to exactly those lists, so a multi-map
+model reads as cohesive blocks and the solve sees the same keywords (byte-equal to the flat
+spelling).
 
-This is a thin bundling/lowering layer: :meth:`OffsetModel.to_setup_kwargs`
-expands back to the exact parallel-list kwargs ``setup_lsqr`` already consumes,
-so driving ``setup_lsqr`` via an ``OffsetModel`` is numerically identical to
-calling it with the equivalent flat kwargs (verified byte-equal: rerunning a
-reference config through both spellings produces identical ``cal_*.h5`` output;
-byte-equality gates in ``selfcal_scripts/gates/`` +
-``selfcal_scripts/gates/diff_cal_h5.py``). The flat parallel-list kwargs
-remain supported but are deprecated; new code should construct an
-``OffsetModel``.
-
-Per-block (lives on ``OffsetBlock``): chunk map, frame grouping, template,
-adjacency + its weight, polynomial-chain constraints.
-Global solver settings (the sky model and its per-pixel damping ``damp_weight`` /
-``damp_weight_line``, masking, weighting, workers, ...) are NOT per-block and stay
-as ``setup_lsqr`` kwargs; the offset damping is per map (``damp_offset_maps``).
-Hard constraints on a block's columns (``exclusions``) go to the solver, not here.
+Per block (:class:`OffsetBlock`): the chunk map, the frame grouping, the adjacency pairs and their
+weight, the basis of known functions. Global solver settings (the sky model and its per-pixel
+damping ``damp_weight`` / ``damp_weight_line``, masking, weighting, workers, ...) are NOT per-block
+and stay ``setup_lsqr`` keywords; the offset damping is per map (``damp_offset_maps``). Hard
+constraints on a block's columns (``exclusions``) go to the solver, not here.
 """
 from __future__ import annotations
 
@@ -144,62 +129,20 @@ class OffsetBlock:
         free offset per frame. ``np.zeros(num_frames)`` locks all frames to one
         shared offset vector (a detector-fixed pattern — e.g. a readout
         stripe — as in the ``sc.two_block`` model).
-    template : np.ndarray or None
-        Fixed spatial pattern; when set, the block solves only a per-frame
-        amplitude. Requires ``det_groups`` to be set (matches setup_lsqr).
     reg_weight : float
-        Adjacency-smoothness weight for this block (the flat ``reg_weights[m]``).
-    adj_info : object or None
-        Adjacency pairs ``(chunk_i, chunk_j)`` for this block (``adj_infos[m]``).
-    poly_constraints : list or None
-        List of polynomial-chain constraint groups, each a dict
-        ``{'chains', 'stencil', 'weight'}`` (``poly_constraints_list[m]``).
-        Multiple groups are allowed (e.g. column + subchannel chains) and are
-        applied in list order.
-    poly_basis : dict or None
-        Hard polynomial-basis offset (replaces the soft ``poly_constraints``
-        subchannel penalty). When set, this block does NOT solve a free offset
-        per chunk; instead the per-frame offset IS a degree-D Chebyshev
-        polynomial in an abstract per-chunk coordinate, independent per group
-        (for SPHEREx: coordinate = subchannel, group = column), solved for its
-        coefficients ``a[frame, group, d]`` (d=1..D: no constant, so a frame's
-        level belongs to another block, such as one on a one-chunk map). Dict keys (see :mod:`selfcal.models.offset_basis`): ``degree``
-        (int D), ``num_groups`` (number of independent polynomials),
-        ``coord_lo``/``coord_hi`` (coordinate window), ``chunk_coord``/
-        ``chunk_group`` (per-chunk coordinate / group-index arrays). When set,
-        ``adj_info``/``reg_weight``/``poly_constraints`` for this block are
-        ignored (the polynomial is exact, no weight knob).
+        The weight of the adjacency rows (0: none).
+    adj_info : tuple or None
+        The adjacent chunk pairs ``(chunk_i, chunk_j)`` the rows tie together.
     basis : Basis or None
-        ``n`` known functions of data variables multiplying the block
-        (:class:`Basis`). The block's unknowns become one coefficient per
-        (frame group, chunk, function) — column ``g*(n_chunks*n) + c*n + k`` —
-        and observation ``i`` of chunk ``c`` contributes
-        ``chunk_weight(i, c) * phi_k(v_i)``. ``n == 1`` is a *coefficient*: the
-        chunk offset times a known function (a detector pattern times the
-        frame's temperature, a per-frame gain times a previous sky, ...); the
-        column layout is then the plain block's. ``adj_info`` and
-        ``poly_constraints`` are given in the expanded column space (the
-        lowering expands chunk pairs over the functions). ``None``: the
-        classic block (``phi = 1``).
+        ``n`` known functions of data variables multiplying the offset at each
+        observation: the unknowns become one coefficient per chunk and function.
     """
 
     chunk_map: np.ndarray
     det_groups: object = None
-    template: object = None
     reg_weight: float = 0.0
     adj_info: object = None
-    poly_constraints: object = None
-    poly_basis: object = None
     basis: object = None
-
-    def __post_init__(self):
-        b = self.basis
-        if b is None:
-            return
-        if self.poly_basis is not None and b.n != 1:
-            raise ValueError("a hard poly-basis block takes a coefficient (a basis of one function) only")
-        if self.template is not None and b.n != 1:
-            raise ValueError("a template block takes a coefficient (a basis of one function) only")
 
 
 @dataclass(frozen=True)
@@ -242,17 +185,13 @@ class OffsetModel:
         -------
         dict
             The parallel-list ``setup_lsqr`` kwargs: ``chunk_maps``,
-            ``det_groups_list``, ``det_templates``, ``reg_weights``,
-            ``adj_infos``, ``poly_constraints_list``, ``poly_basis_list``,
-            ``basis_list`` (each a length-K list indexed by map ``m``).
+            ``det_groups_list``, ``reg_weights``, ``adj_infos``, ``basis_list``
+            (each a length-K list indexed by map ``m``).
         """
         return {
             'chunk_maps': [b.chunk_map for b in self.blocks],
             'det_groups_list': [b.det_groups for b in self.blocks],
-            'det_templates': [b.template for b in self.blocks],
             'reg_weights': [b.reg_weight for b in self.blocks],
             'adj_infos': [b.adj_info for b in self.blocks],
-            'poly_constraints_list': [b.poly_constraints for b in self.blocks],
-            'poly_basis_list': [b.poly_basis for b in self.blocks],
             'basis_list': [b.basis for b in self.blocks],
         }

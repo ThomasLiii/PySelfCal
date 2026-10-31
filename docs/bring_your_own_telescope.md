@@ -36,8 +36,7 @@ import selfcal as sc
 CAMERA = sc.Camera((2048, 2048), chunks=(8, 8), dq_ext=2, tag="MyCam")   # dq_ext=None: no mask
 FIELD = sc.Field("/data/runs/mycam_field1", CAMERA, pixel_scale=1.0,
                  compute=sc.Compute("/scratch/selfcal", workers=16))
-RECIPE = sc.Recipe(sc.continuum(smooth=0.1,                               # smoothness between chunks
-                                poly_prior=sc.Poly(1, along="col", weight=0.5)),   # optional
+RECIPE = sc.Recipe(sc.continuum(smooth=0.1),                              # smoothness between chunks
                    fit=sc.Fit(100, clip=5.0),
                    coadd=sc.Coadd(clip=3.0),
                    name="v1")
@@ -76,8 +75,7 @@ MODEL = sc.Model(
          sc.Sky("annual", times=sc.Function(season, of="time", period=365.25),   # a map times ANY
                 damping=1e-3)],                                                  # function of variables
     offsets=[sc.Offsets("chunks", smooth=0.1,                 # free per-frame offsets on the chunk grid,
-                        exclude=sc.Poly(0),                    #   with no constant in any frame
-                        poly_prior=sc.Poly(1, along="col", weight=0.5)),
+                        exclude=sc.Poly(0)),                   #   with no constant in any frame
              sc.Offsets("thermal", per="all",                  # a detector-fixed pattern times the temperature
                         times=sc.Function(above, of="temperature", t0=80.0)),
              sc.Offsets("gradient", on="detector",            # a free 2-D gradient per frame
@@ -133,11 +131,11 @@ receives a `FrameObservations`: the frame's file, index, observation pixels, `su
   `per="frame"` (each frame its own), `per="all"` (all frames one) or `per=` any frame variable
   (frames with equal values); `times=φ` (one known function multiplying the offset at every
   observation) or `basis=fns, n=n` (`n` functions: the unknowns are one coefficient per group ×
-  chunk × function), or `polynomial=sc.Poly(degree, along=, window=)` (an exact polynomial along a
-  chunk axis); the built-in priors `smooth` + `smooth_along`, `poly_prior`, `damping`,
-  `exact_group_rows`; and a hard constraint, `exclude=sc.Poly(k, along=)`: no polynomial of degree
-  ≤ `k` along the axis (per line of the other axes, per group), imposed exactly by the solver with
-  no row and no weight, for a term of one unknown per chunk (not `basis=` or `polynomial=`);
+  chunk × function; an offset that is a polynomial in a coordinate is a basis of that coordinate's
+  polynomials); the built-in priors `smooth` + `smooth_along`, `damping`, `exact_group_rows`; and a
+  hard constraint, `exclude=sc.Poly(k, along=)`: no polynomial of degree ≤ `k` along the axis (per
+  line of the other axes, per group), imposed exactly by the solver with no row and no weight, for a
+  term of one unknown per chunk (not `basis=`);
   `exclude=sc.Poly(0)` needs no `along` (no constant over all of a group's chunks). The term
   `sc.Offsets("scalar", on="detector")` is a per-frame scalar.
 * **weight**, `sc.Model(weight=fn)`: a function of data variables multiplying every observation's
@@ -304,7 +302,7 @@ Optional hooks, with defaults: `aux_coadds(geom)` and
 * `axes`: the named coordinates of its chunk grid (`sc.ChunkAxes.row_major(names, sizes, scans)`),
   which the priors, the jobs' windows and the terms' `smooth` name; `adjacency_axes=`, the axes a
   term's `smooth` follows by default (without them, `smooth` needs `smooth_along`; the plan refuses
-  smoothing with no axis); `spectral_axis=` and `group_axis=`, for the polynomial terms;
+  smoothing with no axis); `spectral_axis=`, the axis along which the wavelength changes;
 * `grid=`: the map sampled `geometry.oversample` times per pixel along each axis, for the mosaic
   (None: the engine replicates `det`); `extra=`: what the map's own functions read later;
 * `renderers={name: make}` and `render=`: how the mosaic draws the map's offsets. `make(chunks,

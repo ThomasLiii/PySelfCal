@@ -26,7 +26,7 @@ def grid_chunks(geometry, chunks) -> Chunks:
     """``ny x nx`` rectangular chunks over the detector (``chunks`` = (rows, cols); chunk id
     ``row * nx + col``; :meth:`~selfcal.instruments.base.Chunks.rectangles`). Its axes are ``row``
     (scanned vertically) and ``col`` (horizontally); the standard offset block regularises along
-    both, and ``row`` is the default group axis of a polynomial-basis offset term."""
+    both."""
     return Chunks.rectangles(geometry.shape, chunks)
 
 

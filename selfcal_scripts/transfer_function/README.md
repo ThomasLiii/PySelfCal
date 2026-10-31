@@ -110,7 +110,7 @@ not collide with the production recipe's):
 RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=None), name="nogauge")       # no gauge
 RECIPE = SLOPE_GAUGE.replace(fit=SLOPE_GAUGE.fit.replace(gauge=sc.Gauge("xs_term", degree=2)),
                              name="quadgauge")                                              # the quadratic gauge
-RECIPE, NUM_CH = POLY_K1, 34       # the NumCol 10 fiducial of 2026-05 (from recipes/spherex.py): 34 channels x 10 columns
+RECIPE, NUM_CH = NUMCOL3, 34       # the channel maps' recipe of 2026-09/10 (from recipes/spherex.py): 34 channels x 3 columns
 ```
 
 Settings are checked as they are built; the [Python API guide](../../docs/guide/python-api.md)

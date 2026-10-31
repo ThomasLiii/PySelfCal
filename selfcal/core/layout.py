@@ -7,8 +7,7 @@ a flat concatenation of blocks::
         | offset block 0 | offset block 1 | ... | offset block K-1 ]
 
 where ``num_sky = ref_h * ref_w``. Each offset block ``m`` spans
-``num_offset_groups[m] * num_chunks[m]`` columns, except in *template* mode
-where it collapses to ``num_frames`` per-frame amplitude columns.
+``num_offset_groups[m] * num_chunks[m]`` columns.
 
 Two call sites need the exact same column arithmetic: ``setup_lsqr`` (to tell
 the worker processes their per-map column bases) and
@@ -17,8 +16,7 @@ the worker processes their per-map column bases) and
 they had to be kept in lockstep by hand. ``SystemLayout.build`` computes it once
 so they cannot drift.
 
-Bit-identity contract: the layout computed here — including the template-mode
-collapse to one chunk with ``num_frames`` alpha columns, and the
+Bit-identity contract: the layout computed here — including the
 ``np.unique(..., return_inverse=True)`` group mapping — fixes the column order
 of every solved cal file. Do not "fix" edge cases here without deliberately
 re-baselining the byte-equality regression goldens (reference ``cal_*.h5``
@@ -43,10 +41,8 @@ class SystemLayout:
     num_frames: int
     num_offset_groups_list: list
     num_chunks_list: list
-    det_template_arr_list: list
     frame_to_group_list: list
     col_bases: list  # length K+1; col_bases[K] == total_cols
-    poly_basis_list: list = None  # per-map hard-poly spec or None
 
     # Derived (filled in __post_init__).
     num_sky: int = field(init=False)
@@ -67,20 +63,12 @@ class SystemLayout:
     def build(cls, ref_shape: tuple[int, int], chunk_maps: list[np.ndarray], *,
               num_sky_blocks: int, num_frames: int,
               det_groups_list: list[np.ndarray | None] | None = None,
-              det_templates: list[np.ndarray | None] | None = None,
-              poly_basis_list: list[dict | None] | None = None,
               basis_list: list | None = None) -> SystemLayout:
         """Compute the column layout from the setup inputs.
 
-        ``det_groups_list`` / ``det_templates`` / ``poly_basis_list`` may be
-        ``None`` (default for every map) or length-K lists. The result is
-        independent of how the caller spelled the defaults, so the parent
+        ``det_groups_list`` / ``basis_list`` may be ``None`` (default for every map) or length-K
+        lists. The result is independent of how the caller spelled the defaults, so the parent
         process and the Calibrator get identical layouts from equivalent inputs.
-
-        A map with ``poly_basis_list[m]`` set is a **hard polynomial-basis**
-        offset: its columns are the coefficients ``a[frame, col, d=1..D]``, so
-        the block reuses the chunk machinery with ``num_chunks := num_col * D``
-        and one group per frame (no det_groups / template).
 
         Parameters
         ----------
@@ -96,13 +84,6 @@ class SystemLayout:
         det_groups_list : list[np.ndarray | None] | None, optional
             Per-map arrays mapping each frame to a detector-group id, or ``None``
             for one group per frame.
-        det_templates : list[np.ndarray | None] | None, optional
-            Per-map fixed detector templates; a set template collapses map ``m``
-            to one per-frame amplitude column and requires ``det_groups_list[m]``.
-        poly_basis_list : list[dict | None] | None, optional
-            Per-map hard polynomial-basis spec (with keys such as
-            ``'num_groups'``) or ``None``; incompatible with ``det_groups_list``
-            / ``det_templates`` for the same map.
         basis_list : list | None, optional
             Per-map :class:`~selfcal.models.offset_model.Basis` (``n`` functions
             of data variables) or ``None``. A basis of ``n`` functions gives map
@@ -117,41 +98,17 @@ class SystemLayout:
         K = len(chunk_maps)
         if det_groups_list is None:
             det_groups_list = [None] * K
-        if det_templates is None:
-            det_templates = [None] * K
-        if poly_basis_list is None:
-            poly_basis_list = [None] * K
         if basis_list is None:
             basis_list = [None] * K
 
         frame_to_group_list = []
         num_offset_groups_list = []
         num_chunks_list = []
-        det_template_arr_list = []
         for m in range(K):
             cm = chunk_maps[m]
-            pb = poly_basis_list[m]
-            if pb is not None:
-                # Hard poly-basis: columns are a[frame, col, d] coeffs. Reuse the
-                # chunk machinery: num_chunks := num_col*degree, one group/frame.
-                if not (det_groups_list[m] is None and det_templates[m] is None):
-                    raise ValueError(
-                        f"poly_basis[{m}] is incompatible with det_groups/det_templates")
-                from ..models.offset_basis import n_coef as _n_coef
-                ftg = np.arange(num_frames)
-                num_offset_groups_m = num_frames
-                num_chunks_m = int(pb['num_groups']) * _n_coef(pb)
-                tmpl = None
-                frame_to_group_list.append(ftg)
-                num_offset_groups_list.append(num_offset_groups_m)
-                num_chunks_list.append(num_chunks_m)
-                det_template_arr_list.append(tmpl)
-                continue
             num_chunks_m = int(cm.max()) + 1
             n_basis_m = 1 if basis_list[m] is None else int(basis_list[m].n)
             if n_basis_m > 1:
-                if det_templates[m] is not None:
-                    raise ValueError(f"basis[{m}] of {n_basis_m} functions is incompatible with a template")
                 num_chunks_m *= n_basis_m
             if det_groups_list[m] is not None:
                 det_groups_arr = np.asarray(det_groups_list[m])
@@ -160,31 +117,14 @@ class SystemLayout:
             else:
                 ftg = np.arange(num_frames)
                 num_offset_groups_m = num_frames
-
-            if det_templates[m] is not None:
-                if det_groups_list[m] is None:
-                    raise ValueError(
-                        f"det_templates[{m}] requires det_groups_list[{m}]")
-                tmpl = np.asarray(det_templates[m], dtype=np.float32)
-                # Template mode collapses (groups, chunks) into one per-frame alpha.
-                num_offset_groups_m = num_frames
-                num_chunks_m = 1
-            else:
-                tmpl = None
-
             frame_to_group_list.append(ftg)
             num_offset_groups_list.append(num_offset_groups_m)
             num_chunks_list.append(num_chunks_m)
-            det_template_arr_list.append(tmpl)
 
         num_sky = int(ref_shape[0]) * int(ref_shape[1])
         col_bases = [num_sky_blocks * num_sky]
         for m in range(K):
-            if det_template_arr_list[m] is not None:
-                block = num_frames  # one alpha column per frame
-            else:
-                block = num_chunks_list[m] * num_offset_groups_list[m]
-            col_bases.append(col_bases[-1] + block)
+            col_bases.append(col_bases[-1] + num_chunks_list[m] * num_offset_groups_list[m])
 
         return cls(
             ref_shape=tuple(ref_shape),
@@ -192,10 +132,8 @@ class SystemLayout:
             num_frames=num_frames,
             num_offset_groups_list=num_offset_groups_list,
             num_chunks_list=num_chunks_list,
-            det_template_arr_list=det_template_arr_list,
             frame_to_group_list=frame_to_group_list,
             col_bases=col_bases,
-            poly_basis_list=list(poly_basis_list),
         )
 
     # --- column-slice helpers (used by parsing; safe convenience accessors) ---

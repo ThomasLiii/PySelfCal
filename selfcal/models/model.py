@@ -11,9 +11,8 @@ pixel)::
 * :class:`Sky`: a sky map ``S_j`` times a known function ``c_j`` of data variables ``v``
   (``times``; none: a constant sky);
 * :class:`Offsets`: an offset per chunk of a chunk map (``on``), shared by the frames of a
-  group (``per``), optionally times known functions (``times``, ``basis``), or a polynomial
-  (``polynomial``); with smoothness and polynomial-shape priors and hard constraints
-  (``exclude``); a per-frame scalar is the term of one chunk, ``Offsets('scalar', on='detector')``;
+  group (``per``), optionally times known functions (``times``, ``basis``); with a smoothness
+  prior and hard constraints (``exclude``); a per-frame scalar is the term of one chunk, ``Offsets('scalar', on='detector')``;
 * data variables beyond the built-in and instrument ones (``Model.variables``: a header
   keyword, a function of the frame list, a detector or sky map, ...);
 * :class:`Prior`: any linear rows on the unknowns, written as a function.
@@ -300,23 +299,24 @@ def _lower_function(value, n=None):
 # =============================================================================== terms
 @dataclass(frozen=True)
 class Poly(Config):
-    """A polynomial along an axis of a chunk map.
-
-    As a soft prior (``Offsets(poly_prior=...)``), the offsets along ``along`` are pulled toward
-    a degree-``degree`` polynomial with weight ``weight`` (default 1), over the ``window`` of
-    axis values if one is given; ``along=None`` means the first axis the term is smoothed along.
-    As a hard basis (``Offsets(polynomial=...)``), the offset IS a degree-``degree`` polynomial in
-    ``along`` (default: the map's spectral axis), one per value of ``each`` (default: the map's
-    group axis), over ``window`` (required), optionally piecewise on ``segments``
-    (``[(lo, hi), ...]``).
-    """
+    """A polynomial along an axis of a chunk map, the shape ``Offsets(exclude=Poly(k, along=axis))`` excludes
+    from a term: every polynomial of degree at most ``degree`` along ``along`` (per line of the other axes, per
+    group of frames), a hard constraint by reparametrisation (no row, no weight). ``along`` may be left out on a map
+    with one axis; ``Poly(0)`` (no constant over a group's chunks) needs no axis on any map. ``window``: unused by
+    the exclusion (kept for the records of older products)."""
     degree: int
     _: KW_ONLY
     along: str | None = None
     window: range | None = None
-    weight: float | None = None
-    each: str | None = None
-    segments: tuple[tuple[int, int], ...] | None = None
+    _removed = {'weight': (None, "the soft polynomial prior Offsets(poly_prior=Poly(..., weight=)) was removed on "
+                                 "2026-10-30; an offset term's polynomial shape is a basis of functions, "
+                                 "Offsets(basis=Function(...), n=)"),
+                'each': (None, "the polynomial-basis offset Offsets(polynomial=Poly(..., each=)) was removed on "
+                               "2026-10-30; write the polynomial as Offsets(basis=Function(...), n=) on the map "
+                               "whose chunks it is a polynomial per"),
+                'segments': (None, "the piecewise polynomial-basis offset Offsets(polynomial=Poly(..., segments=)) "
+                                   "was removed on 2026-10-30; write one Offsets(basis=Function(...), n=) term per "
+                                   "segment")}
 
     def _validate(self):
         if self.degree < 0:
@@ -324,18 +324,6 @@ class Poly(Config):
         if self.window is not None and (self.window.step != 1 or len(self.window) < 1):
             raise ConfigError(f"Poly(window={self.window!r}): a range of consecutive axis values, "
                               f"e.g. range(200, 321)")
-        if self.weight is not None and self.weight < 0:
-            raise ConfigError(f"Poly(weight={self.weight}): at least 0")
-
-    def lower_soft(self, what):
-        if self.each is not None or self.segments is not None:
-            raise ConfigError(f"{what}: Poly(each=..., segments=...) describes a hard polynomial basis; "
-                              f"give it as Offsets(polynomial=...)")
-        out = {'axis': self.along, 'degree': int(self.degree),
-               'weight': 1.0 if self.weight is None else float(self.weight)}
-        if self.window is not None:
-            out.update(lo=int(self.window.start), hi=int(self.window.stop - 1))
-        return out
 
 
 @dataclass(frozen=True)
@@ -483,13 +471,12 @@ class Offsets(Config):
 
     Known functions: ``times`` (one function of data variables multiplying the offset at every
     observation), or ``basis`` with ``n`` functions (the unknowns become one coefficient per
-    chunk and function; the function returns ``n`` arrays). ``polynomial``: the offset IS the
-    polynomial :class:`Poly` along a chunk axis (no smoothness or shape prior then).
+    chunk and function; the function returns ``n`` arrays). A term whose offsets are a polynomial
+    in a coordinate is a ``basis`` of the polynomials of that coordinate (``n = degree + 1``).
 
     Priors: ``smooth`` pulls chunks that neighbour along ``smooth_along`` (default: the map's
-    own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given;
-    ``poly_prior`` pulls the offsets toward soft polynomials; ``damping`` pulls every offset toward
-    zero (coverage weighted).
+    own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given; ``damping``
+    pulls every offset toward zero (coverage weighted).
     ``exclude=Poly(k, along=axis)`` is a hard constraint: the term carries no polynomial of degree
     <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
     the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
@@ -506,7 +493,7 @@ class Offsets(Config):
     ``Fit(min_observations=)`` does for sky pixels (2: an offset seen once fits that observation exactly and informs
     no other unknown): their rows are zeroed in the solve and they keep no value (0), and the mosaic still uses those
     observations, with that offset at zero. A hard constraint on the term (``exclude=``) holds on the observed offsets.
-    One unknown per chunk (not ``polynomial=`` or ``basis=``). None (the default): off.
+    One unknown per chunk (not ``basis=``). None (the default): off.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
     ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
@@ -522,13 +509,18 @@ class Offsets(Config):
     smooth: float = 0.0
     smooth_along: tuple[str, ...] | None = None
     smooth_step: int | None = None
-    poly_prior: tuple[Poly, ...] = ()
-    polynomial: Poly | None = None
     exclude: Poly | SkySignature | Overlap | None = added(None, since='2026-10')
     min_observations: int | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
+    _removed = {'poly_prior': ((), "the soft polynomial prior (weighted rows pulling the offsets toward a "
+                                   "polynomial) was removed on 2026-10-30; an offset term's polynomial shape is "
+                                   "a basis of functions, Offsets(basis=Function(...), n=)"),
+                'polynomial': (None, "the polynomial-basis offset Offsets(polynomial=Poly(...)) was removed on "
+                                     "2026-10-30; write the polynomial as Offsets(basis=Function(...), n=): the "
+                                     "polynomials of a coordinate variable, one coefficient each per chunk and "
+                                     "group of frames")}
 
     def _validate(self):
         label = f"Offsets({self.name!r})" if self.name else "Offsets()"
@@ -541,46 +533,28 @@ class Offsets(Config):
                               f"one function is times=)")
         if self.n is not None and self.basis is None:
             raise ConfigError(f"{label}: n= is the number of functions of basis=, which is not given")
-        if self.polynomial is not None:
-            bad = [k for k, v in (('smooth', self.smooth), ('poly_prior', self.poly_prior),
-                                  ('basis', self.basis), ('exact_group_rows', self.exact_group_rows)) if v]
-            if bad:
-                raise ConfigError(f"{label}: polynomial= makes the offset a polynomial, which takes no "
-                                  f"{', '.join(bad)}")
-            if self.polynomial.window is None:
-                raise ConfigError(f"{label}: polynomial= needs Poly(window=range(lo, hi + 1)), the axis values "
-                                  f"it spans")
-            if self.polynomial.weight is not None:
-                raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
-            if self.per != 'frame':
-                raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
         if isinstance(self.exclude, SkySignature):
-            if self.polynomial is not None:
-                raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
             if self.per == 'all':
                 raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
                                   "a term shared by every frame is the same in every frame: nothing to constrain")
         elif isinstance(self.exclude, Overlap):
-            if self.polynomial is not None or self.basis is not None:
-                raise ConfigError(f"{label}: exclude=Overlap(...) applies to a term of one unknown per chunk (not polynomial= or basis=)")
+            if self.basis is not None:
+                raise ConfigError(f"{label}: exclude=Overlap(...) applies to a term of one unknown per chunk (not basis=)")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
                 raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis), a SkySignature(degree) or an Overlap(terms)")
-            bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
-            if bad:
-                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
-            if self.polynomial is not None or self.basis is not None:
-                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
-        for p in self.poly_prior:
-            p.lower_soft(label)
+            if e.window is not None:
+                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no window")
+            if self.basis is not None:
+                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not basis=)")
         if self.min_observations is not None:
             m = self.min_observations
             if isinstance(m, bool) or not isinstance(m, (int, np.integer)) or m < 2:
                 raise ConfigError(f"{label}: min_observations is an integer of at least 2, or None")
-            if self.polynomial is not None or self.basis is not None:
+            if self.basis is not None:
                 raise ConfigError(f"{label}: min_observations applies to a term of one unknown per chunk "
-                                  f"(not polynomial= or basis=)")
+                                  f"(not basis=)")
         if self.exact_group_rows and self.per == 'frame':
             raise ConfigError(f"{label}: exact_group_rows applies to a shared term (per='all' or a frame "
                               f"variable)")
@@ -595,30 +569,23 @@ class Offsets(Config):
 
     def lower(self) -> dict:
         out = {'map': self.on}
-        if self.polynomial is not None:
-            p = self.polynomial
-            out.update(kind='polybasis', degree=int(p.degree), axis=p.along, group_axis=p.each,
-                       lo=int(p.window.start), hi=int(p.window.stop - 1),
-                       segments=None if p.segments is None else [list(s) for s in p.segments])
-        else:
-            kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
-            out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows),
-                       poly=[p.lower_soft('Offsets') for p in self.poly_prior])
-            if isinstance(self.exclude, SkySignature):
-                out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
-            elif isinstance(self.exclude, Overlap):
-                out['exclude_overlap'] = list(self.exclude.terms)
-                if self.exclude.weights is not None:
-                    out['exclude_overlap_weights'] = self.exclude.weights
-            elif self.exclude is not None:
-                out['exclude_degree'] = int(self.exclude.degree)
-                out['exclude_axis'] = self.exclude.along
-            if self.smooth_along is not None:
-                out['adjacency'] = list(self.smooth_along)
-            if self.smooth_step is not None:
-                out['adjacency_step'] = int(self.smooth_step)
-            if kind == 'grouped':
-                out['groups'] = self.per
+        kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
+        out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows))
+        if isinstance(self.exclude, SkySignature):
+            out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+        elif isinstance(self.exclude, Overlap):
+            out['exclude_overlap'] = list(self.exclude.terms)
+            if self.exclude.weights is not None:
+                out['exclude_overlap_weights'] = self.exclude.weights
+        elif self.exclude is not None:
+            out['exclude_degree'] = int(self.exclude.degree)
+            out['exclude_axis'] = self.exclude.along
+        if self.smooth_along is not None:
+            out['adjacency'] = list(self.smooth_along)
+        if self.smooth_step is not None:
+            out['adjacency_step'] = int(self.smooth_step)
+        if kind == 'grouped':
+            out['groups'] = self.per
         out['damp'] = float(self.damping)
         if self.min_observations is not None:
             out['min_observations'] = int(self.min_observations)
@@ -1041,46 +1008,23 @@ class Model(Config):
         from .spec import ModelSpec
         return ModelSpec.from_config(self.lower(mosaic))
 
-    def spectral_window(self):
-        """``(lo, hi)`` (inclusive) of the first polynomial window of the offset terms (the hard
-        polynomial's first), or None. The N-pass refit reads it."""
-        for t in self.offsets:
-            if t.polynomial is not None:
-                w = t.polynomial.window
-                return int(w.start), int(w.stop - 1)
-        for t in self.offsets:
-            for p in t.poly_prior:
-                if p.window is not None:
-                    return int(p.window.start), int(p.window.stop - 1)
-        return None
 
 
 # =============================================================================== presets
-def continuum(smooth=0.1, poly_prior=None, damping=None) -> Model:
+def continuum(smooth=0.1, damping=None) -> Model:
     """A constant sky (``damping``: see :class:`Sky`), an offset per frame and chunk of the
     primary map smoothed along the map's own axes (``smooth``) with no constant (``exclude=Poly(0)``),
-    optional soft polynomials (``poly_prior``: a :class:`Poly` or several), and a per-frame scalar
-    (``Offsets('scalar', on='detector')``), which holds each frame's level."""
-    poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
+    and a per-frame scalar (``Offsets('scalar', on='detector')``), which holds each frame's level."""
     return Model(sky=(Sky(damping=damping),),
-                 offsets=(Offsets(smooth=smooth, poly_prior=poly, exclude=Poly(0)), Offsets('scalar', on='detector')))
+                 offsets=(Offsets(smooth=smooth, exclude=Poly(0)), Offsets('scalar', on='detector')))
 
 
-def spectral(lines, polynomial=None, smooth=None, poly_prior=None, damping=None) -> Model:
+def spectral(lines, smooth=None, damping=None) -> Model:
     """A constant sky (``damping``) plus the sky terms ``lines`` (:class:`Sky` terms with a
-    function of the wavelength). The offsets: a hard polynomial along the spectral axis
-    (``polynomial``, a :class:`Poly` with a window), or the :func:`continuum` offset term (``smooth``,
-    default 0.1; ``poly_prior``), and a per-frame scalar (``Offsets('scalar', on='detector')``), which
-    holds each frame's level."""
+    function of the wavelength), the :func:`continuum` offset term (``smooth``, default 0.1) and a
+    per-frame scalar (``Offsets('scalar', on='detector')``), which holds each frame's level."""
     lines = (lines,) if isinstance(lines, Sky) else tuple(lines)
-    if polynomial is not None:
-        if smooth is not None or poly_prior is not None:
-            raise ConfigError("spectral(polynomial=...): the offset is the polynomial itself, which takes no "
-                              "smooth= or poly_prior=")
-        offsets = (Offsets(polynomial=polynomial),)
-    else:
-        poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
-        offsets = (Offsets(smooth=0.1 if smooth is None else smooth, poly_prior=poly, exclude=Poly(0)),)
+    offsets = (Offsets(smooth=0.1 if smooth is None else smooth, exclude=Poly(0)),)
     return Model(sky=(Sky(damping=damping),) + lines, offsets=offsets + (Offsets('scalar', on='detector'),))
 
 

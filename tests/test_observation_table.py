@@ -353,9 +353,6 @@ def test_column_norms_and_chunk_readers(tmp_path):
 # =================================================================== refusals and the API
 def test_refusals(tmp_path):
     paths = _frames(tmp_path)
-    tmpl = np.ones((1, 4), np.float32)
-    with pytest.raises(ValueError, match='template'):
-        setup_lsqr(paths, GRID, matrix='compact', **_common(det_templates=[tmpl], det_groups_list=[np.zeros(F, int)]))
     with pytest.raises(ValueError, match='adjacency'):
         setup_lsqr(paths, GRID, matrix='compact', **_common(offset_regularization=True, reg_weights=[0.5],
                                                              adj_infos=[(np.array([0, 1]), np.array([1, 2]))]))

@@ -7,7 +7,7 @@
 # 1. pytest; 2. continuum + spectral cal gates; 3. the e2e cal + mosaic gate (D3 Ch17, 300 frames, full mosaic incl.
 # wavelength maps); 4. the npass n=3 probe (INIT+SKY+OFFSET); 5. the Euclid EDFN recipe (3 exposures x 16 detectors);
 # 6. the production recipe (D3 Ch9, 100 frames, cal + mosaic); 7. the same through the observation table
-# (Compute(matrix='compact'), against the production golden); 8. a tiled multi-line solve (two tiles, stitched).
+# (Compute(matrix='compact'), against its own golden); 8. a tiled multi-line solve (two tiles, stitched).
 # SELFCAL_REPO picks the tree (default: the one this script is in), SELFCAL_PYTHON the interpreter (default: python
 # on PATH), SELFCAL_GATE_FIXTURES the frame fixtures.
 set -u
@@ -78,8 +78,8 @@ for g in $GATES; do
     rmp ${D3C9}_compact_gate_py.h5 ${D3C9_MOS}_compact_gate_py.fits; rm -f ${D3C9_SNAP}_compact_gate_py_it*.h5
     rm -rf $R/cache/compact_gate
     run compact
-    echo "--- compact cal: byte-diff vs production_golden_f64"; $PY $G/h5_diff.py ${D3C9}_compact_gate_py.h5 ${D3C9}_production_golden_f64.h5 2>&1 | tail -1
-    echo "--- compact mosaic: byte-diff vs production_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_compact_gate_py.fits ${D3C9_MOS}_production_golden_f64.fits 2>&1 | tail -1 ;;
+    echo "--- compact cal: byte-diff vs compact_golden_f64"; $PY $G/h5_diff.py ${D3C9}_compact_gate_py.h5 ${D3C9}_compact_golden_f64.h5 2>&1 | tail -1
+    echo "--- compact mosaic: byte-diff vs compact_golden_f64"; $PY $G/fits_diff.py ${D3C9_MOS}_compact_gate_py.fits ${D3C9_MOS}_compact_golden_f64.fits 2>&1 | tail -1 ;;
   tiles)
     rmp ${NP}_tiles_T1_gate_py.h5 ${NP}_tiles_T2_gate_py.h5 ${NP}_tiles_stitched_gate_py.h5
     rm -f ${NP}_tiles_stitched_gate_py_npass_monitor.json; rm -rf $R/cache/tiles_gate

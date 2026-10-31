@@ -12,7 +12,8 @@ import selfcal as sc
 from selfcal.instruments.spherex.settings import DETECTOR_SIZE, LINE_TEMPLATES, _DATA as LINE_TEMPLATE_DIR
 from selfcal.instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM
 
-__all__ = ['tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets', 'line', 'pah_3p29']
+__all__ = ['tilt', 'frame_slope', 'arc_position', 'hats', 'spectral_offsets', 'chebyshev', 'spectral_polynomial', 'line',
+           'pah_3p29']
 
 #: The intrinsic width of the PAH 3.29 um feature, as a variance in um^2, added in quadrature to the band width.
 PAH_INTRINSIC_VAR_UM2 = 2.890e-4
@@ -71,6 +72,29 @@ def spectral_offsets(subchannels, position='arc_position', name='spectral', per=
     first, last = int(subchannels.start) - 1, int(subchannels.stop) - 1
     return sc.Offsets(name, on='detector', per=per, basis=sc.Function(hats, of=position, first=first, last=last),
                       n=last - first + 1)
+
+
+def chebyshev(position, degree, lo, hi):
+    """The Chebyshev polynomials ``T_0 .. T_degree`` of a position across the LVF arcs over the subchannels ``lo``
+    to ``hi`` (inclusive indices): the position is mapped to ``x`` in [-1, 1] from the first subchannel's start edge
+    (``lo - 1``; subchannel ``s`` spans the positions ``s - 1`` to ``s``, :func:`arc_position`) to the last one's end
+    edge (``hi``), and the polynomials run on past the window. ``degree + 1`` functions, the constant first."""
+    from numpy.polynomial import chebyshev as C
+    x = 2.0 * (np.asarray(position, dtype=np.float64) - (lo - 1)) / (hi - (lo - 1)) - 1.0
+    return C.chebvander(x, int(degree))
+
+
+def spectral_polynomial(subchannels, degree=2, position='arc_position', name='poly', on='detector', per='frame'):
+    """An offset term that is a polynomial of degree ``degree`` in the position across the LVF arcs over the
+    subchannels ``subchannels`` (a range of subchannel indices, the fit's window), per frame (``per``) and per chunk
+    of the map ``on`` (``'detector'``: one polynomial per frame; ``'detector_column'``: one per frame and column):
+    ``degree + 1`` coefficients each, of the Chebyshev polynomials :func:`chebyshev` (the constant among them, so the
+    term holds the frame's level too). A continuous function of the position, exact by its basis: no constraint and
+    no weight. ``position`` names the model's variable holding the position:
+    ``variables={position: sc.DetectorMap(arc_position)}``."""
+    lo, hi = int(subchannels.start), int(subchannels.stop) - 1
+    return sc.Offsets(name, on=on, per=per, basis=sc.Function(chebyshev, of=position, degree=int(degree), lo=lo, hi=hi),
+                      n=int(degree) + 1)
 
 
 def line(name, damping=None, *, file=None):

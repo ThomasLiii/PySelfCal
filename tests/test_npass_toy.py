@@ -9,7 +9,7 @@ defaults); the run's job is every chunk, ``sc.Job('All')``.
 The data: 20 frames written directly on a 96 x 96 reference grid (no reprojection), each the sky
 ``S_0 + S_1 * gauss(wavelength)`` (a continuum and one line) seen at a random pointing, plus a
 per-frame offset that is a quadratic in the band per column and a per-frame scalar (what the
-model's polynomial-basis offset term and scalar can represent).
+model's polynomial offset term, the two Chebyshev shapes of the band per column, and scalar represent).
 
 Each schedule is solved and its products checked: the products and the monitor of every pass, the
 damping every SKY pass records (each sky term's, as in the INIT pass). The schedules, n = 3 each:
@@ -86,9 +86,27 @@ def toy_chunk_ids():
 
 
 def toy_band_columns(geometry):
-    """The chunk map (:func:`toy_chunk_ids`): its axes are the band (spectral) and the column (group)."""
+    """The chunk map (:func:`toy_chunk_ids`): its axes are the band (spectral) and the column."""
     axes = sc.ChunkAxes.row_major(('band', 'col'), (N_BAND, N_COL), ('y', 'x'))
-    return sc.Chunks(toy_chunk_ids(), axes, adjacency_axes=('col',), spectral_axis='band', group_axis='col')
+    return sc.Chunks(toy_chunk_ids(), axes, adjacency_axes=('col',), spectral_axis='band')
+
+
+def toy_columns(geometry):
+    """A chunk per column: the map of the polynomial offset term (one polynomial per frame and column)."""
+    return sc.Chunks(toy_chunk_ids() % N_COL, sc.ChunkAxes.row_major(('col',), (N_COL,), ('x',)))
+
+
+def band_position(geometry):
+    """The band index of every detector pixel: the coordinate the polynomial offsets are in (a detector map)."""
+    return (toy_chunk_ids() // N_COL).astype(np.float32)
+
+
+def band_shapes(band, degree, lo, hi):
+    """The Chebyshev shapes ``T_1 .. T_degree`` of the band over ``lo .. hi`` (no constant: the scalar holds the
+    frame's level)."""
+    from numpy.polynomial import chebyshev as C
+    x = 2.0 * (np.asarray(band, dtype=np.float64) - lo) / (hi - lo) - 1.0
+    return C.chebvander(x, int(degree))[:, 1:]
 
 
 def toy_geometry(oversample):
@@ -108,7 +126,7 @@ class ToySpectrograph(sc.Instrument):
         return toy_geometry(oversample)
 
     def default_chunk_maps(self):
-        return {'lvf': sc.ChunkMap(toy_band_columns)}
+        return {'lvf': sc.ChunkMap(toy_band_columns), 'column': sc.ChunkMap(toy_columns)}
 
 
 # ============================================================================
@@ -164,7 +182,15 @@ def _line(damping=None):
 
 
 def _polynomial():
-    return sc.Poly(2, window=WINDOW)
+    """The polynomial offset: the two Chebyshev shapes of the band over the window, per frame and column."""
+    return sc.Offsets('poly', on='column', basis=sc.Function(band_shapes, of='band_pos', degree=2, lo=WINDOW.start,
+                                                             hi=WINDOW.stop - 1), n=2)
+
+
+def _model(line, damping=None):
+    """A constant sky (``damping``) plus ``line``, the polynomial offset and a per-frame scalar."""
+    return sc.Model(sky=[sc.Sky(damping=damping), line], offsets=[_polynomial(), sc.Offsets('scalar', on='detector')],
+                    variables={'band_pos': sc.DetectorMap(band_position)})
 
 
 @dataclass(frozen=True)
@@ -186,12 +212,12 @@ class Schedule:
 
 
 SCHEDULES = (
-    Schedule('skyfirst', sc.spectral([_line()], polynomial=_polynomial()),
+    Schedule('skyfirst', _model(_line()),
              sc.Passes(3, order='sky_first', ends_on_offset=True, offset=sc.Refit())),
-    Schedule('offfirst', sc.spectral([_line(0.05)], polynomial=_polynomial(), damping=0.02),
+    Schedule('offfirst', _model(_line(0.05), damping=0.02),
              sc.Passes(3, order='offset_first', init_clip=sc.Clip(4.0, per=BAND), sky_clip=sc.Clip(5.0, per=BAND),
                        offset=sc.Refit(clip=sc.Clip(2.5, per=BAND), min_pixels=500))),
-    Schedule('stitch', sc.spectral([_line()], polynomial=_polynomial()),
+    Schedule('stitch', _model(_line()),
              sc.Passes(3, order='sky_first', ends_on_offset=True, sky_merge='stitch',
                        offset=sc.Refit(min_pixels=500))),
 )

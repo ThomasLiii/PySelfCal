@@ -100,27 +100,19 @@ def _frames_sha(files):
 
 def _built_offset_rows(offsets, regularize):
     """The offset model's setup keywords (``OffsetModel.to_setup_kwargs()``) with each map's
-    smoothness and soft-polynomial rows described as the solver builds them
-    (``core/assembly.py`` ``_prep_lsqr``; ``core/system.py``, the grouped adjacency): smoothness
-    rows only with ``offset_regularization``, a positive weight and at least one adjacent pair,
-    a polynomial group only with ``offset_regularization``, a nonzero weight and at least one
-    chain, and neither on a template or polynomial-basis map. Rows that are not built read
-    alike however they were left out (the switch off, a zero weight, no pairs, no polynomial):
-    weight 0.0, no adjacency, no polynomial groups."""
+    smoothness rows described as the solver builds them (``core/assembly.py`` ``_prep_lsqr``;
+    ``core/system.py``, the grouped adjacency): smoothness rows only with ``offset_regularization``,
+    a positive weight and at least one adjacent pair. Rows that are not built read alike however
+    they were left out (the switch off, a zero weight, no pairs): weight 0.0, no adjacency."""
     out = dict(offsets)
-    reg_weights, adj_infos, polys = [], [], []
+    reg_weights, adj_infos = [], []
     for m in range(len(offsets['chunk_maps'])):
-        free = (regularize and offsets['det_templates'][m] is None
-                and offsets['poly_basis_list'][m] is None)
         weight, adj = offsets['reg_weights'][m], offsets['adj_infos'][m]
-        smooth = (free and weight > 0 and adj is not None
+        smooth = (regularize and weight > 0 and adj is not None
                   and not all(np.asarray(a).size == 0 for a in adj))
         reg_weights.append(weight if smooth else 0.0)
         adj_infos.append(adj if smooth else None)
-        groups = offsets['poly_constraints_list'][m]
-        built = [g for g in groups or () if free and float(g['weight']) != 0 and np.shape(g['chains'])[0] > 0]
-        polys.append(groups if groups and len(built) == len(groups) else (built or None))
-    out.update(reg_weights=reg_weights, adj_infos=adj_infos, poly_constraints_list=polys)
+    out.update(reg_weights=reg_weights, adj_infos=adj_infos)
     return out
 
 

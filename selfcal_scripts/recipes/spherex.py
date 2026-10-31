@@ -25,9 +25,9 @@ from .site import ORCA, OUTPUTS
 
 __all__ = ['nep', 'sep', 'nep_qr2', 'maps', 'on_maps', 'CHANNEL_MAPS', 'SLOPE_GAUGE', 'SLOPE_GAUGE_VARWEIGHT',
            'SLOPE_GAUGE_COLUMNS', 'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'SUBCH_VARWEIGHT_COLUMNS',
-           'SUBCH_VARWEIGHT_COLUMNS_FINAL', 'continuous_final', 'NUMCOL3', 'POLY_K1', 'LINES3', 'SUBCHANNEL',
+           'SUBCH_VARWEIGHT_COLUMNS_FINAL', 'continuous_final', 'NUMCOL3', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
-           'pahfit_tiled']
+           ]
 
 
 # ---------------------------------------------------------------------------------------------- fields
@@ -207,14 +207,6 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
                         name='subch_varweight_pixels_final_continuous')
 
 
-#: The NumCol 10 era fiducial: a linear polynomial along the columns (weight 0.5), 34 channels of 10 columns; the sky
-#: damped with weight 0.1 (the library default of that time).
-POLY_K1 = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=10)),
-                    fit=sc.Fit(50, clip=5.0, method='lsqr'),
-                    coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
-                    name='damp0p1_reg0p1_outThresh5_sigma2_polyK1')
-
-
 # ---------------------------------------------------------------------------------------------- PAH lines
 #: The three PAH features of the multi-line fits, with the shipped realistic templates.
 LINES3 = [T.line(name, damping=5e-3) for name in ('aromatic', 'aliphatic', 'plateau')]
@@ -227,29 +219,24 @@ MULTILINE3_WINDOW = range(200, 321)
 
 
 def multiline3(name, *, iterations=300, threads=32, lines=LINES3, window=MULTILINE3_WINDOW, degree=2,
-               segments=None, num_ch=34, num_col=3):
+               num_ch=34, num_col=3):
     """The multi-line recipe on :func:`maps` of 34 channels and ``num_col`` columns: a constant sky (damping 0.1,
-    the library default when the recipe was made) plus ``lines``, the offset a hard degree-``degree`` polynomial
-    along the subchannels of ``window`` (per column), per-pixel shot-noise weights, the source-mask bit ignored; no
-    mosaic (tiled and N-pass runs)."""
-    model = sc.spectral(lines, polynomial=sc.Poly(degree, window=window, segments=segments), damping=0.1)
-    return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
-                     fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True,
-                                method='lsqr'),
+    the library default when the recipe was made) plus ``lines``, the offset a degree-``degree`` Chebyshev polynomial
+    of the position across the LVF arcs over the subchannels of ``window``, per frame and per column of the
+    partition (``num_col`` of them, the map ``column`` of :func:`selfcal_scripts.spherex.chunks.columns`; one
+    polynomial per frame when ``num_col`` is 1) (:func:`selfcal_scripts.spherex.terms.spectral_polynomial`; its
+    constant holds the frame's level), per-pixel shot-noise weights, the source-mask bit ignored; no mosaic (tiled
+    and N-pass runs). Until 2026-10-30 the polynomial was the engine's own polynomial-basis offset per column group
+    without a constant, plus one scalar per frame; the general form gives each column its own constant instead
+    (two more unknowns per frame with three columns, none with one)."""
+    chunk_maps = maps(num_ch=num_ch, num_col=num_col)
+    if num_col > 1:
+        chunk_maps = {**chunk_maps, 'column': C.column_map(num_ch=num_ch, num_col=num_col)}
+    model = sc.Model(chunk_maps=chunk_maps, sky=[sc.Sky(damping=0.1), *lines],
+                     offsets=[T.spectral_polynomial(window, degree, on='column' if num_col > 1 else 'detector')],
+                     variables={'arc_position': sc.DetectorMap(T.arc_position)})
+    return sc.Recipe(model, fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
                      coadd=None, numerics=sc.Numerics(threads), name=name)
-
-
-def pahfit_tiled(name, *, iterations, num_ch=34, num_col=3):
-    """The tiled PAH 3.29 um recipe (2026-08) on :func:`maps` of 34 channels and ``num_col`` columns: a constant
-    sky (damping 0.1) plus the PAH line (``terms.pah_3p29``, damping 5e-3), free offsets smoothed along the columns
-    with a linear column polynomial and a cubic along the subchannels 200-259 (weight 100), shot-noise weights, the
-    source-mask bit ignored; no mosaic."""
-    model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=5e-3)],
-                        poly_prior=[sc.Poly(1, weight=0.5), sc.Poly(3, along='subchannel', window=range(200, 260),
-                                                                  weight=100.0)], damping=0.1)
-    return sc.Recipe(model.replace(chunk_maps=maps(num_ch=num_ch, num_col=num_col)),
-                     fit=sc.Fit(iterations, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
-                     coadd=None, name=name)
 
 
 #: The N-pass schedule of the multi-line fits: five passes ending on a sky; every clip per subchannel; the

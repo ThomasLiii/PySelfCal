@@ -14,7 +14,7 @@ import numpy as np  # noqa: F401  (imported before selfcal on purpose: the actio
 
 import selfcal as sc
 from selfcal_scripts.recipes.spherex import maps
-from selfcal_scripts.spherex import jobs, terms as T
+from selfcal_scripts.spherex import chunks as C, jobs, terms as T
 
 OUTPUTS = '/mnt/md124/thomasli/selfcal/outputs'
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the tree under test
@@ -38,10 +38,15 @@ TILES = {'T1': (4342, 6185, 4334, 8068), 'T2': (6135, 8237, 4334, 8068)}
 
 
 def multiline(name):
-    """Three lines, the hard polynomial over the window, 20 iterations, no mosaic (npass3, tiles)."""
-    return sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321)), damping=0.1).replace(chunk_maps=MAPS),
-                     fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
-                     name=name)
+    """Three lines, a degree-2 Chebyshev polynomial of the position across the arcs over the window per frame and
+    column of the partition (3 columns: the map ``column`` of chunks.columns; terms.spectral_polynomial), 20
+    iterations, no mosaic (npass3, tiles)."""
+    model = sc.Model(chunk_maps={**MAPS, 'column': C.column_map(num_ch=34, num_col=3)},
+                     sky=[sc.Sky(damping=0.1), *LINES],
+                     offsets=[T.spectral_polynomial(range(200, 321), 2, on='column')],
+                     variables={'arc_position': sc.DetectorMap(T.arc_position)})
+    return sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'),
+                     coadd=None, name=name)
 
 
 def continuum():
@@ -55,7 +60,7 @@ def continuum():
 def spectral():
     """The PAH 3.29 um line (terms.pah_3p29) on D4 in five columns, 150 frames, no mosaic."""
     model = sc.spectral([sc.Sky('pah_3p29', times=T.pah_3p29(), damping=0.0)],
-                        poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=5))
+                        damping=0.1).replace(chunk_maps=maps(num_ch=34, num_col=5))
     recipe = sc.Recipe(model, fit=sc.Fit(20, clip=5.0, ignore_flags=[21], shot_noise_weights=True, method='lsqr'), coadd=None,
                        name='unify_gate_py')
     return NEP_D4.calibrate(recipe, jobs=jobs.window('AromaticPAHfit', range(210, 250)),
@@ -64,7 +69,7 @@ def spectral():
 
 def e2e():
     """D3 Ch17, 300 frames, cal + full mosaic (wavelength maps included)."""
-    recipe = sc.Recipe(sc.continuum(smooth=0.1, poly_prior=sc.Poly(1, weight=0.5), damping=0.1).replace(chunk_maps=MAPS),
+    recipe = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1).replace(chunk_maps=MAPS),
                        fit=sc.Fit(50, clip=5.0, ignore_flags=[], method='lsqr'),
                        coadd=sc.Coadd(clip=2.0, ignore_flags=[21], oversample=2), name='unify_e2e_gate_py')
     compute = sc.Compute(f'{REPO}/cache', workers=48, stage='reuse', keep_staged=True)
@@ -111,8 +116,10 @@ def production():
 
 def compact():
     """The production gate's recipe, frames and settings through the observation table (``sc.Compute(matrix='compact')``:
-    the matrix never stored, each pass remaking the rows in compiled loops): the same cal and mosaic bytes as the
-    production golden are expected, so this gate has no golden of its own."""
+    the matrix never stored, each pass remaking the rows in compiled loops), against a golden of its own: the
+    production golden's storage is one block and the table's blocks are the assembly batches, which the deflation
+    sums per block, so the two differ in the deflation's rounding (against the partitioned stored storage the table
+    is byte-equal: the unit tests, the production-size runs)."""
     from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
     inst = sc.SPHEREx(3, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
     field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
