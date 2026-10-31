@@ -683,6 +683,15 @@ class Numerics(Config):
     each summing its rows into a buffer of its own (None: as many as ``threads``, capped so the
     buffers stay under 16 GB; 1: the sequential product). ``batch``: frames per assembly batch.
     ``mosaic_batch``: frames per batch of the coadd's frame cache; ``coadd_batch``: of its passes.
+    ``gradient``: how CGLS (``Fit(method='cgls')``) has the gradient of each iteration:
+    ``'recomputed'``, from the residual by a transpose product (two passes over the matrix per
+    iteration), or ``'recurrence'``, carried along from the transpose product of the matvec's own
+    result, which the observation table (``sc.Compute(matrix='compact')``) forms in the same pass as the
+    matvec, so an iteration makes the rows once; recomputed from the residual every 50 iterations,
+    as the residual is, and whenever its norm grows. The two differ by the recurrence's rounding, not
+    in what they converge to; a solve on the recurrence ends by its stop rule or the solver's tests,
+    not by a fixed count far past convergence, where the recurrence's float64 gradient keeps moving the
+    iterate along the system's near-null directions.
     The defaults are production's, so any machine reproduces production bit for bit.
     """
     threads: int = 48
@@ -691,6 +700,7 @@ class Numerics(Config):
     mosaic_batch: int = 50
     coadd_batch: int = 50
     rmatvec_threads: int | None = None
+    gradient: Literal['recomputed', 'recurrence'] = added('recomputed', since='2026-10')
 
     def _validate(self):
         for k in ('threads', 'batch', 'mosaic_batch', 'coadd_batch'):
@@ -698,6 +708,8 @@ class Numerics(Config):
                 raise ConfigError(f"Numerics({k}={getattr(self, k)}): at least 1")
         if self.rmatvec_threads is not None and self.rmatvec_threads < 1:
             raise ConfigError(f"Numerics(rmatvec_threads={self.rmatvec_threads}): at least 1 (None: automatic)")
+        if self.gradient not in ('recomputed', 'recurrence'):
+            raise ConfigError(f"Numerics(gradient={self.gradient!r}): 'recomputed' or 'recurrence'")
 
 
 @dataclass(frozen=True)

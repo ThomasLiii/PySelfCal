@@ -164,7 +164,25 @@ class ColumnProjector:
             self.apply(out)
             return out
 
-        return LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
+        wrapped = LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
+        inner = getattr(op, 'normal_product', None)
+        if inner is not None:                      # (A P y, P A^T A P y) from one pass of the operator inside
+            def normal_product(y):
+                z = np.array(y, dtype=dt, copy=True).reshape(-1)
+                self.apply(z)
+                q, t = inner(z)
+                t = np.asarray(t)
+                self.apply(t)
+                return q, t
+            wrapped.normal_product = normal_product
+        inner_t = getattr(op, 'rmatvec_promoted', None)
+        if inner_t is not None:
+            def rmatvec_promoted(u):
+                out = np.asarray(inner_t(u))
+                self.apply(out)
+                return out
+            wrapped.rmatvec_promoted = rmatvec_promoted
+        return wrapped
 
     def mapped(self, index_map) -> 'ColumnProjector':
         """The same projector on columns renumbered by ``index_map`` (an int array over the current

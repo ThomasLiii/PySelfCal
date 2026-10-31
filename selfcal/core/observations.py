@@ -122,7 +122,7 @@ _ZERO64 = np.float64(0.0)
 
 @_jit
 def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, kinds, H, W, nb, nboff,
-          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s):
+          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s, tbuf):
     """One pass over a block's rows ``lo:hi``: each row's entries made in column order and used as ``mode`` says.
 
     ======  ===================================================================================================
@@ -138,6 +138,11 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
     3       ``out[i - lo]`` (a uint8 array): 1 when the row has an entry in a column of ``drop`` (a boolean over
             the leading columns of the full layout; the coverage floor's columns), with the columns unmapped and
             unscaled.
+    4       mode 0 and, in the same pass, ``tbuf[c] += A[i, c] * out[i - lo]`` for the row's stored product: the
+            matvec and the transpose product of its result (``A^T A vec``) from one making of the rows, each
+            row's product taken back in ``out``'s dtype, as a transpose product of that vector would read it,
+            the products and sums of the scatter in float64 (``tbuf`` float64): a gradient carried by recurrence
+            keeps the rounding of every term it was built from, so this one is made in the vectors' precision.
     ======  ===================================================================================================
 
     A row's entries: the sky terms first (``j * num_sky + P``, the value ``w * c_j`` made by the model's code:
@@ -174,7 +179,7 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
         if floored:
             fi += 1
         k = i - lo
-        if mode == 0:
+        if mode == 0 or mode == 4:
             out[k] = 0
         if floored and mode != 2:
             continue
@@ -334,11 +339,15 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
                                 oc[cnt] = c
                                 ov[cnt] = v
                                 cnt += 1
-        if mode == 0:
+        if mode == 0 or mode == 4:
             acc = zero
             for t in range(cnt):
                 acc = acc + ov[t] * vec[oc[t]]
             out[k] = acc
+            if mode == 4:
+                qv = np.float64(out[k])
+                for t in range(cnt):
+                    tbuf[oc[t]] += np.float64(ov[t]) * qv
         elif mode == 1:
             yv = vec[k]
             for t in range(cnt):
@@ -420,14 +429,102 @@ def _split_spans(indptr, cols, vals, cuts, out_ip, out_cols, out_vals, offsets):
 
 
 # ---------------------------------------------------------------------------------------------------- the table
+@_jit
+def _max_nonzero(vals):
+    """The most nonzero values any column of ``vals`` ``(functions, rows)`` holds: the slots a packed store of these
+    functions needs per row."""
+    worst = 0
+    for k in range(vals.shape[1]):
+        c = 0
+        for q in range(vals.shape[0]):
+            if vals[q, k] != 0:
+                c += 1
+        if c > worst:
+            worst = c
+    return worst
+
+
+@_jit
+def _pack(vals, s0, s1, lo, pidx, pval):
+    """The nonzero values of ``vals`` ``(functions, rows)``, a map's functions over the block rows from ``lo``, into
+    the slots ``s0:s1`` of those rows of ``pidx`` / ``pval`` (the function's index within the map, 255 for an empty
+    slot, and its value). The row loop (:func:`_pass`) skips a zero value, either sign, so the zeros dropped here
+    change nothing it makes."""
+    for k in range(vals.shape[1]):
+        s = s0
+        for q in range(vals.shape[0]):
+            v = vals[q, k]
+            if v != 0:
+                pidx[lo + k, s] = q
+                pval[lo + k, s] = v
+                s += 1
+        for t in range(s, s1):
+            pidx[lo + k, t] = 255
+
+
+@_jit
+def _unpack(lo, hi, w, sky_src, sky_c, dense, dense_fn, pk_off, pk_base, pk_nb, pidx, pval, out_sky, out_phi):
+    """The model's stored values of a block's rows ``lo:hi`` unpacked into the arrays :func:`_pass` takes: the first
+    ``hi - lo`` columns of ``out_sky`` ``(J, rows)`` and ``out_phi`` ``(sum nb, rows)``. Sky term ``j`` is the weight
+    when ``sky_src[j] < 0`` (an identity coefficient), else row ``sky_src[j]`` of ``sky_c``; dense function ``d`` is
+    function ``dense_fn[d]``; packed map ``m`` has its ``pk_nb[m]`` function rows from ``pk_base[m]`` zeroed, then its
+    slots ``pk_off[m]:pk_off[m + 1]`` of ``pidx`` / ``pval`` placed."""
+    n = hi - lo
+    for j in range(sky_src.shape[0]):
+        src = sky_src[j]
+        if src < 0:
+            for k in range(n):
+                out_sky[j, k] = w[lo + k]
+        else:
+            for k in range(n):
+                out_sky[j, k] = sky_c[src, lo + k]
+    for d in range(dense.shape[0]):
+        r = dense_fn[d]
+        for k in range(n):
+            out_phi[r, k] = dense[d, lo + k]
+    for m in range(pk_off.shape[0] - 1):
+        b0 = pk_base[m]
+        for q in range(pk_nb[m]):
+            for k in range(n):
+                out_phi[b0 + q, k] = np.float32(0.0)
+        s0, s1 = pk_off[m], pk_off[m + 1]
+        for k in range(n):
+            for s in range(s0, s1):
+                q = pidx[lo + k, s]
+                if q != 255:
+                    out_phi[b0 + q, k] = pval[lo + k, s]
+
+
+class _Values:
+    """The model's values over one block's observations, stored (``ObservationTable(functions='stored')``): the sky
+    coefficients that are functions, ``sky_c`` ``(J', n)`` float32 (``sky_src[j]`` the row of sky term ``j``, -1 for
+    an identity coefficient, which is the weight); the offset bases stored dense, ``dense`` ``(D, n)`` float32 (row
+    ``d`` the function ``dense_fn[d]`` of the model's ``sum nb``); the bases stored packed, each map ``m`` of them its
+    ``pk_nb[m]`` functions from ``pk_base[m]`` in the slots ``pk_off[m]:pk_off[m + 1]`` of ``pidx`` ``(n, slots)``
+    uint8 (the function's index within the map, 255 empty) and ``pval`` ``(n, slots)`` float32. A map is packed when
+    its slots, the most nonzero functions on any of the block's rows, at 5 bytes each cost less than its functions
+    at 4 (and it has at most 255 functions)."""
+
+    __slots__ = ('sky_src', 'sky_c', 'dense', 'dense_fn', 'pk_off', 'pk_base', 'pk_nb', 'pidx', 'pval')
+
+    def __init__(self, sky_src, sky_c, dense, dense_fn, pk_off, pk_base, pk_nb, pidx, pval):
+        self.sky_src, self.sky_c, self.dense, self.dense_fn = sky_src, sky_c, dense, dense_fn
+        self.pk_off, self.pk_base, self.pk_nb, self.pidx, self.pval = pk_off, pk_base, pk_nb, pidx, pval
+
+    @property
+    def nbytes(self):
+        return self.sky_c.nbytes + self.dense.nbytes + self.pidx.nbytes + self.pval.nbytes
+
+
 class _Block:
     """The data rows of one assembly batch: per observation its reference pixel ``sky`` (int32), detector position
     ``x``, ``y`` (the frames' coordinate dtype) and weight ``w`` (float32); the frames (``frames``, their index in the
     solve), their row ranges (``frame_rows``, length ``nf + 1``) and their column base per offset map (``base``,
     ``(nf, K)``); the rows whose right-hand side is zero (``zb``, ascending) and those the coverage floor zeroed
-    (``fl``, ascending); the entry count ``nnz``."""
+    (``fl``, ascending); the entry count ``nnz``; the model's stored values (``values``, a :class:`_Values`, or None
+    when the passes evaluate the model)."""
 
-    __slots__ = ('frames', 'frame_rows', 'sky', 'x', 'y', 'w', 'base', 'zb', 'fl', 'nnz')
+    __slots__ = ('frames', 'frame_rows', 'sky', 'x', 'y', 'w', 'base', 'zb', 'fl', 'nnz', 'values')
 
     def __init__(self, frames, frame_rows, sky, x, y, w, zb, nnz):
         self.frames = np.asarray(frames, dtype=np.int64)
@@ -440,6 +537,7 @@ class _Block:
         self.zb = np.asarray(zb, dtype=np.int64)
         self.fl = np.zeros(0, dtype=np.int64)
         self.nnz = int(nnz)
+        self.values = None
 
     @property
     def n(self):
@@ -447,7 +545,8 @@ class _Block:
 
     @property
     def nbytes(self):
-        return self.sky.nbytes + self.x.nbytes + self.y.nbytes + self.w.nbytes
+        return (self.sky.nbytes + self.x.nbytes + self.y.nbytes + self.w.nbytes
+                + (0 if self.values is None else self.values.nbytes))
 
 
 def _map_kind(cm):
@@ -565,15 +664,22 @@ class ObservationTable:
     row order), ``tail`` (the constraint rows, a csr matrix in solver columns, or None), ``shape`` and ``dtype``
     (float32, the entries') as a stored matrix has them, ``scale`` (the column scale of every entry, None until the
     preconditioner sets it) and ``threads`` (the threads of its passes). The expansion (``model``) holds the model's
-    detector side and the column map of a compacted system."""
+    detector side and the column map of a compacted system. ``functions``: ``'computed'``, the model's functions
+    evaluated at every pass over a chunk of rows, or ``'stored'``, evaluated once here and kept per block
+    (:class:`_Values`: 4 bytes per value, a basis that is mostly zero packed), every pass unpacking a chunk's values
+    in a compiled loop: the same values either way."""
 
-    def __init__(self, blocks, tail, n_cols, model, threads=1):
+    def __init__(self, blocks, tail, n_cols, model, threads=1, functions='computed'):
         require_numba()
+        if functions not in ('computed', 'stored'):
+            raise ValueError(f"functions={functions!r}: 'computed' (the model's functions evaluated at every pass) or "
+                             "'stored' (their values kept with the table)")
         self.blocks = list(blocks)
         self.tail = tail
         self.model = model
         self.scale = None
         self.threads = max(1, int(threads))
+        self.functions = functions
         if not self.blocks:
             raise ValueError("an observation table needs at least one data block")
         dt = {b.x.dtype for b in self.blocks} | {b.y.dtype for b in self.blocks}
@@ -585,7 +691,10 @@ class ObservationTable:
         np.cumsum(sizes, out=self.row_bounds[1:])
         self.shape = (int(self.row_bounds[-1]), int(n_cols))
         self._scratch = {}
+        self._vscratch = {}
         self._lock = threading.Lock()
+        if functions == 'stored':
+            self._store_values()
 
     # ---- what a stored matrix tells ---------------------------------------------------------------------------
     dtype = np.dtype(np.float32)
@@ -603,8 +712,13 @@ class ObservationTable:
 
     @property
     def nbytes(self):
-        """The bytes of the table (the observations; the tail's stored entries aside)."""
+        """The bytes of the table (the observations and the model's stored values; the tail's entries aside)."""
         return sum(b.nbytes for b in self.blocks)
+
+    @property
+    def values_nbytes(self):
+        """The bytes of the model's stored values (0 when the passes evaluate the model)."""
+        return sum(0 if b.values is None else b.values.nbytes for b in self.blocks)
 
     @property
     def n_data_rows(self):
@@ -612,15 +726,82 @@ class ObservationTable:
 
     def __repr__(self):
         return (f"<ObservationTable shape={self.shape} observations={self.n_data_rows} nnz={self.nnz} "
-                f"blocks={len(self.blocks)} tail={0 if self.tail is None else self.tail.shape[0]} rows>")
+                f"blocks={len(self.blocks)} tail={0 if self.tail is None else self.tail.shape[0]} rows "
+                f"functions={self.functions}>")
 
     # ---- the rows ---------------------------------------------------------------------------------------------
+    def _store_values(self):
+        """Evaluate the model's functions over every block once, in the table's threads, and keep the values
+        (:class:`_Values`): the sky coefficients that are functions and the dense bases as they are, a basis packed
+        when that is smaller for the block."""
+        md = self.model
+        sky_fn = [j for j in range(md.J) if not md.identity[j]]
+        sky_src = np.full(md.J, -1, dtype=np.int64)
+        sky_src[sky_fn] = np.arange(len(sky_fn))
+        nb, nboff, K = md.nb, md.nboff, md.K
+
+        def store(blk):
+            n = blk.n
+            chunks = [(a, b) + md.values(blk, a, b) for a, b in self._chunks(0, n)]
+            sky_c = np.empty((len(sky_fn), n), dtype=np.float32)
+            worst = np.zeros(K, dtype=np.int64)
+            for a, b, sv, ph in chunks:
+                for r, j in enumerate(sky_fn):
+                    sky_c[r, a:b] = sv[j]
+                for m in range(K):
+                    if nb[m]:
+                        worst[m] = max(worst[m], _max_nonzero(ph[nboff[m]:nboff[m + 1]]))
+            packed = [m for m in range(K) if nb[m] and nb[m] <= 255 and 5 * worst[m] < 4 * nb[m]]
+            dense_maps = [m for m in range(K) if nb[m] and m not in packed]
+            dense_fn = np.concatenate([np.arange(nboff[m], nboff[m + 1]) for m in dense_maps]
+                                      or [np.zeros(0, dtype=np.int64)]).astype(np.int64)
+            dense = np.empty((dense_fn.size, n), dtype=np.float32)
+            pk_off = np.zeros(len(packed) + 1, dtype=np.int64)
+            np.cumsum([worst[m] for m in packed], out=pk_off[1:])
+            pk_base = np.array([nboff[m] for m in packed], dtype=np.int64)
+            pk_nb = np.array([nb[m] for m in packed], dtype=np.int64)
+            pidx = np.empty((n, int(pk_off[-1])), dtype=np.uint8)
+            pval = np.empty((n, int(pk_off[-1])), dtype=np.float32)
+            for a, b, sv, ph in chunks:
+                if dense_fn.size:
+                    dense[:, a:b] = ph[dense_fn]
+                for i, m in enumerate(packed):
+                    _pack(ph[nboff[m]:nboff[m + 1]], int(pk_off[i]), int(pk_off[i + 1]), a, pidx, pval)
+            blk.values = _Values(sky_src, sky_c, dense, dense_fn, pk_off, pk_base, pk_nb, pidx, pval)
+
+        if self.threads <= 1 or len(self.blocks) == 1:
+            for blk in self.blocks:
+                store(blk)
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.threads, len(self.blocks))) as ex:
+                list(ex.map(store, self.blocks))
+
+    def _values(self, blk, lo, hi):
+        """The model's values over rows ``lo:hi`` of ``blk`` (at most ``_EVAL_ROWS`` rows), as :func:`_pass` takes
+        them: evaluated now, or unpacked from the block's stored values into this thread's scratch (whose rows
+        beyond ``hi - lo`` the loops never read)."""
+        v = blk.values
+        if v is None:
+            return self.model.values(blk, lo, hi)
+        key = threading.get_ident()
+        with self._lock:
+            sc = self._vscratch.get(key)
+        if sc is None:
+            md = self.model
+            sc = (np.empty((md.J, _EVAL_ROWS), dtype=np.float32),
+                  np.empty((int(md.nboff[-1]), _EVAL_ROWS), dtype=np.float32))
+            with self._lock:
+                self._vscratch[key] = sc
+        _unpack(lo, hi, blk.w, v.sky_src, v.sky_c, v.dense, v.dense_fn, v.pk_off, v.pk_base, v.pk_nb, v.pidx,
+                v.pval, sc[0], sc[1])
+        return sc
+
     def _args(self, bi, lo, hi, scaled=True):
         """The compiled loops' arguments for rows ``lo:hi`` of block ``bi`` (local rows): the block's arrays, the
         model's values over those rows and the layout."""
         blk = self.blocks[bi]
         md = self.model
-        sky_vals, phi = md.values(blk, lo, hi)
+        sky_vals, phi = self._values(blk, lo, hi)
         use_cmap = md.col_map is not None
         use_scale = scaled and self.scale is not None
         return (lo, hi, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, blk.fl, md.J, md.num_sky,
@@ -656,7 +837,7 @@ class ObservationTable:
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
         for a, b in self._chunks(lo - base, hi - base):
             _pass(0, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32)
+                  _NO_I32, _NO_F32, _NO_F64)
 
     def rmatvec_rows(self, bi, lo, hi, y_seg, buf):
         """``buf[c] += A[lo:hi, c]^T y_seg`` for the global rows ``lo:hi`` of block ``bi`` (the tail included), the
@@ -672,7 +853,29 @@ class ObservationTable:
             return
         for a, b in self._chunks(lo - base, hi - base):
             _pass(1, *self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], _ZERO64, buf, _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32)
+                  _NO_I32, _NO_F32, _NO_F64)
+
+    def normal_rows(self, bi, lo, hi, p, out, buf):
+        """``out[:] = A[lo:hi] @ p`` and ``buf[c] += A[lo:hi, c]^T out`` from one making of the rows ``lo:hi`` of
+        block ``bi`` (the tail included): the matvec of :meth:`matvec_rows` and the transpose product of its
+        stored result in one pass, the latter's products and sums in float64 (``buf`` float64)."""
+        base = int(self.row_bounds[bi])
+        if bi == len(self.blocks):
+            lr0, lr1 = lo - base, hi - base
+            ip = self.tail.indptr[lr0:lr1 + 1]
+            s0, s1 = int(ip[0]), int(ip[-1])
+            out[...] = _csr_shell(self.tail.data[s0:s1], self.tail.indices[s0:s1], ip - np.int32(s0),
+                                  (hi - lo, self.shape[1])) @ p
+            d = self.tail.data
+            if d.dtype != buf.dtype:
+                d = d.astype(buf.dtype)
+            _sparsetools.csc_matvec(self.shape[1], hi - lo, self.tail.indptr[lr0:lr1 + 1], self.tail.indices, d,
+                                    np.ascontiguousarray(out, dtype=buf.dtype), buf)
+            return
+        zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
+        for a, b in self._chunks(lo - base, hi - base):
+            _pass(4, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
+                  _NO_I32, _NO_F32, buf)
 
     @staticmethod
     def _chunks(lo, hi, rows=_EVAL_ROWS):
@@ -705,7 +908,7 @@ class ObservationTable:
             m = b - a
             cols_s, vals_s, counts = self._thread_scratch(m)
             _pass(2, *self._args(bi, a, b, scaled=scaled), _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts[:m], cols_s,
-                  vals_s)
+                  vals_s, _NO_F64)
             k = int(counts[:m].sum())
             ip, co, va = np.empty(m + 1, dtype=np.int32), np.empty(k, dtype=np.int32), np.empty(k, dtype=np.float32)
             _compact(counts[:m], S, cols_s, vals_s, ip, co, va)
@@ -859,11 +1062,11 @@ class ObservationTable:
             blk = self.blocks[bi]
             flags = np.zeros(hi - lo, dtype=np.uint8)
             for a, b in self._chunks(lo, hi):
-                sky_vals, phi = md.values(blk, a, b)
+                sky_vals, phi = self._values(blk, a, b)
                 _pass(3, a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, _NO_I64, md.J,
                       md.num_sky, sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi, False,
                       _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop, _NO_I64, _NO_I32,
-                      _NO_F32)
+                      _NO_F32, _NO_F64)
             return bi, lo + np.flatnonzero(flags)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
@@ -914,15 +1117,32 @@ def warm_up():
     for pdt in (np.float32, np.float64):
         for odt in (np.float32, np.float64):
             _pass(0, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
-                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
-        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32)
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
+            _pass(4, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, np.zeros(S, odt))
+        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
     counts = np.zeros(1, np.int64)
     cols_s, vals_s = np.zeros(S, np.int32), np.zeros(S, np.float32)
-    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s)
+    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s, _NO_F64)
     ip, co, va = np.zeros(2, np.int32), np.zeros(S, np.int32), np.zeros(S, np.float32)
     _compact(counts, S, cols_s, vals_s, ip, co, va)
-    _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32)
+    _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32,
+          _NO_F64)
     _fold_sums(ip, co, va, np.zeros(1), 0, np.zeros(S), np.zeros(S))
     _sample_maps(x, y, np.zeros((1, HW), np.float32), 2, 2, np.zeros((1, 1), np.float32))
     _split_spans(ip, co, va, np.array([0, 2, S], np.int64), np.zeros((2, 2), np.int32), np.zeros(S, np.int32),
                  np.zeros(S, np.float32), np.array([0, 0], np.int64))
+    one64 = np.array([1], np.int64)
+    pidx, pval = np.full((1, 1), 255, np.uint8), np.zeros((1, 1), np.float32)
+    _max_nonzero(phi)
+    _pack(phi, 0, 1, 0, pidx, pval)
+    _unpack(0, 1, w, np.array([-1], np.int64), np.zeros((0, 1), np.float32), np.zeros((0, 1), np.float32),
+            np.zeros(0, np.int64), np.array([0, 1], np.int64), np.zeros(1, np.int64), one64, pidx, pval,
+            np.zeros((1, 1), np.float32), np.zeros((1, 1), np.float32))
+    one64 = np.array([1], np.int64)
+    pidx, pval = np.full((1, 1), 255, np.uint8), np.zeros((1, 1), np.float32)
+    _max_nonzero(phi)
+    _pack(phi, 0, 1, 0, pidx, pval)
+    _unpack(0, 1, w, np.array([-1], np.int64), np.zeros((0, 1), np.float32), np.zeros((0, 1), np.float32),
+            np.zeros(0, np.int64), np.array([0, 1], np.int64), np.zeros(1, np.int64), one64, pidx, pval,
+            np.zeros((1, 1), np.float32), np.zeros((1, 1), np.float32))

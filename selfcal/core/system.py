@@ -397,7 +397,7 @@ def _compaction(pixel_counts, drop_cols, constraint_blocks, total_cols, alloc):
 
 
 def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, num_sky_blocks, sky_rhs_moments,
-                 constraint_blocks, min_observations, offset_min_observations, expansion):
+                 constraint_blocks, min_observations, offset_min_observations, expansion, functions='computed'):
     """``setup_lsqr(matrix='compact')``: the system as an :class:`~selfcal.core.observations.ObservationTable`.
 
     The workers build each batch's rows as always and ship their observations with the batch's share of the
@@ -498,14 +498,17 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
               else np.concatenate(pieces))
     del b_pieces, tail_b, pieces
 
-    table = ObservationTable(blocks, tail, n_active, model, threads=max_workers)
+    table = ObservationTable(blocks, tail, n_active, model, threads=max_workers, functions=functions)
     if drop_cols is not None:
         rows = table.floor(drop_cols)
         full_b[rows] = 0
         logger.info(f"Coverage floor: {rows.size} observations of those columns set to zero "
                     "(values and right-hand side); the columns stay without data.")
     logger.info(f"Matrix hand-over: observation table of {n_obs} observations in {len(blocks)} blocks "
-                f"({table.nbytes / 1e9:.2f} GB) standing for {n_entries} entries (stored: {n_entries * 8 / 1e9:.1f} GB)"
+                f"({table.nbytes / 1e9:.2f} GB"
+                + (f", of which {table.values_nbytes / 1e9:.2f} GB the model's stored values" if functions == 'stored'
+                   else '')
+                + f") standing for {n_entries} entries (stored: {n_entries * 8 / 1e9:.1f} GB)"
                 + (f", {tail.shape[0]} constraint rows stored" if tail is not None else '')
                 + f"; {n_active} columns.")
     if pixel_cross is not None and num_sky_blocks == 2:
@@ -546,7 +549,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                reduce: Callable | None = None,
                min_observations: int | None = None,
                offset_min_observations: list | None = None,
-               matrix: str = 'stored', window_edge: str = 'partial') -> SetupResult:
+               matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed') -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``matrix``: how the matrix is kept. ``'stored'`` (default): its entries, as a csr matrix or the block storages
@@ -554,8 +557,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     made from (16 bytes each instead of the row's 8 to 12 entries of 8 bytes), made again with the build's arithmetic
     whenever the solve reads the matrix, so the products are the stored matrix's to the bit; it needs numba, holds
     data rows only (no per-frame adjacency rows) and the model's functions may not read the stored values, flag
-    bits, layers or frame functions. ``moments_only`` and
-    ``reduce`` build no matrix and ignore it.
+    bits, layers or frame functions. ``functions``, with the table: ``'computed'`` (its functions evaluated at every
+    pass) or ``'stored'`` (their values evaluated once and kept with the table, 4 bytes per value, a basis that is
+    mostly zero packed: faster passes for a larger table, the same values). ``moments_only`` and ``reduce`` build
+    no matrix and ignore both.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
@@ -771,6 +776,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("give moments_only or reduce, not both")
     if matrix not in ('stored', 'compact'):
         raise ValueError(f"matrix={matrix!r}: 'stored' (the matrix's entries) or 'compact' (an observation table)")
+    if functions not in ('computed', 'stored'):
+        raise ValueError(f"functions={functions!r}: 'computed' (the model's functions evaluated at every pass) or "
+                         "'stored' (their values kept with the observation table)")
+    if functions == 'stored' and matrix != 'compact':
+        raise ValueError("functions='stored' keeps the model's values with the observation table: it needs "
+                         "matrix='compact'")
     compact = matrix == 'compact' and not moments_only and reduce is None
     if compact:
         from .observations import require_numba
@@ -1178,7 +1189,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return _setup_table(batched_tasks, max_workers=max_workers, shm_objects=shm_objects, layout=layout,
                             num_sky=num_sky, num_sky_blocks=num_sky_blocks, sky_rhs_moments=sky_rhs_moments,
                             constraint_blocks=_constraint_blocks, min_observations=min_observations,
-                            offset_min_observations=offset_min_observations, expansion=expansion)
+                            offset_min_observations=offset_min_observations, expansion=expansion, functions=functions)
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results

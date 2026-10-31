@@ -130,6 +130,23 @@ def compact():
                            snapshots=sc.Snapshots(every=50))
 
 
+def compact_recurrence():
+    """The compact gate with the observation table's two speed options: the model's values evaluated once and kept
+    with the table (``sc.Compute(functions='stored')``, the same values as the ones computed at every pass) and CGLS's
+    gradient carried by recurrence from one pass over the table per iteration (``sc.Numerics(gradient='recurrence')``).
+    Its golden is its own: the recurrence rounds differently from the gradient recomputed from the residual."""
+    from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
+    inst = sc.SPHEREx(3, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
+    field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
+    recipe = SLOPE_GAUGE.replace(numerics=SLOPE_GAUGE.numerics.replace(gradient='recurrence'),
+                                 name='compact_recurrence_gate_py')
+    return field.calibrate(recipe, jobs=jobs.channel(9), frames=sc.frames_in(E2E_FIXTURE)[:100],
+                           compute=sc.Compute(f'{REPO}/cache/compact_recurrence_gate', workers=30, stage=None,
+                                              matrix='compact', functions='stored'),
+                           monitor=sc.Monitor(every=10, residual=True, gradient=False, large_scale=2),
+                           snapshots=sc.Snapshots(every=50))
+
+
 def tiles():
     """The npass3 recipe on its 150 frames in two overlapping tiles, solved one after the other and stitched,
     as pass 1 of the N-pass schedule (passes=sc.Passes(1))."""
@@ -139,7 +156,8 @@ def tiles():
 
 
 GATES = {'continuum': continuum, 'spectral': spectral, 'e2e': e2e, 'npass3': npass3, 'euclid': euclid,
-         'production': production, 'compact': compact, 'tiles': tiles}
+         'production': production, 'compact': compact, 'compact_recurrence': compact_recurrence,
+         'tiles': tiles}
 
 if __name__ == '__main__':
     names = sys.argv[1:] or list(GATES)

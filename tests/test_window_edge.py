@@ -122,6 +122,7 @@ def test_the_setting():
     class _Compute:                 # the machine settings setup_options reads
         resolved_workers = 1
         matrix = 'stored'
+        functions = 'computed'
     recipe = sc.Recipe(sc.continuum(), fit=sc.Fit())
     assert 'window_edge' not in setup_options(recipe, _Compute(), sc.SPHEREx(2))
     inside = sc.Recipe(sc.continuum(), fit=sc.Fit(window_edge='inside'))

@@ -759,7 +759,7 @@ class Calibrator(Reprojector):
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
                    fixed_sky: bool = False, moments_only: bool = False, reduce=None,
                    min_observations: int | None = None, offset_min_observations: list | None = None,
-                   matrix: str = 'stored', window_edge: str = 'partial') -> None:
+                   matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed') -> None:
         """Build the LSQR system for K chunk maps.
 
         ``min_observations``: the sky pixels observed fewer times than this leave
@@ -770,7 +770,9 @@ class Calibrator(Reprojector):
         the offsets observed fewer times leave the solve the same way.
         ``matrix``: ``'stored'`` (the matrix's entries) or ``'compact'`` (an
         :class:`~selfcal.core.observations.ObservationTable`, the observations the rows are made from;
-        ``sc.Compute(matrix=)``; :func:`selfcal.core.system.setup_lsqr`).
+        ``sc.Compute(matrix=)``; :func:`selfcal.core.system.setup_lsqr`). ``functions``, with the table:
+        ``'computed'`` (the model's functions evaluated at every pass) or ``'stored'`` (their values kept with
+        the table; ``sc.Compute(functions=)``).
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms alone, and :meth:`save_calibration` writes the solved
@@ -945,7 +947,7 @@ class Calibrator(Reprojector):
                 outlier_chunk_groups=outlier_chunk_groups,
                 fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
                 min_observations=min_observations, offset_min_observations=offset_min_observations,
-                matrix=matrix, window_edge=window_edge)
+                matrix=matrix, window_edge=window_edge, functions=functions)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -1069,7 +1071,7 @@ class Calibrator(Reprojector):
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
                    scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None,
-                   signatures=None, held=None) -> None:
+                   signatures=None, held=None, gradient: str = 'recomputed') -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
         solve in ``self.solve_record``.
 
@@ -1127,6 +1129,9 @@ class Calibrator(Reprojector):
         vectors : {'float32', 'float64'} or None, optional
             The precision of the solver's vectors (``sc.Fit(vectors=...)``;
             :func:`~selfcal.core.solve.apply_lsqr`). None: the method's own.
+        gradient : {'recomputed', 'recurrence'}, optional
+            How CGLS has each iteration's gradient (``sc.Numerics(gradient=)``;
+            :func:`~selfcal.core.solve.apply_lsqr`).
         exclusions, signatures : list or None, optional
             The model's hard constraints (:meth:`~selfcal.models.spec.ModelSpec.column_exclusions`,
             :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`;
@@ -1180,6 +1185,8 @@ class Calibrator(Reprojector):
                     snap.update(deflate=deflate, sky_names=self._cal_sky_names())
                 if vectors is not None:
                     snap['vectors'] = vectors
+                if gradient != 'recomputed':
+                    snap['gradient'] = gradient      # CGLS's gradient by recurrence (``sc.Numerics(gradient=)``)
                 # Spill setup products unused during the solve; restored (byte
                 # identically) in the finally so save_calibration and any
                 # post-solve consumer see unchanged state even on error.

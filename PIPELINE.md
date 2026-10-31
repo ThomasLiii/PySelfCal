@@ -366,7 +366,10 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   integer coverage, Fisher and separability outputs are untouched. Measured
   on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
   (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
-  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`
+  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`; `sc.Numerics(gradient='recurrence')`
+  lets CGLS carry its gradient by recurrence from the transpose product of the matvec's own result, which the
+  observation table forms in the matvec's pass, so an iteration makes the rows once instead of twice (within rounding
+  of the two-pass form; off by default)
   pins it (the action sets `SELFCAL_PARALLEL_RMATVEC`), and `1` selects the
   sequential kernel — the byte-exact verification mode the pre-2026-09-10
   goldens were made with. In practice the count equals the solver's threads
@@ -416,10 +419,14 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   thread for the rows alone, plus the model's functions): a channel job pays
   a few times its product time for a matrix 4 to 6 times smaller; a solve that
   does not fit in memory stored fits as a table. It holds data rows only (no
-  template or polynomial-basis map, no per-frame adjacency or
-  polynomial-constraint rows; `oversample_factor=1`) and the model's
+  per-frame adjacency rows; `oversample_factor=1`) and the model's
   functions may not read the stored values, flag bits, layers or frame
-  functions. The transpose product's private buffers
+  functions. `sc.Compute(matrix='compact', functions='stored')` evaluates the
+  model's functions once, when the table is made, and keeps their values
+  with it (4 B per value; a basis that is mostly zero packed as (function,
+  value) pairs) instead of evaluating them at every pass (`'computed'`, the
+  default): the passes then run in compiled loops alone, for a table larger
+  by those bytes, with the same values. The transpose product's private buffers
   (`sc.Numerics(rmatvec_threads=)`, one `n_active x 4 B` buffer per thread)
   are the same as the stored path's and are the memory to budget for a
   table solve at large column counts.

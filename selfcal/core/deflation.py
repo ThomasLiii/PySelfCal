@@ -1946,7 +1946,32 @@ class Deflation:
                 pc.apply(out)                            # the transpose: Pc P^T Pc A^T
             return out
 
-        return LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
+        wrapped = LinearOperator((m, n), matvec=matvec, rmatvec=rmatvec, dtype=dt)
+        inner = getattr(op, 'normal_product', None)
+        if inner is not None:                        # (B P y, P^T B^T B P y) from one pass of the bound operator
+            def normal_product(y):
+                y = np.asarray(y).reshape(-1)
+                np.copyto(buf, y, casting='unsafe')
+                if pc is not None:
+                    pc.apply(buf)
+                self._scatter(buf, self.project(buf))
+                q, t = inner(buf)
+                t = np.asarray(t)
+                self._scatter(t, self._project_transposed(self._gather(t)))
+                if pc is not None:
+                    pc.apply(t)
+                return q, t
+            wrapped.normal_product = normal_product
+        inner_t = getattr(op, 'rmatvec_promoted', None)
+        if inner_t is not None:
+            def rmatvec_promoted(u):
+                out = np.asarray(inner_t(u))
+                self._scatter(out, self._project_transposed(self._gather(out)))
+                if pc is not None:
+                    pc.apply(out)
+                return out
+            wrapped.rmatvec_promoted = rmatvec_promoted
+        return wrapped
 
     def constrain(self, v):
         """Remove from ``v`` (a solver vector, in place) its part along the space: the solver's right Lanczos

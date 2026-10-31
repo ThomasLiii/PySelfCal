@@ -66,6 +66,8 @@ def setup_options(recipe, compute, instrument) -> dict:
         options['min_observations'] = fit.min_observations
     if compute.matrix != 'stored':
         options['matrix'] = compute.matrix
+    if compute.functions != 'computed':
+        options['functions'] = compute.functions
     if fit.window_edge != 'partial':
         options['window_edge'] = fit.window_edge
     return options
@@ -88,6 +90,11 @@ def solver_options(recipe) -> dict:
         out['deflate'] = fit.deflate
     if fit.vectors is not None:
         out['vectors'] = fit.vectors
+    if recipe.numerics.gradient != 'recomputed':
+        if fit.method != 'cgls':
+            raise ConfigError(f"Numerics(gradient={recipe.numerics.gradient!r}) is CGLS's (Fit(method='cgls')); "
+                              f"the recipe's method is {fit.method!r}")
+        out['gradient'] = recipe.numerics.gradient
     return out
 
 

@@ -370,7 +370,7 @@ def _row_spans(row_bounds, m, n_pieces):
     return pieces
 
 
-def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
+def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter, fused=None):
     """Row-split ``A^T @ y`` over any storage: ``scatter(bi, lo, hi, y_seg, buf)``
     must add rows ``lo:hi`` (global ids, inside storage block ``bi``) into
     ``buf`` (length ``n``) with scipy's ``csc_matvec``.
@@ -381,6 +381,11 @@ def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
     column chunk — deterministic, and parallel. Rows within a thread are
     scattered in row order block by block, so for a column the per-thread
     partial is the same sequence whatever the storage layout.
+
+    ``fused(bi, lo, hi, x, out_seg, buf)``, when given, writes ``A[lo:hi] @ x`` into ``out_seg`` and adds
+    ``A[lo:hi]^T out_seg`` into ``buf`` (float64) in one pass over those rows; the returned function then carries
+    ``normal(x, out) -> A^T (A x)`` in float64 with ``A x`` left in ``out``, over the same pieces and the same fold
+    as the transpose product, into float64 buffers of its own.
     """
     pieces = _row_spans(row_bounds, m, n_threads)
     bufs = [np.zeros(n, dtype=dtype) for _ in pieces]
@@ -411,6 +416,49 @@ def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
 
         list(ex.map(_reduce_chunk, range(len(pieces))))
         return out
+
+    if fused is not None:
+        bufs64 = []                                    # float64 buffers of the same pieces, made on first use
+
+        def _reduce64(t):
+            def _reduce_t(k):
+                c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+                t[c0:c1] = bufs64[0][c0:c1]
+                for b in bufs64[1:]:
+                    t[c0:c1] += b[c0:c1]
+            list(ex.map(_reduce_t, range(len(pieces))))
+            return t
+
+        def _normal(x, out):
+            if not bufs64:
+                bufs64.extend(np.zeros(n, dtype=np.float64) for _ in pieces)
+
+            def _fused_piece(i):
+                buf = bufs64[i]
+                buf[...] = 0
+                for bi, lo, hi in pieces[i][2]:
+                    fused(bi, lo, hi, x, out[lo:hi], buf)
+
+            list(ex.map(_fused_piece, range(len(pieces))))
+            return _reduce64(np.empty(n, dtype=np.float64))
+
+        def _rmatvec64(y):
+            """``A^T y`` in float64 over the same pieces and fold, ``y`` in any dtype (the gradient of a float64
+            residual, for CGLS's recurrence)."""
+            if not bufs64:
+                bufs64.extend(np.zeros(n, dtype=np.float64) for _ in pieces)
+            y = np.ascontiguousarray(y, dtype=np.float64)
+
+            def _scatter_piece(i):
+                buf = bufs64[i]
+                buf[...] = 0
+                for bi, lo, hi in pieces[i][2]:
+                    scatter(bi, lo, hi, y[lo:hi], buf)
+
+            list(ex.map(_scatter_piece, range(len(pieces))))
+            return _reduce64(np.empty(n, dtype=np.float64))
+        _rmatvec.normal = _normal
+        _rmatvec.promoted = _rmatvec64
 
     return _rmatvec, ex, len(pieces)
 
@@ -826,7 +874,8 @@ def _make_table_operator(table, n_threads, promote=False):
     _rmv_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
     _rowsplit, _rex = (None, None)
     if _rmv_threads > 1:
-        _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows)
+        _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows,
+                                                   fused=table.normal_rows)
 
     def _rmatvec(y):
         if _rowsplit is not None and np.promote_types(dtype, y.dtype) == dtype:
@@ -840,7 +889,38 @@ def _make_table_operator(table, n_threads, promote=False):
                 table.rmatvec_rows(bi, lo, hi, yc[lo:hi], out)
         return out
 
+    def _normal_product(x):
+        # (A x, A^T A x) from one making of the rows: the matvec's output as _matvec stores it and the transpose
+        # product of that stored vector in float64, by the row-split pieces when they serve this dtype, else
+        # sequentially
+        od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
+        out = _out_buffer(_outs, m, od)
+        xs = np.ascontiguousarray(x)
+        if _rowsplit is not None and od == dtype:
+            return out, _rowsplit.normal(xs, out)
+        t = np.zeros(n, dtype=np.float64)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.normal_rows(bi, lo, hi, xs, out[lo:hi], t)
+        return out, t
+
+    def _rmatvec_promoted(y):
+        # A^T y in float64 (the row-split pieces when they exist, else the sequential scatter): the gradient of a
+        # float64 residual, for CGLS's recurrence; rmatvec itself keeps the stored storages' regimes
+        if _rowsplit is not None:
+            return _rowsplit.promoted(y)
+        out = np.zeros(n, dtype=np.float64)
+        yc = np.ascontiguousarray(y, dtype=np.float64)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.rmatvec_rows(bi, lo, hi, yc[lo:hi], out)
+        return out
+
     op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
+    op.normal_product = _normal_product
+    op.rmatvec_promoted = _rmatvec_promoted
     op._executor = executor
     op._rmatvec_executor = _rex
     op._table = table
@@ -853,7 +933,7 @@ _RESIDUAL_BLOCK = 1 << 23
 
 
 def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
-                callback_every=1, watch=None, constrain=None, refresh=None, vectors=None):
+                callback_every=1, watch=None, constrain=None, refresh=None, vectors=None, gradient='recomputed'):
     """Run LSQR or LSMR on the (scaled) operator ``A``.
 
     ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
@@ -861,8 +941,9 @@ def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_
     in place. ``callback(itn, x)``: called every ``callback_every`` iterations while the solve goes
     on; ``watch``: the monitors and stop rules (:class:`~selfcal.core.monitor.Watch`); ``constrain``:
     applied to each normalised right Lanczos vector (a deflated solve's,
-    :meth:`~selfcal.core.deflation.Deflation.constrain`); ``refresh`` and ``vectors``: CGLS's right-hand side
-    for its residual refresh and its vectors' dtype (:func:`~selfcal.core.cgls.cgls`). Returns the solver's tuple."""
+    :meth:`~selfcal.core.deflation.Deflation.constrain`); ``refresh``, ``vectors`` and ``gradient``: CGLS's
+    right-hand side for its residual refresh, its vectors' dtype and how it has each iteration's gradient
+    (:func:`~selfcal.core.cgls.cgls`). Returns the solver's tuple."""
     hook = {} if callback is None else {'callback': callback, 'callback_every': int(callback_every)}
     if watch is not None:
         hook['watch'] = watch
@@ -877,7 +958,7 @@ def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_
     if solver == 'cgls':
         return cgls(A, b_owned.pop(), x0=x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp,
                     conlim=conlim, iter_lim=iter_lim, history=history, refresh=refresh,
-                    vectors=np.float64 if vectors is None else vectors, **hook)
+                    vectors=np.float64 if vectors is None else vectors, gradient=gradient, **hook)
     raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
 
 
@@ -937,7 +1018,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None, signatures=None, held=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None, held=None,
+                gradient='recomputed') -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -979,6 +1061,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         as before. The solution is returned in the products' precision either way. ``'float64'`` with ``use_float32``: LSQR and LSMR keep ``b`` and their
         vectors in float64 and the products are computed in float64 from the float32 matrix
         (upcast piece by piece in each product: slower). ``'float32'`` needs ``use_float32``.
+    gradient : {'recomputed', 'recurrence'}, optional
+        How CGLS has each iteration's gradient (:func:`~selfcal.core.cgls.cgls`): from the residual
+        by a transpose product, or carried along from the transpose product of the matvec's own
+        result, which an operator with ``normal_product`` (the observation table) forms in the
+        matvec's pass. CGLS only.
     n_threads : int, optional
         Thread count for the parallel SpMV ``LinearOperator``; <=1 uses scipy's
         serial matvec (default 32).
@@ -1372,6 +1459,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         del b
         history = SolveHistory()
         solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+        if gradient != 'recomputed':
+            if solver != 'cgls':
+                raise ValueError(f"gradient={gradient!r} is CGLS's; the solver is {solver!r}")
+            solve_kw['gradient'] = gradient           # (:func:`~selfcal.core.cgls.cgls`)
         watch = None
         if stop is not None or monitor is not None:
             watch = Watch(stop=stop, monitor=monitor, ref_shape=ref_shape, sky_names=sky_names, history=history,
@@ -1460,8 +1551,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 solver_op = defl.operator()
                 # LSQR / LSMR: the Lanczos vectors are kept in the complement of the space as well (constrain);
                 # CGLS: the two projections alone (its gradients stay there by construction; the guard on top of
-                # P^T was found to let a float32 solve drift far past convergence).
-                kw = dict(solve_kw, constrain=None if solver == 'cgls' else defl.constrain)
+                # P^T was found to let a float32 solve drift far past convergence), except with the gradient by
+                # recurrence, which no projection renews: a part of the gradient outside the complement would
+                # grow from iteration to iteration, so the recurrence's gradient is kept there (constrain).
+                guard = solver != 'cgls' or solve_kw.get('gradient') == 'recurrence'
+                kw = dict(solve_kw, constrain=defl.constrain if guard else None)
                 if solver == 'cgls':
                     # CGLS measures its residual against the deflated right-hand side b - B x_c (its refresh
                     # recomputes it from the parked original: one float64 pass over the matrix every 50 iterations).
