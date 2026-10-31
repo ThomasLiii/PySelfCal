@@ -68,6 +68,12 @@ def hats(det_x):
     return np.stack([np.maximum(0.0, 1.0 - np.abs(t - 0.5)), np.maximum(0.0, 1.0 - np.abs(t - 1.5))], axis=1)
 
 
+def hats6(det_x):
+    """Six hat functions across the detector column: at most two are nonzero at any position."""
+    t = det_x / W * 6.0
+    return np.stack([np.maximum(0.0, 1.0 - np.abs(t - (k + 0.5))) for k in range(6)], axis=1)
+
+
 def times_t(t):
     return 1.0 + 0.1 * t
 
@@ -230,6 +236,45 @@ def test_sky_coefficient_basis_groups_and_variables(tmp_path, monkeypatch):
     _same_matrix(stored, compact)
     _same_solve(stored, compact, tmp_path, residual=False, deflate=sc.Deflate(), sky_names=['continuum', 'line'],
                 iter_lim=12)
+
+
+def test_stored_functions(tmp_path):
+    """``functions='stored'``: the model's values kept with the table give the matrix, the floors and the solve of
+    the values made at every pass; a basis that is mostly zero is packed and a dense one and the sky coefficients
+    kept as they are; the setting is refused without the table."""
+    paths = _frames(tmp_path)
+    arc = (np.linspace(0, 1, H * W, dtype=np.float32).reshape(DET) * 3).astype(np.float32)
+    pix = (np.arange(H * W) % 5).reshape(DET).astype(np.int32)
+    chunks = _common()['chunk_maps'][0]
+    sky_model = SkyModel(components=(SkyComponent('continuum'),
+                                     SkyComponent('line', coefficient=Coefficient('arc', arc_coef))))
+    kw = dict(chunk_maps=[chunks, pix], det_groups_list=[None, np.array([0, 0, 1, 1, 2, 2, 2])],
+              basis_list=[Basis(Coefficient('det_x', hats6), n=6), Basis(Coefficient('det_x', ramp), n=1)],
+              det_aux=[arc], aux_keys=['arc'], sky_model=sky_model)
+    for floor in ({}, dict(min_observations=2)):
+        computed = setup_lsqr(paths, GRID, matrix='compact', **_common(**kw, **floor))
+        stored = setup_lsqr(paths, GRID, matrix='compact', functions='stored', **_common(**kw, **floor))
+        assert computed.A.functions == 'computed' and stored.A.functions == 'stored'
+        assert all(b.values is None for b in computed.A.blocks) and all(b.values is not None for b in stored.A.blocks)
+        for b in stored.A.blocks:
+            v = b.values
+            assert v.sky_src.tolist() == [-1, 0] and v.sky_c.shape == (1, b.n)       # the identity term is the weight
+            assert v.pk_nb.tolist() == [6] and v.pk_base.tolist() == [0] and 1 <= int(v.pk_off[1]) <= 2
+            assert v.dense_fn.tolist() == [6] and v.dense.shape == (1, b.n)
+            assert v.pidx.shape == v.pval.shape == (b.n, int(v.pk_off[1]))
+            assert np.all((v.pidx == 255) | (v.pidx < 6)) and np.all(v.pval[v.pidx != 255] != 0)
+        assert stored.A.values_nbytes > 0 and stored.A.nbytes == computed.A.nbytes + stored.A.values_nbytes
+        _same_matrix(computed, stored)
+        np.testing.assert_array_equal(np.concatenate([b.fl for b in computed.A.blocks]),
+                                      np.concatenate([b.fl for b in stored.A.blocks]))
+        _same_solve(computed, stored, tmp_path)
+    with pytest.raises(ValueError, match="matrix='compact'"):
+        setup_lsqr(paths, GRID, functions='stored', **_common())
+    with pytest.raises(ValueError, match="'computed'"):
+        setup_lsqr(paths, GRID, matrix='compact', functions='cached', **_common())
+    with pytest.raises(sc.ConfigError, match="matrix='compact'"):
+        sc.Compute(functions='stored')
+    assert sc.Compute(matrix='compact', functions='stored').functions == 'stored'
 
 
 def test_sky_variable_and_constant_sky_coefficient(tmp_path):

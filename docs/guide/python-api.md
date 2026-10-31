@@ -294,7 +294,12 @@ as the stored matrix's for the same thread count: a matrix 4 to 6 times smaller 
 holds data rows only (no per-frame adjacency rows) and asks that the model's functions read only the observation's
 coordinates, the detector maps, the frame values, the sky maps and functions of them (not the
 stored values, flag bits, layers or frame functions, which the build reads from the frame files).
-The machine setting it is: a product's fingerprint does not depend on it.
+With the table, `functions` says how the model's functions (the sky coefficients and the offset
+bases at each observation) are served to the passes: `"computed"` (default) evaluates them at every
+pass over a chunk of rows; `"stored"` evaluates them once, when the table is made, and keeps them
+with it, 4 bytes per value and a basis that is mostly zero packed as (function, value) pairs: faster
+passes for a larger table, the same values either way. Both are machine settings: a product's
+fingerprint does not depend on them.
 
 ### Worker processes and functions
 

@@ -66,6 +66,8 @@ def setup_options(recipe, compute, instrument) -> dict:
         options['min_observations'] = fit.min_observations
     if compute.matrix != 'stored':
         options['matrix'] = compute.matrix
+    if compute.functions != 'computed':
+        options['functions'] = compute.functions
     if fit.window_edge != 'partial':
         options['window_edge'] = fit.window_edge
     return options

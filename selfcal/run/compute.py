@@ -111,8 +111,11 @@ class Compute(Config):
     its matrix: ``"stored"`` (its entries, 8 bytes each and 8 to 12 per observation) or ``"compact"``
     (the observations the rows are made from, 16 bytes each, the rows made again at every pass with
     the build's arithmetic: the same bytes in the products, a smaller matrix for a slower pass; needs
-    the ``numba`` package; :mod:`selfcal.core.observations`). ``tuning``: the expert knobs of the
-    solver's machinery (:class:`Tuning`).
+    the ``numba`` package; :mod:`selfcal.core.observations`). ``functions``, with ``"compact"``: the
+    model's functions (the sky coefficients and the offset bases at each observation) ``"computed"`` at
+    every pass over the table, or ``"stored"``, evaluated once and kept with it, 4 bytes per value and a
+    basis that is mostly zero packed: faster passes for a larger table, the same values. ``tuning``: the
+    expert knobs of the solver's machinery (:class:`Tuning`).
     """
     scratch: str | None = None
     _: KW_ONLY
@@ -125,6 +128,7 @@ class Compute(Config):
     cache_frames: bool = True
     memory_guard: bool | None = None
     matrix: Literal['stored', 'compact'] = 'stored'
+    functions: Literal['computed', 'stored'] = 'computed'
     tuning: Tuning = field(default_factory=Tuning)
 
     def _validate(self):
@@ -138,6 +142,9 @@ class Compute(Config):
                 require_numba()
             except ImportError as e:
                 raise ConfigError(str(e)) from None
+        if self.functions == 'stored' and self.matrix != 'compact':
+            raise ConfigError("Compute(functions='stored') keeps the model's values with the observation table: it "
+                              "needs matrix='compact'")
 
     @property
     def stages(self) -> bool:

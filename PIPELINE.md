@@ -419,10 +419,14 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   thread for the rows alone, plus the model's functions): a channel job pays
   a few times its product time for a matrix 4 to 6 times smaller; a solve that
   does not fit in memory stored fits as a table. It holds data rows only (no
-  template or polynomial-basis map, no per-frame adjacency or
-  polynomial-constraint rows; `oversample_factor=1`) and the model's
+  per-frame adjacency rows; `oversample_factor=1`) and the model's
   functions may not read the stored values, flag bits, layers or frame
-  functions. The transpose product's private buffers
+  functions. `sc.Compute(matrix='compact', functions='stored')` evaluates the
+  model's functions once, when the table is made, and keeps their values
+  with it (4 B per value; a basis that is mostly zero packed as (function,
+  value) pairs) instead of evaluating them at every pass (`'computed'`, the
+  default): the passes then run in compiled loops alone, for a table larger
+  by those bytes, with the same values. The transpose product's private buffers
   (`sc.Numerics(rmatvec_threads=)`, one `n_active x 4 B` buffer per thread)
   are the same as the stored path's and are the memory to budget for a
   table solve at large column counts.
