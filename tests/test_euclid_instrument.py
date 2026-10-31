@@ -45,7 +45,7 @@ def test_layout_and_geometry():
     assert cs.n_chunks == 6 and rs.n_chunks == 6 and cs.axes['strip'].scan == 'x' and rs.axes['strip'].scan == 'y'
     assert (cs.det[0] == cs.det[-1]).all() and (rs.det[:, 0] == rs.det[:, -1]).all()
     t = geom.chunk_maps['col_tilt']
-    assert t.n_chunks == 5 and t.spectral_axis == 'strip' and t.group_axis == 'all' and t.axes['all'].size == 1
+    assert t.n_chunks == 5 and t.spectral_axis == 'strip' and t.axes['all'].size == 1
     jg = inst.job_geometry(geom, JOB)
     assert jg.det_valid_weight.shape == (40, 60) and jg.grid_valid_weight.shape == (80, 120)
     assert jg.det_valid_weight[0, 0] == 0 and jg.det_valid_weight[20, 30] == 1 and 0 < jg.det_valid_weight[3, 30] < 1

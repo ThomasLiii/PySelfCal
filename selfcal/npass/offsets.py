@@ -1,8 +1,8 @@
 """The OFFSET pass of the N-pass solve: the offsets given the sky.
 
 Given the sky, each frame's offsets are an independent least-squares problem: a frame's rows touch
-only its own offset columns -- whatever the model's terms are (per-chunk values, a polynomial along a
-chunk axis, coefficients of known functions of data variables) -- up to constraint rows,
+only its own offset columns -- whatever the model's terms are (per-chunk values, coefficients of
+known functions of data variables) -- up to constraint rows,
 which may tie a few frames together. An OFFSET pass subtracts the sky from every frame
 (:class:`SkySubtractor`, a frame hook that also drops the observations off the sky map or too bright),
 reduces each frame's rows, in the workers, to the frame's normal equations

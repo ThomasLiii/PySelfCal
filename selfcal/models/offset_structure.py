@@ -22,14 +22,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from math import comb
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['ChunkAxis', 'ChunkAxes', 'adjacency_along', 'poly_chains_along',
-           'poly_basis_along', 'group_edges_along', 'group_aux_edges', 'fd_stencil']
+__all__ = ['ChunkAxis', 'ChunkAxes', 'adjacency_along', 'adjacency_union', 'group_edges_along', 'group_aux_edges']
 
 
 @dataclass(frozen=True)
@@ -147,80 +145,6 @@ def adjacency_union(chunk_map, axes: ChunkAxes, axis_names):
     i = np.concatenate([p[0] for p in parts]); j = np.concatenate([p[1] for p in parts])
     unique_pairs = np.unique(np.stack([i, j], axis=1), axis=0)
     return unique_pairs[:, 0], unique_pairs[:, 1]
-
-
-def fd_stencil(degree):
-    """The ``(degree+1)``-th finite-difference stencil ``(-1)^k C(degree+1, k)``,
-    length ``degree + 2``: annihilates any polynomial of degree ``<= degree``."""
-    if degree < 0:
-        raise ValueError(f"degree must be >= 0 (got {degree})")
-    return np.array([(-1) ** k * comb(degree + 1, k) for k in range(degree + 2)], dtype=np.float64)
-
-
-def chunk_table(axes: ChunkAxes, names):
-    """Dense lookup ``table[i_0, i_1, ...] = chunk id`` over the axes ``names``
-    (-1 where no chunk has those coordinates)."""
-    shape = tuple(axes[n].size for n in names)
-    table = np.full(shape, -1, dtype=np.int64)
-    table[tuple(axes[n].of_chunk for n in names)] = np.arange(axes.n_chunks)
-    return table
-
-
-def poly_chains_along(axes: ChunkAxes, axis: str, degree: int, lo: int | None = None,
-                      hi: int | None = None):
-    """Chains + stencil of the soft polynomial constraint along ``axis``: for
-    every combination of the OTHER axes' values, sliding windows of
-    ``L = degree + 2`` consecutive ``axis`` values form the chains, optionally
-    restricted to windows whose first value lies in ``[lo, hi - L + 1]``
-    (``hi`` = the last value a chain may reach, inclusive). Chains are ordered
-    by their first chunk id (the order the row assembly emits them in).
-
-    Every chain must be fully populated (the axes must form a dense grid, as
-    SPHEREx's and any row-major encoding do).
-    """
-    L = degree + 2
-    size = axes[axis].size
-    if size < L:
-        raise ValueError(f"axis {axis!r} has {size} values, too few for degree={degree}: need >= {L}")
-    s_lo = 0 if lo is None else int(lo)
-    s_hi = (size - L) if hi is None else int(hi) - L + 1
-    if s_lo < 0 or s_hi > size - L:
-        raise ValueError(f"window lo={lo}, hi={hi} (chain start range [{s_lo}, {s_hi}]) outside "
-                         f"valid [0, {size - L}]")
-    if s_hi < s_lo:
-        raise ValueError(f"window [{lo}, {hi}] yields no length-{L} chains along {axis!r}")
-    names = [axis] + [a.name for a in axes.others(axis)]
-    table = chunk_table(axes, names)                                     # (size_axis, *other_sizes)
-    starts = np.arange(s_lo, s_hi + 1, dtype=np.int64)
-    win = starts[:, None] + np.arange(L, dtype=np.int64)[None, :]        # (n_starts, L)
-    chains = table[win]                                                  # (n_starts, L, *other_sizes)
-    chains = np.moveaxis(chains, 1, -1).reshape(-1, L)                   # (n_starts * n_other, L)
-    if (chains < 0).any():
-        raise ValueError(f"the chunk grid is not dense along {axis!r}: a chain hits a missing chunk")
-    chains = chains[np.argsort(chains[:, 0], kind='stable')]
-    return chains, fd_stencil(degree)
-
-
-def poly_basis_along(axes: ChunkAxes, coord_axis: str, group_axis: str, degree: int,
-                     lo: int, hi: int, segments=None):
-    """The hard polynomial-basis descriptor consumed by
-    :mod:`selfcal.models.offset_basis`: a degree-``degree`` Chebyshev in
-    ``coord_axis`` over the window ``[lo, hi]``, one independent polynomial
-    per value of ``group_axis``; with ``segments`` (inclusive ``[lo, hi]``
-    ranges inside the window) an independent polynomial per segment."""
-    pb = {
-        'degree': int(degree),
-        'num_groups': int(axes[group_axis].size),
-        'coord_lo': int(lo), 'coord_hi': int(hi),
-        'chunk_coord': np.asarray(axes[coord_axis].of_chunk),
-        'chunk_group': np.asarray(axes[group_axis].of_chunk),
-    }
-    if segments:
-        segs = [(int(a), int(b)) for a, b in segments]
-        if segs[0][0] < int(lo) or segs[-1][1] > int(hi):
-            raise ValueError(f"segments {segs} must lie inside the window [{lo}, {hi}]")
-        pb['segments'] = segs
-    return pb
 
 
 def group_aux_edges(det_aux, det_chunk_map, group_of_chunk, min_pixels=50):

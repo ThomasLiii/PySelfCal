@@ -176,15 +176,20 @@ def test_model_lowers_to_the_model_table():
 
 
 def test_presets_and_their_rules():
-    m = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, weight=0.5), damping=0.001)
-    assert m.lower()['offset'][0]['poly'] == [{'axis': None, 'degree': 1, 'weight': 0.5}]
-    s = sc.spectral([T.line('aromatic', damping=5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
-    assert s.spectral_window() == (200, 320)
-    assert s.lower()['offset'][0]['kind'] == 'polybasis'
-    with pytest.raises(ConfigError, match='takes no smooth'):
-        sc.spectral([], polynomial=sc.Poly(2, window=range(200, 321)), smooth=0.1)
-    with pytest.raises(ConfigError, match='needs Poly\\(window'):
-        sc.Offsets(polynomial=sc.Poly(2))
+    m = sc.continuum(smooth=0.2, damping=0.001)
+    assert m.lower()['offset'][0]['reg_weight'] == 0.2 and m.lower()['offset'][0]['exclude_degree'] == 0
+    s = sc.spectral([T.line('aromatic', damping=5e-3)], smooth=0.3)
+    assert [t.name for t in s.sky] == ['continuum', 'aromatic'] and s.offsets[0].smooth == 0.3
+    # the polynomial encodings removed on 2026-10-30 are refused with the replacement named, and their
+    # settings stay in the encoding at their defaults, so earlier products keep their fingerprints
+    with pytest.raises(ConfigError, match='removed.*basis=Function'):
+        sc.Offsets(polynomial=sc.Poly(2, window=range(200, 321)))
+    with pytest.raises(ConfigError, match='removed'):
+        sc.Offsets(poly_prior=(sc.Poly(1, weight=0.5),))
+    with pytest.raises(ConfigError, match='removed'):
+        sc.Poly(1, weight=0.5)
+    d = sc.Offsets(exclude=sc.Poly(1)).to_dict()
+    assert d['polynomial'] is None and d['poly_prior'] == [] and d['exclude']['weight'] is None
     with pytest.raises(ConfigError, match='basis= needs n='):
         sc.Offsets(basis=gradient)
 

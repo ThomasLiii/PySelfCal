@@ -152,9 +152,7 @@ the real homes below.
     (`save_calibration`) with the per-component skymap(s), K per-map offset
     arrays and coverage information. Always-list
     API for K maps: `chunk_maps=[…]`, `reg_weights=[…]`, `adj_infos=[…]`,
-    `det_groups_list`, `det_templates`, plus
-    `poly_constraints_list` for polynomial-degree constraints along
-    user-supplied chunk chains; hard constraints on a map's offsets go to
+    `det_groups_list`, `basis_list`; hard constraints on a map's offsets go to
     `apply_lsqr(exclusions=)`.
     The forward-looking spelling bundles these into a single `offset_model=`
     (`OffsetModel`) and `sky_model=` (`SkyModel`); both lower to the exact
@@ -281,25 +279,19 @@ clarity:
   full column layout is computed once by `SystemLayout`. Supported features:
   - **Multi-chunk-map offsets**: K independent offset blocks, summed
     additively in the model. Each map can independently set its own
-    adjacency reg, poly constraints, grouping, or
-    template. A per-frame scalar is a map of one chunk, like any other.
+    adjacency reg, grouping, or basis of functions. A per-frame scalar is
+    a map of one chunk, like any other.
   - **Grouped offsets** (`det_groups_list[m]`): frames in the same
     group share one offset vector for map `m`. Reduces unknowns from
     `num_frames * num_chunks_m` to `num_groups_m * num_chunks_m`.
-  - **Template mode** (`det_templates[m]`): fix the spatial pattern
-    and solve only for a per-frame amplitude `alpha` for map `m`.
-    Spatial regularization is auto-skipped for template maps.
+  - **Bases of known functions** (`basis_list[m]`, `sc.Offsets(basis=, n=)`):
+    `n` functions of data variables per chunk, one coefficient each (a
+    polynomial in a coordinate is the basis of that coordinate's
+    polynomials; the SPHEREx multi-line recipe's `terms.spectral_polynomial`).
   - **Spatial adjacency regularization**: adjacent chunks pulled
     toward each other with weight `reg_weights[m]` using pre-computed
     `adj_infos[m]`. Empty adjacency tuples (e.g. `NumCol=1`) are
     auto-demoted to `None`.
-  - **Polynomial constraints** (`poly_constraints_list[m]`): each
-    element is a list of `{'chains': (n, L) int, 'stencil': (L,)
-    float, 'weight': float}` dicts. Each chain adds one row per frame
-    enforcing `weight * Σ stencil[ℓ] · O[chains[r, ℓ]] = 0` — a
-    polynomial-of-degree-(L-2) annihilator. SPHEREx column-linearity
-    helper: `compute_column_polynomial_chains(chunk_map, num_columns,
-    degree=1)`.
   - **Spectral / multi-component sky** (`sky_model=`, `det_aux=`):
     one sky block per `SkyModel` component (continuum + arbitrary
     spectral templates), with per-pixel line damping and a Fisher
@@ -617,14 +609,6 @@ clarity:
     `setup_lsqr` — e.g., within-subchannel column neighbors only (no arc
     crossings) for column smoothness, or cross-subchannel same-column
     neighbors for vertical smoothness.
-  - `compute_column_polynomial_chains(chunk_map, num_columns, degree=1)`
-    emits sliding-window chains of length `degree+2` over the column
-    indices of each subchannel, plus the matching finite-difference
-    stencil (`[1, -2, 1]` for `degree=1`, `[1, -3, 3, -1]` for
-    `degree=2`, etc.). Pass to `setup_lsqr(poly_constraints_list=...)`
-    to enforce polynomial-of-degree-N offsets across the columns within
-    each subchannel. `compute_subchannel_polynomial_chains` is the
-    cross-subchannel analogue.
   - `make_spherex_offset_map` / `make_spherex_stripped_offset_map`
     convert a solved per-chunk offset vector into a smooth
     high-resolution offset map using mean-preserving splines in `(R, x)`,
@@ -895,7 +879,7 @@ runtime libraries: `numpy`, `scipy`, `astropy`, `reproject`, `h5py`,
 | [`io/reprojection.py`](io/reprojection.py) | Parallel batch reprojection onto the reference WCS; `reproject_layers`, `reproject_mask` / `pack_mask` (the mask rule); `add_layers` / `add_reader_layers` (planes added to existing frames), `refresh_mask` / `refresh_reader_mask` (their mask recomputed). |
 | [`io/exposure_filter.py`](io/exposure_filter.py) | Header-driven exposure selection (cached header reads). |
 | [`io/frame_select.py`](io/frame_select.py) | Spatial frame selection for tiled / windowed solves. |
-| [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, polynomial chains, hard basis, group edges). |
+| [`models/offset_structure.py`](models/offset_structure.py) | Chunk axes + the generic offset-structure builders (adjacency, group edges). |
 | [`models/spec.py`](models/spec.py) | `ModelSpec`: the model as the engine takes it (variables, sky terms, offset terms, weight, priors), built from an `sc.Model`, lowered to `VariableSet` / `SkyModel` / `OffsetModel` / prior callables. |
 | [`models/variables.py`](models/variables.py) | `VariableSet`, `ObservationVariables`, `FrameObservations`: named per-observation data variables from any source. |
 | [`models/priors.py`](models/priors.py) | `TermInfo`, `ModelPrior` and ready-made prior functions. |

@@ -2,8 +2,9 @@
 PAH fit over the Multiline3 window with a free x-slope offset term, on six tiles balanced by frame count.
 
 The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
-two offset terms at NumCol 1, the hard degree-2 polynomial along the subchannels of the window (one per frame)
-and a free gradient along detector x per frame and subchannel (``terms.frame_slope``); no damping or
+two offset terms at NumCol 1, a degree-2 Chebyshev polynomial of the position across the LVF arcs over the
+window per frame (``terms.spectral_polynomial``; its constant holds the frame's level) and a free gradient along
+detector x per frame and subchannel (``terms.frame_slope``); no damping or
 regularisation of any kind; shot-noise weights, the source-mask bit ignored, a 5-sigma clip; the default solver
 to convergence, at most 400 iterations; no mosaic. The tiles are solved one at a time; ``ONLY`` limits the run
 to the tiles listed (no stitch: a later run of every tile reuses their cals and stitches them).
@@ -28,14 +29,14 @@ FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_NEP_expansion_2026W29_D4_6p2arcsec', sc.SPH
                  compute=ORCA.replace(keep_staged=True, memory_guard=True))
 LINES = [T.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
 RECIPE = sc.Recipe(sc.Model(chunk_maps=maps(num_ch=34, num_col=1), sky=[sc.Sky(damping=0.0), *LINES],
-                            offsets=[sc.Offsets(polynomial=sc.Poly(2, window=MULTILINE3_WINDOW)),
-                                     T.frame_slope('xslope')]),
+                            offsets=[T.spectral_polynomial(MULTILINE3_WINDOW, 2), T.frame_slope('xslope')],
+                            variables={'arc_position': sc.DetectorMap(T.arc_position)}),
                    fit=sc.Fit(400, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
                    coadd=None, numerics=sc.Numerics(32),
-                   name='multiline3_xslope_NEPexp6_STITCHED_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg')
+                   name='multiline3_xslope_NEPexp6_STITCHED_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg')
 RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW),
            tiles=sc.Tiles(boxes=NEP_EXPANSION6_TILES, only=ONLY,
-                          tile_name='multiline3_xslope_NEPexp6_{tile}_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg',
+                          tile_name='multiline3_xslope_NEPexp6_{tile}_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg',
                           stitched_name='{name}'))
 
 if __name__ == '__main__':

@@ -326,23 +326,39 @@ def _offsets_from_term(term, notes):
         notes.append(f"offset term {term.name or term.map or 'primary'!r}: a basis of one function, written as "
                      f"times=")
     common = dict(on=term.map, times=times, damping=float(term.damp), render=term.render, name=term.name)
-    if term.kind == 'polybasis':
-        return M.Offsets(polynomial=M.Poly(int(term.degree), along=term.axis, each=term.group_axis,
-                                           window=range(int(term.lo), int(term.hi) + 1),
-                                           segments=None if term.segments is None else tuple(map(tuple, term.segments))),
-                         **common)
     per = {'free': 'frame', 'fixed': 'all'}.get(term.kind, term.groups)
-    if any((p.lo is None) != (p.hi is None) for p in term.poly):
-        raise ConfigError(f"offset term {term.name or term.map or 'primary'!r}: a polynomial prior with one of lo / hi "
-                          f"has no Python form; give both (a window)")
-    poly = tuple(M.Poly(int(p.degree), along=p.axis, weight=float(p.weight),
-                        window=None if p.lo is None else range(int(p.lo), int(p.hi) + 1)) for p in term.poly)
     return M.Offsets(per=per, basis=basis, n=n, smooth=float(term.reg_weight),
                      smooth_along=None if term.adjacency is None else tuple(term.adjacency),
-                     smooth_step=term.adjacency_step, poly_prior=poly,
+                     smooth_step=term.adjacency_step,
                      exclude=None if term.exclude_degree is None else M.Poly(int(term.exclude_degree),
                                                                               along=term.exclude_axis),
                      exact_group_rows=bool(term.exact_group_rows), **common)
+
+
+def _model_table(table):
+    """A TOML ``[model]`` table in the current form: its ``scalar`` (default true) becomes an offset term
+    of one chunk, ``{map = 'detector', name = 'scalar'}``, after the others, and an offset term's
+    ``mean_zero = true`` its hard constraint ``exclude_degree = 0`` (no constant over its chunks)."""
+    t = dict(table)
+    scalar = bool(t.pop('scalar', True))
+    offsets = []
+    for o in t.get('offset') or []:
+        o = dict(o)
+        label = o.get('name') or o.get('map') or 'primary'
+        if o.get('kind') == 'polybasis':
+            raise ConfigError(f"offset term {label!r}: the polynomial-basis offset (kind = \"polybasis\") was removed on "
+                              "2026-10-30; write the polynomial as an Offsets(basis=Function(...), n=) term of the "
+                              "spectral coordinate (selfcal_scripts.spherex.terms.spectral_polynomial for SPHEREx)")
+        if o.get('poly'):
+            raise ConfigError(f"offset term {label!r}: the soft polynomial prior (poly = [...]) was removed on "
+                              "2026-10-30; it has no Python form")
+        if o.pop('mean_zero', False) and o.get('exclude_degree') is None:
+            o['exclude_degree'] = 0
+        offsets.append(o)
+    if scalar:
+        offsets.append({'map': 'detector', 'name': 'scalar'})
+    t['offset'] = offsets
+    return t
 
 
 def _source(v):
@@ -364,24 +380,6 @@ def _source(v):
     if v.source == 'function':
         return M.Derived(load_callable(v.value), of=tuple(v.inputs), **p)
     return M.FrameFunction(load_callable(v.value), **p)
-
-
-def _model_table(table):
-    """A TOML ``[model]`` table in the current form: its ``scalar`` (default true) becomes an offset term
-    of one chunk, ``{map = 'detector', name = 'scalar'}``, after the others, and an offset term's
-    ``mean_zero = true`` its hard constraint ``exclude_degree = 0`` (no constant over its chunks)."""
-    t = dict(table)
-    scalar = bool(t.pop('scalar', True))
-    offsets = []
-    for o in t.get('offset') or []:
-        o = dict(o)
-        if o.pop('mean_zero', False) and o.get('exclude_degree') is None:
-            o['exclude_degree'] = 0
-        offsets.append(o)
-    if scalar:
-        offsets.append({'map': 'detector', 'name': 'scalar'})
-    t['offset'] = offsets
-    return t
 
 
 def _model_from_table(table, dampings, notes):
@@ -417,23 +415,14 @@ def _preset_model(cfg, inst_name, notes):
         used.update(keys)
         return _param(p, *keys, default=default)
 
-    def standard_offsets(extra_poly=(), column_default=None):
+    def standard_offsets():
         adj = take('adjacency_axes')
-        poly = []
-        weight = take('poly_weight', default=column_default)
-        if weight is not None:
-            poly.append(M.Poly(int(take('poly_degree', default=1)), along=take('poly_axis'), weight=float(weight)))
-        else:
-            take('poly_degree', 'poly_axis')
-        poly.extend(extra_poly)
+        dropped = [k for k in ('poly_weight', 'poly_degree', 'poly_axis') if _param(p, k) is not None]
+        take('poly_weight', 'poly_degree', 'poly_axis')
+        if dropped:
+            notes.append(f"[params] {dropped}: the soft polynomial prior was removed on 2026-10-30 (dropped)")
         return M.Offsets(smooth=float(take('reg_weight', default=0.1)),
-                         smooth_along=None if adj is None else tuple(adj), poly_prior=tuple(poly), exclude=M.Poly(0))
-
-    def window():
-        lo, hi = take('spectral_poly_lo', 'subch_poly_lo'), take('spectral_poly_hi', 'subch_poly_hi')
-        if lo is None or hi is None:
-            raise ConfigError("[params] needs spectral_poly_lo / spectral_poly_hi")
-        return range(int(lo), int(hi) + 1)
+                         smooth_along=None if adj is None else tuple(adj), exclude=M.Poly(0))
 
     def spectral_sky():
         lines = take('lines')
@@ -464,30 +453,18 @@ def _preset_model(cfg, inst_name, notes):
         sky, offsets, scalar = [], (standard_offsets(),), True
     elif name in ('spectral', 'spectral_softpoly', 'tiled'):
         sky = spectral_sky()
-        extra = ()
-        weight = take('spectral_poly_weight', 'subch_poly_weight')
-        required = name == 'tiled'                 # the tiled preset always has the spectral polynomial
-        if weight is not None or required:
-            if weight is None:
-                raise ConfigError("[params] needs spectral_poly_weight")
-            if spectral_axis is None:
-                raise ConfigError(f"the spectral polynomial needs a spectral axis ({inst_name!r} has none)")
-            extra = (M.Poly(int(take('spectral_poly_degree', 'subch_poly_degree')), along=spectral_axis,
-                            weight=float(weight), window=window()),)
-        elif name == 'spectral' and (_param(p, 'spectral_poly_lo', 'subch_poly_lo') is not None):
-            window()                                 # read (the TOML mode printed a Gram check over it), not used
-        offsets = (standard_offsets(extra, 0.5 if name == 'tiled' else None),)
+        soft = [k for k in ('spectral_poly_weight', 'subch_poly_weight', 'spectral_poly_degree', 'subch_poly_degree',
+                            'spectral_poly_lo', 'subch_poly_lo', 'spectral_poly_hi', 'subch_poly_hi') if _param(p, k) is not None]
+        take(*soft)
+        if soft or name == 'tiled':
+            notes.append(f"[params] {soft}: the soft spectral polynomial prior was removed on 2026-10-30 (dropped; "
+                         "a polynomial shape of the offsets is a basis of functions, Offsets(basis=Function(...), n=))")
+        offsets = (standard_offsets(),)
         scalar = True
     elif name == 'spectral_polybasis':
-        sky = spectral_sky()
-        segs = take('spectral_poly_segments', 'subch_poly_segments')
-        offsets = (M.Offsets(polynomial=M.Poly(int(take('spectral_poly_degree', 'subch_poly_degree')), window=window(),
-                                               segments=None if segs is None else tuple(map(tuple, segs)))),)
-        scalar = True
-        dead = sorted(set(p) & {'reg_weight', 'poly_weight', 'poly_degree', 'poly_axis', 'adjacency_axes'})
-        if dead:
-            notes.append(f"[params] {dead}: not read by the polynomial-basis recipe (dropped)")
-            used.update(dead)
+        raise ConfigError(f"mode {name!r}: the polynomial-basis offset was removed on 2026-10-30; write the polynomial "
+                          "as an Offsets(basis=Function(...), n=) term of the spectral coordinate "
+                          "(selfcal_scripts.spherex.terms.spectral_polynomial for SPHEREx)")
     elif name == 'two_block_fixed':
         if spectral_axis is None:
             raise ConfigError(f"two_block_fixed smooths along the spectral axis ({inst_name!r} has none)")
@@ -622,8 +599,7 @@ def from_toml(path) -> Converted:
         own = [t.damp_weight for t in spec.sky]
         dampings = _sky_dampings(cal, len(spec.sky), own, sky_passes, cfg.calibration)
         model, mosaic_mode = _model_from_table(cfg.model, dampings, notes)
-        unread = sorted(set(cfg.params) - {'line_fisher_threshold', 'spectral_poly_lo', 'spectral_poly_hi',
-                                            'subch_poly_lo', 'subch_poly_hi'})
+        unread = sorted(set(cfg.params) - {'line_fisher_threshold'})
         if unread:
             notes.append(f"[params] {unread}: not read with a [model] table (dropped)")
     else:
@@ -637,9 +613,8 @@ def from_toml(path) -> Converted:
     if not cal['weighted_damping']:
         notes.append("weighted_damping = false: no sky damping rows (every sky term damping=0.0)")
     if not cal['offset_regularization']:
-        model = model.replace(offsets=tuple(o if o.polynomial is not None else
-                                            o.replace(smooth=0.0, poly_prior=()) for o in model.offsets))
-        notes.append("offset_regularization = false: no smoothness or polynomial rows")
+        model = model.replace(offsets=tuple(o.replace(smooth=0.0) for o in model.offsets))
+        notes.append("offset_regularization = false: no smoothness rows")
     if cal['damp_offset']:
         model = model.replace(offsets=tuple(o.replace(damping=float(cal['damp_offset'])) for o in model.offsets))
         notes.append(f"damp_offset = {cal['damp_offset']}: written as each offset term's damping")

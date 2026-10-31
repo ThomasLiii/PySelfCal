@@ -38,7 +38,6 @@ class Chunks:
     ``adjacency_axes``: the axes along which the standard offset block regularises neighbouring
     chunks by default (a camera grid: ``('row', 'col')``). ``spectral_axis``: the axis along
     which the dispersion runs (SPHEREx: ``'subchannel'``), ``None`` for broadband.
-    ``group_axis``: the axis that indexes independent polynomials in the hard poly-basis offset.
 
     ``renderers``: how the mosaic draws this map's offsets, by name: each
     ``make(chunks, jobgeom) -> renderer`` returns the ``renderer(chunk_map, offsets) -> image`` of
@@ -54,7 +53,6 @@ class Chunks:
     name: str = ''
     adjacency_axes: tuple[str, ...] = ()
     spectral_axis: str | None = None
-    group_axis: str | None = None
     renderers: dict[str, Callable] = field(default_factory=dict)
     render: str | None = None
     extra: dict = field(default_factory=dict)
@@ -65,18 +63,16 @@ class Chunks:
         return int(self.det.max()) + 1
 
     @classmethod
-    def rectangles(cls, shape, chunks, axes=('row', 'col'), adjacency=None, group_axis=None) -> Chunks:
+    def rectangles(cls, shape, chunks, axes=('row', 'col'), adjacency=None) -> Chunks:
         """``ny x nx`` rectangular chunks over a detector of ``shape`` (chunk id ``row * nx + col``;
         sides differ by at most one pixel), at detector resolution. ``axes`` names the chunk rows
-        and columns; the chunks are smoothed along both unless ``adjacency`` says otherwise, and
-        ``group_axis`` (default the first axis) indexes a polynomial basis's groups."""
+        and columns; the chunks are smoothed along both unless ``adjacency`` says otherwise."""
         from .grid import rect_grid_chunk_map
         ny, nx = (int(v) for v in chunks)
         det = rect_grid_chunk_map(tuple(int(v) for v in shape), ny, nx)
         axes = tuple(axes)
         return cls(det, ChunkAxes.row_major(axes, (ny, nx), ('y', 'x')),
-                   adjacency_axes=axes if adjacency is None else tuple(adjacency), spectral_axis=None,
-                   group_axis=group_axis or axes[0])
+                   adjacency_axes=axes if adjacency is None else tuple(adjacency), spectral_axis=None)
 
 
 @dataclass(frozen=True)

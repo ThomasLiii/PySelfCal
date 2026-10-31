@@ -63,9 +63,8 @@ The named coordinates of a chunk map's chunks
 ([`ChunkAxes`][selfcal.models.offset_structure.ChunkAxes]): for each axis, the value of every chunk
 along it and the image direction in which neighbouring chunks differ. Priors and modes name axes
 (`row` and `col` for `sc.Camera`, `subchannel` and `column` for SPHEREx), so they work on any instrument
-that declares them. A map also names its adjacency axes, its *spectral axis* (along which the
-wavelength changes) and its *group axis* (one polynomial per value in a [polybasis](#polybasis)
-term). See [Chunk maps and chunk axes](concepts.md#chunk-maps-and-chunk-axes).
+that declares them. A map also names its adjacency axes and its *spectral axis* (along which the
+wavelength changes). See [Chunk maps and chunk axes](concepts.md#chunk-maps-and-chunk-axes).
 
 ## Chunk map { #chunk-map }
 
@@ -234,7 +233,7 @@ omitted on a map with one axis, and for `k = 0` on a map with several axes too: 
 all of a group's chunks. The solver imposes it exactly by reparametrisation
 ([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), with no weight; a chunk with no
 unknown in the solve (no observation and no prior row on it) drops out. It applies to a term of one
-unknown per chunk (not `basis=` or `polynomial=`). `exclude=sc.Poly(0)` on the chunk term of
+unknown per chunk (not `basis=`). `exclude=sc.Poly(0)` on the chunk term of
 `sc.continuum` leaves each frame's level to its [per-frame scalar](#per-frame-scalar).
 `sc.Offsets(exclude=sc.Overlap('a', 'b'))` is the same kind of restriction with directions taken from
 the model itself: the term carries no detector pattern that the offset terms `a` and `b` can make
@@ -394,7 +393,7 @@ map's renderers. See
 One block of offsets in the model, on one chunk map, also called an offset map (`sc.Offsets`,
 [`OffsetTerm`][selfcal.models.spec.OffsetTerm]). `per="frame"`: an offset
 per frame and chunk; `per="all"`: one offset vector shared by all frames; `per=` a frame variable:
-one per group of frames with equal values of it; `polynomial=`: see [polybasis](#polybasis). It may
+one per group of frames with equal values of it. It may
 carry a [coefficient](#coefficient) (`times=`) or a [basis](#basis), its priors and a
 [hard constraint](#hard-constraint) (`exclude=`). The term on the map `"detector"`, one chunk, is a
 [per-frame scalar](#per-frame-scalar). Map `m`'s offsets are `offsets/map_<m>` in the cal file. See
@@ -433,24 +432,6 @@ functions the worker processes will import, and each product, to be made, reused
 Every action plans first, so a run that cannot finish stops before it starts. See
 [The Python API](python-api.md).
 
-## Polybasis { #polybasis }
-
-An offset term that is a polynomial
-(`sc.Offsets(polynomial=sc.Poly(degree, along=, window=, segments=))`): the offset is a
-polynomial along one chunk
-axis (default the spectral axis) over the `window` of chunks, one per value of the map's group
-axis, and the solve fits its coefficients (a Chebyshev series of degrees 1 to `degree`, with no
-constant: another term, such as the per-frame scalar, carries each frame's level). `segments`
-fits an independent shape on each listed sub-range. See [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
-
-## Polynomial constraint { #polynomial-constraint }
-
-A soft prior on an offset term (`sc.Offsets(poly_prior=sc.Poly(degree, along=, window=,
-weight=))`): on every run of `degree + 2` consecutive chunks along the axis, a row
-`weight · Σ stencil · O = 0` that vanishes on polynomials of degree `degree` or less, so the offset
-is pulled toward such a polynomial. [Polybasis](#polybasis) is its exact form. See
-[What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).
-
 ## Preconditioning { #preconditioning }
 
 Scaling every column of the system to unit norm before the solve and undoing it afterwards
@@ -468,8 +449,7 @@ variant of your own is written the same way. The named modes of the old TOML con
 ## Prior { #prior }
 
 Linear rows added to the system beside the data rows, to settle what the data leave free: the
-priors built into the terms (`sc.Sky(damping=)`, and an offset term's `smooth`, `poly_prior` and
-`damping`) and user priors (`sc.Model(priors=[...])`: a function that returns rows
+priors built into the terms (`sc.Sky(damping=)`, and an offset term's `smooth` and `damping`) and user priors (`sc.Model(priors=[...])`: a function that returns rows
 on the unknowns of named terms, `sc.Prior(fn, terms)`; ready-made: `sc.priors.frame_smoothness`,
 `sky_smoothness`, `toward`). A [hard constraint](#hard-constraint) adds no row. See
 [What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart).

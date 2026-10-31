@@ -107,7 +107,8 @@ def added(default, *, since):
     encoding every product is fingerprinted by: the products made before it existed, and those made
     since with the default, keep their fingerprints. Set to another value, it is encoded (those
     products are made by other inputs). A record encoded before the setting existed decodes with
-    the setting at its default."""
+    the setting at its default. A setting taken out of a class is declared in
+    :attr:`Config._removed`, the mirror of this."""
     return dataclasses.field(default=default, metadata={'since': str(since)})
 
 
@@ -123,6 +124,13 @@ def _default(f):
 class Config:
     """Base class of the settings objects (see the module docstring)."""
 
+    #: Settings taken out of the class after products were made with them: ``{name: (its last default,
+    #: a note saying when and what to write instead)}``. :meth:`to_dict` keeps each at that default, so
+    #: the encoding every product is fingerprinted by does not change and the products made with the
+    #: default keep their fingerprints; giving the setting raises with the note; a record that holds it
+    #: at its default decodes, one that holds another value does not (the mirror of :func:`added`).
+    _removed: typing.ClassVar[dict] = {}
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         # The dataclass decorator keeps a __repr__ the class already has: give every subclass
@@ -134,6 +142,8 @@ class Config:
         if dataclasses.is_dataclass(cls):
             names = setting_names(cls)
             for key in kwargs:
+                if key in cls._removed:
+                    raise ConfigError(f"{cls.__name__}({key}=...) was removed: {cls._removed[key][1]}")
                 if key not in names:
                     close = difflib.get_close_matches(key, names, n=1)
                     raise TypeError(
@@ -192,6 +202,8 @@ class Config:
             if 'since' in f.metadata and _same(value, _default(f)):
                 continue
             out[f.name] = encode(value)
+        for name, (default, _note) in type(self)._removed.items():
+            out[name] = encode(default)
         return out
 
     @staticmethod
@@ -437,7 +449,11 @@ def decode(v):
     if isinstance(v, dict):
         if 'type' in v and isinstance(v['type'], str) and ':' in v['type']:
             cls = import_name(v['type'])
-            fields = {k: decode(x) for k, x in v.items() if k != 'type'}
+            removed = getattr(cls, '_removed', {})
+            for k, (default, note) in removed.items():
+                if k in v and v[k] != encode(default):
+                    raise ConfigError(f"the record holds {cls.__name__}({k}=...), which was removed: {note}")
+            fields = {k: decode(x) for k, x in v.items() if k != 'type' and k not in removed}
             rebuild = getattr(cls, '_from_fields', None)     # a class whose constructor is not its fields
             return rebuild(**fields) if rebuild is not None else cls(**fields)
         if set(v) == {'range'}:
