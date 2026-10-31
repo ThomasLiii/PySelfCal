@@ -111,8 +111,10 @@ def production():
 
 def compact():
     """The production gate's recipe, frames and settings through the observation table (``sc.Compute(matrix='compact')``:
-    the matrix never stored, each pass remaking the rows in compiled loops): the same cal and mosaic bytes as the
-    production golden are expected, so this gate has no golden of its own."""
+    the matrix never stored, each pass remaking the rows in compiled loops), against a golden of its own: the
+    production golden's storage is one block and the table's blocks are the assembly batches, which the deflation
+    sums per block, so the two differ in the deflation's rounding (against the partitioned stored storage the table
+    is byte-equal: the unit tests, the production-size runs)."""
     from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
     inst = sc.SPHEREx(3, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
     field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
