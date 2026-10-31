@@ -6,7 +6,9 @@ reconstructs the shared-memory arrays once per batch and assembles that
 batch's rows. Companion modules: ``selfcal.core.system`` (dispatches
 ``_prep_lsqr_batch_worker`` to a ProcessPoolExecutor and assembles the full
 sparse system from these per-subframe rows) and ``selfcal.core.solve``
-(runs LSQR on it).
+(runs LSQR on it). With ``setup_lsqr(matrix='compact')`` a batch ships its
+rows' observations and its share of the per-column moments instead of the
+entries (``_table_batch``; :mod:`selfcal.core.observations`).
 """
 import os
 import traceback
@@ -23,7 +25,13 @@ from .subframe import _prep_subframe
 
 
 def _prep_lsqr(task_params):
-    '''Compute the components of the LSQR matrix A and vector b for a single subframe.'''
+    '''Compute the components of the LSQR matrix A and vector b for a single subframe.
+
+    Returns ``(rows, cols, data, b, num_rows, off_counts, table)``: the subframe's entries as COO triplets with
+    batch-local rows, its right-hand side, its row count, the pre-merge offset-column counts (template and polynomial
+    maps; else None) and, with ``task_params['observation_table']``, the observation table of its data rows (the rows
+    in order: reference pixel, detector x, detector y, weight; :mod:`selfcal.core.observations`), else None.
+    '''
     # 1. Unpack task specific
     index = task_params['index']
     reproj_file = task_params['reproj_file']
@@ -128,10 +136,10 @@ def _prep_lsqr(task_params):
         num_valid_pixels = valid_vals.shape[0]
 
         if num_valid_pixels == 0:
-            # Same arity as the success return (the caller unpacks 6 and skips
+            # Same arity as the success return (the caller unpacks 7 and skips
             # on an empty b); off_counts is None, as it is whenever there is no
-            # per-offset bookkeeping to report.
-            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None
+            # per-offset bookkeeping to report, and so is the table.
+            return np.array([]), np.array([]), np.array([]), np.array([]), 0, None, None
 
         ref_pix_indices = (valid_sub_coords[0] + ref_coords[0]) * ref_w + (valid_sub_coords[1] + ref_coords[2])
 
@@ -359,13 +367,25 @@ def _prep_lsqr(task_params):
         sub_data_vec = sub_data_vec.astype(np.float32)
         sub_b = sub_b[unique_rows]
 
+        table = None
+        if task_params.get('observation_table'):
+            # The rows that survive, as observations: the observation table makes their entries again from these
+            # (selfcal.core.observations), so a row must be a data row (no regularization row in the subframe).
+            if unique_rows.size and int(unique_rows[-1]) >= num_valid_pixels:
+                raise ValueError("the observation table holds data rows only; this subframe emits regularization "
+                                 "rows (adjacency or polynomial constraints)")
+            sm = extras.get('sub_mapping')
+            rr, cc_ = valid_sub_coords[0][unique_rows], valid_sub_coords[1][unique_rows]
+            table = (ref_pix_indices[unique_rows].astype(np.int32), np.asarray(sm[0])[rr, cc_],
+                     np.asarray(sm[1])[rr, cc_], valid_weight[unique_rows].astype(np.float32, copy=False))
+
         off_counts = None
         if task_params.get('merge_duplicates'):
             ref_h, ref_w = task_params['ref_shape']
             sub_rows, sub_cols, sub_data_vec, off_counts = _merge_subframe_duplicates(
                 sub_rows, sub_cols, sub_data_vec, len(sub_b), col_bases[-1],
                 task_params['num_sky_blocks'] * ref_h * ref_w)
-        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts
+        return sub_rows, sub_cols, sub_data_vec, sub_b, len(sub_b), off_counts, table
 
     except FrameLoadError:
         raise                                   # a missing/corrupt frame is fatal, never silently dropped
@@ -405,6 +425,95 @@ def _merge_subframe_duplicates(rows, cols, data, n_rows, n_cols, num_sky_eff):
     rows = np.repeat(np.arange(n_rows, dtype=np.int32), np.diff(A.indptr))
     return (rows.astype(np.int32, copy=False), A.indices.astype(np.int32, copy=False),
             A.data.astype(np.float32, copy=False), (off_ids.astype(np.int64), off_cnt))
+
+def _ship(arr):
+    """``arr`` copied into a fresh shared-memory segment: its ``(name, shape, dtype)`` for the parent to read."""
+    arr = np.ascontiguousarray(arr)
+    shm = SharedMemory(create=True, size=max(arr.nbytes, 1))
+    np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+    meta = (shm.name, arr.shape, arr.dtype.str)
+    shm.close()
+    return meta
+
+
+def _sparse_bincount(keys, weights=None):
+    """``(unique keys, bincount over them)``: the sums of ``weights`` per key, each key's weights added in their
+    order from 0.0, as ``np.bincount(keys, weights, minlength=...)`` adds them, over the keys present alone."""
+    ids, inv = np.unique(keys, return_inverse=True)
+    out = np.bincount(inv, weights=weights, minlength=ids.size)
+    return ids, out
+
+
+def _table_batch(sub_tasks, shm_arrays, batch_params):
+    """The batch as an observation table (``setup_lsqr(matrix='compact')``, :mod:`selfcal.core.observations`).
+
+    The subframes' rows are built as always; in place of the entries, the batch ships their observations (reference
+    pixel, detector x and y, weight), its right-hand side, and its share of the per-column moments that the stored
+    matrix's collation accumulates per batch, the entry counts, the Fisher sums, the sky blocks' cross moments and
+    the right-hand-side moments, each as ``(columns, values)`` over the columns the batch touches, computed over the
+    batch's entries in their order as the collation computes them from the batch's arrays. Returns None when no
+    subframe has rows, else a dict: ``shm`` (the arrays' shared-memory handles), ``frames`` (``(index, first row,
+    last row)`` of each subframe with rows), ``num_rows`` and ``n_entries``.
+    """
+    first = sub_tasks[0]
+    num_sky = int(np.prod(first['ref_shape']))
+    J = int(first['num_sky_blocks'])
+    rows_l, cols_l, data_l, b_l, tab_l, frames = [], [], [], [], [], []
+    off = 0
+    for task_params in sub_tasks:
+        task_params.update(shm_arrays)
+        task_params['observation_table'] = True
+        result = _prep_lsqr(task_params)
+        if result is None:
+            continue
+        sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, table = result
+        if num_rows == 0:
+            continue
+        if off_counts is not None:
+            raise ValueError("the observation table holds no template or polynomial-basis map")
+        rows_l.append(sub_rows.astype(np.int64) + off)
+        cols_l.append(sub_cols)
+        data_l.append(sub_data)
+        b_l.append(sub_b)
+        tab_l.append(table)
+        frames.append((int(task_params['index']), off, off + num_rows))
+        off += num_rows
+    if not b_l:
+        return None
+    rows, cols, data = np.concatenate(rows_l), np.concatenate(cols_l), np.concatenate(data_l)
+    b = np.concatenate(b_l)
+    del rows_l, cols_l, data_l, b_l
+    shm = {'sky': _ship(np.concatenate([t[0] for t in tab_l])), 'x': _ship(np.concatenate([t[1] for t in tab_l])),
+           'y': _ship(np.concatenate([t[2] for t in tab_l])), 'w': _ship(np.concatenate([t[3] for t in tab_l])),
+           'b': _ship(b)}
+    del tab_l
+    ids, counts = _sparse_bincount(cols)
+    shm['ids'] = _ship(ids.astype(np.int64))
+    shm['counts'] = _ship(counts.astype(np.int64))
+    shm['fisher'] = _ship(_sparse_bincount(cols, data.astype(np.float64) ** 2)[1])
+    if J >= 2:
+        # the sky blocks' cross moments: each data row's block-i entry paired with its block-j entry through the row
+        masks = [(cols >= jj * num_sky) & (cols < (jj + 1) * num_sky) for jj in range(J)]
+        rowvals = []
+        for jj in range(J):
+            v = np.zeros(off, dtype=np.float64)
+            v[rows[masks[jj]]] = data[masks[jj]]
+            rowvals.append(v)
+        cross = {}
+        for i in range(J):
+            for j in range(i + 1, J):
+                m_j = masks[j]
+                upix, vals = _sparse_bincount(cols[m_j] - j * num_sky,
+                                              data[m_j].astype(np.float64) * rowvals[i][rows[m_j]])
+                cross[(i, j)] = (_ship(upix.astype(np.int64)), _ship(vals))
+        shm['cross'] = cross
+    if batch_params.get('sky_rhs_moments'):
+        rowb = np.asarray(b, dtype=np.float64)[rows]
+        sky = cols < J * num_sky
+        u, vals = _sparse_bincount(cols[sky], data[sky].astype(np.float64) * rowb[sky])
+        shm['rhs'] = (_ship(u.astype(np.int64)), _ship(vals))
+    return {'shm': shm, 'frames': frames, 'num_rows': off, 'n_entries': int(cols.shape[0])}
+
 
 def chunk_group_of_pixels(chunk_contrib, chunk_groups, shape):
     """The group of each subframe pixel: ``chunk_groups`` of the chunk contributing most to it
@@ -494,7 +603,7 @@ def _prep_lsqr_batch_worker(batch_params):
                 result = _prep_lsqr(task_params)
                 if result is None or len(result[3]) == 0:
                     continue
-                sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+                sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, _table = result
                 ids, cnt = np.unique(sub_cols, return_counts=True)
                 if off_counts is not None:
                     num_sky_eff = task_params['num_sky_blocks'] * int(np.prod(task_params['ref_shape']))
@@ -503,6 +612,8 @@ def _prep_lsqr_batch_worker(batch_params):
                 out.append((task_params['index'], reduce(sub_rows, sub_cols, sub_data, sub_b, num_rows),
                             (ids.astype(np.int64), cnt.astype(np.int64))))
             return out
+        if batch_params.get('observation_table'):
+            return _table_batch(sub_tasks, shm_arrays, batch_params)
         if spill_dir is not None:
             # Stream the bulk COO arrays straight to files, one append per
             # subframe: no per-batch list retention, no concatenate copy,
@@ -535,7 +646,7 @@ def _prep_lsqr_batch_worker(batch_params):
             if result is None:
                 continue
 
-            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts = result
+            sub_rows, sub_cols, sub_data, sub_b, num_rows, off_counts, _table = result
             if len(sub_b) == 0:
                 continue
             if off_counts is not None:

@@ -119,8 +119,9 @@ def test_the_setting():
     with pytest.raises(ConfigError):
         sc.Fit(window_edge='hard')
 
-    class _Compute:
+    class _Compute:                 # the machine settings setup_options reads
         resolved_workers = 1
+        matrix = 'stored'
     recipe = sc.Recipe(sc.continuum(), fit=sc.Fit())
     assert 'window_edge' not in setup_options(recipe, _Compute(), sc.SPHEREx(2))
     inside = sc.Recipe(sc.continuum(), fit=sc.Fit(window_edge='inside'))

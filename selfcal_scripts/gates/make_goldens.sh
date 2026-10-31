@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Make the float64-norm goldens (*golden_f64*) the gates compare with, by running the gates of python_gates.py on a
 # COMMITTED tree. Usage: make_goldens.sh <tag> [gate ...]   (gates: continuum spectral e2e npass3 euclid production
-# tiles; default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: the one this
+# compact tiles; default: all) -> $GATES_LOGDIR/make_goldens_<tag>.log. SELFCAL_REPO picks the tree (default: the one this
 # script is in; SELFCAL_PYTHON the interpreter, default python on PATH); it must be clean, so that each golden belongs to a commit (the log records it). An existing golden is
 # never replaced unless FORCE=1. The goldens are made with the float64 LSQR norms (selfcal/core/lsqr_inplace.py,
 # since 2026-10-05): SELFCAL_LSQR_FLOAT32_NORMS=1 is refused. The e2e and production gates write the large goldens
@@ -11,7 +11,7 @@ R=${SELFCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}   # defau
 PY=${SELFCAL_PYTHON:-$(command -v python)}                          # the active env unless set
 L=${GATES_LOGDIR:-/mnt/md124/thomasli/selfcal/outputs/_gates/logs}   # the logs, next to the goldens
 TAG=${1:?tag}; shift
-GATES=${*:-continuum spectral e2e npass3 euclid production tiles}
+GATES=${*:-continuum spectral e2e npass3 euclid production compact tiles}
 mkdir -p $L
 LOG=$L/make_goldens_${TAG}.log
 O=/mnt/md124/thomasli/selfcal/outputs
@@ -69,6 +69,12 @@ for g in $GATES; do
     run production
     keep ${D3C9}_production_gate_py.h5 ${D3C9}_production_golden_f64.h5
     keep ${D3C9_MOS}_production_gate_py.fits ${D3C9_MOS}_production_golden_f64.fits ;;
+  compact)
+    rmp ${D3C9}_compact_gate_py.h5 ${D3C9_MOS}_compact_gate_py.fits; rm -f ${D3C9_SNAP}_compact_gate_py_it*.h5
+    rm -rf $R/cache/compact_gate
+    run compact
+    keep ${D3C9}_compact_gate_py.h5 ${D3C9}_compact_golden_f64.h5
+    keep ${D3C9_MOS}_compact_gate_py.fits ${D3C9_MOS}_compact_golden_f64.fits ;;
   tiles)
     rmp ${NP}_tiles_T1_gate_py.h5 ${NP}_tiles_T2_gate_py.h5 ${NP}_tiles_stitched_gate_py.h5
     rm -f ${NP}_tiles_stitched_gate_py_npass_monitor.json; rm -rf $R/cache/tiles_gate

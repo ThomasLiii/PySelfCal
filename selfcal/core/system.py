@@ -316,6 +316,204 @@ def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_ob
                        reduced=reduced, constraint_blocks=constraint_blocks(pixel_counts))
 
 
+def _read_shm(info):
+    """Read an array from shared memory and clean up the segment."""
+    name, shape, dtype = info
+    shm = SharedMemory(name=name)
+    arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
+    shm.close()
+    shm.unlink()
+    return arr
+
+
+def _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, *, num_sky, num_sky_blocks, col_bases,
+                   total_cols, min_observations, offset_min_observations):
+    """The coverage floor's columns (``setup_lsqr(min_observations=, offset_min_observations=)``): the sky pixels
+    the collated counts show observed fewer times than the floor (every sky term's column of them), and the offsets
+    of a map with a floor observed fewer times than it. Their pixel state is zeroed here (counts, Fisher, cross and
+    right-hand-side moments: they read as uncovered from here on). Returns a boolean over the leading columns of the
+    layout, or None when nothing is floored."""
+    drop_cols = None
+    if min_observations is not None:
+        obs = pixel_counts[:num_sky]              # the first sky term's observations of each grid pixel
+        drop_px = (obs > 0) & (obs < int(min_observations))
+        n_drop_px = int(np.count_nonzero(drop_px))
+        if n_drop_px:
+            drop_cols = np.tile(drop_px, num_sky_blocks)          # every sky term's column of those pixels
+            pixel_counts[:drop_cols.size][drop_cols] = 0
+            pixel_fisher[:drop_cols.size][drop_cols] = 0.0
+            if pixel_rhs is not None:
+                pixel_rhs[drop_cols] = 0.0
+            if pixel_cross is not None:
+                for v in pixel_cross.values():
+                    v[drop_px] = 0.0
+        logger.info(f"Coverage floor: {n_drop_px} sky pixels observed fewer than {int(min_observations)} times "
+                    "leave the solve.")
+    if offset_min_observations is not None:
+        # The offset maps' floors (Offsets(min_observations=)), judged on the same collated counts: their rows are
+        # zeroed in the same pass as the sky floor's, the mask now over every column.
+        drop_off = np.zeros(total_cols, dtype=bool)
+        for m, n in enumerate(offset_min_observations):
+            if n is None:
+                continue
+            a, c = int(col_bases[m]), int(col_bases[m + 1])
+            cnt = pixel_counts[a:c]
+            drop_off[a:c] = (cnt > 0) & (cnt < int(n))
+            logger.info(f"Coverage floor: {int(np.count_nonzero(drop_off[a:c]))} offsets of map {m} observed "
+                        f"fewer than {int(n)} times leave the solve.")
+        if drop_off.any():
+            pixel_counts[drop_off] = 0
+            pixel_fisher[drop_off] = 0.0
+            if drop_cols is not None:
+                drop_off[:drop_cols.size] |= drop_cols
+            drop_cols = drop_off
+    return drop_cols
+
+
+def _compaction(pixel_counts, drop_cols, constraint_blocks, total_cols, alloc):
+    """The early column compaction: every column with entries (``pixel_counts > 0``, plus the floor's columns, whose
+    zeroed entries keep their slots) is kept and the others dropped, unless a constraint row points at a column
+    without entries (the compaction is then left to the solver). Returns ``(active_mask, col_map, n_active)``:
+    the kept columns of the full layout and the int32 map from full to compact ids (``alloc(name, n, dtype)`` makes
+    it), both None when the compaction does not run."""
+    active_mask = pixel_counts > 0
+    if drop_cols is not None:        # the floor's columns keep their slots: their zeroed entries need one
+        active_mask[:drop_cols.size] |= drop_cols
+    for blk in constraint_blocks:
+        cols_b = blk['cols']
+        if cols_b.size and not active_mask[cols_b].all():
+            return None, None, int(total_cols)
+    n_active = int(active_mask.sum())
+    assert n_active < 2**31, (
+        f"n_active={n_active} overflows int32 column ids")
+    # int32 halves both the map itself (total_cols entries) and every
+    # per-batch col_map[cols_b] gather output of the placement. Values are
+    # exact (cumsum <= n_active < 2^31).
+    col_map = alloc('col_map', int(active_mask.size), np.int32)
+    np.cumsum(active_mask, dtype=np.int32, out=col_map)
+    col_map -= 1
+    logger.info(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
+    return active_mask, col_map, n_active
+
+
+def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, num_sky_blocks, sky_rhs_moments,
+                 constraint_blocks, min_observations, offset_min_observations, expansion):
+    """``setup_lsqr(matrix='compact')``: the system as an :class:`~selfcal.core.observations.ObservationTable`.
+
+    The workers build each batch's rows as always and ship their observations with the batch's share of the
+    per-column moments (:func:`selfcal.core.assembly._table_batch`); the moments are added in batch order, as the
+    stored matrix's collation adds them, so the pixel state is the same bytes. The coverage floor, the constraint
+    rows (a small stored matrix after the data rows), the column compaction and the right-hand side then follow the
+    stored path's rules. Returns the :class:`SetupResult`, or ``(None, None)`` when no subframe has data.
+    """
+    from .observations import ObservationTable, _Block, _Expansion
+    total_cols = layout.total_cols
+    num_sky_eff = num_sky_blocks * num_sky
+    pixel_counts = np.zeros(total_cols, dtype=np.int64)
+    pixel_fisher = np.zeros(total_cols, dtype=np.float64)
+    pixel_rhs = np.zeros(num_sky_eff, dtype=np.float64) if sky_rhs_moments else None
+    pairs = [(i, j) for i in range(num_sky_blocks) for j in range(i + 1, num_sky_blocks)]
+    pixel_cross = {p: np.zeros(num_sky, dtype=np.float64) for p in pairs} if num_sky_blocks >= 2 else None
+    blocks, b_pieces = [], []
+    n_obs = n_entries = 0
+
+    def fold(r):
+        """One batch, in batch order: its moments added to the pixel state, its observations kept as a block;
+        returns its right-hand side."""
+        nonlocal n_obs, n_entries
+        shm = r['shm']
+        sky, x, y, w, b = (_read_shm(shm[k]) for k in ('sky', 'x', 'y', 'w', 'b'))
+        ids = _read_shm(shm['ids'])
+        pixel_counts[ids] += _read_shm(shm['counts'])
+        pixel_fisher[ids] += _read_shm(shm['fisher'])
+        if pixel_cross is not None:
+            for pair, (u_meta, v_meta) in shm['cross'].items():
+                pixel_cross[pair][_read_shm(u_meta)] += _read_shm(v_meta)
+        if pixel_rhs is not None:
+            u_meta, v_meta = shm['rhs']
+            pixel_rhs[_read_shm(u_meta)] += _read_shm(v_meta)
+        frames = r['frames']
+        frame_rows = np.array([f[1] for f in frames] + [frames[-1][2]], dtype=np.int64)
+        blocks.append(_Block([f[0] for f in frames], frame_rows, sky, x, y, w, np.flatnonzero(b == 0),
+                             r['n_entries']))
+        n_obs += int(r['num_rows'])
+        n_entries += int(r['n_entries'])
+        return b
+
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=worker_pool_context()) as executor:
+            futures = {executor.submit(_prep_lsqr_batch_worker, batch): i for i, batch in enumerate(batched_tasks)}
+            pending, next_id = {}, 0
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Building the observation table",
+                               disable=not _state.progress_enabled):
+                pending[futures[future]] = future.result()
+                while next_id in pending:                 # batch-id order: the moments' float64 sums depend on it
+                    r = pending.pop(next_id)
+                    next_id += 1
+                    if r is not None:
+                        b_pieces.append(fold(r))
+    finally:
+        for shm in shm_objects:
+            shm.close()
+            shm.unlink()
+    if not blocks:
+        logger.warning("No valid data found in any subframe.")
+        return None, None
+
+    drop_cols = _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky=num_sky,
+                               num_sky_blocks=num_sky_blocks, col_bases=layout.col_bases, total_cols=total_cols,
+                               min_observations=min_observations, offset_min_observations=offset_min_observations)
+    cblocks = constraint_blocks(pixel_counts)
+    active_mask, col_map, n_active = _compaction(pixel_counts, drop_cols, cblocks, total_cols,
+                                                 lambda name, n, dtype: np.empty(n, dtype=dtype))
+    model = _Expansion(**expansion, col_map=col_map)
+    for blk in blocks:
+        blk.base = model.column_bases(blk.frames)
+
+    # The constraint rows: a stored matrix after the data rows, in solver columns, each row's entries sorted by
+    # column and duplicates summed (scipy's conversion from triplets: the kernels of the stored path's placement).
+    tail, tail_b = None, []
+    if cblocks:
+        rows_l, cols_l, data_l, off = [], [], [], 0
+        for blk in cblocks:
+            rows_l.append(np.asarray(blk['rows_local'], dtype=np.int64) + off)
+            cols_l.append(np.asarray(blk['cols'], dtype=np.int64))
+            data_l.append(np.asarray(blk['data'], dtype=np.float32))
+            tail_b.append(np.asarray(blk['b']))
+            off += int(blk['num_rows'])
+        cols = np.concatenate(cols_l)
+        if col_map is not None:
+            cols = col_map[cols]
+        tail = csr_matrix((np.concatenate(data_l), (np.concatenate(rows_l), cols)), shape=(off, n_active))
+        tail.sum_duplicates()
+        tail.sort_indices()
+        tail.indices = tail.indices.astype(np.int32, copy=False)
+        tail.indptr = tail.indptr.astype(np.int32, copy=False)
+
+    # The right-hand side: float32 when every value is exactly representable (the stored path's rule).
+    pieces = b_pieces + tail_b
+    can_f32 = all(p.dtype == np.float32 or p.size == 0 or np.array_equal(p, p.astype(np.float32).astype(np.float64))
+                  for p in pieces)
+    full_b = (np.concatenate([p.astype(np.float32, copy=False) for p in pieces]) if can_f32
+              else np.concatenate(pieces))
+    del b_pieces, tail_b, pieces
+
+    table = ObservationTable(blocks, tail, n_active, model, threads=max_workers)
+    if drop_cols is not None:
+        rows = table.floor(drop_cols)
+        full_b[rows] = 0
+        logger.info(f"Coverage floor: {rows.size} observations of those columns set to zero "
+                    "(values and right-hand side); the columns stay without data.")
+    logger.info(f"Matrix hand-over: observation table of {n_obs} observations in {len(blocks)} blocks "
+                f"({table.nbytes / 1e9:.2f} GB) standing for {n_entries} entries (stored: {n_entries * 8 / 1e9:.1f} GB)"
+                + (f", {tail.shape[0]} constraint rows stored" if tail is not None else '')
+                + f"; {n_active} columns.")
+    if pixel_cross is not None and num_sky_blocks == 2:
+        pixel_cross = pixel_cross[(0, 1)]
+    return SetupResult(A=table, b=full_b, pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
+                       pixel_cross=pixel_cross, pixel_rhs=pixel_rhs, active_mask=active_mask)
+
+
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                chunk_maps: list[np.ndarray] | None = None,
                grid_valid_weight: np.ndarray | None = None,
@@ -351,8 +549,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                reduce: Callable | None = None,
                min_observations: int | None = None,
                offset_min_observations: list | None = None,
-               window_edge: str = 'partial') -> SetupResult:
+               matrix: str = 'stored', window_edge: str = 'partial') -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
+
+    ``matrix``: how the matrix is kept. ``'stored'`` (default): its entries, as a csr matrix or the block storages
+    below. ``'compact'``: an :class:`~selfcal.core.observations.ObservationTable`, the observations the rows are
+    made from (16 bytes each instead of the row's 8 to 12 entries of 8 bytes), made again with the build's arithmetic
+    whenever the solve reads the matrix, so the products are the stored matrix's to the bit; it needs numba, holds
+    data rows only (no template or polynomial-basis map, no per-frame adjacency or polynomial-constraint rows) and
+    the model's functions may not read the stored values, flag bits, layers or frame functions. ``moments_only`` and
+    ``reduce`` build no matrix and ignore it.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
@@ -581,6 +787,15 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         raise ValueError("batch_size must be a positive integer")
     if moments_only and reduce is not None:
         raise ValueError("give moments_only or reduce, not both")
+    if matrix not in ('stored', 'compact'):
+        raise ValueError(f"matrix={matrix!r}: 'stored' (the matrix's entries) or 'compact' (an observation table)")
+    compact = matrix == 'compact' and not moments_only and reduce is None
+    if compact:
+        from .observations import require_numba
+        require_numba()
+        if oversample_factor != 1:
+            raise ValueError("matrix='compact': the observation table keeps the frames' detector coordinates as "
+                             "stored (oversample_factor=1); use matrix='stored'")
 
     # Normalize chunk_maps and per-map arguments to length-K lists.
     if chunk_maps is None:
@@ -666,6 +881,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     for m in group_adjacency_maps:
         if not (isinstance(m, (int, np.integer)) and 0 <= m < K):
             raise ValueError(f"group_adjacency_maps entry {m!r} is not a map index in [0, {K})")
+    if compact:
+        if any(t is not None for t in det_templates) or any(pb is not None for pb in poly_basis_list):
+            raise ValueError("matrix='compact': the observation table holds no template or polynomial-basis offset "
+                             "map (their entries are merged per frame); use matrix='stored'")
+        if offset_regularization and (
+                any(rw > 0 and adj is not None and m not in group_adjacency_maps
+                    for m, (rw, adj) in enumerate(zip(reg_weights, adj_infos)))
+                or any(g for g in poly_constraints_list)):
+            raise ValueError("matrix='compact': the observation table holds data rows only, not the per-frame "
+                             "adjacency or polynomial-constraint rows; use matrix='stored' or weight 0")
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -747,6 +972,24 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if tuple(np.shape(m_)) != tuple(ref_shape):
             raise ValueError(f"sky variable {name!r} has shape {np.shape(m_)}, expected the "
                              f"reference grid {tuple(ref_shape)}")
+    if compact:
+        # The table evaluates the model's functions again at every pass, from the observations' positions, the
+        # detector maps, the frame values and the sky maps: what is read from the frame files is not available.
+        stack = list(sky_model.required_variables) + [v for bm in basis_list if bm is not None for v in bm.variables]
+        seen = set()
+        while stack:
+            v = stack.pop()
+            if v in seen:
+                continue
+            seen.add(v)
+            if v in variables.derived:
+                stack.extend(variables.derived[v].inputs)
+        unavailable = sorted(v for v in seen if v in ('value', 'flags') or v in variables.layers
+                             or v in variables.frame_functions)
+        if unavailable:
+            raise ValueError(f"matrix='compact': the model's functions read {unavailable}, which the observation table "
+                             "cannot evaluate again (the stored values, flag bits, layers and frame functions are read "
+                             "from the frame files at the build); use matrix='stored'")
     if num_sky_blocks > 1:
         logger.info(f"Sky model: {num_sky_blocks} terms {sky_model.names}, {num_sky_blocks * num_sky} sky cols, "
                     f"damping {sky_model.damp_weights(damp_weight, damp_weight_line)}.")
@@ -915,6 +1158,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                  'spill_dir': _spill_run_dir}
         if reduce is not None:
             batch['reduce'] = reduce
+        if compact:
+            batch['observation_table'] = True
+            batch['sky_rhs_moments'] = bool(sky_rhs_moments)
         batched_tasks.append(batch)
 
     logger.info(f"Processing {len(all_individual_tasks)} items in {len(batched_tasks)} batches...")
@@ -991,6 +1237,23 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return _setup_reduced(batched_tasks, max_workers=max_workers, total_cols=total_cols,
                               num_frames=num_frames, shm_objects=shm_objects,
                               constraint_blocks=_constraint_blocks)
+    if compact:
+        if K:
+            det_shape = chunk_maps[0].shape
+        elif grid_valid_weight is not None:
+            det_shape = grid_valid_weight.shape
+        else:
+            det_shape = np.shape(det_aux[0]) if det_aux else (0, 0)
+        expansion = dict(ref_shape=ref_shape, sky_components=sky_model.components, sky_entries=not fixed_sky,
+                         chunk_maps=chunk_maps, det_shape=det_shape, bases=basis_list, aux_keys=aux_keys,
+                         aux_maps=[np.ascontiguousarray(a, dtype=np.float32) for a in (det_aux or [])],
+                         frame_values=frame_vars, sky_variables=variables.sky, derived=variables.derived,
+                         col_bases=col_bases, num_chunks_list=num_chunks_list,
+                         frame_to_group_list=frame_to_group_list)
+        return _setup_table(batched_tasks, max_workers=max_workers, shm_objects=shm_objects, layout=layout,
+                            num_sky=num_sky, num_sky_blocks=num_sky_blocks, sky_rhs_moments=sky_rhs_moments,
+                            constraint_blocks=_constraint_blocks, min_observations=min_observations,
+                            offset_min_observations=offset_min_observations, expansion=expansion)
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results
@@ -1016,15 +1279,6 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         pixel_cross = {p: np.zeros(num_sky, dtype=np.float64) for p in _cross_pairs}
     else:
         pixel_cross = None
-
-    def _read_shm(info):
-        """Read array from shared memory and clean up the segment."""
-        name, shape, dtype = info
-        shm = SharedMemory(name=name)
-        arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf).copy()
-        shm.close()
-        shm.unlink()
-        return arr
 
     # ----------------------------------------------------------------
     # Collation: the workers' results, batch by batch.
@@ -1354,42 +1608,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # after it); their columns keep their slots without data and read as
     # uncovered from here on (the constraint builders, the outputs).
     # ----------------------------------------------------------------
-    drop_cols = None
-    if min_observations is not None:
-        _obs = pixel_counts[:num_sky]              # the first sky term's observations of each grid pixel
-        _drop_px = (_obs > 0) & (_obs < int(min_observations))
-        _n_drop_px = int(np.count_nonzero(_drop_px))
-        if _n_drop_px:
-            drop_cols = np.tile(_drop_px, num_sky_blocks)          # every sky term's column of those pixels
-            pixel_counts[:drop_cols.size][drop_cols] = 0
-            pixel_fisher[:drop_cols.size][drop_cols] = 0.0
-            if pixel_rhs is not None:
-                pixel_rhs[drop_cols] = 0.0
-            if pixel_cross is not None:
-                for _v in pixel_cross.values():
-                    _v[_drop_px] = 0.0
-        logger.info(f"Coverage floor: {_n_drop_px} sky pixels observed fewer than {int(min_observations)} times "
-                    "leave the solve.")
-        del _obs, _drop_px
-    if offset_min_observations is not None:
-        # The offset maps' floors (Offsets(min_observations=)), judged on the same collated counts: their rows are
-        # zeroed in the same placement pass as the sky floor's, the mask now over every column.
-        _drop_off = np.zeros(total_cols, dtype=bool)
-        for _m, _n in enumerate(offset_min_observations):
-            if _n is None:
-                continue
-            _a, _c = int(col_bases[_m]), int(col_bases[_m + 1])
-            _cnt = pixel_counts[_a:_c]
-            _drop_off[_a:_c] = (_cnt > 0) & (_cnt < int(_n))
-            logger.info(f"Coverage floor: {int(np.count_nonzero(_drop_off[_a:_c]))} offsets of map {_m} observed "
-                        f"fewer than {int(_n)} times leave the solve.")
-        if _drop_off.any():
-            pixel_counts[_drop_off] = 0
-            pixel_fisher[_drop_off] = 0.0
-            if drop_cols is not None:
-                _drop_off[:drop_cols.size] |= drop_cols
-            drop_cols = _drop_off
-        del _drop_off
+    drop_cols = _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky=num_sky,
+                               num_sky_blocks=num_sky_blocks, col_bases=col_bases, total_cols=total_cols,
+                               min_observations=min_observations, offset_min_observations=offset_min_observations)
 
     if moments_only:
         # The pixel state, accumulated by the collation, is all the caller reads: no matrix is
@@ -1645,31 +1866,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # normally have pixel_counts > 0, but a constraint row pointing at an
     # otherwise-uncovered column would still need its slot: when one does,
     # the compaction is left to apply_lsqr.
-    active_mask = pixel_counts > 0
-    if drop_cols is not None:        # the floor's columns keep their slots: their zeroed entries need one
-        active_mask[:drop_cols.size] |= drop_cols
-    compaction_active = True
-    for blk in constraint_blocks:
-        cols_b = blk['cols']
-        if cols_b.size and not active_mask[cols_b].all():
-            compaction_active = False
-            break
-
-    if compaction_active:
-        n_active = int(active_mask.sum())
-        assert n_active < 2**31, (
-            f"n_active={n_active} overflows int32 column ids")
-        # int32 halves both the map itself (total_cols entries) and every
-        # per-batch col_map[cols_b] gather output of the placement. Values are
-        # exact (cumsum <= n_active < 2^31).
-        col_map = _shared_alloc('col_map', int(active_mask.size), np.int32)
-        np.cumsum(active_mask, dtype=np.int32, out=col_map)
-        col_map -= 1
-        logger.info(f"Compacting zero-coverage columns inline ({n_active}/{total_cols} active).")
-    else:
-        active_mask = None
-        col_map = None
-        n_active = total_cols
+    active_mask, col_map, n_active = _compaction(pixel_counts, drop_cols, constraint_blocks, total_cols,
+                                                 _shared_alloc)
+    compaction_active = active_mask is not None
 
     if _partitioned:
         # Compact-space cuts: the compaction map is monotone, so the number of

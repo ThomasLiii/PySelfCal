@@ -286,6 +286,18 @@ owns) and the solver and the coadd keep their intermediates there. Without it, f
 in place. Every action pins the BLAS and OpenMP threads to one per process before any worker
 starts (the solver's thread pool is the parallelism).
 
+`matrix` is how the solve keeps its matrix. `"stored"` (default) keeps its entries: 8 bytes each,
+8 to 12 per observation. `"compact"` keeps the observations the rows are made from (the reference
+pixel, the detector position, the weight: 16 bytes each) and makes the rows again at every pass,
+with the build's arithmetic in compiled loops, so the products and the solution are the same bytes
+as the stored matrix's for the same thread count: a matrix 4 to 6 times smaller for a slower pass
+(the rows are computed instead of read). It needs the `numba` package (`pip install selfcal[compact]`),
+holds data rows only (no template or polynomial-basis offset map, no per-frame adjacency or
+polynomial-constraint rows) and asks that the model's functions read only the observation's
+coordinates, the detector maps, the frame values, the sky maps and functions of them (not the
+stored values, flag bits, layers or frame functions, which the build reads from the frame files).
+The machine setting it is: a product's fingerprint does not depend on it.
+
 ### Worker processes and functions
 
 The pipeline's worker processes start fresh and import the run script again, so:

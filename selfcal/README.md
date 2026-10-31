@@ -333,6 +333,18 @@ clarity:
   `ColumnProjector`), with no constraint row and no weight, and imposes
   them on the start vector too.
 
+- **[`core/observations.py`](core/observations.py)** — `ObservationTable`: the
+  matrix kept as its observations (`sc.Compute(matrix='compact')`): per row
+  the reference pixel, the detector position and the weight (16 bytes instead
+  of the row's 8 to 12 stored entries of 8 bytes). Every pass over the matrix
+  (the products, the column norms, the start vector, the deflation's sums)
+  makes the rows again with the build's arithmetic in compiled loops (numba),
+  the model's functions evaluated by the model's own code per chunk of
+  observations, so the entries and the products are the stored matrix's to the
+  bit. The build's workers ship each batch's observations and its share of the
+  per-column moments instead of the entries; the constraint rows stay a small
+  stored matrix after the data rows. `apply_lsqr`, the deflation's chunk
+  readers and the start vectors take it like a stored matrix.
 - **[`core/blockcsr.py`](core/blockcsr.py)** — `BlockCSR`: row-block list
   representation that `setup_lsqr` emits instead of one giant CSR once total
   nnz reaches 2^31 (env `SELFCAL_BLOCK_NNZ` overrides). A unified scipy CSR
