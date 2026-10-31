@@ -114,6 +114,22 @@ def production():
                            snapshots=sc.Snapshots(every=50))
 
 
+def compact():
+    """The production gate's recipe, frames and settings through the observation table (``sc.Compute(matrix='compact')``:
+    the matrix never stored, each pass remaking the rows in compiled loops), against a golden of its own: the
+    production golden's storage is one block and the table's blocks are the assembly batches, which the deflation
+    sums per block, so the two differ in the deflation's rounding (against the partitioned stored storage the table
+    is byte-equal: the unit tests, the production-size runs)."""
+    from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
+    inst = sc.SPHEREx(3, calib_dir='/mnt/md124/SPHEREx/SpecCal_202509/ParameterFiles')
+    field = sc.Field(f'{OUTPUTS}/SPHEREx_nep_qr2_det3_6p2arcsec', inst, 6.19999999999992)
+    return field.calibrate(SLOPE_GAUGE.replace(name='compact_gate_py'), jobs=jobs.channel(9),
+                           frames=sc.frames_in(E2E_FIXTURE)[:100],
+                           compute=sc.Compute(f'{REPO}/cache/compact_gate', workers=30, stage=None, matrix='compact'),
+                           monitor=sc.Monitor(every=10, residual=True, gradient=False, large_scale=2),
+                           snapshots=sc.Snapshots(every=50))
+
+
 def tiles():
     """The npass3 recipe on its 150 frames in two overlapping tiles, solved one after the other and stitched,
     as pass 1 of the N-pass schedule (passes=sc.Passes(1))."""
@@ -123,7 +139,7 @@ def tiles():
 
 
 GATES = {'continuum': continuum, 'spectral': spectral, 'e2e': e2e, 'npass3': npass3, 'euclid': euclid,
-         'production': production, 'tiles': tiles}
+         'production': production, 'compact': compact, 'tiles': tiles}
 
 if __name__ == '__main__':
     names = sys.argv[1:] or list(GATES)

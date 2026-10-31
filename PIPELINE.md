@@ -397,6 +397,32 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   transpose product of the 2026-09 byte-equality rounds); T ranges hold
   `(T-1) * 4 B/row` more indptr, and `sc.Tuning(split_extra_gb=)` (`SELFCAL_SPLIT_EXTRA_GB`,
   default 24) halves T until that fits.
+- **The observation table** (`sc.Compute(matrix='compact')`;
+  `selfcal/core/observations.py`). The matrix is not stored: each data row is
+  kept as the observation it is made from, its reference pixel, its detector
+  position and its weight (16 B), against 8 B per stored entry and 8 to 12
+  entries per row, and the rows are made again at every pass over the matrix
+  (the products, the column norms, the start vector, the deflation's sums)
+  with the build's arithmetic in compiled loops (numba), the model's functions
+  evaluated by the model's own code per chunk of observations. The entries are
+  the stored matrix's to the bit, so the products and the solution are the
+  stored path's for the same thread count; the deflation's per-chunk sums
+  follow the storage blocks, which are the assembly batches, as the
+  partitioned storage's are. The assembly's workers ship each batch's
+  observations and its share of the per-column moments instead of the
+  entries (no entry spill), so the build's collation is parallel. The
+  constraint rows stay a small stored matrix after the data rows. A pass is
+  slower than a read of stored entries (about 150 ns per observation per
+  thread for the rows alone, plus the model's functions): a channel job pays
+  a few times its product time for a matrix 4 to 6 times smaller; a solve that
+  does not fit in memory stored fits as a table. It holds data rows only (no
+  template or polynomial-basis map, no per-frame adjacency or
+  polynomial-constraint rows; `oversample_factor=1`) and the model's
+  functions may not read the stored values, flag bits, layers or frame
+  functions. The transpose product's private buffers
+  (`sc.Numerics(rmatvec_threads=)`, one `n_active x 4 B` buffer per thread)
+  are the same as the stored path's and are the memory to budget for a
+  table solve at large column counts.
 - **Memory knobs** (`sc.Tuning`, each a `SELFCAL_*` environment variable;
   defaults need no tuning): `block_nnz` (`SELFCAL_BLOCK_NNZ`) —
   nnz threshold at which `setup_lsqr` emits int32 block storage instead of a

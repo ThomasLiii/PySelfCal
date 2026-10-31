@@ -64,6 +64,8 @@ def setup_options(recipe, compute, instrument) -> dict:
     options.update(clip_keys(fit.clip))
     if fit.min_observations is not None:
         options['min_observations'] = fit.min_observations
+    if compute.matrix != 'stored':
+        options['matrix'] = compute.matrix
     if fit.window_edge != 'partial':
         options['window_edge'] = fit.window_edge
     return options
