@@ -594,9 +594,11 @@ def solve_job(ctx, job, jobgeom, *, frame_dir, cal_file, hdd_reproj_dir, frames=
         names = ctx.model.offset_names(ctx.geom)
         ctx.model.offset_columns(cc.layout, deflate.offsets, ctx.geom)  # refuses a name the model does not have
         held = ctx.model.offset_columns(cc.layout, [t for t in names if t not in deflate.offsets], ctx.geom)
-    cc.apply_lsqr(x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
-                  exclusions=exclusions or None, signatures=signatures or None,
-                  held=held if held is not None and held.size else None)
+    # Called through the class: CPython 3.13 keeps the keyword dict of a bound method called with ``**``, x0 included,
+    # until it returns, where a function's call hands its arguments over (3.11 keeps the dict either way).
+    type(cc).apply_lsqr(cc, x0=_x0_owned.pop(), **ctx.solve_options(), **watch, scratch_dir=ctx.solve_scratch(),
+                        exclusions=exclusions or None, signatures=signatures or None,
+                        held=held if held is not None and held.size else None)
     checkpoint('post-apply_lsqr')
     ctx.configure(cc)
     record = cc.solve_record

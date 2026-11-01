@@ -1419,6 +1419,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
                 sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
+            cmap = None                                   # the full layout's column map: one int64 per grid column
         def solver_columns(cols):
             # full-layout columns -> solver columns (the active ones)
             c = np.asarray(cols, dtype=np.int64)
