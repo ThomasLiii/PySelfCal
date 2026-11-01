@@ -117,6 +117,9 @@ _SCHUR_BATCH = 1 << 26
 _MIN_BLOCK = 1 << 18
 #: Columns of a pattern made per task when the patterns are built (the task's temporaries: a few arrays of this length).
 _PATTERN_COLUMNS = 1 << 22
+#: Rows of a chunk per evaluation of the patterns where a pass reads them (:class:`_SkyPatterns`): the thread's buffer
+#: holds the patterns at each of these rows' entries.
+_PATTERN_ROWS = 1 << 15
 #: Sky columns per call when a chunk's column sums are made and added in the second pass (each adding thread's
 #: buffer holds this many columns of the products).
 _ADD_COLUMNS = 1 << 16
@@ -859,6 +862,133 @@ def _transform_in_place(M, T, cols=1 << 20, pool=None):
     return M[:kk]
 
 
+def _sky_untouched(projector, n_sky):
+    """Whether no group of the column constraints ``projector`` (None: none) holds one of the ``n_sky`` sky columns (the
+    first solver columns): then the patterns are their functions' values (a constraint on the offset columns leaves them
+    as they are) and :class:`_SkyPatterns` makes them where they are read."""
+    return projector is None or all(not (c[c >= 0] < n_sky).any() for c, _Q in projector.groups)
+
+
+class _SkyPatterns:
+    """The patterns made where the setup reads them, in place of a ``(patterns, columns)`` array: pattern ``i`` of a sky
+    term at one of the term's columns is ``(fx_i[x - x0] * fy_i[y - y0]) * col_norm`` (the operations, in the order, that
+    make the stored array: the same values to the bit), with ``(y, x)`` the column's grid position, and zero at the other
+    columns of the sky; at the offset columns it is ``offsets`` (``(n_off, k)``, the paired patterns: set after the first
+    pass, which reads the sky part only).
+
+    ``terms``: per deflated term ``(a, b, j, i0, i1, x0, y0, fx, fy)``, its columns ``a:b`` (the deflation's space;
+    term ``j`` of the grid layout), its patterns ``i0:i1`` and their axis functions ``fx`` (``(i1 - i0, width)``) and
+    ``fy`` (``(i1 - i0, height)``) on its box from ``(y0, x0)``. ``sky_full``: the full-layout column of each sky column
+    of the space, ``npix`` and ``w``: the grid's size and width, ``col_norm``: the columns' norms."""
+
+    def __init__(self, k, n_sky_S, terms, sky_full, npix, w, col_norm):
+        self.k, self.n_sky_S, self.terms = k, n_sky_S, terms
+        self.sky_full, self.npix, self.w, self.col_norm = sky_full, npix, w, col_norm
+        self.offsets = None
+        # one term on every sky column: each row of a pattern range is written whole (otherwise zeroed first)
+        self.whole = len(terms) == 1 and terms[0][0] == 0 and terms[0][1] == n_sky_S
+        self._tables = {}
+        self._lock = threading.Lock()
+
+    def _positions(self, cols, j):
+        """The grid positions ``(x, y)`` of the sky columns ``cols`` (an index array or a slice) of term ``j``."""
+        fs = self.sky_full[cols]
+        pix = fs - j * self.npix if j else fs
+        iy, ix = np.divmod(pix, self.w)
+        return ix, iy
+
+    def _table(self, t, p0, p1):
+        """Term ``t``'s axis functions for its patterns ``p0:p1``, one row per grid position (``(width, p1 - p0)`` and
+        ``(height, p1 - p0)``, contiguous: the gathers of :meth:`rows` read whole rows)."""
+        key = (t, p0, p1)
+        tab = self._tables.get(key)
+        if tab is None:
+            _a, _b, _j, i0, _i1, _x0, _y0, fx, fy = self.terms[t]
+            tab = (np.ascontiguousarray(fx[p0 - i0:p1 - i0].T), np.ascontiguousarray(fy[p0 - i0:p1 - i0].T))
+            with self._lock:
+                self._tables.setdefault(key, tab)
+        return tab
+
+    def rows(self, cols, out, lo, hi, buf):
+        """The patterns ``lo:hi`` at the sky columns ``cols`` of the space, one row per column, written into ``out``
+        (``(cols.size, hi - lo)`` float64); ``buf`` (a :class:`_Slot`) holds the temporaries."""
+        n = int(cols.size)
+        if not self.whole:
+            out.fill(0.0)
+        for t, (a, b, j, i0, i1, x0, y0, _fx, _fy) in enumerate(self.terms):
+            p0, p1 = max(lo, i0), min(hi, i1)
+            if p1 <= p0:
+                continue
+            if self.whole:
+                c, dst = cols, out
+            else:
+                sel = np.flatnonzero((cols >= a) & (cols < b))
+                if sel.size == 0:
+                    continue
+                c = cols[sel]
+                dst = buf.get('pat_term', sel.size * (p1 - p0), np.float64).reshape(sel.size, p1 - p0)
+            ix, iy = self._positions(c, j)
+            ix -= x0
+            iy -= y0
+            tx, ty = self._table(t, p0, p1)
+            gy = buf.get('pat_y', dst.size, np.float64).reshape(dst.shape)
+            np.take(tx, ix, axis=0, out=dst, mode='clip')
+            np.take(ty, iy, axis=0, out=gy, mode='clip')
+            np.multiply(dst, gy, out=dst)
+            np.multiply(dst, self.col_norm[c][:, None], out=dst)
+            if not self.whole:
+                out[sel, p0 - lo:p1 - lo] = dst
+        return out
+
+    def image(self, nr, ip, cols, vals, U, buf, lo, hi, offsets=None):
+        """``U += P Z[lo:hi].T`` for a piece ``P`` of ``nr`` rows (``(ip, cols, vals)``, a csr over the space's columns:
+        sky columns only, or both kinds with ``offsets``, the patterns' offset part for the columns ``lo:hi``), a block of
+        :data:`_PATTERN_ROWS` rows at a time: the patterns made at each of the block's entries (one row per entry), then
+        the kernel the stored array is read with, each entry pointing at its own row: every row's sum is the same
+        products added in the same order."""
+        w = hi - lo
+        for r0 in range(0, nr, _PATTERN_ROWS):
+            r1 = min(nr, r0 + _PATTERN_ROWS)
+            e0, e1 = int(ip[r0]), int(ip[r1])
+            ne = e1 - e0
+            if ne == 0:
+                continue
+            Zl = buf.get('pat_rows', ne * w, np.float64).reshape(ne, w)
+            c = cols[e0:e1]
+            o = None if offsets is None else c >= self.n_sky_S
+            if o is not None and o.any():
+                s = np.flatnonzero(~o)
+                Zs = buf.get('pat_sky', s.size * w, np.float64).reshape(s.size, w)
+                Zl[s] = self.rows(c[s], Zs, lo, hi, buf)
+                Zl[o] = offsets[c[o] - self.n_sky_S]
+            else:
+                self.rows(c, Zl, lo, hi, buf)
+            lip = np.subtract(ip[r0:r1 + 1], e0, out=buf.get('pat_ip', r1 - r0 + 1, ip.dtype))
+            steps = buf.bufs.get('pat_steps')
+            if steps is None or steps.size < ne or steps.dtype != ip.dtype:
+                steps = buf.bufs['pat_steps'] = np.arange(max(ne, 2 * _PATTERN_ROWS), dtype=ip.dtype)
+            _sparsetools.csr_matvecs(r1 - r0, ne, w, lip, steps[:ne], vals[e0:e1], Zl, U[r0:r1])
+
+    def block(self, a, c, out=None):
+        """The patterns at the space's columns ``a:c`` (``(k, c - a)`` float64, written into ``out`` when given), the
+        sky part a few columns at a time."""
+        out = np.empty((self.k, c - a)) if out is None else out
+        s1 = min(c, self.n_sky_S)
+        if not self.whole:
+            out[:, :max(0, s1 - a)] = 0.0
+        for ta, tb, j, i0, i1, x0, y0, fx, fy in self.terms:
+            for p in range(max(a, ta), min(s1, tb), _PATTERN_ROWS):
+                q = min(s1, tb, p + _PATTERN_ROWS)
+                ix, iy = self._positions(slice(p, q), j)
+                gx = np.take(fx, ix - x0, axis=1)
+                np.multiply(gx, np.take(fy, iy - y0, axis=1), out=gx)
+                np.multiply(gx, self.col_norm[p:q], out=out[i0:i1, p - a:q - a])
+        if c > self.n_sky_S:
+            o0 = max(a, self.n_sky_S)
+            out[:, o0 - a:] = self.offsets[o0 - self.n_sky_S:c - self.n_sky_S].T
+        return out
+
+
 class Deflation:
     """The deflation of one solve (see the module docstring).
 
@@ -941,6 +1071,10 @@ class Deflation:
         pix = fs - term_of * npix
         iy, ix = np.divmod(pix, w)
         full_sky_cols = fs if getattr(settings, 'exclude', None) is not None else None
+        computed = _sky_untouched(projector, n_sky)       # the patterns made where they are read (_SkyPatterns)
+        # each sky column's full-layout column, for the patterns made where they are read (full_sky itself when the
+        # space holds every column)
+        sky_full = None if not computed else (full_sky if self.S is None else fs)
         del fs, pix
         col_norm = (np.ones(nS) if scale is None
                     else 1.0 / np.asarray(scale if self.S is None else np.asarray(scale)[self.S], dtype=np.float64))
@@ -948,12 +1082,13 @@ class Deflation:
         order, basis = int(settings.order), str(settings.basis)
         # (sel, x function, y function, box corner) per pattern; the values are made row by row into the pattern
         # array below, one pattern's temporaries at a time
-        labels, rows_of = [], []
+        labels, rows_of, term_table = [], [], []
         for name in terms:
             j = names.index(name)
             sel = np.flatnonzero(term_of == j)
             if sel.size == 0:
                 continue
+            i0 = len(labels)
             x0, x1, y0, y1 = int(ix[sel].min()), int(ix[sel].max()), int(iy[sel].min()), int(iy[sel].max())
             fx = axis_functions(basis, order, x1 - x0 + 1)
             fy = axis_functions(basis, order, y1 - y0 + 1)
@@ -970,6 +1105,9 @@ class Deflation:
                             continue
                         labels.append(f"{name}:P{a},{c}")
                         rows_of.append((sel, px[a], py[c], x0, y0))
+            # the term's columns are consecutive (the sky columns come in grid order per term)
+            term_table.append((int(sel[0]), int(sel[-1]) + 1, j, i0, len(labels), x0, y0,
+                               np.array([r[1] for r in rows_of[i0:]]), np.array([r[2] for r in rows_of[i0:]])))
         self._term_slices = []
         for j, name in enumerate(names):
             a_, b_ = int(np.searchsorted(term_of, j, 'left')), int(np.searchsorted(term_of, j, 'right'))
@@ -979,16 +1117,22 @@ class Deflation:
         if k == 0:
             raise ValueError(f"Deflate: the sky terms {list(terms)} have no covered pixel")
         self.labels = labels
-        Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
-        blocks = [(i, a) for i, row in enumerate(rows_of) for a in range(0, row[0].size, _PATTERN_COLUMNS)]
+        # The patterns: made where the passes read them (no array of them), or, when a column constraint holds sky
+        # columns (it changes their sky part, below), made once into an array.
+        patterns = _SkyPatterns(k, n_sky_S, term_table, sky_full, npix, w, col_norm) if computed else None
+        Z = None
+        if patterns is None:
+            Z = np.zeros((k, nS))                     # one pattern per row (contiguous)
+            blocks = [(i, a) for i, row in enumerate(rows_of) for a in range(0, row[0].size, _PATTERN_COLUMNS)]
 
-        def pattern(t):                           # a block of one pattern's columns per task, over the threads
-            i, a = blocks[t]
-            sel, gx, gy, x0, y0 = rows_of[i]
-            sb = sel[a:a + _PATTERN_COLUMNS]
-            Z[i, sb] = (gx[ix[sb] - x0] * gy[iy[sb] - y0]) * col_norm[sb]
-        self._wait(self._submit(pattern, len(blocks)))
-        del rows_of, term_of, iy, ix, blocks
+            def pattern(t):                           # a block of one pattern's columns per task, over the threads
+                i, a = blocks[t]
+                sel, gx, gy, x0, y0 = rows_of[i]
+                sb = sel[a:a + _PATTERN_COLUMNS]
+                Z[i, sb] = (gx[ix[sb] - x0] * gy[iy[sb] - y0]) * col_norm[sb]
+            self._wait(self._submit(pattern, len(blocks)))
+            del blocks
+        del rows_of, term_table, sky_full, term_of, iy, ix
         self._colmap = None
         if self.S is not None:
             cm = np.full(n, -1, dtype=_IDX)
@@ -1002,8 +1146,9 @@ class Deflation:
             cm = np.arange(n, dtype=np.int64) if self._colmap is None else self._colmap
             # The patterns live in the allowed subspace: a sky shape the constraints exclude (a bowl, say) leaves
             # the space (its projected pattern is ~0 and drops as dependent), the others lose their part along it.
-            full = np.zeros(n)
-            for i in range(k):
+            # (Constraints on the offset columns alone leave them as they are: the patterns' offset part is zero.)
+            full = np.zeros(n) if Z is not None else None
+            for i in range(k if Z is not None else 0):
                 full[...] = 0.0
                 if self.S is None:
                     full[:] = Z[i]
@@ -1050,7 +1195,7 @@ class Deflation:
             # the offsets' response R = B_off^T U and the offsets' normal matrix G = B_off^T B_off (a sparse product
             # per row chunk).
             t = time.perf_counter()
-            Zt = self._copied(Z.T)                                # (nS, k): the kernels' vector layout
+            Zt = None if Z is None else self._copied(Z.T)        # (nS, k): the kernels' vector layout
             del Z                                                 # the one layout until pass 2 has read it
             descs = _piece_index(storage)
             spans = _piece_spans(storage, self._cuts)
@@ -1082,7 +1227,10 @@ class Deflation:
                         if sky is not None:
                             # the sky entries alone: the table's offset rows are zero here, and a row's sky entries
                             # keep their order, so the sums are those of the whole piece
-                            _sparsetools.csr_matvecs(nr, nS, k, sky[0], sky[1], sky[2], Zt, U)
+                            if Zt is None:
+                                patterns.image(nr, sky[0], sky[1], sky[2], U, slot, 0, k)
+                            else:
+                                _sparsetools.csr_matvecs(nr, nS, k, sky[0], sky[1], sky[2], Zt, U)
                         if oc is not None:
                             offs.append((oc, oid))
                     sky_norm2 += np.einsum('ij,ij->j', U, U)
@@ -1170,7 +1318,10 @@ class Deflation:
             del res
             if signatures:
                 X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
-            Zt[n_sky_S:, :] = -X                                 # the paired patterns (pass 2 reads them)
+            if Zt is None:
+                patterns.offsets = np.ascontiguousarray(-X)       # the paired patterns' offset part (pass 2 reads it)
+            else:
+                Zt[n_sky_S:, :] = -X                             # the paired patterns (pass 2 reads them)
             del G, R, X
             t_pair = time.perf_counter() - t
 
@@ -1186,7 +1337,9 @@ class Deflation:
             bnorm2 = 0.0
             acc2 = []
             groups = [(0, (k + 1) // 2), ((k + 1) // 2, k)] if k >= 4 else [(0, k)]
-            Ztg = [self._copied(Zt[:, g0:g1]) for g0, g1 in groups]
+            # each group's patterns: the stored ones, or their offset part (the sky part made where it is read)
+            Ztg = ([self._copied(Zt[:, g0:g1]) for g0, g1 in groups] if Zt is not None else
+                   [np.ascontiguousarray(patterns.offsets[:, g0:g1]) for g0, g1 in groups])
             del Zt
 
             def images(r0, r1, prepared, buf, U):
@@ -1194,15 +1347,22 @@ class Deflation:
                 for lip, pos, d64, sky, off, _oid in prepared:
                     for (g0, g1), Zg, Ug in zip(groups, Ztg, U):
                         if pos is not None:
-                            _sparsetools.csr_matvecs(nr, nS, g1 - g0, lip, pos, d64, Zg, Ug)
+                            if patterns is None:
+                                _sparsetools.csr_matvecs(nr, nS, g1 - g0, lip, pos, d64, Zg, Ug)
+                            else:
+                                patterns.image(nr, lip, pos, d64, Ug, buf, g0, g1, offsets=Zg)
                             continue
                         # a piece of one kind, its entries as stored against its part of the patterns; the pieces come
                         # in column order and a row's sky entries before its offset entries, so each row's sum is that
                         # of the whole row
                         if sky is not None:
-                            _sparsetools.csr_matvecs(nr, n_sky_S, g1 - g0, sky[0], sky[1], sky[2], Zg[:n_sky_S], Ug)
+                            if patterns is None:
+                                _sparsetools.csr_matvecs(nr, n_sky_S, g1 - g0, sky[0], sky[1], sky[2], Zg[:n_sky_S], Ug)
+                            else:
+                                patterns.image(nr, sky[0], sky[1], sky[2], Ug, buf, g0, g1)
                         if off is not None:
-                            _sparsetools.csr_matvecs(nr, nS - n_sky_S, g1 - g0, off[0], off[1], off[2], Zg[n_sky_S:], Ug)
+                            _sparsetools.csr_matvecs(nr, nS - n_sky_S, g1 - g0, off[0], off[1], off[2],
+                                                     Zg if patterns is not None else Zg[n_sky_S:], Ug)
                 np.copyto(U[-1][:, 0], b[r0:r1], casting='unsafe')
 
             def chunk_value(r0, r1, U):
@@ -1217,13 +1377,15 @@ class Deflation:
             del acc2
             ATb = NZg.pop()[:, 0]
             NZ = np.empty((k, nS))                                # into the layout the grams read, a group at a time
-            Z = np.empty((k, nS))                                 # the patterns, one per row again
             for g, (g0, g1) in enumerate(groups):
                 self._copied(NZg[g].T, out=NZ[g0:g1])
                 NZg[g] = None
-            for g, (g0, g1) in enumerate(groups):
-                self._copied(Ztg[g].T, out=Z[g0:g1])
-                Ztg[g] = None
+            Z = None
+            if patterns is None:
+                Z = np.empty((k, nS))                             # the patterns, one per row again
+                for g, (g0, g1) in enumerate(groups):
+                    self._copied(Ztg[g].T, out=Z[g0:g1])
+                    Ztg[g] = None
             del NZg, Ztg
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
@@ -1232,8 +1394,11 @@ class Deflation:
             # data see (E's eigenvalue above DEPENDENT of the largest: exact gauges have ~0); the rest
             # stays orthogonal to the dropped. The obliqueness |N v| / v^T N v of each (about 1 for an
             # eigenvector of N, large for a slow direction mixed with fast ones) is kept as information.
-            E = self._gram(Z, NZ)
-            GZ = self._gram(Z, Z)
+            if Z is None:
+                E, GZ = self._pattern_grams(patterns, NZ)
+            else:
+                E = self._gram(Z, NZ)
+                GZ = self._gram(Z, Z)
             NN = self._gram(NZ, NZ)
         except BaseException:
             self.close()
@@ -1276,6 +1441,11 @@ class Deflation:
             if k_sel == k:
                 raise ValueError(f"Deflate(exclude=Degenerate(below={ex.below:g})): every direction of the pattern space is seen "
                                  f"below the level")
+            if Z is None:                                  # the re-basing combines the patterns: made into an array
+                Z = np.empty((k, nS))
+                list(_bounded_map(self._pool, lambda a_: patterns.block(a_, min(nS, a_ + (1 << 20)),
+                                                                        out=Z[:, a_:min(nS, a_ + (1 << 20))]),
+                                  range(0, nS, 1 << 20)))
             Ts = np.ascontiguousarray(T[:, sel])                                           # (k, k_sel)
             M_sky = 1.0 / col_norm[:n_sky_S]
             P = np.empty((n_sky_S, k_sel))
@@ -1393,10 +1563,6 @@ class Deflation:
         if self.kept == 0:
             self.close()
             raise ValueError("Deflate: no pattern direction is left (every one is a gauge of the system)")
-        # V = T^T Z and W = T^T N Z (one direction per row), in place: the setup's peak stays at the two arrays.
-        self.V = _transform_in_place(Z, T, pool=self._pool)
-        self.W = _transform_in_place(NZ, T, pool=self._pool)
-        del Z, NZ
         # Kept in the products' precision when that is float32 (half the traffic of every projection; the
         # arithmetic stays float64 and the rounding is that of the products: a converged float32 solve stays as
         # put as with float64 storage, measured), in float64 otherwise (float32 storage then lets a converged
@@ -1408,8 +1574,18 @@ class Deflation:
                              "products the stored vectors would be coarser than the products and a converged solve "
                              "would drift")
         self.store = np.dtype(np.float64) if want == 'float64' else (pdt if pdt == np.float32 else np.dtype(np.float64))
+        # V = T^T Z and W = T^T N Z (one direction per row): V from the patterns made a block at a time into its own
+        # array, in the stored precision, or in place in theirs; W in place.
+        if Z is None:
+            self.V = self._pattern_transform(patterns, T, self.store)
+        else:
+            self.V = _transform_in_place(Z, T, pool=self._pool)
+        self.W = _transform_in_place(NZ, T, pool=self._pool)
+        del Z, NZ, patterns
         if self.store == np.float32:
-            self.V, self.W = self._copied(self.V, np.float32), self._copied(self.W, np.float32)
+            if self.V.dtype != np.float32:
+                self.V = self._copied(self.V, np.float32)
+            self.W = self._copied(self.W, np.float32)
         # The space's least-squares amplitudes.
         self.c_star = (self.V @ ATb) / self.lam
         del ATb
@@ -1845,6 +2021,36 @@ class Deflation:
         for q in parts[1:]:
             out += q
         return 0.5 * (out + out.T) if A is B else out
+
+    def _pattern_grams(self, patterns, NZ):
+        """``(Z NZ^T, Z Z^T)`` as :meth:`_gram` makes each (its column blocks, its products, its sums), the patterns
+        ``Z`` made a block at a time by ``patterns`` (a :class:`_SkyPatterns`; a few blocks in flight)."""
+        n = NZ.shape[1]
+        nb = 1 if self._pool is None else max(1, min(self._pool._max_workers, n // _MIN_BLOCK))
+        cuts = np.linspace(0, n, nb + 1, dtype=np.int64)
+
+        def part(j):
+            a, c = int(cuts[j]), int(cuts[j + 1])
+            Zb = patterns.block(a, c)
+            return Zb @ NZ[:, a:c].T, Zb @ Zb.T
+
+        parts = _bounded_map(self._pool, part, range(nb))
+        E, GZ = parts[0][0].copy(), parts[0][1].copy()
+        for e, g in parts[1:]:
+            E += e
+            GZ += g
+        return E, 0.5 * (GZ + GZ.T)
+
+    def _pattern_transform(self, patterns, T, dtype, cols=1 << 20):
+        """``T^T Z`` (``(T.shape[1], nS)`` in ``dtype``) as :func:`_transform_in_place` makes it (its column blocks and
+        products; cast to ``dtype`` as :meth:`_copied` casts), the patterns ``Z`` made a block at a time by ``patterns``."""
+        out = np.empty((T.shape[1], self.nS), dtype=dtype)
+
+        def block(a):
+            c = min(self.nS, a + cols)
+            out[:, a:c] = T.T @ patterns.block(a, c)
+        list(_bounded_map(self._pool, block, range(0, self.nS, cols)))
+        return out
 
     def _copied(self, M, dtype=None, block=1 << 20, out=None):
         """A C-ordered copy of the 2-D ``M`` (in ``dtype``; default ``M``'s), a block of its long side per thread: the

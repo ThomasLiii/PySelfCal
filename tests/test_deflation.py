@@ -651,3 +651,74 @@ def test_the_offset_terms_left_out_of_the_deflation_keep_the_solution(tmp_path):
                                  name='deflate_bad')
     with pytest.raises(ValueError, match='nosuch'):
         field.calibrate(bad, jobs=sc.Job('All'))
+
+
+@pytest.mark.parametrize('case', ['one term', 'one of two terms', 'zero entries', 'degenerate'])
+def test_the_patterns_made_where_they_are_read_give_the_stored_bits(monkeypatch, case):
+    """The setup makes the patterns where its passes, its Gram matrices and V read them, not into an array of them (a
+    column constraint on sky columns, which changes them, keeps the array): the same values in the same sums, so the
+    space, its eigenvalues, V, W and the start are the same bits as from the array. Checked with one sky term (threaded
+    or not), with the first of two sky terms deflated (the other's columns zero), with an offset column whose entries
+    are all zero (left out of the space: a chunk's offset piece then holds both kinds of column), and through
+    Deflate(exclude=Degenerate(...)) (its re-basing combines the patterns: made into an array there) to the solution."""
+    import selfcal.core.deflation as deflation
+
+    def stored(*_a):
+        return False
+
+    if case == 'degenerate':
+        from test_degenerate_exclusion import _shared_pattern_system
+        from test_exclusions import _poly_basis
+        A, b, npix, grid, _bowl = _shared_pattern_system(carry=0.95)
+        n = A.shape[1]
+        active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+        excl = [(np.arange(n - 16, n)[None, :], _poly_basis(16, 1))]
+
+        def solve():
+            return apply_lsqr(A[:, active].tocsr(), b.copy(), ref_shape=grid, atol=0.0, btol=0.0, conlim=0.0, damp=0.0,
+                              solver='cgls', n_threads=4, iter_lim=50, active_mask=active, num_cols_full=n,
+                              return_record=True, scratch_dir=_SCRATCH, sky_names=('sky',),
+                              deflate=sc.Deflate(2, exclude=sc.Degenerate(below=0.15)), exclusions=excl)
+        x, rec = solve()
+        monkeypatch.setattr(deflation, '_sky_untouched', stored)
+        x_s, rec_s = solve()
+        assert x.tobytes() == x_s.tobytes()
+        assert rec.deflation == rec_s.deflation
+        return
+    A, b, npix, grid = CHUNK
+    names, settings = ('sky',), sc.Deflate(3, basis='polynomial')
+    if case == 'one of two terms':
+        A1 = A.tocoo()
+        coef = 0.2 + 1.6 * np.random.default_rng(3).random(A1.shape[0])
+        sky = A1.col < npix
+        rows = np.concatenate([A1.row, A1.row[sky]])
+        cols = np.concatenate([np.where(sky, A1.col, A1.col + npix), A1.col[sky] + npix])
+        vals = np.concatenate([A1.data, A1.data[sky] * coef[A1.row[sky]]])
+        A = sp.csr_matrix((vals, (rows, cols)), shape=(A1.shape[0], A1.shape[1] + npix))
+        names, settings = ('continuum', 'line'), sc.Deflate(3, terms=('continuum',))
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    Ac = A[:, active].tocsr()
+    cn = np.sqrt(np.asarray(Ac.multiply(Ac).sum(axis=0)).ravel())
+    B = (Ac @ sp.diags(1 / cn)).tocsr()
+    if case == 'zero entries':
+        B = B.copy()
+        last = B.indices == B.shape[1] - 1                    # the last offset column's entries stored as zeros
+        B.data[last] = 0.0
+    for threads in (1, 4):
+        out = []
+        for patch in (None, stored):
+            with monkeypatch.context() as m:
+                m.setattr(deflation, '_PATTERN_ROWS', 50)        # several row and column blocks of the patterns
+                m.setattr(deflation, '_MIN_BLOCK', 256)          # and several blocks of the Gram matrices, threaded
+                if patch is not None:
+                    m.setattr(deflation, '_sky_untouched', patch)
+                D = Deflation(B, b, scale=1 / cn, active_mask=active, ref_shape=grid, sky_names=names,
+                              settings=settings, threads=threads)
+            out.append({key: np.asarray(getattr(D, key)).tobytes()
+                        for key in ('V', 'W', 'lam', 'directions', 'eigenvalues', 'c_star', 'x_c', 'nullness',
+                                    'pairing_residual')})
+            out[-1]['S'] = None if D.S is None else D.S.tobytes()
+            D.close()
+        assert out[0] == out[1], [key for key in out[0] if out[0][key] != out[1][key]]
+        if case == 'zero entries':
+            assert out[0]['S'] is not None                    # the zero column is out of the space

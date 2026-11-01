@@ -391,6 +391,13 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   buffers' memory). The rows are the same, in another order, so the sums over rows round differently. The regrouping
   runs once after the build, a field at a time (`selfcal.core.observations.by_sky_range`), with one field's array
   (4 bytes per observation) and each row's frame of extra memory.
+- **The deflation's setup makes its smooth patterns where it reads them** (`sc.Fit(deflate=sc.Deflate(...))`): in its
+  two passes over the matrix (a block of rows at a time, the patterns at each entry's column), its Gram matrices and
+  the directions `V` (a block of columns at a time), instead of holding them as an array of `8 × patterns` bytes per
+  covered unknown (17 GB for 30 patterns on 71 M columns). Each value is the same product of the two axis functions
+  and the column's norm, taken in the same order, so the setup's results are the same bits. A constraint on a sky
+  term (`sc.Sky(exclude=...)`) changes the patterns, and the setup then keeps them as an array, as does
+  `sc.Deflate(exclude=sc.Degenerate(...))` from its re-basing on.
 - **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
   (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
   its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages
