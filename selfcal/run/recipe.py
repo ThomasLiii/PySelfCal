@@ -692,6 +692,12 @@ class Numerics(Config):
     in what they converge to; a solve on the recurrence ends by its stop rule or the solver's tests,
     not by a fixed count far past convergence, where the recurrence's float64 gradient keeps moving the
     iterate along the system's near-null directions.
+    ``row_order``: the order of the observation table's rows (``sc.Compute(matrix='compact')``): ``'frame'``, each
+    frame's rows together, as the stored matrix holds them, or ``'sky'``, the rows grouped into blocks by ranges of
+    reference pixels, each frame's rows of a range together. Grouped by sky range, the threads of the transpose
+    product each own whole blocks, and so the sky columns of their pixels, which they sum in place: only the offset
+    columns need a private buffer per thread (``threads x offset columns`` in place of ``threads x columns``). The same
+    rows in another order, so the sums round differently.
     The defaults are production's, so any machine reproduces production bit for bit.
     """
     threads: int = 48
@@ -701,6 +707,7 @@ class Numerics(Config):
     coadd_batch: int = 50
     rmatvec_threads: int | None = None
     gradient: Literal['recomputed', 'recurrence'] = added('recomputed', since='2026-10')
+    row_order: Literal['frame', 'sky'] = added('frame', since='2026-11')
 
     def _validate(self):
         for k in ('threads', 'batch', 'mosaic_batch', 'coadd_batch'):
@@ -710,6 +717,8 @@ class Numerics(Config):
             raise ConfigError(f"Numerics(rmatvec_threads={self.rmatvec_threads}): at least 1 (None: automatic)")
         if self.gradient not in ('recomputed', 'recurrence'):
             raise ConfigError(f"Numerics(gradient={self.gradient!r}): 'recomputed' or 'recurrence'")
+        if self.row_order not in ('frame', 'sky'):
+            raise ConfigError(f"Numerics(row_order={self.row_order!r}): 'frame' or 'sky'")
 
 
 @dataclass(frozen=True)

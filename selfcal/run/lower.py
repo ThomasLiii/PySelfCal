@@ -70,6 +70,11 @@ def setup_options(recipe, compute, instrument) -> dict:
         options['functions'] = compute.functions
     if fit.window_edge != 'partial':
         options['window_edge'] = fit.window_edge
+    if recipe.numerics.row_order != 'frame':
+        if compute.matrix != 'compact':
+            raise ConfigError(f"Numerics(row_order={recipe.numerics.row_order!r}) orders the observation table's rows: "
+                              "it needs sc.Compute(matrix='compact')")
+        options['row_order'] = recipe.numerics.row_order
     return options
 
 

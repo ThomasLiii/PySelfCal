@@ -397,16 +397,19 @@ def _compaction(pixel_counts, drop_cols, constraint_blocks, total_cols, alloc):
 
 
 def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, num_sky_blocks, sky_rhs_moments,
-                 constraint_blocks, min_observations, offset_min_observations, expansion, functions='computed'):
+                 constraint_blocks, min_observations, offset_min_observations, expansion, functions='computed',
+                 row_order='frame'):
     """``setup_lsqr(matrix='compact')``: the system as an :class:`~selfcal.core.observations.ObservationTable`.
 
     The workers build each batch's rows as always and ship their observations with the batch's share of the
     per-column moments (:func:`selfcal.core.assembly._table_batch`); the moments are added in batch order, as the
     stored matrix's collation adds them, so the pixel state is the same bytes. The coverage floor, the constraint
     rows (a small stored matrix after the data rows), the column compaction and the right-hand side then follow the
-    stored path's rules. Returns the :class:`SetupResult`, or ``(None, None)`` when no subframe has data.
+    stored path's rules. ``row_order='sky'``: the data rows and their right-hand side are then regrouped by ranges of
+    reference pixels (:func:`selfcal.core.observations.by_sky_range`) before the coverage floor. Returns the
+    :class:`SetupResult`, or ``(None, None)`` when no subframe has data.
     """
-    from .observations import ObservationTable, _Block, _Expansion
+    from .observations import ObservationTable, _Block, _Expansion, by_sky_range
     total_cols = layout.total_cols
     num_sky_eff = num_sky_blocks * num_sky
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
@@ -467,8 +470,11 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     active_mask, col_map, n_active = _compaction(pixel_counts, drop_cols, cblocks, total_cols,
                                                  lambda name, n, dtype: np.empty(n, dtype=dtype))
     model = _Expansion(**expansion, col_map=col_map)
-    for blk in blocks:
-        blk.base = model.column_bases(blk.frames)
+    if row_order == 'sky':                        # the column base of every frame of the solve, the rows' own frames
+        gbase = model.column_bases(np.arange(1 + max(int(blk.frames.max()) for blk in blocks)))
+    else:
+        for blk in blocks:
+            blk.base = model.column_bases(blk.frames)
 
     # The constraint rows: a stored matrix after the data rows, in solver columns, each row's entries sorted by
     # column and duplicates summed (scipy's conversion from triplets: the kernels of the stored path's placement).
@@ -498,7 +504,13 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
               else np.concatenate(pieces))
     del b_pieces, tail_b, pieces
 
-    table = ObservationTable(blocks, tail, n_active, model, threads=max_workers, functions=functions)
+    if row_order == 'sky':
+        entries = sum(blk.nnz for blk in blocks)
+        blocks, b_data = by_sky_range(blocks, full_b[:n_obs], num_sky, gbase, threads=max_workers)
+        full_b[:n_obs] = b_data
+        del b_data, gbase
+    table = ObservationTable(blocks, tail, n_active, model, threads=max_workers, functions=functions,
+                             row_order=row_order, entries=entries if row_order == 'sky' else None)
     if drop_cols is not None:
         rows = table.floor(drop_cols)
         full_b[rows] = 0
@@ -549,7 +561,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                reduce: Callable | None = None,
                min_observations: int | None = None,
                offset_min_observations: list | None = None,
-               matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed') -> SetupResult:
+               matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed',
+               row_order: str = 'frame') -> SetupResult:
     """Prepares the LSQR matrix A and vector b for all subframes in parallel.
 
     ``matrix``: how the matrix is kept. ``'stored'`` (default): its entries, as a csr matrix or the block storages
@@ -559,8 +572,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     data rows only (no per-frame adjacency rows) and the model's functions may not read the stored values, flag
     bits, layers or frame functions. ``functions``, with the table: ``'computed'`` (its functions evaluated at every
     pass) or ``'stored'`` (their values evaluated once and kept with the table, 4 bytes per value, a basis that is
-    mostly zero packed: faster passes for a larger table, the same values). ``moments_only`` and ``reduce`` build
-    no matrix and ignore both.
+    mostly zero packed: faster passes for a larger table, the same values). ``row_order``, with the table:
+    ``'frame'`` (each frame's rows together, the stored matrix's order) or ``'sky'`` (the rows regrouped by ranges of
+    reference pixels, in their order within each: :func:`selfcal.core.observations.by_sky_range`; the same rows in
+    another order, so the sums over rows round differently). ``moments_only`` and ``reduce`` build no matrix and
+    ignore these.
 
     ``fixed_sky``: the sky is known and already subtracted from the data (by a
     frame hook): no sky entries and no sky damping rows are emitted, so the
@@ -782,6 +798,11 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     if functions == 'stored' and matrix != 'compact':
         raise ValueError("functions='stored' keeps the model's values with the observation table: it needs "
                          "matrix='compact'")
+    if row_order not in ('frame', 'sky'):
+        raise ValueError(f"row_order={row_order!r}: 'frame' (each frame's rows together) or 'sky' (the rows grouped by "
+                         "ranges of reference pixels)")
+    if row_order == 'sky' and matrix != 'compact':
+        raise ValueError("row_order='sky' orders the observation table's rows: it needs matrix='compact'")
     compact = matrix == 'compact' and not moments_only and reduce is None
     if compact:
         from .observations import require_numba
@@ -1189,7 +1210,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         return _setup_table(batched_tasks, max_workers=max_workers, shm_objects=shm_objects, layout=layout,
                             num_sky=num_sky, num_sky_blocks=num_sky_blocks, sky_rhs_moments=sky_rhs_moments,
                             constraint_blocks=_constraint_blocks, min_observations=min_observations,
-                            offset_min_observations=offset_min_observations, expansion=expansion, functions=functions)
+                            offset_min_observations=offset_min_observations, expansion=expansion, functions=functions,
+                            row_order=row_order)
 
     # Per-batch streaming accumulators for pixel_counts and pixel_fisher.
     # Allocated up front and accumulated batch-by-batch as worker results

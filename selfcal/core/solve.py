@@ -351,10 +351,11 @@ def rmatvec_threads(n_threads, n_cols, itemsize=4):
     return max(1, min(int(n_threads), int(budget // per_thread)))
 
 
-def _row_spans(row_bounds, m, n_pieces):
-    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges and intersect each
+def _row_spans(row_bounds, m, n_pieces, cuts=None):
+    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges (at ``cuts`` when given) and intersect each
     with the storage blocks: ``[(r0, r1, [(block, lo, hi), ...]), ...]``."""
-    cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
+    if cuts is None:
+        cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
     pieces = []
     for r0, r1 in zip(cuts[:-1], cuts[1:]):
         r0, r1 = int(r0), int(r1)
@@ -835,6 +836,96 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False, promote=False
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
+def _make_owned_rmatvec(table, n_threads):
+    """The transpose products of an :class:`~selfcal.core.observations.ObservationTable` grouped by sky range
+    (``table.row_order == 'sky'``): the data rows cut into ``n_threads`` pieces at blocks' first rows
+    (:meth:`~selfcal.core.observations.ObservationTable.row_cuts`), so each piece is the only one with rows of its
+    pixels and adds their sky columns straight into the output, each column's products in row order from zero; the
+    offset columns (from :meth:`~selfcal.core.observations.ObservationTable.first_offset_column` on) go to private
+    buffers, one per piece, reduced in piece order; the constraint rows, when present, add after, sequentially.
+    Deterministic, and the sky columns' sums do not depend on the thread count. Returns ``(rmatvec, executor,
+    pieces)`` as :func:`_make_rowsplit_rmatvec` does, ``rmatvec`` carrying ``normal`` (``A^T (A x)`` in float64 with
+    ``A x`` left in ``out``) and ``promoted`` (``A^T y`` in float64)."""
+    m_data, n = table.n_data_rows, int(table.shape[1])
+    m = int(table.shape[0])
+    dtype = table.dtype
+    split = table.first_offset_column()
+    n_off = n - split
+    pieces = _row_spans(table.row_bounds, m_data, n_threads, cuts=table.row_cuts(n_threads))
+    np_ = max(1, len(pieces))
+    ex = ThreadPoolExecutor(max_workers=np_)
+    zero_cuts = np.linspace(0, split, np_ + 1, dtype=np.int64)
+    red_cuts = np.linspace(split, n, np_ + 1, dtype=np.int64)
+    tail_bi = table.nblocks if table.tail is not None else None
+    logger.info(f"  rmatvec: rows by sky range over {len(pieces)} threads, the {split} sky columns summed in place "
+                f"(+{len(pieces) * n_off * np.dtype(dtype).itemsize / 2**30:.2f} GB of private buffers for the {n_off} "
+                "offset columns; deterministic for this thread count, the sky columns for any).")
+    bufs = {}
+
+    def _bufs(dt):
+        b = bufs.get(np.dtype(dt))
+        if b is None:
+            b = bufs[np.dtype(dt)] = [np.zeros(n_off, dtype=dt) for _ in pieces]
+        return b
+
+    def _run(out, dt, rows):
+        """``rows(bi, lo, hi, obuf)`` over every piece's spans, ``out`` (length n, ``dt``) set from zero."""
+        ob = _bufs(dt)
+
+        def _zero(k):
+            out[int(zero_cuts[k]):int(zero_cuts[k + 1])] = 0
+
+        list(ex.map(_zero, range(np_)))
+
+        def _work(i):
+            buf = ob[i]
+            buf[...] = 0
+            for bi, lo, hi in pieces[i][2]:
+                rows(bi, lo, hi, buf)
+
+        list(ex.map(_work, range(len(pieces))))
+
+        def _reduce(k):
+            c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+            seg = out[c0:c1]
+            if ob:
+                seg[...] = ob[0][c0 - split:c1 - split]
+                for b in ob[1:]:                   # fixed order => same fold everywhere
+                    seg += b[c0 - split:c1 - split]
+            else:
+                seg[...] = 0
+
+        list(ex.map(_reduce, range(np_)))
+        return out
+
+    def _rmatvec(y):
+        y = np.ascontiguousarray(y, dtype=dtype)
+        out = np.empty(n, dtype=dtype)
+        _run(out, dtype, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], out, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], out)
+        return out
+
+    def _normal(x, out_rows):
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.normal_rows(bi, lo, hi, x, out_rows[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.normal_rows(tail_bi, m_data, m, x, out_rows[m_data:m], t)
+        return t
+
+    def _promoted(y):
+        y = np.ascontiguousarray(y, dtype=np.float64)
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], t)
+        return t
+
+    _rmatvec.normal = _normal
+    _rmatvec.promoted = _promoted
+    return _rmatvec, ex, len(pieces)
+
+
 def _make_table_operator(table, n_threads, promote=False):
     """The SpMV operator of an :class:`~selfcal.core.observations.ObservationTable`.
 
@@ -843,7 +934,8 @@ def _make_table_operator(table, n_threads, promote=False):
     thread or with ``promote`` (the block storages' regimes). ``A^T @ y``: the row-split scatter of
     :func:`_make_rowsplit_rmatvec` with the table's rows as the scatter, so the same pieces, private buffers and
     reduction order as the stored storages give the same bytes for the same thread count; a vector wider than the
-    entries goes through the sequential scatter in the promoted dtype, as there.
+    entries goes through the sequential scatter in the promoted dtype, as there. A table grouped by sky range has
+    the transpose products of :func:`_make_owned_rmatvec` (private buffers for the offset columns only).
     """
     from .observations import warm_up
     warm_up()
@@ -871,9 +963,13 @@ def _make_table_operator(table, n_threads, promote=False):
         list(executor.map(_work, pieces))
         return out
 
-    _rmv_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
+    by_sky = table.row_order == 'sky' and table.first_offset_column() > 0      # sky columns to own
+    _rmv_threads = rmatvec_threads(n_threads, n - table.first_offset_column() if by_sky else n,
+                                   np.dtype(dtype).itemsize)
     _rowsplit, _rex = (None, None)
-    if _rmv_threads > 1:
+    if by_sky and _rmv_threads > 1:
+        _rowsplit, _rex, _ = _make_owned_rmatvec(table, _rmv_threads)
+    elif _rmv_threads > 1:
         _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows,
                                                    fused=table.normal_rows)
 
