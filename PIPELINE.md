@@ -175,7 +175,9 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   removed when the solve ends; a killed run's parked file is swept by the next solve that parks
   in the same directory. When it cannot be parked (a full or unwritable disk, or no directory
   given), a warning says why, the solve goes on and `true_residual` and `bnorm` are NaN (LSMR
-  keeps `b` and needs no copy). The record goes to the cal file's `solve` group
+  keeps `b` and needs no copy). A deflated CGLS solve parks a second vector there, the deflated
+  right-hand side `b - B x_c` its residual refresh reads every 50 iterations (without it, each
+  refresh makes it again with one pass over the matrix). The record goes to the cal file's `solve` group
   ([its attributes](#the-solve-group)), to the action's record (`solves`) and, with the solver's
   state at every iteration, to `<field>/records/<cal stem>_history.npz` (`itn`, `r1norm`,
   `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm`, `test1` = |r| / |b|, `test2` = |A^T r| / (|A|
