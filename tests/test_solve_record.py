@@ -31,7 +31,7 @@ from selfcal.core.lsmr import lsmr  # noqa: E402
 from selfcal.core.lsqr_inplace import lsqr_inplace  # noqa: E402
 from selfcal.core.solve import apply_lsqr  # noqa: E402
 from selfcal.core.solve_record import HISTORY_COLUMNS, STOP_REASONS, SolveHistory  # noqa: E402
-from selfcal.core.spill import ParkedVector  # noqa: E402
+from selfcal.core.spill import ParkedVector, release_free_memory  # noqa: E402
 from selfcal.io.calfile import CalFile  # noqa: E402
 from selfcal.run.lower import solver_options  # noqa: E402
 from tests.synthetic_exposures import DET, N_CHUNK_SIDE, REF_ARCSEC, write_exposures  # noqa: E402
@@ -205,6 +205,22 @@ def test_parked_vectors_of_dead_processes_are_swept(tmp_path):
     ParkedVector(np.zeros(4), tmp_path).discard()                           # parking sweeps the directory
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(n for k, n in names.items() if k != 'dead')
     assert sweep_parked(tmp_path) == []
+
+
+def test_freed_memory_goes_back_to_the_system():
+    """release_free_memory hands back the pages glibc keeps after the program frees arrays it took from its heaps
+    (below its mapping threshold), and touches no array."""
+    import ctypes
+    keep = np.arange(1000.0)
+    big = np.ones(30 << 17)                              # 31.5 MB: a mapped block, whose release raises glibc's
+    del big                                              # mapping threshold to its size
+    blocks = [np.ones(1 << 19) for _ in range(100)]      # 4 MB each: now from the heap
+    fence = np.ones(1 << 19)                             # kept, so the freed blocks are not the heap's top
+    del blocks
+    released = release_free_memory('in a test')
+    assert released >= 0 and np.array_equal(keep, np.arange(1000.0)) and fence.sum() == fence.size
+    if sys.platform.startswith('linux') and hasattr(ctypes.CDLL(None), 'malloc_trim'):
+        assert released > 300 * 2**20
 
 
 def test_the_vendored_givens_rotation_is_scipys():

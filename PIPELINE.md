@@ -389,6 +389,11 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   buffers' memory). The rows are the same, in another order, so the sums over rows round differently. The regrouping
   runs once after the build, a field at a time (`selfcal.core.observations.by_sky_range`), with one field's array
   (4 bytes per observation) and each row's frame of extra memory.
+- **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
+  (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
+  its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages
+  after they are freed, so what the build and the deflation setup free would otherwise stay resident through the
+  iterations, and the matrix through the coadd. No array is touched.
 - **Column compaction is always on**, template-mode maps included. The solve
   runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
   tile), which removes ~17 GB of n-space vectors and is what makes the

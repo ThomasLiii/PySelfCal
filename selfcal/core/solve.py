@@ -57,7 +57,7 @@ from .monitor import Watch
 from .observations import ObservationTable
 from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
-from .spill import ParkedVector
+from .spill import ParkedVector, release_free_memory
 
 logger = logging.getLogger(__name__)
 
@@ -1671,6 +1671,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 if watch is not None:
                     kw['watch'] = (lambda itn, y, istop, tests:
                                    watch(itn, _as_solution(y) if any(watch._due(itn).values()) else y, istop, tests))
+            release_free_memory('before the iterations')     # what the build and the deflation setup freed
             t_solve = time.perf_counter()
             try:
                 result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)

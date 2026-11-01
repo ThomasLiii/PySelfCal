@@ -37,7 +37,7 @@ from ..core.layout import SystemLayout
 from ..core.lsqr import apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky, setup_lsqr
 from ..core.shmbuf import worker_pool_context
 from ..core.solution import parse_x_sky
-from ..core.spill import restore_pixel_state, spill_pixel_state
+from ..core.spill import release_free_memory, restore_pixel_state, spill_pixel_state
 from ..geometry import wcs_helper
 from ..io.atomic import atomic_path
 from ..io.cal_writer import write_sky_groups, write_sky_maps
@@ -1209,6 +1209,7 @@ class Calibrator(Reprojector):
                     snapshots.close()
             self.num_cols_full = None
             del active_mask_local
+            release_free_memory('after the solve')            # the matrix, its deflation, the solver's vectors
 
     def load_calibration(self, cal_path: str | None = None) -> None:
         """Load a saved calibration (tri-generation schema).
