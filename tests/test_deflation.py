@@ -297,6 +297,26 @@ def test_the_schur_path_stays_put_past_convergence():
     assert _rel(x, x_plain) < 1e-7
 
 
+@pytest.mark.parametrize('float32', [False, True])
+def test_cgls_refresh_reads_the_parked_deflated_right_hand_side(monkeypatch, float32):
+    """A deflated CGLS solve parks the deflated right-hand side once (start() makes it in b's buffer) and its residual
+    refresh reads that copy instead of making it again with a pass over the matrix: the same bits as a solve whose
+    copy could not be parked (every 50 iterations a new one, from the parked original)."""
+    import selfcal.core.solve as solve_mod
+    made = []
+    shifted = Deflation.shifted
+    monkeypatch.setattr(Deflation, 'shifted', lambda self, *a, **k: made.append(1) or shifted(self, *a, **k))
+    opts = dict(deflate=sc.Deflate(3, basis='polynomial'), iter_lim=120, solver='cgls', float32=float32)
+    x, rec = _solve(CHUNK, **opts)
+    assert made == []                                    # the two refreshes read the parked copy
+    parked = solve_mod.ParkedVector
+    monkeypatch.setattr(solve_mod, 'ParkedVector', lambda vec, directory, label='', **k:
+                        parked(vec, None if 'deflated' in label else directory, label=label, **k))
+    x0, rec0 = _solve(CHUNK, **opts)
+    assert len(made) == 2                                # iterations 50 and 100 made it again
+    assert np.array_equal(x, x0) and np.isfinite(rec.true_residual) and rec.true_residual == rec0.true_residual
+
+
 # =================================================================== the method
 def test_the_deflated_solution_is_the_least_squares_solution_gauge_included():
     """Polynomial patterns contain both exact gauges of the chunk system (the sky's mean against the

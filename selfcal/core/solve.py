@@ -48,7 +48,7 @@ from scipy.sparse.linalg import lsqr, LinearOperator, aslinearoperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
-from .cgls import cgls
+from .cgls import REFRESH, cgls
 from .deflation import Deflation, storage_of
 from .projector import ColumnProjector
 from .lsmr import lsmr
@@ -1218,7 +1218,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         (:class:`~selfcal.core.spill.ParkedVector`; the run engine gives the
         run's scratch directory). None, or a directory it cannot be written
         to: no copy, and those residuals are recorded as NaN (a warning says
-        why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
+        why; the solve goes on). LSMR and the COO path keep ``b`` anyway. A
+        deflated CGLS solve also parks there the deflated right-hand side its
+        residual refresh reads (without it, each refresh makes it again).
     exclusions : list, optional
         Hard constraints on the unknowns, ``[(cols, P), ...]`` in the full column layout: the
         solution has no component along the directions ``P`` (``(n, r)``) over each row of
@@ -1626,6 +1628,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
             nonlocal defl, proj
+            shift_kept = None
             op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
             if deflate is not None:
                 # The deflation first: with Deflate(exclude=) its setup adds the degenerate directions' sky shapes to
@@ -1654,9 +1657,17 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 guard = solver != 'cgls' or solve_kw.get('gradient') == 'recurrence'
                 kw = dict(solve_kw, constrain=defl.constrain if guard else None)
                 if solver == 'cgls':
-                    # CGLS measures its residual against the deflated right-hand side b - B x_c (its refresh
-                    # recomputes it from the parked original: one float64 pass over the matrix every 50 iterations).
-                    kw['refresh'] = lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype)))
+                    # CGLS measures its residual against the deflated right-hand side b - B x_c, which start() has just
+                    # made in b's buffer: parked on disk when the solve can reach a refresh, each refresh reads it back
+                    # a piece at a time; without that copy a refresh makes it again from the parked original (a new
+                    # m-vector and one float64 pass over the matrix). The same bits either way.
+                    if (_rhs() is not None and _b_owned[0].dtype == np.dtype(op.dtype)
+                            and (iter_lim is None or iter_lim >= REFRESH)):
+                        shift_kept = ParkedVector(_b_owned[0], scratch_dir,
+                                                  label='the deflated right-hand side (for the refresh)',
+                                                  without='each refresh makes it again from the original')
+                    kw['refresh'] = ((lambda: shift_kept) if shift_kept is not None and shift_kept.available else
+                                     lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype))))
                 if watch is not None:
                     kw['watch'] = (lambda itn, y, istop, tests:
                                    watch(itn, _as_solution(y) if any(watch._due(itn).values()) else y, istop, tests))
@@ -1676,6 +1687,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             finally:
                 if defl is not None:
                     defl.close()
+                if shift_kept is not None:
+                    shift_kept.discard()
             return result, record
 
         _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')

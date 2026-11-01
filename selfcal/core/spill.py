@@ -177,7 +177,8 @@ class ParkedVector:
 
     Parking is best effort: when ``directory`` is None, or the file cannot be written (no space, an
     unwritable directory, ...), the reason is logged (a warning for a failure) and :attr:`available`
-    is False; the solve goes on, and the residuals that need the vector are recorded as NaN.
+    is False; the solve goes on, and the residuals that need the vector are recorded as NaN (``without``: what the
+    warning says the solve does without the copy, for another use of it).
     :meth:`discard` removes the file. The file is named after this machine and process,
     ``selfcal_parked_<host>_<pid>_<random>.npy``; parking sweeps the files a dead process of this
     machine left in ``directory`` (a killed run).
@@ -187,7 +188,7 @@ class ParkedVector:
 
     PREFIX = 'selfcal_parked_'
 
-    def __init__(self, vec, directory, label=''):
+    def __init__(self, vec, directory, label='', without='its true residual |b - A x| is recorded as NaN'):
         self._path = None
         self._dtype = self._shape = self._offset = None
         #: Why the vector is not available (None when it is).
@@ -214,8 +215,7 @@ class ParkedVector:
             self._path, path = path, None
         except Exception as e:                    # no space, unwritable, ...: the solve goes on
             self.reason = f'{type(e).__name__}: {e}'
-            logger.warning(f"Could not park {what} in {directory} ({self.reason}); the solve goes on, and its "
-                           f"true residual |b - A x| is recorded as NaN")
+            logger.warning(f"Could not park {what} in {directory} ({self.reason}); the solve goes on, and {without}")
         finally:
             if path is not None:                  # a partial file (an error, an interrupt)
                 with contextlib.suppress(OSError):
