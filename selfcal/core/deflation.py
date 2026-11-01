@@ -1175,7 +1175,7 @@ class Deflation:
             t_pair = time.perf_counter() - t
 
             # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside (the
-            # right-hand side rides along as one more column of U). Threaded in two stages per batch of row
+            # right-hand side rides along as a second image array, of one column). Threaded in two stages per batch of row
             # chunks: the images U = B Z chunk by chunk, then the transposed products over the columns, each
             # thread owning a range of them (:meth:`_transposed_products`; the sums per column in row order, as a
             # single sweep makes them).
@@ -1186,8 +1186,7 @@ class Deflation:
 
             def images(r0, r1, prepared, buf):
                 nr = r1 - r0
-                U = buf.take('U', (nr, k + 1))
-                Uk = buf.take('Uk', (nr, k))             # contiguous, as the kernels write (a column slice of U is not)
+                Uk = buf.take('Uk', (nr, k))
                 for lip, pos, d64, sky, off, _oid in prepared:
                     if pos is not None:
                         _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, Uk)
@@ -1199,20 +1198,18 @@ class Deflation:
                         _sparsetools.csr_matvecs(nr, n_sky_S, k, sky[0], sky[1], sky[2], Zt[:n_sky_S], Uk)
                     if off is not None:
                         _sparsetools.csr_matvecs(nr, nS - n_sky_S, k, off[0], off[1], off[2], Zt[n_sky_S:], Uk)
-                U[:, :k] = Uk
-                pn = np.einsum('ij,ij->j', U[:, :k], U[:, :k])
+                pn = np.einsum('ij,ij->j', Uk, Uk)
                 bc = np.asarray(b[r0:r1], dtype=np.float64)
-                U[:, k] = bc
-                return U, (pn, float(bc @ bc))
+                return (Uk, bc.reshape(nr, 1)), (pn, float(bc @ bc))
 
-            NZb = self._transposed_products(storage, images, k + 1, n_sky_S, acc2)
+            NZt, ATb = self._transposed_products(storage, images, (k, 1), n_sky_S, acc2)
             for pn, bn in acc2:
                 pair_norm2 += pn
                 bnorm2 += bn
             del acc2
-            ATb = np.ascontiguousarray(NZb[:, k])
-            NZ = self._copied(NZb[:, :k].T)                       # one copy, into the layout the grams read
-            del NZb
+            ATb = ATb[:, 0]
+            NZ = self._copied(NZt.T)                              # one copy, into the layout the grams read
+            del NZt
             Z = self._copied(Zt.T)                                # the patterns, one per row again
             del Zt
             t_pass2 = time.perf_counter() - t
@@ -1577,13 +1574,16 @@ class Deflation:
 
     def _transposed_products(self, storage, images, m, n_sky_S, extra=None):
         """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
-        chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). Per batch of chunks
+        chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). ``m`` a tuple of widths:
+        ``images`` gives one contiguous array per width and the result is one array per width (each column's sums are
+        those of a single array holding them all: the kernels sum every column on its own). Per batch of chunks
         the images are made in parallel, and each chunk's sky entries (``pos < n_sky_S``) are sorted by column (a
         stable sort); threads that own disjoint column ranges then sum each chunk's products per column (in row
         order, from zero) and add the sums into the output; the offset columns' (few) go through the transposed
         kernel into a private buffer per chunk, added in chunk order. Every column's total is the chunk partials
         added in chunk order, so the result does not depend on the thread count."""
-        out = np.zeros((self.nS, m))
+        widths = (m,) if np.isscalar(m) else tuple(m)
+        outs = [np.zeros((self.nS, w)) for w in widths]
         descs = _piece_index(storage)
         spans = _piece_spans(storage, self._cuts)
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
@@ -1594,6 +1594,7 @@ class Deflation:
             column's entries ``ip[i]:ip[i + 1]`` in row order; None: none), the chunk's ``U``, and the offset columns'
             ``(columns, sums)``, the chunk's own offset columns only (None: none)."""
             (r0, r1, prepared), (U, x) = mp
+            Us = (U,) if np.isscalar(m) else U
             nr = r1 - r0
             sky = []
             off = None
@@ -1610,11 +1611,12 @@ class Deflation:
                 mark[touched] = False
                 cmap = buf.get('offmap', n_off, _IDX)
                 cmap[touched] = np.arange(touched.size)
-                sums = buf.take('offsums', (touched.size, m))
+                sums = [buf.take(f'offsums{q}', (touched.size, w)) for q, w in enumerate(widths)]
                 for ti, (ip, ci, dd) in enumerate(ocs):
                     local = buf.get(f'{ti}offlocal', ci.size, _IDX)
                     np.take(cmap, ci, out=local)
-                    _sparsetools.csc_matvecs(touched.size, nr, m, ip, local, dd, U, sums)
+                    for q, w in enumerate(widths):
+                        _sparsetools.csc_matvecs(touched.size, nr, w, ip, local, dd, Us[q], sums[q])
                 off = (touched, sums)
             for _lip, _pos, _d64, sk, oc, _o in prepared:
                 if sk is not None:
@@ -1636,7 +1638,7 @@ class Deflation:
                 ip[:-1] = starts
                 ip[-1] = ne
                 grouped = (uniq, ip, rs, ds)
-            return grouped, U, off, x
+            return grouped, Us, off, x
 
         # One buffer slot per task of a batch (the chunk's entries and U: a gigabyte per chunk at full scale), kept
         # for the whole pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises
@@ -1676,7 +1678,8 @@ class Deflation:
                     for touched, sums in offs:
                         i0, i1 = (int(v) for v in np.searchsorted(touched, (lo, hi)))
                         if i1 > i0:
-                            out[n_sky_S + touched[i0:i1]] += sums[i0:i1]
+                            for out, sm in zip(outs, sums):
+                                out[n_sky_S + touched[i0:i1]] += sm[i0:i1]
                 self._wait(self._submit(add_off, -(-n_off // ostep)))
                 del offs
             # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
@@ -1702,9 +1705,9 @@ class Deflation:
                 if hi <= lo:
                     return
                 t0 = time.perf_counter()
-                view = out[lo:hi]
+                views = [out[lo:hi] for out in outs]
                 pb = add_slots[j]
-                for g, U, _off, _x in parts:
+                for g, Us, _off, _x in parts:
                     if g is None:
                         continue
                     uniq, ip, rs, ds = g
@@ -1713,10 +1716,11 @@ class Deflation:
                         a1 = min(i1, a0 + _ADD_COLUMNS)
                         e0, e1 = int(ip[a0]), int(ip[a1])
                         lip = np.subtract(ip[a0:a1 + 1], e0, out=pb.get('ip', a1 - a0 + 1, _IDX))
-                        part = pb.take('part', (a1 - a0, m))
-                        _sparsetools.csr_matvecs(a1 - a0, U.shape[0], m, lip, rs[e0:e1], ds[e0:e1], U, part)
-                        _sparsetools.csc_matvecs(hi - lo, a1 - a0, m, steps[:a1 - a0 + 1], uniq[a0:a1] - lo,
-                                                 units[:a1 - a0], part, view)
+                        for q, w in enumerate(widths):
+                            part = pb.take(f'part{q}', (a1 - a0, w))
+                            _sparsetools.csr_matvecs(a1 - a0, Us[q].shape[0], w, lip, rs[e0:e1], ds[e0:e1], Us[q], part)
+                            _sparsetools.csc_matvecs(hi - lo, a1 - a0, w, steps[:a1 - a0 + 1], uniq[a0:a1] - lo,
+                                                     units[:a1 - a0], part, views[q])
                 t_add[j] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
@@ -1725,7 +1729,7 @@ class Deflation:
             del parts
         self.sweep_timing = {'work_thread_s': float(sum(t_work)), 'work_wall_s': t_wall[0],
                              'add_thread_s': float(sum(t_add)), 'add_wall_s': t_wall[1], 'threads': nt}
-        return out
+        return outs[0] if np.isscalar(m) else tuple(outs)
 
     def _forward(self, storage, v, fn):
         """``fn(r0, r1, B[r0:r1] v)`` for every row chunk (``v``: (nS,) float64; the products in parallel over the
