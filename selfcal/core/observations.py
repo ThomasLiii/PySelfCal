@@ -45,9 +45,13 @@ __all__ = ['ObservationTable', 'require_numba']
 
 #: Rows of a data block per task of the streams and the coverage-floor pass.
 _TASK_ROWS = 1 << 19
-#: Rows per evaluation of the model's functions and per call of the loops: the functions' temporaries (a few arrays
-#: of this length per function) and the padded scratch of the expansion stay in cache at this size.
-_EVAL_ROWS = 1 << 16
+#: Rows per evaluation of the model's functions and per call of the loops when the functions are computed (the rows are
+#: the same at any length). Longer chunks share the model's per-call cost among more rows: on 2,000 frames of a
+#: 30-thread solve, 2^16 rows took 2.0 times as long as 2^18 (2^17 about as 2^18, 2^20 longer again).
+_EVAL_ROWS = 1 << 18
+#: Rows per call of the loops when the model's values are stored with the table: the values unpacked for a call (this
+#: thread's scratch) stay in cache at this size; on the same solve 2^18 rows took 1.3 to 1.4 times as long.
+_STORED_ROWS = 1 << 16
 
 
 def require_numba():
@@ -786,7 +790,7 @@ class ObservationTable:
 
         def store(blk):
             n = blk.n
-            chunks = [(a, b) + md.values(blk, a, b) for a, b in self._chunks(0, n)]
+            chunks = [(a, b) + md.values(blk, a, b) for a, b in self._chunks(0, n, _EVAL_ROWS)]
             sky_c = np.empty((len(sky_fn), n), dtype=np.float32)
             worst = np.zeros(K, dtype=np.int64)
             for a, b, sv, ph in chunks:
@@ -821,7 +825,7 @@ class ObservationTable:
                 list(ex.map(store, self.blocks))
 
     def _values(self, blk, lo, hi):
-        """The model's values over rows ``lo:hi`` of ``blk`` (at most ``_EVAL_ROWS`` rows), as :func:`_pass` takes
+        """The model's values over rows ``lo:hi`` of ``blk`` (at most :meth:`_chunks`' rows), as :func:`_pass` takes
         them: evaluated now, or unpacked from the block's stored values into this thread's scratch (whose rows
         beyond ``hi - lo`` the loops never read)."""
         v = blk.values
@@ -832,8 +836,8 @@ class ObservationTable:
             sc = self._vscratch.get(key)
         if sc is None:
             md = self.model
-            sc = (np.empty((md.J, _EVAL_ROWS), dtype=np.float32),
-                  np.empty((int(md.nboff[-1]), _EVAL_ROWS), dtype=np.float32))
+            sc = (np.empty((md.J, _STORED_ROWS), dtype=np.float32),
+                  np.empty((int(md.nboff[-1]), _STORED_ROWS), dtype=np.float32))
             with self._lock:
                 self._vscratch[key] = sc
         _unpack(lo, hi, blk.w, v.sky_src, v.sky_c, v.dense, v.dense_fn, v.pk_off, v.pk_base, v.pk_nb, v.pidx,
@@ -923,9 +927,10 @@ class ObservationTable:
             _pass(4, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
                   _NO_I32, _NO_F32, buf, int(split), obuf if split > 0 else _NO_F64)
 
-    @staticmethod
-    def _chunks(lo, hi, rows=_EVAL_ROWS):
-        """The row chunks ``(a, b)`` of ``lo:hi``, ``rows`` each."""
+    def _chunks(self, lo, hi, rows=None):
+        """The row chunks ``(a, b)`` of ``lo:hi``, ``rows`` each (by default the loops': ``_STORED_ROWS`` with the
+        model's values stored, else ``_EVAL_ROWS``)."""
+        rows = rows or (_STORED_ROWS if self.functions == 'stored' else _EVAL_ROWS)
         return [(a, min(hi, a + rows)) for a in range(lo, hi, rows)]
 
     def expand(self, bi, lo, hi, scaled=True, buf=None):
