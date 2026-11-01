@@ -1175,43 +1175,56 @@ class Deflation:
             t_pair = time.perf_counter() - t
 
             # Pass 2 (float64, one sweep): N Z = B^T (B Z) for all the patterns, and B^T b alongside (the
-            # right-hand side rides along as a second image array, of one column). Threaded in two stages per batch of row
+            # right-hand side rides along as an image array of one column). Threaded in two stages per batch of row
             # chunks: the images U = B Z chunk by chunk, then the transposed products over the columns, each
             # thread owning a range of them (:meth:`_transposed_products`; the sums per column in row order, as a
-            # single sweep makes them).
+            # single sweep makes them). The patterns go in two groups of columns, each its own array (a group's images
+            # are one kernel call, and the offset sums share the groups between a chunk's two threads); a group is at
+            # least two columns wide, as numpy's sums of a single column take another order.
             t = time.perf_counter()
             pair_norm2 = np.zeros(k)
             bnorm2 = 0.0
             acc2 = []
+            groups = [(0, (k + 1) // 2), ((k + 1) // 2, k)] if k >= 4 else [(0, k)]
+            Ztg = [self._copied(Zt[:, g0:g1]) for g0, g1 in groups]
+            del Zt
 
-            def images(r0, r1, prepared, buf):
+            def images(r0, r1, prepared, buf, U):
                 nr = r1 - r0
-                Uk = buf.take('Uk', (nr, k))
                 for lip, pos, d64, sky, off, _oid in prepared:
-                    if pos is not None:
-                        _sparsetools.csr_matvecs(nr, nS, k, lip, pos, d64, Zt, Uk)
-                        continue
-                    # a piece of one kind, its entries as stored against its part of the patterns; the pieces come
-                    # in column order and a row's sky entries before its offset entries, so each row's sum is that
-                    # of the whole row
-                    if sky is not None:
-                        _sparsetools.csr_matvecs(nr, n_sky_S, k, sky[0], sky[1], sky[2], Zt[:n_sky_S], Uk)
-                    if off is not None:
-                        _sparsetools.csr_matvecs(nr, nS - n_sky_S, k, off[0], off[1], off[2], Zt[n_sky_S:], Uk)
-                pn = np.einsum('ij,ij->j', Uk, Uk)
-                bc = np.asarray(b[r0:r1], dtype=np.float64)
-                return (Uk, bc.reshape(nr, 1)), (pn, float(bc @ bc))
+                    for (g0, g1), Zg, Ug in zip(groups, Ztg, U):
+                        if pos is not None:
+                            _sparsetools.csr_matvecs(nr, nS, g1 - g0, lip, pos, d64, Zg, Ug)
+                            continue
+                        # a piece of one kind, its entries as stored against its part of the patterns; the pieces come
+                        # in column order and a row's sky entries before its offset entries, so each row's sum is that
+                        # of the whole row
+                        if sky is not None:
+                            _sparsetools.csr_matvecs(nr, n_sky_S, g1 - g0, sky[0], sky[1], sky[2], Zg[:n_sky_S], Ug)
+                        if off is not None:
+                            _sparsetools.csr_matvecs(nr, nS - n_sky_S, g1 - g0, off[0], off[1], off[2], Zg[n_sky_S:], Ug)
+                np.copyto(U[-1][:, 0], b[r0:r1], casting='unsafe')
 
-            NZt, ATb = self._transposed_products(storage, images, (k, 1), n_sky_S, acc2)
+            def chunk_value(r0, r1, U):
+                bc = U[-1][:, 0]
+                return np.concatenate([np.einsum('ij,ij->j', u, u) for u in U[:-1]]), float(bc @ bc)
+
+            NZg = list(self._transposed_products(storage, images, tuple(g1 - g0 for g0, g1 in groups) + (1,), n_sky_S,
+                                                 acc2, value=chunk_value))
             for pn, bn in acc2:
                 pair_norm2 += pn
                 bnorm2 += bn
             del acc2
-            ATb = ATb[:, 0]
-            NZ = self._copied(NZt.T)                              # one copy, into the layout the grams read
-            del NZt
-            Z = self._copied(Zt.T)                                # the patterns, one per row again
-            del Zt
+            ATb = NZg.pop()[:, 0]
+            NZ = np.empty((k, nS))                                # into the layout the grams read, a group at a time
+            Z = np.empty((k, nS))                                 # the patterns, one per row again
+            for g, (g0, g1) in enumerate(groups):
+                self._copied(NZg[g].T, out=NZ[g0:g1])
+                NZg[g] = None
+            for g, (g0, g1) in enumerate(groups):
+                self._copied(Ztg[g].T, out=Z[g0:g1])
+                Ztg[g] = None
+            del NZg, Ztg
             t_pass2 = time.perf_counter() - t
             self.nullness = np.sqrt(pair_norm2 / np.maximum(sky_norm2, 1e-300))
 
@@ -1572,103 +1585,148 @@ class Deflation:
         shares = [descs[j::nt] for j in range(nt)]
         return list(self._pool.map(fn, shares))
 
-    def _transposed_products(self, storage, images, m, n_sky_S, extra=None):
-        """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, pieces)`` gives each
-        chunk's ``U`` (``(rows, m)``) and an extra value collected in ``extra`` (in row order). ``m`` a tuple of widths:
-        ``images`` gives one contiguous array per width and the result is one array per width (each column's sums are
-        those of a single array holding them all: the kernels sum every column on its own). Per batch of chunks
-        the images are made in parallel, and each chunk's sky entries (``pos < n_sky_S``) are sorted by column (a
-        stable sort); threads that own disjoint column ranges then sum each chunk's products per column (in row
-        order, from zero) and add the sums into the output; the offset columns' (few) go through the transposed
-        kernel into a private buffer per chunk, added in chunk order. Every column's total is the chunk partials
-        added in chunk order, so the result does not depend on the thread count."""
+    def _transposed_products(self, storage, images, m, n_sky_S, extra=None, value=None):
+        """``B^T U`` summed over the row chunks, ``(nS, m)`` float64, where ``images(r0, r1, prepared, buf, U)`` writes
+        rows ``r0:r1`` of a chunk's ``U`` into ``U`` (zeroed, ``(r1 - r0, m)``) and ``value(r0, r1, U)``, when given,
+        returns a value of each whole chunk, collected in ``extra`` in row order. ``m`` a tuple of widths: ``U`` is one
+        contiguous array per width and the result one array per width (each column's sums are those of a single array
+        holding them all: the kernels sum every column on its own).
+
+        Half as many chunks as threads are in flight, each worked on by two threads. First the two halves of a chunk's
+        rows are made, prepared and imaged, one half per thread (a row's images do not depend on the other rows). Then
+        the chunk's offset columns are summed by the transposed kernel into a buffer per chunk, the widths shared between
+        the two threads (each column's sum over the rows in order, half after half), while one of them sorts the chunk's
+        sky entries by column (a stable sort) and the other takes the chunk's value. Threads that own disjoint column
+        ranges then sum each chunk's products per sky column (in row order, from zero) and add the sums into the output,
+        and each offset column takes the chunks' sums in chunk order. Every column's total is the chunk partials added in
+        chunk order, so the result depends neither on the thread count nor on the split of a chunk between its threads."""
         widths = (m,) if np.isscalar(m) else tuple(m)
         outs = [np.zeros((self.nS, w)) for w in widths]
         descs = _piece_index(storage)
         spans = _piece_spans(storage, self._cuts)
         nt = 1 if self._pool is None else max(1, self._pool._max_workers)
+        nc = -(-nt // 2)                                  # chunks in flight, two threads each
         n_off = self.nS - n_sky_S
+        cum = np.cumsum(widths)                           # the widths' share between a chunk's two threads: about half each
+        cut = 1 + int(np.argmin(np.abs(cum - cum[-1] / 2.0)))
+        shares = (tuple(range(cut)), tuple(range(cut, len(widths))))
 
-        def partials(mp, buf):
-            """Per chunk: the sky entries grouped by column ``(uniq, ip, rows, values)`` (the columns ascending, each
-            column's entries ``ip[i]:ip[i + 1]`` in row order; None: none), the chunk's ``U``, and the offset columns'
-            ``(columns, sums)``, the chunk's own offset columns only (None: none)."""
-            (r0, r1, prepared), (U, x) = mp
-            Us = (U,) if np.isscalar(m) else U
-            nr = r1 - r0
-            sky = []
-            off = None
-            ocs = [oc for _lip, _pos, _d64, _sk, oc, _o in prepared if oc is not None]
-            if ocs:
-                # The chunk's offset columns numbered compactly, their sums in a buffer of that size: each the same
-                # sum, in the same order; a column the chunk does not touch gets no addition (its zero changed nothing).
-                mark = buf.bufs.get('offmark')
-                if mark is None or mark.size != n_off:
-                    mark = buf.bufs['offmark'] = np.zeros(n_off, dtype=bool)
-                for _ip, ci, _dd in ocs:
-                    mark[ci] = True
-                touched = np.flatnonzero(mark)
-                mark[touched] = False
-                cmap = buf.get('offmap', n_off, _IDX)
-                cmap[touched] = np.arange(touched.size)
-                sums = [buf.take(f'offsums{q}', (touched.size, w)) for q, w in enumerate(widths)]
-                for ti, (ip, ci, dd) in enumerate(ocs):
-                    local = buf.get(f'{ti}offlocal', ci.size, _IDX)
-                    np.take(cmap, ci, out=local)
-                    for q, w in enumerate(widths):
-                        _sparsetools.csc_matvecs(touched.size, nr, w, ip, local, dd, Us[q], sums[q])
-                off = (touched, sums)
-            for _lip, _pos, _d64, sk, oc, _o in prepared:
-                if sk is not None:
-                    sky.append((sk[1], sk[3], sk[2]))
-            grouped = None
-            if sky:
-                ps = np.concatenate([q[0] for q in sky]) if len(sky) > 1 else sky[0][0]
-                rs = np.concatenate([q[1] for q in sky]) if len(sky) > 1 else sky[0][1]
-                ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
-                order = np.argsort(ps, kind='stable')
-                ne = int(ps.size)
-                ps = np.take(ps, order, out=buf.get('sortcols', ne, _IDX))
-                rs = np.take(rs, order, out=buf.get('sortrows', ne, _IDX))
-                ds = np.take(ds, order, out=buf.get('sortvals', ne, np.float64))
-                del order
-                starts = np.flatnonzero(np.diff(ps, prepend=-1))
-                uniq = np.take(ps, starts, out=buf.get('uniq', starts.size, _IDX))
-                ip = buf.get('sortip', starts.size + 1, _IDX)
-                ip[:-1] = starts
-                ip[-1] = ne
-                grouped = (uniq, ip, rs, ds)
-            return grouped, Us, off, x
+        def run(fn, count):
+            return [fn(i) for i in range(count)] if self._pool is None else list(self._pool.map(fn, range(count)))
 
-        # One buffer slot per task of a batch (the chunk's entries and U: a gigabyte per chunk at full scale), kept
-        # for the whole pass: fresh allocations of that size page-fault on every chunk, which the kernel serialises
-        # across threads. One more per column range, for its column sums (_ADD_COLUMNS columns at a time).
-        slots = [_Slot() for _ in range(nt)]
+        # Buffer slots kept for the whole pass (fresh allocations of this size page-fault on every chunk, which the kernel
+        # serialises across threads): one per chunk half for its entries, one per chunk for its U, one per thread of the
+        # second stage for the offset sums and the sort, and one per column range for its column sums (_ADD_COLUMNS
+        # columns at a time).
+        half_slots = [_Slot() for _ in range(2 * nc)]
+        chunk_slots = [_Slot() for _ in range(nc)]
+        sum_slots = [_Slot() for _ in range(2 * nc)]
         add_slots = [_Slot() for _ in range(nt)]
-        t_work = [0.0] * nt
+        t_work = [0.0] * (2 * nc)
         t_add = [0.0] * nt
         t_wall = [0.0, 0.0]
 
-        def work(i_desc):
-            i, desc = i_desc
-            t0 = time.perf_counter()
-            buf = slots[i]
-            r0, r1, pieces = _piece(storage, desc, buf=buf, spans=spans)
-            prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti,
-                                       span=spans[ti], sky_end=self._sky_end)
-                        for ti, (lip, cols, data) in enumerate(pieces)]
-            del pieces
-            out_ = partials(((r0, r1, prepared), images(r0, r1, prepared, buf)), buf)
-            t_work[i] += time.perf_counter() - t0
-            return out_
+        for a in range(0, len(descs), nc):
+            batch = descs[a:a + nc]
+            halves = []                                   # (chunk, first row of the chunk, the half's rows)
+            chunk_U = []
+            for c, (bi, lr0, lr1) in enumerate(batch):
+                mid = (lr0 + lr1 + 1) // 2
+                halves += [(c, lr0, (bi, lr0, mid)), (c, lr0, (bi, mid, lr1))]
+                chunk_U.append([chunk_slots[c].get(f'U{q}', (lr1 - lr0) * w, np.float64).reshape(lr1 - lr0, w)
+                                for q, w in enumerate(widths)])
 
-        for a in range(0, len(descs), nt):
-            batch = list(enumerate(descs[a:a + nt]))
+            def first(i):
+                t0 = time.perf_counter()
+                c, lr0, (bi, lo, hi) = halves[i]
+                buf = half_slots[i]
+                r0, r1, pieces = _piece(storage, (bi, lo, hi), buf=buf, spans=spans)
+                prepared = [_prepare_piece(r1 - r0, lip, cols, data, self._colmap, n_sky_S, buf=buf, tag=ti,
+                                           span=spans[ti], sky_end=self._sky_end)
+                            for ti, (lip, cols, data) in enumerate(pieces)]
+                del pieces
+                U = [u[lo - lr0:hi - lr0] for u in chunk_U[c]]
+                for u in U:
+                    u.fill(0.0)
+                images(r0, r1, prepared, buf, U)
+                t_work[i] += time.perf_counter() - t0
+                return r0, r1, lo - lr0, prepared
+
+            def second(i):
+                """A chunk's offset sums for this thread's share of the widths ``{q: (columns, sums)}`` (empty: none);
+                for the chunk's second thread its sky entries grouped by column ``(uniq, ip, rows, values)`` (the
+                columns ascending, each column's entries ``ip[i]:ip[i + 1]`` in row order; None: none), for the first
+                the chunk's value."""
+                t0 = time.perf_counter()
+                c, s = divmod(i, 2)
+                hs = (made[2 * c], made[2 * c + 1])
+                U = chunk_U[c]
+                buf = sum_slots[i]
+                sums = {}
+                ocs = [(h, ti, oc) for h, (_r0, _r1, _l0, prepared) in enumerate(hs)
+                       for ti, (_lip, _pos, _d64, _sk, oc, _o) in enumerate(prepared) if oc is not None]
+                if ocs and shares[s]:
+                    # The chunk's offset columns numbered compactly, their sums in a buffer of that size: each the same
+                    # sum, in the same order; a column the chunk does not touch gets no addition (its zero changed nothing).
+                    mark = buf.bufs.get('offmark')
+                    if mark is None or mark.size != n_off:
+                        mark = buf.bufs['offmark'] = np.zeros(n_off, dtype=bool)
+                    for _h, _ti, (_ip, ci, _dd) in ocs:
+                        mark[ci] = True
+                    touched = np.flatnonzero(mark)
+                    mark[touched] = False
+                    cmap = buf.get('offmap', n_off, _IDX)
+                    cmap[touched] = np.arange(touched.size)
+                    for q in shares[s]:
+                        sums[q] = buf.take(f'offsums{q}', (touched.size, widths[q]))
+                    for h, ti, (ip, ci, dd) in ocs:        # the halves in row order: a column's rows in order
+                        r0, r1, l0, _p = hs[h]
+                        local = buf.get(f'{h}.{ti}offlocal', ci.size, _IDX)
+                        np.take(cmap, ci, out=local)
+                        for q in shares[s]:
+                            _sparsetools.csc_matvecs(touched.size, r1 - r0, widths[q], ip, local, dd,
+                                                     U[q][l0:l0 + r1 - r0], sums[q])
+                    sums = {q: (touched, sm) for q, sm in sums.items()}
+                out = sums, None, None
+                if s == 1:
+                    sky = [(sk[1], sk[3] + l0 if l0 else sk[3], sk[2]) for _r0, _r1, l0, prepared in hs
+                           for _lip, _pos, _d64, sk, _oc, _o in prepared if sk is not None]
+                    grouped = None
+                    if sky:
+                        ps = np.concatenate([q[0] for q in sky]) if len(sky) > 1 else sky[0][0]
+                        rs = np.concatenate([q[1] for q in sky]) if len(sky) > 1 else sky[0][1]
+                        ds = np.concatenate([q[2] for q in sky]) if len(sky) > 1 else sky[0][2]
+                        order = np.argsort(ps, kind='stable')
+                        ne = int(ps.size)
+                        ps = np.take(ps, order, out=buf.get('sortcols', ne, _IDX))
+                        rs = np.take(rs, order, out=buf.get('sortrows', ne, _IDX))
+                        ds = np.take(ds, order, out=buf.get('sortvals', ne, np.float64))
+                        del order
+                        starts = np.flatnonzero(np.diff(ps, prepend=-1))
+                        uniq = np.take(ps, starts, out=buf.get('uniq', starts.size, _IDX))
+                        ip = buf.get('sortip', starts.size + 1, _IDX)
+                        ip[:-1] = starts
+                        ip[-1] = ne
+                        grouped = (uniq, ip, rs, ds)
+                    out = sums, grouped, None
+                elif value is not None:
+                    out = sums, None, value(hs[0][0], hs[1][1], U)
+                t_work[i] += time.perf_counter() - t0
+                return out
+
             t0 = time.perf_counter()
-            parts = [work(d) for d in batch] if self._pool is None else list(self._pool.map(work, batch))
+            made = run(first, len(halves))
+            done = run(second, len(halves))
             t_wall[0] += time.perf_counter() - t0
-            if extra is not None:
-                extra.extend(pt[3] for pt in parts)
+            parts = []                                    # per chunk: (grouped, U, (columns, sums per width) or None)
+            for c in range(len(batch)):
+                s0, s1 = done[2 * c][0], done[2 * c + 1][0]
+                both = {**s0, **s1}
+                off = (next(iter(both.values()))[0], [both[q][1] for q in range(len(widths))]) if both else None
+                parts.append((done[2 * c + 1][1], chunk_U[c], off))
+            if extra is not None and value is not None:
+                extra.extend(done[2 * c][2] for c in range(len(batch)))
+            del made, done
             offs = [pt[2] for pt in parts if pt[2] is not None]
             if offs:
                 ostep = max(1, -(-n_off // nt))
@@ -1684,7 +1742,7 @@ class Deflation:
                 del offs
             # The column ranges the threads own, cut where the batch's columns are (a frame covers a compact
             # region of the sky, so equal ranges would leave most threads idle): the quantiles of a sample.
-            samp = np.concatenate([g[0][::997] for g, _U, _o, _x in parts if g is not None]
+            samp = np.concatenate([g[0][::997] for g, _U, _o in parts if g is not None]
                                   or [np.zeros(0, dtype=np.int64)])
             samp.sort()
             if samp.size >= nt:
@@ -1696,7 +1754,7 @@ class Deflation:
             # summed in row order from zero (a sparse product with one row per column of the chunk: the C kernel,
             # which runs without the GIL), then added at their own columns by the transposed kernel with one entry
             # per summed column (``out[c] += 1.0 * part``), so the work is the chunk's columns', not the range's.
-            n_max = min(max((g[0].size for g, _U, _o, _x in parts if g is not None), default=0), _ADD_COLUMNS)
+            n_max = min(max((g[0].size for g, _U, _o in parts if g is not None), default=0), _ADD_COLUMNS)
             steps = np.arange(n_max + 1, dtype=_IDX)
             units = np.ones(n_max)
 
@@ -1707,7 +1765,7 @@ class Deflation:
                 t0 = time.perf_counter()
                 views = [out[lo:hi] for out in outs]
                 pb = add_slots[j]
-                for g, Us, _off, _x in parts:
+                for g, Us, _off in parts:
                     if g is None:
                         continue
                     uniq, ip, rs, ds = g
@@ -1788,11 +1846,12 @@ class Deflation:
             out += q
         return 0.5 * (out + out.T) if A is B else out
 
-    def _copied(self, M, dtype=None, block=1 << 20):
+    def _copied(self, M, dtype=None, block=1 << 20, out=None):
         """A C-ordered copy of the 2-D ``M`` (in ``dtype``; default ``M``'s), a block of its long side per thread: the
         bytes of ``np.ascontiguousarray(M, dtype)``, made in parallel (the deflation's arrays have a column per solver
-        column: gigabytes)."""
-        out = np.empty(M.shape, dtype=M.dtype if dtype is None else dtype)
+        column: gigabytes); written into ``out`` (C-ordered, of ``M``'s shape) when given."""
+        if out is None:
+            out = np.empty(M.shape, dtype=M.dtype if dtype is None else dtype)
         axis = int(M.shape[1] > M.shape[0])
         n = M.shape[axis]
 
@@ -2004,9 +2063,9 @@ class Deflation:
         ``x``. Records the relative size of the change (:attr:`resolve_change`)."""
         xS = self._gather(x)
 
-        def residual(r0, r1, prepared, buf):
+        def residual(r0, r1, prepared, buf, U):
             nr = r1 - r0
-            r = buf.get('resid', nr, np.float64)
+            r = U[0][:, 0]
             np.copyto(r, b[r0:r1], casting='unsafe')
             acc = buf.get('resid_acc', nr, np.float64)
             acc.fill(0.0)
@@ -2021,7 +2080,6 @@ class Deflation:
                 if off is not None:
                     _sparsetools.csr_matvec(nr, self.nS - n_sky_S, off[0], off[1], off[2], xS[n_sky_S:], acc)
             r -= acc
-            return r.reshape(nr, 1), None
 
         g = self._transposed_products(self._storage, residual, 1, self.n_sky_S)[:, 0]
         dc = self._dot(self.V, g) / self.lam

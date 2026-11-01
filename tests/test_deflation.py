@@ -562,6 +562,42 @@ def test_the_column_sums_go_to_their_own_columns_bit_for_bit():
     assert out_new.tobytes() == out_old.tobytes()
 
 
+def test_a_chunk_split_between_two_threads_sums_the_same_bits():
+    """The setup's second pass works a chunk with two threads: the images of its two row halves, then its offset sums
+    with the pattern columns in two groups (each column's sum over the rows in order, half after half), and the norms
+    of each group's images. Each is the same bits as the chunk's whole arrays give (a group two columns wide or more:
+    numpy sums a single column in another order)."""
+    from scipy.sparse import _sparsetools
+    rng = np.random.default_rng(11)
+    nr, ncol, k, per = 5001, 900, 9, 6
+    k0, mid = (k + 1) // 2, nr // 2
+    lip = np.arange(0, nr * per + 1, per).astype(np.int32)
+    cols = rng.integers(0, ncol, nr * per).astype(np.int32)
+    d = rng.standard_normal(nr * per)
+    Zt = rng.standard_normal((ncol, k))
+    U = np.zeros((nr, k))
+    _sparsetools.csr_matvecs(nr, ncol, k, lip, cols, d, Zt, U)
+    S = np.zeros((ncol, k))
+    _sparsetools.csc_matvecs(ncol, nr, k, lip, cols, d, U, S)
+    groups = [(0, k0), (k0, k)]
+    Ug = [np.zeros((nr, g1 - g0)) for g0, g1 in groups]
+    Sg = [np.zeros((ncol, g1 - g0)) for g0, g1 in groups]
+    for lo, hi in ((0, mid), (mid, nr)):
+        lp = (lip[lo:hi + 1] - lip[lo]).astype(np.int32)
+        cc, dd = cols[lip[lo]:lip[hi]], d[lip[lo]:lip[hi]]
+        for (g0, g1), u in zip(groups, Ug):
+            _sparsetools.csr_matvecs(hi - lo, ncol, g1 - g0, lp, cc, dd, np.ascontiguousarray(Zt[:, g0:g1]), u[lo:hi])
+    for lo, hi in ((0, mid), (mid, nr)):
+        lp = (lip[lo:hi + 1] - lip[lo]).astype(np.int32)
+        cc, dd = cols[lip[lo]:lip[hi]], d[lip[lo]:lip[hi]]
+        for (g0, g1), u, s_ in zip(groups, Ug, Sg):
+            _sparsetools.csc_matvecs(ncol, hi - lo, g1 - g0, lp, cc, dd, u[lo:hi], s_)
+    assert np.concatenate(Ug, axis=1).tobytes() == U.tobytes()
+    assert np.concatenate(Sg, axis=1).tobytes() == S.tobytes()
+    norms = np.concatenate([np.einsum('ij,ij->j', u, u) for u in Ug])
+    assert norms.tobytes() == np.einsum('ij,ij->j', U, U).tobytes()
+
+
 def test_the_offset_terms_left_out_of_the_deflation_keep_the_solution(tmp_path):
     """Deflate(offsets=('gradient', 'scalar')): the response of the term every frame shares ('pattern', not listed) held
     at zero (no solve of its couplings: the per-frame block solve alone), the term still in the deflation's space. The
