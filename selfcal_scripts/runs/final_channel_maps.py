@@ -9,12 +9,17 @@ follow the channel's subchannels.
 
 A map that exists and was made by this recipe is reused, so a stopped run continues where it stopped. With --frames
 the frames are read from that directory (a copy of the field's reprojected frames already on fast disk); without it,
-the field's compute settings stage them for each channel.
+the field's compute settings stage them for each channel. FIELD, RECIPE and RUN at the top level are one
+channel's run (Detector 1, Ch9 of 17), what ``selfcal plan`` of this script shows.
 """
 import argparse
 
 from selfcal_scripts.recipes.spherex import nep, pixels_final
 from selfcal_scripts.spherex import jobs
+
+FIELD = nep(1)
+RECIPE = pixels_final(9, num_ch=17)
+RUN = dict(jobs=jobs.channel(9))
 
 
 def channel_maps(detector, num_ch, channels=(), frames=None, plan=False):
