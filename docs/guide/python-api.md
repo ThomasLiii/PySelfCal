@@ -747,7 +747,10 @@ The transpose product's thread count changes the last bits, so it lives in the r
 `sc.Numerics(gradient='recurrence')` lets CGLS carry its gradient along from the transpose product of the matvec's
 own result instead of recomputing it from the residual: on the observation table (`sc.Compute(matrix='compact')`)
 that product comes from the matvec's pass, so an iteration makes the rows once instead of twice. The two forms agree
-within rounding; the option is off by default.
+within rounding; the option is off by default. `sc.Numerics(row_order='sky')` regroups the table's rows into blocks by
+ranges of reference pixels, each range's rows in frame order: the transpose product's threads then each own whole
+blocks and sum their pixels' sky columns in place, so only the offset columns need a private buffer per thread. The
+same rows in another order, so the sums round differently; off by default, and refused without the table.
 
 ### The command line
 

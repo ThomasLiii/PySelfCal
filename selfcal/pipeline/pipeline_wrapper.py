@@ -37,7 +37,7 @@ from ..core.layout import SystemLayout
 from ..core.lsqr import apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky, setup_lsqr
 from ..core.shmbuf import worker_pool_context
 from ..core.solution import parse_x_sky
-from ..core.spill import restore_pixel_state, spill_pixel_state
+from ..core.spill import release_free_memory, restore_pixel_state, spill_pixel_state
 from ..geometry import wcs_helper
 from ..io.atomic import atomic_path
 from ..io.cal_writer import write_sky_groups, write_sky_maps
@@ -759,7 +759,8 @@ class Calibrator(Reprojector):
                    outlier_group_variable: str | None = None, outlier_chunk_groups=None,
                    fixed_sky: bool = False, moments_only: bool = False, reduce=None,
                    min_observations: int | None = None, offset_min_observations: list | None = None,
-                   matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed') -> None:
+                   matrix: str = 'stored', window_edge: str = 'partial', functions: str = 'computed',
+                   row_order: str = 'frame') -> None:
         """Build the LSQR system for K chunk maps.
 
         ``min_observations``: the sky pixels observed fewer times than this leave
@@ -772,7 +773,8 @@ class Calibrator(Reprojector):
         :class:`~selfcal.core.observations.ObservationTable`, the observations the rows are made from;
         ``sc.Compute(matrix=)``; :func:`selfcal.core.system.setup_lsqr`). ``functions``, with the table:
         ``'computed'`` (the model's functions evaluated at every pass) or ``'stored'`` (their values kept with
-        the table; ``sc.Compute(functions=)``).
+        the table; ``sc.Compute(functions=)``). ``row_order``, with the table: ``'frame'`` or ``'sky'`` (its rows
+        grouped by ranges of reference pixels; ``sc.Numerics(row_order=)``).
 
         ``fixed_sky``: the sky is known and subtracted from the data by a frame
         hook (``postprocess_func``): the system fits the offset terms alone, and :meth:`save_calibration` writes the solved
@@ -947,7 +949,7 @@ class Calibrator(Reprojector):
                 outlier_chunk_groups=outlier_chunk_groups,
                 fixed_sky=fixed_sky, moments_only=moments_only, reduce=reduce,
                 min_observations=min_observations, offset_min_observations=offset_min_observations,
-                matrix=matrix, window_edge=window_edge, functions=functions)
+                matrix=matrix, window_edge=window_edge, functions=functions, row_order=row_order)
             self.fixed_sky = bool(fixed_sky)
             # setup_lsqr returns a SetupResult (named, so no arity branching).
             # When it parked the pixel state on scratch, the three arrays come
@@ -1207,6 +1209,7 @@ class Calibrator(Reprojector):
                     snapshots.close()
             self.num_cols_full = None
             del active_mask_local
+            release_free_memory('after the solve')            # the matrix, its deflation, the solver's vectors
 
     def load_calibration(self, cal_path: str | None = None) -> None:
         """Load a saved calibration (tri-generation schema).

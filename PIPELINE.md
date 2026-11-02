@@ -175,7 +175,9 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   removed when the solve ends; a killed run's parked file is swept by the next solve that parks
   in the same directory. When it cannot be parked (a full or unwritable disk, or no directory
   given), a warning says why, the solve goes on and `true_residual` and `bnorm` are NaN (LSMR
-  keeps `b` and needs no copy). The record goes to the cal file's `solve` group
+  keeps `b` and needs no copy). A deflated CGLS solve parks a second vector there, the deflated
+  right-hand side `b - B x_c` its residual refresh reads every 50 iterations (without it, each
+  refresh makes it again with one pass over the matrix). The record goes to the cal file's `solve` group
   ([its attributes](#the-solve-group)), to the action's record (`solves`) and, with the solver's
   state at every iteration, to `<field>/records/<cal stem>_history.npz` (`itn`, `r1norm`,
   `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm`, `test1` = |r| / |b|, `test2` = |A^T r| / (|A|
@@ -366,10 +368,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   integer coverage, Fisher and separability outputs are untouched. Measured
   on the real 1k-frame matrix it is 5.2x faster than the sequential kernel
   (2.07 s vs 10.69 s per product). Thread count: as many as the matvec uses,
-  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`; `sc.Numerics(gradient='recurrence')`
-  lets CGLS carry its gradient by recurrence from the transpose product of the matvec's own result, which the
-  observation table forms in the matvec's pass, so an iteration makes the rows once instead of twice (within rounding
-  of the two-pass form; off by default)
+  capped so the private buffers stay under 16 GB; `sc.Numerics(rmatvec_threads=n)`
   pins it (the action sets `SELFCAL_PARALLEL_RMATVEC`), and `1` selects the
   sequential kernel — the byte-exact verification mode the pre-2026-09-10
   goldens were made with. In practice the count equals the solver's threads
@@ -382,6 +381,28 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   while a deliberately under-converged 30-iteration template fit moves by
   ~1e-3 of it — and two different thread counts differ from each other by as
   much as either differs from the sequential kernel.
+- **Two options of the observation table's solve** (`sc.Compute(matrix='compact')`), both off by default.
+  `sc.Numerics(gradient='recurrence')` lets CGLS carry its gradient by recurrence from the transpose product of
+  the matvec's own result, which the table forms in the matvec's pass, so an iteration makes the rows once instead
+  of twice (within rounding of the two-pass form). `sc.Numerics(row_order='sky')` regroups the table's rows into
+  blocks by ranges of reference pixels, each range's rows in frame order: each thread of the transpose product then
+  owns whole blocks, and so the sky columns of their pixels, which it sums in place, and the private buffers cover
+  the offset columns only (`threads x offset columns` instead of `threads x columns`, on a full field most of the
+  buffers' memory). The rows are the same, in another order, so the sums over rows round differently. The regrouping
+  runs once after the build, a field at a time (`selfcal.core.observations.by_sky_range`), with one field's array
+  (4 bytes per observation) and each row's frame of extra memory.
+- **The deflation's setup makes its smooth patterns where it reads them** (`sc.Fit(deflate=sc.Deflate(...))`): in its
+  two passes over the matrix (a block of rows at a time, the patterns at each entry's column), its Gram matrices and
+  the directions `V` (a block of columns at a time), instead of holding them as an array of `8 × patterns` bytes per
+  covered unknown (17 GB for 30 patterns on 71 M columns). Each value is the same product of the two axis functions
+  and the column's norm, taken in the same order, so the setup's results are the same bits. A constraint on a sky
+  term (`sc.Sky(exclude=...)`) changes the patterns, and the setup then keeps them as an array, as does
+  `sc.Deflate(exclude=sc.Degenerate(...))` from its re-basing on.
+- **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
+  (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
+  its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages
+  after they are freed, so what the build and the deflation setup free would otherwise stay resident through the
+  iterations, and the matrix through the coadd. No array is touched.
 - **Column compaction is always on**, template-mode maps included. The solve
   runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
   tile), which removes ~17 GB of n-space vectors and is what makes the

@@ -27,8 +27,12 @@ location.
 :class:`ParkedVector` keeps the right-hand side of an LSQR solve, which the solver overwrites, on
 disk in the run's scratch directory for the residual checks after it (always on disk, never in
 memory).
+
+:func:`release_free_memory` hands the memory the C allocator keeps after the program has freed it back to
+the system, between the phases of a solve.
 """
 import contextlib
+import ctypes
 import logging
 import os
 import re
@@ -177,7 +181,8 @@ class ParkedVector:
 
     Parking is best effort: when ``directory`` is None, or the file cannot be written (no space, an
     unwritable directory, ...), the reason is logged (a warning for a failure) and :attr:`available`
-    is False; the solve goes on, and the residuals that need the vector are recorded as NaN.
+    is False; the solve goes on, and the residuals that need the vector are recorded as NaN (``without``: what the
+    warning says the solve does without the copy, for another use of it).
     :meth:`discard` removes the file. The file is named after this machine and process,
     ``selfcal_parked_<host>_<pid>_<random>.npy``; parking sweeps the files a dead process of this
     machine left in ``directory`` (a killed run).
@@ -187,7 +192,7 @@ class ParkedVector:
 
     PREFIX = 'selfcal_parked_'
 
-    def __init__(self, vec, directory, label=''):
+    def __init__(self, vec, directory, label='', without='its true residual |b - A x| is recorded as NaN'):
         self._path = None
         self._dtype = self._shape = self._offset = None
         #: Why the vector is not available (None when it is).
@@ -214,8 +219,7 @@ class ParkedVector:
             self._path, path = path, None
         except Exception as e:                    # no space, unwritable, ...: the solve goes on
             self.reason = f'{type(e).__name__}: {e}'
-            logger.warning(f"Could not park {what} in {directory} ({self.reason}); the solve goes on, and its "
-                           f"true residual |b - A x| is recorded as NaN")
+            logger.warning(f"Could not park {what} in {directory} ({self.reason}); the solve goes on, and {without}")
         finally:
             if path is not None:                  # a partial file (an error, an interrupt)
                 with contextlib.suppress(OSError):
@@ -272,6 +276,33 @@ class ParkedVector:
 
 _HOST = socket.gethostname().replace('_', '-') or 'host'
 _PARKED = re.compile(r'^' + re.escape(ParkedVector.PREFIX) + r'(?P<host>[^_]+)_(?P<pid>\d+)_.*\.npy$')
+
+
+def _resident_bytes() -> int:
+    """The process's resident memory (0 where ``/proc`` cannot be read)."""
+    try:
+        with open('/proc/self/statm') as fh:
+            return int(fh.read().split()[1]) * os.sysconf('SC_PAGE_SIZE')
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def release_free_memory(label='') -> int:
+    """Hand the memory the C allocator keeps free in its heaps back to the system (glibc's ``malloc_trim``;
+    nothing where there is none). glibc takes arrays below its mapping threshold (which rises to 32 MB
+    once a mapped block is freed) from its heaps and keeps their pages resident after the program frees
+    them, so what one phase frees, the observation table's blocks of a few tens of MB for one, stays
+    counted against the process through the next. No array is touched. Returns the bytes released
+    (from the resident size before and after; 0 where it cannot be read)."""
+    try:
+        trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError, TypeError):
+        return 0
+    before = _resident_bytes()
+    trim(0)
+    released = max(0, before - _resident_bytes()) if before else 0
+    logger.info(f"Freed memory handed back to the system{' ' + label if label else ''}: {released / 2**30:.2f} GiB")
+    return released
 
 
 def sweep_parked(directory) -> list[str]:

@@ -15,13 +15,16 @@ coefficient or an offset term's basis, are evaluated by the model's own code on 
 as the build evaluates them. A table holds the data rows in blocks, one per assembly batch, and the constraint rows
 as a small stored matrix after them. The row-split transpose product, the column-norm chunks and the deflation's row
 chunks read it through the same functions as the stored matrices (:mod:`selfcal.core.solve`,
-:mod:`selfcal.core.deflation`, :mod:`selfcal.core.solution`).
+:mod:`selfcal.core.deflation`, :mod:`selfcal.core.solution`). Regrouped by sky range (:func:`by_sky_range`,
+``sc.Numerics(row_order='sky')``), each block holds the rows of one range of reference pixels, in their order before:
+the transpose product's threads then each own whole blocks, and so their pixels' sky columns.
 """
 from __future__ import annotations
 
 import itertools
 import logging
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,9 +45,13 @@ __all__ = ['ObservationTable', 'require_numba']
 
 #: Rows of a data block per task of the streams and the coverage-floor pass.
 _TASK_ROWS = 1 << 19
-#: Rows per evaluation of the model's functions and per call of the loops: the functions' temporaries (a few arrays
-#: of this length per function) and the padded scratch of the expansion stay in cache at this size.
-_EVAL_ROWS = 1 << 16
+#: Rows per evaluation of the model's functions and per call of the loops when the functions are computed (the rows are
+#: the same at any length). Longer chunks share the model's per-call cost among more rows: on 2,000 frames of a
+#: 30-thread solve, 2^16 rows took 2.0 times as long as 2^18 (2^17 about as 2^18, 2^20 longer again).
+_EVAL_ROWS = 1 << 18
+#: Rows per call of the loops when the model's values are stored with the table: the values unpacked for a call (this
+#: thread's scratch) stay in cache at this size; on the same solve 2^18 rows took 1.3 to 1.4 times as long.
+_STORED_ROWS = 1 << 16
 
 
 def require_numba():
@@ -122,7 +129,7 @@ _ZERO64 = np.float64(0.0)
 
 @_jit
 def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_vals, K, cmaps, kinds, H, W, nb, nboff,
-          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s, tbuf):
+          phi, use_cmap, col_map, use_scale, scale, S, vec, zero, out, drop, counts, cols_s, vals_s, tbuf, split, obuf):
     """One pass over a block's rows ``lo:hi``: each row's entries made in column order and used as ``mode`` says.
 
     ======  ===================================================================================================
@@ -346,12 +353,28 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
             out[k] = acc
             if mode == 4:
                 qv = np.float64(out[k])
-                for t in range(cnt):
-                    tbuf[oc[t]] += np.float64(ov[t]) * qv
+                if split > 0:
+                    for t in range(cnt):
+                        c = oc[t]
+                        if c >= split:
+                            obuf[c - split] += np.float64(ov[t]) * qv
+                        else:
+                            tbuf[c] += np.float64(ov[t]) * qv
+                else:
+                    for t in range(cnt):
+                        tbuf[oc[t]] += np.float64(ov[t]) * qv
         elif mode == 1:
             yv = vec[k]
-            for t in range(cnt):
-                out[oc[t]] += ov[t] * yv
+            if split > 0:
+                for t in range(cnt):
+                    c = oc[t]
+                    if c >= split:
+                        obuf[c - split] += ov[t] * yv
+                    else:
+                        out[c] += ov[t] * yv
+            else:
+                for t in range(cnt):
+                    out[oc[t]] += ov[t] * yv
         elif mode == 2:
             a = k * S
             for t in range(cnt):
@@ -667,9 +690,11 @@ class ObservationTable:
     detector side and the column map of a compacted system. ``functions``: ``'computed'``, the model's functions
     evaluated at every pass over a chunk of rows, or ``'stored'``, evaluated once here and kept per block
     (:class:`_Values`: 4 bytes per value, a basis that is mostly zero packed), every pass unpacking a chunk's values
-    in a compiled loop: the same values either way."""
+    in a compiled loop: the same values either way. ``row_order``: ``'frame'`` (the assembly batches in order) or
+    ``'sky'`` (each block the rows of one range of reference pixels: :func:`by_sky_range`); ``entries``: the entry
+    count of the data rows when the blocks do not keep theirs (a regrouped table)."""
 
-    def __init__(self, blocks, tail, n_cols, model, threads=1, functions='computed'):
+    def __init__(self, blocks, tail, n_cols, model, threads=1, functions='computed', row_order='frame', entries=None):
         require_numba()
         if functions not in ('computed', 'stored'):
             raise ValueError(f"functions={functions!r}: 'computed' (the model's functions evaluated at every pass) or "
@@ -680,6 +705,8 @@ class ObservationTable:
         self.scale = None
         self.threads = max(1, int(threads))
         self.functions = functions
+        self.row_order = row_order
+        self._entries = None if entries is None else int(entries)
         if not self.blocks:
             raise ValueError("an observation table needs at least one data block")
         dt = {b.x.dtype for b in self.blocks} | {b.y.dtype for b in self.blocks}
@@ -708,7 +735,28 @@ class ObservationTable:
     @property
     def nnz(self):
         """The entries of the matrix the table stands for."""
-        return sum(b.nnz for b in self.blocks) + (0 if self.tail is None else int(self.tail.nnz))
+        data = sum(b.nnz for b in self.blocks) if self._entries is None else self._entries
+        return data + (0 if self.tail is None else int(self.tail.nnz))
+
+    def first_offset_column(self):
+        """The first solver column after the sky terms' (the sky columns lead the layout)."""
+        md = self.model
+        nsky = md.J * md.num_sky
+        if md.col_map is None or nsky == 0:
+            return nsky
+        return int(md.col_map[nsky - 1]) + 1
+
+    def row_cuts(self, n_pieces):
+        """``n_pieces + 1`` cuts of the data rows into contiguous pieces of about equal size; in a table regrouped by
+        sky range each cut at a block's first row, so no range of pixels is split between pieces."""
+        m = self.n_data_rows
+        cuts = np.linspace(0, m, max(1, int(n_pieces)) + 1).astype(np.int64)
+        if self.row_order == 'sky':
+            rb = self.row_bounds[:len(self.blocks) + 1]
+            cuts = rb[np.minimum(np.searchsorted(rb, cuts, side='left'), rb.size - 1)]
+            cuts[0], cuts[-1] = 0, m
+            np.maximum.accumulate(cuts, out=cuts)
+        return cuts
 
     @property
     def nbytes(self):
@@ -742,7 +790,7 @@ class ObservationTable:
 
         def store(blk):
             n = blk.n
-            chunks = [(a, b) + md.values(blk, a, b) for a, b in self._chunks(0, n)]
+            chunks = [(a, b) + md.values(blk, a, b) for a, b in self._chunks(0, n, _EVAL_ROWS)]
             sky_c = np.empty((len(sky_fn), n), dtype=np.float32)
             worst = np.zeros(K, dtype=np.int64)
             for a, b, sv, ph in chunks:
@@ -777,7 +825,7 @@ class ObservationTable:
                 list(ex.map(store, self.blocks))
 
     def _values(self, blk, lo, hi):
-        """The model's values over rows ``lo:hi`` of ``blk`` (at most ``_EVAL_ROWS`` rows), as :func:`_pass` takes
+        """The model's values over rows ``lo:hi`` of ``blk`` (at most :meth:`_chunks`' rows), as :func:`_pass` takes
         them: evaluated now, or unpacked from the block's stored values into this thread's scratch (whose rows
         beyond ``hi - lo`` the loops never read)."""
         v = blk.values
@@ -788,8 +836,8 @@ class ObservationTable:
             sc = self._vscratch.get(key)
         if sc is None:
             md = self.model
-            sc = (np.empty((md.J, _EVAL_ROWS), dtype=np.float32),
-                  np.empty((int(md.nboff[-1]), _EVAL_ROWS), dtype=np.float32))
+            sc = (np.empty((md.J, _STORED_ROWS), dtype=np.float32),
+                  np.empty((int(md.nboff[-1]), _STORED_ROWS), dtype=np.float32))
             with self._lock:
                 self._vscratch[key] = sc
         _unpack(lo, hi, blk.w, v.sky_src, v.sky_c, v.dense, v.dense_fn, v.pk_off, v.pk_base, v.pk_nb, v.pidx,
@@ -837,11 +885,12 @@ class ObservationTable:
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
         for a, b in self._chunks(lo - base, hi - base):
             _pass(0, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32, _NO_F64)
+                  _NO_I32, _NO_F32, _NO_F64, 0, _NO_F64)
 
-    def rmatvec_rows(self, bi, lo, hi, y_seg, buf):
+    def rmatvec_rows(self, bi, lo, hi, y_seg, buf, split=0, obuf=None):
         """``buf[c] += A[lo:hi, c]^T y_seg`` for the global rows ``lo:hi`` of block ``bi`` (the tail included), the
-        rows in order."""
+        rows in order. ``split`` > 0 (a data block): the columns from ``split`` on add into ``obuf[c - split]``
+        instead."""
         base = int(self.row_bounds[bi])
         if bi == len(self.blocks):
             lr0, lr1 = lo - base, hi - base
@@ -853,12 +902,13 @@ class ObservationTable:
             return
         for a, b in self._chunks(lo - base, hi - base):
             _pass(1, *self._args(bi, a, b), y_seg[a - (lo - base):b - (lo - base)], _ZERO64, buf, _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32, _NO_F64)
+                  _NO_I32, _NO_F32, _NO_F64, int(split), obuf if split > 0 else np.zeros(0, dtype=buf.dtype))
 
-    def normal_rows(self, bi, lo, hi, p, out, buf):
+    def normal_rows(self, bi, lo, hi, p, out, buf, split=0, obuf=None):
         """``out[:] = A[lo:hi] @ p`` and ``buf[c] += A[lo:hi, c]^T out`` from one making of the rows ``lo:hi`` of
         block ``bi`` (the tail included): the matvec of :meth:`matvec_rows` and the transpose product of its
-        stored result in one pass, the latter's products and sums in float64 (``buf`` float64)."""
+        stored result in one pass, the latter's products and sums in float64 (``buf`` float64). ``split`` > 0 (a
+        data block): the columns from ``split`` on add into ``obuf[c - split]`` (float64) instead."""
         base = int(self.row_bounds[bi])
         if bi == len(self.blocks):
             lr0, lr1 = lo - base, hi - base
@@ -875,11 +925,12 @@ class ObservationTable:
         zero = np.zeros((), dtype=np.promote_types(self.dtype, p.dtype))[()]
         for a, b in self._chunks(lo - base, hi - base):
             _pass(4, *self._args(bi, a, b), p, zero, out[a - (lo - base):b - (lo - base)], _NO_U8, _NO_I64,
-                  _NO_I32, _NO_F32, buf)
+                  _NO_I32, _NO_F32, buf, int(split), obuf if split > 0 else _NO_F64)
 
-    @staticmethod
-    def _chunks(lo, hi, rows=_EVAL_ROWS):
-        """The row chunks ``(a, b)`` of ``lo:hi``, ``rows`` each."""
+    def _chunks(self, lo, hi, rows=None):
+        """The row chunks ``(a, b)`` of ``lo:hi``, ``rows`` each (by default the loops': ``_STORED_ROWS`` with the
+        model's values stored, else ``_EVAL_ROWS``)."""
+        rows = rows or (_STORED_ROWS if self.functions == 'stored' else _EVAL_ROWS)
         return [(a, min(hi, a + rows)) for a in range(lo, hi, rows)]
 
     def expand(self, bi, lo, hi, scaled=True, buf=None):
@@ -908,7 +959,7 @@ class ObservationTable:
             m = b - a
             cols_s, vals_s, counts = self._thread_scratch(m)
             _pass(2, *self._args(bi, a, b, scaled=scaled), _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts[:m], cols_s,
-                  vals_s, _NO_F64)
+                  vals_s, _NO_F64, 0, _NO_F64)
             k = int(counts[:m].sum())
             ip, co, va = np.empty(m + 1, dtype=np.int32), np.empty(k, dtype=np.int32), np.empty(k, dtype=np.float32)
             _compact(counts[:m], S, cols_s, vals_s, ip, co, va)
@@ -1066,7 +1117,7 @@ class ObservationTable:
                 _pass(3, a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, _NO_I64, md.J,
                       md.num_sky, sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi, False,
                       _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop, _NO_I64, _NO_I32,
-                      _NO_F32, _NO_F64)
+                      _NO_F32, _NO_F64, 0, _NO_F64)
             return bi, lo + np.flatnonzero(flags)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
@@ -1099,6 +1150,130 @@ class ObservationTable:
         return out
 
 
+@_jit
+def _count_rows(sky, counts):
+    """``counts[p] +=`` the rows of reference pixel ``p``."""
+    for r in range(sky.shape[0]):
+        counts[sky[r]] += 1
+
+
+@_jit
+def _place_by_range(sky, src, rng, nxt, g_lo, g_hi, dst):
+    """Each row whose pixel's range ``rng[pixel]`` is in ``g_lo:g_hi`` copied to ``dst[nxt[range]]``, ``nxt[range]``
+    advanced: the rows of a range land in their order here."""
+    for r in range(sky.shape[0]):
+        g = rng[sky[r]]
+        if g >= g_lo and g < g_hi:
+            d = nxt[g]
+            nxt[g] = d + 1
+            dst[d] = src[r]
+
+
+@_jit
+def _place_by_range_frames(sky, frame_rows, frames, rng, nxt, g_lo, g_hi, dst):
+    """:func:`_place_by_range` of each row's frame (``frames[f]`` over the rows ``frame_rows[f]:frame_rows[f + 1]``)."""
+    f = 0
+    for r in range(sky.shape[0]):
+        while r >= frame_rows[f + 1]:
+            f += 1
+        g = rng[sky[r]]
+        if g >= g_lo and g < g_hi:
+            d = nxt[g]
+            nxt[g] = d + 1
+            dst[d] = frames[f]
+
+
+def by_sky_range(blocks, b, num_sky, base, threads=1):
+    """The frame-ordered data ``blocks`` (in row order) and their right-hand side ``b`` regrouped by ranges of reference
+    pixels: as many blocks as before (fewer when a pixel alone holds more rows than a block's share), each the rows of
+    one range of pixels, about equal rows each, in their order before, so a frame's rows in a range stay together and
+    the frames in order. Returns ``(blocks, b)``: the blocks (:class:`_Block`, their arrays views of one array per
+    field; their entry counts left at zero) and ``b`` in the new order. ``base``: the column base per offset map of
+    every frame of the solve. Each field is placed by ``threads`` threads, each over its own ranges and every row in
+    order, so the result does not depend on the thread count; the old blocks' arrays of a field are released once it
+    is placed (the extra memory at any time: one field's array, 4 bytes per row, each row's frame while the blocks are
+    made, and one counter per pixel)."""
+    require_numba()
+    t0 = time.perf_counter()
+    blocks = list(blocks)
+    sizes = np.array([blk.n for blk in blocks], dtype=np.int64)
+    offsets = np.zeros(len(blocks) + 1, dtype=np.int64)
+    np.cumsum(sizes, out=offsets[1:])
+    m = int(offsets[-1])
+    if np.asarray(b).shape[0] != m:
+        raise ValueError(f"by_sky_range: {np.asarray(b).shape[0]} right-hand-side values for {m} rows")
+    counts = np.zeros(int(num_sky), dtype=np.int64)
+    for blk in blocks:
+        _count_rows(blk.sky, counts)
+    cum = np.zeros(int(num_sky) + 1, dtype=np.int64)
+    np.cumsum(counts, out=cum[1:])
+    del counts
+    pcut = np.searchsorted(cum, np.linspace(0, m, len(blocks) + 1), side='left').astype(np.int64)
+    pcut[0], pcut[-1] = 0, int(num_sky)
+    np.maximum.accumulate(pcut, out=pcut)
+    pcut = np.unique(pcut)
+    R = pcut.size - 1
+    rng = np.repeat(np.arange(R, dtype=np.int32), np.diff(pcut))           # each pixel's range
+    rstart = cum[pcut]                                                      # each range's first row
+    del cum
+    T = max(1, int(threads))
+    gcut = np.searchsorted(rstart, np.linspace(0, m, T + 1), side='left').astype(np.int64)
+    gcut[0], gcut[-1] = 0, R
+    np.maximum.accumulate(gcut, out=gcut)
+    frames32 = [np.asarray(blk.frames, dtype=np.int32) for blk in blocks]
+
+    def place(dtype, kernel):
+        dst = np.empty(m, dtype=dtype)
+        nxt = rstart[:-1].copy()
+
+        def work(t):
+            g_lo, g_hi = int(gcut[t]), int(gcut[t + 1])
+            if g_hi > g_lo:
+                for bi, blk in enumerate(blocks):
+                    kernel(bi, blk, nxt, g_lo, g_hi, dst)
+
+        if T == 1:
+            work(0)
+        else:
+            with ThreadPoolExecutor(max_workers=T) as ex:
+                list(ex.map(work, range(T)))
+        return dst
+
+    X = place(blocks[0].x.dtype, lambda bi, blk, nxt, lo, hi, dst: _place_by_range(blk.sky, blk.x, rng, nxt, lo, hi, dst))
+    for blk in blocks:
+        blk.x = None
+    Y = place(blocks[0].y.dtype, lambda bi, blk, nxt, lo, hi, dst: _place_by_range(blk.sky, blk.y, rng, nxt, lo, hi, dst))
+    for blk in blocks:
+        blk.y = None
+    Wt = place(np.float32, lambda bi, blk, nxt, lo, hi, dst: _place_by_range(blk.sky, blk.w, rng, nxt, lo, hi, dst))
+    for blk in blocks:
+        blk.w = None
+    Fr = place(np.int32, lambda bi, blk, nxt, lo, hi, dst: _place_by_range_frames(blk.sky, blk.frame_rows, frames32[bi],
+                                                                                   rng, nxt, lo, hi, dst))
+    bsrc = np.asarray(b)
+    B = place(bsrc.dtype, lambda bi, blk, nxt, lo, hi, dst: _place_by_range(blk.sky, bsrc[offsets[bi]:offsets[bi + 1]],
+                                                                            rng, nxt, lo, hi, dst))
+    del bsrc, frames32
+    Sk = place(np.int32, lambda bi, blk, nxt, lo, hi, dst: _place_by_range(blk.sky, blk.sky, rng, nxt, lo, hi, dst))
+    for blk in blocks:
+        blk.sky = None
+    del rng, blocks
+    out = []
+    for g in range(R):
+        r0, r1 = int(rstart[g]), int(rstart[g + 1])
+        fr = Fr[r0:r1]
+        starts = np.flatnonzero(fr[1:] != fr[:-1]) + 1                     # each frame's first row in the range
+        frame_rows = np.concatenate(([0], starts, [r1 - r0])).astype(np.int64)
+        frames = fr[np.concatenate(([0], starts))].astype(np.int64)
+        blk = _Block(frames, frame_rows, Sk[r0:r1], X[r0:r1], Y[r0:r1], Wt[r0:r1], np.flatnonzero(B[r0:r1] == 0), 0)
+        blk.base = base[frames]
+        out.append(blk)
+    del Fr
+    logger.info(f"Rows grouped by sky range: {m} rows in {len(out)} blocks of reference-pixel ranges "
+                f"({time.perf_counter() - t0:.1f} s, {T} threads).")
+    return out, B
+
+
 def warm_up():
     """Compile the loops once, on a one-row table, so the solve's threads do not all wait on the compilation."""
     require_numba()
@@ -1117,17 +1292,22 @@ def warm_up():
     for pdt in (np.float32, np.float64):
         for odt in (np.float32, np.float64):
             _pass(0, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
-                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64, 0, _NO_F64)
             _pass(4, *args, np.ones(S, pdt), np.zeros((), dtype=np.promote_types(np.float32, pdt))[()],
-                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, np.zeros(S, odt))
-        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64)
+                  np.zeros(1, odt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, np.zeros(S, odt), 0, _NO_F64)
+        _pass(1, *args, np.ones(1, pdt), _ZERO64, np.zeros(S, pdt), _NO_U8, _NO_I64, _NO_I32, _NO_F32, _NO_F64, 0,
+              np.zeros(0, pdt))
     counts = np.zeros(1, np.int64)
     cols_s, vals_s = np.zeros(S, np.int32), np.zeros(S, np.float32)
-    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s, _NO_F64)
+    _pass(2, *args, _NO_F64, _ZERO64, _NO_F64, _NO_U8, counts, cols_s, vals_s, _NO_F64, 0, _NO_F64)
     ip, co, va = np.zeros(2, np.int32), np.zeros(S, np.int32), np.zeros(S, np.float32)
     _compact(counts, S, cols_s, vals_s, ip, co, va)
     _pass(3, *args, _NO_F64, _ZERO64, np.zeros(1, np.uint8), np.zeros(1, np.bool_), _NO_I64, _NO_I32, _NO_F32,
-          _NO_F64)
+          _NO_F64, 0, _NO_F64)
+    one32 = np.zeros(1, np.int32)
+    _count_rows(P, np.zeros(1, np.int64))
+    _place_by_range(P, x, one32, np.zeros(1, np.int64), 0, 1, np.zeros(1, x.dtype))
+    _place_by_range_frames(P, frame_rows, one32, one32, np.zeros(1, np.int64), 0, 1, np.zeros(1, np.int32))
     _fold_sums(ip, co, va, np.zeros(1), 0, np.zeros(S), np.zeros(S))
     _sample_maps(x, y, np.zeros((1, HW), np.float32), 2, 2, np.zeros((1, 1), np.float32))
     _split_spans(ip, co, va, np.array([0, 2, S], np.int64), np.zeros((2, 2), np.int32), np.zeros(S, np.int32),

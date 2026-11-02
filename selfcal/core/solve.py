@@ -48,7 +48,7 @@ from scipy.sparse.linalg import lsqr, LinearOperator, aslinearoperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
-from .cgls import cgls
+from .cgls import REFRESH, cgls
 from .deflation import Deflation, storage_of
 from .projector import ColumnProjector
 from .lsmr import lsmr
@@ -57,7 +57,7 @@ from .monitor import Watch
 from .observations import ObservationTable
 from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
-from .spill import ParkedVector
+from .spill import ParkedVector, release_free_memory
 
 logger = logging.getLogger(__name__)
 
@@ -351,10 +351,11 @@ def rmatvec_threads(n_threads, n_cols, itemsize=4):
     return max(1, min(int(n_threads), int(budget // per_thread)))
 
 
-def _row_spans(row_bounds, m, n_pieces):
-    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges and intersect each
+def _row_spans(row_bounds, m, n_pieces, cuts=None):
+    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges (at ``cuts`` when given) and intersect each
     with the storage blocks: ``[(r0, r1, [(block, lo, hi), ...]), ...]``."""
-    cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
+    if cuts is None:
+        cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
     pieces = []
     for r0, r1 in zip(cuts[:-1], cuts[1:]):
         r0, r1 = int(r0), int(r1)
@@ -835,6 +836,96 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False, promote=False
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
+def _make_owned_rmatvec(table, n_threads):
+    """The transpose products of an :class:`~selfcal.core.observations.ObservationTable` grouped by sky range
+    (``table.row_order == 'sky'``): the data rows cut into ``n_threads`` pieces at blocks' first rows
+    (:meth:`~selfcal.core.observations.ObservationTable.row_cuts`), so each piece is the only one with rows of its
+    pixels and adds their sky columns straight into the output, each column's products in row order from zero; the
+    offset columns (from :meth:`~selfcal.core.observations.ObservationTable.first_offset_column` on) go to private
+    buffers, one per piece, reduced in piece order; the constraint rows, when present, add after, sequentially.
+    Deterministic, and the sky columns' sums do not depend on the thread count. Returns ``(rmatvec, executor,
+    pieces)`` as :func:`_make_rowsplit_rmatvec` does, ``rmatvec`` carrying ``normal`` (``A^T (A x)`` in float64 with
+    ``A x`` left in ``out``) and ``promoted`` (``A^T y`` in float64)."""
+    m_data, n = table.n_data_rows, int(table.shape[1])
+    m = int(table.shape[0])
+    dtype = table.dtype
+    split = table.first_offset_column()
+    n_off = n - split
+    pieces = _row_spans(table.row_bounds, m_data, n_threads, cuts=table.row_cuts(n_threads))
+    np_ = max(1, len(pieces))
+    ex = ThreadPoolExecutor(max_workers=np_)
+    zero_cuts = np.linspace(0, split, np_ + 1, dtype=np.int64)
+    red_cuts = np.linspace(split, n, np_ + 1, dtype=np.int64)
+    tail_bi = table.nblocks if table.tail is not None else None
+    logger.info(f"  rmatvec: rows by sky range over {len(pieces)} threads, the {split} sky columns summed in place "
+                f"(+{len(pieces) * n_off * np.dtype(dtype).itemsize / 2**30:.2f} GB of private buffers for the {n_off} "
+                "offset columns; deterministic for this thread count, the sky columns for any).")
+    bufs = {}
+
+    def _bufs(dt):
+        b = bufs.get(np.dtype(dt))
+        if b is None:
+            b = bufs[np.dtype(dt)] = [np.zeros(n_off, dtype=dt) for _ in pieces]
+        return b
+
+    def _run(out, dt, rows):
+        """``rows(bi, lo, hi, obuf)`` over every piece's spans, ``out`` (length n, ``dt``) set from zero."""
+        ob = _bufs(dt)
+
+        def _zero(k):
+            out[int(zero_cuts[k]):int(zero_cuts[k + 1])] = 0
+
+        list(ex.map(_zero, range(np_)))
+
+        def _work(i):
+            buf = ob[i]
+            buf[...] = 0
+            for bi, lo, hi in pieces[i][2]:
+                rows(bi, lo, hi, buf)
+
+        list(ex.map(_work, range(len(pieces))))
+
+        def _reduce(k):
+            c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+            seg = out[c0:c1]
+            if ob:
+                seg[...] = ob[0][c0 - split:c1 - split]
+                for b in ob[1:]:                   # fixed order => same fold everywhere
+                    seg += b[c0 - split:c1 - split]
+            else:
+                seg[...] = 0
+
+        list(ex.map(_reduce, range(np_)))
+        return out
+
+    def _rmatvec(y):
+        y = np.ascontiguousarray(y, dtype=dtype)
+        out = np.empty(n, dtype=dtype)
+        _run(out, dtype, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], out, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], out)
+        return out
+
+    def _normal(x, out_rows):
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.normal_rows(bi, lo, hi, x, out_rows[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.normal_rows(tail_bi, m_data, m, x, out_rows[m_data:m], t)
+        return t
+
+    def _promoted(y):
+        y = np.ascontiguousarray(y, dtype=np.float64)
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], t)
+        return t
+
+    _rmatvec.normal = _normal
+    _rmatvec.promoted = _promoted
+    return _rmatvec, ex, len(pieces)
+
+
 def _make_table_operator(table, n_threads, promote=False):
     """The SpMV operator of an :class:`~selfcal.core.observations.ObservationTable`.
 
@@ -843,7 +934,8 @@ def _make_table_operator(table, n_threads, promote=False):
     thread or with ``promote`` (the block storages' regimes). ``A^T @ y``: the row-split scatter of
     :func:`_make_rowsplit_rmatvec` with the table's rows as the scatter, so the same pieces, private buffers and
     reduction order as the stored storages give the same bytes for the same thread count; a vector wider than the
-    entries goes through the sequential scatter in the promoted dtype, as there.
+    entries goes through the sequential scatter in the promoted dtype, as there. A table grouped by sky range has
+    the transpose products of :func:`_make_owned_rmatvec` (private buffers for the offset columns only).
     """
     from .observations import warm_up
     warm_up()
@@ -871,9 +963,13 @@ def _make_table_operator(table, n_threads, promote=False):
         list(executor.map(_work, pieces))
         return out
 
-    _rmv_threads = rmatvec_threads(n_threads, n, np.dtype(dtype).itemsize)
+    by_sky = table.row_order == 'sky' and table.first_offset_column() > 0      # sky columns to own
+    _rmv_threads = rmatvec_threads(n_threads, n - table.first_offset_column() if by_sky else n,
+                                   np.dtype(dtype).itemsize)
     _rowsplit, _rex = (None, None)
-    if _rmv_threads > 1:
+    if by_sky and _rmv_threads > 1:
+        _rowsplit, _rex, _ = _make_owned_rmatvec(table, _rmv_threads)
+    elif _rmv_threads > 1:
         _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows,
                                                    fused=table.normal_rows)
 
@@ -1122,7 +1218,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         (:class:`~selfcal.core.spill.ParkedVector`; the run engine gives the
         run's scratch directory). None, or a directory it cannot be written
         to: no copy, and those residuals are recorded as NaN (a warning says
-        why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
+        why; the solve goes on). LSMR and the COO path keep ``b`` anyway. A
+        deflated CGLS solve also parks there the deflated right-hand side its
+        residual refresh reads (without it, each refresh makes it again).
     exclusions : list, optional
         Hard constraints on the unknowns, ``[(cols, P), ...]`` in the full column layout: the
         solution has no component along the directions ``P`` (``(n, r)``) over each row of
@@ -1419,6 +1517,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
                 sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
+            cmap = None                                   # the full layout's column map: one int64 per grid column
         def solver_columns(cols):
             # full-layout columns -> solver columns (the active ones)
             c = np.asarray(cols, dtype=np.int64)
@@ -1529,6 +1628,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
             nonlocal defl, proj
+            shift_kept = None
             op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
             if deflate is not None:
                 # The deflation first: with Deflate(exclude=) its setup adds the degenerate directions' sky shapes to
@@ -1557,12 +1657,21 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 guard = solver != 'cgls' or solve_kw.get('gradient') == 'recurrence'
                 kw = dict(solve_kw, constrain=defl.constrain if guard else None)
                 if solver == 'cgls':
-                    # CGLS measures its residual against the deflated right-hand side b - B x_c (its refresh
-                    # recomputes it from the parked original: one float64 pass over the matrix every 50 iterations).
-                    kw['refresh'] = lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype)))
+                    # CGLS measures its residual against the deflated right-hand side b - B x_c, which start() has just
+                    # made in b's buffer: parked on disk when the solve can reach a refresh, each refresh reads it back
+                    # a piece at a time; without that copy a refresh makes it again from the parked original (a new
+                    # m-vector and one float64 pass over the matrix). The same bits either way.
+                    if (_rhs() is not None and _b_owned[0].dtype == np.dtype(op.dtype)
+                            and (iter_lim is None or iter_lim >= REFRESH)):
+                        shift_kept = ParkedVector(_b_owned[0], scratch_dir,
+                                                  label='the deflated right-hand side (for the refresh)',
+                                                  without='each refresh makes it again from the original')
+                    kw['refresh'] = ((lambda: shift_kept) if shift_kept is not None and shift_kept.available else
+                                     lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype))))
                 if watch is not None:
                     kw['watch'] = (lambda itn, y, istop, tests:
                                    watch(itn, _as_solution(y) if any(watch._due(itn).values()) else y, istop, tests))
+            release_free_memory('before the iterations')     # what the build and the deflation setup freed
             t_solve = time.perf_counter()
             try:
                 result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)
@@ -1579,6 +1688,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             finally:
                 if defl is not None:
                     defl.close()
+                if shift_kept is not None:
+                    shift_kept.discard()
             return result, record
 
         _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
