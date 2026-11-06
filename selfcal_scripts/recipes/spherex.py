@@ -121,9 +121,9 @@ SLOPE_GAUGE_VARWEIGHT_COLUMNS = SLOPE_GAUGE_VARWEIGHT.replace(
     model=SLOPE_GAUGE_VARWEIGHT.model.replace(offsets=tuple(SLOPE_GAUGE_VARWEIGHT.model.offsets) + (SHARED_COLUMNS,)),
     name='slope_gauge_varweight_columns')
 
-#: The base recipe of the weak-mode work (2026-10-21; workspace/weak-modes/plan.md): per frame one free constant per
-#: subchannel (they hold the frame's level: no per-frame scalar term and no constraint on their mean; the default
-#: seed starts each at the inverse-variance weighted mean of its pixels) and the x-slope per subchannel; one
+#: The base recipe of the weak-mode work (2026-10-21; workspace/_archived_reports/weak-modes/plan.md): per frame one
+#: free constant per subchannel (they hold the frame's level: no per-frame scalar term and no constraint on their mean;
+#: the default seed starts each at the inverse-variance weighted mean of its pixels) and the x-slope per subchannel; one
 #: constant per detector column shared by every
 #: frame, without its constant and slope across the columns (those two duplicate the per-frame terms exactly);
 #: weighted by the frames' L2b VARIANCE layer; no clip, damping, regularisation, degenerate-mode exclusion or
