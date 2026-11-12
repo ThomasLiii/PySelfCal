@@ -144,7 +144,8 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
             the value +0.0, as the stored matrix keeps them.
     3       ``out[i - lo]`` (a uint8 array): 1 when the row has an entry in a column of ``drop`` (a boolean over
             the leading columns of the full layout; the coverage floor's columns), with the columns unmapped and
-            unscaled.
+            unscaled; with ``counts`` not empty, such a row's columns from ``split`` on are written from slot
+            ``(i - lo) * S`` of ``cols_s`` and their number to ``counts[i - lo]`` (other rows: untouched).
     4       mode 0 and, in the same pass, ``tbuf[c] += A[i, c] * out[i - lo]`` for the row's stored product: the
             matvec and the transpose product of its result (``A^T A vec``) from one making of the rows, each
             row's product taken back in ``out``'s dtype, as a transpose product of that vector would read it,
@@ -389,6 +390,15 @@ def _pass(mode, lo, hi, P, x, y, w, frame_rows, base, zb, fl, J, num_sky, sky_va
                     hit = 1
                     break
             out[k] = hit
+            if hit and counts.shape[0] > 0:
+                # the floored row's entries at the columns from ``split`` on, padded as mode 2 pads a row
+                a = k * S
+                n = 0
+                for t in range(cnt):
+                    if oc[t] >= split:
+                        cols_s[a + n] = oc[t]
+                        n += 1
+                counts[k] = n
 
 
 @_jit
@@ -1100,25 +1110,44 @@ class ObservationTable:
         return sq
 
     # ---- the coverage floor -----------------------------------------------------------------------------------
-    def floor(self, drop_cols, threads=None):
+    def floor(self, drop_cols, threads=None, first_column=None):
         """Zero the rows with an entry in a column of ``drop_cols`` (a boolean over the leading columns of the full
-        layout): they keep their entries with the value +0.0 from here on. Returns their global row ids."""
+        layout): they keep their entries with the value +0.0 from here on. Returns their global row ids; with
+        ``first_column`` (a column of the full layout) also those rows' entries per column from it on, counted as the
+        pass makes the rows: ``(rows, [(columns, counts), ...])``."""
         threads = self.threads if threads is None else max(1, int(threads))
         drop = np.ascontiguousarray(drop_cols, dtype=np.bool_)
         md = self.model
         out = []
+        count = first_column is not None
+        split = int(first_column) if count else 0
 
         def work(t):
             bi, lo, hi = t
             blk = self.blocks[bi]
             flags = np.zeros(hi - lo, dtype=np.uint8)
-            for a, b in self._chunks(lo, hi):
+            chunks = self._chunks(lo, hi)
+            if count:                    # this task's buffers, for its longest chunk; freed when the pass ends
+                n_rows = max(b - a for a, b in chunks)
+                counts, cols_s, lost = np.zeros(n_rows, np.int64), np.empty(n_rows * md.S, np.int32), []
+            else:
+                counts, cols_s = _NO_I64, _NO_I32
+            for a, b in chunks:
                 sky_vals, phi = self._values(blk, a, b)
                 _pass(3, a, b, blk.sky, blk.x, blk.y, blk.w, blk.frame_rows, blk.base, blk.zb, _NO_I64, md.J,
                       md.num_sky, sky_vals, md.K, md.cmaps, md.kinds, md.H, md.W, md.nb, md.nboff, phi, False,
-                      _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop, _NO_I64, _NO_I32,
-                      _NO_F32, _NO_F64, 0, _NO_F64)
-            return bi, lo + np.flatnonzero(flags)
+                      _NO_I32, False, _NO_F32, md.S, _NO_F64, _ZERO64, flags[a - lo:b - lo], drop,
+                      counts[:b - a] if count else counts, cols_s, _NO_F32, _NO_F64, split, _NO_F64)
+                if count:
+                    k = np.flatnonzero(counts[:b - a])
+                    if k.size:
+                        n = counts[k]
+                        lost.append(cols_s[np.repeat(k * md.S - (np.cumsum(n) - n), n) + np.arange(int(n.sum()))])
+                        counts[k] = 0
+            rows = lo + np.flatnonzero(flags)
+            if not count:
+                return bi, rows, None
+            return bi, rows, (np.unique(np.concatenate(lost), return_counts=True) if lost else None)
 
         tasks = [t for t in self.piece_index(_TASK_ROWS) if t[0] < len(self.blocks)]
         if threads <= 1:
@@ -1127,13 +1156,16 @@ class ObservationTable:
             with ThreadPoolExecutor(max_workers=threads) as ex:
                 results = list(ex.map(work, tasks))
         per_block = {}
-        for bi, rows in results:
+        for bi, rows, _lost in results:
             per_block.setdefault(bi, []).append(rows)
         for bi, parts in per_block.items():
             rows = np.concatenate(parts)
             self.blocks[bi].fl = np.sort(rows).astype(np.int64)
             out.append(rows + int(self.row_bounds[bi]))
-        return np.sort(np.concatenate(out)) if out else np.zeros(0, dtype=np.int64)
+        rows = np.sort(np.concatenate(out)) if out else np.zeros(0, dtype=np.int64)
+        if not count:
+            return rows
+        return rows, [r[2] for r in results if r[2] is not None]
 
     # ---- for tests and checks ---------------------------------------------------------------------------------
     def to_csr(self, scaled=True):

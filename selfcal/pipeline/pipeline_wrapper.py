@@ -35,6 +35,7 @@ from .. import _state
 from ..core import coadd
 from ..core.layout import SystemLayout
 from ..core.lsqr import apply_lsqr, parse_pixel_counts_sky, parse_pixel_fisher_sky, setup_lsqr
+from ..core.system import parse_offset_counts
 from ..core.shmbuf import worker_pool_context
 from ..core.solution import parse_x_sky
 from ..core.spill import release_free_memory, restore_pixel_state, spill_pixel_state
@@ -966,8 +967,10 @@ class Calibrator(Reprojector):
                 self.pixel_cross = None
                 self.pixel_rhs = None
                 self._pixel_spill = None
+                self.offset_counts_solved = None
             else:
                 self.A, self.b = r.A, r.b
+                self.offset_counts_solved = getattr(r, 'offset_counts_solved', None)
                 self.pixel_counts = r.pixel_counts
                 self.pixel_fisher = r.pixel_fisher
                 self.pixel_cross = r.pixel_cross
@@ -1382,6 +1385,7 @@ class Calibrator(Reprojector):
                 cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
                 frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
                 cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
+            self._write_solved_coverage(f)
             self._write_frame_groups(f, K)
             if getattr(self, 'solve_record', None) is not None:
                 # The record of the solve: attributes of a group (no dataset), so every
@@ -1466,7 +1470,23 @@ class Calibrator(Reprojector):
             cov_grp.create_dataset(f'map_{m}', data=map_coverages[m], compression='gzip')
             frac_grp.create_dataset(f'map_{m}', data=map_coverage_fracs[m], compression='gzip')
             cm_grp.create_dataset(f'map_{m}', data=self.chunk_maps[m], compression='gzip')
+        self._write_solved_coverage(f)
         self._write_frame_groups(f, K)
+
+    def _write_solved_coverage(self, f) -> None:
+        """``offset_coverage_solved/map_<m>``: with a coverage floor in the solve
+        (``Fit(min_observations=)``, ``Offsets(min_observations=)``), each offset's observations that the floor left
+        in the solve, laid out as ``offset_coverage/map_<m>`` (which counts every observation the build made, the
+        rows the floor zeroed too); nothing without a floor, where the two are the same."""
+        counts = getattr(self, 'offset_counts_solved', None)
+        if counts is None:
+            return
+        grp = f.create_group('offset_coverage_solved')
+        layout = parse_offset_counts(counts, self.num_offset_groups_list, self.chunk_maps,
+                                     num_chunks_list=self.num_chunks_list)
+        for m, cov in enumerate(layout):
+            rows = cov if self._stored_by_group(m) else cov[self.frame_to_groups[m]]
+            grp.create_dataset(f'map_{m}', data=rows, compression='gzip')
 
     def write_cal_solution(self, f, iterate) -> None:
         """Write into the open HDF5 file ``f`` (holding :meth:`write_cal_static`'s parts) the parts
@@ -1661,6 +1681,7 @@ class Mosaicker(Reprojector):
             self.offsets = cal.rows('offsets', 'offset')
             self.offset_coverages = cal.rows('offset_coverage', 'offset_coverage')
             self.offset_coverage_fracs = cal.rows('offset_coverage_frac', 'offset_coverage_frac')
+            self.offset_coverage_solved = cal.rows('offset_coverage_solved') or None
             self.cal_chunk_maps = cal.chunk_maps
         logger.info(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
