@@ -394,6 +394,10 @@ are evaluated and subtracted at every observation that carries weight, as in the
 the coadd). The offset of a
 frame and chunk that the solve saw only in part (its covered fraction, counted over the chunk's
 pixels that the job can observe, below `sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first.
+With `sc.Coadd(chunk_coverage='solved')` that fraction counts only the observations the solve's coverage
+floor left in it (the cal's `offset_coverage_solved`), and the terms subtracted at every observation are judged
+the same way, each unknown on its own: a frame whose observations of a chunk no other frame sees keeps only the few
+it shares, and the observations that an offset held by those few carries are left out of the coadd.
 The SPHEREx subchannel renderer and the Euclid grid spline fill such a chunk in from the frame's
 other chunks; where nothing fills it, its pixels in that frame are left out of the coadd.
 

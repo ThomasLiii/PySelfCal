@@ -348,6 +348,14 @@ class CalFile:
         return self._per_map('offset_coverage', 'offset_coverage')
 
     @property
+    def offset_coverage_solved(self) -> list[np.ndarray]:
+        """Per-map ``(n_frames, n_chunks)`` counts of the observations of each offset that the solve's coverage floor
+        left in it (``Fit(min_observations=)``, ``Offsets(min_observations=)``), laid out as :attr:`offset_coverage`,
+        which counts every observation the build made; ``[]`` for a cal without a floor or written before
+        2026-11."""
+        return self._per_map('offset_coverage_solved', None)
+
+    @property
     def offset_coverage_frac(self) -> list[np.ndarray]:
         """Per-map ``(n_frames, n_chunks)`` coverage as a fraction of each chunk's pixels.
 

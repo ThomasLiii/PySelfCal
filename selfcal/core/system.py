@@ -68,7 +68,10 @@ class SetupResult(NamedTuple):
     constraint row touches an otherwise-uncovered column). ``A`` and ``b`` are
     None when no matrix was built: ``moments_only`` (the pixel state alone) or
     ``reduce`` (``reduced``: each subframe's reduction, in subframe order, None
-    for a subframe with no rows; ``constraint_blocks``: the constraint rows).
+    for a subframe with no rows; ``constraint_blocks``: the constraint rows). ``offset_counts_solved``: with a
+    coverage floor (``min_observations`` or ``offset_min_observations``), the entry counts of the offset columns (the
+    full layout's columns from the first offset column on) over the rows the floor leaves in the solve, where
+    ``pixel_counts`` counts every row the build made; None without a floor.
     """
     A: object
     b: object
@@ -80,6 +83,7 @@ class SetupResult(NamedTuple):
     pixel_rhs: object = None
     reduced: object = None
     constraint_blocks: object = None
+    offset_counts_solved: object = None
 
 
 def _place_rows(rows_local, cols, data, num_rows, n_cols, out_indices, out_data):
@@ -123,30 +127,39 @@ def _compact_in_place(indices, e0, e1, col_map, cut=0, chunk=64_000_000):
             v -= cut
 
 
-def _floor_batch(rows_local, cols, data, num_rows, drop_cols):
+def _floor_batch(rows_local, cols, data, num_rows, drop_cols, first_offset=None):
     """The coverage floor (``setup_lsqr(min_observations=, offset_min_observations=)``) on one batch: its values with
     every entry of a row that has an entry in a column of ``drop_cols`` (a boolean over the leading columns: the sky's,
-    and every column when an offset term has a floor) set to zero, and those rows (batch-local, ascending);
-    ``(data, None)`` when the batch has none. The rows keep their entries, so the row layout and the collated counts
-    stand; the caller zeroes their right-hand side."""
+    and every column when an offset term has a floor) set to zero, those rows (batch-local, ascending) and, with
+    ``first_offset`` (the full layout's first offset column), the entries of those rows per offset column as
+    ``(columns, counts)`` (None: no such entry); ``(data, None, None)`` when the batch has none. The rows keep their
+    entries, so the row layout and the collated counts stand; the caller zeroes their right-hand side."""
     cols = np.asarray(cols)
     lead = cols < drop_cols.shape[0]
     hit = np.zeros(cols.shape[0], dtype=bool)
     hit[lead] = drop_cols[cols[lead]]
     del lead
     if not hit.any():
-        return data, None
+        return data, None, None
     rows_local = np.asarray(rows_local)
     flag = np.zeros(int(num_rows), dtype=bool)
     flag[rows_local[hit]] = True
     del hit
+    floored = flag[rows_local]
+    lost = None
+    if first_offset is not None:                  # read at the floored entries alone
+        at = cols[np.flatnonzero(floored)]
+        at = at[at >= first_offset]
+        if at.size:
+            lost = np.unique(at, return_counts=True)
+        del at
     out = np.array(data, copy=True)
-    out[flag[rows_local]] = 0
-    return out, np.flatnonzero(flag)
+    out[floored] = 0
+    return out, np.flatnonzero(flag), lost
 
 
 def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
-                       indptr, col_map, csr_data, csr_indices, n_cols, drop_cols=None):
+                       indptr, col_map, csr_data, csr_indices, n_cols, drop_cols=None, first_offset=None):
     """Place one batch's entries (batch-LOCAL rows, original entry order)
     into the unified CSR buffers.
 
@@ -157,7 +170,9 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     derives from the batch itself is checked against the global indptr; a
     disagreement raises instead of silently corrupting the matrix. With
     ``drop_cols`` the coverage floor zeroes the rows with an entry in those
-    columns (:func:`_floor_batch`); returns those rows (batch-local) or None.
+    columns (:func:`_floor_batch`); returns ``(rows, lost)``: those rows
+    (batch-local) and their entries per offset column (``first_offset``),
+    each None when there is none.
     """
     n = int(rows_arr.shape[0])
     e0 = int(indptr[row_offset])
@@ -165,10 +180,10 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
     if e1 - e0 != n:
         raise RuntimeError(f"batch entry count {n} != indptr span {e1 - e0}")
     if n == 0:
-        return None
-    dropped = None
+        return None, None
+    dropped = lost = None
     if drop_cols is not None:
-        data_arr, dropped = _floor_batch(rows_arr, cols_arr, data_arr, num_rows, drop_cols)
+        data_arr, dropped, lost = _floor_batch(rows_arr, cols_arr, data_arr, num_rows, drop_cols, first_offset)
     local = _place_rows(rows_arr, cols_arr, data_arr, num_rows, n_cols,
                         csr_indices[e0:e1], csr_data[e0:e1])
     for k0 in range(0, num_rows + 1, 16_000_000):      # bounded comparison temp
@@ -178,7 +193,7 @@ def _scatter_one_batch(rows_arr, cols_arr, data_arr, row_offset, num_rows,
             raise RuntimeError("batch row layout disagrees with the global indptr")
     del local
     _compact_in_place(csr_indices, e0, e1, col_map)
-    return dropped
+    return dropped, lost
 
 
 def _scatter_batch_worker(task):
@@ -186,25 +201,25 @@ def _scatter_batch_worker(task):
 
     Everything the worker needs arrives EXPLICITLY in ``task`` (spill file
     paths + SharedBuffer handles); nothing is inherited from the parent, so
-    the pool can use the fork-safe forkserver start method. Returns the rows
-    the coverage floor zeroed (batch-local) or None.
+    the pool can use the fork-safe forkserver start method. Returns what
+    :func:`_scatter_one_batch` returns.
     """
-    row_offset, num_rows, files, n_cols, bufs = task
+    row_offset, num_rows, files, n_cols, bufs, first_offset = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
     drop = bufs.get('drop_cols')
-    dropped = _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
-                                 bufs['indptr'].array, col_map,
-                                 bufs['csr_data'].array, bufs['csr_indices'].array, n_cols,
-                                 drop_cols=drop.array if drop is not None else None)
+    out = _scatter_one_batch(rows_mm, cols_mm, data_mm, row_offset, num_rows,
+                             bufs['indptr'].array, col_map,
+                             bufs['csr_data'].array, bufs['csr_indices'].array, n_cols,
+                             drop_cols=drop.array if drop is not None else None, first_offset=first_offset)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
-    return dropped
+    return out
 
 
 def _range_ids(cols_full, full_cuts):
@@ -217,11 +232,11 @@ def _range_ids(cols_full, full_cuts):
 
 
 def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
-                         col_map, csr_data, csr_indices, ip_all, n_cols, drop_cols=None):
+                         col_map, csr_data, csr_indices, ip_all, n_cols, drop_cols=None, first_offset=None):
     """Place one STORAGE BLOCK (a spill batch, or one constraint block) into
     the column-partitioned layout. With ``drop_cols`` the coverage floor
     zeroes the rows with an entry in those columns (:func:`_floor_batch`);
-    returns those rows (block-local) or None.
+    returns ``(rows, lost)`` as :func:`_scatter_one_batch` does (block-local rows).
 
     The buffers are (block, range)-major: block b's entries are contiguous,
     and inside them range 0's rows come first, then range 1's, ... so every
@@ -244,10 +259,10 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
     ip_view = ip_all[ip_off:ip_off + T * (num_rows + 1)]
     if n == 0:
         ip_view[:] = 0
-        return None
-    dropped = None
+        return None, None
+    dropped = lost = None
     if drop_cols is not None:
-        data_arr, dropped = _floor_batch(rows_local, cols_arr, data_arr, num_rows, drop_cols)
+        data_arr, dropped, lost = _floor_batch(rows_local, cols_arr, data_arr, num_rows, drop_cols, first_offset)
     vdt = np.int64 if (T * num_rows >= 2**31 or n >= 2**31) else np.int32
     key = _range_ids(cols_arr, full_cuts).astype(vdt)
     key *= vdt(num_rows)
@@ -266,28 +281,28 @@ def _scatter_block_split(rows_local, cols_arr, data_arr, num_rows, layout,
         np.subtract(seg, seg[0], out=ip_view[o:o + num_rows + 1], casting='unsafe')
         _compact_in_place(csr_indices, blk_start + s0, blk_start + s1,
                           col_map, cut=int(cuts_c[t]))
-    return dropped
+    return dropped, lost
 
 
 def _scatter_block_worker_split(task):
-    """Partitioned-layout placement of one spill batch in a worker process. Returns the rows
-    the coverage floor zeroed (block-local) or None."""
-    num_rows, files, layout, n_cols, bufs = task
+    """Partitioned-layout placement of one spill batch in a worker process. Returns what
+    :func:`_scatter_block_split` returns."""
+    num_rows, files, layout, n_cols, bufs, first_offset = task
     fr, fc, fd = files
     rows_mm = np.memmap(fr, dtype=np.int32, mode='r')
     cols_mm = np.memmap(fc, dtype=np.int32, mode='r')
     data_mm = np.memmap(fd, dtype=np.float32, mode='r')
     col_map = bufs['col_map'].array if bufs['col_map'] is not None else None
     drop = bufs.get('drop_cols')
-    dropped = _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
-                                   bufs['csr_data'].array, bufs['csr_indices'].array,
-                                   bufs['ip_all'].array, n_cols,
-                                   drop_cols=drop.array if drop is not None else None)
+    out = _scatter_block_split(rows_mm, cols_mm, data_mm, num_rows, layout, col_map,
+                               bufs['csr_data'].array, bufs['csr_indices'].array,
+                               bufs['ip_all'].array, n_cols,
+                               drop_cols=drop.array if drop is not None else None, first_offset=first_offset)
     del rows_mm, cols_mm, data_mm, col_map
     for b in bufs.values():
         if b is not None:
             b.close()
-    return dropped
+    return out
 
 
 def _setup_reduced(batched_tasks, *, max_workers, total_cols, num_frames, shm_objects, constraint_blocks):
@@ -368,6 +383,18 @@ def _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, *, num_sk
                 drop_off[:drop_cols.size] |= drop_cols
             drop_cols = drop_off
     return drop_cols
+
+
+def _offset_counts_solved(counts, lost, first_offset):
+    """``SetupResult.offset_counts_solved``: ``counts`` (int64, the offset columns' collated counts from the full
+    layout's column ``first_offset`` on, the coverage floor's own columns already zeroed) less ``lost``, the entries of
+    the rows the floor zeroed, as ``(columns, counts)`` pairs (full-layout columns, each column once per pair), in
+    place. A column the floor itself left without data stays at zero."""
+    taken = np.zeros(counts.size, dtype=np.int64)
+    for cols, n in lost:
+        taken[np.asarray(cols, dtype=np.int64) - first_offset] += n
+    np.subtract(counts, taken, out=counts, where=counts > 0)
+    return counts
 
 
 def _compaction(pixel_counts, drop_cols, constraint_blocks, total_cols, alloc):
@@ -466,6 +493,9 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     drop_cols = _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky=num_sky,
                                num_sky_blocks=num_sky_blocks, col_bases=layout.col_bases, total_cols=total_cols,
                                min_observations=min_observations, offset_min_observations=offset_min_observations)
+    first_off = int(layout.col_bases[0])
+    off_solved = (np.array(pixel_counts[first_off:], dtype=np.int64)       # as the stored path's
+                  if min_observations is not None or offset_min_observations is not None else None)
     cblocks = constraint_blocks(pixel_counts)
     active_mask, col_map, n_active = _compaction(pixel_counts, drop_cols, cblocks, total_cols,
                                                  lambda name, n, dtype: np.empty(n, dtype=dtype))
@@ -512,7 +542,11 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     table = ObservationTable(blocks, tail, n_active, model, threads=max_workers, functions=functions,
                              row_order=row_order, entries=entries if row_order == 'sky' else None)
     if drop_cols is not None:
-        rows = table.floor(drop_cols)
+        if off_solved is None:
+            rows = table.floor(drop_cols)
+        else:                                     # the floored rows' entries counted in the same pass
+            rows, lost = table.floor(drop_cols, first_column=first_off)
+            off_solved = _offset_counts_solved(off_solved, lost, first_off)
         full_b[rows] = 0
         logger.info(f"Coverage floor: {rows.size} observations of those columns set to zero "
                     "(values and right-hand side); the columns stay without data.")
@@ -526,7 +560,8 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     if pixel_cross is not None and num_sky_blocks == 2:
         pixel_cross = pixel_cross[(0, 1)]
     return SetupResult(A=table, b=full_b, pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
-                       pixel_cross=pixel_cross, pixel_rhs=pixel_rhs, active_mask=active_mask)
+                       pixel_cross=pixel_cross, pixel_rhs=pixel_rhs, active_mask=active_mask,
+                       offset_counts_solved=off_solved)
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -1560,6 +1595,13 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     drop_cols = _floor_columns(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky=num_sky,
                                num_sky_blocks=num_sky_blocks, col_bases=col_bases, total_cols=total_cols,
                                min_observations=min_observations, offset_min_observations=offset_min_observations)
+    # With a floor, the offsets' entry counts over the rows the solve keeps (SetupResult.offset_counts_solved): the
+    # collated counts, those of the floor's own offset columns zeroed above, less the entries of the rows the
+    # data-row placement zeroes (_floor_batch counts them per offset column from the first offset column on).
+    _first_off = int(col_bases[0])
+    _off_solved = (np.array(pixel_counts[_first_off:], dtype=np.int64)
+                   if min_observations is not None or offset_min_observations is not None else None)
+    _first_off_floor = _first_off if (_off_solved is not None and drop_cols is not None) else None
 
     if moments_only:
         # The pixel state, accumulated by the collation, is all the caller reads: no matrix is
@@ -1876,6 +1918,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # ----------------------------------------------------------------
     _done_par = set()
     _floored = {}           # batch id -> the batch-local rows the coverage floor zeroed
+    _lost = {}              # batch id -> (offset columns, entries of those rows there)
     _timeout = float(os.environ.get('SELFCAL_SCATTER_TIMEOUT_S', 1800))
     _batch_block = {src: _b for _b, src in enumerate(_blk_src)
                     if src is not None} if _partitioned else {}
@@ -1902,7 +1945,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                      'drop_cols': _shared.get('drop_cols')}
             _worker = _scatter_block_worker_split
             _tasks = [(_bi, (_blk_rows[_b], batch_results[_bi]['files'],
-                             _layout_of(_b), total_cols, _bufs))
+                             _layout_of(_b), total_cols, _bufs, _first_off_floor))
                       for _bi, _b in _batch_block.items()]
         else:
             _bufs = {'csr_data': _shared['csr_data'],
@@ -1911,7 +1954,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                      'drop_cols': _shared.get('drop_cols')}
             _worker = _scatter_batch_worker
             _tasks = [(_bi, (batch_row_starts[_bi], _r['num_rows'], _r['files'],
-                             total_cols, _bufs))
+                             total_cols, _bufs, _first_off_floor))
                       for _bi, _r in enumerate(batch_results)
                       if _r is not None and 'files' in _r]
         _ex = ProcessPoolExecutor(max_workers=_scatter_workers,
@@ -1919,10 +1962,12 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         try:
             _futs = {_ex.submit(_worker, _task): _key for _key, _task in _tasks}
             for _f in as_completed(_futs, timeout=_timeout * max(1, len(_futs))):
-                _rows_floored = _f.result(timeout=_timeout)     # re-raises a worker exception
+                _rows_floored, _lost_b = _f.result(timeout=_timeout)     # re-raises a worker exception
                 _done_par.add(_futs[_f])
                 if _rows_floored is not None:
                     _floored[_futs[_f]] = _rows_floored
+                if _lost_b is not None:
+                    _lost[_futs[_f]] = _lost_b
         except (_FutTimeout, BrokenProcessPool) as _e:
             logger.warning(f"Data-row placement: the parallel placement aborted "
                            f"({type(_e).__name__}: {_e}); {len(_futs) - len(_done_par)} batch(es) "
@@ -1943,17 +1988,22 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         if _partitioned:
             if batch_id not in _done_par and batch['num_rows']:
                 _b = _batch_block[batch_id]
-                _rows_floored = _scatter_block_split(
+                _rows_floored, _lost_b = _scatter_block_split(
                     batch['rows'], batch['cols'], batch['data'], _blk_rows[_b], _layout_of(_b), col_map,
-                    csr_data, csr_indices, _ip_all, total_cols, drop_cols=drop_cols)
+                    csr_data, csr_indices, _ip_all, total_cols, drop_cols=drop_cols, first_offset=_first_off_floor)
                 if _rows_floored is not None:
                     _floored[batch_id] = _rows_floored
+                if _lost_b is not None:
+                    _lost[batch_id] = _lost_b
         elif batch_id not in _done_par:
-            _rows_floored = _scatter_one_batch(
+            _rows_floored, _lost_b = _scatter_one_batch(
                 batch['rows'], batch['cols'], batch['data'], batch_row_starts[batch_id], batch['num_rows'],
-                indptr, col_map, csr_data, csr_indices, total_cols, drop_cols=drop_cols)
+                indptr, col_map, csr_data, csr_indices, total_cols, drop_cols=drop_cols,
+                first_offset=_first_off_floor)
             if _rows_floored is not None:
                 _floored[batch_id] = _rows_floored
+            if _lost_b is not None:
+                _lost[batch_id] = _lost_b
         # Free the batch refs (and its spill files, if any).
         _files = batch.get('files')
         batch_results[batch_id] = None
@@ -1976,6 +2026,9 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         logger.info(f"Coverage floor: {_n_floored} observations of those columns set to zero "
                     "(values and right-hand side); the columns stay without data.")
         _floored = drop_cols = None
+    if _off_solved is not None:
+        _off_solved = _offset_counts_solved(_off_solved, _lost.values(), _first_off)
+    _lost = None
 
     # ----------------------------------------------------------------
     # Constraint placement: scatter the constraint blocks at their reserved row ranges.
@@ -2122,7 +2175,8 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                        pixel_cross=pixel_cross, pixel_rhs=pixel_rhs,
                        active_mask=active_mask if compaction_active else None,
                        pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
-                                    if _pix_spill_dir is not None else None))
+                                    if _pix_spill_dir is not None else None),
+                       offset_counts_solved=_off_solved)
 
 
 def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
@@ -2184,6 +2238,19 @@ def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
         offset_valid_fracs.append(offset_valid_frac)
         cursor += block
     return sky_coverages, offset_coverages, offset_valid_fracs
+
+
+def parse_offset_counts(offset_counts, num_offset_groups_list, chunk_maps, num_chunks_list=None):
+    """The per-map ``(groups, layout columns)`` tables of offset-column counts that start at the first offset column
+    (:attr:`SetupResult.offset_counts_solved`), sliced as :func:`parse_pixel_counts_sky` slices the offsets' part of
+    ``pixel_counts``."""
+    out, cursor = [], 0
+    for m, (ng, cm) in enumerate(zip(num_offset_groups_list, chunk_maps)):
+        nchk = int(np.max(cm)) + 1 if num_chunks_list is None else int(num_chunks_list[m])
+        block = ng * nchk
+        out.append(np.asarray(offset_counts[cursor:cursor + block]).reshape(ng, nchk))
+        cursor += block
+    return out
 
 
 def parse_pixel_counts(pixel_counts, ref_shape, num_offset_groups_list, chunk_maps,

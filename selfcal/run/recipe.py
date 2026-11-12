@@ -647,7 +647,13 @@ class Coadd(Config):
     instrument's per-pixel maps too (SPHEREx: the wavelength maps). ``min_chunk_coverage``: a
     chunk a frame observed in a smaller fraction of its pixels the job can see takes no offset of
     its own: the instrument's renderer fills it from the frame's other chunks where it can
-    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``subtract_offsets``:
+    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``chunk_coverage``:
+    the observations that fraction counts. ``'observed'``: every observation of the chunk the build made.
+    ``'solved'``: those the solve's coverage floor (``Fit(min_observations=)``, ``Offsets(min_observations=)``)
+    left in it (the cal's ``offset_coverage_solved``), for the offset terms subtracted per observation (a
+    ``times=`` or ``basis=`` term) as well, each of whose unknowns is judged so: a frame whose observations
+    of a chunk other frames mostly do not see keeps few of them in the solve, and its offsets there, held by
+    those few, are not carried into the coadd. ``subtract_offsets``:
     subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: first subtract
     from the first offset map its mean over every frame's valid chunks (one number, recorded as the
     mosaic's ``MEANOFF``). ``frame_hook``: called on each corrected frame.
@@ -664,10 +670,13 @@ class Coadd(Config):
     subtract_offsets: bool = True
     normalize_offsets: bool = False
     frame_hook: Callable | None = None
+    chunk_coverage: Literal['observed', 'solved'] = added('observed', since='2026-11')
 
     def _validate(self):
         if self.clip is not None and self.clip <= 0:
             raise ConfigError(f"Coadd(clip={self.clip}): sigma is positive (no clip: clip=None)")
+        if self.chunk_coverage not in ('observed', 'solved'):
+            raise ConfigError(f"Coadd(chunk_coverage={self.chunk_coverage!r}): 'observed' or 'solved'")
         if self.clip is not None and not self.std:
             raise ConfigError("Coadd: the sigma clip needs the std map (std=True), or clip=None")
         if self.oversample < 1:

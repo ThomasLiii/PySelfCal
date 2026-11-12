@@ -865,15 +865,36 @@ def _basis_offset_hook(ctx, mm, cal_path):
     offset_model = ctx.offset_model(frames, variables, log=_quiet)
     terms = [(m, b.basis, b.chunk_map) for m, b in enumerate(offset_model.blocks) if b.basis is not None]
     keep = [os.path.basename(p) for p in frames]
+    solved = ctx.spec.mosaic.get('chunk_coverage', 'observed') == 'solved'
+    drop = None
     with CalFile(cal_path) as cal:
         order = {os.path.basename(p): i for i, p in enumerate(cal.reproj_list)}
+        if solved:
+            # Coadd(chunk_coverage='solved'): these terms' unknowns judged as the chunk path judges a chunk, by the
+            # coverage fraction over the observations the solve kept; a frame's observations that an unknown below
+            # Coadd(min_chunk_coverage=) carries leave the coadd (BasisOffsetSubtractor(drop=)).
+            thresh = float(ctx.spec.mosaic.get('valid_chunk_thresh', 0.01))
+            fr, obs, sol = cal.offset_coverage_frac, cal.offset_coverage, cal.offset_coverage_solved
+            if not sol:
+                raise ValueError(f"{cal_path}: no offset_coverage_solved, which Coadd(chunk_coverage='solved') judges "
+                                 "the chunks by: its solve had no coverage floor (the observed coverage is then the "
+                                 "solved one: chunk_coverage='observed'), or was made before the cal recorded it "
+                                 "(2026-11)")
+            drop = {}
+            for m, _, _cm in terms:
+                f, o, s = (np.asarray(a[m], dtype=np.float64) for a in (fr, obs, sol))
+                judged = np.where(o > 0, f * s / np.maximum(o, 1.0), 0.0)
+                drop[m] = (judged < thresh) & (f > 0)
     rows = np.array([order[k] for k in keep], dtype=np.int64)
     for m, _, cm in terms:
         n_chunks = int(np.asarray(cm).max()) + 1
         zeros = np.zeros((len(rows), n_chunks), dtype=np.float64)
         mm.offsets[m] = zeros
         mm.offset_coverage_fracs[m] = np.ones_like(zeros)
-    return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1, frame_names=frames)
+        if solved:
+            mm.offset_coverage_solved[m] = None       # judged here, not by the chunk path
+    return BasisOffsetSubtractor(cal_path, terms, variables=variables, oversample_factor=1, frame_names=frames,
+                                 drop=drop)
 
 
 def _mosaic_variables(ctx, mm):
