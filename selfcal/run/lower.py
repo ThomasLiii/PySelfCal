@@ -108,13 +108,16 @@ def coadd_options(recipe, compute, instrument) -> dict:
     c = recipe.coadd
     if c is None:
         return {}
-    return {'apply_mask': c.use_mask, 'apply_weight': c.shot_noise_weights,
-            'ignore_list': _ignore(c.ignore_flags, instrument), 'make_std_map': c.std,
-            'apply_sigma_clipping': c.clip is not None, 'sigma': 2.0 if c.clip is None else float(c.clip),
-            'apply_offset': c.subtract_offsets, 'normalize_offset': c.normalize_offsets,
-            'valid_chunk_thresh': float(c.min_chunk_coverage),
-            'cache_batch_size': recipe.numerics.mosaic_batch, 'coadd_batch_size': recipe.numerics.coadd_batch,
-            'cache_intermediate': compute.cache_frames, 'max_workers': compute.resolved_coadd_workers}
+    out = {'apply_mask': c.use_mask, 'apply_weight': c.shot_noise_weights,
+           'ignore_list': _ignore(c.ignore_flags, instrument), 'make_std_map': c.std,
+           'apply_sigma_clipping': c.clip is not None, 'sigma': 2.0 if c.clip is None else float(c.clip),
+           'apply_offset': c.subtract_offsets, 'normalize_offset': c.normalize_offsets,
+           'valid_chunk_thresh': float(c.min_chunk_coverage),
+           'cache_batch_size': recipe.numerics.mosaic_batch, 'coadd_batch_size': recipe.numerics.coadd_batch,
+           'cache_intermediate': compute.cache_frames, 'max_workers': compute.resolved_coadd_workers}
+    if c.chunk_coverage != 'observed':        # the default stays out, so a recipe without it lowers as before
+        out['chunk_coverage'] = c.chunk_coverage
+    return out
 
 
 def _pass_clip(clip, ignore_flags=None) -> PassClip:

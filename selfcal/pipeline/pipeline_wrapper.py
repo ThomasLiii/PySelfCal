@@ -1686,6 +1686,18 @@ class Mosaicker(Reprojector):
         logger.info(f"Calibration loaded from {cal_path} ({len(self.offsets)} map(s))")
         self.cal_path = cal_path
 
+    def _solved_fracs(self, m, fracs):
+        """Map ``m``'s coverage fractions over the observations the solve kept: ``fracs`` (the observed ones, as
+        stored) times the solved over the observed counts (0 where nothing was observed); ``fracs`` itself for a map
+        without a solved record (None)."""
+        solved = self.offset_coverage_solved[m]
+        if solved is None:
+            return fracs
+        observed = self.offset_coverages[m]
+        solved = np.asarray(solved.values if isinstance(solved, FrameRows) else solved, dtype=np.float64)
+        observed = np.asarray(observed.values if isinstance(observed, FrameRows) else observed, dtype=np.float64)
+        return np.where(observed > 0, np.asarray(fracs, dtype=np.float64) * solved / np.maximum(observed, 1.0), 0.0)
+
     def make_mosaic(self, chunk_maps: list[np.ndarray], grid_valid_weight: np.ndarray,
         oversample_factor: int = 1, apply_mask: bool = True, apply_weight: bool = True,
         max_workers: int = 20,
@@ -1697,7 +1709,8 @@ class Mosaicker(Reprojector):
         cache_intermediate: bool = False, det_aux: np.ndarray | None = None,
         postprocess_func: Callable | None = None,
         valid_chunk_thresh: float = 0.01,
-        wav_maps: tuple[np.ndarray, np.ndarray] | None = None, keep_raw: bool = False) -> dict:
+        wav_maps: tuple[np.ndarray, np.ndarray] | None = None, keep_raw: bool = False,
+        chunk_coverage: str = 'observed') -> dict:
         """Build coadded maps applying per-map calibration offsets.
 
         ``keep_raw`` hands ``postprocess_func`` each frame's stored values and flag
@@ -1765,6 +1778,16 @@ class Mosaicker(Reprojector):
         valid_chunk_thresh : float, optional
             Minimum per-map coverage fraction below which a chunk's offset is
             zeroed out (and refilled, or its pixels left out).
+        chunk_coverage : {'observed', 'solved'}, optional
+            The observations the coverage fraction counts: every one the
+            build made (``offset_coverage_frac``, the default), or those the
+            solve's coverage floor left in it (``offset_coverage_solved``):
+            a chunk whose observations the floor mostly zeroed, held only by
+            the few the solve kept, then counts as the chunk of a frame that
+            observed it little. Still judged inside the solve's window by its
+            observed fraction. A map whose ``offset_coverage_solved`` is None
+            (set so by the caller for the terms it subtracts per observation)
+            keeps the observed rule.
         wav_maps : (np.ndarray, np.ndarray) or None, optional
             ``(band centre, band width)`` detector-grid maps. When given
             (requires ``make_std_map`` and ``apply_sigma_clipping``), the
@@ -1799,6 +1822,14 @@ class Mosaicker(Reprojector):
         self.chunk_maps = chunk_maps
 
         offset_lists_param = None
+        if chunk_coverage not in ('observed', 'solved'):
+            raise ValueError(f"chunk_coverage={chunk_coverage!r}: 'observed' or 'solved'")
+        if (apply_offset and chunk_coverage == 'solved' and self.offsets
+                and getattr(self, 'offset_coverage_solved', None) is None):
+            raise ValueError(f"{getattr(self, 'cal_path', 'the calibration')}: no offset_coverage_solved, which "
+                             "chunk_coverage='solved' judges the "
+                             "chunks by: its solve had no coverage floor (the observed coverage is then the solved "
+                             "one: chunk_coverage='observed'), or was made before the cal recorded it (2026-11)")
         if apply_offset:
             if self.offsets:
                 if len(self.offsets) != K:
@@ -1815,7 +1846,7 @@ class Mosaicker(Reprojector):
                     off = (self.offsets[m].values if grouped else self.offsets[m]).copy()
                     fracs = self.offset_coverage_fracs[m]
                     fracs = fracs.values if isinstance(fracs, FrameRows) else fracs
-                    valid = fracs >= valid_chunk_thresh
+                    valid = (fracs if chunk_coverage == 'observed' else self._solved_fracs(m, fracs)) >= valid_chunk_thresh
                     if m == 0:
                         # Legacy compat: report mean_offset on map 0 only.
                         if grouped:

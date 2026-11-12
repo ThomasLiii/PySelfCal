@@ -96,10 +96,16 @@ class BasisOffsetSubtractor:
     variables, their frame values aligned with ``frame_names`` (default: the
     cal's frame list). The offset at observation ``i`` of chunk weights
     ``w_c(i)`` is ``Σ_c w_c(i) Σ_k a[c, k] φ_k(v_i)``.
+
+    ``drop``: None, or per map ``m`` a boolean ``(cal frames, n_chunks * n)``
+    over the unknowns (the layout of ``offsets/map_<m>``): a frame's
+    observations that a true unknown carries (``w_c(i) φ_k(v_i) != 0``) are
+    set to NaN, so they leave the coadd (``Coadd(chunk_coverage='solved')``).
     """
 
-    def __init__(self, cal_path, terms, variables=None, oversample_factor=1, frame_names=None):
+    def __init__(self, cal_path, terms, variables=None, oversample_factor=1, frame_names=None, drop=None):
         self.terms = [(int(m), b, np.asarray(cm)) for m, b, cm in terms]
+        self.drop = drop or {}
         self.variables = variables
         self.oversample_factor = oversample_factor
         with CalFile(cal_path) as cal:
@@ -124,6 +130,7 @@ class BasisOffsetSubtractor:
             if obs.n == 0:
                 continue
             total = np.zeros(obs.n, dtype=np.float64)
+            out = None
             for m, basis, cm in self.terms:
                 if cm.shape != shape:
                     continue
@@ -134,8 +141,15 @@ class BasisOffsetSubtractor:
                 contrib = compute_chunk_contrib(cm, interp)                       # (n_chunks, n_obs)
                 off = np.asarray(contrib.T @ a)                                   # (n_obs, n)
                 total += np.nan_to_num((off * phi).sum(axis=1))
+                d = self.drop.get(m)
+                if d is not None and d[i].any():
+                    carried = np.asarray(contrib.T @ d[i].reshape(n_chunks, nb).astype(np.float64)) * (phi != 0)
+                    hit = carried.any(axis=1)
+                    out = hit if out is None else out | hit
             rows, cols = obs.pixels
             sub_data[rows, cols] -= total.astype(sub_data.dtype)
+            if out is not None and out.any():
+                sub_data[rows[out], cols[out]] = np.nan
         return sub_data
 
 
