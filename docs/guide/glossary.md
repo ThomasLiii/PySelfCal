@@ -97,7 +97,9 @@ fraction of the chunk's pixels the frame covered, counted over the pixels the jo
 for a chunk with none of them). The damping rows are weighted by it, and the mosaic sets to zero the
 offset of a frame and chunk whose covered fraction is below `sc.Coadd(min_chunk_coverage=)`. When
 the fraction is above 0, the chunk map's renderer fills that chunk in from the frame's other chunks
-where it can, and the chunk's pixels in that frame are left out of the coadd otherwise. See
+where it can, and the chunk's pixels in that frame are left out of the coadd otherwise. With a coverage floor the cal
+also holds `offset_coverage_solved/map_<m>`, the observations the floor left in the solve, which
+`sc.Coadd(chunk_coverage='solved')` judges the chunks by. See
 [The mosaic](concepts.md#the-mosaic).
 
 ## Damping { #damping }
