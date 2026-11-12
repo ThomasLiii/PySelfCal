@@ -103,9 +103,11 @@ class BasisOffsetSubtractor:
     set to NaN, so they leave the coadd (``Coadd(chunk_coverage='solved')``).
     """
 
+    drop = None
+
     def __init__(self, cal_path, terms, variables=None, oversample_factor=1, frame_names=None, drop=None):
         self.terms = [(int(m), b, np.asarray(cm)) for m, b, cm in terms]
-        self.drop = drop or {}
+        self.drop = drop
         self.variables = variables
         self.oversample_factor = oversample_factor
         with CalFile(cal_path) as cal:
@@ -141,7 +143,7 @@ class BasisOffsetSubtractor:
                 contrib = compute_chunk_contrib(cm, interp)                       # (n_chunks, n_obs)
                 off = np.asarray(contrib.T @ a)                                   # (n_obs, n)
                 total += np.nan_to_num((off * phi).sum(axis=1))
-                d = self.drop.get(m)
+                d = self.drop.get(m) if self.drop else None
                 if d is not None and d[i].any():
                     carried = np.asarray(contrib.T @ d[i].reshape(n_chunks, nb).astype(np.float64)) * (phi != 0)
                     hit = carried.any(axis=1)
