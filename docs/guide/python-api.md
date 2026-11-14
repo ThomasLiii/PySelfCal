@@ -598,6 +598,7 @@ are what is slow, and the same otherwise.
 | `basis="cosine"` | `"cosine"` or `"polynomial"` |
 | `terms=None` | the sky terms to deflate (None: all) |
 | `storage=None` | the precision of the deflation's vectors: None, the products' (float32 with `float32=True`); `"float64"` always; `"float32"` needs float32 products |
+| `direct=True` | `False`: only the patterns' offset responses are made, for a term with `exclude=sc.SkySignature(...)`; nothing is solved directly and no vector is stored, the iterations run on every unknown (the same solution in more iterations; for a system whose pattern vectors would not fit in memory) |
 
 Read it with three facts in mind:
 

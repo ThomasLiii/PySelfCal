@@ -282,7 +282,11 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   goes into the map as that field. The signature comes from the system itself (the deflation's
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
-  too) but the constant, instead of the polynomials up to a degree.
+  too) but the constant, instead of the polynomials up to a degree. The deflation keeps two vectors
+  per pattern over every unknown; on a system where they would not fit in memory,
+  `sc.Deflate(..., direct=False)` makes the signature alone: its setup stops after the patterns'
+  offset responses, the exclusion is the same, and the patterns are left to the iterations (the same
+  solution, in more iterations).
 - `sc.Offsets(exclude=sc.Overlap('a', 'b'))`: the term carries no detector pattern that the offset
   terms `a` and `b` can also make with the same coefficients in every frame (their fixed patterns).
   Two terms that can make the same pattern leave the data unable to say which holds it; with the

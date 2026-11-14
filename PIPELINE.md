@@ -398,6 +398,14 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   and the column's norm, taken in the same order, so the setup's results are the same bits. A constraint on a sky
   term (`sc.Sky(exclude=...)`) changes the patterns, and the setup then keeps them as an array, as does
   `sc.Deflate(exclude=sc.Degenerate(...))` from its re-basing on.
+- **The sky-signature exclusion without the deflation's vectors** (`sc.Deflate(direct=False)`): a deflated solve
+  keeps the pattern directions and their images, `2 × 4 × patterns` bytes per covered unknown with float32 products
+  and twice that while its setup makes them, which on a large field with several sky terms outgrows the matrix itself
+  (120 patterns: 0.95 kB per sky unknown). A model that needs the deflation only for `sc.Offsets(exclude=sc.SkySignature(...))`
+  can stop the setup after its first pass: the exclusion is made from the patterns' offset responses as before, and
+  the solver iterates on every unknown. The same least-squares solution; the patterns' amplitudes are reached by
+  iterating, as slowly as the data see them (the setup's first pass keeps about
+  `8 × (patterns × offsets + patterns × 2²¹)` bytes per thread while it runs).
 - **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
   (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
   its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages

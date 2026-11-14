@@ -348,7 +348,8 @@ class SkySignature(Config):
       detector-fixed slope stays in the offsets whatever orientations the frames have.
 
     The signature is the term's part of the offsets' least-squares response to each field, computed from the system
-    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
+    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``
+    (``Deflate(direct=False)`` makes the signature and leaves the patterns to the iterations),
     and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes),
     2 (the planes and the three quadratics) or ``'all'`` (every pattern of ``Deflate(order)``, the cosines included,
     except the constant: the mean is a gauge of the sky and the per-frame constants, not of a slope-like term, and
