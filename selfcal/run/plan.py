@@ -151,6 +151,10 @@ def describe_deflate(deflate) -> str:
     if ex is not None:
         rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '
                  'excluded from the sky (a hard constraint in map space), the space re-based, the solve on the constrained system')
+    if not getattr(deflate, 'direct', True):
+        return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}: the offsets "
+                f"that absorb them made (for the terms that exclude sky signatures), the patterns left to the "
+                f"iterations{rule}")
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
             f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 

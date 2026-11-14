@@ -47,6 +47,13 @@ cannot see: :meth:`Deflation.constrain`); CGLS's gradients stay there by constru
 the two projections only. At the end, the part in the space is solved again against the final
 iterate in float64 (one pass over the matrix), which removes the rounding of ``P``.
 
+**The responses alone.** ``Deflate(direct=False)`` stops after the patterns' offset responses (the first
+pass over the matrix and the block solve): the exclusions made from them (``Offsets(exclude=SkySignature)``)
+join the column constraints, and the patterns themselves are left to the solver's iterations. No basis
+``V``, no ``W``, no start in the space: none of the cost below but the first pass, for a system whose
+pattern vectors would not fit in memory. The solution is the same least-squares solution; the solver
+reaches the patterns' amplitudes by iterating, as slowly as the data see them.
+
 **Cost.** Setup: the patterns' products with the matrix in float64, two passes over it with all
 the patterns at once (forward and transposed), plus one for the start; per iteration, four passes over
 ``V`` and ``W`` (kept in the products' precision, ``2 x 4 x patterns`` bytes per covered column with
@@ -1005,14 +1012,24 @@ class Deflation:
     solver gets), :meth:`operator` (the solver's operator), :meth:`full` (an iterate as the
     solution), :meth:`resolve` (the part in the space again, against an iterate) and :meth:`summary`
     (what the solve's record keeps). :meth:`bind` gives it the solver's operator and the matrix before
-    :meth:`start`. Only the columns with entries take part (all of a compacted system's)."""
+    :meth:`start`. Only the columns with entries take part (all of a compacted system's).
+
+    With ``settings.direct`` False the object is the setup's first pass alone (:attr:`direct` False): it holds the
+    column constraints (:attr:`projector`) and the summary, and none of the solve's methods apply."""
 
     def __init__(self, storage, b, *, scale, active_mask, ref_shape, sky_names, settings, threads=1,
                  projector=None, signatures=None, held=None):
         t0 = time.perf_counter()
         self.settings = settings
+        self.direct = bool(getattr(settings, 'direct', True))    # False: the offset responses alone (no V, no W)
         self.exclusion_info = None                    # Deflate(exclude=): the degenerate directions excluded (record)
         self.signature_info = None                    # Offsets(exclude=SkySignature): the terms constrained (record)
+        if not self.direct and not signatures:
+            raise ValueError("Deflate(direct=False) makes the patterns' offset responses alone, and nothing here reads "
+                             "them: no offset term has exclude=SkySignature(...)")
+        if not self.direct and getattr(settings, 'exclude', None) is not None:
+            raise ValueError("Deflate(direct=False, exclude=Degenerate(...)): the degenerate directions come from the "
+                             "decomposition of the pattern space, which direct=False does not make")
         if signatures and getattr(settings, 'exclude', None) is not None:
             raise ValueError("Offsets(exclude=SkySignature(...)) together with Deflate(exclude=Degenerate(...)) is not "
                              "supported: the second re-bases the pattern space on sky constraints, the first constrains "
@@ -1318,6 +1335,23 @@ class Deflation:
             del res
             if signatures:
                 X = self._exclude_signatures(signatures, X, G, info, scale, n, n_sky_S, n_off)
+            if not self.direct:
+                # The responses are made and the exclusions built from them: the patterns are left to the iterations,
+                # so the second pass, the basis and its images are not made. What is kept: the column constraints and
+                # the summary's numbers.
+                del G, R, X, Zt, patterns
+                self.S = self._colmap = None
+                self.setup_s = time.perf_counter() - t0
+                logger.info(
+                    f"Deflation: the patterns' offset responses alone (Deflate(direct=False)): solved on {info['blocks']} "
+                    f"blocks (largest {info['largest']}, {info['zero_eigenvalues']} zero eigenvalues"
+                    + (f"; {info['hubs']} columns shared by many frames eliminated by a Schur complement" if info.get('hubs') else '')
+                    + (f"; {info['held']} columns of the terms Deflate(offsets=) leaves out held at zero" if info.get('held') else '')
+                    + f"), normal-equation residual {self.pairing_residual:.1e}; the {k} patterns are left to the "
+                    f"iterations (no stored directions); pass {t_pass1:.1f} s (the offsets' normal matrix {t_g:.1f} s of "
+                    f"a thread's, with the reduction), blocks {time.perf_counter() - t:.1f} s; setup {self.setup_s:.1f} s")
+                self.close()
+                return
             if Zt is None:
                 patterns.offsets = np.ascontiguousarray(-X)       # the paired patterns' offset part (pass 2 reads it)
             else:
@@ -2298,6 +2332,14 @@ class Deflation:
     def summary(self) -> dict:
         """What the solve's record keeps (all reproducible run to run; the setup time is apart)."""
         st = self.settings
+        if not self.direct:                               # the offset responses alone: no decomposition, no amplitudes
+            out = {'basis': str(st.basis), 'order': int(st.order), 'terms': None if st.terms is None else list(st.terms),
+                   'patterns': len(self.labels), 'direct': False, 'columns': int(self.nS),
+                   'pairing_residual': float(self.pairing_residual), 'pattern_labels': list(self.labels),
+                   'signature_exclusions': self.signature_info}
+            if self.held_columns:
+                out['held_columns'] = self.held_columns
+            return out
         out = {'basis': str(st.basis), 'order': int(st.order), 'storage': self.store.name,
                 'terms': None if st.terms is None else list(st.terms), 'patterns': len(self.labels),
                 'kept': self.kept, 'gauges': self.gauges,
