@@ -338,7 +338,7 @@ Compare quantities that a change of gauge leaves alone:
   from the exposure's DQ extension and is resampled bit by bit during the reprojection. `sc.Fit`
   and `sc.Coadd` each have their own `use_mask` and `ignore_flags`, so the solve can leave out
   pixels that the mosaic uses, or the reverse.
-- **Outlier rejection in the solve.** With `sc.Fit(clip=5.0)`, every sample is scored against its
+- **Outlier rejection in the solve.** Off by default. With `sc.Fit(clip=5.0)`, every sample is scored against its
   frame's median, in units of `1.4826 · MAD` (the median absolute deviation), and samples scoring
   above the threshold are left out of the solve
   ([`find_outliers`][selfcal.geometry.map_helper.find_outliers]). The score uses the frame's own
