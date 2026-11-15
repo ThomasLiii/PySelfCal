@@ -190,9 +190,6 @@ def model_of(kind, slope_exclude=None):
                     variables={'band_pos': sc.DetectorMap(band_position)} if kind == 'poly_slope' else {})
 
 
-NO_CLIP = sc.Clip(1e6)          # noise-free data: nothing is an outlier
-
-
 def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False):
     """The products of an ``n``-pass solve of ``kind``'s field: the first solve's cal, then each pass's. ``tied``: the
     x-slopes of ``poly_slope`` exclude every sky signature of a deflation of order 2 (a constraint across frames)."""
@@ -204,8 +201,7 @@ def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False):
     model = model_of(kind, slope_exclude=sc.SkySignature('all')) if tied else model_of(kind)
     fit = sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0, **({'deflate': sc.Deflate(2)} if tied else {}))
     recipe = sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4), name=name)
-    passes = sc.Passes(n, order=order, sky_clip=NO_CLIP,
-                       offset=sc.Refit(clip=NO_CLIP, min_pixels=0))
+    passes = sc.Passes(n, order=order, offset=sc.Refit(min_pixels=0))      # no pass clips, as by default
     field = sc.Field(field_dir, ToyInstrument(), PIX)
     field.calibrate(recipe, jobs=sc.Job('All'), passes=passes,
                     compute=sc.Compute(os.path.join(root, kind, f'scratch_{name}'), workers=2, stage=None))

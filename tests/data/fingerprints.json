@@ -3383,6 +3383,185 @@
     "type": "sky"
    }
   },
+  "passes_init_flags/cal": {
+   "fingerprint": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_init_flags/pass 2 sky": {
+   "fingerprint": "4ea1f31e2aad623ab0ec3de1948a2650760133578fdd21b9f21894269b088da4",
+   "inputs": {
+    "index": 2,
+    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
   "passes_init_sigma/cal": {
    "fingerprint": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
    "inputs": {
@@ -3675,6 +3854,206 @@
       "type": "selfcal.run.recipe:Clip",
       "variable": null
      },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_no_clips/cal": {
+   "fingerprint": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_no_clips/pass 2 off": {
+   "fingerprint": "508b03d10b5868991abaa78f171212d17ae63a858bc202e0377dafef6a10fbbe",
+   "inputs": {
+    "index": 2,
+    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_no_clips/pass 3 sky": {
+   "fingerprint": "878c89290be8bc5df68ecf2c02e42236e3c9032e565101befa4bd670cebd8a4a",
+   "inputs": {
+    "index": 3,
+    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
      "sky_merge": "combine",
      "type": "selfcal.run.schedule:Passes"
     },

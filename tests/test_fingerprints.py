@@ -379,9 +379,14 @@ def cases(files):
         Case('numerics', CAMERA,
              sc.Recipe(sc.continuum(), numerics=sc.Numerics(4, batch=10, mosaic_batch=20, coadd_batch=30,
                                                             rmatvec_threads=2), name='n')),
-        # the passes
+        # the passes. Until 2026-11 a schedule clipped by default (the SKY passes at 5 sigma, the OFFSET passes at
+        # 2.5); the cases made then state those clips, and their products keep their fingerprints
         Case('passes_default', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='np'), aromatic,
+             passes=sc.Passes(3, sky_clip=5.0, offset=sc.Refit(clip=2.5))),
+        Case('passes_no_clips', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='np'), aromatic,
              passes=sc.Passes(3)),
+        Case('passes_init_flags', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='np'), aromatic,
+             passes=sc.Passes(2, order='sky_first', init_ignore_flags=())),
         Case('passes_settings', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='np'), aromatic,
              passes=sc.Passes(3, order='sky_first', ends_on_offset=True,
                               init_clip=sc.Clip(2.5, per=SUBCHANNEL, ignore_flags=(21,)),
@@ -389,7 +394,7 @@ def cases(files):
                               offset=sc.Refit(clip=sc.Clip(2.0, per=SUBCHANNEL), bright_cut=0.05, min_pixels=100),
                               stop_tol=1e-4, sky_merge='stitch', keep_moments=True)),
         Case('passes_init_sigma', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='np'), aromatic,
-             passes=sc.Passes(5, init_clip=4.0)),
+             passes=sc.Passes(5, init_clip=4.0, sky_clip=5.0, offset=sc.Refit(clip=2.5))),
         # the tiles
         Case('tiles_grid', CAMERA, sc.Recipe(sc.continuum(), coadd=None, name='t'),
              tiles=sc.Tiles((1, 2), overlap=10, names=('W', 'E'), assign='overlap', halo=5),
@@ -397,7 +402,7 @@ def cases(files):
         Case('tiles_grid_named_by_the_engine', CAMERA, sc.Recipe(sc.continuum(), coadd=None, name='t4'),
              tiles=sc.Tiles((2, 2), overlap=20), tile_frames=tuple(FRAMES[i::4] for i in range(4))),
         Case('tiles_boxes_passes', sc.SPHEREx(4), sc.Recipe(polybasis, coadd=None, name='tp'), aromatic,
-             passes=sc.Passes(3),
+             passes=sc.Passes(3, sky_clip=5.0, offset=sc.Refit(clip=2.5)),
              tiles=sc.Tiles(boxes={'north': (0, 70, 0, 160), 'south': (50, 120, 0, 160)}, tile_name='{name}_t{tile}',
                             stitched_name='{name}_all'),
              tile_frames=(FRAMES[:14], FRAMES[10:])),
@@ -497,10 +502,10 @@ def plan_entries(root):
         ('plan camera maps', camera_maps, camera_maps.plan(sc.Recipe(sc.continuum(), coadd=None, name='m'), jobs=ALL)),
         ('plan euclid', euclid, euclid.plan(sc.Recipe(sc.continuum(), name='e'), jobs=sc.Job('J'))),
         ('plan prism passes', prism, prism.plan(sc.Recipe(SPECTRAL, coadd=None, name='np'), jobs=ALL,
-                                                passes=sc.Passes(3))),
+                                                passes=sc.Passes(3, sky_clip=5.0, offset=sc.Refit(clip=2.5)))),
         ('plan prism tiles passes', prism, prism.plan(
             sc.Recipe(SPECTRAL, coadd=None, name='tp'), jobs=ALL,
-            passes=sc.Passes(4, order='sky_first', sky_merge='stitch'),
+            passes=sc.Passes(4, order='sky_first', sky_merge='stitch', sky_clip=5.0, offset=sc.Refit(clip=2.5)),
             tiles=sc.Tiles(boxes={'north': (0, 70, 0, 160), 'south': (50, 120, 0, 160)}))),
     ]
     out = {}
