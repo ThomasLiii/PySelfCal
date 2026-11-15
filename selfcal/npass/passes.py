@@ -36,9 +36,9 @@ def offset_spec(spec, edges_fn, hook):
     clip = spec.passes.refit_clip
     setup = dict(spec.setup)
     setup['fixed_sky'] = True
-    setup['outlier_thresh'] = clip.sigma
+    setup['outlier_thresh'] = None if clip is None else clip.sigma       # the pass's own clip, not the fit's
     setup.pop('outlier_groups', None)                # the pass's clip alone decides the grouping
-    if clip.grouped:
+    if clip is not None and clip.grouped:
         setup['outlier_group_edges'] = edges_fn()
     else:
         setup.pop('outlier_group_edges', None)
@@ -152,7 +152,7 @@ class PassRunner:
         (``sky_merge="combine"``), or each tile solved and the tiles stitched."""
         spec, ctx, p = self.spec, self.ctx, self.p
         clip = p.sky_clip
-        edges = self.edges() if clip.grouped else None
+        edges = self.edges() if clip is not None and clip.grouped else None
         calk = dict(spec.setup)
         for k in ("outlier_thresh", "outlier_group_edges", "outlier_groups"):
             calk.pop(k, None)
@@ -182,7 +182,7 @@ class PassRunner:
             else:
                 frame_list = list(files)
             print(f"\n[npass] pass {i} SKY [{name}]: {len(frame_list)} frames, closed form given the offsets, "
-                  f"clip {clip.sigma}{' per-subch' if edges is not None else ''}",
+                  + ("no clip" if clip is None else f"clip {clip.sigma}{' per-subch' if edges is not None else ''}"),
                   flush=True)
             cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=nvme)
             cc.reproj_list = frame_list
@@ -196,7 +196,7 @@ class PassRunner:
             cc.setup_lsqr(offset_model=OffsetModel.sky_only(), grid_valid_weight=self.grid_valid,
                           oversample_factor=1,
                           sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
-                          postprocess_func=subtract, outlier_thresh=float(clip.sigma),
+                          postprocess_func=subtract, outlier_thresh=None if clip is None else float(clip.sigma),
                           outlier_group_edges=edges,
                           sky_rhs_moments=True, moments_only=True, batch_spill_dir=spec.scratch, **calk)
             if p.sky_merge == "combine":

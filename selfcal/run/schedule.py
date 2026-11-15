@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Literal
 
-from ..config.base import Config, ConfigError
+from ..config.base import Config, ConfigError, added
 from .recipe import Clip, as_clip
 
 __all__ = ['Tiles', 'Refit', 'Passes', 'Snapshots', 'Monitor', 'schedule', 'as_snapshots', 'as_monitor']
@@ -67,18 +67,17 @@ class Refit(Config):
     """The N-pass OFFSET pass: the offsets refitted against the fixed sky -- the recipe's own offset
     terms (whatever the model has, with its constraints and priors), every frame
     solved directly from its normal equations. Nothing about the offsets is chosen here.
-    ``clip``: of the residual (per frame unless chunk groups are given). ``bright_cut``: only the
+    ``clip``: an outlier clip of the residual (None, the default: no clip; a sigma or a :class:`Clip`, per
+    frame unless chunk groups are given). ``bright_cut``: only the
     observations whose modelled sky is below it (all of a frame's when fewer than ``min_pixels``
     remain; None: every observation)."""
     _: KW_ONLY
-    clip: Clip = field(default_factory=lambda: Clip(2.5))
+    clip: float | Clip | None = None
     bright_cut: float | None = None
     min_pixels: int = 5000
 
     def _validate(self):
         object.__setattr__(self, 'clip', as_clip(self.clip, 'Refit(clip=...)'))
-        if self.clip is None:
-            raise ConfigError("Refit(clip=None): the offset refit always clips; give a sigma")
         if self.min_pixels < 0:
             raise ConfigError("Refit: min_pixels is at least 0")
 
@@ -97,8 +96,13 @@ class Passes(Config):
     and per-frame OFFSET passes alternate, ``order`` deciding which comes first.
 
     ``init_clip``: the first pass's clip (None: the recipe's ``Fit.clip``); ``sky_clip``: the SKY
-    passes'; ``offset``: the OFFSET pass (:class:`Refit`). Clips are per frame unless chunk groups
-    are given (``sc.Clip(5.0, per=SUBCHANNEL)``). ``stop_tol``: stop early once the sky changes
+    passes' (None, the default: no clip); ``offset``: the OFFSET pass (:class:`Refit`, whose clip is
+    off by default too). A clip is a sigma or a :class:`~selfcal.run.recipe.Clip`, per frame unless chunk
+    groups are given (``sc.Clip(5.0, per=SUBCHANNEL)``). ``init_ignore_flags``: the data-quality bits the
+    first pass ignores (None: the fit's, ``Fit(ignore_flags=)``, which the SKY and OFFSET passes always
+    read): with ``Passes(2, order="sky_first", init_ignore_flags=())`` and ``Fit(ignore_flags=(b,))`` the
+    joint solve fits the offsets on the pixels without any flag and the SKY pass makes the sky from those
+    and the ones flagged with bit ``b`` alone. ``stop_tol``: stop early once the sky changes
     less than this. ``sky_merge``: how tiled SKY passes are merged (``"combine"``: summed normal
     equations, exact; ``"stitch"``: per-tile solves, Fisher-stitched). ``keep_moments``: keep
     those intermediates. A schedule ending on an OFFSET pass is refused (its last sky would be a
@@ -108,20 +112,24 @@ class Passes(Config):
     _: KW_ONLY
     order: Literal['sky_first', 'offset_first'] = 'offset_first'
     init_clip: float | Clip | None = None
-    sky_clip: float | Clip = field(default_factory=lambda: Clip(5.0))
+    sky_clip: float | Clip | None = None
     offset: Refit = field(default_factory=Refit)
     stop_tol: float = 0.0
     sky_merge: Literal['combine', 'stitch'] = 'combine'
     keep_moments: bool = False
     ends_on_offset: bool = False
+    init_ignore_flags: tuple[int, ...] | None = added(None, since='2026-11')
 
     def _validate(self):
         if self.n < 1:
             raise ConfigError(f"Passes(n={self.n}): at least 1")
         object.__setattr__(self, 'init_clip', as_clip(self.init_clip, 'Passes(init_clip=...)'))
         object.__setattr__(self, 'sky_clip', as_clip(self.sky_clip, 'Passes(sky_clip=...)'))
-        if self.sky_clip is None:
-            raise ConfigError("Passes(sky_clip=None): the SKY passes always clip; give a sigma")
+        if self.init_ignore_flags is not None:
+            if self.init_clip is not None and self.init_clip.ignore_flags is not None:
+                raise ConfigError("Passes: the first pass's ignored flags are given twice (init_ignore_flags= and "
+                                  "init_clip=Clip(..., ignore_flags=)); give them once")
+            object.__setattr__(self, 'init_ignore_flags', tuple(int(b) for b in self.init_ignore_flags))
         if self.n > 1 and schedule(self.n, self.order)[-1] == 'offset' and not self.ends_on_offset:
             raise ConfigError(f"Passes(n={self.n}, order={self.order!r}) ends on an OFFSET pass, which leaves the "
                               f"sky of the pass before; use n={self.n + 1} (or the other order), or say "

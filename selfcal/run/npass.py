@@ -38,7 +38,7 @@ resumed pass reuses.
 The settings are a :class:`~selfcal.run.runspec.PassesSpec` (from
 :class:`~selfcal.run.schedule.Passes`). Pass 1 is the ``cal`` task on the same run (tiled when the
 run has tiles; its tiles are then also the memory tiling of every SKY and OFFSET pass); the INIT
-clip replaces only the clip of the run's ``setup_lsqr`` keywords for that pass. Frames are
+clip and the INIT's ignored flags replace only those of the run's ``setup_lsqr`` keywords for that pass. Frames are
 re-staged per tile. Every pass damps the sky terms as the INIT does
 (:attr:`~selfcal.run.engine.RunContext.sky_damping`). The grouped clips use
 :meth:`~selfcal.run.engine.RunContext.clip_group_edges`.
@@ -55,10 +55,12 @@ __all__ = ["describe_schedule", "run_npass"]
 
 
 def _init_spec(spec, edges_fn):
-    """The pass-1 run: ``spec`` with the INIT clip applied to its ``setup_lsqr`` keywords. Nothing
-    else changes, so ``n = 1`` without an INIT clip is exactly the ``cal`` task."""
+    """The pass-1 run: ``spec`` with the INIT clip and the INIT's ignored flags applied to its ``setup_lsqr``
+    keywords. Nothing else changes, so ``n = 1`` without either is exactly the ``cal`` task."""
     clip = spec.passes.init_clip
     setup = dict(spec.setup)
+    if spec.passes.init_ignore_flags is not None:
+        setup['ignore_list'] = list(spec.passes.init_ignore_flags)
     if clip is not None:
         setup['outlier_thresh'] = clip.sigma
         if clip.ignore_flags is not None:
@@ -71,7 +73,7 @@ def _init_spec(spec, edges_fn):
 
 
 def _clip(clip):
-    return f"{clip.sigma:g} {'grouped' if clip.grouped else 'per frame'}"
+    return "none" if clip is None else f"{clip.sigma:g} {'grouped' if clip.grouped else 'per frame'}"
 
 
 def describe_schedule(spec) -> list[str]:
@@ -84,6 +86,8 @@ def describe_schedule(spec) -> list[str]:
     for i, t in enumerate(sched, start=1):
         if t == "init":
             over = f"clip {_clip(p.init_clip)}" if p.init_clip is not None else "the fit's clip"
+            if p.init_ignore_flags is not None:
+                over += f", ignoring the flags {list(p.init_ignore_flags)}"
             lines.append(f"  pass {i}: INIT   joint LSQR iter_lim={spec.lsqr.get('iter_lim')} "
                          f"via {how1}; {over}" + ("  -> product = the plain cal" if p.n == 1 else ""))
         elif t == "sky":
