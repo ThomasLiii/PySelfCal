@@ -199,6 +199,7 @@ def test_recipe_parts():
     fit = sc.Fit(100, clip=sc.Clip(2.5, per=sc.ChunkGroups.along('subchannel')), tolerance=(1e-8, 1e-6))
     assert fit.atol_btol == (1e-8, 1e-6)
     assert sc.Fit(clip=3).clip == sc.Clip(3.0)
+    assert sc.Fit().clip is None                    # a fit clips nothing unless given a clip
     with pytest.raises(ConfigError, match='needs the std map'):
         sc.Coadd(clip=2.0, std=False)
     assert sc.Recipe(name='x').model == sc.continuum() and sc.Recipe(name='x').suffix == '_x'

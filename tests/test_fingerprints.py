@@ -328,6 +328,9 @@ def cases(files):
         Case('spherex_group_two_block', sc.SPHEREx(4), sc.Recipe(with_readouts(sc.two_block('readout', 'subchannel')),
                                                                  name='k2'), jobs.group(17, 18)),
         Case('euclid', sc.Euclid(band='Y', chunks=40, strips=40), sc.Recipe(sc.continuum(), name='e'), sc.Job('Y')),
+        # until 2026-11 a fit clipped each frame at 5 sigma by default: stated, it gives those products' fingerprints
+        Case('euclid_fit_clip_stated', sc.Euclid(band='Y', chunks=40, strips=40),
+             sc.Recipe(sc.continuum(), fit=sc.Fit(clip=5.0), name='e'), sc.Job('Y')),
         Case('camera_maps', sc.Camera((64, 64), chunks=4, dq_ext=2, tag='Toy', detector_maps={'qe': QE},
                                       headers={'temp': 'TEMP'}), sc.Recipe(sc.continuum(), name='c')),
         Case('user_instrument', Prism(), sc.Recipe(sc.continuum(), name='p')),
