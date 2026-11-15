@@ -537,8 +537,8 @@ class Fit(Config):
     (``conlim`` and the ``"condition"`` test never stop it). With ``vectors="float64"``, LSQR and LSMR
     keep float64 vectors on a float32 matrix, with the products computed in float64 (slower). Every solve is recorded: in the cal file's ``solve`` group, in the
     action's record, and its history per iteration in ``<field>/records/<cal stem>_history.npz``
-    (:mod:`selfcal.core.solve_record`). ``clip``: the
-    outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
+    (:mod:`selfcal.core.solve_record`). ``clip``: an
+    outlier clip (None, the default: no clip; a sigma or a :class:`Clip`). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
     ``min_observations``: leave out of the solve the sky pixels observed fewer times than this (2: those a
     single observation covers, whose one row the pixel's own value fits exactly, informing nothing else),
@@ -579,7 +579,7 @@ class Fit(Config):
     """
     iterations: int = 50
     _: KW_ONLY
-    clip: float | Clip | None = 5.0
+    clip: float | Clip | None = None
     use_mask: bool = True
     ignore_flags: tuple[int, ...] | None = None
     shot_noise_weights: bool = False

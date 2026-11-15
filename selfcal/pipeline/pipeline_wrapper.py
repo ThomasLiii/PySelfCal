@@ -738,7 +738,7 @@ class Calibrator(Reprojector):
                    oversample_factor: int = 1,
                    apply_mask: bool = True, apply_weight: bool = True,
                    max_workers: int = 20,
-                   outlier_thresh: float = 3.0, outlier_group_edges=None,
+                   outlier_thresh: float | None = None, outlier_group_edges=None,
                    ignore_list: list[int] | None = None,
                    batch_size: int = 10,
                    offset_regularization: bool = False,
@@ -821,8 +821,8 @@ class Calibrator(Reprojector):
             Apply per-sample inverse-variance weighting.
         max_workers : int, optional
             Number of worker processes for the parallel matrix assembly.
-        outlier_thresh : float, optional
-            Sigma threshold for per-pixel outlier rejection during assembly.
+        outlier_thresh : float or None, optional
+            Sigma threshold for per-pixel outlier rejection during assembly (None, the default: none).
         ignore_list : list of int or None, optional
             Data-quality flag bits to ignore. ``None`` means ignore nothing.
         batch_size : int, optional

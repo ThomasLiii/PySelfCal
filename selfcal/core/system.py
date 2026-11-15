@@ -569,7 +569,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                grid_valid_weight: np.ndarray | None = None,
                apply_mask: bool = True, apply_weight: bool = False,
                valid_threshold: float = 0.99,
-               outlier_thresh: float | None = 3, outlier_group_edges=None,
+               outlier_thresh: float | None = None, outlier_group_edges=None,
                max_workers: int = 20,
                ignore_list: list[int] | None = None, oversample_factor: int = 1,
                batch_size: int = 10, offset_regularization: bool = False,
@@ -711,7 +711,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     valid_threshold : float, optional
         Minimum valid fraction for a reprojected pixel to be kept (default 0.99).
     outlier_thresh : float or None, optional
-        Sigma threshold for per-subframe outlier rejection; ``None`` disables it.
+        Sigma threshold for per-subframe outlier rejection; ``None`` (the default) disables it.
     max_workers : int, optional
         Number of worker processes in the row-assembly pool (default 20).
     ignore_list : list of int or None, optional
