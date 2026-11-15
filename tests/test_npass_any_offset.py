@@ -190,16 +190,18 @@ def model_of(kind, slope_exclude=None):
                     variables={'band_pos': sc.DetectorMap(band_position)} if kind == 'poly_slope' else {})
 
 
-def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False):
+def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False, floor=None):
     """The products of an ``n``-pass solve of ``kind``'s field: the first solve's cal, then each pass's. ``tied``: the
-    x-slopes of ``poly_slope`` exclude every sky signature of a deflation of order 2 (a constraint across frames)."""
+    x-slopes of ``poly_slope`` exclude every sky signature of a deflation of order 2 (a constraint across frames).
+    ``floor``: the fit's coverage floor (``Fit(min_observations=)``)."""
     field_dir = os.path.join(root, kind, 'out', 'toy')
     if not os.path.exists(field_dir):
         os.makedirs(field_dir)
         write_field(field_dir, kind, np.random.default_rng(7))
-    name = f'{kind}{"_tied" if tied else ""}_it{init_iterations}'
+    name = f'{kind}{"_tied" if tied else ""}{"" if floor is None else f"_floor{floor}"}_it{init_iterations}'
     model = model_of(kind, slope_exclude=sc.SkySignature('all')) if tied else model_of(kind)
-    fit = sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0, **({'deflate': sc.Deflate(2)} if tied else {}))
+    fit = sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0, min_observations=floor,
+                 **({'deflate': sc.Deflate(2)} if tied else {}))
     recipe = sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4), name=name)
     passes = sc.Passes(n, order=order, offset=sc.Refit(min_pixels=0))      # no pass clips, as by default
     field = sc.Field(field_dir, ToyInstrument(), PIX)
@@ -357,3 +359,37 @@ def test_a_term_tied_across_frames_takes_sky_passes_only(root):
     assert non_increasing(obj, field_dir), (obj, rounding_floor(field_dir))
     with h5py.File(products[1], 'r') as f:
         assert 'sky' in f and 'offsets' not in f
+
+
+def coverage_of(path):
+    with h5py.File(path, 'r') as f:
+        return f['sky_coverage']['continuum'][()]
+
+
+def test_a_sky_pass_applies_the_coverage_floor_to_its_own_pixels(root):
+    """With ``Fit(min_observations=k)``, a SKY pass leaves out the pixels its own observations cover fewer than k
+    times, as the joint solve does: they have no coverage and no value in its product, and every other pixel keeps
+    the coverage it has without the floor."""
+    k = 4
+    plain = coverage_of(solve(root, 'plain', init_iterations=400, n=2, order='sky_first')[1])
+    floored_path = solve(root, 'plain', init_iterations=400, n=2, order='sky_first', floor=k)[1]
+    floored = coverage_of(floored_path)
+    below = (plain > 0) & (plain < k)
+    assert below.any() and (plain >= k).any()
+    assert not floored[below].any() and np.array_equal(floored[~below], plain[~below])
+    continuum, line, _ = sky_of(floored_path)
+    assert not np.nan_to_num(continuum)[below].any() and not np.nan_to_num(line)[below].any()
+    assert np.all(np.isfinite(continuum[plain >= k])) and np.any(continuum[plain >= k] != 0)
+
+
+def test_the_coverage_floor_on_a_pass_sums():
+    """``apply_coverage_floor`` zeroes, for the pixels the first term's count puts below the floor, every term's count,
+    Fisher and right-hand side and the cross moments, and nothing else; a pixel without data is not counted."""
+    from selfcal.npass.sky import apply_coverage_floor
+    counts = np.array([0, 1, 3, 5, 0, 1, 3, 5], dtype=np.float64)        # two terms on four pixels
+    fisher, rhs = np.arange(1.0, 9.0), np.arange(11.0, 19.0)
+    cross = {(0, 1): np.array([0.5, 0.6, 0.7, 0.8])}
+    assert apply_coverage_floor(counts, fisher, rhs, cross, 4, 2, 3) == 1
+    assert counts.tolist() == [0, 0, 3, 5, 0, 0, 3, 5]
+    assert fisher.tolist() == [1, 0, 3, 4, 5, 0, 7, 8] and rhs.tolist() == [11, 0, 13, 14, 15, 0, 17, 18]
+    assert cross[(0, 1)].tolist() == [0.5, 0.0, 0.7, 0.8]
