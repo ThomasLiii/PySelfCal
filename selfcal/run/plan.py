@@ -556,10 +556,14 @@ def _check_passes(ctx, recipe, passes):
         raise ConfigError(f"calibrate(passes=...): the offset terms on {shared} are shared across frames (per=...); "
                           f"an OFFSET pass solves every frame's offsets on their own and takes per='frame' terms only")
     from ..models.model import SkySignature
+    from .schedule import schedule
     tied = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if isinstance(t.exclude, SkySignature)]
-    if tied:
+    # A SKY pass holds the offsets it is given, so the joint solve followed by SKY passes alone keeps the constraint.
+    if tied and 'offset' in schedule(passes.n, passes.order):
         raise ConfigError(f"calibrate(passes=...): the offset terms on {tied} exclude a sky signature, a constraint "
-                          f"across frames; an OFFSET pass solves every frame's offsets on their own")
+                          f"across frames; an OFFSET pass solves every frame's offsets on their own (the joint solve "
+                          f"followed by SKY passes alone, Passes(2, order='sky_first'), holds the joint solve's "
+                          f"offsets and is taken)")
     for name, clip in (('init_clip', passes.init_clip), ('sky_clip', passes.sky_clip),
                        ('offset.clip', passes.offset.clip)):
         per = getattr(clip, 'per', 'frame')
