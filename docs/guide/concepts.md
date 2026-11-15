@@ -348,8 +348,8 @@ Compare quantities that a change of gauge leaves alone:
   group instead: `sc.Clip(5.0, per="chunk")` (its chunk of the primary map),
   `sc.Clip(5.0, per=sc.ChunkGroups.along("subchannel"))` (the chunks of its subchannel; for
   SPHEREx, binned by wavelength) or `sc.Clip(5.0, variable=..., edges=[...])` (bins of a data
-  variable, by default the instrument's wavelength map). The N-pass passes clip the same way
-  (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
+  variable, by default the instrument's wavelength map). The N-pass SKY and OFFSET passes clip the same
+  way when given a clip (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`), and not at all by default. Samples whose weight, coefficient or
   basis value is not finite are dropped as well.
 - **Coverage floor.** `sc.Fit(min_observations=2)` leaves out of the solve the sky pixels that fewer
   than 2 observations cover, counted after the masks, the clip if any and the weights. A sky pixel

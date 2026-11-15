@@ -141,9 +141,10 @@ trust: adopt a product only with the script of the config that made it. See
 | `[reproject]` | `field.reproject(exposures, reference=, method=, padding=, padding_fraction=, replace=, verify=)` |
 | `[zodi]` `pred_dir`, `clip_window_days`, `clip_sigma`, `clip_iters` | `spherex.zodi_anchor(result, predictions, clip_window_days=, clip_sigma=, clip_iters=)` after the calibration |
 
-Two defaults differ. A `[passes]` table without `n` or `order` ran four passes, sky first;
+Three defaults differ. A `[passes]` table without `n` or `order` ran four passes, sky first;
 `sc.Passes()` runs three, offset first, and refuses a schedule that ends on an OFFSET pass unless
-`ends_on_offset=True`. The converter writes both values out.
+`ends_on_offset=True`. A `[passes]` table without `sky` or `offset` clips clipped the SKY passes at 5
+sigma and the OFFSET passes at 2.5; `sc.Passes()` clips neither. The converter writes all of these values out.
 
 ### Modes
 

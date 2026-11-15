@@ -335,9 +335,13 @@ N-pass alternating solve (`order="offset_first"` by default; a schedule ending o
 is refused unless `ends_on_offset=True`). `sc.Passes(2, order="sky_first")` is the joint solve
 followed by one SKY pass: every pixel's sky terms solved in closed form with the joint solve's offsets
 subtracted. The first pass can read other data-quality bits than the SKY pass
-(`init_clip=sc.Clip(sigma, ignore_flags=...)`; the SKY pass reads the fit's), so the offsets can be
-fitted on fewer pixels than the sky is made from. An offset term tied across frames
-(`exclude=sc.SkySignature(...)`) takes such a schedule and no OFFSET pass.
+(`init_ignore_flags=`; the SKY and OFFSET passes read the fit's, `Fit(ignore_flags=)`), so the offsets
+can be fitted on fewer pixels than the sky is made from: with `sc.Fit(ignore_flags=[21])` and
+`sc.Passes(2, order="sky_first", init_ignore_flags=[])` the joint solve reads the pixels without any
+flag and the SKY pass those and the ones flagged with bit 21 alone. An offset term tied across frames
+(`exclude=sc.SkySignature(...)`) takes such a schedule and no OFFSET pass. The SKY and OFFSET passes
+clip nothing unless given a clip (`sky_clip=`, `sc.Refit(clip=)`: a sigma or an `sc.Clip`); the first
+pass has the fit's clip, or its own (`init_clip=`).
 
 ### Results
 

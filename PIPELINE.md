@@ -577,8 +577,9 @@ is therefore solved by alternating least squares with each half exact:
 just the joint solve: it *semi-converges* — the offsets converge fast, the low-wavelength-diversity
 pixels' continuum↔line split does not, and past that point the iterate drifts along the exact
 null spaces (uniform line floor ↔ static detector pattern; uniform sky ↔ the frames' levels). Each SKY and
-OFFSET pass is an exact block minimisation (`sc.Refit`: the OFFSET pass's clip and an optional
-`bright_cut` with `min_pixels` — nothing about the offsets' form), so the objective is non-increasing in `n`
+OFFSET pass is an exact block minimisation (`sc.Refit`: an optional clip of the OFFSET pass and an optional
+`bright_cut` with `min_pixels` — nothing about the offsets' form; neither pass clips unless given a clip,
+`sc.Passes(sky_clip=)` and `sc.Refit(clip=)`), so the objective is non-increasing in `n`
 (`tests/test_npass_any_offset.py` checks it for three different offset models), but drift along
 the null spaces is not excluded — the scheduler records per-pass monitors in
 `<stem>_npass_monitor.json` (per-block median / % positive / step RMS; per OFFSET pass each
