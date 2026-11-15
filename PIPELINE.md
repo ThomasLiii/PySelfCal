@@ -559,7 +559,10 @@ model has** -- per-chunk values, coefficients of known functions of data variabl
 Chebyshev polynomial of `terms.spectral_polynomial` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
 with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
-of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script
+of an OFFSET pass together, and the plan refuses it. A term that excludes a sky signature
+(`exclude=sc.SkySignature(...)`) is tied across frames by that constraint: the plan refuses it for a
+schedule with an OFFSET pass, and takes it for the joint solve followed by SKY passes alone
+(`sc.Passes(2, order="sky_first")`), which hold the joint solve's offsets. The offset terms are chosen in the run script
 and nowhere else: the passes take them from the model. Given the offsets the sky is **block-diagonal** (one J×J normal
 system per pixel); given the sky the offsets are the model's own offset system. The joint problem
 is therefore solved by alternating least squares with each half exact:

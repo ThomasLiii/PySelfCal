@@ -332,7 +332,12 @@ aromatic = result.sky("aromatic")               # from the last SKY pass
 
 `sc.Tiles` solves the field tile by tile and stitches the tiles' skies; `sc.Passes` runs the
 N-pass alternating solve (`order="offset_first"` by default; a schedule ending on an OFFSET pass
-is refused unless `ends_on_offset=True`).
+is refused unless `ends_on_offset=True`). `sc.Passes(2, order="sky_first")` is the joint solve
+followed by one SKY pass: every pixel's sky terms solved in closed form with the joint solve's offsets
+subtracted. The first pass can read other data-quality bits than the SKY pass
+(`init_clip=sc.Clip(sigma, ignore_flags=...)`; the SKY pass reads the fit's), so the offsets can be
+fitted on fewer pixels than the sky is made from. An offset term tied across frames
+(`exclude=sc.SkySignature(...)`) takes such a schedule and no OFFSET pass.
 
 ### Results
 
