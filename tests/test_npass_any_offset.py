@@ -20,7 +20,9 @@ For each, the joint objective (the weighted residual of the data against the sky
 passes hold, computed here from the products independently of the library) never increases from pass
 to pass (each pass is an exact block minimisation), and from a deliberately unconverged first solve
 the passes bring the sky much closer to the truth. A third model, a detector-fixed pattern shared by
-every frame (``per="all"``), would tie the frames of an OFFSET pass together; the plan refuses it.
+every frame (``per="all"``), would tie the frames of an OFFSET pass together; the plan refuses it. A term
+that excludes a sky signature is tied across frames by that constraint: the plan refuses it for a schedule
+with an OFFSET pass and takes it for the joint solve followed by a SKY pass alone.
 """
 import json
 import os
@@ -43,6 +45,7 @@ from astropy.wcs import WCS  # noqa: E402
 import selfcal as sc  # noqa: E402
 from selfcal.geometry import wcs_helper  # noqa: E402
 from selfcal.io.frames import standard_frame_path, write_frame  # noqa: E402
+from selfcal.run.schedule import schedule  # noqa: E402
 
 DET, N_BAND, N_COL, REF, PIX = 64, 16, 2, 96, 20.0
 N_FRAMES = 20
@@ -171,14 +174,16 @@ def write_field(field_dir, kind, rng):
         write_frame(standard_frame_path(frames, k, 0), values, [oy, oy + DET, ox, ox + DET], np.stack([det_x, det_y]))
 
 
-def model_of(kind):
+def model_of(kind, slope_exclude=None):
+    """The model of ``kind``; ``slope_exclude``: what the x-slopes of ``poly_slope`` may not carry."""
     sky = [sc.Sky(damping=0.0), sc.Sky('line', times=sc.gaussian(LINE_CENTER, sigma=LINE_SIGMA), damping=0.0)]
     if kind == 'plain':
         offsets = [sc.Offsets(exclude=sc.Poly(0))]
     elif kind == 'poly_slope':
         offsets = [sc.Offsets('poly', on='column', n=2,
                               basis=sc.Function(band_shapes, of='band_pos', degree=2, lo=0, hi=N_BAND - 1)),
-                   sc.Offsets('slope', on='band', times=sc.Function(tilt, of='det_x', centre=CENTRE, half=HALF))]
+                   sc.Offsets('slope', on='band', times=sc.Function(tilt, of='det_x', centre=CENTRE, half=HALF),
+                              exclude=slope_exclude)]
     else:
         offsets = [sc.Offsets(per='all', exclude=sc.Poly(0))]
     return sc.Model(sky=sky, offsets=offsets + [sc.Offsets('scalar', on='detector')],
@@ -188,15 +193,18 @@ def model_of(kind):
 NO_CLIP = sc.Clip(1e6)          # noise-free data: nothing is an outlier
 
 
-def solve(root, kind, init_iterations, n=5):
+def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False):
+    """The products of an ``n``-pass solve of ``kind``'s field: the first solve's cal, then each pass's. ``tied``: the
+    x-slopes of ``poly_slope`` exclude every sky signature of a deflation of order 2 (a constraint across frames)."""
     field_dir = os.path.join(root, kind, 'out', 'toy')
     if not os.path.exists(field_dir):
         os.makedirs(field_dir)
         write_field(field_dir, kind, np.random.default_rng(7))
-    name = f'{kind}_it{init_iterations}'
-    recipe = sc.Recipe(model_of(kind), fit=sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0),
-                       coadd=None, numerics=sc.Numerics(2, batch=4), name=name)
-    passes = sc.Passes(n, order='offset_first', sky_clip=NO_CLIP,
+    name = f'{kind}{"_tied" if tied else ""}_it{init_iterations}'
+    model = model_of(kind, slope_exclude=sc.SkySignature('all')) if tied else model_of(kind)
+    fit = sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0, **({'deflate': sc.Deflate(2)} if tied else {}))
+    recipe = sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4), name=name)
+    passes = sc.Passes(n, order=order, sky_clip=NO_CLIP,
                        offset=sc.Refit(clip=NO_CLIP, min_pixels=0))
     field = sc.Field(field_dir, ToyInstrument(), PIX)
     field.calibrate(recipe, jobs=sc.Job('All'), passes=passes,
@@ -204,7 +212,8 @@ def solve(root, kind, init_iterations, n=5):
     cal_dir = os.path.join(field_dir, 'calibration')
     stem = f'cal_{TAG}_All_{name}'
     products = [os.path.join(cal_dir, f'{stem}.h5')] + [
-        os.path.join(cal_dir, f'{stem}_pass{i}{"off" if i % 2 == 0 else "sky"}.h5') for i in range(2, n + 1)]
+        os.path.join(cal_dir, f'{stem}_pass{i}{"off" if t == "offset" else "sky"}.h5')
+        for i, t in enumerate(schedule(n, order)[1:], start=2)]
     return products
 
 
@@ -335,3 +344,20 @@ def test_shared_terms_are_refused(root):
     from selfcal.config.base import ConfigError
     with pytest.raises(ConfigError, match="shared across frames"):
         solve(root, 'shared', init_iterations=3, n=3)
+
+
+def test_a_term_tied_across_frames_takes_sky_passes_only(root):
+    """An offset term that excludes a sky signature is tied across frames by that constraint. A schedule with an
+    OFFSET pass, which solves every frame on its own, is refused before anything runs. The joint solve followed by a
+    SKY pass alone holds the joint solve's offsets: it runs, its product is a sky, and that sky does not raise the
+    joint objective."""
+    from selfcal.config.base import ConfigError
+    with pytest.raises(ConfigError, match="exclude a sky signature"):
+        solve(root, 'poly_slope', init_iterations=400, n=3, tied=True)
+    products = solve(root, 'poly_slope', init_iterations=400, n=2, order='sky_first', tied=True)
+    assert [os.path.basename(p).rsplit('_', 1)[-1] for p in products[1:]] == ['pass2sky.h5']
+    field_dir = os.path.dirname(os.path.dirname(products[0]))
+    obj = objectives(products)
+    assert non_increasing(obj, field_dir), (obj, rounding_floor(field_dir))
+    with h5py.File(products[1], 'r') as f:
+        assert 'sky' in f and 'offsets' not in f
