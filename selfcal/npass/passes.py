@@ -20,7 +20,7 @@ from ..pipeline.tiled import stitch
 from ..run import staging
 from ..run.engine import setup_job, tile_assignment
 from .offsets import SkySubtractor, merge_offset_cals, normal_equations, solve_frames
-from .sky import OffsetModelSubtractor, combine_moments, dump_moments, solve_pixels
+from .sky import OffsetModelSubtractor, apply_coverage_floor, combine_moments, dump_moments, solve_pixels
 
 __all__ = ["PassRunner", "offset_spec", "append_monitor"]
 
@@ -156,6 +156,8 @@ class PassRunner:
         calk = dict(spec.setup)
         for k in ("outlier_thresh", "outlier_group_edges", "outlier_groups"):
             calk.pop(k, None)
+        # The fit's coverage floor is the matrix build's; the pass applies it to its own sums before it solves them.
+        floor = calk.pop("min_observations", None)
         if not calk.get("outlier_group_variable"):
             calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = ctx.sky_damping
@@ -202,6 +204,10 @@ class PassRunner:
             if p.sky_merge == "combine":
                 dump_moments(cc, piece)
             else:
+                if floor is not None:
+                    cc._materialize_pixel_state()
+                    apply_coverage_floor(cc.pixel_counts, cc.pixel_fisher, cc.pixel_rhs, cc.pixel_cross,
+                                         cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, floor)
                 cc.x = solve_pixels(cc.pixel_fisher, cc.pixel_cross, cc.pixel_rhs, cc.pixel_counts,
                                     cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, damp_weights=dws)
                 ctx.configure(cc)
@@ -213,7 +219,7 @@ class PassRunner:
             pieces.append(piece)
         if p.sky_merge == "combine":
             combine_moments(pieces, out, sky_names=list(self.sky_model.names), damp_weights=dws,
-                            line_fisher_threshold=self.lft, attrs={"npass_pass": i})
+                            line_fisher_threshold=self.lft, attrs={"npass_pass": i}, min_observations=floor)
             # The dumps are pure intermediates and they are BIG (a J=4 full-NEP
             # tile dump is ~23 GB, so one n=8 run is ~0.5 TB and a 16-tile one
             # ~1.4 TB). Once the combine has written the product they have no

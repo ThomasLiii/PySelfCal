@@ -102,7 +102,8 @@ class Passes(Config):
     first pass ignores (None: the fit's, ``Fit(ignore_flags=)``, which the SKY and OFFSET passes always
     read): with ``Passes(2, order="sky_first", init_ignore_flags=())`` and ``Fit(ignore_flags=(b,))`` the
     joint solve fits the offsets on the pixels without any flag and the SKY pass makes the sky from those
-    and the ones flagged with bit ``b`` alone. ``stop_tol``: stop early once the sky changes
+    and the ones flagged with bit ``b`` alone. A SKY pass applies the fit's coverage floor
+    (``Fit(min_observations=)``) to its own observations of each pixel. ``stop_tol``: stop early once the sky changes
     less than this. ``sky_merge``: how tiled SKY passes are merged (``"combine"``: summed normal
     equations, exact; ``"stitch"``: per-tile solves, Fisher-stitched). ``keep_moments``: keep
     those intermediates. A schedule ending on an OFFSET pass is refused (its last sky would be a
