@@ -282,7 +282,11 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   goes into the map as that field. The signature comes from the system itself (the deflation's
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
-  too) but the constant, instead of the polynomials up to a degree.
+  too) but the constant, instead of the polynomials up to a degree. The deflation keeps two vectors
+  per pattern over every unknown; on a system where they would not fit in memory,
+  `sc.Deflate(..., direct=False)` makes the signature alone: its setup stops after the patterns'
+  offset responses, the exclusion is the same, and the patterns are left to the iterations (the same
+  solution, in more iterations).
 - `sc.Offsets(exclude=sc.Overlap('a', 'b'))`: the term carries no detector pattern that the offset
   terms `a` and `b` can also make with the same coefficients in every frame (their fixed patterns).
   Two terms that can make the same pattern leave the data unable to say which holds it; with the
@@ -334,7 +338,7 @@ Compare quantities that a change of gauge leaves alone:
   from the exposure's DQ extension and is resampled bit by bit during the reprojection. `sc.Fit`
   and `sc.Coadd` each have their own `use_mask` and `ignore_flags`, so the solve can leave out
   pixels that the mosaic uses, or the reverse.
-- **Outlier rejection in the solve.** With `sc.Fit(clip=5.0)`, every sample is scored against its
+- **Outlier rejection in the solve.** Off by default. With `sc.Fit(clip=5.0)`, every sample is scored against its
   frame's median, in units of `1.4826 · MAD` (the median absolute deviation), and samples scoring
   above the threshold are left out of the solve
   ([`find_outliers`][selfcal.geometry.map_helper.find_outliers]). The score uses the frame's own
@@ -344,8 +348,8 @@ Compare quantities that a change of gauge leaves alone:
   group instead: `sc.Clip(5.0, per="chunk")` (its chunk of the primary map),
   `sc.Clip(5.0, per=sc.ChunkGroups.along("subchannel"))` (the chunks of its subchannel; for
   SPHEREx, binned by wavelength) or `sc.Clip(5.0, variable=..., edges=[...])` (bins of a data
-  variable, by default the instrument's wavelength map). The N-pass passes clip the same way
-  (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
+  variable, by default the instrument's wavelength map). The N-pass SKY and OFFSET passes clip the same
+  way when given a clip (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`), and not at all by default. Samples whose weight, coefficient or
   basis value is not finite are dropped as well.
 - **Coverage floor.** `sc.Fit(min_observations=2)` leaves out of the solve the sky pixels that fewer
   than 2 observations cover, counted after the masks, the clip if any and the weights. A sky pixel

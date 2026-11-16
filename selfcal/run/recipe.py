@@ -398,6 +398,15 @@ class Deflate(Config):
     the deflation's dense Schur complement holds (16,384; a constant per detector pixel, say) is left out this way. A
     term's ``exclude=SkySignature`` is made from the listed terms' response, and the term itself must be listed.
 
+    ``direct``: True (the default): the patterns are solved directly, as above. False: the setup's first pass alone,
+    which makes the patterns' offset responses: a term's ``exclude=SkySignature`` is made from them as with True, and
+    the iterations then run on every unknown, the patterns included. No vector set is stored, so the memory below (and
+    twice it during the setup) and the per-iteration work on it are not spent. The solution is the same least-squares
+    solution, reached in more iterations where the patterns are what is slow; until the solve has converged, the
+    patterns' amplitudes lie between the start's and their least-squares values. For a system whose pattern vectors
+    would not fit in memory. Needs a term with ``exclude=SkySignature`` (nothing else reads the responses); not with
+    ``exclude=Degenerate``, which reads the decomposition of the pattern space.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -411,10 +420,17 @@ class Deflate(Config):
     storage: Literal['float32', 'float64'] | None = None
     exclude: Degenerate | None = added(None, since='2026-10')
     offsets: tuple[str, ...] | None = added(None, since='2026-10')
+    direct: bool = added(True, since='2026-11')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
             raise ConfigError(f"Deflate(order={self.order}): 0 to 16")
+        if not isinstance(self.direct, bool):
+            raise ConfigError(f"Deflate(direct={self.direct!r}): True (the patterns solved directly) or False (their "
+                              "offset responses alone, the patterns left to the iterations)")
+        if not self.direct and self.exclude is not None:
+            raise ConfigError("Deflate(direct=False, exclude=Degenerate(...)): the degenerate directions come from the "
+                              "decomposition of the pattern space, which direct=False does not make")
         if self.basis not in ('cosine', 'polynomial'):
             raise ConfigError(f"Deflate(basis={self.basis!r}): 'cosine' or 'polynomial'")
         if self.storage not in (None, 'float32', 'float64'):
@@ -521,8 +537,8 @@ class Fit(Config):
     (``conlim`` and the ``"condition"`` test never stop it). With ``vectors="float64"``, LSQR and LSMR
     keep float64 vectors on a float32 matrix, with the products computed in float64 (slower). Every solve is recorded: in the cal file's ``solve`` group, in the
     action's record, and its history per iteration in ``<field>/records/<cal stem>_history.npz``
-    (:mod:`selfcal.core.solve_record`). ``clip``: the
-    outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
+    (:mod:`selfcal.core.solve_record`). ``clip``: an
+    outlier clip (None, the default: no clip; a sigma or a :class:`Clip`). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
     ``min_observations``: leave out of the solve the sky pixels observed fewer times than this (2: those a
     single observation covers, whose one row the pixel's own value fits exactly, informing nothing else),
@@ -563,7 +579,7 @@ class Fit(Config):
     """
     iterations: int = 50
     _: KW_ONLY
-    clip: float | Clip | None = 5.0
+    clip: float | Clip | None = None
     use_mask: bool = True
     ignore_flags: tuple[int, ...] | None = None
     shot_noise_weights: bool = False

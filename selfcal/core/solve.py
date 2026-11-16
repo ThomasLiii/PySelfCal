@@ -1235,6 +1235,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
         The responses come from the deflation's setup, which also adds the constraint to the column
         constraints (:meth:`~selfcal.core.deflation.Deflation._exclude_signatures`): needs ``deflate``.
+        With ``deflate.direct`` False that setup ends there: the constraint is made and the solver runs
+        on every unknown, the deflation's patterns included.
     held : array of int, optional
         The offset columns (full layout) of the terms ``Deflate(offsets=)`` leaves out: the deflation holds their
         response to its patterns at zero (:class:`~selfcal.core.deflation.Deflation`).
@@ -1629,6 +1631,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # deflated when asked; returns (the solver's result with the solution first, the record).
             nonlocal defl, proj
             shift_kept = None
+            responses = None                                # Deflate(direct=False): the setup that made the constraints
             op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
             if deflate is not None:
                 # The deflation first: with Deflate(exclude=) its setup adds the degenerate directions' sky shapes to
@@ -1640,11 +1643,17 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 if defl.projector is not proj:
                     proj = defl.projector
                     logger.info(f"Column constraints with the deflation's additions: {proj}")
+                if not defl.direct:
+                    # The offset responses alone: the constraints are made, and the solver runs on every unknown
+                    # (the plain solve under the column constraints; a start is put in the allowed subspace).
+                    responses, defl = defl, None
+                    if _x0_owned[0] is not None:
+                        proj.apply(_x0_owned[0])
             if proj is not None:
                 op = proj.wrap(op0)
             _watch(op)
             kw, solver_op, setup_s = solve_kw, op, None
-            if deflate is not None:
+            if defl is not None:
                 defl.bind(op, storage)
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0
@@ -1678,6 +1687,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 if defl is not None:
                     result = (_as_solution(result[0], exact=True),) + tuple(result[1:])
                 record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve)
+                if responses is not None:
+                    record.deflation = responses.summary_json()
+                    record.deflation_s = responses.setup_s
                 if defl is not None:
                     record.deflation = defl.summary_json()
                     record.deflation_s = setup_s
@@ -1688,6 +1700,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             finally:
                 if defl is not None:
                     defl.close()
+                if responses is not None:
+                    responses.close()
                 if shift_kept is not None:
                     shift_kept.discard()
             return result, record

@@ -2,17 +2,10 @@
  "about": "tests/test_fingerprints.py: the canonical inputs and fingerprint of each product. Regenerating this file makes the sidecar of every product whose inputs changed 'different': do it only on purpose.",
  "products": {
   "camera_maps/cal": {
-   "fingerprint": "2b39fda2530d6a17d15f125da27dd5fe1c6270a0d255dd456611380bddeb572a",
+   "fingerprint": "e2c2f86ef203c729c9aa4a557776ae2e2f50d2769e40f2ebbbd418c853378a40",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -280,17 +273,10 @@
    }
   },
   "coadd_settings/cal": {
-   "fingerprint": "0a6ad38dbd2db9690819ee31c56e302308c774b9ebf328527e24ab51988162cb",
+   "fingerprint": "a93ffd8bf0811684e195be325f0026bbd689b587630bfead76eb2b4a33b27634",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -531,17 +517,10 @@
    }
   },
   "continuum_smooth/cal": {
-   "fingerprint": "a6a1758dc7b4c7392ce99522d18e6a31133f33e1468d2e5b496d17d0f5722172",
+   "fingerprint": "e0800a6adffbba8f911e3a1c23b61e28ad211b82665b514dcdef73521e23a769",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -775,6 +754,253 @@
    }
   },
   "euclid/cal": {
+   "fingerprint": "e4b1bed4ac5dd8418af5fb40f9a120c75ab143b1ae87d7cf9bddae291314eeaa",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "name": "Y",
+     "strict": null,
+     "window": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid/mosaic": {
+   "fingerprint": "07a88af29f082509c7f6ae65fabc0ef94a52a37234adb87ab2d3a3165463e8ab",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "name": "Y",
+     "strict": null,
+     "window": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid_fit_clip_stated/cal": {
    "fingerprint": "12bc3445344bdd5a20d3a629ced63f8a855095b8be997e0fef4b67e3b3941aea",
    "inputs": {
     "fit": {
@@ -907,7 +1133,7 @@
     }
    }
   },
-  "euclid/mosaic": {
+  "euclid_fit_clip_stated/mosaic": {
    "fingerprint": "07a88af29f082509c7f6ae65fabc0ef94a52a37234adb87ab2d3a3165463e8ab",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
@@ -1458,17 +1684,10 @@
    }
   },
   "fit_gauge/cal": {
-   "fingerprint": "716395c43c9aa08b95446a08400075ca592cbe143fb71fdad59592cce7111d46",
+   "fingerprint": "0671e866d903a99960b89f79e174791e62beb947b562dda3026721ae4affe0b7",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -2122,17 +2341,10 @@
    }
   },
   "model_with_everything/cal": {
-   "fingerprint": "4667e762028e977e3bb80dcaa700be5f05f18302522708da7ad13619f8edec4a",
+   "fingerprint": "ba9911b11d8e7369c353da58c563c8aa4a756a62c8f1026b52e1068dad79e908",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -2912,17 +3124,10 @@
    }
   },
   "numerics/cal": {
-   "fingerprint": "741b4fe9cf0e0ff5fc0800df0112dc712e28cc36cf6b7e10fc4f0c6311880f57",
+   "fingerprint": "61d52e74c9b92dc7229d3dbbdc50f7e515e9358e166603feb21765ccfd7f65a7",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -3156,17 +3361,10 @@
    }
   },
   "passes_default/cal": {
-   "fingerprint": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -3314,10 +3512,10 @@
    }
   },
   "passes_default/pass 2 off": {
-   "fingerprint": "f83b4a5fc87117e245e174c42e6c168fc9db3876f2cfa8120a89e14e4f96c48a",
+   "fingerprint": "074d58c6e5f9ed30a4808e3796a072e838614077931d36991d2edfd74695ff48",
    "inputs": {
     "index": 2,
-    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3349,10 +3547,10 @@
    }
   },
   "passes_default/pass 3 sky": {
-   "fingerprint": "9328865f109c4f5de40a386a00a3686e117c8377b766dd27c7b76a792c91ade6",
+   "fingerprint": "5662e505cbb5367b71613fb4c68e69fe2462cf471091d56d14b42e74a8e8c3e5",
    "inputs": {
     "index": 3,
-    "init": "39d54f9fbf3b39009c8d89f8e6b74e871897447562b073fb58831546a4d1c098",
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3377,6 +3575,178 @@
       "type": "selfcal.run.recipe:Clip",
       "variable": null
      },
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
+  "passes_init_flags/cal": {
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_init_flags/pass 2 sky": {
+   "fingerprint": "27c5aa693c502b0f0d4d67f3dde54ea5515b0f660c49df3470c4baf1e84a53da",
+   "inputs": {
+    "index": 2,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": null,
      "sky_merge": "combine",
      "type": "selfcal.run.schedule:Passes"
     },
@@ -3681,6 +4051,199 @@
     "type": "sky"
    }
   },
+  "passes_no_clips/cal": {
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_no_clips/pass 2 off": {
+   "fingerprint": "9ab609e09727ed841f136141aef86337e9adb793c9b03ed66c0ed9ae4636949b",
+   "inputs": {
+    "index": 2,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_no_clips/pass 3 sky": {
+   "fingerprint": "47f7e109cff3030f11ae5498b998beef0e47d498190bc94fc064b6597dccc61b",
+   "inputs": {
+    "index": 3,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
   "passes_settings/cal": {
    "fingerprint": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
    "inputs": {
@@ -3937,17 +4500,10 @@
    }
   },
   "plan camera maps/calibration/cal_Toy_Chunks4x4_All_m.h5": {
-   "fingerprint": "202d9cbb8a6570eabb8293ca4dba580580bed16377dacd2e1329566b04e5ac18",
+   "fingerprint": "99029def8c72fb61d25242d563dc1dddf3ac25bb7528eca98ccb9d7e2620a881",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4084,17 +4640,10 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_m.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_E.h5": {
-   "fingerprint": "2655261850fd974cdf53f27b30c78d3958133e5ec90b7c4a0fce951f3a358585",
+   "fingerprint": "e5e1e2cb41a0b49de96a6f27509492c8d88a6643c29e750eb758390fe61cca32",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4225,17 +4774,10 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_E.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_W.h5": {
-   "fingerprint": "229c3984d84f9e7cc18082d2520e29196135315faf7738c4edb4f28644a6b370",
+   "fingerprint": "23f0a192716a0b401642f1f2fa727d5fe246e705ac02eeea5ebe8ad7ed3ffa1a",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4366,30 +4908,23 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_W.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_stitched.h5": {
-   "fingerprint": "b4bf4a4d8ae25241bdec14661219f8226a5540bdab7e1bdce9e493e3e70f1e4b",
+   "fingerprint": "ea39fd1a2c1db9c254d9164cecb172a826d7eccbeedc8b25ee1d881a0a905a2c",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "2655261850fd974cdf53f27b30c78d3958133e5ec90b7c4a0fce951f3a358585",
-     "W": "229c3984d84f9e7cc18082d2520e29196135315faf7738c4edb4f28644a6b370"
+     "E": "e5e1e2cb41a0b49de96a6f27509492c8d88a6643c29e750eb758390fe61cca32",
+     "W": "23f0a192716a0b401642f1f2fa727d5fe246e705ac02eeea5ebe8ad7ed3ffa1a"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Toy_Chunks4x4_All_t_stitched.h5"
   },
   "plan camera/calibration/cal_Toy_Chunks4x4_All_c.h5": {
-   "fingerprint": "064f9f61c8dda96f70623db9c2e1a69703ab4ae00d309c3d6e476af91c9ded17",
+   "fingerprint": "76bafb0293a4402978e9829d51f348536b5d14a87c85c821a92c9cb97d8c31d9",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4513,17 +5048,10 @@
    "path": "mosaic/mosaic_Toy_Chunks4x4_All_c.fits"
   },
   "plan euclid/calibration/cal_EDFN_J_e.h5": {
-   "fingerprint": "b2070514cdc81b2189e6ad53440718e7e57bdacac8e2e8e323ea0fbb70cb2a15",
+   "fingerprint": "0801f7944e3db2cc81124b2fe570a5fa3746166f56c77ae1db9062b848ce7423",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4652,17 +5180,10 @@
    "path": "mosaic/mosaic_EDFN_J_e.fits"
   },
   "plan prism passes/calibration/cal_Prism_All_np.h5": {
-   "fingerprint": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
+   "fingerprint": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4786,10 +5307,10 @@
    "path": "calibration/cal_Prism_All_np.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
-   "fingerprint": "8e06b65daf93210452a72a0c2f2e6cd1eb4a20d4b7d3d15bd5c30ec8e770e1b8",
+   "fingerprint": "3d7041000dfec8cd823ab891e197e84eddb2db01ed43097f31e7b1ba88a0c8de",
    "inputs": {
     "index": 2,
-    "init": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
+    "init": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4823,10 +5344,10 @@
    "path": "calibration/cal_Prism_All_np_pass2off.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
-   "fingerprint": "498be05d6a262c8e95e38a154c9cbaad735d02c5889895d0ef49671801feef86",
+   "fingerprint": "8814e6d3e074056f8699518013a9cac06e36c0151c2bdbe87521fbbe09ff2896",
    "inputs": {
     "index": 3,
-    "init": "b3295615c1b252cb37e5f17b8dd8e224639ab89a81da0d47136929ab05408b81",
+    "init": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4860,17 +5381,10 @@
    "path": "calibration/cal_Prism_All_np_pass3sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
-   "fingerprint": "0bc0fa6157da37454d6d4003e40703f1f59fcb75cfc5d0a0b343de5a5686a889",
+   "fingerprint": "c0ff3fda6ba47ea0c03177682ff2729c7b80444036b24e45033467764daa39f5",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5005,17 +5519,10 @@
    "path": "calibration/cal_Prism_All_tp_north.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
-   "fingerprint": "9cd3a6efcb4db9c846bdb34891341720e5f89dfdcf5aa5f9471f50e4f614e660",
+   "fingerprint": "7864fb18e600c38673c76c1707de0fb8cb1d59b7ba0c924a43f7dba81e62dcde",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5150,23 +5657,23 @@
    "path": "calibration/cal_Prism_All_tp_south.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
-   "fingerprint": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
+   "fingerprint": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "0bc0fa6157da37454d6d4003e40703f1f59fcb75cfc5d0a0b343de5a5686a889",
-     "south": "9cd3a6efcb4db9c846bdb34891341720e5f89dfdcf5aa5f9471f50e4f614e660"
+     "north": "c0ff3fda6ba47ea0c03177682ff2729c7b80444036b24e45033467764daa39f5",
+     "south": "7864fb18e600c38673c76c1707de0fb8cb1d59b7ba0c924a43f7dba81e62dcde"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Prism_All_tp_stitched.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
-   "fingerprint": "679101538887026d0597289936cf6baf2c44453c17c092aec426956b45c97bd4",
+   "fingerprint": "fffa71c0d104a34276b97622a26ead9c7e0ae8bca4383990ce7dab12fb807454",
    "inputs": {
     "index": 2,
-    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5200,10 +5707,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
-   "fingerprint": "7c5f54ef384bf5c46d044a8b19a157899c5c69ff4e0aee62e7e4ce0ff24dc280",
+   "fingerprint": "9f780b3fd86268c4fba7f540087b2e548fe03bc53af7164254cd2b62d69cd06d",
    "inputs": {
     "index": 3,
-    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5237,10 +5744,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
-   "fingerprint": "d6c015ee0d4a4a06572137a18345f5e8ec354e924deb33625524cbefa15163dc",
+   "fingerprint": "787b3001d7e926add4e139894c457b7d843c85449b67f7e84b791f0a39cba1ff",
    "inputs": {
     "index": 4,
-    "init": "e7b6efaf2e7141e8e3e6803447f04d8b4ea007e8388075eb3d382708b05fe4df",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5274,17 +5781,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
   },
   "spectral_lines/cal": {
-   "fingerprint": "b8a555393a23f0e6f9cd9a6bf5e1972b9df6fc50e2ffc3fb0a60cb9a853846b2",
+   "fingerprint": "bee0f4fd1ffc28fbcf8e69ccad221d1f81c64ac3f35807f0a26939a97118fd50",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5537,17 +6037,10 @@
    }
   },
   "spectral_smooth/cal": {
-   "fingerprint": "51f3d58233a23fbe0857493233c79b1ec57f49e546a8d1878769095a676a87ef",
+   "fingerprint": "0e0819e663620bc82519c512aee1902c08093157a0b75a3882e37d937073368b",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5841,17 +6334,10 @@
    }
   },
   "spherex_channel/cal": {
-   "fingerprint": "36b1f1e2e42e819365565d6b6c13e4cdcfd38a343a6cc58eaece384b39598d3e",
+   "fingerprint": "b29ef07c7187c84c6065c85403deccd326b0afbab8f9ebe164532212f58827f8",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6123,17 +6609,10 @@
    }
   },
   "spherex_group_two_block/cal": {
-   "fingerprint": "1bb32d47b9257827fbf81304fa0ae96318c3a0f4b57940bf74a838b385cc2e5d",
+   "fingerprint": "819d307c862df97e04afa50c405a4d530b0b29239dd1f2decc93761ac52a2516",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6425,17 +6904,10 @@
    }
   },
   "spherex_settings_window/cal": {
-   "fingerprint": "0420c2f06769fb1391b531fdb887ab536095fbb4fa4866153f9552d52016a63b",
+   "fingerprint": "8b57fb4bb8d94cbce0dee1d65ac313871c95d889d4acab15afcbef02f03a328e",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6697,10 +7169,10 @@
    }
   },
   "tiles_boxes_passes/pass 2 off": {
-   "fingerprint": "8cde6dd3d92874b80df63244632a34a41f2a93b1c4f91b6edb6362a985fed347",
+   "fingerprint": "e903671586fed9ba51c57f1cb2ef6f5a28547a9b0405ebe625494741fb5e132b",
    "inputs": {
     "index": 2,
-    "init": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
+    "init": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6732,10 +7204,10 @@
    }
   },
   "tiles_boxes_passes/pass 3 sky": {
-   "fingerprint": "47d114804e8a472bec96c7c886f3be220961c1c5d3a79ae8273c118052d5ff9f",
+   "fingerprint": "4d2e8dec1086a95802fada51f60f70109d10498bf151308eb03de8b6f1ce9c05",
    "inputs": {
     "index": 3,
-    "init": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
+    "init": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6767,28 +7239,21 @@
    }
   },
   "tiles_boxes_passes/stitched": {
-   "fingerprint": "f567e2d8990eeeb07bc6f84949f7054f17168f8bbc64d2f628e3d05fb602c69c",
+   "fingerprint": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "ccda3d454adb7e9ba95a77aadeb1ea1c87adc49fde1b4137baa580a9ebe47219",
-     "south": "04e10f9dd789b6d2364ac0c73710269269c8156292f2e3c7a6b065c57101c442"
+     "north": "9ca3e8f47c19fcfa68d49c9aea95ba2075873726874d0f7319c069ecff1ad47a",
+     "south": "46ee19487f678eb64aa7923e46ee685ed8f29787a9f27bcb3136bfe707f27930"
     }
    }
   },
   "tiles_boxes_passes/tile north": {
-   "fingerprint": "ccda3d454adb7e9ba95a77aadeb1ea1c87adc49fde1b4137baa580a9ebe47219",
+   "fingerprint": "9ca3e8f47c19fcfa68d49c9aea95ba2075873726874d0f7319c069ecff1ad47a",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6947,17 +7412,10 @@
    }
   },
   "tiles_boxes_passes/tile south": {
-   "fingerprint": "04e10f9dd789b6d2364ac0c73710269269c8156292f2e3c7a6b065c57101c442",
+   "fingerprint": "46ee19487f678eb64aa7923e46ee685ed8f29787a9f27bcb3136bfe707f27930",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7116,28 +7574,21 @@
    }
   },
   "tiles_grid/stitched": {
-   "fingerprint": "e24b1efe56c0df925ecc1add70dc7fdc9ce091540d36efb9ce91468d2bbe3a9e",
+   "fingerprint": "d7c02d7df4c9f97cbf18fd115ad6d8c6048be0be2677fb28c21bcb9dbbb11314",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "1551b36fc17909ac044e4c5bf71ab32b8d09ad07a1ecaf535d25024d7dec54d5",
-     "W": "c1a5d5794f673b74708c1030ec5782d72eef18e6d3b71cfd5faba0a7b166e629"
+     "E": "771bd73f899269996b3cddcbfdd40aa6a7cc6c5d99f8c567719593878fde7bc2",
+     "W": "647d52956605231b5fdb9e08a4d8e4979de4dc82d5c0ba4f6cbbfa1a4ed4cec2"
     }
    }
   },
   "tiles_grid/tile E": {
-   "fingerprint": "1551b36fc17909ac044e4c5bf71ab32b8d09ad07a1ecaf535d25024d7dec54d5",
+   "fingerprint": "771bd73f899269996b3cddcbfdd40aa6a7cc6c5d99f8c567719593878fde7bc2",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7266,17 +7717,10 @@
    }
   },
   "tiles_grid/tile W": {
-   "fingerprint": "c1a5d5794f673b74708c1030ec5782d72eef18e6d3b71cfd5faba0a7b166e629",
+   "fingerprint": "647d52956605231b5fdb9e08a4d8e4979de4dc82d5c0ba4f6cbbfa1a4ed4cec2",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7405,30 +7849,23 @@
    }
   },
   "tiles_grid_named_by_the_engine/stitched": {
-   "fingerprint": "fd3148057ca1d62ef51c525b63dc1af01030cd8751b35321bd8827a7447691c7",
+   "fingerprint": "afac00fdeb2abc7262c0e418c94a1b264d434743026758302368e0bf4b42e362",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "r0c0": "07c3d4099b623a6308792042a9fdb09bce2cd9a28eadecfb178c6f748d5f108e",
-     "r0c1": "d143a710c7e960471e8782aca9d90642128e38ade63ff5f53840b99b65410159",
-     "r1c0": "dbc1da59c0283e513ab118c2217b3816730d8f3ce0e46ec9ca671a3d51d90b64",
-     "r1c1": "14b13f3ba5411ba06e9e407e3a8640c9e8d881f19dbce50f97fc27600d2864fc"
+     "r0c0": "db07dcd621c5bd79ceb1af837ac29d0b8464993838925a1f13edc1be12e981e4",
+     "r0c1": "2f930cff5f583107e2c7881170c83edb5f6c923bd6df7e6120a8f21a0fedcde9",
+     "r1c0": "76b73de85dd336a923a147a63b05818f8a4052bdc9c01099186ac3f127bfaf15",
+     "r1c1": "de80ca6117a1fa28aac72ba636ec4fa33c2e342d88a763c233f3eb0ed1c48722"
     }
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c0": {
-   "fingerprint": "07c3d4099b623a6308792042a9fdb09bce2cd9a28eadecfb178c6f748d5f108e",
+   "fingerprint": "db07dcd621c5bd79ceb1af837ac29d0b8464993838925a1f13edc1be12e981e4",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7557,17 +7994,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c1": {
-   "fingerprint": "d143a710c7e960471e8782aca9d90642128e38ade63ff5f53840b99b65410159",
+   "fingerprint": "2f930cff5f583107e2c7881170c83edb5f6c923bd6df7e6120a8f21a0fedcde9",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7696,17 +8126,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c0": {
-   "fingerprint": "dbc1da59c0283e513ab118c2217b3816730d8f3ce0e46ec9ca671a3d51d90b64",
+   "fingerprint": "76b73de85dd336a923a147a63b05818f8a4052bdc9c01099186ac3f127bfaf15",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7835,17 +8258,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c1": {
-   "fingerprint": "14b13f3ba5411ba06e9e407e3a8640c9e8d881f19dbce50f97fc27600d2864fc",
+   "fingerprint": "de80ca6117a1fa28aac72ba636ec4fa33c2e342d88a763c233f3eb0ed1c48722",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7974,17 +8390,10 @@
    }
   },
   "two_block_settings/cal": {
-   "fingerprint": "b3fb88a8b0b6ef16038493922c495082293f1e41d1e23319b0a42284e97c1e05",
+   "fingerprint": "8a4ec8d4bbaf0501f76994accdeb8dd69b1f53b923c9338403fc3f51404bc9fe",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -8131,17 +8540,10 @@
    }
   },
   "user_instrument/cal": {
-   "fingerprint": "2be641db06f1ad37535110751dd48042e046ab1effa467386568a0be1696e560",
+   "fingerprint": "1edff9dd41aee058e55de477e2b9743a01cca2388c4ad9e84fc98a6893371c52",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -8355,17 +8757,10 @@
    }
   },
   "variance_weight/cal": {
-   "fingerprint": "c6252973768e4d52520d514dd91534b99f0d79b1bae4b50063c5495b90c16a00",
+   "fingerprint": "56e8a99c815d9d3155da0b39e6db1edc9c2de9213525513cace76c1a05c90d7e",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,

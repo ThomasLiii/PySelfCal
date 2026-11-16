@@ -255,14 +255,17 @@ def engine_view(spec):
         init = p.init_clip
         init_clip = {'outlier_thresh': init.sigma if init is not None else calk.get('outlier_thresh'),
                      'grouped': init.grouped if init is not None else calk.get('outlier_group_edges') is not None,
-                     'ignore_list': (list(init.ignore_flags) if init is not None and init.ignore_flags is not None
+                     'ignore_list': (list(p.init_ignore_flags) if p.init_ignore_flags is not None
+                                     else list(init.ignore_flags) if init is not None and init.ignore_flags is not None
                                      else calk.get('ignore_list') or [])}
+        sky, refit = p.sky_clip, p.refit_clip
         view['passes'] = _canon({'schedule': schedule(p.n, p.order), 'stop_tol': p.stop_tol, 'sky_merge': p.sky_merge,
                                  'keep_moments': p.keep_moments, 'init': init_clip,
-                                 'sky': {'outlier_thresh': p.sky_clip.sigma, 'subch_clip': p.sky_clip.grouped},
-                                 'offset': {'outlier_thresh': p.refit_clip.sigma,
-                                            'subch_clip': p.refit_clip.grouped, 'bright_cut': p.bright_cut,
-                                            'min_pix': p.min_pixels}})
+                                 'sky': {'outlier_thresh': None if sky is None else sky.sigma,
+                                         'subch_clip': sky is not None and sky.grouped},
+                                 'offset': {'outlier_thresh': None if refit is None else refit.sigma,
+                                            'subch_clip': refit is not None and refit.grouped,
+                                            'bright_cut': p.bright_cut, 'min_pix': p.min_pixels}})
         with contextlib.redirect_stdout(io.StringIO()):
             view['npass_edges'] = _canon(ctx.clip_group_edges())
     return view

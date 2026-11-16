@@ -332,7 +332,16 @@ aromatic = result.sky("aromatic")               # from the last SKY pass
 
 `sc.Tiles` solves the field tile by tile and stitches the tiles' skies; `sc.Passes` runs the
 N-pass alternating solve (`order="offset_first"` by default; a schedule ending on an OFFSET pass
-is refused unless `ends_on_offset=True`).
+is refused unless `ends_on_offset=True`). `sc.Passes(2, order="sky_first")` is the joint solve
+followed by one SKY pass: every pixel's sky terms solved in closed form with the joint solve's offsets
+subtracted. The first pass can read other data-quality bits than the SKY pass
+(`init_ignore_flags=`; the SKY and OFFSET passes read the fit's, `Fit(ignore_flags=)`), so the offsets
+can be fitted on fewer pixels than the sky is made from: with `sc.Fit(ignore_flags=[21])` and
+`sc.Passes(2, order="sky_first", init_ignore_flags=[])` the joint solve reads the pixels without any
+flag and the SKY pass those and the ones flagged with bit 21 alone. An offset term tied across frames
+(`exclude=sc.SkySignature(...)`) takes such a schedule and no OFFSET pass. The SKY and OFFSET passes
+clip nothing unless given a clip (`sky_clip=`, `sc.Refit(clip=)`: a sigma or an `sc.Clip`); the first
+pass has the fit's clip, or its own (`init_clip=`).
 
 ### Results
 
@@ -598,6 +607,7 @@ are what is slow, and the same otherwise.
 | `basis="cosine"` | `"cosine"` or `"polynomial"` |
 | `terms=None` | the sky terms to deflate (None: all) |
 | `storage=None` | the precision of the deflation's vectors: None, the products' (float32 with `float32=True`); `"float64"` always; `"float32"` needs float32 products |
+| `direct=True` | `False`: only the patterns' offset responses are made, for a term with `exclude=sc.SkySignature(...)`; nothing is solved directly and no vector is stored, the iterations run on every unknown (the same solution in more iterations; for a system whose pattern vectors would not fit in memory) |
 
 Read it with three facts in mind:
 

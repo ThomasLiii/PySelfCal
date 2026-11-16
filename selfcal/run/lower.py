@@ -120,9 +120,11 @@ def coadd_options(recipe, compute, instrument) -> dict:
     return out
 
 
-def _pass_clip(clip, ignore_flags=None) -> PassClip:
+def _pass_clip(clip, ignore_flags=None) -> PassClip | None:
     """An N-pass clip: grouped by the primary map's spectral axis (chunk groups along an axis), or
-    per frame."""
+    per frame; None for a pass without one."""
+    if clip is None:
+        return None
     if clip.edges is not None or clip.per == 'chunk' or (isinstance(clip.per, ChunkGroups) and clip.per.axis is None):
         raise ConfigError("the N-pass clips group by an axis of the primary chunk map (ChunkGroups.along(...)) "
                           "or not at all (per='frame')")
@@ -140,7 +142,7 @@ def passes_spec(passes) -> PassesSpec:
                       refit_clip=_pass_clip(refit.clip), bright_cut=refit.bright_cut,
                       min_pixels=refit.min_pixels,
                       stop_tol=float(p.stop_tol), sky_merge=p.sky_merge,
-                      keep_moments=p.keep_moments)
+                      keep_moments=p.keep_moments, init_ignore_flags=p.init_ignore_flags)
 
 
 def _suffix(template, name, tile='{tile}'):

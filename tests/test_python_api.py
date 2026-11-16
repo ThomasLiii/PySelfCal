@@ -199,12 +199,20 @@ def test_recipe_parts():
     fit = sc.Fit(100, clip=sc.Clip(2.5, per=sc.ChunkGroups.along('subchannel')), tolerance=(1e-8, 1e-6))
     assert fit.atol_btol == (1e-8, 1e-6)
     assert sc.Fit(clip=3).clip == sc.Clip(3.0)
+    assert sc.Fit().clip is None                    # a fit clips nothing unless given a clip
     with pytest.raises(ConfigError, match='needs the std map'):
         sc.Coadd(clip=2.0, std=False)
     assert sc.Recipe(name='x').model == sc.continuum() and sc.Recipe(name='x').suffix == '_x'
     with pytest.raises(ConfigError, match='ends on an OFFSET pass'):
         sc.Passes(n=2)
     assert sc.Passes(n=2, ends_on_offset=True).n == 2
+    # no pass clips unless one is given; a sigma is a per-frame clip
+    assert sc.Passes().sky_clip is None and sc.Passes().offset.clip is None and sc.Refit().clip is None
+    assert sc.Passes(sky_clip=5).sky_clip == sc.Clip(5.0) and sc.Refit(clip=2.5).clip == sc.Clip(2.5)
+    # the first pass's ignored flags: their own setting, given once
+    assert sc.Passes(2, order='sky_first', init_ignore_flags=[]).init_ignore_flags == ()
+    with pytest.raises(ConfigError, match='given twice'):
+        sc.Passes(init_clip=sc.Clip(3.0, ignore_flags=(21,)), init_ignore_flags=(21,))
     with pytest.raises(ConfigError, match='needs \\{tile\\}'):
         sc.Tiles((2, 2), tile_name='same')
 

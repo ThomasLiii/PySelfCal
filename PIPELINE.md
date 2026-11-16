@@ -398,6 +398,14 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   and the column's norm, taken in the same order, so the setup's results are the same bits. A constraint on a sky
   term (`sc.Sky(exclude=...)`) changes the patterns, and the setup then keeps them as an array, as does
   `sc.Deflate(exclude=sc.Degenerate(...))` from its re-basing on.
+- **The sky-signature exclusion without the deflation's vectors** (`sc.Deflate(direct=False)`): a deflated solve
+  keeps the pattern directions and their images, `2 × 4 × patterns` bytes per covered unknown with float32 products
+  and twice that while its setup makes them, which on a large field with several sky terms outgrows the matrix itself
+  (120 patterns: 0.95 kB per sky unknown). A model that needs the deflation only for `sc.Offsets(exclude=sc.SkySignature(...))`
+  can stop the setup after its first pass: the exclusion is made from the patterns' offset responses as before, and
+  the solver iterates on every unknown. The same least-squares solution; the patterns' amplitudes are reached by
+  iterating, as slowly as the data see them (the setup's first pass keeps about
+  `8 × (patterns × offsets + patterns × 2²¹)` bytes per thread while it runs).
 - **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
   (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
   its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages
@@ -551,7 +559,12 @@ model has** -- per-chunk values, coefficients of known functions of data variabl
 Chebyshev polynomial of `terms.spectral_polynomial` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
 with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
-of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script
+of an OFFSET pass together, and the plan refuses it. A term that excludes a sky signature
+(`exclude=sc.SkySignature(...)`) is tied across frames by that constraint: the plan refuses it for a
+schedule with an OFFSET pass, and takes it for the joint solve followed by SKY passes alone
+(`sc.Passes(2, order="sky_first")`), which hold the joint solve's offsets. A coverage floor
+(`sc.Fit(min_observations=)`) applies in a SKY pass to the pass's own sums: a pixel its observations cover
+fewer times gets no value and no coverage, as in the joint solve. The offset terms are chosen in the run script
 and nowhere else: the passes take them from the model. Given the offsets the sky is **block-diagonal** (one J×J normal
 system per pixel); given the sky the offsets are the model's own offset system. The joint problem
 is therefore solved by alternating least squares with each half exact:
@@ -566,8 +579,9 @@ is therefore solved by alternating least squares with each half exact:
 just the joint solve: it *semi-converges* — the offsets converge fast, the low-wavelength-diversity
 pixels' continuum↔line split does not, and past that point the iterate drifts along the exact
 null spaces (uniform line floor ↔ static detector pattern; uniform sky ↔ the frames' levels). Each SKY and
-OFFSET pass is an exact block minimisation (`sc.Refit`: the OFFSET pass's clip and an optional
-`bright_cut` with `min_pixels` — nothing about the offsets' form), so the objective is non-increasing in `n`
+OFFSET pass is an exact block minimisation (`sc.Refit`: an optional clip of the OFFSET pass and an optional
+`bright_cut` with `min_pixels` — nothing about the offsets' form; neither pass clips unless given a clip,
+`sc.Passes(sky_clip=)` and `sc.Refit(clip=)`), so the objective is non-increasing in `n`
 (`tests/test_npass_any_offset.py` checks it for three different offset models), but drift along
 the null spaces is not excluded — the scheduler records per-pass monitors in
 `<stem>_npass_monitor.json` (per-block median / % positive / step RMS; per OFFSET pass each
