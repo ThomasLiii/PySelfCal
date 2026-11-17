@@ -16,9 +16,8 @@ solver itself is :mod:`selfcal.core`.
 - :mod:`~selfcal.models.profiles`: ready-made coefficient functions (Gaussian, tabulated, linear).
 - :mod:`~selfcal.models.offset_model`: the offset blocks of a solve, one per chunk map, lowered to
   the keyword arguments of :func:`~selfcal.core.system.setup_lsqr`.
-- :mod:`~selfcal.models.offset_structure`: adjacency pairs, polynomial chains and polynomial bases
-  built along the axes of a chunk grid.
-- :mod:`~selfcal.models.offset_basis`: the mean-zero Chebyshev basis of a hard polynomial offset.
+- :mod:`~selfcal.models.offset_structure`: adjacency pairs and group edges built along the axes of
+  a chunk grid.
 - :mod:`~selfcal.models.priors`: priors as functions that return linear rows on the unknowns,
   and ready-made ones.
 """

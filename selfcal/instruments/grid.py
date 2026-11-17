@@ -2,7 +2,7 @@
 
 :func:`rect_grid_chunk_map` cuts a detector into ``ny x nx`` rectangular chunks (the chunk map of
 :class:`~selfcal.instruments.camera.Camera` and of
-:meth:`~selfcal.instruments.base.ChunkMap.rectangles`); :func:`upsample_chunk_map` samples a
+:meth:`~selfcal.instruments.base.Chunks.rectangles`); :func:`upsample_chunk_map` samples a
 detector-resolution chunk map onto the oversampled grid the mosaic uses.
 """
 from __future__ import annotations

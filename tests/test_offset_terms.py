@@ -29,9 +29,11 @@ from selfcal.core.subframe import _render_offset  # noqa: E402
 from selfcal.core.system import parse_pixel_counts_sky  # noqa: E402
 from selfcal.io.calfile import CalFile  # noqa: E402
 from selfcal.models.spec import ModelSpec, OffsetTerm  # noqa: E402
+from selfcal.run.engine import chunk_map_specs, with_chunk_maps  # noqa: E402
 from tests.synthetic_exposures import write_exposures  # noqa: E402
 
 CAMERA = sc.Camera((40, 60), chunks=(4, 6), dq_ext=2, tag='Terms')
+ALL = sc.Job('All')
 SCALAR = sc.Offsets('scalar', on='detector')
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
 
@@ -46,7 +48,7 @@ def test_the_layout_is_the_sky_and_the_offset_terms():
 
 
 def test_no_constant_takes_every_chunk_of_a_map_with_several_axes():
-    geom = CAMERA.geometry(1)
+    geom = with_chunk_maps(CAMERA.geometry(1), chunk_map_specs(CAMERA, ModelSpec()))
     n_frames = 3
     L = SystemLayout.build((10, 10), [geom.chunk_map.det], num_sky_blocks=1, num_frames=n_frames)
     [(cols, P)] = ModelSpec(offset=(OffsetTerm(kind='free', exclude_degree=0),)).column_exclusions(geom, L)
@@ -67,7 +69,9 @@ def test_the_old_settings_are_gone():
         sc.Model(scalar=True)
     with pytest.raises(ValueError, match="map = 'detector'"):
         ModelSpec.from_config({'sky': [{'name': 'continuum'}], 'scalar': True})
-    assert sc.continuum().offsets[-1] == SCALAR and sc.two_block().offsets[-1] != SCALAR
+    assert sc.continuum().offsets[-1] == SCALAR and sc.two_block('readout', 'subchannel').offsets[-1] != SCALAR
+    with pytest.raises(TypeError):
+        sc.two_block()                                  # the second map and the smoothing axis are named
 
 
 # =================================================================== the same model, written two ways
@@ -91,9 +95,9 @@ def test_the_scalar_beside_constants_with_no_constant_is_free_constants(field):
     do not fix, so the values themselves need not agree.) The constants with no constant average to zero over
     each frame's observed chunks, exactly."""
     two = field.calibrate(_recipe(sc.Model(sky=[sc.Sky(damping=0.0)],
-                                           offsets=[sc.Offsets(exclude=sc.Poly(0)), SCALAR]), 'two'))
-    one = field.calibrate(_recipe(sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets()]), 'one'))
-    dup = field.calibrate(_recipe(sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(), SCALAR]), 'dup'))
+                                           offsets=[sc.Offsets(exclude=sc.Poly(0)), SCALAR]), 'two'), jobs=ALL)
+    one = field.calibrate(_recipe(sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets()]), 'one'), jobs=ALL)
+    dup = field.calibrate(_recipe(sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(), SCALAR]), 'dup'), jobs=ALL)
     fits_ = []
     for result in (two, one, dup):
         with CalFile(result.cal_paths[0]) as cal:
@@ -143,10 +147,10 @@ def test_a_left_out_chunk_is_nan_whatever_draws_it():
 
 def test_the_mosaic_leaves_out_what_nothing_fills(field):
     model = sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(), SCALAR])
-    kept = field.calibrate(_recipe(model, 'kept', coadd=sc.Coadd(None, std=False)))
+    kept = field.calibrate(_recipe(model, 'kept', coadd=sc.Coadd(None, std=False)), jobs=ALL)
     # a threshold no chunk reaches: the camera draws its maps chunk by chunk (nothing fills), so every
     # pixel of every frame leaves the coadd
-    gone = field.calibrate(_recipe(model, 'gone', coadd=sc.Coadd(None, std=False, min_chunk_coverage=2.0)))
+    gone = field.calibrate(_recipe(model, 'gone', coadd=sc.Coadd(None, std=False, min_chunk_coverage=2.0)), jobs=ALL)
     from astropy.io import fits
     w_kept = fits.getdata(kept.mosaic_paths[0], 'MEAN_MAP_WEIGHT')
     w_gone = fits.getdata(gone.mosaic_paths[0], 'MEAN_MAP_WEIGHT')
@@ -158,7 +162,7 @@ def test_a_cal_with_a_separate_scalar_is_refused(field, tmp_path):
     import shutil
     from selfcal.pipeline.pipeline_wrapper import Calibrator
     model = sc.Model(sky=[sc.Sky(damping=0.0)], offsets=[sc.Offsets(), SCALAR])
-    cal = field.calibrate(_recipe(model, 'kept', coadd=sc.Coadd(None, std=False))).cal_paths[0]
+    cal = field.calibrate(_recipe(model, 'kept', coadd=sc.Coadd(None, std=False)), jobs=ALL).cal_paths[0]
     old = str(tmp_path / 'old.h5')
     shutil.copyfile(cal, old)
     with h5py.File(old, 'a') as f:

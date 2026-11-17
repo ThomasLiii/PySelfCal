@@ -64,6 +64,17 @@ def setup_options(recipe, compute, instrument) -> dict:
     options.update(clip_keys(fit.clip))
     if fit.min_observations is not None:
         options['min_observations'] = fit.min_observations
+    if compute.matrix != 'stored':
+        options['matrix'] = compute.matrix
+    if compute.functions != 'computed':
+        options['functions'] = compute.functions
+    if fit.window_edge != 'partial':
+        options['window_edge'] = fit.window_edge
+    if recipe.numerics.row_order != 'frame':
+        if compute.matrix != 'compact':
+            raise ConfigError(f"Numerics(row_order={recipe.numerics.row_order!r}) orders the observation table's rows: "
+                              "it needs sc.Compute(matrix='compact')")
+        options['row_order'] = recipe.numerics.row_order
     return options
 
 
@@ -84,6 +95,11 @@ def solver_options(recipe) -> dict:
         out['deflate'] = fit.deflate
     if fit.vectors is not None:
         out['vectors'] = fit.vectors
+    if recipe.numerics.gradient != 'recomputed':
+        if fit.method != 'cgls':
+            raise ConfigError(f"Numerics(gradient={recipe.numerics.gradient!r}) is CGLS's (Fit(method='cgls')); "
+                              f"the recipe's method is {fit.method!r}")
+        out['gradient'] = recipe.numerics.gradient
     return out
 
 
@@ -92,18 +108,23 @@ def coadd_options(recipe, compute, instrument) -> dict:
     c = recipe.coadd
     if c is None:
         return {}
-    return {'apply_mask': c.use_mask, 'apply_weight': c.shot_noise_weights,
-            'ignore_list': _ignore(c.ignore_flags, instrument), 'make_std_map': c.std,
-            'apply_sigma_clipping': c.clip is not None, 'sigma': 2.0 if c.clip is None else float(c.clip),
-            'apply_offset': c.subtract_offsets, 'normalize_offset': c.normalize_offsets,
-            'valid_chunk_thresh': float(c.min_chunk_coverage),
-            'cache_batch_size': recipe.numerics.mosaic_batch, 'coadd_batch_size': recipe.numerics.coadd_batch,
-            'cache_intermediate': compute.cache_frames, 'max_workers': compute.resolved_coadd_workers}
+    out = {'apply_mask': c.use_mask, 'apply_weight': c.shot_noise_weights,
+           'ignore_list': _ignore(c.ignore_flags, instrument), 'make_std_map': c.std,
+           'apply_sigma_clipping': c.clip is not None, 'sigma': 2.0 if c.clip is None else float(c.clip),
+           'apply_offset': c.subtract_offsets, 'normalize_offset': c.normalize_offsets,
+           'valid_chunk_thresh': float(c.min_chunk_coverage),
+           'cache_batch_size': recipe.numerics.mosaic_batch, 'coadd_batch_size': recipe.numerics.coadd_batch,
+           'cache_intermediate': compute.cache_frames, 'max_workers': compute.resolved_coadd_workers}
+    if c.chunk_coverage != 'observed':        # the default stays out, so a recipe without it lowers as before
+        out['chunk_coverage'] = c.chunk_coverage
+    return out
 
 
-def _pass_clip(clip, ignore_flags=None) -> PassClip:
+def _pass_clip(clip, ignore_flags=None) -> PassClip | None:
     """An N-pass clip: grouped by the primary map's spectral axis (chunk groups along an axis), or
-    per frame."""
+    per frame; None for a pass without one."""
+    if clip is None:
+        return None
     if clip.edges is not None or clip.per == 'chunk' or (isinstance(clip.per, ChunkGroups) and clip.per.axis is None):
         raise ConfigError("the N-pass clips group by an axis of the primary chunk map (ChunkGroups.along(...)) "
                           "or not at all (per='frame')")
@@ -121,7 +142,7 @@ def passes_spec(passes) -> PassesSpec:
                       refit_clip=_pass_clip(refit.clip), bright_cut=refit.bright_cut,
                       min_pixels=refit.min_pixels,
                       stop_tol=float(p.stop_tol), sky_merge=p.sky_merge,
-                      keep_moments=p.keep_moments)
+                      keep_moments=p.keep_moments, init_ignore_flags=p.init_ignore_flags)
 
 
 def _suffix(template, name, tile='{tile}'):
@@ -236,8 +257,7 @@ def _frame_source(field, frames, compute, scratch, tiles):
 
 def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None, frames=None, cal=None,
           compute=None, start=None, snapshots=None, monitor=None) -> list[RunSpec]:
-    """The engine runs of one action: a :class:`~selfcal.run.runspec.RunSpec` per group of jobs the
-    instrument runs together (SPHEREx: its channel jobs, then its window jobs).
+    """The engine runs of one action: one :class:`~selfcal.run.runspec.RunSpec` over its jobs.
 
     ``task``: ``"cal"`` (with ``tiles``: tiled; with ``passes``: the N-pass solve) or ``"mosaic"``
     (of the cal ``cal``, default each job's own). ``frames``: None (the field's frames), a number
@@ -252,8 +272,10 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
     snapshots, monitor = as_snapshots(snapshots), as_monitor(monitor)
     compute = compute or field.compute
     inst = field.instrument
-    jobs = tuple(inst.default_jobs()) if jobs is None else ((jobs,) if not isinstance(jobs, (list, tuple))
-                                                            else tuple(jobs))
+    if jobs is None:
+        raise ConfigError("jobs=: name the jobs of the action, one sc.Job each (sc.Job('All') solves every chunk of "
+                          "the primary map; selfcal_scripts.spherex.jobs builds a SPHEREx channel's)")
+    jobs = (jobs,) if not isinstance(jobs, (list, tuple)) else tuple(jobs)
     inst.check_jobs(jobs)
     if start is not None and (task != 'cal' or tiles is not None or passes is not None):
         raise ConfigError("calibrate(start=...): a warm start continues a plain calibration, one solve per job; "
@@ -269,15 +291,12 @@ def lower(field, recipe=None, *, task='cal', jobs=None, tiles=None, passes=None,
             and (tiles is not None or passes is not None)):
         raise ConfigError("Fit(gauge=...): the post-solve gauge is applied by a plain calibration, one solve per job; "
                           "a tiled or an N-pass calibration takes none")
-    groups = {}
-    for j in jobs:
-        groups.setdefault(j.kind, []).append(j)
     model, coadd = recipe.model, recipe.coadd
     mosaic = 'none' if coadd is None else ('full' if coadd.instrument_maps else 'no_wav')
     scratch = _scratch(field, recipe, compute, tiles, passes)
     source, frames_dir = _frame_source(field, frames, compute, scratch, tiles)
     out = []
-    for group in groups.values():
+    for group in (jobs,):
         spec = RunSpec(
             task='npass' if passes is not None else task, field=field, instrument=inst,
             output_dir=os.path.dirname(field.path), run_name=field.name, resolution_arcsec=field.pixel_scale,

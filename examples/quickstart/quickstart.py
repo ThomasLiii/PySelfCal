@@ -29,7 +29,10 @@ RECIPE = sc.Recipe(sc.continuum(smooth=0.1, damping=0.001),
                    numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4),
                    name="quickstart")
 
+# The one job: every chunk of the camera's grid, named All (the name ends up in the product names).
+RUN = dict(jobs=sc.Job("All"))
+
 if __name__ == "__main__":
     FIELD.reproject("quickstart_output/exposures/sim_*.fits", method="interp", padding=8)
-    print(FIELD.plan(RECIPE))
-    print(FIELD.calibrate(RECIPE))
+    print(FIELD.plan(RECIPE, **RUN))
+    print(FIELD.calibrate(RECIPE, **RUN))

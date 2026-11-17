@@ -4,7 +4,8 @@ Given the offsets, the sky is block diagonal: each pixel's J sky values are an i
 least-squares problem. A SKY pass subtracts the solved offsets from every frame
 (:class:`OffsetModelSubtractor`, a frame hook), streams the per-pixel sums of the normal equations of the
 rest (``setup_lsqr(..., sky_rhs_moments=True, moments_only=True)``: no matrix) and solves every pixel once
-(:func:`solve_pixels`). The sums are additive over disjoint frame sets, so the tiles' dumps
+(:func:`solve_pixels`); every observation carries the model's observation weight, as in the joint solve. The sums
+are additive over disjoint frame sets, so the tiles' dumps
 (:func:`dump_moments`) are summed before anything is solved (:func:`combine_moments`): exactly a
 full-field solve, with no seam.
 
@@ -26,8 +27,8 @@ from ..io.cal_writer import write_sky_groups
 from ..io.calfile import CalFile
 from ..pipeline.model_eval import frame_observations, weighted_pixels
 
-__all__ = ["OffsetModelSubtractor", "solve_pixels", "dump_moments", "combine_moments", "write_sky_cal",
-           "sky_monitors"]
+__all__ = ["OffsetModelSubtractor", "solve_pixels", "apply_coverage_floor", "dump_moments", "combine_moments",
+           "write_sky_cal", "sky_monitors"]
 
 
 def _basename(p):
@@ -156,6 +157,27 @@ def solve_pixels(pixel_fisher, pixel_cross, pixel_rhs, pixel_counts, num_sky, nu
     return x.T.reshape(-1)
 
 
+def apply_coverage_floor(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky, num_sky_blocks, min_observations):
+    """The coverage floor (``Fit(min_observations=)``) on a SKY pass's per-pixel sums, in place: a pixel the pass's
+    observations cover fewer than ``min_observations`` times loses its sums (every sky term's counts, Fisher and
+    right-hand side, and the cross moments), so it is solved to no value and reads as uncovered -- what the joint
+    solve does with the pixels below its floor. The count is the first sky term's, as in the matrix build
+    (:func:`selfcal.core.system.setup_lsqr`). ``pixel_cross``: the ``{(i, j): array}`` dict, the bare (0, 1) array,
+    or None. Returns the number of pixels left out."""
+    drop = np.asarray(pixel_counts[:num_sky])
+    drop = (drop > 0) & (drop < int(min_observations))
+    n = int(np.count_nonzero(drop))
+    if n:
+        cols = np.tile(drop, int(num_sky_blocks))
+        pixel_counts[:cols.size][cols] = 0
+        pixel_fisher[:cols.size][cols] = 0.0
+        pixel_rhs[:cols.size][cols] = 0.0
+        cross = pixel_cross.values() if isinstance(pixel_cross, dict) else ([] if pixel_cross is None else [pixel_cross])
+        for c in cross:
+            c[drop] = 0.0
+    return n
+
+
 # --------------------------------------------------------------------------- #
 # the tiles' sums: dumps, combined
 # --------------------------------------------------------------------------- #
@@ -181,9 +203,10 @@ def dump_moments(cc, out_npz):
 
 
 def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_threshold=None,
-                    attrs=None):
+                    attrs=None, min_observations=None):
     """Sum per-tile moment dumps and solve every pixel once (exactly a
-    full-field solve). Writes a v3 sky-only cal via :func:`write_sky_cal`."""
+    full-field solve). Writes a v3 sky-only cal via :func:`write_sky_cal`. ``min_observations``: the coverage floor,
+    applied to the summed counts before the solve (:func:`apply_coverage_floor`; None: every pixel with data)."""
     acc = None
     reproj = []
     for i, d in enumerate(dumps):
@@ -214,6 +237,11 @@ def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_thre
     cross = {tuple(int(t) for t in k.split("_")[1:]): v for k, v in acc.items()
              if k.startswith("cross_")}
     num_sky = ref_shape[0] * ref_shape[1]
+    if min_observations is not None:
+        left_out = apply_coverage_floor(acc["pixel_counts"], acc["pixel_fisher"], acc["pixel_rhs"], cross, num_sky, J,
+                                        min_observations)
+        print(f"[npass] combine: coverage floor, {left_out:,} sky pixels observed fewer than {int(min_observations)} "
+              f"times get no value", flush=True)
     print(f"[npass] combine: solving {num_sky:,} pixels, J={J}, damp {damp_weights} ...", flush=True)
     x = solve_pixels(acc["pixel_fisher"], cross, acc["pixel_rhs"], acc["pixel_counts"], num_sky, J,
                      damp_weights=damp_weights)

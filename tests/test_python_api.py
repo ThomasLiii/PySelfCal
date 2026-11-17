@@ -6,6 +6,7 @@ a toy data set with the built-in camera: calibrate + mosaic (the injected offset
 mosaic action, a tiled solve, a camera without a mask; the geometry is built once for a plan and its
 action; a model grouped by a frame variable of its own is mosaicked.
 """
+import dataclasses
 import functools
 import os
 import pickle
@@ -32,9 +33,12 @@ from selfcal.config import Config, ConfigError  # noqa: E402
 from selfcal.config.base import added, encode, type_name  # noqa: E402
 from selfcal.instruments import spherex  # noqa: E402
 from selfcal.io.calfile import CalFile  # noqa: E402
-from selfcal.run.engine import RunContext  # noqa: E402
+from selfcal.models.spec import ModelSpec  # noqa: E402
+from selfcal.run.engine import RunContext, chunk_map_specs, with_chunk_maps  # noqa: E402
 from selfcal.run.lower import lower  # noqa: E402
-from selfcal.run.products import fingerprint  # noqa: E402
+from selfcal.run.products import fingerprint, job_key  # noqa: E402
+from selfcal_scripts.spherex import jobs  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 from tests.synthetic_exposures import (  # noqa: E402
     DET,
     N_CHUNK_SIDE,
@@ -63,6 +67,22 @@ def fortnight(exposure, length=8):
 
 def plane(det_x, det_y):
     return [(np.asarray(det_x, dtype=np.float64) - DET / 2) / DET, (np.asarray(det_y, dtype=np.float64) - DET / 2) / DET]
+
+
+#: The job of a camera's runs: every chunk of the primary chunk map.
+ALL = sc.Job('All')
+
+
+def map_specs(inst, model=None):
+    """The chunk maps a run of ``model`` on ``inst`` evaluates (a model naming none, the default: the
+    instrument's)."""
+    return chunk_map_specs(inst, ModelSpec.from_config((model or sc.Model()).lower()))
+
+
+def detector_geometry(inst, oversample=1, model=None):
+    """``inst``'s detector geometry with the chunk maps of ``model`` evaluated on it, as the run engine builds
+    it."""
+    return with_chunk_maps(inst.geometry(oversample), map_specs(inst, model))
 
 
 # =================================================================== the settings base
@@ -143,7 +163,7 @@ def test_model_lowers_to_the_model_table():
                      variables={'temperature': sc.Header('TEMP'), 'night': sc.PerFrame(per_frame_index)},
                      priors=[sc.priors.frame_smoothness('thermal', 'temperature', weight=2.0)])
     t = model.lower()
-    assert [s['damp_weight'] for s in t['sky']] == [1e-4, 0.3]      # the second term's default
+    assert [s['damp_weight'] for s in t['sky']] == [1e-4, 0.0]      # the second term's default: undamped
     assert t['sky'][1]['coefficient'] == {'variable': 'wavelength', 'function': 'gaussian', 'center': 3.3,
                                           'sigma': 0.01}
     kinds = [(o['kind'], o.get('groups')) for o in t['offset']]
@@ -156,15 +176,20 @@ def test_model_lowers_to_the_model_table():
 
 
 def test_presets_and_their_rules():
-    m = sc.continuum(smooth=0.2, poly_prior=sc.Poly(1, weight=0.5), damping=0.001)
-    assert m.lower()['offset'][0]['poly'] == [{'axis': None, 'degree': 1, 'weight': 0.5}]
-    s = sc.spectral([spherex.line('aromatic', damping=5e-3)], polynomial=sc.Poly(2, window=range(200, 321)))
-    assert s.spectral_window() == (200, 320)
-    assert s.lower()['offset'][0]['kind'] == 'polybasis'
-    with pytest.raises(ConfigError, match='takes no smooth'):
-        sc.spectral([], polynomial=sc.Poly(2, window=range(200, 321)), smooth=0.1)
-    with pytest.raises(ConfigError, match='needs Poly\\(window'):
-        sc.Offsets(polynomial=sc.Poly(2))
+    m = sc.continuum(smooth=0.2, damping=0.001)
+    assert m.lower()['offset'][0]['reg_weight'] == 0.2 and m.lower()['offset'][0]['exclude_degree'] == 0
+    s = sc.spectral([T.line('aromatic', damping=5e-3)], smooth=0.3)
+    assert [t.name for t in s.sky] == ['continuum', 'aromatic'] and s.offsets[0].smooth == 0.3
+    # the polynomial encodings removed on 2026-10-30 are refused with the replacement named, and their
+    # settings stay in the encoding at their defaults, so earlier products keep their fingerprints
+    with pytest.raises(ConfigError, match='removed.*basis=Function'):
+        sc.Offsets(polynomial=sc.Poly(2, window=range(200, 321)))
+    with pytest.raises(ConfigError, match='removed'):
+        sc.Offsets(poly_prior=(sc.Poly(1, weight=0.5),))
+    with pytest.raises(ConfigError, match='removed'):
+        sc.Poly(1, weight=0.5)
+    d = sc.Offsets(exclude=sc.Poly(1)).to_dict()
+    assert d['polynomial'] is None and d['poly_prior'] == [] and d['exclude']['weight'] is None
     with pytest.raises(ConfigError, match='basis= needs n='):
         sc.Offsets(basis=gradient)
 
@@ -174,32 +199,75 @@ def test_recipe_parts():
     fit = sc.Fit(100, clip=sc.Clip(2.5, per=sc.ChunkGroups.along('subchannel')), tolerance=(1e-8, 1e-6))
     assert fit.atol_btol == (1e-8, 1e-6)
     assert sc.Fit(clip=3).clip == sc.Clip(3.0)
+    assert sc.Fit().clip is None                    # a fit clips nothing unless given a clip
     with pytest.raises(ConfigError, match='needs the std map'):
         sc.Coadd(clip=2.0, std=False)
     assert sc.Recipe(name='x').model == sc.continuum() and sc.Recipe(name='x').suffix == '_x'
     with pytest.raises(ConfigError, match='ends on an OFFSET pass'):
         sc.Passes(n=2)
     assert sc.Passes(n=2, ends_on_offset=True).n == 2
+    # no pass clips unless one is given; a sigma is a per-frame clip
+    assert sc.Passes().sky_clip is None and sc.Passes().offset.clip is None and sc.Refit().clip is None
+    assert sc.Passes(sky_clip=5).sky_clip == sc.Clip(5.0) and sc.Refit(clip=2.5).clip == sc.Clip(2.5)
+    # the first pass's ignored flags: their own setting, given once
+    assert sc.Passes(2, order='sky_first', init_ignore_flags=[]).init_ignore_flags == ()
+    with pytest.raises(ConfigError, match='given twice'):
+        sc.Passes(init_clip=sc.Clip(3.0, ignore_flags=(21,)), init_ignore_flags=(21,))
     with pytest.raises(ConfigError, match='needs \\{tile\\}'):
         sc.Tiles((2, 2), tile_name='same')
 
 
 # =================================================================== instruments
 def test_spherex_jobs_and_their_runs():
-    inst = sc.SPHEREx(3, num_col=3)
-    assert inst.product_tag == 'Detector3_NumSub10_NumCh34_NumCol3'
-    chans = spherex.channels(16, 18)
-    assert [j.name for j in chans] == ['Ch16', 'Ch17', 'Ch18'] and chans[1].value == (17,)
-    window = spherex.window('Multiline3', subchannels=range(200, 321))
-    assert (window.kind, window.value) == ('window', (200, 321))
-    assert spherex.group(17, 18).name == 'Ch17-18'
-    # channel jobs and window jobs run separately: an engine run each
-    runs = lower(sc.Field('/tmp/spherex_field', inst, 6.2), sc.Recipe(coadd=None), jobs=chans + (window,))
-    assert [[j.name for j in r.jobs] for r in runs] == [['Ch16', 'Ch17', 'Ch18'], ['Multiline3']]
+    from selfcal_scripts.recipes.spherex import maps
+    inst = sc.SPHEREx(3)
+    assert inst.product_tag == 'Detector3' and inst.default_chunk_maps() == {}
+    chans = jobs.channels(16, 18)
+    assert [j.name for j in chans] == ['Ch16', 'Ch17', 'Ch18']
+    # a channel's window is its subchannels padded by one on each side, its strict set its own
+    assert chans[1].window == {'subchannel': range(160, 172)} and chans[1].strict == {'subchannel': range(161, 171)}
+    window = jobs.window('Multiline3', range(200, 321))
+    assert window.window == {'subchannel': range(200, 321)} and window.strict is None
+    assert jobs.window('Aromatic').window == {'subchannel': jobs.WINDOWS['Aromatic']}
+    group = jobs.group(17, 18)
+    assert group.name == 'Ch17-18' and group.strict == {'subchannel': range(161, 181)}
+    with pytest.raises(ConfigError, match='consecutive channels'):
+        jobs.group(17, 19)
+    # channel jobs and window jobs run together, on the recipe's chunk maps, whose primary map tags the products
+    recipe = sc.Recipe(sc.continuum().replace(chunk_maps=maps(num_ch=34, num_col=3)), coadd=None)
+    (run,) = lower(sc.Field('/tmp/spherex_field', inst, 6.2), recipe, jobs=chans + (window,))
+    assert [j.name for j in run.jobs] == ['Ch16', 'Ch17', 'Ch18', 'Multiline3']
+    assert RunContext.build(run, need_geometry=False).frame_tag == 'Detector3_NumSub10_NumCh34_NumCol3'
+    # SPHEREx offers no chunk maps: a model names its own
+    (plain,) = lower(sc.Field('/tmp/spherex_field', inst, 6.2), sc.Recipe(coadd=None), jobs=chans)
+    with pytest.raises(ConfigError, match='has no default chunk maps'):
+        RunContext.build(plain, need_geometry=False)
     with pytest.raises(ConfigError, match='1 to 6'):
         sc.SPHEREx(7)
-    with pytest.raises(ConfigError, match='name their maps'):
-        inst.default_jobs()
+    with pytest.raises(TypeError):
+        sc.SPHEREx(3, num_col=3)                        # the partition is the model's
+
+
+def test_a_job_names_chunks_on_the_primary_map():
+    """A job's window and strict set select the chunks of the primary map by their indices along its axes, and a
+    job naming an axis the map lacks, reaching beyond it, or keeping chunks outside its window is refused; an
+    action names its jobs."""
+    from selfcal.instruments.contract import check_job, chunk_window
+    cm = sc.Chunks.rectangles((DET, DET), (2, 3))              # chunk id = row * 3 + col
+    assert chunk_window(cm, None).all() and chunk_window(cm, {'col': range(1, 3)}).tolist() == [0, 1, 1] * 2
+    assert chunk_window(cm, {'row': range(1, 2), 'col': range(0, 1)}).nonzero()[0].tolist() == [3]
+    check_job(sc.Job('Right', window={'col': range(1, 3)}, strict={'col': range(2, 3)}), cm)
+    for job, msg in ((sc.Job('A', window={'band': range(0, 1)}), "no chunk axis 'band'"),
+                     (sc.Job('B', window={'col': range(2, 4)}), 'lies outside'),
+                     (sc.Job('C', window={'col': range(0, 1)}, strict={'col': range(1, 2)}), 'leaves its window')):
+        with pytest.raises(ConfigError, match=msg):
+            check_job(job, cm)
+    with pytest.raises(ConfigError, match='consecutive chunk indices'):
+        sc.Job('D', window={'col': range(0, 3, 2)})
+    assert job_key(sc.Job('Right', window={'col': range(1, 3)})) == \
+        {'name': 'Right', 'window': {'col': [1, 3]}, 'strict': None}
+    with pytest.raises(ConfigError, match='jobs='):
+        lower(sc.Field('/tmp/owl_field', sc.Camera((DET, DET)), 20.0), sc.Recipe(coadd=None))
 
 
 def test_the_zodi_anchor_reads_the_channel_of_each_cal(tmp_path, monkeypatch):
@@ -212,36 +280,62 @@ def test_the_zodi_anchor_reads_the_channel_of_each_cal(tmp_path, monkeypatch):
     monkeypatch.setattr(za, 'append_anchor_channel',
                         lambda path, det, run, channel, fit, clip, anchor_method: anchored.append(channel))
     field = sc.Field(str(tmp_path / 'field'), sc.SPHEREx(4), 6.2)
-    jobs = (spherex.channel(17), spherex.channel(18), spherex.group(19, 20))
+    run_jobs = (jobs.channel(17), jobs.channel(18), jobs.group(19, 20))
     predictions = tmp_path / 'predictions'
     predictions.mkdir()
     for suffix in ('', '_named'):
-        stems = [f'{field.instrument.product_tag}_{j.name}{suffix}' for j in jobs]
+        # the products' tag: the instrument's, then the primary chunk map's (whose own 'NumCh17' names no channel)
+        stems = [f'{field.instrument.product_tag}_NumSub10_NumCh17_NumCol1_{j.name}{suffix}' for j in run_jobs]
         for stem in stems:
             (predictions / f'zodi_pred_{stem}.npz').touch()
         anchored.clear()
         cals = [os.path.join(field.path, 'calibration', f'cal_{stem}.h5') for stem in stems]
-        fits_by_job = spherex.zodi_anchor(Result(field, None, jobs, cals), predictions)
+        fits_by_job = spherex.zodi_anchor(Result(field, None, run_jobs, cals), predictions)
         assert anchored == [17, 18] and fits_by_job == {'Ch17': os.path.basename(cals[0]),
                                                         'Ch18': os.path.basename(cals[1])}
 
 
 def test_camera_and_euclid():
     cam = sc.Camera((64, 48), chunks=3, dq_ext=2, tag='Toy')
-    assert cam.chunks == (3, 3) and cam.product_tag == 'Toy_Chunks3x3'
+    assert cam.chunks == (3, 3) and cam.product_tag == 'Toy'
+    assert [(k, m.tag) for k, m in cam.default_chunk_maps().items()] == [('grid', 'Chunks3x3')]
     layout = cam.layout()
     assert layout.sci_ext == [1] and layout.dq_ext == [2] and layout.cache_tag == 'headers_Toy'
     cam = sc.Camera((30, 40), chunks=(3, 4), dq_ext=2)
-    geom = cam.geometry(2)
+    assert cam.geometry(2).chunk_maps == {}                     # the engine adds the model's maps
+    geom = detector_geometry(cam, 2)
     cm = geom.chunk_map
-    assert geom.shape == (30, 40) and cm.n_chunks == 12 and cm.grid.shape == (60, 80)
+    assert geom.shape == (30, 40) and cm.n_chunks == 12 and cm.grid.shape == (60, 80) and cm.name == 'grid'
     assert cm.axes.names == ['row', 'col'] and cm.adjacency_axes == ('row', 'col')
     assert cm.axes['col'].size == 4 and cm.axes['row'].scan == 'y'
-    jg = cam.job_geometry(geom, cam.default_jobs()[0])
+    jg = cam.job_geometry(geom, ALL)
     assert jg.det_valid_weight.shape == (30, 40) and jg.grid_valid_weight.shape == (60, 80)
-    assert cam.product_tag == 'Grid30x40_Chunks3x4'
+    assert jg.det_valid_weight.dtype == np.float64 and jg.grid_valid_weight.dtype == np.float32
+    assert jg.det_valid_weight.min() == 1 and jg.chunk_valid.all() and jg.chunk_valid_strict.all()
+    right = cam.job_geometry(geom, sc.Job('Right', window={'col': range(2, 4)}, strict={'col': range(3, 4)}))
+    assert right.chunk_valid.tolist() == [False, False, True, True] * 3
+    assert right.chunk_valid_strict.tolist() == [False, False, False, True] * 3
+    assert np.array_equal(right.det_valid_weight, (cm.det % 4 >= 2).astype(np.float64))
+    assert np.array_equal(right.grid_valid_weight, (cm.grid % 4 == 3).astype(np.float32))
+    assert cam.product_tag == 'Grid30x40'
+    (spec,) = lower(sc.Field('/tmp/camera_field', cam, 20.0), sc.Recipe(coadd=None), jobs=ALL)
+    assert RunContext.build(spec, need_geometry=False).frame_tag == 'Grid30x40_Chunks3x4'
     eu = sc.Euclid(band='J', chunks=510)
-    assert eu.default_jobs()[0].name == 'J' and eu.default_ignore_flags() == (11, 15)
+    assert eu.product_tag == 'EDFN' and eu.default_ignore_flags() == (11, 15)
+    assert list(eu.default_chunk_maps()) == ['grid', 'col_strips', 'row_strips', 'col_tilt', 'row_tilt']
+
+
+def rectangles(geometry, chunks, axes=('row', 'col')):
+    """A chunk map of the user instruments: ``chunks`` = (rows, cols) rectangles over the detector."""
+    return sc.Chunks.rectangles(geometry.shape, chunks, axes=axes)
+
+
+def amplifier_columns(geometry, n=4):
+    """A chunk map of the user instruments: one chunk per amplifier, ``n`` vertical bands, along x, with no
+    adjacency axes."""
+    h, w = geometry.shape
+    ids = np.repeat(np.arange(n, dtype=np.int32)[None, :], h, axis=0).repeat(w // n, axis=1)
+    return sc.Chunks(ids, sc.ChunkAxes.row_major(('amp',), (n,), ('x',)))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -252,9 +346,11 @@ class Owl(sc.Instrument):
     unit: str = 'e-/s'
 
     def geometry(self, oversample):
-        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (self.chunks, self.chunks))
-        amps = sc.ChunkMap.rectangles('amps', (DET, DET), (1, 4), axes=('all', 'amp'))
-        return sc.Geometry((DET, DET), oversample, maps=[grid, amps])
+        return sc.Geometry((DET, DET), oversample)
+
+    def default_chunk_maps(self):
+        return {'grid': sc.ChunkMap(rectangles, chunks=(self.chunks, self.chunks)),
+                'amps': sc.ChunkMap(rectangles, chunks=(1, 4), axes=('all', 'amp'))}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -263,20 +359,31 @@ class AmpsCamera(sc.Instrument):
     tag: str = 'Amps'
 
     def geometry(self, oversample):
-        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (N_CHUNK_SIDE, N_CHUNK_SIDE))
-        ids = np.repeat(np.arange(4, dtype=np.int32)[None, :], DET, axis=0).repeat(DET // 4, axis=1)
-        amps = sc.ChunkMap('amps', ids, ids, axes=sc.ChunkAxes.row_major(('amp',), (4,), ('x',)))
-        return sc.Geometry((DET, DET), oversample, maps=[grid, amps])
+        return sc.Geometry((DET, DET), oversample)
+
+    def default_chunk_maps(self):
+        return {'grid': sc.ChunkMap(rectangles, chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE)),
+                'amps': sc.ChunkMap(amplifier_columns)}
 
 
 def test_a_new_instrument_is_a_subclass():
     owl = Owl(chunks=2)
     field = sc.Field('/tmp/owl_field', owl, 20.0)
-    (spec,) = lower(field, sc.Recipe(coadd=None))
+    (spec,) = lower(field, sc.Recipe(coadd=None), jobs=ALL)
     ctx = RunContext.build(spec)
     assert ctx.frame_tag == 'Owl' and [j.name for j in ctx.jobs()] == ['All']
-    assert sorted(ctx.geom.chunk_maps) == ['amps', 'grid'] and ctx.geom.chunk_map.n_chunks == 4
-    assert ctx.geom.chunk_maps['amps'].grid.shape == (DET, DET)
+    assert list(ctx.geom.chunk_maps) == ['grid', 'amps'] and ctx.geom.primary == 'grid'
+    assert ctx.geom.chunk_map.n_chunks == 4 and ctx.geom.chunk_maps['amps'].name == 'amps'
+    assert ctx.geom.chunk_maps['amps'].grid.shape == (DET, DET)            # replicated from the detector map
+    # a model's own maps replace the instrument's defaults, the first one primary
+    model = sc.Model(chunk_maps={'amps': sc.ChunkMap(amplifier_columns, tag='Amps4'),
+                                 'grid': sc.ChunkMap(rectangles, chunks=(2, 2))})
+    (spec,) = lower(field, sc.Recipe(model, coadd=None), jobs=ALL)
+    ctx = RunContext.build(spec)
+    assert ctx.frame_tag == 'Owl_Amps4' and ctx.geom.primary == 'amps' and ctx.geom.chunk_map.n_chunks == 4
+    with pytest.raises(ConfigError, match="no chunk axis 'row'"):
+        top = sc.Job('Top', window={'row': range(0, 1)})           # an axis of the instrument's map, not the model's
+        RunContext.build(lower(field, sc.Recipe(model, coadd=None), jobs=top)[0])
 
 
 class UndecoratedOwl(sc.Instrument):
@@ -303,39 +410,56 @@ def test_an_instrument_is_a_frozen_dataclass():
             sc.Field('/tmp/owl_field', inst, 20.0)
 
 
-@dataclass(frozen=True, kw_only=True)
-class RenderedOwl(Owl):
-    """Owl with two of the engine's optional hooks."""
-
-    def coefficient_catalog(self):
-        return {'ramp': functools.partial(sc.linear, 0.0, 1.0)}
-
-    def offset_renderer(self, geom, jobgeom, map_name=None, render=None):
-        return _render_constant if map_name in (None, 'grid') else None
-
-
 def _render_constant(chunk_map, offsets):
     return np.asarray(offsets)[chunk_map]
 
 
+def drawn(chunks, jobgeom):
+    """A mosaic renderer of a chunk map: the renderer of one job's offsets."""
+    return _render_constant
+
+
+def drawn_rectangles(geometry, chunks):
+    """:func:`rectangles` whose offsets the mosaic draws with :func:`drawn` unless a term names another way."""
+    return dataclasses.replace(rectangles(geometry, chunks), renderers={'drawn': drawn}, render='drawn')
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenderedOwl(Owl):
+    """Owl whose grid map carries a renderer of its own."""
+
+    def default_chunk_maps(self):
+        grid = sc.ChunkMap(drawn_rectangles, chunks=(self.chunks, self.chunks))
+        return {**super().default_chunk_maps(), 'grid': grid}
+
+
 def test_an_instruments_optional_hooks_reach_the_engine():
-    model = sc.Model(offsets=[sc.Offsets(), sc.Offsets(on='amps', smooth_along=())])
-    (spec,) = lower(sc.Field('/tmp/owl_field', RenderedOwl(chunks=2), 20.0), sc.Recipe(model, coadd=None))
-    ctx = RunContext.build(spec)
-    assert sorted(ctx.catalog()) == ['ramp']
-    _, renderers = ctx.mosaic_geometry(ctx.job_geometry(ctx.jobs()[0]))
-    assert renderers == [_render_constant, None]
+    """A chunk map's renderers reach the mosaic: the map's default one, or the one an offset term names
+    (``'constant'``: constant over each chunk); a map without renderers is drawn constant over each chunk."""
+    def renderers(model):
+        (spec,) = lower(sc.Field('/tmp/owl_field', RenderedOwl(chunks=2), 20.0), sc.Recipe(model, coadd=None),
+                        jobs=ALL)
+        ctx = RunContext.build(spec)
+        return ctx.mosaic_geometry(ctx.job_geometry(ctx.jobs()[0]))[1]
+
+    assert renderers(sc.Model(offsets=[sc.Offsets(), sc.Offsets(on='amps', smooth_along=())])) == [_render_constant,
+                                                                                                    None]
+    assert renderers(sc.Model(offsets=[sc.Offsets(render='constant')])) == [None]
+    with pytest.raises(ConfigError, match="has no renderer 'spline'"):
+        renderers(sc.Model(offsets=[sc.Offsets(render='spline')]))
     plain = Owl()
-    assert plain.coefficient_catalog() == {} and plain.offset_renderer(None, None) is None
     assert plain.aux_coadds(None) is None and plain.geometry_files() == ()
+    assert _NoGeometry().default_chunk_maps() == {}
 
 
 def test_built_in_instruments_give_their_geometry():
-    geom = sc.Camera((DET, DET), chunks=N_CHUNK_SIDE, dq_ext=2, tag='Toy').geometry(2)
+    geom = detector_geometry(sc.Camera((DET, DET), chunks=N_CHUNK_SIDE, dq_ext=2, tag='Toy'), 2)
     assert geom.chunk_map.n_chunks == N_CHUNK_SIDE ** 2 and geom.chunk_map.grid.shape == (2 * DET, 2 * DET)
     from selfcal.instruments.spherex.spherex_utility import DEFAULT_CALIBRATION_DIR
     if os.path.isdir(os.environ.get('SELFCAL_SPHEREX_CALIB_DIR', DEFAULT_CALIBRATION_DIR)):   # its maps (not on CI)
-        lvf = sc.SPHEREx(4, num_col=3).geometry(1)
+        from selfcal_scripts.recipes.spherex import maps
+        lvf = detector_geometry(sc.SPHEREx(4), 1, sc.Model(chunk_maps=maps(num_ch=34, num_col=3)))
+        assert list(lvf.chunk_maps) == ['subchannel', 'detector_column'] and lvf.primary == 'subchannel'
         assert lvf.chunk_map.axes is not None and 'subchannel' in lvf.chunk_map.axes.names
     with pytest.raises(NotImplementedError, match='a subclass of sc.Instrument implements'):
         sc.Instrument.geometry(_NoGeometry())
@@ -399,11 +523,12 @@ def test_a_run_through_the_api():
         assert field.reproject(os.path.join(exp_dir, 'toy_exp_*_D0.fits'), method='interp', padding=8) == \
             os.path.join(run_dir, 'reprojected')
         assert len(field.frames) == 12 and os.path.exists(os.path.join(run_dir, 'ref.fits'))
-        recipe = sc.Recipe(sc.continuum(smooth=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
+        # the sky damped (0.1): the toy's offsets are recovered in the 60 iterations given
+        recipe = sc.Recipe(sc.continuum(smooth=0.1, damping=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
                            numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4), name='t')
-        plan = field.plan(recipe)
+        plan = field.plan(recipe, jobs=ALL)
         assert 'cal_Toy_Chunks4x4_All_t.h5' in str(plan) and plan.frames[0] == 12
-        result = field.calibrate(recipe)
+        result = field.calibrate(recipe, jobs=ALL)
         assert os.path.exists(result.record)
         assert result.offsets().shape == (12, N_CHUNK_SIDE ** 2) and result.sky().ndim == 2
         _recovered(result.cal_paths[0], off_true, sc_true)
@@ -414,12 +539,12 @@ def test_a_run_through_the_api():
 
         made = os.path.join(tmp, 'mosaic_made.fits')                 # the mosaic action, from the existing cal
         shutil.move(result.mosaic_paths[0], made)
-        again = field.mosaic(recipe)
+        again = field.mosaic(recipe, jobs=ALL)
         _same_fits(again.mosaic_paths[0], made)
 
         tiles = sc.Tiles((1, 2), overlap=10, names=('W', 'E'))
         t = field.calibrate(recipe.replace(coadd=None), tiles=tiles,
-                            compute=field.compute.replace(stage_dir='toy_tiles', memory_guard=False))
+                            compute=field.compute.replace(stage_dir='toy_tiles', memory_guard=False), jobs=ALL)
         assert sorted(t.tile_cals) == ['E', 'W']
         assert os.path.basename(t.final) == 'cal_Toy_Chunks4x4_All_t_stitched.h5'
         assert [os.path.basename(p) for p in sorted(t.tile_cals.values())] == \
@@ -445,8 +570,8 @@ def test_a_nonsquare_camera_without_a_mask_runs(tmp_path):
     with h5py.File(field.frames[0], 'r') as f:
         assert int(f['sub_bitmask'][()].max()) == 0               # no mask: nothing flagged
     assert len(field.frames) == n and reprojected == os.path.join(field.path, 'reprojected')
-    result = field.calibrate(sc.Recipe(fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
-                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))
+    result = field.calibrate(sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(60, tolerance=1e-8), coadd=sc.Coadd(clip=3.0),
+                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)), jobs=ALL)
     assert len(result.cal_paths) == 1 and len(result.mosaic_paths) == 1
     with CalFile(result.cal_paths[0]) as cal:
         assert cal.schema_version == 3 and cal.sky_names == ['continuum'] and cal.num_maps == 2   # + the scalar term
@@ -477,6 +602,9 @@ class CountedCamera(sc.Instrument):
         GEOMETRIES.append(oversample)
         return sc.Camera((DET, DET), chunks=N_CHUNK_SIDE).geometry(oversample)
 
+    def default_chunk_maps(self):
+        return sc.Camera((DET, DET), chunks=N_CHUNK_SIDE).default_chunk_maps()
+
     def layout(self):
         return sc.Camera((DET, DET), dq_ext=2).layout()
 
@@ -492,20 +620,24 @@ def test_the_geometry_is_kept_and_copied(tmp_path):
     marker = tmp_path / 'geometry_input'
     marker.write_text('a')
     inst = CountedCamera(files=(str(marker),))
+    specs = map_specs(inst)
     GEOMETRIES.clear()
-    a = instrument_geometry(inst, 1)
+    a = instrument_geometry(inst, 1, specs)
     a.chunk_map.det[0, 0] = 99                       # a run that writes into its geometry changes no other's
-    b = instrument_geometry(inst, 1)
+    b = instrument_geometry(inst, 1, specs)
     assert GEOMETRIES == [1] and b.chunk_map.det[0, 0] == 0
-    instrument_geometry(inst, 2)
+    instrument_geometry(inst, 2, specs)
     assert GEOMETRIES == [1, 2]
     os.utime(marker, ns=(0, 0))                      # a file the geometry reads changed: built again
-    instrument_geometry(inst, 1)
+    instrument_geometry(inst, 1, specs)
     assert GEOMETRIES == [1, 2, 1]
     assert GEOMETRIES_KEPT == 2
-    instrument_geometry(inst, 3)                     # the last two are kept: 1 and 3; 2 is built again
-    instrument_geometry(inst, 2)
+    instrument_geometry(inst, 3, specs)              # the last two are kept: 1 and 3; 2 is built again
+    instrument_geometry(inst, 2, specs)
     assert GEOMETRIES == [1, 2, 1, 3, 2]
+    other = map_specs(inst, sc.Model(chunk_maps={'grid': sc.ChunkMap(rectangles, chunks=(2, 2))}))
+    assert instrument_geometry(inst, 2, other).chunk_map.n_chunks == 4     # other chunk maps: built again
+    assert GEOMETRIES == [1, 2, 1, 3, 2, 2]
 
 
 def test_the_geometry_is_built_once_for_a_plan_and_its_action(tmp_path):
@@ -517,8 +649,8 @@ def test_the_geometry_is_built_once_for_a_plan_and_its_action(tmp_path):
     recipe = sc.Recipe(fit=sc.Fit(10), coadd=sc.Coadd(clip=3.0), numerics=sc.Numerics(2, batch=4, mosaic_batch=4,
                                                                                      coadd_batch=4))
     GEOMETRIES.clear()
-    field.plan(recipe)
-    field.calibrate(recipe)
+    field.plan(recipe, jobs=ALL)
+    field.calibrate(recipe, jobs=ALL)
     assert GEOMETRIES == [1]
 
 
@@ -534,11 +666,18 @@ class ModuleStateCamera(sc.Instrument):
 
     def geometry(self, oversample=1):
         GEOMETRIES.append(oversample)
-        side = MODULE_CHUNKS['side']
-        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (side, side))
-        geom = sc.Geometry((DET, DET), oversample, maps=[grid])
+        geom = sc.Geometry((DET, DET), oversample)
         geom.extra['lock'] = threading.Lock()
         return geom
+
+    def default_chunk_maps(self):
+        return {'grid': sc.ChunkMap(module_state_rectangles)}
+
+
+def module_state_rectangles(geometry):
+    """``MODULE_CHUNKS['side']`` x ``MODULE_CHUNKS['side']`` rectangles: a chunk map that reads module state."""
+    side = MODULE_CHUNKS['side']
+    return sc.Chunks.rectangles(geometry.shape, (side, side))
 
     def layout(self):
         return sc.Camera((DET, DET), dq_ext=2).layout()
@@ -557,9 +696,9 @@ def test_a_user_geometry_is_built_by_each_action_and_not_kept(tmp_path):
     GEOMETRIES.clear()
     MODULE_CHUNKS['side'] = 2
     try:
-        assert field.plan(recipe).contexts[0].geom.chunk_map.n_chunks == 4
+        assert field.plan(recipe, jobs=ALL).contexts[0].geom.chunk_map.n_chunks == 4
         MODULE_CHUNKS['side'] = 4
-        result = field.calibrate(recipe)
+        result = field.calibrate(recipe, jobs=ALL)
     finally:
         MODULE_CHUNKS['side'] = 2
     assert GEOMETRIES == [1, 1]
@@ -569,15 +708,16 @@ def test_a_user_geometry_is_built_by_each_action_and_not_kept(tmp_path):
 
 def test_every_pass_damps_the_sky_as_the_model_says():
     model = sc.Model(sky=[sc.Sky(), sc.Sky('ramp', times=x_ramp)])
-    (spec,) = lower(sc.Field('/tmp/damping_field', sc.Camera((DET, DET)), 20.0), sc.Recipe(model, coadd=None))
+    (spec,) = lower(sc.Field('/tmp/damping_field', sc.Camera((DET, DET)), 20.0), sc.Recipe(model, coadd=None),
+                    jobs=ALL)
     ctx = RunContext.build(spec)
-    assert ctx.sky_damping == model.sky_dampings() == [0.1, 0.3]
-    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight, then 3 x damp_weight for the others
+    assert ctx.sky_damping == model.sky_dampings() == [0.0, 0.0]          # Sky() leaves the sky undamped
+    # the one rule (SkyModel.damp_weights): a term's own, else damp_weight for the first, damp_weight_line for the others
     from dataclasses import replace
 
     from selfcal.models.sky_model import SkyModel
     plain = SkyModel(tuple(replace(c, damp_weight=None) for c in ctx.sky_model().components))
-    assert plain.damp_weights(0.1) == [0.1, 3.0 * 0.1] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
+    assert plain.damp_weights(0.1) == [0.1, 0.0] and plain.damp_weights(0.1, 0.02) == [0.1, 0.02]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -586,9 +726,11 @@ class AmpCamera(sc.Instrument):
     tag: str = 'AmpCam'
 
     def geometry(self, oversample=1):
-        grid = sc.ChunkMap.rectangles('grid', (DET, DET), (N_CHUNK_SIDE, N_CHUNK_SIDE))
-        amps = sc.ChunkMap.rectangles('amps', (DET, DET), (1, 4), axes=('all', 'amp'))
-        return sc.Geometry((DET, DET), oversample, maps=[grid, amps])
+        return sc.Geometry((DET, DET), oversample)
+
+    def default_chunk_maps(self):
+        return {'grid': sc.ChunkMap(rectangles, chunks=(N_CHUNK_SIDE, N_CHUNK_SIDE)),
+                'amps': sc.ChunkMap(rectangles, chunks=(1, 4), axes=('all', 'amp'))}
 
 
 def test_a_model_grouped_by_its_own_frame_variable_is_mosaicked(tmp_path):
@@ -605,7 +747,7 @@ def test_a_model_grouped_by_its_own_frame_variable_is_mosaicked(tmp_path):
                               sc.Offsets('gradient', on='detector', basis=plane, n=2), sc.Offsets('scalar', on='detector')],
                      variables={'fortnight': sc.PerFrame(fortnight, of='exposure', length=8)})
     result = field.calibrate(sc.Recipe(model, fit=sc.Fit(30), coadd=sc.Coadd(clip=3.0),
-                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)))
+                                       numerics=sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)), jobs=ALL)
     with result.mosaic() as mosaic:
         assert np.isfinite(mosaic.mean).any()
 
@@ -623,7 +765,7 @@ def _run_script(tmp_path, text):
 def test_a_run_outside_the_main_guard_is_refused(tmp_path):
     proc = _run_script(tmp_path, "import selfcal as sc\n"
                                  "field = sc.Field('out/x', sc.Camera((8, 8)), 1.0)\n"
-                                 "field.plan()\n")
+                                 "field.plan(jobs=sc.Job('All'))\n")
     assert proc.returncode != 0 and 'if __name__ == "__main__"' in proc.stderr, proc.stderr[-2000:]
 
 
@@ -662,7 +804,7 @@ def test_each_pixel_takes_the_group_of_its_dominant_chunk():
 def test_clip_groups_resolve_on_the_primary_chunk_map():
     from selfcal.run.engine import clip_groups
     field = sc.Field('/tmp/clip_field', sc.Camera((DET, DET), chunks=N_CHUNK_SIDE), 20.0)
-    (spec,) = lower(field, sc.Recipe(coadd=None))
+    (spec,) = lower(field, sc.Recipe(coadd=None), jobs=ALL)
     ctx = RunContext.build(spec)
     n = N_CHUNK_SIDE ** 2
     assert clip_groups(ctx, {'chunk': True})['outlier_chunk_groups'].tolist() == list(range(n))
@@ -688,7 +830,7 @@ def test_a_fit_clipped_per_chunk_group_runs():
         for name, per in (('frame', 'frame'), ('chunk', 'chunk'), ('rows', sc.ChunkGroups.along('row'))):
             recipe = sc.Recipe(fit=sc.Fit(30, clip=sc.Clip(2.0, per=per)), coadd=None,
                                numerics=sc.Numerics(2, batch=4), name=name)
-            cals[name] = field.calibrate(recipe).cal_paths[0]
+            cals[name] = field.calibrate(recipe, jobs=ALL).cal_paths[0]
         with h5py.File(cals['frame']) as a, h5py.File(cals['chunk']) as b, h5py.File(cals['rows']) as c:
             sky = [f['sky/continuum'][()] for f in (a, b, c)]
         assert all(np.isfinite(s).any() for s in sky)

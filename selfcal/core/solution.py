@@ -146,6 +146,7 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
         many chunks; the result does not depend on it).
     """
     from .blockcsr import BlockCSR, ColSplitCSR
+    from .observations import ObservationTable
 
     ref_h, ref_w = ref_shape
     num_sky = ref_h * ref_w
@@ -174,7 +175,7 @@ def compute_x0_from_Ab(A: csr_matrix | coo_matrix | BlockCSR | ColSplitCSR, b: n
     num_offset_cols = num_cols - boundary
 
     # offset_j = (A_off[:, j]^T @ b) / (A_off[:, j]^T @ A_off[:, j])
-    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         AtA_diag, Atb = _column_sums(A, b, boundary, chunk_target_entries=_chunk_target_entries)
     else:
         # A coo_matrix (callers that pass one directly): one bincount over its
@@ -227,6 +228,9 @@ def _column_sums(A, b, boundary, chunk_target_entries=16_000_000, window=4):
     from scipy.sparse import _sparsetools
 
     from .blockcsr import BlockCSR, ColSplitCSR
+    from .observations import ObservationTable
+    if isinstance(A, ObservationTable):           # the rows made again, folded in the same order
+        return A.column_sums(b, boundary)
     n = int(A.shape[1])
     pieces = []                       # (data, indices, indptr, first row, first column, width), in fold order
     if isinstance(A, ColSplitCSR):
@@ -313,7 +317,8 @@ def compute_x0_offsets_fit(A, b: np.ndarray, ref_shape: tuple[int, int], num_sky
 
     from .blockcsr import BlockCSR, ColSplitCSR
     from .deflation import _block_pinv_solve, _pieces
-    if not isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+    from .observations import ObservationTable
+    if not isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         raise TypeError("compute_x0_offsets_fit needs the CSR or block system setup_lsqr builds, not the COO path")
     ref_h, ref_w = ref_shape
     num_sky_full = int(num_sky_blocks) * int(ref_h) * int(ref_w)

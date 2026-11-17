@@ -21,7 +21,8 @@ if _REPO not in sys.path:
 from selfcal.core.constraint_builders import ConstraintBlock, as_constraint_block  # noqa: E402
 from selfcal.core.layout import SystemLayout                                                   # noqa: E402
 from selfcal.geometry.map_helper import _parse_chunk_map, chunk_to_det                           # noqa: E402
-from selfcal.models.offset_model import Basis, OffsetBlock, OffsetModel, as_basis_values        # noqa: E402
+from selfcal.instruments.base import Chunks                                                     # noqa: E402
+from selfcal.models.offset_model import Basis, OffsetModel, as_basis_values                     # noqa: E402
 from selfcal.models.offset_structure import ChunkAxes                                           # noqa: E402
 from selfcal.models.priors import TermInfo, frame_smoothness, sky_smoothness, toward_variable   # noqa: E402
 from selfcal.models.sky_model import Coefficient, ImportedFunction                              # noqa: E402
@@ -50,23 +51,8 @@ def first_row_value(frame):
 
 
 # ---------------------------------------------------------------------------
-# a tiny geometry (duck-typed like DetectorGeometry)
+# a tiny geometry (duck-typed like DetectorGeometry, with an evaluated chunk map)
 # ---------------------------------------------------------------------------
-@dataclasses.dataclass(frozen=True)
-class _CM:
-    name: str
-    det: np.ndarray
-    grid: np.ndarray
-    axes: object
-    adjacency_axes: tuple = ('row', 'col')
-    spectral_axis: str = None
-    group_axis: str = 'row'
-
-    @property
-    def n_chunks(self):
-        return int(self.det.max()) + 1
-
-
 @dataclasses.dataclass(frozen=True)
 class _Geom:
     shape: tuple
@@ -84,7 +70,8 @@ class _Geom:
 def _geom():
     det = np.repeat(np.repeat(np.arange(6).reshape(2, 3), 4, axis=0), 4, axis=1).astype(np.int32)  # 8 x 12
     axes = ChunkAxes.row_major(('row', 'col'), (2, 3), ('y', 'x'))
-    return _Geom(shape=det.shape, chunk_maps={'grid': _CM('grid', det, det, axes)},
+    grid = Chunks(det, axes, grid=det, name='grid', adjacency_axes=('row', 'col'))
+    return _Geom(shape=det.shape, chunk_maps={'grid': grid},
                  aux={'u': np.linspace(0, 1, det.size, dtype=np.float32).reshape(det.shape)})
 
 
@@ -153,8 +140,6 @@ def test_basis_shapes():
     b = Basis(Coefficient(('x', 'y'), ImportedFunction('tests.test_general_model:plane')), 2)
     v = b.evaluate({'x': np.array([1.0, 2.0]), 'y': np.array([3.0, 4.0])})
     assert np.array_equal(v, [[1, 3], [2, 4]])
-    with pytest.raises(ValueError):
-        OffsetBlock(chunk_map=np.zeros((2, 2), int), template=np.zeros((1, 1)), basis=b)
 
 
 def test_layout_counts_basis_columns():

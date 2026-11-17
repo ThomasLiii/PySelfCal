@@ -293,11 +293,8 @@ class SkyModel:
     def damp_weights(self, damp_weight, damp_weight_line=None) -> list[float]:
         """Per-term Tikhonov weights, the one rule of every sky damping (the LSQR damping rows,
         the run engine's passes): a term's own ``damp_weight`` when set, else ``damp_weight`` for
-        the first term and ``damp_weight_line`` for the others. ``damp_weight_line`` defaults to
-        ``3 * damp_weight`` (a varying coefficient has a smaller average than 1, so ~3x more
-        shrinkage at the same data S/N); a weight left None is 0."""
-        if damp_weight_line is None and len(self.components) > 1 and damp_weight is not None:
-            damp_weight_line = 3.0 * damp_weight
+        the first term and ``damp_weight_line`` for the others; a weight left None is 0 (no
+        damping)."""
         out = []
         for j, comp in enumerate(self.components):
             w = getattr(comp, 'damp_weight', None)
@@ -314,22 +311,21 @@ class SkyModel:
 
     @classmethod
     def continuum_plus_gaussian_line(
-        cls, name: str, center_um: float, sigma_um: float, *, wavelength_key: str,
+        cls, name: str, center: float, sigma: float, *, wavelength_key: str,
         width_key: str | None = None, fwhm_to_sigma: float = 2.355,
-        intrinsic_var_um2: float = 0.0,
+        intrinsic_var: float = 0.0,
     ) -> SkyModel:
         """A constant term + one term whose coefficient is a Gaussian of the
         variable ``wavelength_key``; its per-observation sigma comes from the
         variable ``width_key`` (FWHM / ``fwhm_to_sigma``, in quadrature with
-        ``intrinsic_var_um2``) when that variable is supplied to the solve,
-        else the scalar ``sigma_um``. Instrument catalogues wrap this with
-        their constants (SPHEREx: ``instruments.spherex.line_catalog``).
+        ``intrinsic_var``) when that variable is supplied to the solve,
+        else the scalar ``sigma``.
         """
         from .profiles import GaussianProfile, QuadratureSigma
         sigma_source = None
         if width_key is not None:
             sigma_source = QuadratureSigma(fwhm_key=width_key, fwhm_to_sigma=fwhm_to_sigma,
-                                           intrinsic_var_um2=intrinsic_var_um2)
-        profile = GaussianProfile(center_um=center_um, sigma_um=sigma_um, sigma_source=sigma_source)
+                                           intrinsic_var=intrinsic_var)
+        profile = GaussianProfile(center=center, sigma=sigma, sigma_source=sigma_source)
         return cls((ContinuumComponent(),
                     SkyComponent(name=name, coefficient=Coefficient(wavelength_key, profile))))

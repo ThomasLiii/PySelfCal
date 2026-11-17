@@ -297,6 +297,26 @@ def test_the_schur_path_stays_put_past_convergence():
     assert _rel(x, x_plain) < 1e-7
 
 
+@pytest.mark.parametrize('float32', [False, True])
+def test_cgls_refresh_reads_the_parked_deflated_right_hand_side(monkeypatch, float32):
+    """A deflated CGLS solve parks the deflated right-hand side once (start() makes it in b's buffer) and its residual
+    refresh reads that copy instead of making it again with a pass over the matrix: the same bits as a solve whose
+    copy could not be parked (every 50 iterations a new one, from the parked original)."""
+    import selfcal.core.solve as solve_mod
+    made = []
+    shifted = Deflation.shifted
+    monkeypatch.setattr(Deflation, 'shifted', lambda self, *a, **k: made.append(1) or shifted(self, *a, **k))
+    opts = dict(deflate=sc.Deflate(3, basis='polynomial'), iter_lim=120, solver='cgls', float32=float32)
+    x, rec = _solve(CHUNK, **opts)
+    assert made == []                                    # the two refreshes read the parked copy
+    parked = solve_mod.ParkedVector
+    monkeypatch.setattr(solve_mod, 'ParkedVector', lambda vec, directory, label='', **k:
+                        parked(vec, None if 'deflated' in label else directory, label=label, **k))
+    x0, rec0 = _solve(CHUNK, **opts)
+    assert len(made) == 2                                # iterations 50 and 100 made it again
+    assert np.array_equal(x, x0) and np.isfinite(rec.true_residual) and rec.true_residual == rec0.true_residual
+
+
 # =================================================================== the method
 def test_the_deflated_solution_is_the_least_squares_solution_gauge_included():
     """Polynomial patterns contain both exact gauges of the chunk system (the sky's mean against the
@@ -478,11 +498,13 @@ def test_the_space_is_orthonormal_and_diagonalises_the_normal_matrix():
 
 # =================================================================== through the API
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 
 
 def _recipe(iterations=30, name='d', **fit):
-    return sc.Recipe(sc.continuum(), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None, numerics=NUMERICS,
-                     name=name)
+    # the sky damped (0.1): this toy's deflated and plain solves then reach the same solution in the iterations given
+    return sc.Recipe(sc.continuum(damping=0.1), fit=sc.Fit(iterations, tolerance=0, **fit), coadd=None,
+                     numerics=NUMERICS, name=name)
 
 
 @pytest.fixture(scope='module')
@@ -500,15 +522,15 @@ def field():
 @pytest.mark.filterwarnings('ignore:.*recorded with code:UserWarning')
 def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     import logging
-    (job,) = field.instrument.default_jobs()
-    book = lambda r: field.plan(r).book.cal(job, field.frames)          # noqa: E731
+    job = ALL
+    book = lambda r: field.plan(r, jobs=ALL).book.cal(job, field.frames)          # noqa: E731
     plain, deflated = _recipe(20, name='same'), _recipe(20, name='same', deflate=sc.Deflate(2))
     assert book(plain) != book(deflated)                    # the setting is part of the fingerprint when given
     assert book(plain) == book(_recipe(20, name='same', deflate=None))
     assert 'deflate     14 patterns (cosine, order 2) of every sky term' in str(field.plan(
-        _recipe(20, name='d1', deflate=sc.Deflate(2))))
+        _recipe(20, name='d1', deflate=sc.Deflate(2)), jobs=ALL))
     with caplog.at_level(logging.INFO, logger='selfcal'):
-        res = field.calibrate(_recipe(20, name='d1', deflate=sc.Deflate(2)), monitor=sc.Monitor(5))
+        res = field.calibrate(_recipe(20, name='d1', deflate=sc.Deflate(2)), monitor=sc.Monitor(5), jobs=ALL)
     assert 'Deflation: ' in caplog.text and 'directions solved directly' in caplog.text and 'off |b|^2' in caplog.text
     cal = res.cal_paths[0]
     with h5py.File(cal, 'r') as f:
@@ -520,7 +542,7 @@ def test_a_deflated_calibration_is_recorded_and_fingerprinted(field, caplog):
     assert entry['deflation']['patterns'] == 14 and entry['deflation_s'] >= 0
     # closer to the converged sky than plain iterations, and still there far past convergence
     def sky(recipe):
-        with CalFile(field.calibrate(recipe).cal_paths[0]) as c:
+        with CalFile(field.calibrate(recipe, jobs=ALL).cal_paths[0]) as c:
             return np.nan_to_num(np.asarray(c.sky(0), dtype=np.float64))
 
     ref = sky(_recipe(300, name='ref64', float32=False))
@@ -558,3 +580,145 @@ def test_the_column_sums_go_to_their_own_columns_bit_for_bit():
         _sparsetools.csc_matvecs(hi - lo, uniq.size, m, np.arange(uniq.size + 1, dtype=np.int64), uniq - lo,
                                  np.ones(uniq.size), part, out_new)
     assert out_new.tobytes() == out_old.tobytes()
+
+
+def test_a_chunk_split_between_two_threads_sums_the_same_bits():
+    """The setup's second pass works a chunk with two threads: the images of its two row halves, then its offset sums
+    with the pattern columns in two groups (each column's sum over the rows in order, half after half), and the norms
+    of each group's images. Each is the same bits as the chunk's whole arrays give (a group two columns wide or more:
+    numpy sums a single column in another order)."""
+    from scipy.sparse import _sparsetools
+    rng = np.random.default_rng(11)
+    nr, ncol, k, per = 5001, 900, 9, 6
+    k0, mid = (k + 1) // 2, nr // 2
+    lip = np.arange(0, nr * per + 1, per).astype(np.int32)
+    cols = rng.integers(0, ncol, nr * per).astype(np.int32)
+    d = rng.standard_normal(nr * per)
+    Zt = rng.standard_normal((ncol, k))
+    U = np.zeros((nr, k))
+    _sparsetools.csr_matvecs(nr, ncol, k, lip, cols, d, Zt, U)
+    S = np.zeros((ncol, k))
+    _sparsetools.csc_matvecs(ncol, nr, k, lip, cols, d, U, S)
+    groups = [(0, k0), (k0, k)]
+    Ug = [np.zeros((nr, g1 - g0)) for g0, g1 in groups]
+    Sg = [np.zeros((ncol, g1 - g0)) for g0, g1 in groups]
+    for lo, hi in ((0, mid), (mid, nr)):
+        lp = (lip[lo:hi + 1] - lip[lo]).astype(np.int32)
+        cc, dd = cols[lip[lo]:lip[hi]], d[lip[lo]:lip[hi]]
+        for (g0, g1), u in zip(groups, Ug):
+            _sparsetools.csr_matvecs(hi - lo, ncol, g1 - g0, lp, cc, dd, np.ascontiguousarray(Zt[:, g0:g1]), u[lo:hi])
+    for lo, hi in ((0, mid), (mid, nr)):
+        lp = (lip[lo:hi + 1] - lip[lo]).astype(np.int32)
+        cc, dd = cols[lip[lo]:lip[hi]], d[lip[lo]:lip[hi]]
+        for (g0, g1), u, s_ in zip(groups, Ug, Sg):
+            _sparsetools.csc_matvecs(ncol, hi - lo, g1 - g0, lp, cc, dd, u[lo:hi], s_)
+    assert np.concatenate(Ug, axis=1).tobytes() == U.tobytes()
+    assert np.concatenate(Sg, axis=1).tobytes() == S.tobytes()
+    norms = np.concatenate([np.einsum('ij,ij->j', u, u) for u in Ug])
+    assert norms.tobytes() == np.einsum('ij,ij->j', U, U).tobytes()
+
+
+def test_the_offset_terms_left_out_of_the_deflation_keep_the_solution(tmp_path):
+    """Deflate(offsets=('gradient', 'scalar')): the response of the term every frame shares ('pattern', not listed) held
+    at zero (no solve of its couplings: the per-frame block solve alone), the term still in the deflation's space. The
+    least-squares problem is the same: after the same iterations (both stop at the limit, on the way to it) the two
+    residuals agree to 1e-6 and the solutions to 1e-3 of each dataset's largest value; the record counts the held
+    columns. A name the model does not have is refused."""
+    import h5py
+
+    from test_offset_rows import _field, _recipe
+    from test_any_telescope import FIT
+
+    field = _field(tmp_path)
+    fit = FIT.replace(deflate=sc.Deflate(3, basis='polynomial'))
+    out = {}
+    for name, offsets in (('all', None), ('perframe', ('gradient', 'scalar'))):
+        recipe = _recipe('all').replace(fit=fit.replace(deflate=fit.deflate.replace(offsets=offsets)),
+                                        name=f'deflate_{name}')
+        res = field.calibrate(recipe, jobs=sc.Job('All'))
+        with h5py.File(res.cal_paths[0], 'r') as f:
+            attrs = dict(f['solve'].attrs)
+            solved = {f'{g}/{k}': f[g][k][()] for g in ('sky', 'offsets') for k in f[g]}
+        out[name] = (json.loads(attrs['deflation']), float(attrs['r1norm']), solved)
+    assert out['perframe'][0]['held_columns'] > 0 and 'held_columns' not in out['all'][0]
+    assert abs(out['perframe'][1] - out['all'][1]) <= 1e-6 * out['all'][1]
+    a, b = out['all'][2], out['perframe'][2]
+    assert set(a) == set(b)
+    for k in a:
+        np.testing.assert_allclose(b[k], a[k], rtol=0, atol=1e-3 * max(float(np.nanmax(np.abs(a[k]))), 1e-30),
+                                   err_msg=k)
+    bad = _recipe('all').replace(fit=fit.replace(deflate=fit.deflate.replace(offsets=('gradient', 'nosuch'))),
+                                 name='deflate_bad')
+    with pytest.raises(ValueError, match='nosuch'):
+        field.calibrate(bad, jobs=sc.Job('All'))
+
+
+@pytest.mark.parametrize('case', ['one term', 'one of two terms', 'zero entries', 'degenerate'])
+def test_the_patterns_made_where_they_are_read_give_the_stored_bits(monkeypatch, case):
+    """The setup makes the patterns where its passes, its Gram matrices and V read them, not into an array of them (a
+    column constraint on sky columns, which changes them, keeps the array): the same values in the same sums, so the
+    space, its eigenvalues, V, W and the start are the same bits as from the array. Checked with one sky term (threaded
+    or not), with the first of two sky terms deflated (the other's columns zero), with an offset column whose entries
+    are all zero (left out of the space: a chunk's offset piece then holds both kinds of column), and through
+    Deflate(exclude=Degenerate(...)) (its re-basing combines the patterns: made into an array there) to the solution."""
+    import selfcal.core.deflation as deflation
+
+    def stored(*_a):
+        return False
+
+    if case == 'degenerate':
+        from test_degenerate_exclusion import _shared_pattern_system
+        from test_exclusions import _poly_basis
+        A, b, npix, grid, _bowl = _shared_pattern_system(carry=0.95)
+        n = A.shape[1]
+        active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+        excl = [(np.arange(n - 16, n)[None, :], _poly_basis(16, 1))]
+
+        def solve():
+            return apply_lsqr(A[:, active].tocsr(), b.copy(), ref_shape=grid, atol=0.0, btol=0.0, conlim=0.0, damp=0.0,
+                              solver='cgls', n_threads=4, iter_lim=50, active_mask=active, num_cols_full=n,
+                              return_record=True, scratch_dir=_SCRATCH, sky_names=('sky',),
+                              deflate=sc.Deflate(2, exclude=sc.Degenerate(below=0.15)), exclusions=excl)
+        x, rec = solve()
+        monkeypatch.setattr(deflation, '_sky_untouched', stored)
+        x_s, rec_s = solve()
+        assert x.tobytes() == x_s.tobytes()
+        assert rec.deflation == rec_s.deflation
+        return
+    A, b, npix, grid = CHUNK
+    names, settings = ('sky',), sc.Deflate(3, basis='polynomial')
+    if case == 'one of two terms':
+        A1 = A.tocoo()
+        coef = 0.2 + 1.6 * np.random.default_rng(3).random(A1.shape[0])
+        sky = A1.col < npix
+        rows = np.concatenate([A1.row, A1.row[sky]])
+        cols = np.concatenate([np.where(sky, A1.col, A1.col + npix), A1.col[sky] + npix])
+        vals = np.concatenate([A1.data, A1.data[sky] * coef[A1.row[sky]]])
+        A = sp.csr_matrix((vals, (rows, cols)), shape=(A1.shape[0], A1.shape[1] + npix))
+        names, settings = ('continuum', 'line'), sc.Deflate(3, terms=('continuum',))
+    active = np.asarray((A != 0).sum(axis=0)).ravel() > 0
+    Ac = A[:, active].tocsr()
+    cn = np.sqrt(np.asarray(Ac.multiply(Ac).sum(axis=0)).ravel())
+    B = (Ac @ sp.diags(1 / cn)).tocsr()
+    if case == 'zero entries':
+        B = B.copy()
+        last = B.indices == B.shape[1] - 1                    # the last offset column's entries stored as zeros
+        B.data[last] = 0.0
+    for threads in (1, 4):
+        out = []
+        for patch in (None, stored):
+            with monkeypatch.context() as m:
+                m.setattr(deflation, '_PATTERN_ROWS', 50)        # several row and column blocks of the patterns
+                m.setattr(deflation, '_MIN_BLOCK', 256)          # and several blocks of the Gram matrices, threaded
+                if patch is not None:
+                    m.setattr(deflation, '_sky_untouched', patch)
+                D = Deflation(B, b, scale=1 / cn, active_mask=active, ref_shape=grid, sky_names=names,
+                              settings=settings, threads=threads)
+            out.append({key: np.asarray(getattr(D, key)).tobytes()
+                        for key in ('V', 'W', 'lam', 'directions', 'eigenvalues', 'c_star', 'x_c', 'nullness',
+                                    'pairing_residual')})
+            out[-1]['S'] = None if D.S is None else D.S.tobytes()
+            D.close()
+        assert out[0] == out[1], [key for key in out[0] if out[0][key] != out[1][key]]
+        if case == 'zero entries':
+            assert out[0]['S'] is not None                    # the zero column is out of the space

@@ -154,9 +154,21 @@ def _as_dtype(v, dtype, held, key):
 
 def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=False, calc_var=False,
          x0=None, x0_owned=False, history=None, callback=None, callback_every=1, watch=None, constrain=None,
-         refresh=None, vectors=np.float64):
+         refresh=None, vectors=np.float64, gradient='recomputed'):
     """CGLS with the arguments and the return tuple of :func:`~selfcal.core.lsqr_inplace.lsqr_inplace`
     (``conlim`` and ``calc_var`` accepted, unused: no condition estimate, no variance).
+
+    ``gradient``: how the gradient ``A^T r`` of each iteration is had. ``'recomputed'``: from the residual, a
+    transpose product per iteration (two passes over the matrix with the matvec). ``'recurrence'``: carried
+    along, ``s - alpha * (A^T A p + damp^2 p)``, the transpose product being that of the matvec's own result,
+    which an operator with ``normal_product(p) -> (A p, A^T A p)`` gives from one pass over the matrix (the
+    observation table) and any other from a second product of ``A p``, in float64 either way: a gradient
+    carried by recurrence keeps the rounding of every term it was built from, where a recomputed one keeps
+    only its own, so the terms are made in the vectors' precision; the gradient is recomputed from the
+    residual at every refresh (:data:`REFRESH` iterations), as the residual is, and whenever the recurrence's
+    gradient norm grows from one iteration to the next (past convergence the recurrence's rounding takes over
+    and it drifts, where a gradient from the residual stays at the rounding floor). The two forms differ by the
+    rounding of the recurrence, not in what they converge to.
 
     ``b`` is taken over (its buffer becomes the residual when its dtype is the products'); ``x0``
     (the full solver layout) is the start, copied unless ``x0_owned``. ``refresh``: a function returning
@@ -167,6 +179,10 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
     and the damping term turns that drift into a divergence on some BLAS kernels (OpenBLAS's Haswell and
     Zen kernels: x1.14 per iteration). ``vectors``: the dtype of the iterate, the direction and the
     gradient. The returned ``x`` is in that dtype; ``anorm`` is the estimate above, ``acond`` 0."""
+    if gradient not in ('recomputed', 'recurrence'):
+        raise ValueError(f"gradient={gradient!r}: 'recomputed' or 'recurrence'")
+    normal = getattr(A, 'normal_product', None) if gradient == 'recurrence' else None
+    rmatvec64 = getattr(A, 'rmatvec_promoted', None) if gradient == 'recurrence' else None
     A = aslinearoperator(A)
     m, n = A.shape
     pdt = np.dtype(A.dtype)                            # the products' precision
@@ -182,19 +198,20 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
     if refresh is None and d2 > 0:                     # a damped solve needs its true residual (see refresh)
         kept = b.copy()
         refresh = lambda: kept  # noqa: E731
+    rdt = vdt if gradient == 'recurrence' else pdt        # the recurrence keeps the residual in the vectors' precision
     if x0 is None:
         x = np.zeros(n, dtype=vdt)
-        r = b if b.dtype == pdt else b.astype(pdt)
+        r = b if b.dtype == rdt else b.astype(rdt)
     else:
         x = np.asarray(x0, dtype=vdt) if x0_owned and np.asarray(x0).dtype == vdt else np.array(x0, dtype=vdt)
-        r = b if b.dtype == pdt else b.astype(pdt)
+        r = b if b.dtype == rdt else b.astype(rdt)
         np.subtract(r, A.matvec(x.astype(pdt, copy=False)), out=r, casting='unsafe')
     del b
 
     held = {}                                          # this solve's cast buffers (the direction, the gradient)
 
-    def gradient():
-        g = np.asarray(A.rmatvec(r))
+    def gradient_from_residual():
+        g = np.asarray(rmatvec64(r) if rmatvec64 is not None and r.dtype != pdt else A.rmatvec(r))
         g = _as_dtype(g, vdt, held, 'gradient')
         if d2 > 0:
             g -= d2 * x
@@ -202,7 +219,7 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
             constrain(g)
         return g
 
-    s = gradient()
+    s = gradient_from_residual()
     gamma = _dot(s, s)
     arnorm = sqrt(gamma)
     p = s.copy()
@@ -228,7 +245,17 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
 
     while itn < iter_lim:
         itn += 1
-        q = np.asarray(A.matvec(_as_dtype(p, pdt, held, 'direction')))
+        pd = _as_dtype(p, pdt, held, 'direction')
+        t = None
+        if gradient == 'recurrence':
+            if normal is not None:
+                q, t = normal(pd)
+                q, t = np.asarray(q), np.asarray(t)
+            else:                                  # no fused product: the transpose product of q, in float64
+                q = np.asarray(A.matvec(pd))
+                t = np.asarray(A.rmatvec(q.astype(np.float64, copy=False)))
+        else:
+            q = np.asarray(A.matvec(pd))
         qq = _dot(q, q) + (d2 * _dot(p, p) if d2 > 0 else 0.0)
         if qq <= 0:
             istop = 5
@@ -240,6 +267,7 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
         _add_scaled(x, alpha, p)
         _sub_scaled(r, alpha, q)
         del q
+        refreshed = False
         if refresh is not None and itn % REFRESH == 0:
             b0 = refresh()
             if b0 is not None:
@@ -248,8 +276,24 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
                     e0 = min(m, s0 + _BLOCK)
                     np.subtract(np.asarray(b0[s0:e0], dtype=pdt), ax[s0:e0], out=r[s0:e0], casting='unsafe')
                 del ax, b0
-        s = gradient()
+                refreshed = True
+        if t is not None and not refreshed:
+            # the gradient by recurrence: s <- s - alpha (A^T A p + damp^2 p), kept in the constrained subspace
+            tv = _as_dtype(t, vdt, held, 'normal')
+            if d2 > 0:
+                _add_scaled(tv, d2, p)
+            _sub_scaled(s, alpha, tv)
+            if constrain is not None:
+                constrain(s)
+        else:
+            s = gradient_from_residual()
         gamma_new = _dot(s, s)
+        if t is not None and not refreshed and gamma_new > gamma:
+            # the recurrence's gradient grew: past convergence its rounding takes over and the recurrence drifts,
+            # where a gradient from the residual stays at the rounding floor; recompute it (one more pass)
+            s = gradient_from_residual()
+            gamma_new = _dot(s, s)
+        del t
         rnorm = sqrt(_dot(r, r))
         arnorm = sqrt(max(gamma_new, 0.0))
         test1 = rnorm / bnorm if bnorm > 0 else 0.0
@@ -275,7 +319,8 @@ def cgls(A, b, damp=0.0, atol=1e-6, btol=1e-6, conlim=1e8, iter_lim=None, show=F
         beta = gamma_new / gamma
         gamma = gamma_new
         _scale_add(p, beta, s)
-        del s
+        if gradient == 'recomputed':
+            del s
     if show:
         print(f'CGLS finished: istop = {istop}, itn = {itn}, r1norm = {rnorm:.1e}, arnorm = {arnorm:.1e}')
     return (x, istop, itn, rnorm, sqrt(rnorm * rnorm + d2 * _dot(x, x)) if d2 > 0 else rnorm, anorm, 0.0,

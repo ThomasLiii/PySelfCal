@@ -390,6 +390,23 @@ class Deflate(Config):
     the same setup, and the solve runs on the constrained system. The post-solve plane gauge (``Fit(gauge=)``)
     then has nothing to move and is left off. None (the default): off.
 
+    ``offsets``: the offset terms whose response to the patterns the deflation solves, by name (as priors name them:
+    the term's name, else its map's); None (the default): every offset term. A term not listed keeps a zero response:
+    the patterns' offsets are the listed terms' alone, and the others stay in the space, so the projections are those
+    of the space the patterns and those responses span and the solution is the same least-squares solution; what the
+    other terms take of the patterns is left to the iterations. A term with more offsets shared by many frames than
+    the deflation's dense Schur complement holds (16,384; a constant per detector pixel, say) is left out this way. A
+    term's ``exclude=SkySignature`` is made from the listed terms' response, and the term itself must be listed.
+
+    ``direct``: True (the default): the patterns are solved directly, as above. False: the setup's first pass alone,
+    which makes the patterns' offset responses: a term's ``exclude=SkySignature`` is made from them as with True, and
+    the iterations then run on every unknown, the patterns included. No vector set is stored, so the memory below (and
+    twice it during the setup) and the per-iteration work on it are not spent. The solution is the same least-squares
+    solution, reached in more iterations where the patterns are what is slow; until the solve has converged, the
+    patterns' amplitudes lie between the start's and their least-squares values. For a system whose pattern vectors
+    would not fit in memory. Needs a term with ``exclude=SkySignature`` (nothing else reads the responses); not with
+    ``exclude=Degenerate``, which reads the decomposition of the pattern space.
+
     Cost: two float64 passes over the matrix with all the patterns at the start, one at the end (and
     one per snapshot); memory and per-iteration work of ``2 x 4 x patterns`` bytes per covered unknown
     with float32 products (``2 x 8`` with float64; four passes over them per iteration, six with LSQR), with :attr:`patterns_per_term` patterns per deflated term.
@@ -402,15 +419,28 @@ class Deflate(Config):
     terms: tuple[str, ...] | None = None
     storage: Literal['float32', 'float64'] | None = None
     exclude: Degenerate | None = added(None, since='2026-10')
+    offsets: tuple[str, ...] | None = added(None, since='2026-10')
+    direct: bool = added(True, since='2026-11')
 
     def _validate(self):
         if not 0 <= self.order <= 16:
             raise ConfigError(f"Deflate(order={self.order}): 0 to 16")
+        if not isinstance(self.direct, bool):
+            raise ConfigError(f"Deflate(direct={self.direct!r}): True (the patterns solved directly) or False (their "
+                              "offset responses alone, the patterns left to the iterations)")
+        if not self.direct and self.exclude is not None:
+            raise ConfigError("Deflate(direct=False, exclude=Degenerate(...)): the degenerate directions come from the "
+                              "decomposition of the pattern space, which direct=False does not make")
         if self.basis not in ('cosine', 'polynomial'):
             raise ConfigError(f"Deflate(basis={self.basis!r}): 'cosine' or 'polynomial'")
         if self.storage not in (None, 'float32', 'float64'):
             raise ConfigError(f"Deflate(storage={self.storage!r}): 'float32', 'float64' or None (the products' "
                               f"precision)")
+        if self.offsets is not None:
+            offsets = (self.offsets,) if isinstance(self.offsets, str) else tuple(self.offsets)
+            if not all(isinstance(t, str) and t for t in offsets):
+                raise ConfigError(f"Deflate(offsets={self.offsets!r}): offset term names, or None for all")
+            object.__setattr__(self, 'offsets', offsets)
         if self.exclude is not None and not isinstance(self.exclude, Degenerate):
             raise ConfigError(f"Deflate(exclude={self.exclude!r}): a Degenerate(...) (the rules naming the degenerate directions) or None")
         if self.terms is not None:
@@ -507,15 +537,25 @@ class Fit(Config):
     (``conlim`` and the ``"condition"`` test never stop it). With ``vectors="float64"``, LSQR and LSMR
     keep float64 vectors on a float32 matrix, with the products computed in float64 (slower). Every solve is recorded: in the cal file's ``solve`` group, in the
     action's record, and its history per iteration in ``<field>/records/<cal stem>_history.npz``
-    (:mod:`selfcal.core.solve_record`). ``clip``: the
-    outlier clip (a sigma, a :class:`Clip`, or None). ``use_mask``: drop pixels flagged in the
+    (:mod:`selfcal.core.solve_record`). ``clip``: an
+    outlier clip (None, the default: no clip; a sigma or a :class:`Clip`). ``use_mask``: drop pixels flagged in the
     data-quality mask, except the bits ``ignore_flags`` (None: the instrument's default).
     ``min_observations``: leave out of the solve the sky pixels observed fewer times than this (2: those a
     single observation covers, whose one row the pixel's own value fits exactly, informing nothing else),
     counted over the observations the solve uses (after the masks, the clip if any and the weights) by
     the matrix build itself; those observations are set to zero in the matrix and the right-hand side,
     the pixels' columns are left without data (coverage 0, value 0 in the solution, outside the
-    deflation's patterns), and the coadd still covers them (None: every pixel).
+    deflation's patterns), and the coadd still covers them (None: every pixel). An offset term's own floor is
+    :class:`~selfcal.models.model.Offsets` ``min_observations``.
+    ``window_edge``: the observations at the edge of the job's window (its detector pixels on the primary chunk
+    map). An observation samples the detector-plane quantities (the offsets, the data variables, the window
+    itself) bilinearly from the four detector pixels around its position, so one near the window's edge can read
+    pixels on both sides of it. ``'partial'`` (the default): such an observation is kept, its weight times the
+    share of its sampling inside the window, and it reads the offsets of the pixels just outside, which every
+    offset term covering them then has to model. ``'inside'``: only the observations whose sampling lies wholly
+    inside the window are kept, so the solve reads no detector pixel outside it and an offset term covering
+    exactly the window covers everything the solve reads; the observations straddling the edge (a strip one
+    detector pixel wide on each side) leave the solve. The coadd is not affected.
     ``shot_noise_weights``: weight observations by ``1/sqrt(|value|)`` (the fixed Poisson weight of
     :func:`selfcal.geometry.map_helper.make_weight`; a configurable noise model is the model's
     weight: ``sc.Model(weight=sc.Variance(...))`` or ``sc.shot_noise()``).
@@ -539,7 +579,7 @@ class Fit(Config):
     """
     iterations: int = 50
     _: KW_ONLY
-    clip: float | Clip | None = 5.0
+    clip: float | Clip | None = None
     use_mask: bool = True
     ignore_flags: tuple[int, ...] | None = None
     shot_noise_weights: bool = False
@@ -557,6 +597,7 @@ class Fit(Config):
     gauge: Gauge | None = added(None, since='2026-10')
     seed: Literal['separate', 'offsets', 'zero'] = added('separate', since='2026-10')
     min_observations: int | None = added(None, since='2026-10')
+    window_edge: Literal['partial', 'inside'] = added('partial', since='2026-10')
 
     def _validate(self):
         if self.seed not in ('separate', 'offsets', 'zero'):
@@ -567,6 +608,10 @@ class Fit(Config):
                                                   or not isinstance(self.min_observations, int)
                                                   or self.min_observations < 2):
             raise ConfigError(f"Fit(min_observations={self.min_observations!r}): an integer >= 2 (None: every pixel)")
+        if self.window_edge not in ('partial', 'inside'):
+            raise ConfigError(f"Fit(window_edge={self.window_edge!r}): 'partial' (an observation straddling the "
+                              f"window's edge kept with the share of its sampling inside) or 'inside' (only the "
+                              f"observations wholly inside the window)")
         if self.gauge is not None and not isinstance(self.gauge, Gauge):
             raise ConfigError(f"Fit(gauge={self.gauge!r}): an sc.Gauge")
         if self.iterations < 1:
@@ -618,7 +663,13 @@ class Coadd(Config):
     instrument's per-pixel maps too (SPHEREx: the wavelength maps). ``min_chunk_coverage``: a
     chunk a frame observed in a smaller fraction of its pixels the job can see takes no offset of
     its own: the instrument's renderer fills it from the frame's other chunks where it can
-    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``subtract_offsets``:
+    (``fills_invalid``), and otherwise the chunk's pixels in that frame leave the coadd. ``chunk_coverage``:
+    the observations that fraction counts. ``'observed'``: every observation of the chunk the build made.
+    ``'solved'``: those the solve's coverage floor (``Fit(min_observations=)``, ``Offsets(min_observations=)``)
+    left in it (the cal's ``offset_coverage_solved``), for the offset terms subtracted per observation (a
+    ``times=`` or ``basis=`` term) as well, each of whose unknowns is judged so: a frame whose observations
+    of a chunk other frames mostly do not see keeps few of them in the solve, and its offsets there, held by
+    those few, are not carried into the coadd. ``subtract_offsets``:
     subtract the solved offsets (False: coadd the raw frames). ``normalize_offsets``: first subtract
     from the first offset map its mean over every frame's valid chunks (one number, recorded as the
     mosaic's ``MEANOFF``). ``frame_hook``: called on each corrected frame.
@@ -635,10 +686,13 @@ class Coadd(Config):
     subtract_offsets: bool = True
     normalize_offsets: bool = False
     frame_hook: Callable | None = None
+    chunk_coverage: Literal['observed', 'solved'] = added('observed', since='2026-11')
 
     def _validate(self):
         if self.clip is not None and self.clip <= 0:
             raise ConfigError(f"Coadd(clip={self.clip}): sigma is positive (no clip: clip=None)")
+        if self.chunk_coverage not in ('observed', 'solved'):
+            raise ConfigError(f"Coadd(chunk_coverage={self.chunk_coverage!r}): 'observed' or 'solved'")
         if self.clip is not None and not self.std:
             raise ConfigError("Coadd: the sigma clip needs the std map (std=True), or clip=None")
         if self.oversample < 1:
@@ -654,6 +708,21 @@ class Numerics(Config):
     each summing its rows into a buffer of its own (None: as many as ``threads``, capped so the
     buffers stay under 16 GB; 1: the sequential product). ``batch``: frames per assembly batch.
     ``mosaic_batch``: frames per batch of the coadd's frame cache; ``coadd_batch``: of its passes.
+    ``gradient``: how CGLS (``Fit(method='cgls')``) has the gradient of each iteration:
+    ``'recomputed'``, from the residual by a transpose product (two passes over the matrix per
+    iteration), or ``'recurrence'``, carried along from the transpose product of the matvec's own
+    result, which the observation table (``sc.Compute(matrix='compact')``) forms in the same pass as the
+    matvec, so an iteration makes the rows once; recomputed from the residual every 50 iterations,
+    as the residual is, and whenever its norm grows. The two differ by the recurrence's rounding, not
+    in what they converge to; a solve on the recurrence ends by its stop rule or the solver's tests,
+    not by a fixed count far past convergence, where the recurrence's float64 gradient keeps moving the
+    iterate along the system's near-null directions.
+    ``row_order``: the order of the observation table's rows (``sc.Compute(matrix='compact')``): ``'frame'``, each
+    frame's rows together, as the stored matrix holds them, or ``'sky'``, the rows grouped into blocks by ranges of
+    reference pixels, each frame's rows of a range together. Grouped by sky range, the threads of the transpose
+    product each own whole blocks, and so the sky columns of their pixels, which they sum in place: only the offset
+    columns need a private buffer per thread (``threads x offset columns`` in place of ``threads x columns``). The same
+    rows in another order, so the sums round differently.
     The defaults are production's, so any machine reproduces production bit for bit.
     """
     threads: int = 48
@@ -662,6 +731,8 @@ class Numerics(Config):
     mosaic_batch: int = 50
     coadd_batch: int = 50
     rmatvec_threads: int | None = None
+    gradient: Literal['recomputed', 'recurrence'] = added('recomputed', since='2026-10')
+    row_order: Literal['frame', 'sky'] = added('frame', since='2026-11')
 
     def _validate(self):
         for k in ('threads', 'batch', 'mosaic_batch', 'coadd_batch'):
@@ -669,6 +740,10 @@ class Numerics(Config):
                 raise ConfigError(f"Numerics({k}={getattr(self, k)}): at least 1")
         if self.rmatvec_threads is not None and self.rmatvec_threads < 1:
             raise ConfigError(f"Numerics(rmatvec_threads={self.rmatvec_threads}): at least 1 (None: automatic)")
+        if self.gradient not in ('recomputed', 'recurrence'):
+            raise ConfigError(f"Numerics(gradient={self.gradient!r}): 'recomputed' or 'recurrence'")
+        if self.row_order not in ('frame', 'sky'):
+            raise ConfigError(f"Numerics(row_order={self.row_order!r}): 'frame' or 'sky'")
 
 
 @dataclass(frozen=True)

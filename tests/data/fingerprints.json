@@ -2,17 +2,10 @@
  "about": "tests/test_fingerprints.py: the canonical inputs and fingerprint of each product. Regenerating this file makes the sidecar of every product whose inputs changed 'different': do it only on purpose.",
  "products": {
   "camera_maps/cal": {
-   "fingerprint": "ce9d4145b4aa896e490cf468bf6b807f88137b3da8187240d80785fff7f6462e",
+   "fingerprint": "e2c2f86ef203c729c9aa4a557776ae2e2f50d2769e40f2ebbbd418c853378a40",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -59,7 +52,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -72,9 +64,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -126,7 +118,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -148,7 +140,7 @@
    }
   },
   "camera_maps/mosaic": {
-   "fingerprint": "a8e0f5fe4d2fe9478da002f0bf0039103bf5de1efc53be6a94892f1dbc913918",
+   "fingerprint": "7b5afe89dc2b7fede2782ac736e8f4068d75a8ed58083e7a54ae9a40d2bf6617",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -194,7 +186,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -207,9 +198,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -261,7 +252,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -282,17 +273,10 @@
    }
   },
   "coadd_settings/cal": {
-   "fingerprint": "743f8ec6b3f1d5bc47af00aa06cf7dc37919bcc6083fde53642f952c9754dde6",
+   "fingerprint": "a93ffd8bf0811684e195be325f0026bbd689b587630bfead76eb2b4a33b27634",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -322,7 +306,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -335,9 +318,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -389,7 +372,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -411,7 +394,7 @@
    }
   },
   "coadd_settings/mosaic": {
-   "fingerprint": "e18f4ed6504cbb3e11e10940d50f16087a591b4f097645c68e4bebe381a56a82",
+   "fingerprint": "38d61f4d73ae33ca713c600b9272498e7b288d0a621ae748670f9982f9aa4e00",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -447,7 +430,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -460,9 +442,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -514,7 +496,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -534,18 +516,11 @@
     }
    }
   },
-  "continuum_smooth_poly/cal": {
-   "fingerprint": "0fe17808995357231970812bf3b79c3cfe40ad83f1b56876a60b98110b334a76",
+  "continuum_smooth/cal": {
+   "fingerprint": "e0800a6adffbba8f911e3a1c23b61e28ad211b82665b514dcdef73521e23a769",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -575,7 +550,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -588,9 +562,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -612,17 +586,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": null,
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.5,
-         "window": null
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.3,
@@ -652,7 +616,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -673,8 +637,8 @@
     }
    }
   },
-  "continuum_smooth_poly/mosaic": {
-   "fingerprint": "48b1b46941f30486f24b1fe26a09414ca96335550226a87653078668666ff8c7",
+  "continuum_smooth/mosaic": {
+   "fingerprint": "cb0b88daf5f5038f23762fe644249837c96e53cd2979a0b5a4649ab985036e40",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -703,7 +667,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -716,9 +679,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -740,17 +703,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": null,
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.5,
-         "window": null
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.3,
@@ -780,7 +733,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -801,17 +754,10 @@
    }
   },
   "euclid/cal": {
-   "fingerprint": "671087adbadd570ee681dca59459d872c62717f5885356f0ec715f05082fb064",
+   "fingerprint": "e4b1bed4ac5dd8418af5fb40f9a120c75ab143b1ae87d7cf9bddae291314eeaa",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -858,9 +804,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "Y",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -912,7 +858,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -934,7 +880,7 @@
    }
   },
   "euclid/mosaic": {
-   "fingerprint": "6ab276ef88e7ce30057a72d718b99a0e8e78ab2dc8f31c6925fb8977e7b59f88",
+   "fingerprint": "07a88af29f082509c7f6ae65fabc0ef94a52a37234adb87ab2d3a3165463e8ab",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -980,9 +926,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "Y",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1034,7 +980,261 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "coadd_batch": 50,
+     "mosaic_batch": 50
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid_fit_clip_stated/cal": {
+   "fingerprint": "12bc3445344bdd5a20d3a629ced63f8a855095b8be997e0fef4b67e3b3941aea",
+   "inputs": {
+    "fit": {
+     "clip": {
+      "edges": null,
+      "ignore_flags": null,
+      "per": "frame",
+      "sigma": 5.0,
+      "type": "selfcal.run.recipe:Clip",
+      "variable": null
+     },
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "name": "Y",
+     "strict": null,
+     "window": null
+    },
+    "kind": "cal",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "euclid_fit_clip_stated/mosaic": {
+   "fingerprint": "07a88af29f082509c7f6ae65fabc0ef94a52a37234adb87ab2d3a3165463e8ab",
+   "inputs": {
+    "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+    "coadd": {
+     "clip": 2.0,
+     "frame_hook": null,
+     "ignore_flags": [
+      11,
+      15
+     ],
+     "instrument_maps": true,
+     "min_chunk_coverage": 0.01,
+     "normalize_offsets": false,
+     "oversample": 1,
+     "shot_noise_weights": false,
+     "std": true,
+     "subtract_offsets": true,
+     "type": "selfcal.run.recipe:Coadd",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "band": "Y",
+     "chunks": 40,
+     "det_shape": [
+      2040,
+      2040
+     ],
+     "detectors": 16,
+     "edge_ramp_px": 0,
+     "edge_zero_px": 0,
+     "reference_ext": [
+      1,
+      10,
+      37,
+      46
+     ],
+     "strips": 40,
+     "tag": "EDFN",
+     "tilt_strips": 60,
+     "type": "selfcal.instruments.euclid.settings:Euclid"
+    },
+    "job": {
+     "name": "Y",
+     "strict": null,
+     "window": null
+    },
+    "kind": "mosaic",
+    "model": {
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1055,7 +1255,7 @@
    }
   },
   "fit_clip_edges/cal": {
-   "fingerprint": "0576c76722ad30b1e66bd8488c1c49645b16de086d035e884c58af84a5da0309",
+   "fingerprint": "211ba6576829bcf5b5a1a2d23e81438c424654278fb97892e21d68e960b20515",
    "inputs": {
     "fit": {
      "clip": {
@@ -1095,20 +1295,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -1157,7 +1384,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1179,7 +1406,7 @@
    }
   },
   "fit_clip_mapping/cal": {
-   "fingerprint": "6d049d39dc89292b3c6d92e800c649f6f17e6351459767af4d7c9740c0008b80",
+   "fingerprint": "8116f0b85ab8ecd2b0780c76ffb06624c7940c67fa5961ca5d5bea8c8515577f",
    "inputs": {
     "fit": {
      "clip": {
@@ -1241,7 +1468,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1254,9 +1480,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1308,7 +1534,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1330,7 +1556,7 @@
    }
   },
   "fit_clip_per_chunk/cal": {
-   "fingerprint": "44a4e92dd6f0984e3dd2d55d1038a4e656eb9a6fb9e4b3a5f884c63885986ec7",
+   "fingerprint": "e7df763e71010ffb5348419f10ade4f8a04ef89b3d0419ed67c55f4d7a0a8450",
    "inputs": {
     "fit": {
      "clip": {
@@ -1370,7 +1596,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1383,9 +1608,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1437,7 +1662,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1459,17 +1684,10 @@
    }
   },
   "fit_gauge/cal": {
-   "fingerprint": "158c0866e0a3fa05cbef55205219a37c4943603b371e64caf1e6c8aa0700e4f2",
+   "fingerprint": "0671e866d903a99960b89f79e174791e62beb947b562dda3026721ae4affe0b7",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -1510,7 +1728,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1523,9 +1740,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1577,7 +1794,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1599,7 +1816,7 @@
    }
   },
   "fit_gauge/mosaic": {
-   "fingerprint": "39625a4d0f24cfa89908d3efd99e42277e2fb1080151d65a1e153b174c234abb",
+   "fingerprint": "7a90d145706457836350e0d8488d72fb8f830364bbd004a4072685e75146f259",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -1628,7 +1845,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -1641,9 +1857,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1695,7 +1911,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1716,7 +1932,7 @@
    }
   },
   "fit_no_clip/cal": {
-   "fingerprint": "b257d1a94f3977810e5e9f44791d48dbb817445eeb504b4130ed7509d2777a2d",
+   "fingerprint": "25af4cb37e8b958ac549f3d80756e89d18fb4d4b8602dd7917c63d5c41ce6161",
    "inputs": {
     "fit": {
      "clip": null,
@@ -1766,9 +1982,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "H",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -1820,7 +2036,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1842,7 +2058,7 @@
    }
   },
   "fit_no_clip/mosaic": {
-   "fingerprint": "057315690ffee36441fd8fc01d32f53e5985326216dc48d35eee1dce7c4f9946",
+   "fingerprint": "9208317574a36bd3f251207b5cc5126e31a29f2cef6b3b599269f84a7bff7353",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -1888,9 +2104,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "H",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -1942,7 +2158,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -1963,7 +2179,7 @@
    }
   },
   "fit_settings/cal": {
-   "fingerprint": "270b33853f1930e4fad56a551b1b4b59928c071f4812f6560e0934df490ff092",
+   "fingerprint": "43af604245b7b252fc4cec480e479fa7d1faefaf2572be2f6559323f4388ffff",
    "inputs": {
     "fit": {
      "clip": {
@@ -2014,20 +2230,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -2076,7 +2319,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -2098,17 +2341,10 @@
    }
   },
   "model_with_everything/cal": {
-   "fingerprint": "cc202c526ee6cb80505ef948ee2acc9a40e8f859041e648d463060c6c0a4e9e3",
+   "fingerprint": "ba9911b11d8e7369c353da58c563c8aa4a756a62c8f1026b52e1068dad79e908",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -2140,9 +2376,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -2164,23 +2400,7 @@
        "name": "chunks",
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "band",
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.2,
-         "window": {
-          "range": [
-           0,
-           8,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.05,
@@ -2334,7 +2554,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "ramp",
        "times": {
         "fn": {
@@ -2351,7 +2571,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "season",
        "times": {
         "fn": {
@@ -2366,7 +2586,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "bump",
        "times": {
         "fn": {
@@ -2515,7 +2735,7 @@
    }
   },
   "model_with_everything/mosaic": {
-   "fingerprint": "9aeca0489cce15c80ef6d0ff061b9dea7837b9cd8266bd1879ad4e223885b5ca",
+   "fingerprint": "09e807b31d4a2f74d753bf3e897753e938917b4e817a6b906a34753718b7e2c6",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -2546,9 +2766,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -2570,23 +2790,7 @@
        "name": "chunks",
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "band",
-         "degree": 1,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": 0.2,
-         "window": {
-          "range": [
-           0,
-           8,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.05,
@@ -2740,7 +2944,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "ramp",
        "times": {
         "fn": {
@@ -2757,7 +2961,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "season",
        "times": {
         "fn": {
@@ -2772,7 +2976,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "bump",
        "times": {
         "fn": {
@@ -2920,17 +3124,10 @@
    }
   },
   "numerics/cal": {
-   "fingerprint": "9a0893fe3554d96d662e4bcd0b13d411d1a2dd9eb5d0b07911be112cebb537d4",
+   "fingerprint": "61d52e74c9b92dc7229d3dbbdc50f7e515e9358e166603feb21765ccfd7f65a7",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -2960,7 +3157,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -2973,9 +3169,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -3027,7 +3223,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -3049,7 +3245,7 @@
    }
   },
   "numerics/mosaic": {
-   "fingerprint": "6bdb15d29f997244e87bd1f471a8cb1ad31446ced82cde9792d5d373e4e47183",
+   "fingerprint": "a82945c4b5063b27147269ed8c464a65161d16d255ecd0b64025ce56cfc6f638",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -3078,7 +3274,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -3091,9 +3286,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -3145,7 +3340,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -3166,17 +3361,10 @@
    }
   },
   "passes_default/cal": {
-   "fingerprint": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -3202,48 +3390,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3270,7 +3474,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -3308,10 +3512,10 @@
    }
   },
   "passes_default/pass 2 off": {
-   "fingerprint": "5f4884259bbb2069d6f6d3d82e149a304105b6f4738e68ec251427a4d94c27ce",
+   "fingerprint": "074d58c6e5f9ed30a4808e3796a072e838614077931d36991d2edfd74695ff48",
    "inputs": {
     "index": 2,
-    "init": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3343,10 +3547,10 @@
    }
   },
   "passes_default/pass 3 sky": {
-   "fingerprint": "9fabf7295d596b0d346c1884e3d97f7751b889a4e444cdfba62c5ea2fe1bcab7",
+   "fingerprint": "5662e505cbb5367b71613fb4c68e69fe2462cf471091d56d14b42e74a8e8c3e5",
    "inputs": {
     "index": 3,
-    "init": "e9722d628c77b1165c117ce2fac88f438a87ce44284c5f72cbde5b3341d2479c",
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3377,8 +3581,180 @@
     "type": "sky"
    }
   },
+  "passes_init_flags/cal": {
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_init_flags/pass 2 sky": {
+   "fingerprint": "27c5aa693c502b0f0d4d67f3dde54ea5515b0f660c49df3470c4baf1e84a53da",
+   "inputs": {
+    "index": 2,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "sky_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
   "passes_init_sigma/cal": {
-   "fingerprint": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+   "fingerprint": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
    "inputs": {
     "fit": {
      "clip": {
@@ -3414,48 +3790,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3482,7 +3874,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -3520,10 +3912,10 @@
    }
   },
   "passes_init_sigma/pass 2 off": {
-   "fingerprint": "a94abdb5a322dd8f38196d94e426458dc89fcd0707b3fc9ecd7f6cd5d6734522",
+   "fingerprint": "761ab958c371056fc7a21e467614ef8136bbbb070f75dd472e3fa0f3643cbfaf",
    "inputs": {
     "index": 2,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3555,10 +3947,10 @@
    }
   },
   "passes_init_sigma/pass 3 sky": {
-   "fingerprint": "edc78a92656bcf6b9893d242019dba87917bd459ecc77315a6788e0b8286d2ff",
+   "fingerprint": "a705181bd60dbc492d24abdc7dc59316cbeb76387b4a2e07cf03e2a0d9df3296",
    "inputs": {
     "index": 3,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3590,10 +3982,10 @@
    }
   },
   "passes_init_sigma/pass 4 off": {
-   "fingerprint": "862f66f424e42e04ec4ac4b80d0b3bef747b124f50d2a3507b0bf55dbddcf01c",
+   "fingerprint": "b055dbceaedf1a54c5dd53623adfbef14c0ad9f468c875cc380a15f3f9458bdc",
    "inputs": {
     "index": 4,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3625,10 +4017,10 @@
    }
   },
   "passes_init_sigma/pass 5 sky": {
-   "fingerprint": "6faa510c7409242d0e19326f0ecbce8641b4eabf8a60b7574df3933d0d08e1ca",
+   "fingerprint": "5093de25d7ef2a04a12cfcc2adc33119a0fa889b13ba1e34a129ef0c02d97270",
    "inputs": {
     "index": 5,
-    "init": "fe8efc62c4f0ae9af635beec4f17a27b50efc4bf62ed755907294dadd60a6e98",
+    "init": "33f129a579f1726929b2729478358bfb9c8ffc9248ef9fc79e02c36b26db990a",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3659,8 +4051,201 @@
     "type": "sky"
    }
   },
+  "passes_no_clips/cal": {
+   "fingerprint": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+   "inputs": {
+    "fit": {
+     "clip": null,
+     "damp": 0.0,
+     "float32": true,
+     "frame_hook": null,
+     "ignore_flags": [],
+     "iterations": 50,
+     "line_fisher_threshold": 10.0,
+     "method": "cgls",
+     "precondition": true,
+     "raw_frame_hook": null,
+     "shot_noise_weights": false,
+     "tolerance": [
+      1e-06,
+      1e-06
+     ],
+     "type": "selfcal.run.recipe:Fit",
+     "use_mask": true
+    },
+    "frames": {
+     "n": 24,
+     "sha256": "bf4a46d97d5772144fc94ce6f65ae2c99289295d49e1ebbc0dd49a8d8001d025"
+    },
+    "instrument": {
+     "calib_dir": null,
+     "detector": 4,
+     "lvf_dir": null,
+     "type": "selfcal.instruments.spherex.settings:SPHEREx"
+    },
+    "job": {
+     "name": "Aromatic",
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
+    },
+    "kind": "cal",
+    "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
+     "offsets": [
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
+       "n": null,
+       "name": null,
+       "on": null,
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.1,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      },
+      {
+       "basis": null,
+       "damping": 0.0,
+       "exact_group_rows": false,
+       "n": null,
+       "name": "scalar",
+       "on": "detector",
+       "per": "frame",
+       "poly_prior": [],
+       "polynomial": null,
+       "render": null,
+       "smooth": 0.0,
+       "smooth_along": null,
+       "smooth_step": null,
+       "times": null,
+       "type": "selfcal.models.model:Offsets"
+      }
+     ],
+     "priors": [],
+     "sky": [
+      {
+       "damping": 0.0,
+       "name": "continuum",
+       "times": null,
+       "type": "selfcal.models.model:Sky"
+      },
+      {
+       "damping": 0.005,
+       "name": "aromatic",
+       "times": {
+        "kind": "template",
+        "of": "wavelength",
+        "params": {
+         "file": {
+          "sha256": "4bb73b95eff17802da9e5921369df41daa2cc1faad06e5821a50955b37ef1572"
+         },
+         "norm": "peak"
+        },
+        "type": "selfcal.models.model:Shape"
+       },
+       "type": "selfcal.models.model:Sky"
+      }
+     ],
+     "type": "selfcal.models.model:Model",
+     "variables": {},
+     "weight": null
+    },
+    "numerics": {
+     "batch": 50,
+     "rmatvec_threads": null,
+     "threads": 48
+    },
+    "pixel_scale": 6.2,
+    "reference": {
+     "sha256": "621f8d3d8ea8fb1b0a3fc2bf7b2a8d027f6f1124ceb21cac252f978561ab8fc0"
+    }
+   }
+  },
+  "passes_no_clips/pass 2 off": {
+   "fingerprint": "9ab609e09727ed841f136141aef86337e9adb793c9b03ed66c0ed9ae4636949b",
+   "inputs": {
+    "index": 2,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "off"
+   }
+  },
+  "passes_no_clips/pass 3 sky": {
+   "fingerprint": "47f7e109cff3030f11ae5498b998beef0e47d498190bc94fc064b6597dccc61b",
+   "inputs": {
+    "index": 3,
+    "init": "ce47c203522162de55dc6b102485ebf7976cc857965d04101064c9a6d53521f6",
+    "kind": "pass",
+    "passes": {
+     "offset": {
+      "bright_cut": null,
+      "clip": null,
+      "min_pixels": 5000,
+      "type": "selfcal.run.schedule:Refit"
+     },
+     "order": "offset_first",
+     "sky_clip": null,
+     "sky_merge": "combine",
+     "type": "selfcal.run.schedule:Passes"
+    },
+    "type": "sky"
+   }
+  },
   "passes_settings/cal": {
-   "fingerprint": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+   "fingerprint": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
    "inputs": {
     "fit": {
      "clip": {
@@ -3703,48 +4288,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -3771,7 +4372,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -3809,10 +4410,10 @@
    }
   },
   "passes_settings/pass 2 sky": {
-   "fingerprint": "7c6cca5b83bce8d0b772ddbb2d87f16204d220902712bb351f0aae6d0f819414",
+   "fingerprint": "181c33be695c7ac24fb90fb6200f1d45d1549267a4b30f8b58a7744d98c2fd07",
    "inputs": {
     "index": 2,
-    "init": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+    "init": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3854,10 +4455,10 @@
    }
   },
   "passes_settings/pass 3 off": {
-   "fingerprint": "df732f9e5a7be8a6842ab928b7332dcac272a8588adfbb7724b10d0d0392c064",
+   "fingerprint": "4079203f1a161a0f1f018566d480e32c0db9e43c719901293d6972d6e05fb7ae",
    "inputs": {
     "index": 3,
-    "init": "a35ed42af250abfbeae695187d19db8e6ef2781c52f60bcec6b9cf0027435759",
+    "init": "aea14f7255c57868ce12b3f41f37833e305d3689e269cdab43b968f5732cdf77",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -3899,17 +4500,10 @@
    }
   },
   "plan camera maps/calibration/cal_Toy_Chunks4x4_All_m.h5": {
-   "fingerprint": "36865e87f6031f815265eed936c054cb617220a0a95c16fc9255ad081cce4095",
+   "fingerprint": "99029def8c72fb61d25242d563dc1dddf3ac25bb7528eca98ccb9d7e2620a881",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -3956,7 +4550,6 @@
        "type": "selfcal.models.model:Header"
       }
      },
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -3969,9 +4562,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4023,7 +4616,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -4047,17 +4640,10 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_m.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_E.h5": {
-   "fingerprint": "f6e55028fc13dc1ad96d651fbb66ccc59d42544588f26826421ee786ab559758",
+   "fingerprint": "e5e1e2cb41a0b49de96a6f27509492c8d88a6643c29e750eb758390fe61cca32",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4087,7 +4673,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4100,9 +4685,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4154,7 +4739,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -4189,17 +4774,10 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_E.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_W.h5": {
-   "fingerprint": "a9b0dfc2981af925479953c9c879f4ead01b0666f0a4026557810d54a2b137d0",
+   "fingerprint": "23f0a192716a0b401642f1f2fa727d5fe246e705ac02eeea5ebe8ad7ed3ffa1a",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4229,7 +4807,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4242,9 +4819,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4296,7 +4873,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -4331,30 +4908,23 @@
    "path": "calibration/cal_Toy_Chunks4x4_All_t_W.h5"
   },
   "plan camera tiles/calibration/cal_Toy_Chunks4x4_All_t_stitched.h5": {
-   "fingerprint": "847de0eba626bbfcad585c5620ca3437b23802a2ffa77781b5b1670f13e81dba",
+   "fingerprint": "ea39fd1a2c1db9c254d9164cecb172a826d7eccbeedc8b25ee1d881a0a905a2c",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "f6e55028fc13dc1ad96d651fbb66ccc59d42544588f26826421ee786ab559758",
-     "W": "a9b0dfc2981af925479953c9c879f4ead01b0666f0a4026557810d54a2b137d0"
+     "E": "e5e1e2cb41a0b49de96a6f27509492c8d88a6643c29e750eb758390fe61cca32",
+     "W": "23f0a192716a0b401642f1f2fa727d5fe246e705ac02eeea5ebe8ad7ed3ffa1a"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Toy_Chunks4x4_All_t_stitched.h5"
   },
   "plan camera/calibration/cal_Toy_Chunks4x4_All_c.h5": {
-   "fingerprint": "b9a5b35534dfb031ddf05b04bafd8fddd24de786c8456e94028b2a726e022597",
+   "fingerprint": "76bafb0293a4402978e9829d51f348536b5d14a87c85c821a92c9cb97d8c31d9",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4384,7 +4954,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -4397,9 +4966,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4451,7 +5020,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -4479,17 +5048,10 @@
    "path": "mosaic/mosaic_Toy_Chunks4x4_All_c.fits"
   },
   "plan euclid/calibration/cal_EDFN_J_e.h5": {
-   "fingerprint": "928a46e7e3dd22c92d003ff9537e0ca8b5bd3c3d2f6088b97cc25b30bf415466",
+   "fingerprint": "0801f7944e3db2cc81124b2fe570a5fa3746166f56c77ae1db9062b848ce7423",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4536,9 +5098,9 @@
      "type": "selfcal.instruments.euclid.settings:Euclid"
     },
     "job": {
-     "kind": "all",
      "name": "J",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4590,7 +5152,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -4618,17 +5180,10 @@
    "path": "mosaic/mosaic_EDFN_J_e.fits"
   },
   "plan prism passes/calibration/cal_Prism_All_np.h5": {
-   "fingerprint": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+   "fingerprint": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4660,9 +5215,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4671,28 +5226,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -4719,13 +5269,13 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "line",
        "times": {
         "kind": "gaussian",
@@ -4757,10 +5307,10 @@
    "path": "calibration/cal_Prism_All_np.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass2off.h5": {
-   "fingerprint": "35d40ade18cf1909eeb26cc891e2d90b75bee31d7243fde0ec6a7ca8316c8771",
+   "fingerprint": "3d7041000dfec8cd823ab891e197e84eddb2db01ed43097f31e7b1ba88a0c8de",
    "inputs": {
     "index": 2,
-    "init": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+    "init": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4794,10 +5344,10 @@
    "path": "calibration/cal_Prism_All_np_pass2off.h5"
   },
   "plan prism passes/calibration/cal_Prism_All_np_pass3sky.h5": {
-   "fingerprint": "5a41446322bbf886d0dab53831402c5f8f14ccd626e92347ca8929a5162f312a",
+   "fingerprint": "8814e6d3e074056f8699518013a9cac06e36c0151c2bdbe87521fbbe09ff2896",
    "inputs": {
     "index": 3,
-    "init": "4a0b9703cd362954101ef6d6fcfff48327ba43d9e24070b637d19a97719107eb",
+    "init": "d239d9886fce4ff96530c95b8a9e437371dedfac8e43c0d2e01d599719bf8fbb",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -4831,17 +5381,10 @@
    "path": "calibration/cal_Prism_All_np_pass3sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_north.h5": {
-   "fingerprint": "318375ad78ebcf03dc47020b587796bd0f5a0a796989a9e7d5dc212077aa4cee",
+   "fingerprint": "c0ff3fda6ba47ea0c03177682ff2729c7b80444036b24e45033467764daa39f5",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -4873,9 +5416,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -4884,28 +5427,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -4932,13 +5470,13 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "line",
        "times": {
         "kind": "gaussian",
@@ -4981,17 +5519,10 @@
    "path": "calibration/cal_Prism_All_tp_north.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_south.h5": {
-   "fingerprint": "8119d5bbd4f32586f8c4476dda84aab4cb9a89720baf6baa1cdf4bb6c04ace2b",
+   "fingerprint": "7864fb18e600c38673c76c1707de0fb8cb1d59b7ba0c924a43f7dba81e62dcde",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5023,9 +5554,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -5034,28 +5565,23 @@
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          0,
-          8,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -5082,13 +5608,13 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "line",
        "times": {
         "kind": "gaussian",
@@ -5131,23 +5657,23 @@
    "path": "calibration/cal_Prism_All_tp_south.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched.h5": {
-   "fingerprint": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+   "fingerprint": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "318375ad78ebcf03dc47020b587796bd0f5a0a796989a9e7d5dc212077aa4cee",
-     "south": "8119d5bbd4f32586f8c4476dda84aab4cb9a89720baf6baa1cdf4bb6c04ace2b"
+     "north": "c0ff3fda6ba47ea0c03177682ff2729c7b80444036b24e45033467764daa39f5",
+     "south": "7864fb18e600c38673c76c1707de0fb8cb1d59b7ba0c924a43f7dba81e62dcde"
     }
    },
    "kind": "stitched",
    "path": "calibration/cal_Prism_All_tp_stitched.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass2sky.h5": {
-   "fingerprint": "6dd071444b181581742f24e8c2a5ed66ff09a8d3d63fae2dbabc3945c0bc79e8",
+   "fingerprint": "fffa71c0d104a34276b97622a26ead9c7e0ae8bca4383990ce7dab12fb807454",
    "inputs": {
     "index": 2,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5181,10 +5707,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass2sky.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass3off.h5": {
-   "fingerprint": "2e6a97273262da20b17c61021c56af9050c3e873420ccd51e2bda2012b82b484",
+   "fingerprint": "9f780b3fd86268c4fba7f540087b2e548fe03bc53af7164254cd2b62d69cd06d",
    "inputs": {
     "index": 3,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5218,10 +5744,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass3off.h5"
   },
   "plan prism tiles passes/calibration/cal_Prism_All_tp_stitched_pass4sky.h5": {
-   "fingerprint": "e52bbc59fcfc26eaebcdf6edff87ebdc1b43c4085f582ba66eb2d32d3f0a5cea",
+   "fingerprint": "787b3001d7e926add4e139894c457b7d843c85449b67f7e84b791f0a39cba1ff",
    "inputs": {
     "index": 4,
-    "init": "98d8a0b75f4d78662ac7e0344b3383ced353d8de83c7f85bb02273768f9cba6b",
+    "init": "9f6074429153fb30355b6565f94bb2c3f1c7c85b0b675480b67e35667e9ec8df",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -5255,17 +5781,10 @@
    "path": "calibration/cal_Prism_All_tp_stitched_pass4sky.h5"
   },
   "spectral_lines/cal": {
-   "fingerprint": "7a3020f4c25a76c7438c0c228df160aa8e504fee9d6cbfa5010ef92fe0ae508c",
+   "fingerprint": "bee0f4fd1ffc28fbcf8e69ccad221d1f81c64ac3f35807f0a26939a97118fd50",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5291,48 +5810,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Multiline3",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -5359,13 +5894,13 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "aromatic",
        "times": {
         "kind": "template",
@@ -5397,7 +5932,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "broad",
        "times": {
         "kind": "gaussian",
@@ -5426,21 +5961,23 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "pah",
        "times": {
-        "kind": "catalog",
-        "of": null,
+        "kind": "gaussian",
+        "of": "wavelength",
         "params": {
-         "catalog": "pah_3p29",
-         "center": 3.29
+         "center": 3.29,
+         "fwhm_to_sigma": 2.355,
+         "intrinsic_var": 0.000289,
+         "width": "bandwidth"
         },
         "type": "selfcal.models.model:Shape"
        },
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "tabulated",
        "times": {
         "kind": "template",
@@ -5470,7 +6007,7 @@
        "type": "selfcal.models.model:Sky"
       },
       {
-       "damping": 0.3,
+       "damping": 0.0,
        "name": "tilt",
        "times": {
         "kind": "linear",
@@ -5499,18 +6036,11 @@
     }
    }
   },
-  "spectral_soft_poly/cal": {
-   "fingerprint": "005be42cea874dd3dc8c2b8edc969982f65192f2c288711f6488b54ca4d02724",
+  "spectral_smooth/cal": {
+   "fingerprint": "0e0819e663620bc82519c512aee1902c08093157a0b75a3882e37d937073368b",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5536,21 +6066,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "W",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5569,23 +6120,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "subchannel",
-         "degree": 3,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": null,
-         "window": {
-          "range": [
-           200,
-           321,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.2,
@@ -5652,8 +6187,8 @@
     }
    }
   },
-  "spectral_soft_poly/mosaic": {
-   "fingerprint": "d2516333ba52bcda673c094c0ae881beca2b2c3847d953bd5a9517b935538a79",
+  "spectral_smooth/mosaic": {
+   "fingerprint": "ef60f1b47806b369a34b35c837f5efe3262f8bc5cb2045dd2bb72e9270ff7140",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -5678,21 +6213,42 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "W",
-     "value": [
-      200,
-      321
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       200,
+       321
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5711,23 +6267,7 @@
        "name": null,
        "on": null,
        "per": "frame",
-       "poly_prior": [
-        {
-         "along": "subchannel",
-         "degree": 3,
-         "each": null,
-         "segments": null,
-         "type": "selfcal.models.model:Poly",
-         "weight": null,
-         "window": {
-          "range": [
-           200,
-           321,
-           1
-          ]
-         }
-        }
-       ],
+       "poly_prior": [],
        "polynomial": null,
        "render": null,
        "smooth": 0.2,
@@ -5794,17 +6334,10 @@
    }
   },
   "spherex_channel/cal": {
-   "fingerprint": "c9baf3a3c05c5b1d86dd5ee28cc63b2850b47d0cb89f8247439e7b324bceced5",
+   "fingerprint": "b29ef07c7187c84c6065c85403deccd326b0afbab8f9ebe164532212f58827f8",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -5830,20 +6363,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -5892,7 +6452,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -5914,7 +6474,7 @@
    }
   },
   "spherex_channel/mosaic": {
-   "fingerprint": "1279d8f428823a9472b9f8436608bab4e01a1c630bd73608cebe10a2f3d531b3",
+   "fingerprint": "c6f0e4069dda31fcc9ab29754d064228306464bf7eb458a56bfdebe8099027f0",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -5939,20 +6499,47 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17",
-     "value": [
-      17
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       171
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       172
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6001,7 +6588,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6022,17 +6609,10 @@
    }
   },
   "spherex_group_two_block/cal": {
-   "fingerprint": "d61aa26d9f8a2eedb585b275f87004e3d4dfcbe154e27fe584fb35f034e4697b",
+   "fingerprint": "819d307c862df97e04afa50c405a4d530b0b29239dd1f2decc93761ac52a2516",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6058,21 +6638,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17-18",
-     "value": [
-      17,
-      18
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       181
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       182
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6123,7 +6737,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6145,7 +6759,7 @@
    }
   },
   "spherex_group_two_block/mosaic": {
-   "fingerprint": "607bab125ea467d24541021e5293950403b83a377c1d237dfd6c30282f33b1e6",
+   "fingerprint": "5a41346e20910a87d28eea9f58fd6214521c7bd2c97b8f9b47f165bae21893e9",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -6170,21 +6784,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch17-18",
-     "value": [
-      17,
-      18
-     ]
+     "strict": {
+      "subchannel": [
+       161,
+       181
+      ]
+     },
+     "window": {
+      "subchannel": [
+       160,
+       182
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6235,7 +6883,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6256,17 +6904,10 @@
    }
   },
   "spherex_settings_window/cal": {
-   "fingerprint": "f181c3243c487703a58d9b93ab9917fea21a6d104482de9c0cf968c5805f1b08",
+   "fingerprint": "8b57fb4bb8d94cbce0dee1d65ac313871c95d889d4acab15afcbef02f03a328e",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6292,21 +6933,42 @@
      "calib_dir": "/data/spherex/calibration",
      "detector": 3,
      "lvf_dir": "/data/spherex/lvf",
-     "num_ch": 34,
-     "num_col": 10,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 10,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol10",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6355,7 +7017,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6377,7 +7039,7 @@
    }
   },
   "spherex_settings_window/mosaic": {
-   "fingerprint": "53552f4b97f660f98e93704b4c33b4f1c6d5db1ee8c69cbbc456c5864ee44a22",
+   "fingerprint": "1ee28feefd819b917823f9e145ea818f9faa872961c534cc3887f2c8b47af2d9",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -6402,21 +7064,42 @@
      "calib_dir": "/data/spherex/calibration",
      "detector": 3,
      "lvf_dir": "/data/spherex/lvf",
-     "num_ch": 34,
-     "num_col": 10,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "mosaic",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 10,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol10",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -6465,7 +7148,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6486,10 +7169,10 @@
    }
   },
   "tiles_boxes_passes/pass 2 off": {
-   "fingerprint": "2716db3e76354d39df2be747262d38bd5c05605ee276fd929e5eadcc009d5161",
+   "fingerprint": "e903671586fed9ba51c57f1cb2ef6f5a28547a9b0405ebe625494741fb5e132b",
    "inputs": {
     "index": 2,
-    "init": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+    "init": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6521,10 +7204,10 @@
    }
   },
   "tiles_boxes_passes/pass 3 sky": {
-   "fingerprint": "ebe9572e528a8588c2a2db2208ebfb5bf255f3d37f3aa5f1bbf1c9af665b177f",
+   "fingerprint": "4d2e8dec1086a95802fada51f60f70109d10498bf151308eb03de8b6f1ce9c05",
    "inputs": {
     "index": 3,
-    "init": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+    "init": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
     "kind": "pass",
     "passes": {
      "offset": {
@@ -6556,28 +7239,21 @@
    }
   },
   "tiles_boxes_passes/stitched": {
-   "fingerprint": "4a05c92b3d5da7027114dc431e98dfb422b3cff9adf4cf8458714f10a81d9868",
+   "fingerprint": "a1b0d323743fe03eb5349e2023760793e3b49389b0c3764cb2c77429507533bc",
    "inputs": {
     "kind": "stitched",
     "line": true,
     "tiles": {
-     "north": "1fcbef38f0220f122a904ba1927c9a4695090610b7ad5b80dc5071a6709a9ff2",
-     "south": "a5cb34dbf351d6263deb02b2633be1b2c74f0554fdfeabcc71f2963eff6cc3b2"
+     "north": "9ca3e8f47c19fcfa68d49c9aea95ba2075873726874d0f7319c069ecff1ad47a",
+     "south": "46ee19487f678eb64aa7923e46ee685ed8f29787a9f27bcb3136bfe707f27930"
     }
    }
   },
   "tiles_boxes_passes/tile north": {
-   "fingerprint": "1fcbef38f0220f122a904ba1927c9a4695090610b7ad5b80dc5071a6709a9ff2",
+   "fingerprint": "9ca3e8f47c19fcfa68d49c9aea95ba2075873726874d0f7319c069ecff1ad47a",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6603,48 +7279,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -6671,7 +7363,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6720,17 +7412,10 @@
    }
   },
   "tiles_boxes_passes/tile south": {
-   "fingerprint": "a5cb34dbf351d6263deb02b2633be1b2c74f0554fdfeabcc71f2963eff6cc3b2",
+   "fingerprint": "46ee19487f678eb64aa7923e46ee685ed8f29787a9f27bcb3136bfe707f27930",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6756,48 +7441,64 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "window",
      "name": "Aromatic",
-     "value": [
-      225,
-      236
-     ]
+     "strict": null,
+     "window": {
+      "subchannel": [
+       225,
+       236
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 34,
+        "num_col": 3,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh34_NumCol3",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
        "damping": 0.0,
        "exact_group_rows": false,
+       "exclude": {
+        "along": null,
+        "degree": 0,
+        "each": null,
+        "segments": null,
+        "type": "selfcal.models.model:Poly",
+        "weight": null,
+        "window": null
+       },
        "n": null,
        "name": null,
        "on": null,
        "per": "frame",
        "poly_prior": [],
-       "polynomial": {
-        "along": null,
-        "degree": 2,
-        "each": null,
-        "segments": null,
-        "type": "selfcal.models.model:Poly",
-        "weight": null,
-        "window": {
-         "range": [
-          200,
-          321,
-          1
-         ]
-        }
-       },
+       "polynomial": null,
        "render": null,
-       "smooth": 0.0,
+       "smooth": 0.1,
        "smooth_along": null,
        "smooth_step": null,
        "times": null,
@@ -6824,7 +7525,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -6873,28 +7574,21 @@
    }
   },
   "tiles_grid/stitched": {
-   "fingerprint": "4d620d2b25e7d1fced6491deccd8262f367b0aeb3c0ea397679dcd0beb41315f",
+   "fingerprint": "d7c02d7df4c9f97cbf18fd115ad6d8c6048be0be2677fb28c21bcb9dbbb11314",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "E": "fa4a76050473634d55d74ded4b1efe975e8eacc0e16dcfe7b20c01ec4d643377",
-     "W": "427c27b2c615ceb6d040e4f87479280638f02997db0472a4a18dad30f500a2a8"
+     "E": "771bd73f899269996b3cddcbfdd40aa6a7cc6c5d99f8c567719593878fde7bc2",
+     "W": "647d52956605231b5fdb9e08a4d8e4979de4dc82d5c0ba4f6cbbfa1a4ed4cec2"
     }
    }
   },
   "tiles_grid/tile E": {
-   "fingerprint": "fa4a76050473634d55d74ded4b1efe975e8eacc0e16dcfe7b20c01ec4d643377",
+   "fingerprint": "771bd73f899269996b3cddcbfdd40aa6a7cc6c5d99f8c567719593878fde7bc2",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -6924,7 +7618,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -6937,9 +7630,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -6991,7 +7684,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7024,17 +7717,10 @@
    }
   },
   "tiles_grid/tile W": {
-   "fingerprint": "427c27b2c615ceb6d040e4f87479280638f02997db0472a4a18dad30f500a2a8",
+   "fingerprint": "647d52956605231b5fdb9e08a4d8e4979de4dc82d5c0ba4f6cbbfa1a4ed4cec2",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7064,7 +7750,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7077,9 +7762,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7131,7 +7816,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7164,30 +7849,23 @@
    }
   },
   "tiles_grid_named_by_the_engine/stitched": {
-   "fingerprint": "7571aec84a9e427410a320f5509c94f243ac43d34e4a5140ea7c9f2cb2aede43",
+   "fingerprint": "afac00fdeb2abc7262c0e418c94a1b264d434743026758302368e0bf4b42e362",
    "inputs": {
     "kind": "stitched",
     "line": false,
     "tiles": {
-     "r0c0": "08c81fc5bf6712f29e75528b4be7e53cce48651732f31b96cb7816f2beeca147",
-     "r0c1": "ae80c4826266029c89e9afda51b8ebd9c5a53e3a4144ca933bf17867a48a76c8",
-     "r1c0": "4793213339c9ce583af2901244eea54b0109cd5eac6143742d6e628237bcb4e0",
-     "r1c1": "ddd8116071568c1803a7be70d6ddbddba01f199699f2fef7e87ab5209b26f1b3"
+     "r0c0": "db07dcd621c5bd79ceb1af837ac29d0b8464993838925a1f13edc1be12e981e4",
+     "r0c1": "2f930cff5f583107e2c7881170c83edb5f6c923bd6df7e6120a8f21a0fedcde9",
+     "r1c0": "76b73de85dd336a923a147a63b05818f8a4052bdc9c01099186ac3f127bfaf15",
+     "r1c1": "de80ca6117a1fa28aac72ba636ec4fa33c2e342d88a763c233f3eb0ed1c48722"
     }
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c0": {
-   "fingerprint": "08c81fc5bf6712f29e75528b4be7e53cce48651732f31b96cb7816f2beeca147",
+   "fingerprint": "db07dcd621c5bd79ceb1af837ac29d0b8464993838925a1f13edc1be12e981e4",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7217,7 +7895,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7230,9 +7907,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7284,7 +7961,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7317,17 +7994,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r0c1": {
-   "fingerprint": "ae80c4826266029c89e9afda51b8ebd9c5a53e3a4144ca933bf17867a48a76c8",
+   "fingerprint": "2f930cff5f583107e2c7881170c83edb5f6c923bd6df7e6120a8f21a0fedcde9",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7357,7 +8027,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7370,9 +8039,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7424,7 +8093,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7457,17 +8126,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c0": {
-   "fingerprint": "4793213339c9ce583af2901244eea54b0109cd5eac6143742d6e628237bcb4e0",
+   "fingerprint": "76b73de85dd336a923a147a63b05818f8a4052bdc9c01099186ac3f127bfaf15",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7497,7 +8159,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7510,9 +8171,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7564,7 +8225,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7597,17 +8258,10 @@
    }
   },
   "tiles_grid_named_by_the_engine/tile r1c1": {
-   "fingerprint": "ddd8116071568c1803a7be70d6ddbddba01f199699f2fef7e87ab5209b26f1b3",
+   "fingerprint": "de80ca6117a1fa28aac72ba636ec4fa33c2e342d88a763c233f3eb0ed1c48722",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7637,7 +8291,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -7650,9 +8303,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7704,7 +8357,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7737,17 +8390,10 @@
    }
   },
   "two_block_settings/cal": {
-   "fingerprint": "9b3fad3e34b372563cef69da37466385f6e986d0b40e555da59a0fc4aa44e2c1",
+   "fingerprint": "8a4ec8d4bbaf0501f76994accdeb8dd69b1f53b923c9338403fc3f51404bc9fe",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7773,20 +8419,55 @@
      "calib_dir": null,
      "detector": 4,
      "lvf_dir": null,
-     "num_ch": 34,
-     "num_col": 3,
-     "num_sub": 10,
      "type": "selfcal.instruments.spherex.settings:SPHEREx"
     },
     "job": {
-     "kind": "channels",
      "name": "Ch3",
-     "value": [
-      3
-     ]
+     "strict": {
+      "subchannel": [
+       21,
+       31
+      ]
+     },
+     "window": {
+      "subchannel": [
+       20,
+       32
+      ]
+     }
     },
     "kind": "cal",
     "model": {
+     "chunk_maps": {
+      "detector_column": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:detector_columns"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "readout": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:readouts"
+       },
+       "params": {},
+       "tag": "",
+       "type": "selfcal.models.model:ChunkMap"
+      },
+      "subchannel": {
+       "fn": {
+        "function": "selfcal_scripts.spherex.chunks:subchannels"
+       },
+       "params": {
+        "num_ch": 17,
+        "num_col": 1,
+        "num_sub": 10
+       },
+       "tag": "NumSub10_NumCh17_NumCol1",
+       "type": "selfcal.models.model:ChunkMap"
+      }
+     },
      "offsets": [
       {
        "basis": null,
@@ -7859,17 +8540,10 @@
    }
   },
   "user_instrument/cal": {
-   "fingerprint": "0d02a1efce3dd32247cc3836f049b24f27476278082c05d248a15a7bc791a304",
+   "fingerprint": "1edff9dd41aee058e55de477e2b9743a01cca2388c4ad9e84fc98a6893371c52",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -7901,9 +8575,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -7955,7 +8629,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -7977,7 +8651,7 @@
    }
   },
   "user_instrument/mosaic": {
-   "fingerprint": "53b398e350f5563aebe3f71d81b099eb1aea77ce00e0ad7f3cc5027f0d1ef652",
+   "fingerprint": "416dfd0709cb53362a0ede4dc845c1ec183befba82365bd62d3bbae869f586fe",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -8008,9 +8682,9 @@
      "unit": "MJy/sr"
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -8062,7 +8736,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -8083,17 +8757,10 @@
    }
   },
   "variance_weight/cal": {
-   "fingerprint": "e4fdea841f80c7457385ac1adea338df14a580d74ec5ed95023c9ffe195847b4",
+   "fingerprint": "56e8a99c815d9d3155da0b39e6db1edc9c2de9213525513cace76c1a05c90d7e",
    "inputs": {
     "fit": {
-     "clip": {
-      "edges": null,
-      "ignore_flags": null,
-      "per": "frame",
-      "sigma": 5.0,
-      "type": "selfcal.run.recipe:Clip",
-      "variable": null
-     },
+     "clip": null,
      "damp": 0.0,
      "float32": true,
      "frame_hook": null,
@@ -8123,7 +8790,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -8136,9 +8802,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "cal",
     "model": {
@@ -8146,7 +8812,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"
@@ -8180,7 +8846,7 @@
    }
   },
   "variance_weight/mosaic": {
-   "fingerprint": "f668cf4452bf78efe9835189e87e131532ca36ae31609209ea91d4311a31ec66",
+   "fingerprint": "47328d0879a3fad9300ec726fbe8625d64f5d671142df2468eba43d734f868df",
    "inputs": {
     "cal": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
     "coadd": {
@@ -8209,7 +8875,6 @@
      "detector_maps": {},
      "dq_ext": 2,
      "headers": {},
-     "job": "All",
      "reader": null,
      "reference_ext": null,
      "sci_ext": 1,
@@ -8222,9 +8887,9 @@
      "unit": ""
     },
     "job": {
-     "kind": "all",
      "name": "All",
-     "value": null
+     "strict": null,
+     "window": null
     },
     "kind": "mosaic",
     "model": {
@@ -8232,7 +8897,7 @@
      "priors": [],
      "sky": [
       {
-       "damping": 0.1,
+       "damping": 0.0,
        "name": "continuum",
        "times": null,
        "type": "selfcal.models.model:Sky"

@@ -1,5 +1,5 @@
-"""The generic chunk-axes builders reproduce the SPHEREx builders exactly (pairs, chain
-order, stencils, basis descriptors, group edges) on the real stripped chunk maps."""
+"""The generic chunk-axes builders reproduce the SPHEREx builders exactly (adjacency pairs, group
+edges) on the real stripped chunk maps."""
 import os
 import sys
 
@@ -10,8 +10,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from selfcal.models.offset_structure import (ChunkAxes, adjacency_along, poly_chains_along,   # noqa: E402
-                                             poly_basis_along, group_edges_along, fd_stencil)
+from selfcal.models.offset_structure import ChunkAxes, adjacency_along, group_edges_along  # noqa: E402
 
 
 def _same(a, b):
@@ -27,14 +26,8 @@ def test_row_major_axes():
     assert ax['subchannel'].scan == 'y' and ax['column'].scan == 'x'
 
 
-def test_fd_stencil():
-    assert list(fd_stencil(0)) == [1, -1]
-    assert list(fd_stencil(1)) == [1, -2, 1]
-    assert list(fd_stencil(2)) == [1, -3, 3, -1]
-
-
-def test_grid_map_adjacency_and_chains():
-    """A 3x4 (row, col) grid map: adjacency along col within a row, chains along col."""
+def test_grid_map_adjacency():
+    """A 4x4 (row, col) grid map: adjacency along col within a row, along row within a column."""
     from selfcal.geometry.map_helper import make_grid_chunk_map
     cm = make_grid_chunk_map((30, 40), 4)[:, :]          # 4x4 chunks on a 30x40 detector
     n = int(cm.max()) + 1
@@ -44,9 +37,6 @@ def test_grid_map_adjacency_and_chains():
     assert len(i) == 4 * 3 and all(row[i] == row[j]) and all(col[j] - col[i] == 1)
     i, j = adjacency_along(cm, ax, 'row', step=1)
     assert len(i) == 4 * 3 and all(col[i] == col[j])
-    chains, st = poly_chains_along(ax, 'col', 1)
-    assert chains.shape == (4 * 2, 3) and list(st) == [1, -2, 1]
-    assert (chains[:, 0] == np.sort(chains[:, 0])).all()
 
 
 @pytest.mark.parametrize('det,ncol', [(4, 3), (4, 5)])
@@ -62,16 +52,6 @@ def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     blank = np.zeros((2040, 2040), dtype=np.float32)
     monkeypatch.setattr(su, 'load_calibration', lambda band, calibration_dir=None: (blank, blank))
 
-    def legacy_poly_basis(det_chunk_map, num_columns, degree, lo, hi, segments=None):
-        # SPHERExInstrument.subchannel_poly_basis before the instrument-agnostic engine, verbatim
-        n_chunks = int(det_chunk_map.max()) + 1
-        chunk_ids = np.arange(n_chunks)
-        pb = {'degree': int(degree), 'num_groups': int(num_columns), 'coord_lo': int(lo), 'coord_hi': int(hi),
-              'chunk_coord': chunk_ids // int(num_columns), 'chunk_group': chunk_ids % int(num_columns)}
-        if segments:
-            pb['segments'] = [(int(a), int(b)) for a, b in segments]
-        return pb
-
     def legacy_edges(det_bc, det_chunk_map, num_columns):
         # SPHERExInstrument.subchannel_bc_edges before the instrument-agnostic engine, verbatim
         n_chunks = int(det_chunk_map.max()) + 1
@@ -85,21 +65,6 @@ def test_reproduces_spherex_builders(det, ncol, monkeypatch):
     assert _same(a[0], g[0]) and _same(a[1], g[1]) and len(g[0]) > 0
     a = su.compute_subchannel_adjacency(cm, ncol); g = adjacency_along(cm, axes, 'subchannel', step=1)
     assert _same(a[0], g[0]) and _same(a[1], g[1]) and len(g[0]) > 0
-    for deg in (1, 2):
-        if ncol >= deg + 2:
-            c1, s1 = su.compute_column_polynomial_chains(cm, ncol, degree=deg)
-            c2, s2 = poly_chains_along(axes, 'column', deg)
-            assert _same(c1, c2) and _same(s1, s2)
-    for deg, lo, hi in ((2, 200, 320), (3, 210, 249), (1, None, None)):
-        c1, s1 = su.compute_subchannel_polynomial_chains(nsub, ncol, degree=deg, subch_lo=lo, subch_hi=hi)
-        c2, s2 = poly_chains_along(axes, 'subchannel', deg, lo, hi)
-        assert _same(c1, c2) and _same(s1, s2)
-    for segs in (None, [[200, 260], [261, 320]]):
-        p1 = legacy_poly_basis(cm, ncol, 2, 200, 320, segments=segs)
-        p2 = poly_basis_along(axes, 'subchannel', 'column', 2, 200, 320, segments=segs)
-        assert set(p1) == set(p2)
-        for k in p1:
-            assert _same(p1[k], p2[k]) if isinstance(p1[k], np.ndarray) else p1[k] == p2[k]
     bc = np.linspace(3.0, 4.0, cm.size).reshape(cm.shape)
     e1 = legacy_edges(bc, cm, ncol)
     e2 = group_edges_along(bc, cm, axes, 'subchannel')

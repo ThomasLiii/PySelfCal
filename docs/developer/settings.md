@@ -71,14 +71,32 @@ fingerprint. Set to another value, the field is encoded and the fingerprint chan
 that product is made by other inputs. A record written before the field existed decodes with the
 field at its default.
 
+## Removing a setting
+
+A setting taken out of a class is declared in the class's `_removed` dictionary, the mirror of
+`added`: its name, its last default and a note saying when it went and what to write instead:
+
+```python
+@dataclass(frozen=True)
+class Offsets(Config):
+    ...
+    _removed = {'polynomial': (None, "the polynomial-basis offset Offsets(polynomial=Poly(...)) was removed "
+                                     "on 2026-10-30; write the polynomial as Offsets(basis=Function(...), n=)")}
+```
+
+`to_dict()` keeps the setting at that default, so the encoding every product is fingerprinted by
+does not change: every product made with the default keeps its fingerprint (one made with another
+value is refused, as it should be: nothing can make it again). Giving the setting raises with the
+note; a record that holds it at its default decodes, one that holds another value does not.
+
 Rules for every change to a fingerprinted class (`sc.SPHEREx`, `sc.Euclid`, `sc.Camera`, the model's
 classes, `sc.Fit`, `sc.Clip`, `sc.ChunkGroups`, `sc.Stop` and its rules (`sc.ResidualRule`,
 `sc.GradientRule`, `sc.LargeScaleRule`), `sc.Deflate`, `sc.Gauge`, `sc.Coadd`, `sc.Numerics`, `sc.Tiles`,
 `sc.Passes`, `sc.Refit`):
 
 - a new field is declared with `added(default, since=...)`;
-- a class is never renamed or moved, a field never renamed or removed, a default never changed:
-  a new behaviour is a new field;
+- a class is never renamed or moved, a field never renamed, a default never changed: a new
+  behaviour is a new field; a field removed is declared in `_removed` with its last default;
 - a constant of an instrument that is not a setting (its data unit, its capabilities) is a class
   attribute without an annotation, or a property, so that the dataclass does not make it a field;
 - a setting that never changes a byte belongs to `sc.Compute`, or to `sc.Tuning` when it is one of

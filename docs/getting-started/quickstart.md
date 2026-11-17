@@ -66,7 +66,7 @@ injected offsets and scalars for step 4.
 --8<-- "examples/quickstart/quickstart.py"
 ```
 
-The script defines three objects, then acts on them:
+The script defines three objects and the arguments of its actions, then acts on them:
 
 - **`sc.Camera`** says how to read an exposure: the detector's shape, the grid of chunks that
   carry the offsets (4 x 4 chunks of 16 x 16 pixels), the FITS extensions of the image (1, the
@@ -86,6 +86,9 @@ The script defines three objects, then acts on them:
   `sc.Coadd` the mosaic (a sigma-clipped mean at 3 sigma; `coadd=None` makes none) and `sc.Numerics` the summation layout
   (threads and batch sizes, which change only the last bits of the products). The `name` ends the
   product names.
+- **`RUN`** holds the keyword arguments of the actions: `jobs=sc.Job("All")`, the run's one job, every
+  chunk of the camera's grid. Every action but `reproject` names its jobs; the job's name goes into
+  the product names.
 
 Every setting is checked when it is built, so a mistake stops the script at the line that made it:
 
@@ -159,11 +162,11 @@ the detector coordinates of every pixel, from which the solve finds each pixel's
 format](../guide/pipeline.md#reprojected-h5-schema)). Frames that exist are kept, so a second run
 reprojects nothing.
 
-**The plan.** `FIELD.plan(RECIPE)` checks what `calibrate` would do without computing anything:
+**The plan.** `FIELD.plan(RECIPE, **RUN)` checks what `calibrate` would do without computing anything:
 the frames, the model against the instrument's geometry, the functions the worker processes will
 import, and each product, to be made, reused or refused. `calibrate` makes the same checks first,
 so a run that cannot finish stops before it starts. From the shell,
-`selfcal plan examples/quickstart/quickstart.py` prints the plan of a script's `FIELD` and `RECIPE`.
+`selfcal plan examples/quickstart/quickstart.py` prints the plan of a script's `FIELD`, `RECIPE` and `RUN`.
 
 **The solve.** An observation is the value of one frame on one pixel of the reference grid. The
 model of `sc.continuum` is the sky at that pixel, plus the offset of the chunk the pixel fell on,
@@ -183,9 +186,10 @@ mosaic.
   `istop = 2` would mean that the solution met the tolerance first. The residual (`r1norm`, printed
   every tenth iteration) has its final value, 10.65, from iteration 30 on.
 
-**The products** are named after the stem `<tag>_Chunks<rows>x<cols>_<job>_<recipe name>`. A job is
-one solve of the instrument's loop (SPHEREx runs one per channel or subchannel window); a camera has
-a single job, `All`:
+**The products** are named after the stem `<tag>_Chunks<rows>x<cols>_<job>_<recipe name>`: the
+camera's tag, the tag of its default chunk map (the grid), the job and the recipe's name. A job is
+one solve over chunks of the primary chunk map (SPHEREx runs one per channel or subchannel window);
+here a single job, `All`, covers every chunk:
 
 - `calibration/cal_Sim_Chunks4x4_All_quickstart.h5`, the solution: the sky map on the reference grid
   with its coverage, the offset of every frame and chunk, the scalar of every frame (a second offset

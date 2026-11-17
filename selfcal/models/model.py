@@ -11,9 +11,8 @@ pixel)::
 * :class:`Sky`: a sky map ``S_j`` times a known function ``c_j`` of data variables ``v``
   (``times``; none: a constant sky);
 * :class:`Offsets`: an offset per chunk of a chunk map (``on``), shared by the frames of a
-  group (``per``), optionally times known functions (``times``, ``basis``), or a polynomial
-  (``polynomial``); with smoothness and polynomial-shape priors and hard constraints
-  (``exclude``); a per-frame scalar is the term of one chunk, ``Offsets('scalar', on='detector')``;
+  group (``per``), optionally times known functions (``times``, ``basis``); with a smoothness
+  prior and hard constraints (``exclude``); a per-frame scalar is the term of one chunk, ``Offsets('scalar', on='detector')``;
 * data variables beyond the built-in and instrument ones (``Model.variables``: a header
   keyword, a function of the frame list, a detector or sky map, ...);
 * :class:`Prior`: any linear rows on the unknowns, written as a function.
@@ -46,9 +45,9 @@ def _ref(fn):
     """How a function is handed to the model's data form: its import path, or the by-value object itself."""
     return fn if isinstance(fn, by_value) else function_ref(fn)
 
-__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'catalog', 'Poly', 'Sky', 'Offsets',
+__all__ = ['Function', 'Variance', 'Shape', 'template', 'gaussian', 'linear', 'Poly', 'Sky', 'Offsets', 'Overlap',
            'Header', 'PerFrame', 'DetectorMap', 'SkyMap', 'SolvedSky', 'Layer', 'Derived', 'FrameFunction',
-           'Prior', 'Model', 'continuum', 'spectral', 'two_block']
+           'ChunkMap', 'Prior', 'Model', 'continuum', 'spectral', 'two_block']
 
 
 # =============================================================================== functions
@@ -216,26 +215,20 @@ class Variance(Function):
 
 @dataclass(frozen=True)
 class Shape(Config):
-    """A built-in function of one data variable: a tabulated curve, a Gaussian, a line, or a
-    named coefficient of the instrument. Built by :func:`template`, :func:`gaussian`,
-    :func:`linear` and :func:`catalog`."""
-    kind: Literal['template', 'gaussian', 'linear', 'catalog']
+    """A built-in function of one data variable: a tabulated curve, a Gaussian or a line. Built
+    by :func:`template`, :func:`gaussian` and :func:`linear`."""
+    kind: Literal['template', 'gaussian', 'linear']
     _: KW_ONLY
     of: str | None = 'wavelength'
     params: dict[str, Any] = field(default_factory=FrozenDict)
 
     def __repr__(self):
         params = ', '.join(f"{k}={v!r}" for k, v in self.params.items() if not isinstance(v, np.ndarray))
-        of = '' if self.kind == 'catalog' or self.of == 'wavelength' else f", of={self.of!r}"
-        if self.kind == 'catalog':
-            rest = {k: v for k, v in self.params.items() if k != 'catalog'}
-            return _call('catalog', (self.params['catalog'],), tuple(rest.items()))
+        of = '' if self.of == 'wavelength' else f", of={self.of!r}"
         return f"{self.kind}({params}{of})"
 
     def lower(self, n=None) -> dict:
         """The coefficient's data form."""
-        if self.kind == 'catalog':
-            return dict(self.params)
         out = {'variable': self.of, 'function': self.kind}
         out.update({k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in self.params.items()})
         return out
@@ -281,14 +274,6 @@ def linear(center, halfwidth, *, of='wavelength') -> Shape:
     return Shape('linear', of=of, params={'center': float(center), 'halfwidth': float(halfwidth)})
 
 
-def catalog(name, **overrides) -> Shape:
-    """The instrument's named coefficient ``name`` (SPHEREx: ``"pah_3p29"``), with its factory's
-    parameters overridden by ``overrides`` (one given as None keeps the factory's default, so it
-    is left out)."""
-    return Shape('catalog', of=None, params={'catalog': str(name),
-                                             **{k: v for k, v in overrides.items() if v is not None}})
-
-
 def _as_function(value, what):
     """A ``times`` / ``basis`` / ``weight`` value: None, a variable name, a Function, a Shape, or a
     bare function (wrapped in :class:`Function`)."""
@@ -314,23 +299,24 @@ def _lower_function(value, n=None):
 # =============================================================================== terms
 @dataclass(frozen=True)
 class Poly(Config):
-    """A polynomial along an axis of a chunk map.
-
-    As a soft prior (``Offsets(poly_prior=...)``), the offsets along ``along`` are pulled toward
-    a degree-``degree`` polynomial with weight ``weight`` (default 1), over the ``window`` of
-    axis values if one is given; ``along=None`` means the first axis the term is smoothed along.
-    As a hard basis (``Offsets(polynomial=...)``), the offset IS a degree-``degree`` polynomial in
-    ``along`` (default: the map's spectral axis), one per value of ``each`` (default: the map's
-    group axis), over ``window`` (required), optionally piecewise on ``segments``
-    (``[(lo, hi), ...]``).
-    """
+    """A polynomial along an axis of a chunk map, the shape ``Offsets(exclude=Poly(k, along=axis))`` excludes
+    from a term: every polynomial of degree at most ``degree`` along ``along`` (per line of the other axes, per
+    group of frames), a hard constraint by reparametrisation (no row, no weight). ``along`` may be left out on a map
+    with one axis; ``Poly(0)`` (no constant over a group's chunks) needs no axis on any map. ``window``: unused by
+    the exclusion (kept for the records of older products)."""
     degree: int
     _: KW_ONLY
     along: str | None = None
     window: range | None = None
-    weight: float | None = None
-    each: str | None = None
-    segments: tuple[tuple[int, int], ...] | None = None
+    _removed = {'weight': (None, "the soft polynomial prior Offsets(poly_prior=Poly(..., weight=)) was removed on "
+                                 "2026-10-30; an offset term's polynomial shape is a basis of functions, "
+                                 "Offsets(basis=Function(...), n=)"),
+                'each': (None, "the polynomial-basis offset Offsets(polynomial=Poly(..., each=)) was removed on "
+                               "2026-10-30; write the polynomial as Offsets(basis=Function(...), n=) on the map "
+                               "whose chunks it is a polynomial per"),
+                'segments': (None, "the piecewise polynomial-basis offset Offsets(polynomial=Poly(..., segments=)) "
+                                   "was removed on 2026-10-30; write one Offsets(basis=Function(...), n=) term per "
+                                   "segment")}
 
     def _validate(self):
         if self.degree < 0:
@@ -338,18 +324,6 @@ class Poly(Config):
         if self.window is not None and (self.window.step != 1 or len(self.window) < 1):
             raise ConfigError(f"Poly(window={self.window!r}): a range of consecutive axis values, "
                               f"e.g. range(200, 321)")
-        if self.weight is not None and self.weight < 0:
-            raise ConfigError(f"Poly(weight={self.weight}): at least 0")
-
-    def lower_soft(self, what):
-        if self.each is not None or self.segments is not None:
-            raise ConfigError(f"{what}: Poly(each=..., segments=...) describes a hard polynomial basis; "
-                              f"give it as Offsets(polynomial=...)")
-        out = {'axis': self.along, 'degree': int(self.degree),
-               'weight': 1.0 if self.weight is None else float(self.weight)}
-        if self.window is not None:
-            out.update(lo=int(self.window.start), hi=int(self.window.stop - 1))
-        return out
 
 
 @dataclass(frozen=True)
@@ -374,7 +348,8 @@ class SkySignature(Config):
       detector-fixed slope stays in the offsets whatever orientations the frames have.
 
     The signature is the term's part of the offsets' least-squares response to each field, computed from the system
-    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``,
+    itself by the deflation's setup (any term, basis or instrument), so the solve needs ``Fit(deflate=Deflate(...))``
+    (``Deflate(direct=False)`` makes the signature and leaves the patterns to the iterations),
     and the term must be fitted per frame or per group of frames (not ``per='all'``). ``degree``: 1 (the two planes),
     2 (the planes and the three quadratics) or ``'all'`` (every pattern of ``Deflate(order)``, the cosines included,
     except the constant: the mean is a gauge of the sky and the per-frame constants, not of a slope-like term, and
@@ -389,14 +364,65 @@ class SkySignature(Config):
 
 
 @dataclass(frozen=True)
+class Overlap(Config):
+    """What an offset term may not carry (``Offsets(exclude=Overlap('a', 'b'))``): any detector pattern that the
+    named offset terms of the model can also make with the same coefficients in every frame (their fixed patterns).
+
+    Two terms that can make the same detector pattern leave the data unable to say which of them holds it: an exact
+    degeneracy, settled otherwise by where the solver starts. With this exclusion the term gives up the shared
+    patterns to the named terms (a hard constraint by reparametrisation, no row and no weight). The shared patterns
+    are the intersection of the two terms' pattern spaces over the detector pixels of the job's solve, computed
+    exactly from the terms themselves (their chunk maps and their functions at each pixel centre), so a term with
+    one offset per detector pixel gives up every fixed pattern of the named terms, and a term with one offset per
+    detector column only those that are constant along each column. The named terms' functions must read
+    detector-plane variables only (the built-in ``det_x``, ``det_y``, detector maps, and variables derived from
+    them): a function of per-frame or per-observation data makes no fixed pattern. ``terms``: the names of the
+    other offset terms (:attr:`Offsets.term_name`).
+
+    ``weights``: how the term's offsets count when the shared patterns are measured. None (the default): every offset
+    alike. ``'information'``: each offset by its information, the sum of its squared weighted entries in the solve
+    (how strongly the data see it). Counted alike, a few offsets the data barely see (a detector pixel that only the
+    corners of the observations' bilinear sampling reach) can take large values that cancel a shared pattern the
+    other offsets hold, at almost no cost to the fit, and the constraint then holds only on paper; weighted by their
+    information they cannot. An offset without data has no weight and drops out. Either way the constraint is exact
+    (it settles the same exact degeneracy) and needs no threshold.
+    """
+    terms: tuple[str, ...]
+    weights: str | None = added(None, since='2026-10')
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, *terms, weights=None):
+        object.__setattr__(self, 'terms', tuple(terms))
+        object.__setattr__(self, 'weights', weights)
+        self.__post_init__()
+
+    def __repr__(self):
+        return _call('Overlap', self.terms, (('weights', self.weights),) if self.weights is not None else ())
+
+    @classmethod
+    def _from_fields(cls, terms, weights=None):
+        return cls(*terms, weights=weights)
+
+    def _validate(self):
+        if not self.terms or not all(isinstance(t, str) and t for t in self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: the names of one or more offset terms of the model")
+        if len(set(self.terms)) != len(self.terms):
+            raise ConfigError(f"Overlap{self.terms!r}: a term named twice")
+        if self.weights not in (None, 'information'):
+            raise ConfigError(f"Overlap(weights={self.weights!r}): None (every offset alike) or 'information' (each by "
+                              f"how strongly the data see it)")
+
+
+@dataclass(frozen=True)
 class Sky(Config):
     """A sky term: a map on the reference grid times a known function of data variables.
 
     ``times``: the function (a Python function of data variables, :class:`Function`, a
-    built-in :func:`template` / :func:`gaussian` / :func:`linear` / :func:`catalog`, or the name
+    built-in :func:`template` / :func:`gaussian` / :func:`linear`, or the name
     of a variable, which then multiplies the map itself); None: a constant sky. ``damping``: a
-    coverage-weighted pull of the map toward zero (default: 0.1 for the model's first sky term,
-    0.3 for the others; 0 for none).
+    coverage-weighted pull of the map toward zero (None, the default, or 0: none).
 
     ``exclude``: a hard constraint on the map's shape: a function ``shapes(u, v)`` of the pixels'
     coordinates across the reference grid (``u`` along the columns, ``v`` along the rows, both from 0
@@ -441,17 +467,17 @@ class Offsets(Config):
     ``on``: the chunk map (None: the instrument's primary map; ``"detector"``: the whole
     detector as one chunk). ``per``: who shares an offset: ``"frame"`` (each frame its own),
     ``"all"`` (every frame the same: a detector-fixed pattern), or a frame variable (frames with
-    equal values: ``"detector"``, ``"exposure"``, a night, a filter).
+    equal values: ``"detector"``, ``"exposure"``, a night, a filter). The cal file holds a shared term's
+    offsets once per group of frames, with each frame's group (:class:`~selfcal.io.calfile.CalFile`).
 
     Known functions: ``times`` (one function of data variables multiplying the offset at every
     observation), or ``basis`` with ``n`` functions (the unknowns become one coefficient per
-    chunk and function; the function returns ``n`` arrays). ``polynomial``: the offset IS the
-    polynomial :class:`Poly` along a chunk axis (no smoothness or shape prior then).
+    chunk and function; the function returns ``n`` arrays). A term whose offsets are a polynomial
+    in a coordinate is a ``basis`` of the polynomials of that coordinate (``n = degree + 1``).
 
     Priors: ``smooth`` pulls chunks that neighbour along ``smooth_along`` (default: the map's
-    own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given;
-    ``poly_prior`` pulls the offsets toward soft polynomials; ``damping`` pulls every offset toward
-    zero (coverage weighted).
+    own axes; ``()``: none) together, only pairs ``smooth_step`` apart when given; ``damping``
+    pulls every offset toward zero (coverage weighted).
     ``exclude=Poly(k, along=axis)`` is a hard constraint: the term carries no polynomial of degree
     <= k along the chunk axis (per line of the other axes, per group), by reparametrisation in
     the solver (no row, no weight; :mod:`selfcal.core.projector`); ``along`` may be omitted on a
@@ -461,10 +487,17 @@ class Offsets(Config):
     the data can place it: other terms or the sky. ``exclude=SkySignature(k)`` is a hard
     constraint of another kind: the term carries no part of its response to the sky polynomials
     of degree 1 to k (a per-frame slope term that would otherwise absorb a sky plane in every
-    frame; :class:`SkySignature`).
+    frame; :class:`SkySignature`). ``exclude=Overlap('a', 'b')`` is a hard constraint of a third kind: the term
+    carries no detector pattern that the named offset terms can also make with the same coefficients in every frame
+    (:class:`Overlap`), so the two never share a pattern the data cannot split.
+    ``min_observations``: the term's offsets that fewer observations than this see leave the solve, as
+    ``Fit(min_observations=)`` does for sky pixels (2: an offset seen once fits that observation exactly and informs
+    no other unknown): their rows are zeroed in the solve and they keep no value (0), and the mosaic still uses those
+    observations, with that offset at zero. A hard constraint on the term (``exclude=``) holds on the observed offsets.
+    One unknown per chunk (not ``basis=``). None (the default): off.
     ``exact_group_rows`` (shared terms): the smoothness rows once per group, not per frame (the
     same normal equations, far fewer rows, different last bits).
-    ``render``: which of the instrument's renderers draws the term on the mosaic.
+    ``render``: which of the chunk map's renderers draws the term on the mosaic (default the map's own).
     ``name``: how priors refer to the term (default: the map's name).
     """
     name: str | None = None
@@ -477,12 +510,18 @@ class Offsets(Config):
     smooth: float = 0.0
     smooth_along: tuple[str, ...] | None = None
     smooth_step: int | None = None
-    poly_prior: tuple[Poly, ...] = ()
-    polynomial: Poly | None = None
-    exclude: Poly | SkySignature | None = added(None, since='2026-10')
+    exclude: Poly | SkySignature | Overlap | None = added(None, since='2026-10')
+    min_observations: int | None = added(None, since='2026-10')
     damping: float = 0.0
     exact_group_rows: bool = False
     render: str | None = None
+    _removed = {'poly_prior': ((), "the soft polynomial prior (weighted rows pulling the offsets toward a "
+                                   "polynomial) was removed on 2026-10-30; an offset term's polynomial shape is "
+                                   "a basis of functions, Offsets(basis=Function(...), n=)"),
+                'polynomial': (None, "the polynomial-basis offset Offsets(polynomial=Poly(...)) was removed on "
+                                     "2026-10-30; write the polynomial as Offsets(basis=Function(...), n=): the "
+                                     "polynomials of a coordinate variable, one coefficient each per chunk and "
+                                     "group of frames")}
 
     def _validate(self):
         label = f"Offsets({self.name!r})" if self.name else "Offsets()"
@@ -495,36 +534,28 @@ class Offsets(Config):
                               f"one function is times=)")
         if self.n is not None and self.basis is None:
             raise ConfigError(f"{label}: n= is the number of functions of basis=, which is not given")
-        if self.polynomial is not None:
-            bad = [k for k, v in (('smooth', self.smooth), ('poly_prior', self.poly_prior),
-                                  ('basis', self.basis), ('exact_group_rows', self.exact_group_rows)) if v]
-            if bad:
-                raise ConfigError(f"{label}: polynomial= makes the offset a polynomial, which takes no "
-                                  f"{', '.join(bad)}")
-            if self.polynomial.window is None:
-                raise ConfigError(f"{label}: polynomial= needs Poly(window=range(lo, hi + 1)), the axis values "
-                                  f"it spans")
-            if self.polynomial.weight is not None:
-                raise ConfigError(f"{label}: polynomial= is exact; weight= belongs to a soft poly_prior")
-            if self.per != 'frame':
-                raise ConfigError(f"{label}: polynomial= is fitted per frame (per='frame')")
         if isinstance(self.exclude, SkySignature):
-            if self.polynomial is not None:
-                raise ConfigError(f"{label}: exclude=SkySignature(...) applies to a term of unknowns per chunk, not polynomial=")
             if self.per == 'all':
                 raise ConfigError(f"{label}: exclude=SkySignature(...) needs a term fitted per frame or per group of frames; "
                                   "a term shared by every frame is the same in every frame: nothing to constrain")
+        elif isinstance(self.exclude, Overlap):
+            if self.basis is not None:
+                raise ConfigError(f"{label}: exclude=Overlap(...) applies to a term of one unknown per chunk (not basis=)")
         elif self.exclude is not None:
             e = self.exclude
             if not isinstance(e, Poly) or int(e.degree) < 0:
-                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis) or a SkySignature(degree)")
-            bad = [k for k, v in (('window', e.window), ('weight', e.weight), ('each', e.each), ('segments', e.segments)) if v is not None]
-            if bad:
-                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no {', '.join(bad)}")
-            if self.polynomial is not None or self.basis is not None:
-                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not polynomial= or basis=)")
-        for p in self.poly_prior:
-            p.lower_soft(label)
+                raise ConfigError(f"{label}: exclude= is a Poly(degree >= 0, along=axis), a SkySignature(degree) or an Overlap(terms)")
+            if e.window is not None:
+                raise ConfigError(f"{label}: exclude= is a hard constraint on the term's shape along an axis; it takes no window")
+            if self.basis is not None:
+                raise ConfigError(f"{label}: exclude= applies to a term of one unknown per chunk (not basis=)")
+        if self.min_observations is not None:
+            m = self.min_observations
+            if isinstance(m, bool) or not isinstance(m, (int, np.integer)) or m < 2:
+                raise ConfigError(f"{label}: min_observations is an integer of at least 2, or None")
+            if self.basis is not None:
+                raise ConfigError(f"{label}: min_observations applies to a term of one unknown per chunk "
+                                  f"(not basis=)")
         if self.exact_group_rows and self.per == 'frame':
             raise ConfigError(f"{label}: exact_group_rows applies to a shared term (per='all' or a frame "
                               f"variable)")
@@ -539,27 +570,26 @@ class Offsets(Config):
 
     def lower(self) -> dict:
         out = {'map': self.on}
-        if self.polynomial is not None:
-            p = self.polynomial
-            out.update(kind='polybasis', degree=int(p.degree), axis=p.along, group_axis=p.each,
-                       lo=int(p.window.start), hi=int(p.window.stop - 1),
-                       segments=None if p.segments is None else [list(s) for s in p.segments])
-        else:
-            kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
-            out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows),
-                       poly=[p.lower_soft('Offsets') for p in self.poly_prior])
-            if isinstance(self.exclude, SkySignature):
-                out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
-            elif self.exclude is not None:
-                out['exclude_degree'] = int(self.exclude.degree)
-                out['exclude_axis'] = self.exclude.along
-            if self.smooth_along is not None:
-                out['adjacency'] = list(self.smooth_along)
-            if self.smooth_step is not None:
-                out['adjacency_step'] = int(self.smooth_step)
-            if kind == 'grouped':
-                out['groups'] = self.per
+        kind = {'frame': 'free', 'all': 'fixed'}.get(self.per, 'grouped')
+        out.update(kind=kind, reg_weight=float(self.smooth), exact_group_rows=bool(self.exact_group_rows))
+        if isinstance(self.exclude, SkySignature):
+            out['signature_degree'] = 'all' if self.exclude.degree == 'all' else int(self.exclude.degree)
+        elif isinstance(self.exclude, Overlap):
+            out['exclude_overlap'] = list(self.exclude.terms)
+            if self.exclude.weights is not None:
+                out['exclude_overlap_weights'] = self.exclude.weights
+        elif self.exclude is not None:
+            out['exclude_degree'] = int(self.exclude.degree)
+            out['exclude_axis'] = self.exclude.along
+        if self.smooth_along is not None:
+            out['adjacency'] = list(self.smooth_along)
+        if self.smooth_step is not None:
+            out['adjacency_step'] = int(self.smooth_step)
+        if kind == 'grouped':
+            out['groups'] = self.per
         out['damp'] = float(self.damping)
+        if self.min_observations is not None:
+            out['min_observations'] = int(self.min_observations)
         if self.render is not None:
             out['render'] = self.render
         if self.name is not None:
@@ -797,6 +827,49 @@ class FrameFunction(_Source):
 
 
 # =============================================================================== priors
+# =============================================================================== chunk maps
+@dataclass(frozen=True, init=False)
+class ChunkMap(Config):
+    """A chunk map of the model, ``Model(chunk_maps={name: ChunkMap(fn, **params)})``: the function
+    ``fn(geometry, **params)`` returns the partition of the instrument's detector it builds, a
+    :class:`~selfcal.instruments.base.Chunks` on the detector geometry it is given. ``tag`` joins
+    the product name after the instrument's tag when the map is the primary one (the model's
+    first), so that the partition can be read off the name: ``cal_<instrument tag>_<tag>_<job><suffix>.h5``.
+    ``fn`` must be importable by the worker processes."""
+    fn: Callable
+    tag: str
+    params: dict[str, Any]
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, fn, *, tag='', **params):
+        what = f"ChunkMap({getattr(fn, '__name__', fn)})"
+        fn, params = _source_function(fn, params, what)
+        _check_params(fn, params, 1, what)
+        object.__setattr__(self, 'fn', fn)
+        object.__setattr__(self, 'tag', str(tag))
+        object.__setattr__(self, 'params', params)
+        self.__post_init__()
+
+    def __repr__(self):
+        return _call('ChunkMap', (_Named(_fn_name(self.fn)),),
+                     ((('tag', self.tag),) if self.tag else ()) + tuple(self.params.items()))
+
+    @classmethod
+    def _from_fields(cls, fn, tag, params):
+        return cls(fn, tag=tag, **dict(params))
+
+    def lower(self) -> dict:
+        """The map's data form (``{function, tag, params}``)."""
+        out = {'function': _ref(self.fn)}
+        if self.tag:
+            out['tag'] = self.tag
+        if self.params:
+            out['params'] = dict(self.params)
+        return out
+
+
 @dataclass(frozen=True, init=False)
 class Prior(Config):
     """Linear rows on the unknowns of ``terms`` (sky-term names, offset-term names):
@@ -853,9 +926,13 @@ class Prior(Config):
 # =============================================================================== the model
 @dataclass(frozen=True)
 class Model(Config):
-    """The model: sky terms, offset terms, data variables, an observation weight and priors.
+    """The model: chunk maps, sky terms, offset terms, data variables, an observation weight and
+    priors.
 
-    ``sky``: :class:`Sky` terms (at least one; default one constant sky). ``offsets``:
+    ``chunk_maps``: the partitions of the detector the offset terms live on, ``{name:
+    ChunkMap(fn, **params)}`` in order, the first one primary (the terms' default map, the jobs'
+    window and the mosaic's); none: the instrument's defaults (``sc.Camera``, ``sc.Euclid``; a
+    SPHEREx model names its own). ``sky``: :class:`Sky` terms (at least one; default one constant sky). ``offsets``:
     :class:`Offsets` terms (a per-frame scalar is one of them: ``Offsets('scalar', on='detector')``,
     one chunk, one value per frame). ``variables``: the
     model's own data variables, ``{name: source}`` (:class:`Header`, :class:`PerFrame`,
@@ -872,9 +949,16 @@ class Model(Config):
     variables: dict[str, _Source] = field(default_factory=FrozenDict)
     weight: Function | Shape | str | Callable | None = None
     priors: tuple[Prior, ...] = ()
+    chunk_maps: dict[str, ChunkMap] = added(FrozenDict(), since='2026-10')
 
     def _validate(self):
         object.__setattr__(self, 'weight', _as_function(self.weight, 'Model(weight=...)'))
+        maps = {}
+        for k, v in self.chunk_maps.items():
+            if not isinstance(v, ChunkMap):
+                raise ConfigError(f"Model(chunk_maps={{{k!r}: ...}}): a ChunkMap(fn, **params), got {v!r}")
+            maps[str(k)] = v
+        object.__setattr__(self, 'chunk_maps', FrozenDict(maps))
         if not self.sky:
             raise ConfigError("Model(sky=...): at least one sky term")
         names = [t.name for t in self.sky]
@@ -886,6 +970,13 @@ class Model(Config):
         dup = sorted({n for n in explicit if explicit.count(n) > 1} | (set(explicit) & set(names)))
         if dup:
             raise ConfigError(f"Model: term names used twice: {dup}")
+        for t in self.offsets:
+            if isinstance(t.exclude, Overlap):
+                bad = [n for n in t.exclude.terms if n not in off or n == t.term_name]
+                if bad:
+                    raise ConfigError(f"Model: Offsets({t.term_name!r}, exclude={t.exclude!r}) names {bad}, which "
+                                      f"{'is' if len(bad) == 1 else 'are'} not another offset term of the model "
+                                      f"(the offset terms: {off})")
         known = set(names) | set(off)
         for p in self.priors:
             bad = [t for t in p.terms if t not in known]
@@ -895,12 +986,14 @@ class Model(Config):
 
     # ---- lowering -------------------------------------------------------------------------
     def sky_dampings(self) -> list[float]:
-        """Each sky term's damping, defaults resolved: 0.1 for the first term, 0.3 for the others."""
-        return [t.damping if t.damping is not None else (0.1 if j == 0 else 0.3) for j, t in enumerate(self.sky)]
+        """Each sky term's damping, the default (None) resolved to 0: no damping."""
+        return [t.damping if t.damping is not None else 0.0 for t in self.sky]
 
     def lower(self, mosaic='full') -> dict:
         """The ``[model]`` table (:meth:`~selfcal.models.spec.ModelSpec.from_config`) of this model."""
         table = {'mosaic': mosaic, 'sky': [t.lower(d) for t, d in zip(self.sky, self.sky_dampings())]}
+        if self.chunk_maps:
+            table['chunk_maps'] = {k: v.lower() for k, v in self.chunk_maps.items()}
         if self.offsets:
             table['offset'] = [t.lower() for t in self.offsets]
         if self.variables:
@@ -916,54 +1009,31 @@ class Model(Config):
         from .spec import ModelSpec
         return ModelSpec.from_config(self.lower(mosaic))
 
-    def spectral_window(self):
-        """``(lo, hi)`` (inclusive) of the first polynomial window of the offset terms (the hard
-        polynomial's first), or None. The N-pass refit reads it."""
-        for t in self.offsets:
-            if t.polynomial is not None:
-                w = t.polynomial.window
-                return int(w.start), int(w.stop - 1)
-        for t in self.offsets:
-            for p in t.poly_prior:
-                if p.window is not None:
-                    return int(p.window.start), int(p.window.stop - 1)
-        return None
 
 
 # =============================================================================== presets
-def continuum(smooth=0.1, poly_prior=None, damping=None) -> Model:
+def continuum(smooth=0.1, damping=None) -> Model:
     """A constant sky (``damping``: see :class:`Sky`), an offset per frame and chunk of the
     primary map smoothed along the map's own axes (``smooth``) with no constant (``exclude=Poly(0)``),
-    optional soft polynomials (``poly_prior``: a :class:`Poly` or several), and a per-frame scalar
-    (``Offsets('scalar', on='detector')``), which holds each frame's level."""
-    poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
+    and a per-frame scalar (``Offsets('scalar', on='detector')``), which holds each frame's level."""
     return Model(sky=(Sky(damping=damping),),
-                 offsets=(Offsets(smooth=smooth, poly_prior=poly, exclude=Poly(0)), Offsets('scalar', on='detector')))
+                 offsets=(Offsets(smooth=smooth, exclude=Poly(0)), Offsets('scalar', on='detector')))
 
 
-def spectral(lines, polynomial=None, smooth=None, poly_prior=None, damping=None) -> Model:
+def spectral(lines, smooth=None, damping=None) -> Model:
     """A constant sky (``damping``) plus the sky terms ``lines`` (:class:`Sky` terms with a
-    function of the wavelength). The offsets: a hard polynomial along the spectral axis
-    (``polynomial``, a :class:`Poly` with a window), or the :func:`continuum` offset term (``smooth``,
-    default 0.1; ``poly_prior``), and a per-frame scalar (``Offsets('scalar', on='detector')``), which
-    holds each frame's level."""
+    function of the wavelength), the :func:`continuum` offset term (``smooth``, default 0.1) and a
+    per-frame scalar (``Offsets('scalar', on='detector')``), which holds each frame's level."""
     lines = (lines,) if isinstance(lines, Sky) else tuple(lines)
-    if polynomial is not None:
-        if smooth is not None or poly_prior is not None:
-            raise ConfigError("spectral(polynomial=...): the offset is the polynomial itself, which takes no "
-                              "smooth= or poly_prior=")
-        offsets = (Offsets(polynomial=polynomial),)
-    else:
-        poly = () if poly_prior is None else ((poly_prior,) if isinstance(poly_prior, Poly) else tuple(poly_prior))
-        offsets = (Offsets(smooth=0.1 if smooth is None else smooth, poly_prior=poly, exclude=Poly(0)),)
+    offsets = (Offsets(smooth=0.1 if smooth is None else smooth, exclude=Poly(0)),)
     return Model(sky=(Sky(damping=damping),) + lines, offsets=offsets + (Offsets('scalar', on='detector'),))
 
 
-def two_block(second='readout', smooth=0.1, second_smooth=0.0, along='subchannel', damping=None) -> Model:
+def two_block(second, along, smooth=0.1, second_smooth=0.0, damping=None) -> Model:
     """A constant sky, an offset per frame and chunk of the primary map smoothed between
-    neighbours one step apart along ``along``, and a detector-fixed offset on the chunk map
-    ``second`` shared by every frame, with no constant (``exclude=Poly(0)``; ``second_smooth``: its
-    smoothness weight). No per-frame scalar."""
+    neighbours one step apart along the chunk axis ``along``, and a detector-fixed offset on the
+    chunk map ``second`` shared by every frame, with no constant (``exclude=Poly(0)``;
+    ``second_smooth``: its smoothness weight). No per-frame scalar."""
     return Model(sky=(Sky(damping=damping),),
                  offsets=(Offsets(smooth=smooth, smooth_along=(along,), smooth_step=1),
                           Offsets(on=second, per='all', smooth=second_smooth, smooth_along=(), exclude=Poly(0))))

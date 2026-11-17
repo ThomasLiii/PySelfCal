@@ -71,20 +71,22 @@ class PassClip:
 @dataclass(frozen=True)
 class PassesSpec:
     """The N-pass schedule: ``n`` passes, ``order`` saying which of the SKY and OFFSET passes comes
-    first after the INIT; ``init_clip``: the INIT's clip (None: the fit's); ``sky_clip``; the OFFSET
-    passes' clip ``refit_clip``, ``bright_cut`` and ``min_pixels`` (the OFFSET pass refits the model's own
-    offset terms); ``stop_tol``, ``sky_merge`` and ``keep_moments`` as :class:`~selfcal.run.schedule.Passes`
-    says."""
+    first after the INIT; ``init_clip``: the INIT's clip (None: the fit's); ``sky_clip`` (None: no clip); the
+    OFFSET passes' clip ``refit_clip`` (None: no clip), ``bright_cut`` and ``min_pixels`` (the OFFSET pass refits
+    the model's own offset terms); ``stop_tol``, ``sky_merge`` and ``keep_moments`` as
+    :class:`~selfcal.run.schedule.Passes` says; ``init_ignore_flags``: the data-quality bits the INIT ignores
+    (None: its clip's, else the fit's)."""
     n: int
     order: str
     init_clip: PassClip | None
-    sky_clip: PassClip
-    refit_clip: PassClip
+    sky_clip: PassClip | None
+    refit_clip: PassClip | None
     bright_cut: float | None
     min_pixels: int
     stop_tol: float
     sky_merge: str
     keep_moments: bool
+    init_ignore_flags: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)

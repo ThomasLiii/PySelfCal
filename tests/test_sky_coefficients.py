@@ -88,12 +88,12 @@ def test_historical_spelling_is_bit_identical():
     rng = np.random.default_rng(0)
     obs = {'BC': rng.uniform(3.1, 3.5, 10000).astype(np.float32),
            'BW': rng.uniform(0.02, 0.06, 10000).astype(np.float32)}
-    prof = GaussianProfile(center_um=3.29, sigma_um=0.02,
-                           sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355, intrinsic_var_um2=2.89e-4))
+    prof = GaussianProfile(center=3.29, sigma=0.02,
+                           sigma_source=QuadratureSigma(fwhm_key='BW', fwhm_to_sigma=2.355, intrinsic_var=2.89e-4))
     old = SpectralComponent(name='pah', profile=prof, wavelength_key='BC').coefficients(obs)
     new = SkyComponent('pah', Coefficient('BC', prof)).coefficients(obs)
     assert old.dtype == new.dtype and old.tobytes() == new.tobytes()
-    tmpl = TemplateProfile(wave_um=np.linspace(3.0, 3.6, 61), values=np.exp(-np.linspace(-3, 3, 61) ** 2))
+    tmpl = TemplateProfile(x=np.linspace(3.0, 3.6, 61), values=np.exp(-np.linspace(-3, 3, 61) ** 2))
     old = SpectralComponent(name='t', profile=tmpl).coefficients(obs)
     new = SkyComponent('t', Coefficient('BC', tmpl)).coefficients(obs)
     assert old.tobytes() == new.tobytes()
@@ -105,7 +105,7 @@ def test_damp_weight_rule():
     m = SkyModel((ContinuumComponent(), SkyComponent('a', Coefficient('u', shape)),
                   SkyComponent('b', Coefficient('u', shape), damp_weight=0.02)))
     assert m.damp_weights(0.1, 0.3) == [0.1, 0.3, 0.02]
-    assert m.damp_weights(0.1, None) == [0.1, 3.0 * 0.1, 0.02]        # the terms after the first: 3 x by default
+    assert m.damp_weights(0.1, None) == [0.1, 0.0, 0.02]              # the terms after the first: undamped by default
     assert m.damp_weights(None) == [0.0, 0.0, 0.02]
     m2 = SkyModel((SkyComponent('sky', damp_weight=0.5),))
     assert m2.damp_weights(0.1) == [0.5]                  # the first term honours its own prior too
@@ -129,15 +129,18 @@ def test_config_form():
     c = build_coefficient({'variable': ['u', 'wavelength'], 'function': 'tests.test_sky_coefficients:two_var',
                            'params': {'scale': 3.0}}, g)
     assert c.variable == ('u', 'BC') and np.allclose(c.evaluate({'u': np.ones(2), 'BC': np.full(2, 2.0)}), 6.0)
-    cat = {'mine': lambda center=None: Coefficient('BC', GaussianProfile(center_um=center or 1.0, sigma_um=0.1))}
-    assert build_coefficient({'catalog': 'mine', 'center': 2.0}, g, catalog=cat).function.center_um == 2.0
-    assert SkyTerm(coefficient={'catalog': 'mine'}).name == 'mine' and SkyTerm().name == 'continuum'
+    assert SkyTerm().name == 'continuum' and SkyTerm('line', coefficient={'variable': 'u'}).name == 'line'
+    try:
+        SkyTerm(coefficient={'variable': 'u'})
+        raise AssertionError('expected a ValueError for a term with a coefficient and no name')
+    except ValueError as e:
+        assert 'needs a name' in str(e), str(e)
     for bad, msg in (({'variable': 'nope', 'function': 'linear', 'center': 0, 'halfwidth': 1}, 'nope'),
                      ({'variable': 'u', 'function': 'mystery'}, 'mystery'),
                      ({'variable': ['u', 'BC'], 'function': 'linear', 'center': 0, 'halfwidth': 1}, 'one variable'),
-                     ({'catalog': 'absent'}, 'absent')):
+                     ({'catalog': 'pah_3p29'}, 'needs `variable`')):            # a named coefficient: no such form
         try:
-            build_coefficient(bad, g, catalog=cat)
+            build_coefficient(bad, g)
             raise AssertionError(f'expected a ValueError for {bad}')
         except ValueError as e:
             assert msg in str(e), (msg, str(e))
@@ -181,7 +184,7 @@ def test_arbitrary_coefficient_end_to_end():
                               sc.Sky('shaped', times=sc.Function(shape, of='u', power=2.0, offset=0.2), damping=1e-4)],
                          offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')])
         res = field.calibrate(sc.Recipe(model, fit=sc.Fit(400, clip=8.0, tolerance=1e-12), coadd=None,
-                                        numerics=sc.Numerics(2, batch=4)))
+                                        numerics=sc.Numerics(2, batch=4)), jobs=sc.Job('All'))
         with CalFile(res.cal_paths[0]) as cal:
             assert cal.sky_names == ['continuum', 'shaped']
             got = cal.sky('shaped')

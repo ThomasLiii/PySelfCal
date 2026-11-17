@@ -15,7 +15,10 @@ Handles three schema generations:
 
 When one side is legacy and the other is new, the per-map arrays
 (``offsets/map_0`` + ``frame_scalar`` if present) are compared against the
-legacy single ``offset``. Coverage arrays are compared the same way.
+legacy single ``offset``. Coverage arrays are compared the same way. A map stored
+once per group of frames (``offset_frame_group/map_m``: a term shared by groups of
+frames) is compared per frame, expanded through each frame's group, so a cal
+written that way equals one that repeats the group's row on every frame.
 
 Exits 0 if every dataset matches element-wise; nonzero otherwise.
 """
@@ -29,10 +32,18 @@ def _has_new_schema(f):
     return 'offsets' in f
 
 
+def _per_frame(f, arr, m):
+    """``arr`` (map m's rows as stored) per frame: expanded through ``offset_frame_group/map_m`` when the map is
+    stored once per group of frames."""
+    if 'offset_frame_group' in f and f'map_{m}' in f['offset_frame_group']:
+        return arr[f['offset_frame_group'][f'map_{m}'][...]]
+    return arr
+
+
 def _read_offset(f, m=0):
     """Return per-frame offset for map m (with frame_scalar baked in for m=0)."""
     if _has_new_schema(f):
-        off = f['offsets'][f'map_{m}'][...]
+        off = _per_frame(f, f['offsets'][f'map_{m}'][...], m)
         if m == 0 and 'frame_scalar' in f:
             off = off + f['frame_scalar'][...][:, None]
         return off
@@ -44,7 +55,7 @@ def _read_offset(f, m=0):
 def _read_coverage(f, kind, m=0):
     """kind in {'offset_coverage', 'offset_coverage_frac'}."""
     if _has_new_schema(f):
-        return f[kind][f'map_{m}'][...]
+        return _per_frame(f, f[kind][f'map_{m}'][...], m)
     return f[kind][...]
 
 

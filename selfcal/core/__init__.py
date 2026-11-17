@@ -16,6 +16,8 @@ Building and solving the system:
   the unknowns vector.
 - :mod:`~selfcal.core.solve`: :func:`~selfcal.core.solve.apply_lsqr` preconditions the system and
   runs LSQR or LSMR with a thread-parallel sparse product.
+- :mod:`~selfcal.core.observations`: :class:`~selfcal.core.observations.ObservationTable`, the
+  matrix kept as its observations and made again when read (``sc.Compute(matrix='compact')``).
 - :mod:`~selfcal.core.lsqr_inplace`: scipy's LSQR with in-place vector updates (bit-identical,
   less memory).
 - :mod:`~selfcal.core.lsmr`: scipy's LSMR, with its state recorded at every iteration

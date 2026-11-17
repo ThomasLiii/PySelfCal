@@ -68,6 +68,7 @@ FIT = sc.Fit(500, clip=8.0, use_mask=False, tolerance=1e-12)          # LSQR; an
 COADD = sc.Coadd(clip=None, use_mask=False)                            # mean and std maps, no clip
 NUMERICS = sc.Numerics(2, batch=4, mosaic_batch=4, coadd_batch=4)      # two solver threads, small batches
 TWO_WORKERS = sc.Compute(workers=2)                                    # frames read in place
+ALL = sc.Job('All')                                                    # every chunk: the one job of each example
 
 sc.set_progress(False)
 
@@ -173,7 +174,7 @@ def test_time_variable_sky(tmp_path):
                      offsets=[sc.Offsets('chunks', smooth=0.05, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')],
                      variables={'time': sc.Header('MJD-AVG')},
                      priors=[sc.priors.frame_smoothness('chunks', 'time', weight=0.2)])
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS), jobs=ALL)
 
     with result.cal() as cal:
         got, cov = cal.sky('annual'), cal.sky_coverage('annual')
@@ -239,7 +240,7 @@ def test_imaging_polarimeter(tmp_path):
                           sc.Sky('U', times=sin2, damping=1e-4)],
                      offsets=[sc.Offsets(smooth=0.05, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')],
                      variables={'psi': sc.Derived(polariser_angle)})
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS), jobs=ALL)
 
     with result.cal() as cal:
         assert cal.sky_names == ['I', 'Q', 'U']
@@ -291,7 +292,7 @@ def test_thermal_pattern_and_gradients(tmp_path):
                      offsets=[sc.Offsets('thermal', per='all', times=centred, exclude=sc.Poly(0)),
                               sc.Offsets('gradient', on='detector', basis=plane, n=2), sc.Offsets('scalar', on='detector')],
                      variables={'temperature': sc.Header('TEMP')})
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=ALL)
 
     with result.cal() as cal:
         got_pattern = cal.offsets[0][0]
@@ -353,7 +354,7 @@ def test_a_basis_stores_no_entries_where_its_functions_are_zero(tmp_path):
     field = sc.Field(tmp_path / 'ramp_run', sc.Camera((H, W), chunks=CHUNKS, tag='Ramp'), PIX, compute=TWO_WORKERS)
     field.reproject(tmp_path / 'exposures' / 'ramp_exp_*.fits', method='interp', padding=8)
     model = sc.Model(sky=[sc.Sky(damping=1e-4)], offsets=[sc.Offsets('ramp', on='detector', basis=ramps, n=3)])
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=ALL)
 
     with result.cal() as cal:
         got = np.asarray(cal.offsets[0], dtype=np.float64).reshape(-1, 3)
@@ -390,6 +391,11 @@ def read_cube_slice(path, sci_ext, dq_ext=None, header_only=False):
     return ExposureData(header=cel, data=data, layers={'variance': var})
 
 
+def rectangles(geometry, chunks):
+    """The cube's chunk map: ``chunks`` = (rows, cols) rectangles over the detector, as a camera's."""
+    return sc.Chunks.rectangles(geometry.shape, chunks)
+
+
 @dataclass(frozen=True, kw_only=True)
 class ToyCube(sc.Instrument):
     """An integral-field unit whose files hold cubes: four slices of one exposure, each read
@@ -397,7 +403,10 @@ class ToyCube(sc.Instrument):
     tag: str = 'Cube'
 
     def geometry(self, oversample):
-        return sc.Geometry((H, W), oversample, maps=[sc.ChunkMap.rectangles('grid', (H, W), CHUNKS)])
+        return sc.Geometry((H, W), oversample)
+
+    def default_chunk_maps(self):
+        return {'grid': sc.ChunkMap(rectangles, chunks=CHUNKS)}
 
     def layout(self):
         return sc.ExposureLayout(sci_ext=[0, 1, 2, 3], dq_ext=None, detector_ids=[0, 1, 2, 3], ref_use_ext=(0,),
@@ -449,7 +458,7 @@ def test_data_cube_slices(tmp_path):
                      offsets=[sc.Offsets(per='exposure', smooth=0.05, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')],
                      variables={'wave': sc.Header('WAVE'), 'variance': sc.Layer()},
                      weight=inverse_sigma)
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=ALL)
 
     assert len(field.frames) == 4 * n_exp
     assert load_reproj_file(field.frames[0], ['layers/variance'])['layers/variance'] is not None
@@ -525,7 +534,8 @@ def test_frames_written_directly(tmp_path):
                      variables={'known_sky': sc.SkyMap(known_sky)},
                      priors=[sc.Prior(gains_sum_to_zero, 'gain', weight=10.0)])
     fit = sc.Fit(800, clip=None, use_mask=False, tolerance=1e-12, method='lsmr', float32=False)
-    result = field.calibrate(sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4)), frames=frames)
+    result = field.calibrate(sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4)), jobs=ALL,
+                             frames=frames)
 
     with result.cal() as cal:
         got = cal.offsets[0][:, 0]
@@ -586,7 +596,7 @@ def test_amplifier_ghost(tmp_path):
     model = sc.Model(sky=[sc.Sky(damping=1e-4)],
                      offsets=[sc.Offsets('ghost', per='all', times='partner'), sc.Offsets('scalar', on='detector')],
                      variables={'partner': sc.FrameFunction(partner_mean)})
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS), jobs=ALL)
 
     got = result.offsets('ghost')[0]
     r, slope = agreement(got, eps, demean=False)
@@ -631,6 +641,12 @@ def focal_plane_chunks():
     return cm
 
 
+def focal_plane_amplifiers(geometry):
+    """The focal plane's chunk map (:func:`focal_plane_chunks`) with its axes: chunk id = 4 det + 2 row + col."""
+    axes = ChunkAxes.row_major(('det', 'row', 'col'), (2, 2, 2), ('x', 'y', 'x'))
+    return sc.Chunks(focal_plane_chunks(), axes)
+
+
 @dataclass(frozen=True, kw_only=True)
 class ToyFocalPlane(sc.Instrument):
     """Two detectors of different sizes on one focal plane, both in every exposure file (read by
@@ -638,9 +654,10 @@ class ToyFocalPlane(sc.Instrument):
     tag: str = 'FocalPlane'
 
     def geometry(self, oversample):
-        cm = focal_plane_chunks()
-        axes = ChunkAxes.row_major(('det', 'row', 'col'), (2, 2, 2), ('x', 'y', 'x'))   # id = 4 det + 2 row + col
-        return sc.Geometry(FP_SHAPE, oversample, maps=[sc.ChunkMap('amps', cm, cm, axes=axes)])
+        return sc.Geometry(FP_SHAPE, oversample)
+
+    def default_chunk_maps(self):
+        return {'amps': sc.ChunkMap(focal_plane_amplifiers)}
 
     def layout(self):
         return sc.ExposureLayout(sci_ext=[1, 2], dq_ext=None, detector_ids=[0, 1], ref_use_ext=(1, 2),
@@ -682,7 +699,7 @@ def test_heterogeneous_focal_plane(tmp_path):
     # on observed unknowns only.
     model = sc.Model(sky=[sc.Sky(damping=1e-4)],
                      offsets=[sc.Offsets(on='amps', per='detector', damping=1e-3), sc.Offsets('scalar', on='detector')])
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=None, numerics=NUMERICS), jobs=ALL)
 
     with result.cal() as cal:
         offs = cal.offsets[0]

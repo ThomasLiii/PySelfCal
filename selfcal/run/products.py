@@ -187,17 +187,19 @@ def _instrument(field):
 
 
 def job_key(job) -> dict:
-    """A job (the API's or the engine's) as plain data."""
-    value = job.value
-    if isinstance(value, (list, tuple)):
-        value = [int(v) if isinstance(v, (int, np.integer)) else v for v in value]
-    return {'name': job.name, 'kind': job.kind, 'value': value}
+    """A job as plain data: its name and, per axis, the ``[start, stop]`` of its window and of its
+    strict set (None: every chunk / the window)."""
+    def ranges(sel):
+        return None if sel is None else {str(k): [int(r.start), int(r.stop)] for k, r in sel.items()}
+    return {'name': job.name, 'window': ranges(job.window), 'strict': ranges(job.strict)}
 
 
 def solve_fit(recipe, passes=None, instrument=None):
-    """The fit the solve uses: the recipe's, with the N-pass first pass's clip when one is given,
+    """The fit the solve uses: the recipe's, with the N-pass first pass's clip and ignored flags when given,
     defaults resolved (the instrument's ignored flags; the tolerance as ``(atol, btol)``)."""
     fit = recipe.fit
+    if passes is not None and passes.init_ignore_flags is not None:
+        fit = fit.replace(ignore_flags=passes.init_ignore_flags)
     if passes is not None and passes.init_clip is not None:
         clip = passes.init_clip
         changes = {'clip': clip.replace(ignore_flags=None)}
@@ -326,7 +328,7 @@ def stitched_inputs(tile_fingerprints, line) -> dict:
 def pass_inputs(init_fingerprint, passes, index, pass_type) -> dict:
     """The inputs of the N-pass product of pass ``index`` (``"sky"`` or ``"off"``)."""
     settings = encode(passes)
-    for k in ('n', 'stop_tol', 'keep_moments', 'ends_on_offset', 'init_clip'):
+    for k in ('n', 'stop_tol', 'keep_moments', 'ends_on_offset', 'init_clip', 'init_ignore_flags'):
         settings.pop(k, None)
     return {'kind': 'pass', 'init': init_fingerprint, 'index': int(index), 'type': pass_type, 'passes': settings}
 

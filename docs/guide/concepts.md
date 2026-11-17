@@ -73,8 +73,9 @@ The paths are relative to the field's directory (`sc.Field(path, ...)`).
    of every box pixel (`sub_mapping`), which tell the solver where on the detector each value was
    recorded. Data that are not images with a WCS can be written as frame files directly
    ([`write_frame`][selfcal.io.frames.write_frame]).
-2. **Calibrate** (`field.calibrate`), once per [job](glossary.md#job): a SPHEREx
-   [channel](glossary.md#channel) or subchannel window, or the one job of a camera or of Euclid. [`Calibrator.setup_lsqr`][selfcal.pipeline.pipeline_wrapper.Calibrator.setup_lsqr]
+2. **Calibrate** (`field.calibrate`), once per [job](glossary.md#job) the action names: the chunks
+   of the primary chunk map one solve covers (`sc.Job("All")`: every chunk, the one job of a camera;
+   a SPHEREx [channel](glossary.md#channel) or subchannel window). [`Calibrator.setup_lsqr`][selfcal.pipeline.pipeline_wrapper.Calibrator.setup_lsqr]
    ([`setup_lsqr`][selfcal.core.system.setup_lsqr]) reads the frames in parallel worker processes
    and builds the sparse system: one row per observation, plus the rows of the priors.
    [`Calibrator.apply_lsqr`][selfcal.pipeline.pipeline_wrapper.Calibrator.apply_lsqr]
@@ -93,8 +94,9 @@ The paths are relative to the field's directory (`sc.Field(path, ...)`).
    FITS file.
 
 A job's products are named by its [stem](glossary.md#stem), `<frame_tag>_<job>_<name>`: the
-instrument's [frame tag](glossary.md#frame-tag), the job name and the recipe's `name`, for
-example `MyCam_Chunks8x8_All_v1` for a camera tagged `MyCam` and a recipe named `v1`. A field's
+[frame tag](glossary.md#frame-tag) (the instrument's tag, then the primary chunk map's), the job
+name and the recipe's `name`, for example `MyCam_Chunks8x8_All_v1` for a camera tagged `MyCam` on
+its default 8 x 8 grid and a recipe named `v1`. A field's
 actions run these steps through the run engine; the same classes can also be used directly
 ([Using the pipeline](../developer/architecture.md#using-the-pipeline)). The
 [Quickstart](../getting-started/quickstart.md) runs all three on simulated exposures.
@@ -112,17 +114,18 @@ data_i = Σ_j S_j[P] · c_j(v_i)  +  Σ_m Σ_k O_m[g_m(frame), chunk_m(i), k] ·
   on the reference grid, shared by every frame, times a known *coefficient* `c_j(v)`: `c = 1` for a
   plain sky map (one value per pixel), a template of the wavelength for the map of an emission
   feature, a sine of the time for a seasonal term. A coefficient is any importable Python function
-  of data variables, a built-in shape (`sc.template(file)`, `sc.gaussian(...)`, `sc.linear(...)`),
-  or a named entry of the instrument (SPHEREx: `sc.catalog("pah_3p29")`).
+  of data variables or a built-in shape (`sc.template(file)`, `sc.gaussian(...)`, `sc.linear(...)`;
+  the SPHEREx 3.29 µm feature, `terms.pah_3p29()` of `selfcal_scripts/spherex/terms.py`, is a
+  Gaussian of the wavelength).
 - **Offset terms** `O_m` (`sc.Offsets(name, on=m, per=g)`,
   [`OffsetTerm`][selfcal.models.spec.OffsetTerm]): an offset per chunk of chunk map `m`, shared by
   the frames of a group `g_m`: `per="frame"` (each frame its own), `per="all"` (one for all frames:
   a pattern fixed to the detector) or `per=` a [frame variable](glossary.md#frame-variable) such
-  as `"detector"` (the frames with equal values share one). `polynomial=sc.Poly(...)` makes the
-  offset a polynomial along one chunk axis, fitted by its coefficients. `times=φ` multiplies the
+  as `"detector"` (the frames with equal values share one). `times=φ` multiplies the
   offset by a known function of data variables (a pattern times the detector temperature);
   `basis=` with `n=` functions gives `n` unknowns per chunk (a gradient across the detector in every
-  frame). With neither, `φ = 1`: the plain chunk offset.
+  frame; a polynomial in a coordinate, as the polynomials of that coordinate). With neither, `φ = 1`:
+  the plain chunk offset.
 - **Per-frame scalar**: one additive constant per frame, the offset term
   `sc.Offsets("scalar", on="detector")` (the map `"detector"` is the whole detector as one chunk).
   A model has one only if it lists it: `sc.continuum` and `sc.spectral` end with it, `sc.two_block`
@@ -171,9 +174,13 @@ kind of term, variable and prior, with worked examples.
 ## Chunk maps and chunk axes
 
 A *chunk map* is an integer image on the detector grid: the value of a pixel is the id of its
-chunk, and `-1` marks pixels in no chunk. An instrument defines one or more chunk maps by name
-([`ChunkMap`][selfcal.instruments.base.ChunkMap]) and marks one as primary; an offset term that
-names no map uses the primary one, and the name `"detector"` makes the whole detector one chunk.
+chunk, and `-1` marks pixels in no chunk. The model names its chunk maps
+(`sc.Model(chunk_maps={name: sc.ChunkMap(fn, **params)})`, [`ChunkMap`][selfcal.models.model.ChunkMap]):
+each is a function of the instrument's detector geometry that returns the partition, a
+[`Chunks`][selfcal.instruments.base.Chunks], and the run engine evaluates it for the run. The first
+map is the primary one; a model that names none gets the instrument's default maps. An offset term
+that names no map uses the primary one, a [job](glossary.md#job) names its chunks on it, and the
+name `"detector"` makes the whole detector one chunk.
 An observation's offset is read at its detector position by bilinear interpolation of the chunk
 map, so an observation within a pixel of a chunk edge shares its offset between the two chunks.
 
@@ -182,21 +189,20 @@ the chunks: for each axis, the value of every chunk along it and the image direc
 neighbouring chunks differ in it. Priors and offset terms are written in axes ("smoothness along
 `column`", "a degree-3 polynomial along `subchannel`, one per `column`"), so a recipe runs on any
 instrument whose chunk map declares the axes it needs. A map also names its default adjacency
-axes, its *spectral axis* (along which the wavelength changes; none for a broadband instrument) and
-its *group axis* (one polynomial per value in a `polybasis` term).
+axes and its *spectral axis* (along which the wavelength changes; none for a broadband instrument).
 
 | instrument | chunk maps | axes |
 | --- | --- | --- |
-| `sc.Camera` | `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both; group axis `row` |
-| `sc.SPHEREx` | `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `readout`: one chunk per read-out channel of the detector; `detector_column`: one chunk per detector column (a term on it shared by every frame, `per='all'`, is a detector-fixed column pattern) | `subchannel` (spectral axis), `column` (group axis and default adjacency); `readout`; `detector_column` |
-| `sc.Euclid` | `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes on which a degree-1 `polybasis` term is one linear ramp per frame | `row`, `col`; `strip`, `all` |
+| `sc.Camera` | default `grid`: an `ny` x `nx` grid of rectangles (`chunks=(ny, nx)`), id `row · nx + col` | `row`, `col`; adjacency along both |
+| `sc.SPHEREx` | no default; the recipes' maps (`selfcal_scripts/spherex/chunks.py`): `subchannel` (primary): [subchannels](glossary.md#subchannel), the arcs of nearly constant wavelength of the [LVF](glossary.md#lvf), each cut into `num_col` vertical columns, id `subchannel · num_col + column`; `detector_column`: one chunk per detector column (a term on it shared by every frame, `per='all'`, is a detector-fixed column pattern); `readout`: one chunk per read-out channel of the detector | `subchannel` (spectral axis), `column` (default adjacency); `detector_column`; `readout` |
+| `sc.Euclid` | default `grid` (primary): `chunks` x `chunks` squares (default 40); `col_strips`, `row_strips`: vertical and horizontal stripes; `col_tilt`, `row_tilt`: stripes whose `strip` axis is the spectral axis | `row`, `col`; `strip`, `all` |
 
 Chunk size trades flexibility against noise: smaller chunks absorb finer offset structure, but
-fewer pixels constrain each unknown. For SPHEREx, `num_col` is the main knob of this kind (see
-[Calibration pipeline tuning](pipeline.md#calibration-pipeline-tuning)). The solve treats an
-offset as constant over its chunk (times its known functions, if any); the mosaic may draw it more
-smoothly, through the instrument's [offset renderer](glossary.md#offset-renderer) (for SPHEREx, a
-mean-preserving spline across the arcs and columns).
+fewer pixels constrain each unknown. For SPHEREx, `num_col` of the subchannel map is the main
+knob of this kind (see [Calibration pipeline tuning](pipeline.md#calibration-pipeline-tuning)). The
+solve treats an offset as constant over its chunk (times its known functions, if any); the mosaic
+may draw it more smoothly, through the chunk map's [offset renderer](glossary.md#offset-renderer)
+(for the SPHEREx subchannel map, a mean-preserving spline across the arcs and columns).
 
 ## What the data cannot tell apart
 
@@ -226,8 +232,7 @@ The priors, and the rows each adds to the system:
 | prior | setting | rows |
 | --- | --- | --- |
 | adjacency smoothing | `sc.Offsets(smooth=w, smooth_along=axes)` (0 by default; the presets' `smooth`, default 0.1) | per frame and pair of neighbouring chunks `a`, `b`: `w · (O[a] − O[b]) = 0` |
-| polynomial constraint | `sc.Offsets(poly_prior=sc.Poly(degree, along=, window=, weight=))` | per frame and run of `degree + 2` consecutive chunks along the axis: `weight · Σ stencil · O = 0`, a finite difference that vanishes on polynomials of degree `degree` or less |
-| sky damping | `sc.Sky(damping=d)` (default 0.1 for the first sky term, 0.3 for the others) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
+| sky damping | `sc.Sky(damping=d)` (default none, `d` = 0) | per covered pixel: `sqrt(d · coverage) · S[P] = 0`, with the pixel's [coverage](glossary.md#coverage) |
 | offset damping | `sc.Offsets(damping=d)` | per covered unknown: `sqrt(d · coverage) · O = 0` |
 | user priors | `sc.Model(priors=[...])`: a ready-made prior of [`selfcal.priors`](../reference/selfcal/priors.md) (`frame_smoothness`, `sky_smoothness`, `toward`) or your own rows, `sc.Prior(fn, terms)` | the linear rows the function returns |
 
@@ -239,8 +244,8 @@ only for unknowns that satisfy it
 ([`ColumnProjector`][selfcal.core.projector.ColumnProjector]), so there is no weight to choose,
 and what the term cannot carry goes where the data place it, to other terms or the sky.
 `exclude=sc.Poly(0)` needs no `along` on a map with several axes either: the term carries no
-constant over all of a group's chunks. In the chunk term of `sc.continuum` (and of `sc.spectral`
-without `polynomial=`) it moves each frame's mean offset into the frame's per-frame scalar, so the
+constant over all of a group's chunks. In the chunk term of `sc.continuum` and `sc.spectral` it
+moves each frame's mean offset into the frame's per-frame scalar, so the
 chunk offsets carry only structure within the frame. The constraint acts on the unknowns of the
 solve: a chunk that a frame never observed drops out of it, unless a prior row, such as a
 smoothness row, makes that chunk an unknown.
@@ -251,10 +256,9 @@ What each settles:
   one that makes the maps smallest, a level with no physical meaning. Like any Tikhonov term it also
   shrinks real structure toward zero, by an amount that grows with the weight.
 - The **adjacency smoothing** makes steps between neighbouring chunks costly, so smooth structure
-  goes to the sky rather than to offset ramps; the sky damping pushes the other way. A
-  **polynomial constraint** lets the offset follow a polynomial of its degree along its axis (a
-  degree-1 constraint along the columns leaves linear ramps free) and penalises the rest; a
-  [`polybasis`](glossary.md#polybasis) term makes that shape exact.
+  goes to the sky rather than to offset ramps; the sky damping pushes the other way. An offset
+  that should be a polynomial in a coordinate is written as one exactly, a `basis=` of that
+  coordinate's polynomials (`n = degree + 1`), with no weight.
 - `sc.Fit(damp=)` damps every unknown (default 0). With a limited number of iterations
   (`sc.Fit(iterations)`), LSQR also stops before it has
   moved far along weakly constrained directions, where the result then depends on the
@@ -278,7 +282,36 @@ Hard constraints settle a direction without any row or weight, by removing it fr
   goes into the map as that field. The signature comes from the system itself (the deflation's
   setup), so the solve needs `sc.Fit(deflate=sc.Deflate(...))`, and the term must be fitted per frame
   or per group of frames. `sc.SkySignature('all')` takes every pattern of the deflation (its cosines
-  too) but the constant, instead of the polynomials up to a degree.
+  too) but the constant, instead of the polynomials up to a degree. The deflation keeps two vectors
+  per pattern over every unknown; on a system where they would not fit in memory,
+  `sc.Deflate(..., direct=False)` makes the signature alone: its setup stops after the patterns'
+  offset responses, the exclusion is the same, and the patterns are left to the iterations (the same
+  solution, in more iterations).
+- `sc.Offsets(exclude=sc.Overlap('a', 'b'))`: the term carries no detector pattern that the offset
+  terms `a` and `b` can also make with the same coefficients in every frame (their fixed patterns).
+  Two terms that can make the same pattern leave the data unable to say which holds it; with the
+  exclusion it goes to `a` and `b`. The shared patterns are the intersection of the two terms'
+  pattern spaces over the detector pixels the job's observations reach (its window and the one pixel
+  around it that bilinear sampling touches), computed from the terms' chunk maps and their functions
+  at each pixel centre: a term with one offset per detector pixel gives up every fixed pattern of the
+  named terms, a term with one offset per detector column only those constant along each column. The
+  named terms must read detector-plane variables only (`det_x`, `det_y`, detector maps and variables
+  derived from them). By default every offset counts alike in the constraint. A term with many offsets
+  can include some the data barely see (detector pixels that only the corners of the observations'
+  bilinear sampling reach): those can take large values that cancel a shared pattern the other offsets
+  hold, at almost no cost to the fit, so the constraint holds only on paper and the solve wanders along
+  that direction. `sc.Overlap('a', 'b', weights='information')` measures the shared patterns with each
+  offset's information (the sum of its squared weighted entries, as the solver scales its columns): an
+  offset the data barely see then weighs almost nothing in the constraint and an offset without data
+  drops out. The constraint stays exact and needs no threshold.
+- Offsets shared by many frames make one block of the deflation's offset solve. Up to 16,384 such
+  columns are eliminated directly by a Schur complement; with more (one offset per detector pixel,
+  say), the complement no longer fits in memory. `sc.Deflate(offsets=(...))` names the offset terms
+  whose response the deflation solves; the others keep a zero response and stay in the space. Listing
+  the per-frame terms alone leaves the shared ones out: the patterns' offsets are solved directly frame
+  by frame, and what the shared terms take of the patterns is left to the iterations. A shared offset
+  fixed on the detector cannot follow a sky pattern that crosses the detector differently in each
+  frame, so that share is small except along the sky's constant level.
 - `sc.Sky(exclude=shapes)` and `sc.Deflate(exclude=sc.Degenerate(below=))`: the map has no
   component along given (or automatically found) shapes; what the data place there goes to the
   other terms.
@@ -305,7 +338,7 @@ Compare quantities that a change of gauge leaves alone:
   from the exposure's DQ extension and is resampled bit by bit during the reprojection. `sc.Fit`
   and `sc.Coadd` each have their own `use_mask` and `ignore_flags`, so the solve can leave out
   pixels that the mosaic uses, or the reverse.
-- **Outlier rejection in the solve.** With `sc.Fit(clip=5.0)`, every sample is scored against its
+- **Outlier rejection in the solve.** Off by default. With `sc.Fit(clip=5.0)`, every sample is scored against its
   frame's median, in units of `1.4826 · MAD` (the median absolute deviation), and samples scoring
   above the threshold are left out of the solve
   ([`find_outliers`][selfcal.geometry.map_helper.find_outliers]). The score uses the frame's own
@@ -315,8 +348,8 @@ Compare quantities that a change of gauge leaves alone:
   group instead: `sc.Clip(5.0, per="chunk")` (its chunk of the primary map),
   `sc.Clip(5.0, per=sc.ChunkGroups.along("subchannel"))` (the chunks of its subchannel; for
   SPHEREx, binned by wavelength) or `sc.Clip(5.0, variable=..., edges=[...])` (bins of a data
-  variable, by default the instrument's wavelength map). The N-pass passes clip the same way
-  (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`). Samples whose weight, coefficient or
+  variable, by default the instrument's wavelength map). The N-pass SKY and OFFSET passes clip the same
+  way when given a clip (`sc.Passes(sky_clip=..., offset=sc.Refit(clip=...))`), and not at all by default. Samples whose weight, coefficient or
   basis value is not finite are dropped as well.
 - **Coverage floor.** `sc.Fit(min_observations=2)` leaves out of the solve the sky pixels that fewer
   than 2 observations cover, counted after the masks, the clip if any and the weights. A sky pixel
@@ -325,7 +358,13 @@ Compare quantities that a change of gauge leaves alone:
   zeroes those pixels' rows as it places them (values and right-hand side), with no extra pass over
   the frames; the pixels' columns stay without data (coverage 0, value 0, outside the deflation's
   patterns), so every other unknown gets the solution without those rows. The mosaic still covers
-  them. Off by default.
+  them. Off by default. `sc.Offsets(..., min_observations=2)` does the same for one offset term with
+  one unknown per chunk (a chunk a single observation sees: for a term per detector pixel, a pixel
+  next to masked ones): judged on the same counts, its rows zeroed in the same pass, its offsets left
+  at zero, which the mosaic then applies to those observations. A hard constraint on the term
+  (`exclude=`) holds on the observed offsets alone: an offset without data left in the constraint
+  would take whatever value cancels it. Both floors judge the counts the build collates, and those
+  counts stand: a zeroed row still counts in the coverage of its other columns.
 - **Per-frame hooks.** `sc.Fit(raw_frame_hook=...)` runs a function on every frame right after it
   is read, `sc.Fit(frame_hook=...)` after its weights are computed, and `sc.Coadd(frame_hook=...)`
   the same in the mosaic; for example Euclid's star mask
@@ -334,10 +373,15 @@ Compare quantities that a change of gauge leaves alone:
 - **Weights.** An observation's weight `w_i` multiplies its row of the system, so the fit weights
   the observation by `w_i²`. It is the product of
     - the data-quality mask (0 or 1);
-    - the job's [valid weight](glossary.md#valid-weight) on the detector, from the instrument: 1
-      everywhere for a camera; for a SPHEREx channel, 1 on the channel's subchannels and on one more
-      subchannel on each side (shared with the neighbouring channels), 0 elsewhere; for Euclid,
-      an optional taper at the detector edges (`edge_zero_px`, `edge_ramp_px`);
+    - the job's [valid weight](glossary.md#valid-weight) on the detector, from the instrument: by
+      default 1 on the chunks of the primary map inside the job's window, 0 elsewhere (every chunk
+      for `sc.Job("All")`; for a SPHEREx channel job, the channel's subchannels and one more
+      subchannel on each side, shared with the neighbouring channels); for Euclid, an optional taper
+      at the detector edges (`edge_zero_px`, `edge_ramp_px`). It is sampled bilinearly at the
+      observation's detector position, like every detector-plane quantity, so an observation whose
+      four sampled pixels straddle the window's edge gets the share inside and reads the offsets of
+      the pixels just outside; with `sc.Fit(window_edge='inside')` such an observation leaves the
+      solve, and the solve reads no detector pixel outside the window (the coadd is unchanged);
     - with `shot_noise_weights=True` (`sc.Fit`), `1 / sqrt(|data| + 1e-4)`, which weights bright
       pixels down as shot noise would;
     - the model's `weight` (`sc.Model(weight=...)`), a function of data variables (for example
@@ -348,12 +392,16 @@ Compare quantities that a change of gauge leaves alone:
 The mosaic coadds the corrected frames on the reference grid
 ([`Mosaicker.make_mosaic`][selfcal.pipeline.pipeline_wrapper.Mosaicker.make_mosaic]). From each
 frame it subtracts the chunk offsets of every offset term (the per-frame scalar among them), drawn
-on the detector by the instrument's offset renderer; offset terms with a `coefficient` or a `basis`
+on the detector by the chunk map's offset renderer; offset terms with a `coefficient` or a `basis`
 are evaluated and subtracted at every observation that carries weight, as in the solve
 ([`BasisOffsetSubtractor`][selfcal.pipeline.model_eval.BasisOffsetSubtractor]; the frame's other pixels never reach
 the coadd). The offset of a
 frame and chunk that the solve saw only in part (its covered fraction, counted over the chunk's
 pixels that the job can observe, below `sc.Coadd(min_chunk_coverage=0.01)`) is set to zero first.
+With `sc.Coadd(chunk_coverage='solved')` that fraction counts only the observations the solve's coverage
+floor left in it (the cal's `offset_coverage_solved`), and the terms subtracted at every observation are judged
+the same way, each unknown on its own: a frame whose observations of a chunk no other frame sees keeps only the few
+it shares, and the observations that an offset held by those few carries are left out of the coadd.
 The SPHEREx subchannel renderer and the Euclid grid spline fill such a chunk in from the frame's
 other chunks; where nothing fills it, its pixels in that frame are left out of the coadd.
 
@@ -366,7 +414,8 @@ SC_MEAN_MAP  = Σ w·d / Σ w  over the d with |d − MEAN_MAP| ≤ sigma · STD
 ```
 
 Here `w` is the mosaic's weight: the data-quality mask, the job's valid weight for the mosaic
-(SPHEREx: the job's subchannels as 0/1, so the mosaic's weights are the solve's), the factor
+(by default 1 on the chunks inside the job's strict set, its window unless it names one: for a
+SPHEREx channel job, the channel's own subchannels), the factor
 `1 / sqrt(|data| + 1e-4)` with `sc.Coadd(shot_noise_weights=True)` (off by default), and the
 square of the model's `weight`. Each map is written with its summed weight (`MEAN_MAP_WEIGHT`, ...). For SPHEREx
 the mosaic also coadds the band-centre and band-width maps over the same clipped observations into

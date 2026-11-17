@@ -2,7 +2,7 @@
 
 ``field.plan(recipe, jobs=...)`` (and every action, first) lowers the settings onto the engine
 (:class:`~selfcal.run.runspec.RunSpec`), resolves each engine run (the instrument's geometry, the
-model checked against it: data variables, chunk maps and axes, catalogue entries, prior terms),
+model checked against it: data variables, chunk maps and axes, prior terms),
 finds the frames and the existing products, and checks that the worker processes can import
 every function the run sends them. It takes seconds and computes nothing; printing the plan shows
 what the action will do. The action then runs on the plan's resolved runs (:attr:`Plan.contexts`).
@@ -144,10 +144,17 @@ def describe_deflate(deflate) -> str:
     """A :class:`~selfcal.run.recipe.Deflate` in words (the plan's ``deflate`` line)."""
     terms = 'every sky term' if deflate.terms is None else 'the sky term(s) ' + ', '.join(deflate.terms)
     rule = ''
+    if getattr(deflate, 'offsets', None) is not None:
+        rule += ('; the response of the offset terms ' + ', '.join(deflate.offsets) + ' only (the others held at zero, '
+                 'left in the space)')
     ex = getattr(deflate, 'exclude', None)
     if ex is not None:
         rule += (f'; the directions the data see below {ex.below:g} of the best-seen one are degenerate: their sky shapes are '
                  'excluded from the sky (a hard constraint in map space), the space re-based, the solve on the constrained system')
+    if not getattr(deflate, 'direct', True):
+        return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}: the offsets "
+                f"that absorb them made (for the terms that exclude sky signatures), the patterns left to the "
+                f"iterations{rule}")
     return (f"{deflate.patterns_per_term} patterns ({deflate.basis}, order {deflate.order}) of {terms}, with the "
             f"offsets that absorb them, solved directly; the iterations run on the rest{rule}")
 
@@ -476,16 +483,12 @@ def _check_starts(plan):
     """What can be checked of a warm start before the solve is set up: each start is a cal of the
     action's frames (in its order), sky terms on its reference grid, offset terms on their chunk
     maps and job, and none is a cal the action writes; the model's offsets can be read back (no
-    polynomial basis)."""
+    passes)."""
     from ..core.warm_start import contents_problems
     from ..models.spec import chunk_map_of
     from .lower import reference_shape
     from .products import job_key
     model = plan.recipe.model
-    if any(getattr(t, 'polynomial', None) is not None for t in model.offsets):
-        raise ConfigError("calibrate(start=...): an offset term with a polynomial basis (Offsets(polynomial=...)) "
-                          "cannot be continued: its cal holds the offsets the polynomial expands to, not the "
-                          "polynomial's coefficients")
     made = {os.path.abspath(p.path) for p in plan.products if p.kind == 'cal'}
     frames = [os.path.basename(f) for f in plan.frame_list] or None
     try:
@@ -553,10 +556,20 @@ def _check_passes(ctx, recipe, passes):
         raise ConfigError(f"calibrate(passes=...): the offset terms on {shared} are shared across frames (per=...); "
                           f"an OFFSET pass solves every frame's offsets on their own and takes per='frame' terms only")
     from ..models.model import SkySignature
+    from .schedule import schedule
     tied = [t.name or t.on or 'the primary map' for t in recipe.model.offsets if isinstance(t.exclude, SkySignature)]
-    if tied:
+    # A SKY pass holds the offsets it is given, so the joint solve followed by SKY passes alone keeps the constraint.
+    if tied and 'offset' in schedule(passes.n, passes.order):
         raise ConfigError(f"calibrate(passes=...): the offset terms on {tied} exclude a sky signature, a constraint "
-                          f"across frames; an OFFSET pass solves every frame's offsets on their own")
+                          f"across frames; an OFFSET pass solves every frame's offsets on their own (the joint solve "
+                          f"followed by SKY passes alone, Passes(2, order='sky_first'), holds the joint solve's "
+                          f"offsets and is taken)")
+    sky_names = {t.name for t in recipe.model.sky}
+    on_sky = [pr.name or ', '.join(pr.terms) for pr in recipe.model.priors if set(pr.terms) & sky_names]
+    # A SKY pass solves every pixel from that pixel's own sums: a prior's rows on the sky have no place in them.
+    if on_sky and 'sky' in schedule(passes.n, passes.order):
+        raise ConfigError(f"calibrate(passes=...): the priors on {on_sky} act on sky terms; a SKY pass solves every "
+                          f"pixel from its own sums and cannot hold them")
     for name, clip in (('init_clip', passes.init_clip), ('sky_clip', passes.sky_clip),
                        ('offset.clip', passes.offset.clip)):
         per = getattr(clip, 'per', 'frame')

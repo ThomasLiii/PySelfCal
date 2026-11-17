@@ -4,11 +4,15 @@ import numpy as np
 import pytest
 
 import selfcal as sc
+from selfcal.models.spec import ModelSpec
+from selfcal.run.engine import chunk_map_specs, with_chunk_maps
+from selfcal_scripts.recipes.spherex import maps
+from selfcal_scripts.spherex import chunks as C
 
 
 @pytest.fixture(autouse=True)
 def _blank_calibration_maps(monkeypatch):
-    # The geometry builds every chunk map, and the subchannel map reads the detector's band-centre
+    # The engine builds every chunk map of the model, and the subchannel map reads the detector's band-centre
     # map from the calibration files, which exist only on the processing host. With the shipped LVF
     # fit given, that map only sets the shape, so a blank one stands in (as in
     # test_offset_structure.py). The per-column map does not depend on it.
@@ -18,18 +22,28 @@ def _blank_calibration_maps(monkeypatch):
         monkeypatch.setattr(module, 'load_calibration', lambda *args, **kwargs: (blank, blank))
 
 
+def _geometry(oversample):
+    """Detector 4 with the recipes' chunk maps of three columns (:func:`maps`) and the readout channels evaluated on
+    it, as the run engine builds it."""
+    inst = sc.SPHEREx(4)
+    model = sc.Model(chunk_maps={**maps(num_ch=34, num_col=3), 'readout': sc.ChunkMap(C.readouts)})
+    return with_chunk_maps(inst.geometry(oversample), chunk_map_specs(inst, ModelSpec.from_config(model.lower())))
+
+
 def test_detector_column_map_is_one_chunk_per_column():
-    geom = sc.SPHEREx(4, num_col=3).geometry(1)
+    geom = _geometry(1)
     cm = geom.chunk_maps['detector_column']
     H, W = geom.shape
     assert cm.n_chunks == W == 2040
     assert np.array_equal(cm.det, np.tile(np.arange(W, dtype=np.int32), (H, 1)))
     assert list(cm.axes.names) == ['detector_column']
-    assert sorted(geom.chunk_maps) == ['detector_column', 'readout', 'subchannel'] and geom.primary == 'subchannel'
+    assert list(geom.chunk_maps) == ['subchannel', 'detector_column', 'readout'] and geom.primary == 'subchannel'
+    readout = geom.chunk_maps['readout']
+    assert list(readout.axes.names) == ['readout'] and readout.axes['readout'].size == readout.n_chunks == 32
 
 
 def test_detector_column_map_follows_the_oversampling():
-    geom = sc.SPHEREx(4, num_col=3).geometry(2)
+    geom = _geometry(2)
     cm = geom.chunk_maps['detector_column']
     assert cm.grid.shape == tuple(2 * v for v in geom.shape)
     assert np.array_equal(cm.grid[::2, ::2], cm.det) and np.array_equal(cm.grid[1::2, 1::2], cm.det)

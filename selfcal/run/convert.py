@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 from ..config.base import ConfigError
 from ..config.functions import load_callable
+from ..instruments.contract import Job
 from ..models import model as M
 from .compute import Compute
 from .recipe import ChunkGroups, Clip, Coadd, Fit, Numerics, Recipe
@@ -26,7 +27,8 @@ from .schedule import Passes, Refit, Tiles
 
 __all__ = ['Converted', 'from_toml', 'convert_file']
 
-# library defaults of the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic)
+# the defaults the TOML runner gave the keywords a TOML table may leave out (setup_lsqr, apply_lsqr, make_mosaic as they
+# were then; the library's damping defaults are 0 since 2026-10-29): a converted run reproduces the TOML run
 _CAL = dict(apply_mask=True, apply_weight=True, outlier_thresh=3.0, ignore_list=None, batch_size=10, max_workers=20,
             offset_regularization=False, weighted_damping=False, damp_weight=0.1, damp_weight_line=None,
             damp_offset=0.0)
@@ -127,6 +129,8 @@ class Converted:
     zodi: dict | None = None
     notes: list = dc_field(default_factory=list)
     frames_expr: str | None = None     # how to_python writes ``frames`` (``frames_in(dir)[:n]``)
+    chunk_maps_expr: str | None = None     # SPHEREx: the model's chunk maps, built by selfcal_scripts.spherex.chunks
+    jobs_expr: str | None = None           # SPHEREx: the jobs, built by selfcal_scripts.spherex.jobs
 
     def to_python(self, source=None) -> str:
         """The equivalent run script."""
@@ -137,6 +141,7 @@ class Converted:
                 'import selfcal as sc', 'from selfcal import *  # noqa: F401,F403']
         if self.field is not None and type(self.field.instrument).__name__ == 'SPHEREx':
             head.append('from selfcal.instruments import spherex')
+            head.append('from selfcal_scripts.spherex import chunks, jobs')
         for r in sorted(refs):
             module, _, name = r.partition(':')
             head.append(f'from {module} import {name}')
@@ -154,12 +159,14 @@ class Converted:
                   f'FIELD = {self.field.replace(compute=Compute())!r}'[:-1] + ', compute=COMPUTE)']
         if self.recipe is not None:
             lines.append(f'RECIPE = {self.recipe!r}')
+            if self.chunk_maps_expr:
+                lines.append(f'RECIPE = RECIPE.replace(model=RECIPE.model.replace(chunk_maps={self.chunk_maps_expr}))')
         if self.action == 'reproject':
             args = [f'    {k}={python_repr(v)},' for k, v in self.reproject.items()]
             lines += ['REPROJECT = dict(', *args, ')', '', 'if __name__ == "__main__":',
                       '    FIELD.reproject(**REPROJECT)']
         else:
-            opts = [f'    jobs={python_repr(self.jobs)},']
+            opts = [f'    jobs={self.jobs_expr or python_repr(self.jobs)},']
             for k in ('tiles', 'passes', 'frames', 'cal'):
                 v = getattr(self, k)
                 if v is not None:
@@ -203,11 +210,18 @@ def _instrument(cfg, notes):
     from ..instruments.spherex import settings as sx
     t = dict(cfg.instrument_cfg)
     name = t.pop('name')
+    jobs, chunk_maps_expr, jobs_expr = (), None, None
     if name == 'spherex':
-        inst = sx.SPHEREx(int(t.pop('detector')), num_col=int(t.pop('num_col', 3)), num_sub=int(t.pop('num_sub', 10)),
-                          num_ch=int(t.pop('num_ch', 34)), calib_dir=t.pop('calib_dir', None),
-                          lvf_dir=t.pop('lvf_dir', None))
-        jobs = _spherex_jobs(t, sx)
+        inst = sx.SPHEREx(int(t.pop('detector')), calib_dir=t.pop('calib_dir', None), lvf_dir=t.pop('lvf_dir', None))
+        num_col, num_sub, num_ch = int(t.pop('num_col', 3)), int(t.pop('num_sub', 10)), int(t.pop('num_ch', 34))
+        jobs_expr = _spherex_jobs(t, num_sub) or None
+        if jobs_expr:
+            notes.append(f"[instrument] num_sub / num_ch / num_col: the chunk maps are the model's, "
+                         f"chunks.subchannel_map(num_sub={num_sub}, num_ch={num_ch}, num_col={num_col}) and "
+                         f"chunks.detector_columns (selfcal_scripts.spherex.chunks)")
+            chunk_maps_expr = (f"{{'subchannel': chunks.subchannel_map(num_sub={num_sub}, num_ch={num_ch}, "
+                               f"num_col={num_col}), 'detector_column': sc.ChunkMap(chunks.detector_columns), "
+                               f"'readout': sc.ChunkMap(chunks.readouts)}}")
     elif name == 'grid':
         chunks = t.pop('chunks', [4])
         chunks = [chunks] if isinstance(chunks, int) else list(chunks)
@@ -215,8 +229,8 @@ def _instrument(cfg, notes):
         inst = Camera(tuple(t.pop('detector_shape')), chunks=tuple(chunks * 2 if len(chunks) == 1 else chunks),
                       sci_ext=int(t.pop('sci_ext', 1)), dq_ext=None if dq is None or int(dq) < 0 else int(dq),
                       reference_ext=None if 'ref_use_ext' not in t else tuple(t.pop('ref_use_ext')),
-                      tag=t.pop('tag', None), unit=t.pop('unit', ''), job=t.pop('job_name', 'All'))
-        jobs = inst.default_jobs()
+                      tag=t.pop('tag', None), unit=t.pop('unit', ''))
+        jobs = (Job(t.pop('job_name', 'All')),)
     elif name == 'euclid':
         kw = {k: t.pop(k) for k in ('band', 'chunks', 'strips', 'tilt_strips', 'edge_zero_px', 'edge_ramp_px',
                                     'detectors', 'tag') if k in t}
@@ -225,32 +239,50 @@ def _instrument(cfg, notes):
         if 'ref_use_ext' in t:
             kw['reference_ext'] = tuple(t.pop('ref_use_ext'))
         inst = Euclid(**kw)
-        jobs = inst.default_jobs()
+        jobs = (Job(inst.band),)
     else:
         raise ConfigError(f"no Python form of the instrument {name!r} (a registered plugin): keep its TOML config")
     if t:
         raise ConfigError(f"[instrument] keys {sorted(t)} have no Python form for {name!r}")
-    return inst, tuple(jobs)
+    return inst, tuple(jobs), chunk_maps_expr, jobs_expr
 
 
-def _spherex_jobs(t, sx):
+def _spherex_jobs(t, num_sub):
+    """The jobs of a SPHEREx TOML as the Python expression of ``selfcal_scripts.spherex.jobs`` that builds them
+    (``''`` for a reprojection, which has none)."""
     if 'detectors' in t:                            # task precompute
-        return ()
+        return ''
     defs = t.pop('window_defs', {}) or {}
     if 'windows' in t:
-        return tuple(sx.window(w, subchannels=range(*defs[w]) if w in defs else None) for w in t.pop('windows'))
+        return '(' + ''.join(f"jobs.window({w!r}, range{tuple(defs[w])!r}), " if w in defs else f"jobs.window({w!r}), "
+                             for w in t.pop('windows')) + ')'
     if 'subch_window' in t:
         lo, hi = t.pop('subch_window')
-        return (sx.window(t.pop('window_name', f'subch{lo}_{hi}'), subchannels=range(int(lo), int(hi))),)
+        return f"(jobs.window({t.pop('window_name', f'subch{lo}_{hi}')!r}, range({int(lo)}, {int(hi)})),)"
     if 'channel_range' in t:
         a, b = t.pop('channel_range')
-        return sx.channels(int(a), int(b) - 1)
+        return f"jobs.channels({int(a)}, {int(b) - 1}, num_sub={num_sub})"
     if 'channels' in t:
-        return tuple(sx.group(*([c] if isinstance(c, int) else c)) for c in t.pop('channels'))
-    return ()                                       # a reprojection: no jobs
+        groups = [[c] if isinstance(c, int) else list(c) for c in t.pop('channels')]
+        return '(' + ''.join(f"jobs.group({', '.join(map(str, g))}, num_sub={num_sub}), " for g in groups) + ')'
+    return ''                                       # a reprojection: no jobs
 
 
 # =============================================================================== the model
+def _pah_3p29(center=None, sigma=None):
+    """The PAH 3.29 um coefficient of the SPHEREx catalogue as a Gaussian shape of the wavelength: the band width
+    in quadrature with the feature's intrinsic width (``selfcal_scripts.spherex.terms.pah_3p29`` builds the same).
+    A ``sigma`` (the catalogue's fixed width, used only on a frame without a band-width map) has no Python form:
+    it is refused rather than dropped."""
+    from ..instruments.spherex.spherex_utility import PAH_LINE_CENTER_UM
+    if sigma is not None:
+        raise ConfigError("the catalogue line's sigma (a fixed width for frames without a band-width map) has no "
+                          "Python form: every SPHEREx frame carries the map; drop line_sigma, or write the line as "
+                          "sc.gaussian(center, sigma=...) by hand")
+    return M.gaussian(PAH_LINE_CENTER_UM if center is None else float(center), width='bandwidth',
+                      intrinsic_var=2.890e-4, fwhm_to_sigma=2.355)
+
+
 def _coefficient(c):
     """A coefficient's config form as a ``times`` / ``basis`` value."""
     if c is None:
@@ -259,7 +291,9 @@ def _coefficient(c):
     n = c.pop('n', None)
     if 'catalog' in c:
         name = c.pop('catalog')
-        return M.catalog(name, **c), n
+        if name != 'pah_3p29':
+            raise ConfigError(f"no Python form of the catalogue coefficient {name!r}")
+        return _pah_3p29(c.pop('center', None), c.pop('sigma', None)), n
     variable = c.pop('variable')
     function = c.pop('function', None)
     params = dict(c.pop('params', None) or {})
@@ -292,23 +326,39 @@ def _offsets_from_term(term, notes):
         notes.append(f"offset term {term.name or term.map or 'primary'!r}: a basis of one function, written as "
                      f"times=")
     common = dict(on=term.map, times=times, damping=float(term.damp), render=term.render, name=term.name)
-    if term.kind == 'polybasis':
-        return M.Offsets(polynomial=M.Poly(int(term.degree), along=term.axis, each=term.group_axis,
-                                           window=range(int(term.lo), int(term.hi) + 1),
-                                           segments=None if term.segments is None else tuple(map(tuple, term.segments))),
-                         **common)
     per = {'free': 'frame', 'fixed': 'all'}.get(term.kind, term.groups)
-    if any((p.lo is None) != (p.hi is None) for p in term.poly):
-        raise ConfigError(f"offset term {term.name or term.map or 'primary'!r}: a polynomial prior with one of lo / hi "
-                          f"has no Python form; give both (a window)")
-    poly = tuple(M.Poly(int(p.degree), along=p.axis, weight=float(p.weight),
-                        window=None if p.lo is None else range(int(p.lo), int(p.hi) + 1)) for p in term.poly)
     return M.Offsets(per=per, basis=basis, n=n, smooth=float(term.reg_weight),
                      smooth_along=None if term.adjacency is None else tuple(term.adjacency),
-                     smooth_step=term.adjacency_step, poly_prior=poly,
+                     smooth_step=term.adjacency_step,
                      exclude=None if term.exclude_degree is None else M.Poly(int(term.exclude_degree),
                                                                               along=term.exclude_axis),
                      exact_group_rows=bool(term.exact_group_rows), **common)
+
+
+def _model_table(table):
+    """A TOML ``[model]`` table in the current form: its ``scalar`` (default true) becomes an offset term
+    of one chunk, ``{map = 'detector', name = 'scalar'}``, after the others, and an offset term's
+    ``mean_zero = true`` its hard constraint ``exclude_degree = 0`` (no constant over its chunks)."""
+    t = dict(table)
+    scalar = bool(t.pop('scalar', True))
+    offsets = []
+    for o in t.get('offset') or []:
+        o = dict(o)
+        label = o.get('name') or o.get('map') or 'primary'
+        if o.get('kind') == 'polybasis':
+            raise ConfigError(f"offset term {label!r}: the polynomial-basis offset (kind = \"polybasis\") was removed on "
+                              "2026-10-30; write the polynomial as an Offsets(basis=Function(...), n=) term of the "
+                              "spectral coordinate (selfcal_scripts.spherex.terms.spectral_polynomial for SPHEREx)")
+        if o.get('poly'):
+            raise ConfigError(f"offset term {label!r}: the soft polynomial prior (poly = [...]) was removed on "
+                              "2026-10-30; it has no Python form")
+        if o.pop('mean_zero', False) and o.get('exclude_degree') is None:
+            o['exclude_degree'] = 0
+        offsets.append(o)
+    if scalar:
+        offsets.append({'map': 'detector', 'name': 'scalar'})
+    t['offset'] = offsets
+    return t
 
 
 def _source(v):
@@ -330,24 +380,6 @@ def _source(v):
     if v.source == 'function':
         return M.Derived(load_callable(v.value), of=tuple(v.inputs), **p)
     return M.FrameFunction(load_callable(v.value), **p)
-
-
-def _model_table(table):
-    """A TOML ``[model]`` table in the current form: its ``scalar`` (default true) becomes an offset term
-    of one chunk, ``{map = 'detector', name = 'scalar'}``, after the others, and an offset term's
-    ``mean_zero = true`` its hard constraint ``exclude_degree = 0`` (no constant over its chunks)."""
-    t = dict(table)
-    scalar = bool(t.pop('scalar', True))
-    offsets = []
-    for o in t.get('offset') or []:
-        o = dict(o)
-        if o.pop('mean_zero', False) and o.get('exclude_degree') is None:
-            o['exclude_degree'] = 0
-        offsets.append(o)
-    if scalar:
-        offsets.append({'map': 'detector', 'name': 'scalar'})
-    t['offset'] = offsets
-    return t
 
 
 def _model_from_table(table, dampings, notes):
@@ -383,23 +415,14 @@ def _preset_model(cfg, inst_name, notes):
         used.update(keys)
         return _param(p, *keys, default=default)
 
-    def standard_offsets(extra_poly=(), column_default=None):
+    def standard_offsets():
         adj = take('adjacency_axes')
-        poly = []
-        weight = take('poly_weight', default=column_default)
-        if weight is not None:
-            poly.append(M.Poly(int(take('poly_degree', default=1)), along=take('poly_axis'), weight=float(weight)))
-        else:
-            take('poly_degree', 'poly_axis')
-        poly.extend(extra_poly)
+        dropped = [k for k in ('poly_weight', 'poly_degree', 'poly_axis') if _param(p, k) is not None]
+        take('poly_weight', 'poly_degree', 'poly_axis')
+        if dropped:
+            notes.append(f"[params] {dropped}: the soft polynomial prior was removed on 2026-10-30 (dropped)")
         return M.Offsets(smooth=float(take('reg_weight', default=0.1)),
-                         smooth_along=None if adj is None else tuple(adj), poly_prior=tuple(poly), exclude=M.Poly(0))
-
-    def window():
-        lo, hi = take('spectral_poly_lo', 'subch_poly_lo'), take('spectral_poly_hi', 'subch_poly_hi')
-        if lo is None or hi is None:
-            raise ConfigError("[params] needs spectral_poly_lo / spectral_poly_hi")
-        return range(int(lo), int(hi) + 1)
+                         smooth_along=None if adj is None else tuple(adj), exclude=M.Poly(0))
 
     def spectral_sky():
         lines = take('lines')
@@ -422,36 +445,26 @@ def _preset_model(cfg, inst_name, notes):
         if npz:
             return [('pah_3p29', M.template(npz, norm=take('line_template_norm', default='peak')), None)]
         entry = take('line', default='pah_3p29')
-        return [(entry, M.catalog(entry, center=take('line_center'), sigma=take('line_sigma')), None)]
+        if entry != 'pah_3p29':
+            raise ConfigError(f"no Python form of the catalogue line {entry!r}")
+        return [(entry, _pah_3p29(take('line_center'), take('line_sigma')), None)]
 
     if name == 'continuum':
         sky, offsets, scalar = [], (standard_offsets(),), True
     elif name in ('spectral', 'spectral_softpoly', 'tiled'):
         sky = spectral_sky()
-        extra = ()
-        weight = take('spectral_poly_weight', 'subch_poly_weight')
-        required = name == 'tiled'                 # the tiled preset always has the spectral polynomial
-        if weight is not None or required:
-            if weight is None:
-                raise ConfigError("[params] needs spectral_poly_weight")
-            if spectral_axis is None:
-                raise ConfigError(f"the spectral polynomial needs a spectral axis ({inst_name!r} has none)")
-            extra = (M.Poly(int(take('spectral_poly_degree', 'subch_poly_degree')), along=spectral_axis,
-                            weight=float(weight), window=window()),)
-        elif name == 'spectral' and (_param(p, 'spectral_poly_lo', 'subch_poly_lo') is not None):
-            window()                                 # read (the TOML mode printed a Gram check over it), not used
-        offsets = (standard_offsets(extra, 0.5 if name == 'tiled' else None),)
+        soft = [k for k in ('spectral_poly_weight', 'subch_poly_weight', 'spectral_poly_degree', 'subch_poly_degree',
+                            'spectral_poly_lo', 'subch_poly_lo', 'spectral_poly_hi', 'subch_poly_hi') if _param(p, k) is not None]
+        take(*soft)
+        if soft or name == 'tiled':
+            notes.append(f"[params] {soft}: the soft spectral polynomial prior was removed on 2026-10-30 (dropped; "
+                         "a polynomial shape of the offsets is a basis of functions, Offsets(basis=Function(...), n=))")
+        offsets = (standard_offsets(),)
         scalar = True
     elif name == 'spectral_polybasis':
-        sky = spectral_sky()
-        segs = take('spectral_poly_segments', 'subch_poly_segments')
-        offsets = (M.Offsets(polynomial=M.Poly(int(take('spectral_poly_degree', 'subch_poly_degree')), window=window(),
-                                               segments=None if segs is None else tuple(map(tuple, segs)))),)
-        scalar = True
-        dead = sorted(set(p) & {'reg_weight', 'poly_weight', 'poly_degree', 'poly_axis', 'adjacency_axes'})
-        if dead:
-            notes.append(f"[params] {dead}: not read by the polynomial-basis recipe (dropped)")
-            used.update(dead)
+        raise ConfigError(f"mode {name!r}: the polynomial-basis offset was removed on 2026-10-30; write the polynomial "
+                          "as an Offsets(basis=Function(...), n=) term of the spectral coordinate "
+                          "(selfcal_scripts.spherex.terms.spectral_polynomial for SPHEREx)")
     elif name == 'two_block_fixed':
         if spectral_axis is None:
             raise ConfigError(f"two_block_fixed smooths along the spectral axis ({inst_name!r} has none)")
@@ -472,7 +485,7 @@ def _sky_dampings(cal, n_terms, own, passes, table):
     """Each sky term's damping as the joint solve resolves it (``weighted_damping = false``: no
     damping rows, so 0.0 each); with N-pass SKY passes (``passes``), refuses a config whose SKY
     passes resolve one differently. The SKY pass reads the TOML's own ``[calibration]`` ``table``
-    (``damp_weight`` default 0.0, not ``setup_lsqr``'s 0.1; ``damp_weight_line`` default 0.0, not
+    (``damp_weight`` default 0.0, not the joint solve's 0.1; ``damp_weight_line`` default 0.0, not
     3 x) and ignores ``weighted_damping``; a term's own damping wins in both."""
     dw, dwl = float(cal['damp_weight']), cal['damp_weight_line']
     sky_dw, sky_dwl = float(table.get('damp_weight', 0.0)), table.get('damp_weight_line')
@@ -536,7 +549,7 @@ def from_toml(path) -> Converted:
             if k in t:
                 kw[name] = t[k]
         return Converted('precompute', precompute=kw, notes=notes)
-    inst, jobs = _instrument(cfg, notes)
+    inst, jobs, chunk_maps_expr, jobs_expr = _instrument(cfg, notes)
     path = os.path.join(cfg.output_dir, cfg.run_name) if cfg.output_dir else None
     for name, table, known in (('[calibration]', cfg.calibration, set(_CAL) | {'outlier_groups', 'outlier_group_edges',
                                                                               'outlier_group_variable', 'outlier_aux_key',
@@ -586,8 +599,7 @@ def from_toml(path) -> Converted:
         own = [t.damp_weight for t in spec.sky]
         dampings = _sky_dampings(cal, len(spec.sky), own, sky_passes, cfg.calibration)
         model, mosaic_mode = _model_from_table(cfg.model, dampings, notes)
-        unread = sorted(set(cfg.params) - {'line_fisher_threshold', 'spectral_poly_lo', 'spectral_poly_hi',
-                                            'subch_poly_lo', 'subch_poly_hi'})
+        unread = sorted(set(cfg.params) - {'line_fisher_threshold'})
         if unread:
             notes.append(f"[params] {unread}: not read with a [model] table (dropped)")
     else:
@@ -601,9 +613,8 @@ def from_toml(path) -> Converted:
     if not cal['weighted_damping']:
         notes.append("weighted_damping = false: no sky damping rows (every sky term damping=0.0)")
     if not cal['offset_regularization']:
-        model = model.replace(offsets=tuple(o if o.polynomial is not None else
-                                            o.replace(smooth=0.0, poly_prior=()) for o in model.offsets))
-        notes.append("offset_regularization = false: no smoothness or polynomial rows")
+        model = model.replace(offsets=tuple(o.replace(smooth=0.0) for o in model.offsets))
+        notes.append("offset_regularization = false: no smoothness rows")
     if cal['damp_offset']:
         model = model.replace(offsets=tuple(o.replace(damping=float(cal['damp_offset'])) for o in model.offsets))
         notes.append(f"damp_offset = {cal['damp_offset']}: written as each offset term's damping")
@@ -697,7 +708,8 @@ def from_toml(path) -> Converted:
         notes.append("[zodi]: the anchor is fitted by spherex.zodi_anchor(result, ...) after the calibration")
     action = 'mosaic' if cfg.task == 'mosaic' else 'calibrate'
     return Converted(action, field=field, recipe=recipe, jobs=jobs, tiles=tiles, passes=passes, frames=frames,
-                     cal=cfg.cal_override, compute=compute, zodi=zodi, notes=notes, frames_expr=frames_expr)
+                     cal=cfg.cal_override, compute=compute, zodi=zodi, notes=notes, frames_expr=frames_expr,
+                     chunk_maps_expr=chunk_maps_expr, jobs_expr=jobs_expr)
 
 
 def _tiles(t, suffix, name, notes):

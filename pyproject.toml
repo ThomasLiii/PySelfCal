@@ -33,7 +33,10 @@ selfcal = "selfcal.__main__:main"   # selfcal run | convert | rerun | compare
 # in-tree scipy implementation. Imported lazily, so the core package installs
 # and imports without it.
 mpsplines = ["mpsplines @ git+https://github.com/jararias/mpsplines.git"]
-dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
+# The solve's matrix kept as an observation table (sc.Compute(matrix='compact')): its rows are made
+# again at every pass by compiled loops. Imported only by that option.
+compact = ["numba"]
+dev = ["pytest>=7", "pytest-cov", "ruff", "mypy", "numba"]
 # The documentation site (mkdocs.yml): `mkdocs build --strict` / `mkdocs serve`.
 # MkDocs 2 drops the plugin system the site is built on, hence the pin.
 docs = [

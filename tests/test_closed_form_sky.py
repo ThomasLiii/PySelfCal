@@ -55,8 +55,9 @@ def _make_frames(tmp_path, rng):
 def test_closed_form_matches_converged_lsqr(tmp_path):
     rng = np.random.default_rng(3)
     paths, bc_det = _make_frames(str(tmp_path), rng)
-    from selfcal.instruments.spherex.line_catalog import pah_3p29
-    sky_model = pah_3p29(LC, LS)
+    # a constant + a Gaussian line of the band centre; no band-width map is given, so its sigma is LS
+    sky_model = SkyModel.continuum_plus_gaussian_line('pah_3p29', LC, LS, wavelength_key='BC', width_key='BW',
+                                                      fwhm_to_sigma=2.355, intrinsic_var=2.890e-4)
     r = setup_lsqr(paths, REF, sky_rhs_moments=True,
                    chunk_maps=[], sky_model=sky_model, det_aux=[bc_det],
                    max_workers=2, batch_size=20, outlier_thresh=100.0,

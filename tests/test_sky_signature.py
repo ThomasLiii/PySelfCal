@@ -224,3 +224,54 @@ def test_the_setting_lowers_and_needs_the_deflation(tmp_path):
     t = _toy(frames=40, seed=3)
     with pytest.raises(ValueError, match='deflate'):
         _solve(t, None, str(tmp_path), signatures=_sig(t, 1))
+
+
+def test_the_responses_alone_give_the_exclusion_and_the_deflated_solution(tmp_path):
+    """``Deflate(direct=False)``: the setup stops after the patterns' offset responses, the exclusion is the one a
+    deflated solve makes, and the solver, run on every unknown, reaches the deflated solve's solution."""
+    t = _toy(slope_per_row=False)
+    x_d, rec_d = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 1))
+    x_p, rec_p = _solve(t, sc.Deflate(2, direct=False), str(tmp_path), signatures=_sig(t, 1), iter_lim=3000)
+    d_d, d_p = json.loads(rec_d.deflation), json.loads(rec_p.deflation)
+    [info_d], [info_p] = d_d['signature_exclusions'], d_p['signature_exclusions']
+    e_d, cov = _error(t, x_d)
+    e_p, _ = _error(t, x_p)
+    A, b = t['A'], t['b']
+    r_d, r_p = np.linalg.norm(A @ x_d - b), np.linalg.norm(A @ x_p - b)
+    print(f'|solved - true sky| rms: deflated {e_d.std():.2e}, responses alone {e_p.std():.2e}; |x_p - x_d| max '
+          f'{np.abs(x_p - x_d).max():.2e}; |A x - b| {r_d:.6e} / {r_p:.6e}; iterations {rec_d.iterations} / {rec_p.iterations}')
+    assert d_p['direct'] is False and d_p['patterns'] == d_d['patterns'] and d_p['pattern_labels'] == d_d['pattern_labels']
+    assert 'eigenvalues' not in d_p and 'coefficients' not in d_p          # no decomposition, nothing solved directly
+    assert 'direct' not in d_d                                             # a deflated solve's record is as it was
+    assert info_p['directions'] == info_d['directions'] == 2
+    assert np.allclose(info_p['singular_values'], info_d['singular_values'], rtol=1e-10, atol=0.0)
+    assert info_p['constraint_held'] < 1e-10
+    assert e_p.std() < 1e-5                                                # the true sky, plane included
+    assert np.abs(x_p - x_d).max() < 1e-5                                  # the same solution, gauge included
+    assert abs(r_p - r_d) < 1e-6 * max(r_d, 1e-12) + 1e-9
+
+
+def test_the_responses_alone_with_a_slope_per_row(tmp_path):
+    """The same with one slope per detector row and every pattern but the constant excluded ('all'): the solution of
+    the deflated solve."""
+    t = _toy(slope_per_row=True, quad=0.4)
+    x_d, rec_d = _solve(t, sc.Deflate(2), str(tmp_path), signatures=_sig(t, 'all'))
+    x_p, rec_p = _solve(t, sc.Deflate(2, direct=False), str(tmp_path), signatures=_sig(t, 'all'), iter_lim=6000)
+    [info_d], [info_p] = (json.loads(r.deflation)['signature_exclusions'] for r in (rec_d, rec_p))
+    e_d, cov = _error(t, x_d)
+    e_p, _ = _error(t, x_p)
+    print(f'directions {info_d["directions"]} / {info_p["directions"]}; |solved - true sky| rms: deflated {e_d.std():.2e}, '
+          f'responses alone {e_p.std():.2e}; |x_p - x_d| max {np.abs(x_p - x_d).max():.2e}')
+    assert info_p['directions'] == info_d['directions'] and info_p['fields'] == info_d['fields']
+    assert np.abs(e_p - e_d).max() < 1e-5
+
+
+def test_the_responses_alone_need_a_term_that_reads_them(tmp_path):
+    t = _toy(frames=60, slope_per_row=False)
+    with pytest.raises(ValueError, match='nothing here reads'):
+        _solve(t, sc.Deflate(2, direct=False), str(tmp_path))
+    with pytest.raises(sc.ConfigError, match='decomposition of the pattern space'):
+        sc.Deflate(2, direct=False, exclude=sc.Degenerate(below=0.1))
+    with pytest.raises(sc.ConfigError, match='direct='):
+        sc.Deflate(2, direct=0)
+

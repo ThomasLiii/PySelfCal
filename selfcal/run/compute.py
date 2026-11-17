@@ -107,8 +107,15 @@ class Compute(Config):
     ``<scratch>/reproj_nvme_<field name>``); ``keep_staged``: keep the copy afterwards.
     ``io_limit``: concurrent reads from the slow disk while staging. ``cache_frames``: the coadd
     caches each corrected frame for its later passes. ``memory_guard``: end the process cleanly
-    before the machine runs out of memory (None: on for tiled runs). ``tuning``: the expert knobs of
-    the solver's machinery (:class:`Tuning`).
+    before the machine runs out of memory (None: on for tiled runs). ``matrix``: how the solve keeps
+    its matrix: ``"stored"`` (its entries, 8 bytes each and 8 to 12 per observation) or ``"compact"``
+    (the observations the rows are made from, 16 bytes each, the rows made again at every pass with
+    the build's arithmetic: the same bytes in the products, a smaller matrix for a slower pass; needs
+    the ``numba`` package; :mod:`selfcal.core.observations`). ``functions``, with ``"compact"``: the
+    model's functions (the sky coefficients and the offset bases at each observation) ``"computed"`` at
+    every pass over the table, or ``"stored"``, evaluated once and kept with it, 4 bytes per value and a
+    basis that is mostly zero packed: faster passes for a larger table, the same values. ``tuning``: the
+    expert knobs of the solver's machinery (:class:`Tuning`).
     """
     scratch: str | None = None
     _: KW_ONLY
@@ -120,6 +127,8 @@ class Compute(Config):
     io_limit: int = 20
     cache_frames: bool = True
     memory_guard: bool | None = None
+    matrix: Literal['stored', 'compact'] = 'stored'
+    functions: Literal['computed', 'stored'] = 'computed'
     tuning: Tuning = field(default_factory=Tuning)
 
     def _validate(self):
@@ -127,6 +136,15 @@ class Compute(Config):
             v = getattr(self, k)
             if v is not None and v < 1:
                 raise ConfigError(f"Compute({k}={v}): at least 1")
+        if self.matrix == 'compact':
+            from ..core.observations import require_numba
+            try:
+                require_numba()
+            except ImportError as e:
+                raise ConfigError(str(e)) from None
+        if self.functions == 'stored' and self.matrix != 'compact':
+            raise ConfigError("Compute(functions='stored') keeps the model's values with the observation table: it "
+                              "needs matrix='compact'")
 
     @property
     def stages(self) -> bool:

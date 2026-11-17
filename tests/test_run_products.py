@@ -18,6 +18,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import selfcal as sc  # noqa: E402
+from selfcal_scripts.spherex import terms as T  # noqa: E402
 from selfcal import _state  # noqa: E402
 from selfcal.config import ConfigError  # noqa: E402
 from selfcal.io.atomic import atomic_path, is_partial  # noqa: E402
@@ -30,6 +31,8 @@ from tests.synthetic_exposures import (  # noqa: E402
     x_ramp,
     xtilde,
 )
+
+ALL = sc.Job('All')                     # the camera's job: every chunk
 
 
 def test_atomic_writes_leave_nothing_behind_on_failure(tmp_path):
@@ -73,32 +76,32 @@ def _recipe(iterations=40, name='p'):
 
 def test_products_are_reused_refused_adopted_and_rerun(toy_field):
     field, recipe = toy_field, _recipe()
-    first = field.calibrate(recipe)
+    first = field.calibrate(recipe, jobs=ALL)
     cal, mosaic = first.cal_paths[0], first.mosaic_paths[0]
     for p in (cal, mosaic):
         assert products.read_sidecar(p)['fingerprint'] == products.fingerprint(products.read_sidecar(p)['inputs'])
     saved = open(cal, 'rb').read()
 
     # the same recipe: everything is reused (nothing written, no sidecar rewritten)
-    again = field.calibrate(recipe)
+    again = field.calibrate(recipe, jobs=ALL)
     assert sc.rerun is not None and again.cal_paths == [cal]
     import json
     assert json.load(open(again.record))['products']['sidecars_written'] == []
 
     # other inputs under the same name: the plan says so; the action refuses, with the difference
-    plan = field.plan(_recipe(50))
+    plan = field.plan(_recipe(50), jobs=ALL)
     assert {p.state for p in plan.refused} == {'different'} and 'fit.iterations: 40 -> 50' in str(plan)
     with pytest.raises(ConfigError, match=r'fit.iterations: 40 -> 50'):
-        field.calibrate(_recipe(50))
-    assert {p.state for p in field.plan(_recipe(50), overwrite=True).products} == {'replace'}
+        field.calibrate(_recipe(50), jobs=ALL)
+    assert {p.state for p in field.plan(_recipe(50), overwrite=True, jobs=ALL).products} == {'replace'}
     # a product without a sidecar: refused until adopted
     os.remove(products.sidecar_path(cal))
-    assert [p.path for p in field.plan(recipe).refused] == [cal]
+    assert [p.path for p in field.plan(recipe, jobs=ALL).refused] == [cal]
     with pytest.raises(ConfigError, match='no record of how it was made'):
-        field.calibrate(recipe)
-    assert field.adopt(recipe) == [cal]
+        field.calibrate(recipe, jobs=ALL)
+    assert field.adopt(recipe, jobs=ALL) == [cal]
     assert products.read_sidecar(cal)['adopted'] is True
-    assert {p.state for p in field.plan(recipe).products} == {'current'}
+    assert {p.state for p in field.plan(recipe, jobs=ALL).products} == {'current'}
 
     # a record reruns byte-identically (overwrite: made again)
     redone = sc.rerun(first.record, overwrite=True)
@@ -108,8 +111,8 @@ def test_products_are_reused_refused_adopted_and_rerun(toy_field):
 
 def test_compare_explains_a_difference(toy_field):
     field = toy_field
-    a = field.calibrate(_recipe(30, name='cmp_a')).cal_paths[0]
-    b = field.calibrate(_recipe(31, name='cmp_b')).cal_paths[0]
+    a = field.calibrate(_recipe(30, name='cmp_a'), jobs=ALL).cal_paths[0]
+    b = field.calibrate(_recipe(31, name='cmp_b'), jobs=ALL).cal_paths[0]
     result = sc.compare(a, b)
     assert result.verdict == 'different'
     assert any(name.startswith('sky/') or name.startswith('offsets/') for name, _ in result.differences)
@@ -120,13 +123,13 @@ def test_tuning_is_applied_for_the_action_and_recorded(toy_field):
     import json
     field = toy_field
     before = os.environ.get('SELFCAL_COADD_FLUSH_STRIPES')
-    result = field.calibrate(_recipe(20, name='tuned'),
+    result = field.calibrate(_recipe(20, name='tuned'), jobs=ALL,
                              compute=field.compute.replace(tuning=sc.Tuning(flush_stripes=8, vector_threads=2)))
     record = json.load(open(result.record))
     assert record['tuning']['flush_stripes'] == '8' and record['tuning']['vector_threads'] == '2'
     assert os.environ.get('SELFCAL_COADD_FLUSH_STRIPES') == before
     # byte-neutral: the same products as without the knobs
-    plain = field.calibrate(_recipe(20, name='untuned'))
+    plain = field.calibrate(_recipe(20, name='untuned'), jobs=ALL)
     assert sc.compare(result.mosaic_paths[0], plain.mosaic_paths[0]).verdict in ('identical', 'equal values')
 
 
@@ -136,11 +139,11 @@ def test_by_value_runs_and_cannot_be_submitted(toy_field):
     recipe = sc.Recipe(sc.Model(sky=[sc.Sky(damping=0.001), sc.Sky('ramp', times=sc.Function(ramp, of='det_x'))],
                                 offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)), sc.Offsets('scalar', on='detector')]),
                        fit=sc.Fit(20), coadd=None, numerics=sc.Numerics(2, batch=4), name='byvalue')
-    result = field.calibrate(recipe)
+    result = field.calibrate(recipe, jobs=ALL)
     with result.cal() as cal:
         assert cal.sky_names == ['continuum', 'ramp']
     with pytest.raises(ConfigError, match='by value'):
-        field.submit(recipe)
+        field.submit(recipe, jobs=ALL)
 
 
 def _cli(*args, cwd=None):
@@ -390,6 +393,23 @@ def test_converter_refuses_what_it_cannot_translate(tmp_path):
     assert any('compact_zero_columns' in n for n in kept.notes) and any('resume' in n for n in kept.notes)
 
 
+def test_converter_translates_the_variables(tmp_path):
+    """A ``[model.variables]`` entry becomes the variable's Python source: here a detector map of a function, read
+    by a sky term's coefficient."""
+    from selfcal.run.convert import from_toml
+    from tests.synthetic_exposures import x_ramp, xtilde
+    path = tmp_path / 'variables.toml'
+    path.write_text(f'task = "cal"\nmode = "model"\noutput_dir = "{tmp_path}"\nrun_name = "toy"\n'
+                    f'resolution_arcsec = 20.0\ncache_dir = "{tmp_path}/cache/"\n\n[instrument]\nname = "grid"\n'
+                    'detector_shape = [64, 64]\n\n[calibration]\nweighted_damping = false\n\n[model]\nscalar = true\n'
+                    'mosaic = "none"\n\n[[model.sky]]\nname = "continuum"\n\n[[model.sky]]\nname = "ramp"\n'
+                    'coefficient = { variable = "qe", function = "tests.synthetic_exposures:x_ramp" }\n\n'
+                    '[model.variables]\nqe = { detector = "tests.synthetic_exposures:xtilde" }\n')
+    model = from_toml(str(path)).recipe.model
+    assert model.variables == {'qe': sc.DetectorMap(xtilde)}
+    assert model.sky[1].times == sc.Function(x_ramp, of='qe')
+
+
 def test_converter_passes_the_zodi_anchor_only_its_keys(tmp_path):
     """A [zodi] table becomes spherex.zodi_anchor(result, ...) after the calibration, which takes the predictions
     (pred_dir) and the clip keys; any other key (the TOML engine ignored it) is refused."""
@@ -412,10 +432,10 @@ def test_converter_passes_the_zodi_anchor_only_its_keys(tmp_path):
 
 def test_cli_plans_and_adopts_a_run_script(toy_field, tmp_path):
     field, recipe = toy_field, _recipe(25, name='cli')
-    cal = field.calibrate(recipe).cal_paths[0]
+    cal = field.calibrate(recipe, jobs=ALL).cal_paths[0]
     os.remove(products.sidecar_path(cal))                 # as if made by a TOML run
     script = tmp_path / 'toy_run.py'
-    script.write_text(f"from selfcal import *\nFIELD = {field!r}\nRECIPE = {recipe!r}\nRUN = {{}}\n\n"
+    script.write_text(f"from selfcal import *\nFIELD = {field!r}\nRECIPE = {recipe!r}\nRUN = {{'jobs': Job('All')}}\n\n"
                       "if __name__ == '__main__':\n    print(FIELD.calibrate(RECIPE, **RUN))\n")
     proc = _cli('plan', str(script))
     assert proc.returncode == 0, proc.stderr[-3000:]
@@ -438,12 +458,12 @@ def test_cli_refuses_a_toml_config(tmp_path):
 def test_submit_runs_detached_and_records(toy_field, tmp_path):
     import json
     field = toy_field
-    job = field.submit(_recipe(15, name='detached'))
+    job = field.submit(_recipe(15, name='detached'), jobs=ALL)
     assert job.wait(timeout=600) == 0, open(job.console).read()[-3000:]
     assert not job.running()
     request = json.load(open(job.request))
     assert request['status'] == 'submitted'
-    made = field.result(_recipe(15, name='detached'))
+    made = field.result(_recipe(15, name='detached'), jobs=ALL)
     assert os.path.exists(made.cal_paths[0]) and products.read_sidecar(made.cal_paths[0]) is not None
 
 
@@ -452,8 +472,8 @@ def test_a_template_is_fingerprinted_by_content_not_path(tmp_path):
     from selfcal.instruments.spherex.settings import _DATA, LINE_TEMPLATES
     copy = tmp_path / 'aromatic_copy.npz'
     shutil.copy(os.path.join(_DATA, LINE_TEMPLATES['aromatic']), copy)
-    a = sc.spectral([spherex.line('aromatic')], polynomial=sc.Poly(2, window=range(200, 321)))
-    b = sc.spectral([spherex.line('aromatic', file=str(copy))], polynomial=sc.Poly(2, window=range(200, 321)))
+    a = sc.spectral([T.line('aromatic')])
+    b = sc.spectral([T.line('aromatic', file=str(copy))])
     from selfcal.config.base import encode
     ca, cb = (products.content_addressed(encode(products.resolved_model(m))) for m in (a, b))
     assert ca == cb
@@ -466,12 +486,12 @@ def test_a_plan_without_frames_says_so_and_the_action_refuses(toy_field, tmp_pat
     field = sc.Field(tmp_path / 'no_frames', toy_field.instrument, REF_ARCSEC, compute=toy_field.compute)
     os.makedirs(field.path)
     shutil.copy(os.path.join(toy_field.path, 'ref.fits'), os.path.join(field.path, 'ref.fits'))
-    plan = field.plan(_recipe())
+    plan = field.plan(_recipe(), jobs=ALL)
     assert any(n.startswith('no frames in') for n in plan.notes), plan.notes
     with pytest.raises(ConfigError, match='no frames in'):
-        field.calibrate(_recipe())
+        field.calibrate(_recipe(), jobs=ALL)
     with pytest.raises(ConfigError, match='no frames in'):           # adopt records frames: it needs them
-        field.adopt(_recipe())
+        field.adopt(_recipe(), jobs=ALL)
 
 
 def test_two_exposures_make_a_reference_grid(tmp_path):
@@ -488,5 +508,6 @@ def test_smoothing_on_a_chunk_map_without_axes_is_refused(toy_field):
     field = toy_field.replace(instrument=AmpsCamera())
     unsmoothed = sc.Recipe(sc.Model(offsets=[sc.Offsets(on='amps', smooth=0.1)]), coadd=None, name='amps')
     with pytest.raises(ConfigError, match='declares no axes to smooth along'):
-        field.plan(unsmoothed)
-    field.plan(unsmoothed.replace(model=sc.Model(offsets=[sc.Offsets(on='amps', smooth=0.1, smooth_along=('amp',))])))
+        field.plan(unsmoothed, jobs=ALL)
+    field.plan(unsmoothed.replace(model=sc.Model(offsets=[sc.Offsets(on='amps', smooth=0.1, smooth_along=('amp',))])),
+               jobs=ALL)

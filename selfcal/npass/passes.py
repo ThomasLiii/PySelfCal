@@ -20,7 +20,7 @@ from ..pipeline.tiled import stitch
 from ..run import staging
 from ..run.engine import setup_job, tile_assignment
 from .offsets import SkySubtractor, merge_offset_cals, normal_equations, solve_frames
-from .sky import OffsetModelSubtractor, combine_moments, dump_moments, solve_pixels
+from .sky import OffsetModelSubtractor, apply_coverage_floor, combine_moments, dump_moments, solve_pixels
 
 __all__ = ["PassRunner", "offset_spec", "append_monitor"]
 
@@ -36,9 +36,9 @@ def offset_spec(spec, edges_fn, hook):
     clip = spec.passes.refit_clip
     setup = dict(spec.setup)
     setup['fixed_sky'] = True
-    setup['outlier_thresh'] = clip.sigma
+    setup['outlier_thresh'] = None if clip is None else clip.sigma       # the pass's own clip, not the fit's
     setup.pop('outlier_groups', None)                # the pass's clip alone decides the grouping
-    if clip.grouped:
+    if clip is not None and clip.grouped:
         setup['outlier_group_edges'] = edges_fn()
     else:
         setup.pop('outlier_group_edges', None)
@@ -152,13 +152,20 @@ class PassRunner:
         (``sky_merge="combine"``), or each tile solved and the tiles stitched."""
         spec, ctx, p = self.spec, self.ctx, self.p
         clip = p.sky_clip
-        edges = self.edges() if clip.grouped else None
+        edges = self.edges() if clip is not None and clip.grouped else None
         calk = dict(spec.setup)
         for k in ("outlier_thresh", "outlier_group_edges", "outlier_groups"):
             calk.pop(k, None)
+        # The fit's coverage floor is the matrix build's; the pass applies it to its own sums before it solves them.
+        floor = calk.pop("min_observations", None)
         if not calk.get("outlier_group_variable"):
             calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = ctx.sky_damping
+        # The model's observation weight, which the joint solve applies to every observation as well
+        # (engine.setup_job): the pass's sums are the weighted normal equations of the same objective.
+        weight_function = ctx.weight()
+        if weight_function is not None:
+            calk['weight_function'] = weight_function
         io_limit = spec.frames.io_limit
         if spec.tiling is not None:
             nvme = staging.claim(spec.tiling.stage_dir, spec.tiling.frames_dir)
@@ -182,7 +189,7 @@ class PassRunner:
             else:
                 frame_list = list(files)
             print(f"\n[npass] pass {i} SKY [{name}]: {len(frame_list)} frames, closed form given the offsets, "
-                  f"clip {clip.sigma}{' per-subch' if edges is not None else ''}",
+                  + ("no clip" if clip is None else f"clip {clip.sigma}{' per-subch' if edges is not None else ''}"),
                   flush=True)
             cc = pipeline_wrapper.Calibrator(ctx.pipeline_config, reproj_dir=nvme)
             cc.reproj_list = frame_list
@@ -196,12 +203,16 @@ class PassRunner:
             cc.setup_lsqr(offset_model=OffsetModel.sky_only(), grid_valid_weight=self.grid_valid,
                           oversample_factor=1,
                           sky_model=self.sky_model, det_aux=self.det_aux, aux_keys=self.aux_keys,
-                          postprocess_func=subtract, outlier_thresh=float(clip.sigma),
+                          postprocess_func=subtract, outlier_thresh=None if clip is None else float(clip.sigma),
                           outlier_group_edges=edges,
                           sky_rhs_moments=True, moments_only=True, batch_spill_dir=spec.scratch, **calk)
             if p.sky_merge == "combine":
                 dump_moments(cc, piece)
             else:
+                if floor is not None:
+                    cc._materialize_pixel_state()
+                    apply_coverage_floor(cc.pixel_counts, cc.pixel_fisher, cc.pixel_rhs, cc.pixel_cross,
+                                         cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, floor)
                 cc.x = solve_pixels(cc.pixel_fisher, cc.pixel_cross, cc.pixel_rhs, cc.pixel_counts,
                                     cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, damp_weights=dws)
                 ctx.configure(cc)
@@ -213,7 +224,7 @@ class PassRunner:
             pieces.append(piece)
         if p.sky_merge == "combine":
             combine_moments(pieces, out, sky_names=list(self.sky_model.names), damp_weights=dws,
-                            line_fisher_threshold=self.lft, attrs={"npass_pass": i})
+                            line_fisher_threshold=self.lft, attrs={"npass_pass": i}, min_observations=floor)
             # The dumps are pure intermediates and they are BIG (a J=4 full-NEP
             # tile dump is ~23 GB, so one n=8 run is ~0.5 TB and a 16-tile one
             # ~1.4 TB). Once the combine has written the product they have no
@@ -267,7 +278,7 @@ class PassRunner:
                                reduce=normal_equations)
                 cc.x, summary = solve_frames(
                     cc.reduced, cc.constraint_blocks, cc.layout.total_cols, start=ctx.seed,
-                    exclusions=ctx.model.column_exclusions(ctx.geom, cc.layout) or None,
+                    exclusions=ctx.model.column_exclusions(ctx.geom, cc.layout, window=self.jobgeom.det_valid_weight) or None,
                     precondition=opts.get("precondition", True),
                     damp=opts.get("damp", 0.0), dtype=np.float32 if opts.get("use_float32") else np.float64)
                 cc.reduced = cc.constraint_blocks = None

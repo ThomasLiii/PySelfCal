@@ -3,8 +3,9 @@ PAH fit of the NEP expansion (runs/multiline_nep_expansion.py, its recipe itself
 one pass, on eight tiles balanced by frame count.
 
 The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
-two offset terms at NumCol 1, the hard degree-2 polynomial along the subchannels of the window (one per frame)
-and a free gradient along detector x per frame and subchannel (``spherex.frame_slope``); no damping or
+two offset terms at NumCol 1, a degree-2 Chebyshev polynomial of the position across the LVF arcs over the
+window per frame (``terms.spectral_polynomial``; its constant holds the frame's level) and a free gradient along
+detector x per frame and subchannel (``terms.frame_slope``); no damping or
 regularisation of any kind; shot-noise weights, the source-mask bit ignored, a 5-sigma clip; the default solver
 to convergence, at most 400 iterations; no mosaic. The tiles are solved one at a time, then stitched; ``ONLY``
 limits the run to the tiles listed (no stitch: a later run of every tile reuses their cals and stitches them).
@@ -16,7 +17,7 @@ and its matrix build's spill go to the NVMe (``site.NVME``): ~0.11 GB of spill p
 the staged frames stay there (~0.5 TB for the field by the last tile), so check the free space before a run.
 """
 import selfcal as sc
-from selfcal.instruments import spherex
+from selfcal_scripts.spherex import jobs
 from selfcal_scripts.recipes.site import ORCA, OUTPUTS
 from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW
 from selfcal_scripts.runs.multiline_nep_expansion import RECIPE as NEP_EXPANSION_RECIPE
@@ -30,13 +31,13 @@ SEP_EXPANSION8_TILES = {
 #: The tiles this run solves (None: every tile, then the stitch).
 ONLY = None
 
-FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_SEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4, num_col=1), 6.2,
+FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_SEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4), 6.2,
                  compute=ORCA.replace(memory_guard=True))
 RECIPE = NEP_EXPANSION_RECIPE.replace(
-    name='multiline3_xslope_SEPexp8_STITCHED_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg')
-RUN = dict(jobs=spherex.window('Multiline3', subchannels=MULTILINE3_WINDOW),
+    name='multiline3_xslope_SEPexp8_STITCHED_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg')
+RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW),
            tiles=sc.Tiles(boxes=SEP_EXPANSION8_TILES, only=ONLY,
-                          tile_name='multiline3_xslope_SEPexp8_{tile}_conv400_polybasisD2_NumCol1_outThresh5_nodamp_noreg',
+                          tile_name='multiline3_xslope_SEPexp8_{tile}_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg',
                           stitched_name='{name}'))
 
 if __name__ == '__main__':

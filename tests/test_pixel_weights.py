@@ -36,6 +36,7 @@ from selfcal.models.noise import shot_noise_variance  # noqa: E402
 
 FIT = sc.Fit(300, clip=None, tolerance=1e-12)                      # the flag plane masks (use_mask=True)
 COADD = sc.Coadd(clip=None)
+ALL = sc.Job('All')                   # the camera's job: every chunk
 VALUE_RANGE = (0.5, 20.0)                                          # the toy images lie here (the bias keeps them positive)
 
 
@@ -103,7 +104,7 @@ def test_value_and_flags_reach_the_weight_function(tmp_path):
     field, images, flags, _ = toy_field(tmp_path)
     weight = sc.Variance(checked_variance, of=('value', 'flags'), lo=VALUE_RANGE[0], hi=VALUE_RANGE[1])
     coadd = sc.Coadd(clip=None, ignore_flags=(1,))
-    result = field.calibrate(sc.Recipe(model(weight), fit=FIT, coadd=coadd, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model(weight), fit=FIT, coadd=coadd, numerics=NUMERICS), jobs=ALL)
     with result.cal() as cal:
         got, cov = cal.sky(0), cal.sky_coverage(0)
     g, t = against_truth(field, got, (cov >= 3) & np.isfinite(got), true_sky() + 5.0)
@@ -116,9 +117,9 @@ def test_variance_is_the_squared_row_weight(tmp_path):
     as ``Function(0.5)``, and a mosaic weight map of ``0.25`` per covering frame."""
     field, _, flags, pointings = toy_field(tmp_path)
     a = field.calibrate(sc.Recipe(model(sc.Variance(constant_variance, of='value', v=4.0)), fit=FIT, coadd=COADD,
-                                  numerics=NUMERICS, name='var'))
+                                  numerics=NUMERICS, name='var'), jobs=ALL)
     b = field.calibrate(sc.Recipe(model(sc.Function(constant_weight, of='value', w=0.5)), fit=FIT, coadd=COADD,
-                                  numerics=NUMERICS, name='fn'))
+                                  numerics=NUMERICS, name='fn'), jobs=ALL)
     with a.cal() as ca, b.cal() as cb:
         assert np.allclose(ca.sky(0), cb.sky(0), rtol=1e-5, atol=1e-5, equal_nan=True)
         assert np.allclose(ca.offsets[0], cb.offsets[0], rtol=1e-5, atol=1e-6)
@@ -141,7 +142,7 @@ def test_shot_noise_floors_at_the_frame_median(tmp_path):
     """``sc.shot_noise()``: the coadd weights every observation by ``1/max(|value|, m)``, ``m`` the
     median of the frame's unflagged values, so the mosaic's weight map is that sum over the frames."""
     field, images, flags, pointings = toy_field(tmp_path)
-    result = field.calibrate(sc.Recipe(model(sc.shot_noise()), fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model(sc.shot_noise()), fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=ALL)
     with result.mosaic() as mos:
         wmap = np.asarray(mos.weight('MEAN_MAP'), np.float64)
     expected = np.zeros((REF, REF))

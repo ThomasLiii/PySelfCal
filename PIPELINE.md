@@ -18,7 +18,7 @@ tilings of [`selfcal_scripts/recipes/`](selfcal_scripts/recipes/):
 ./selfcal_scripts/run.sh selfcal_scripts/runs/<run>.py --dry-run   # the plan only (selfcal plan)
 ```
 
-The knobs below are named by the Python settings that carry them (`sc.SPHEREx`, `sc.Offsets`,
+The knobs below are named by the Python settings that carry them (`sc.ChunkMap`, `sc.Offsets`,
 `sc.Sky`, `sc.Fit`, `sc.Coadd`, `sc.Numerics`, `sc.Compute`, `sc.Tuning`, `sc.Tiles`, `sc.Passes`)
 and, where it helps, by the keyword of the library call they reach (`Calibrator.setup_lsqr`,
 `apply_lsqr`, `Mosaicker.make_mosaic`). TOML run configs are no longer run;
@@ -47,7 +47,9 @@ For `sc.continuum` (K=2: the primary chunk map, then `"detector"`) the model is 
 
 ## Calibration pipeline tuning
 
-Chunk geometry (`sc.SPHEREx(detector, num_sub=, num_ch=, num_col=)`):
+Chunk geometry (the model's SPHEREx subchannel map, `chunks.subchannel_map(num_sub=, num_ch=, num_col=)`
+of [`selfcal_scripts/spherex/chunks.py`](selfcal_scripts/spherex/chunks.py), which `maps(num_sub=,
+num_ch=, num_col=)` of the recipes names with the detector-column map):
 
 - `num_sub`, `num_ch` (`NumSub`, `NumCh` in the product names) — wavelength (radial) divisions; 10×34 is well-tuned.
   `make_fiducial_chunk_map` asserts `num_channels % 17 == 0` because the
@@ -67,16 +69,16 @@ recipe the transfer function was measured with, on 17 channels and one column (t
 gradient model, the shot-noise weights, deflated CGLS to the chi-squared stop, the post-solve plane
 gauge and the weighted coadd, below), with the wavelength maps in the mosaics;
 [`selfcal_scripts/runs/channel_maps.py`](selfcal_scripts/runs/channel_maps.py) makes them
-(`launch/channel_maps.sh [detectors]`). The production recipe of the NumCol 10 era, `POLY_K1`
-(the channel maps of 2026-09-29 to 2026-10-14 used `NUMCOL3`: NumCol 3, no column polynomial),
-with the production machine of `selfcal_scripts/recipes/site.py`:
+(`launch/channel_maps.sh [detectors]`). The shape of a recipe, in the form of the NumCol 10 era's
+(whose soft column polynomial went with the soft polynomial prior on 2026-10-30; the channel maps of
+2026-09-29 to 2026-10-14 used `NUMCOL3`: NumCol 3), with the production machine of
+`selfcal_scripts/recipes/site.py`:
 
 ```python
 import selfcal as sc
 
-POLY_K1 = sc.Recipe(
-    sc.continuum(smooth=0.1,                     # adjacency smoothness between neighbouring chunks
-                 poly_prior=sc.Poly(1, weight=0.5)),   # the linear column polynomial; omit for none
+SMOOTH = sc.Recipe(
+    sc.continuum(smooth=0.1),                    # adjacency smoothness between neighbouring chunks
     fit=sc.Fit(50, clip=5.0, method="lsqr"),     # its solver (CGLS is the default since 2026-10);
                                                  # shot_noise_weights=True in the PAH fits
     coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),   # drop the source-mask bit
@@ -85,8 +87,7 @@ ORCA = sc.Compute(scratch, workers=48, coadd_workers=48)        # workers tuned 
 # sc.Numerics() is production's: 48 solver threads, batches of 50 frames (tuned 2026-05 from 20)
 ```
 
-The sky damping is each sky term's `sc.Sky(damping=)`: 0.1 for the first term and 0.3 for the
-others unless given. The spectral recipes ignore bit 21 in the fit too
+The sky damping is each sky term's `sc.Sky(damping=)`: none (0) unless given. The spectral recipes ignore bit 21 in the fit too
 (`sc.Fit(ignore_flags=[21])`).
 
 Pixel weights: `sc.Fit(shot_noise_weights=True)` weights every row by `1/sqrt(|value|)` (the PAH
@@ -115,8 +116,7 @@ real sky curvature out of the map. `selfcal.core.gauge` has the computation.
 
 Programmatically, the offset structure is an `OffsetModel` of one `OffsetBlock` per chunk map
 (the run engine builds it from the model's offset terms; `Calibrator.setup_lsqr` still accepts the older flat per-map
-lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `poly_constraints_list=` /
-`det_groups_list=` / `det_templates=`, deprecated — they remain the native
+lists `chunk_maps=` / `adj_infos=` / `reg_weights=` / `det_groups_list=`, deprecated — they remain the native
 arguments of the core `selfcal.core.system.setup_lsqr`, one list entry per map):
 
 ```python
@@ -136,8 +136,6 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
 - **`reg_weights[m]`** + **`adj_infos[m]`** (`reg_weight`, `adj_info`; `sc.Offsets(smooth=, smooth_along=)`) adds `reg_weights[m] * (O_i - O_j) = 0` rows to LSQR for adjacent chunk pairs on map `m`. Two builders in `selfcal/instruments/spherex/spherex_utility.py` (the run engine builds the same pairs from a term's `smooth_along` axes with `selfcal.models.offset_structure.adjacency_along`):
   - `compute_column_adjacency(det_chunk_map, num_columns)` — pairs chunks at same subchannel, adjacent columns. **The default.** Returns `(empty, empty)` for `NumCol=1`; `setup_lsqr` demotes empty adj_info to `None` automatically.
   - `compute_subchannel_adjacency(...)` — pairs at same column, adjacent subchannels.
-
-- **`poly_constraints_list[m]`** (`poly_constraints`; `sc.Offsets(poly_prior=sc.Poly(...))`; optional) — list of constraint dicts that enforce polynomial offset behavior along supplied chunk chains. Each dict is `{'chains': (n_chains, L) int array, 'stencil': (L,) float array, 'weight': float}` and adds `weight * Σ_ℓ stencil[ℓ] · O[chains[r, ℓ]] = 0` rows per frame, per chain. For SPHEREx column linearity: `compute_column_polynomial_chains(det_chunk_map, num_columns, degree=1)` returns `(chains, stencil)` with stencil `[1, -2, 1]` and chain length `degree+2`. See [selfcal/instruments/spherex/spherex_utility.py](selfcal/instruments/spherex/spherex_utility.py).
 
 - **`exclusions`** (not a block field: `apply_lsqr(exclusions=)`; `sc.Offsets(exclude=sc.Poly(k, along=))`, turned into them by `ModelSpec.column_exclusions(geom, layout)`) — hard constraints: a term carries no polynomial of degree ≤ k along a chunk axis, per line of the other axes and per group of frames (`exclude=sc.Poly(0)` with no `along`: no constant over all of a group's chunks). Each is `(cols, P)`, `cols` `(G, n)` the full-layout columns of each group's chunks along one line and `P` `(n, r)` the excluded directions. The solver imposes them exactly by reparametrisation (`selfcal.core.projector.ColumnProjector`: it iterates only on unknowns that satisfy them), with no row and no weight, and imposes them on the start too; a column the compaction dropped (no entry in any row: an unobserved chunk with no prior row on it) drops out of its constraint. The N-pass OFFSET pass applies them in its direct solve (`solve_frames(exclusions=)`).
 
@@ -177,7 +175,9 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   removed when the solve ends; a killed run's parked file is swept by the next solve that parks
   in the same directory. When it cannot be parked (a full or unwritable disk, or no directory
   given), a warning says why, the solve goes on and `true_residual` and `bnorm` are NaN (LSMR
-  keeps `b` and needs no copy). The record goes to the cal file's `solve` group
+  keeps `b` and needs no copy). A deflated CGLS solve parks a second vector there, the deflated
+  right-hand side `b - B x_c` its residual refresh reads every 50 iterations (without it, each
+  refresh makes it again with one pass over the matrix). The record goes to the cal file's `solve` group
   ([its attributes](#the-solve-group)), to the action's record (`solves`) and, with the solver's
   state at every iteration, to `<field>/records/<cal stem>_history.npz` (`itn`, `r1norm`,
   `r2norm`, `arnorm`, `anorm`, `acond`, `xnorm`, `test1` = |r| / |b|, `test2` = |A^T r| / (|A|
@@ -208,9 +208,7 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   (`system`, `system_identity`); a cal solved before 2026-10-08 has none and is checked by its
   contents only (frames, sky terms, chunk maps, column counts, grid shape), with a warning. The
   plan checks the frames, sky terms, grid shape, chunk maps and job before the solve is set up,
-  the solve the rest. Not supported: an offset term with a hard polynomial basis
-  (`Offsets(polynomial=...)`; its cal holds the offsets the polynomial expands to, not the
-  coefficients), and tiled or N-pass runs (refused). The start's identity (its product
+  the solve the rest. Not supported: tiled or N-pass runs (refused). The start's identity (its product
   fingerprint, or the hash of its bytes when it has no current sidecar) enters the new cal's
   fingerprint (the key is absent without a start, so every other cal keeps its fingerprint);
   the new cal records `start_from` (its path), `start_identity` and `iterations_total` (the
@@ -383,6 +381,36 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   while a deliberately under-converged 30-iteration template fit moves by
   ~1e-3 of it — and two different thread counts differ from each other by as
   much as either differs from the sequential kernel.
+- **Two options of the observation table's solve** (`sc.Compute(matrix='compact')`), both off by default.
+  `sc.Numerics(gradient='recurrence')` lets CGLS carry its gradient by recurrence from the transpose product of
+  the matvec's own result, which the table forms in the matvec's pass, so an iteration makes the rows once instead
+  of twice (within rounding of the two-pass form). `sc.Numerics(row_order='sky')` regroups the table's rows into
+  blocks by ranges of reference pixels, each range's rows in frame order: each thread of the transpose product then
+  owns whole blocks, and so the sky columns of their pixels, which it sums in place, and the private buffers cover
+  the offset columns only (`threads x offset columns` instead of `threads x columns`, on a full field most of the
+  buffers' memory). The rows are the same, in another order, so the sums over rows round differently. The regrouping
+  runs once after the build, a field at a time (`selfcal.core.observations.by_sky_range`), with one field's array
+  (4 bytes per observation) and each row's frame of extra memory.
+- **The deflation's setup makes its smooth patterns where it reads them** (`sc.Fit(deflate=sc.Deflate(...))`): in its
+  two passes over the matrix (a block of rows at a time, the patterns at each entry's column), its Gram matrices and
+  the directions `V` (a block of columns at a time), instead of holding them as an array of `8 × patterns` bytes per
+  covered unknown (17 GB for 30 patterns on 71 M columns). Each value is the same product of the two axis functions
+  and the column's norm, taken in the same order, so the setup's results are the same bits. A constraint on a sky
+  term (`sc.Sky(exclude=...)`) changes the patterns, and the setup then keeps them as an array, as does
+  `sc.Deflate(exclude=sc.Degenerate(...))` from its re-basing on.
+- **The sky-signature exclusion without the deflation's vectors** (`sc.Deflate(direct=False)`): a deflated solve
+  keeps the pattern directions and their images, `2 × 4 × patterns` bytes per covered unknown with float32 products
+  and twice that while its setup makes them, which on a large field with several sky terms outgrows the matrix itself
+  (120 patterns: 0.95 kB per sky unknown). A model that needs the deflation only for `sc.Offsets(exclude=sc.SkySignature(...))`
+  can stop the setup after its first pass: the exclusion is made from the patterns' offset responses as before, and
+  the solver iterates on every unknown. The same least-squares solution; the patterns' amplitudes are reached by
+  iterating, as slowly as the data see them (the setup's first pass keeps about
+  `8 × (patterns × offsets + patterns × 2²¹)` bytes per thread while it runs).
+- **Freed memory goes back to the system between the solve's phases**: before the iterations and after the solve
+  (`selfcal.core.spill.release_free_memory`, glibc's `malloc_trim`; the log says how much). glibc serves arrays below
+  its mapping threshold (up to 32 MB, such as the observation table's blocks) from its heaps and keeps their pages
+  after they are freed, so what the build and the deflation setup free would otherwise stay resident through the
+  iterations, and the matrix through the coadd. No array is touched.
 - **Column compaction is always on**, template-mode maps included. The solve
   runs in the active column space (e.g. 38 M of 803 M columns on a 1k-frame
   tile), which removes ~17 GB of n-space vectors and is what makes the
@@ -401,6 +429,36 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   transpose product of the 2026-09 byte-equality rounds); T ranges hold
   `(T-1) * 4 B/row` more indptr, and `sc.Tuning(split_extra_gb=)` (`SELFCAL_SPLIT_EXTRA_GB`,
   default 24) halves T until that fits.
+- **The observation table** (`sc.Compute(matrix='compact')`;
+  `selfcal/core/observations.py`). The matrix is not stored: each data row is
+  kept as the observation it is made from, its reference pixel, its detector
+  position and its weight (16 B), against 8 B per stored entry and 8 to 12
+  entries per row, and the rows are made again at every pass over the matrix
+  (the products, the column norms, the start vector, the deflation's sums)
+  with the build's arithmetic in compiled loops (numba), the model's functions
+  evaluated by the model's own code per chunk of observations. The entries are
+  the stored matrix's to the bit, so the products and the solution are the
+  stored path's for the same thread count; the deflation's per-chunk sums
+  follow the storage blocks, which are the assembly batches, as the
+  partitioned storage's are. The assembly's workers ship each batch's
+  observations and its share of the per-column moments instead of the
+  entries (no entry spill), so the build's collation is parallel. The
+  constraint rows stay a small stored matrix after the data rows. A pass is
+  slower than a read of stored entries (about 150 ns per observation per
+  thread for the rows alone, plus the model's functions): a channel job pays
+  a few times its product time for a matrix 4 to 6 times smaller; a solve that
+  does not fit in memory stored fits as a table. It holds data rows only (no
+  per-frame adjacency rows; `oversample_factor=1`) and the model's
+  functions may not read the stored values, flag bits, layers or frame
+  functions. `sc.Compute(matrix='compact', functions='stored')` evaluates the
+  model's functions once, when the table is made, and keeps their values
+  with it (4 B per value; a basis that is mostly zero packed as (function,
+  value) pairs) instead of evaluating them at every pass (`'computed'`, the
+  default): the passes then run in compiled loops alone, for a table larger
+  by those bytes, with the same values. The transpose product's private buffers
+  (`sc.Numerics(rmatvec_threads=)`, one `n_active x 4 B` buffer per thread)
+  are the same as the stored path's and are the memory to budget for a
+  table solve at large column counts.
 - **Memory knobs** (`sc.Tuning`, each a `SELFCAL_*` environment variable;
   defaults need no tuning): `block_nnz` (`SELFCAL_BLOCK_NNZ`) —
   nnz threshold at which `setup_lsqr` emits int32 block storage instead of a
@@ -437,16 +495,18 @@ Key knobs (per map `m`; the block field, then the model's setting, in parenthese
   elements). Each element depends only on its own inputs, so the split is
   bit-identical; the reductions (norms) stay one ordered pass.
 
-`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from the instrument's `offset_renderer` (`sc.Offsets(render=)` chooses among them). A frame's chunk whose coverage fraction (`offset_coverage_frac`, over the chunk's pixels inside the solve's window) is below `valid_chunk_thresh` (`sc.Coadd(min_chunk_coverage=)`) has its offset zeroed. A renderer with a true attribute `fills_invalid` (the SPHEREx primary renderer, `make_spherex_stripped_offset_map`, and the Euclid grid spline) fills it from the frame's other chunks of that map; a zeroed chunk with a fraction above 0 that nothing fills (another renderer, or a frame with no chunk of the map above the threshold) is left out of the coadd: its pixels in that frame get no weight. A chunk of fraction 0 (no pixel inside the solve's window) keeps its zero offset.
+`det_offset_funcs[m]` (in `Mosaicker.make_mosaic`) controls **mosaic-time** offset rendering — LSQR solves block-constant chunk offsets regardless (except for an offset term with a `coefficient` or `basis`, which the mosaic subtracts per observation instead). Default (`None`) renders chunks with `chunk_to_det` (block-constant, visible edges); SPHEREx LVF maps use `make_spherex_stripped_offset_map` (mean-preserving 2D spline over `r_edges, x_edges`). For multi-map mosaics, each map gets its own `det_offset_func` (or `None`), and `_prep_subframe` sums their grid contributions before a single `det_to_sub` interp. The engine takes each term's renderer from its chunk map (`sc.Chunks(renderers=, render=)`; `sc.Offsets(render=)` chooses among them). A frame's chunk whose coverage fraction (`offset_coverage_frac`, over the chunk's pixels inside the solve's window) is below `valid_chunk_thresh` (`sc.Coadd(min_chunk_coverage=)`) has its offset zeroed. A renderer with a true attribute `fills_invalid` (the SPHEREx subchannel map's renderer, `make_spherex_stripped_offset_map`, and the Euclid grid spline) fills it from the frame's other chunks of that map; a zeroed chunk with a fraction above 0 that nothing fills (another renderer, or a frame with no chunk of the map above the threshold) is left out of the coadd: its pixels in that frame get no weight. A chunk of fraction 0 (no pixel inside the solve's window) keeps its zero offset.
 
-**Channel / window selection** is the action's `jobs=`: `spherex.channel(17)` (one
-channel), `spherex.channels(1, 34)` (one job per channel), `spherex.group(17, 18)` (one
-map over several channels), `spherex.window("Aromatic")` / `spherex.window("Aliphatic")`
-(the named subchannel windows 225–235 / 249–259, covering the PAH bands), or
-`spherex.window(name, subchannels=range(lo, hi))` (an explicit subchannel range, e.g.
-the PAHfit windows `range(210, 250)` / `range(200, 260)`). The SPHEREx product tag is
-`Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}`, so cal filenames are deterministically
-`cal_{tag}_{job}_{name}.h5` (job = `Ch<n>` or the window name; `name` the recipe's).
+**Channel / window selection** is the action's `jobs=`, built by
+[`selfcal_scripts/spherex/jobs.py`](selfcal_scripts/spherex/jobs.py) on the `subchannel` axis of
+the primary map: `jobs.channel(17)` (one channel), `jobs.channels(1, 34)` (one job per channel),
+`jobs.group(17, 18)` (one map over several channels), `jobs.window("Aromatic")` /
+`jobs.window("Aliphatic")` (the named subchannel windows 225–235 / 249–259, covering the PAH
+bands), or `jobs.window(name, range(lo, hi))` (an explicit subchannel range, e.g. the PAHfit
+windows `range(210, 250)` / `range(200, 260)`). The SPHEREx product tag is the instrument's
+`Detector{D}` followed by the primary map's tag, `NumSub{S}_NumCh{C}_NumCol{Co}`, so cal filenames
+are deterministically `cal_Detector{D}_NumSub{S}_NumCh{C}_NumCol{Co}_{job}_{name}.h5` (job = `Ch<n>`
+or the window name; `name` the recipe's).
 
 ## Advanced Calibrator solve modes
 
@@ -465,12 +525,8 @@ parentheses):
   `Calibrator.get_det_offset(m)`. **K=2 use case**: pair a free per-frame
   map at `m=0` with a `det_groups_list[1]=zeros` map at `m=1` to capture a
   detector-fixed pattern shared across all frames (e.g., readout-channel
-  stripes — `sc.two_block(second="readout")`).
-- **Template-amplitude mode via `det_templates[m]`** (`template`). Requires
-  `det_groups_list[m]` also. Fixes the spatial pattern from a
-  previously-solved `(num_groups, num_chunks_m)` template and solves only
-  one scalar amplitude `alpha` per frame. Spatial regularization rows are
-  skipped automatically for this map.
+  stripes — `sc.two_block(second="readout", along="subchannel")` on a model whose chunk maps
+  include `"readout"`, `chunks.readouts` of `selfcal_scripts/spherex/chunks.py`).
 - **Hard constraints via `apply_lsqr(exclusions=)`** (not a block field;
   `sc.Offsets(exclude=...)` in a model). Each excludes the polynomials
   of a degree from a map's offsets along a chunk axis, per group, exactly
@@ -498,11 +554,20 @@ d_i = Σ_j S_j(p(i))·c_j(v_i) + O_k(i) + ε_i
 
 J sky blocks `S_j` (continuum + line amplitudes; `c_j` = e.g. the line template at the
 observation's wavelength) and the frame's offset `O_k`: **whatever offset terms the recipe's
-model has** -- per-chunk values, a polynomial along a chunk axis (`sc.Poly`, segmented or not),
-templates, coefficients of known functions of data variables (`times=` / `basis=`, e.g. the
-x-slope of `spherex.frame_slope`, a per-frame scalar), with their hard constraints and priors.
+model has** -- per-chunk values, coefficients of known functions of data variables (`times=` /
+`basis=`, e.g. the x-slope of `terms.frame_slope`, the hat functions of `terms.spectral_offsets`, the
+Chebyshev polynomial of `terms.spectral_polynomial` (`selfcal_scripts/spherex/terms.py`), a per-frame scalar),
+with their hard constraints and priors.
 Each term must be the frame's own (`per="frame"`): a term shared across frames would tie every frame
-of an OFFSET pass together, and the plan refuses it. The offset terms are chosen in the run script
+of an OFFSET pass together, and the plan refuses it. A term that excludes a sky signature
+(`exclude=sc.SkySignature(...)`) is tied across frames by that constraint: the plan refuses it for a
+schedule with an OFFSET pass, and takes it for the joint solve followed by SKY passes alone
+(`sc.Passes(2, order="sky_first")`), which hold the joint solve's offsets. A coverage floor
+(`sc.Fit(min_observations=)`) applies in a SKY pass to the pass's own sums: a pixel its observations cover
+fewer times gets no value and no coverage, as in the joint solve. A SKY pass weighs every observation with the
+model's observation weight (`sc.Model(weight=...)`), as the joint solve does; a prior on a sky term
+(`sc.Prior(..., '<sky term>')`) has no place in a pixel's own sums, and the plan refuses it for a schedule with a
+SKY pass. The offset terms are chosen in the run script
 and nowhere else: the passes take them from the model. Given the offsets the sky is **block-diagonal** (one J×J normal
 system per pixel); given the sky the offsets are the model's own offset system. The joint problem
 is therefore solved by alternating least squares with each half exact:
@@ -517,8 +582,9 @@ is therefore solved by alternating least squares with each half exact:
 just the joint solve: it *semi-converges* — the offsets converge fast, the low-wavelength-diversity
 pixels' continuum↔line split does not, and past that point the iterate drifts along the exact
 null spaces (uniform line floor ↔ static detector pattern; uniform sky ↔ the frames' levels). Each SKY and
-OFFSET pass is an exact block minimisation (`sc.Refit`: the OFFSET pass's clip and an optional
-`bright_cut` with `min_pixels` — nothing about the offsets' form), so the objective is non-increasing in `n`
+OFFSET pass is an exact block minimisation (`sc.Refit`: an optional clip of the OFFSET pass and an optional
+`bright_cut` with `min_pixels` — nothing about the offsets' form; neither pass clips unless given a clip,
+`sc.Passes(sky_clip=)` and `sc.Refit(clip=)`), so the objective is non-increasing in `n`
 (`tests/test_npass_any_offset.py` checks it for three different offset models), but drift along
 the null spaces is not excluded — the scheduler records per-pass monitors in
 `<stem>_npass_monitor.json` (per-block median / % positive / step RMS; per OFFSET pass each
@@ -550,7 +616,7 @@ global sky, the offsets of different frames are independent (a term of one frame
 only that frame's data), so solving every frame on its own gives exactly the full-field solution,
 with no tile gauge and no seam (the tiles only batch the frames).
 
-**The offset terms must resolve the window** (the model's `sc.Poly(segments=)`). On the SEP, one
+**The offset terms must resolve the window.** On the SEP, one
 degree-4 polynomial over the 121-subchannel multi-line window (200–320) captured 3–5× less of the
 per-frame structure at the ~15-subchannel scale in the aromatic band than over the 60-subchannel
 aromatic window (200–259): the wide fit is constrained by the red-end data, so red-end residuals
@@ -559,10 +625,12 @@ projects onto the adjacent line templates as frame-coherent stripes (0.64 ×10�
 64–1024 px in the dim sky, aromatic–aliphatic stripe correlation +0.52, identical whether the
 per-pixel model is J=2 or J=4). Raising the global degree is *not* the answer — degree 8 over 121
 subchannels extrapolated to ±200 MJy/sr in frames with partial red-end coverage.
-`sc.Poly(4, window=range(200, 321), segments=((200, 259), (260, 320)))` fits an independent shape
-on each range, with nothing to extrapolate. (Until 2026-10 the OFFSET pass refitted a polynomial of
-its own, `sc.Refit(degree, segments=)`; it now refits the model's terms, so the polynomial is the
-model's, in the INIT and every pass.)
+Two polynomial terms, `terms.spectral_polynomial(range(200, 260), 4)` and
+`terms.spectral_polynomial(range(260, 321), 4)`, fit an independent shape on each range, with nothing
+to extrapolate. (Until 2026-10 the OFFSET pass refitted a polynomial of its own, `sc.Refit(degree,
+segments=)`; it now refits the model's terms, so the polynomial is the model's, in the INIT and every
+pass. Until 2026-10-30 the polynomial was the engine's own polynomial-basis offset, `Offsets(polynomial=
+sc.Poly(degree, window=, segments=))`; it is now a basis of functions like any other term.)
 
 **Ordering matters when INIT is tiled** (`sc.Passes(order=)`, default
 `offset_first`). Each INIT tile is an independent joint solve, so it picks its own
@@ -656,11 +724,21 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
   (cals solved since 2026-10-08; see [The `solve` group](#the-solve-group) below)
 
 **Groups (one dataset per map):**
-- `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets, **expanded** from groups to per-frame
+- `offsets/map_{m}` — `(num_frames, num_chunks_m)` float32 — per-frame per-chunk offsets (a term shared by groups of frames: one row per group, below)
 - `offset_coverage/map_{m}` — `(num_frames, num_chunks_m)` int64 — pixel count per (frame, chunk) (int32 ones for a template or polynomial-basis map); for a map whose offsets multiply `n_basis > 1` functions, `(num_frames, num_chunks_m * n_basis)`, each function's count taken over the pixels where it is not zero
 - `offset_coverage_frac/map_{m}` — `(num_frames, num_chunks_m)` float64 — fraction of the chunk's pixels covered per frame, counted over the chunk's pixels inside the solve's window (the detector pixels the job can observe; 0 for a chunk with no pixel inside it; `sc.Coadd(min_chunk_coverage=)` compares it) (float32 ones for a template or polynomial-basis map)
+- `offset_coverage_solved/map_{m}` — laid out as `offset_coverage/map_{m}` — only in a cal whose solve had a coverage floor (`sc.Fit(min_observations=)`, `sc.Offsets(min_observations=)`; cals since 2026-11): each offset's observations left in the solve after the floor zeroed the rows of the pixels too few observations see. `offset_coverage` counts every observation the build made, those rows too; an offset whose observations other frames mostly do not share keeps few of them here. `sc.Coadd(chunk_coverage='solved')` judges the chunks by it
 - `chunk_maps/map_{m}` — `(det_h, det_w)` int — the chunk_map array used for map `m` (stored for analysis reproducibility)
 - a per-frame scalar (`sc.Offsets("scalar", on="detector")`) is an offset map like the others: `offsets/map_{m}` is `(num_frames, 1)`, its chunk map all zeros
+- a map whose term groups of frames share (`per="all"`, or a frame variable: the frames of a group have the same
+  offsets) holds each group's offsets once: one row per group in `offsets/map_{m}` (attr `rows = "groups"`),
+  `offset_coverage/map_{m}` and `offset_coverage_frac/map_{m}`, and each frame's group in
+  `offset_frame_group/map_{m}` `(num_frames,)` int32 (a term every frame shares is a single row; a term fixed within
+  two subsets of the frames, two rows and a 0/1 label per frame). Cals written before 2026-10-28 repeat the group's row
+  on every frame of it, with no `offset_frame_group`. `CalFile.offsets` (and the coverage properties) expand either
+  per frame; `CalFile.rows(group)` gives the map as stored, a `selfcal.io.calfile.FrameRows` (each frame's row on
+  demand), which the mosaic and the per-observation subtraction keep compact. Template and polynomial-basis maps
+  (an amplitude or coefficients per frame) and per-frame terms are one row per frame
 - a map whose offset term carries known functions of data variables (a `coefficient` or a
   `basis` of `n` functions) stores its unknowns: `offsets/map_{m}` is `(num_frames,
   num_chunks_m * n)` (chunk-major: column `c * n + k`), with attrs `n_basis` and `basis` (the

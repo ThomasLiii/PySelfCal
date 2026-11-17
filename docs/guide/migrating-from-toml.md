@@ -54,7 +54,7 @@ they did into the model and notes it:
 
 | TOML | Python |
 | --- | --- |
-| `offset_regularization = false` | every offset term without a hard polynomial gets `smooth=0` and no `poly_prior`: without the switch the engine built no smoothness or polynomial rows |
+| `offset_regularization = false` | every offset term gets `smooth=0`: without the switch the engine built no smoothness rows (nor the soft polynomial rows, removed on 2026-10-30) |
 | `weighted_damping = false` | every sky term gets `damping=0.0`: no sky damping rows |
 | a `basis` of one function | `sc.Offsets(times=...)`: one function is a coefficient (`basis=` takes at least two) |
 
@@ -120,7 +120,7 @@ trust: adopt a product only with the script of the config that made it. See
 | `task` | the action: `field.reproject`, `field.calibrate` (`tiles=`, `passes=`), `field.mosaic`; `precompute`: `spherex.precompute_lvf(detectors)` |
 | `mode` + `[params]`, `[model]` | the model, `sc.Model` or a preset (below) |
 | `output_dir` + `run_name`, `resolution_arcsec` | `sc.Field(path, instrument, pixel_scale)` |
-| `[instrument]` | `sc.SPHEREx(detector, num_col=, num_sub=, num_ch=, calib_dir=)`, `sc.Euclid(band=, chunks=, strips=, ...)`, `sc.Camera(shape, chunks=, sci_ext=, dq_ext=, tag=)`; the channel or window selection: `jobs=spherex.channel(n)`, `spherex.channels(first, last)`, `spherex.group(...)`, `spherex.window(name, subchannels=range(lo, hi + 1))` |
+| `[instrument]` | `sc.SPHEREx(detector, calib_dir=, lvf_dir=)`, `sc.Euclid(band=, chunks=, strips=, ...)`, `sc.Camera(shape, chunks=, sci_ext=, dq_ext=, tag=)`; SPHEREx's `num_sub`, `num_ch`, `num_col`: the model's chunk maps, `chunk_maps={"subchannel": chunks.subchannel_map(num_sub=, num_ch=, num_col=), "detector_column": sc.ChunkMap(chunks.detector_columns)}` (`selfcal_scripts/spherex/chunks.py`); the channel or window selection: `jobs=jobs.channel(n)`, `jobs.channels(first, last)`, `jobs.group(...)`, `jobs.window(name, range(lo, hi + 1))` (`selfcal_scripts/spherex/jobs.py`); a camera's `job_name`: `jobs=sc.Job(name)`; Euclid: `jobs=sc.Job(band)` |
 | `suffix` | `sc.Recipe(name=)`, without the leading `_` |
 | `[calibration] outlier_thresh`, `outlier_group_variable`, `outlier_group_edges`, `outlier_groups` | `sc.Fit(clip=sigma)`, `sc.Clip(sigma, variable=, edges=, per=)` |
 | `[calibration] apply_mask`, `ignore_list`, `apply_weight` | `sc.Fit(use_mask=, ignore_flags=, shot_noise_weights=)` |
@@ -141,9 +141,10 @@ trust: adopt a product only with the script of the config that made it. See
 | `[reproject]` | `field.reproject(exposures, reference=, method=, padding=, padding_fraction=, replace=, verify=)` |
 | `[zodi]` `pred_dir`, `clip_window_days`, `clip_sigma`, `clip_iters` | `spherex.zodi_anchor(result, predictions, clip_window_days=, clip_sigma=, clip_iters=)` after the calibration |
 
-Two defaults differ. A `[passes]` table without `n` or `order` ran four passes, sky first;
+Three defaults differ. A `[passes]` table without `n` or `order` ran four passes, sky first;
 `sc.Passes()` runs three, offset first, and refuses a schedule that ends on an OFFSET pass unless
-`ends_on_offset=True`. The converter writes both values out.
+`ends_on_offset=True`. A `[passes]` table without `sky` or `offset` clips clipped the SKY passes at 5
+sigma and the OFFSET passes at 2.5; `sc.Passes()` clips neither. The converter writes all of these values out.
 
 ### Modes
 
@@ -151,17 +152,19 @@ A mode was a named model with its knobs in `[params]`. Each is a preset or a mod
 
 | mode (historical names) | Python |
 | --- | --- |
-| `continuum` | `sc.continuum(smooth=reg_weight, poly_prior=sc.Poly(poly_degree, along=poly_axis, weight=poly_weight))` |
-| `spectral` (`pahfit`) | `sc.spectral(lines, smooth=, poly_prior=)` |
-| `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, poly_prior=[..., sc.Poly(spectral_poly_degree, along="subchannel", window=range(lo, hi + 1), weight=spectral_poly_weight)])` |
-| `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | `sc.spectral(lines, polynomial=sc.Poly(spectral_poly_degree, window=range(lo, hi + 1), segments=...))` |
-| `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, smooth=reg_weight, second_smooth=second_reg_weight)` |
+| `continuum` | `sc.continuum(smooth=reg_weight)` (the soft column polynomial `poly_weight` was removed on 2026-10-30: dropped, with a note) |
+| `spectral` (`pahfit`) | `sc.spectral(lines, smooth=)` |
+| `spectral_softpoly` (`pahfit_subch`, `pahfit_lvf`; `tiled` without a mosaic) | `sc.spectral(lines, smooth=)` (the soft spectral polynomial was removed on 2026-10-30: dropped, with a note) |
+| `spectral_polybasis` (`pahfit_lvf_polybasis`, `multiline`) | none: the polynomial-basis offset was removed on 2026-10-30; the polynomial is a basis term, `terms.spectral_polynomial(range(lo, hi + 1), degree)` for SPHEREx (the converter refuses the mode) |
+| `two_block_fixed` (`k2_readout`) | `sc.two_block(second=second_map, along="subchannel", smooth=reg_weight, second_smooth=second_reg_weight)` |
 | `model` | `sc.Model(sky=[...], offsets=[...], variables={...}, weight=, priors=[...])` |
 
-The lines of the spectral modes (`[[params.lines]]`) are sky terms: `spherex.line(name, damping=)`
+The lines of the spectral modes (`[[params.lines]]`) are sky terms: `terms.line(name, damping=)` (`selfcal_scripts/spherex/terms.py`)
 for a shipped template, else `sc.Sky(name, times=sc.template(file))` or
 `sc.Sky(name, times=sc.gaussian(center, sigma=...))`; the catalogue line `pah_3p29` is
-`sc.Sky("pah_3p29", times=sc.catalog("pah_3p29"))`.
+`sc.Sky("pah_3p29", times=terms.pah_3p29())`, the Gaussian
+`sc.gaussian(3.29, width="bandwidth", intrinsic_var=2.890e-4, fwhm_to_sigma=2.355)` (the
+converter writes the Gaussian).
 
 A `[model]` table maps term by term:
 
@@ -169,11 +172,11 @@ A `[model]` table maps term by term:
 | --- | --- |
 | `[[model.sky]]` `name`, `coefficient`, `damp_weight` | `sc.Sky(name, times=, damping=)` |
 | `[[model.offset]]` `map`, `kind = "free"` / `"fixed"` / `"grouped"` + `groups` | `sc.Offsets(on=map, per="frame")` / `per="all"` / `per=groups` |
-| `kind = "polybasis"`: `axis`, `group_axis`, `degree`, `lo`, `hi`, `segments` | `sc.Offsets(polynomial=sc.Poly(degree, along=, each=, window=range(lo, hi + 1), segments=))` |
-| `reg_weight`, `adjacency`, `poly`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `poly_prior=sc.Poly(...)`, `damping=`, `exact_group_rows=`, `render=` |
+| `kind = "polybasis"`; `poly` | refused: the polynomial-basis offset and the soft polynomial prior were removed on 2026-10-30 (a polynomial is a basis term, `sc.Offsets(basis=Function(...), n=)`) |
+| `reg_weight`, `adjacency`, `damp`, `exact_group_rows`, `render` | `smooth=`, `smooth_along=`, `damping=`, `exact_group_rows=`, `render=` |
 | `mean_zero = true`; `exclude_degree`, `exclude_axis` | `exclude=sc.Poly(0)`, the hard constraint "no constant over the term's chunks"; `exclude=sc.Poly(exclude_degree, along=exclude_axis)` |
 | a `coefficient` or a `basis`: `{ variable, function = "pkg.mod:fn", params }` | `times=fn` or `basis=fn, n=` (the function itself), or `sc.Function(fn, of=variable, **params)` |
-| `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = name }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `sc.catalog(name)` |
+| `function = "template"` / `"gaussian"` / `"linear"`; `{ catalog = "pah_3p29" }` | `sc.template(...)`, `sc.gaussian(...)`, `sc.linear(...)`; `terms.pah_3p29()` (no other catalogue name has a Python form) |
 | `[model.variables]` `header`, `per_frame`, `detector`, `sky`, `sky_cal`, `layer`, `function`, `frame_function` | `sc.Header`, `sc.PerFrame`, `sc.DetectorMap`, `sc.SkyMap`, `sc.SolvedSky`, `sc.Layer`, `sc.Derived`, `sc.FrameFunction` |
 | `scalar = true` (the default) / `false` | the offset term `sc.Offsets("scalar", on="detector")` after the others (one chunk, the whole detector) / none |
 | `weight` | `sc.Model(weight=)` |
@@ -194,7 +197,6 @@ dropped with a note instead (above).
 | `[lsqr] resume`, `keep_state` at other than their defaults | none: a solve starts from its warm start |
 | `[calibration] compact_zero_columns = false` | none: the zero columns are always compacted |
 | `[calibration] spectral_fit` (the old single-line shim) | a sky term with a coefficient, `sc.Sky(name, times=sc.gaussian(center, sigma=...))` |
-| a polynomial prior with only one of `lo`, `hi` | both bounds: `sc.Poly(degree, window=range(lo, hi + 1))` |
 | a `suffix` that does not start with `_` | `sc.Recipe(name=)`, joined to the product names with `_` |
 | `[tiling] frame_glob` other than every frame; a `[tiling] line` that disagrees with the model | none: a tiled run takes every frame of its directory, and the model decides which sky terms are stitched |
 | `[reproject] use_ext`, `sci_ext_list`, `dq_ext_list` that differ from the instrument's layout | the instrument's exposure layout: `sc.Camera(sci_ext=, dq_ext=, reference_ext=)`, or a subclass's `layout()` |

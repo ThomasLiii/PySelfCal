@@ -8,6 +8,8 @@ import scipy.sparse as sp
 import selfcal as sc
 from selfcal.core.projector import ColumnProjector
 from selfcal.core.solve import apply_lsqr
+from selfcal.models.spec import ModelSpec
+from selfcal.run.engine import chunk_map_specs, with_chunk_maps
 
 from test_deflation import _shared_system  # noqa: E402  (the toy: per-frame chunk offsets + columns shared by every frame)
 
@@ -57,6 +59,50 @@ def test_projector_removes_the_directions_in_physical_units_and_is_a_projector()
     assert np.abs(P[act[cols[1]]].T @ (M[act][cm[a]] * yc[cm[a]])).max() < 1e-12
 
 
+def test_a_constraint_measured_with_the_columns_information():
+    """An exclusion measured with the columns' information (``(cols, P, 'information')``) states ``P^T F x = 0``, ``F``
+    the columns' information (here one column the data barely see): the solution ``x = M y`` satisfies it, scaled or
+    not; an unweighted group in the same list acts as it does alone; without the information it is refused, and the
+    N-pass passes refuse it."""
+    from selfcal.npass.offsets import _exclusion_rows
+    rng = np.random.default_rng(2)
+    P = _poly_basis(12, 1)
+    cols, other = np.array([np.arange(20, 32)]), np.array([np.arange(40, 52)])
+    F = rng.uniform(0.01, 5, 60)
+    F[25] = 1e-8
+    for M in (1 / np.sqrt(F), None):
+        pr = ColumnProjector.build([(cols, P, 'information'), (other, P)], None, M, 60, information=F)
+        y = rng.normal(size=60)
+        z = pr.apply(y.copy())
+        x = z * (M if M is not None else 1.0)
+        assert np.abs(P.T @ (F[cols[0]] * x[cols[0]])).max() < 1e-10
+        alone = ColumnProjector.build([(other, P)], None, M, 60).apply(y.copy())
+        assert np.array_equal(z[40:52], alone[40:52])
+    with pytest.raises(ValueError, match='information'):
+        ColumnProjector.build([(cols, P, 'information')], None, None, 60)
+    with pytest.raises(ValueError, match='iterative solve'):
+        _exclusion_rows([(cols, P, 'information')], 60)
+
+
+def test_a_column_without_data_drops_out_as_an_inactive_one():
+    """A column a coverage floor keeps in the layout with zeroed entries (``no_data``) leaves the basis as a
+    compacted-away column does: the projector leaves its value alone and acts on the others as the projector built
+    with the column inactive."""
+    rng = np.random.default_rng(1)
+    P = _poly_basis(12, 1)
+    cols = np.array([np.arange(20, 32), np.arange(40, 52)])
+    M = rng.uniform(0.5, 2, 60)
+    empty = np.array([23, 41, 50])
+    pr = ColumnProjector.build([(cols, P)], None, M, 60, no_data=empty)
+    act = np.ones(60, bool); act[empty] = False
+    ref = ColumnProjector.build([(cols, P)], act, M[act], int(act.sum()))
+    assert pr.columns.tolist() == [c for c in cols.ravel() if c not in empty]
+    y = rng.normal(size=60)
+    z = pr.apply(y.copy())
+    assert np.array_equal(z[empty], y[empty])
+    np.testing.assert_allclose(z[act], ref.apply(y[act].copy()), rtol=0, atol=1e-13)
+
+
 @pytest.mark.parametrize('deflate', [None, sc.Deflate(2)])
 def test_the_solve_honours_the_constraint_exactly_and_is_the_constrained_least_squares(tmp_path, deflate):
     system = _shared_system(frames=40, shared=16, seed=5)
@@ -87,10 +133,10 @@ def test_the_option_lowers_into_the_term_and_is_validated():
     t = sc.Offsets('columns', on='detector_column', per='all', exclude=sc.Poly(2))
     low = t.lower()
     assert low['exclude_degree'] == 2 and low['exclude_axis'] is None
-    with pytest.raises(Exception):
-        sc.Offsets(per='all', exclude=sc.Poly(2, weight=1.0))
-    with pytest.raises(Exception):
-        sc.Offsets(per='all', exclude=sc.Poly(1), polynomial=sc.Poly(1, window=range(0, 3)))
+    with pytest.raises(Exception, match='takes no window'):
+        sc.Offsets(per='all', exclude=sc.Poly(2, window=range(0, 3)))
+    with pytest.raises(Exception, match='not basis='):
+        sc.Offsets(per='all', exclude=sc.Poly(1), basis=sc.Function(np.sin, of='det_x'), n=2)
 
 
 def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
@@ -118,7 +164,7 @@ def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
                + grad[k, 0] * gx + grad[k, 1] * gy + rng.normal(0, 1.0) + rng.normal(0, 0.01, (H, W)))
         write_exposure(tmp_path / 'exposures' / f'toy_exp_{k:03d}.fits', img, ox, oy, {'TEMP': temp[k]})
     cam = sc.Camera((H, W), chunks=CHUNKS, tag='Toy')
-    axes = cam.geometry(1).chunk_map.axes
+    axes = with_chunk_maps(cam.geometry(1), chunk_map_specs(cam, ModelSpec())).chunk_map.axes   # its default map's
     along = axes.names[1]                                                 # the chunk columns
     field = sc.Field(tmp_path / 'toy_run', cam, PIX, compute=TWO_WORKERS)
     field.reproject(tmp_path / 'exposures' / 'toy_exp_*.fits', method='interp', padding=8)
@@ -127,7 +173,7 @@ def test_a_shared_pattern_without_its_linear_part_end_to_end(tmp_path):
                               sc.Offsets('gradient', on='detector', basis=plane, n=2),
                               sc.Offsets('scalar', on='detector')],
                      variables={'temperature': sc.Header('TEMP')})
-    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS))
+    result = field.calibrate(sc.Recipe(model, fit=FIT, coadd=COADD, numerics=NUMERICS), jobs=sc.Job('All'))
     with result.cal() as cal:
         got = np.asarray(cal.offsets[0][0], dtype=np.float64).reshape(ny, nx)
     t = np.linspace(-1, 1, nx)

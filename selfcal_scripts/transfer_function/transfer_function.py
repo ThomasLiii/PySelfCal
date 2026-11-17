@@ -6,15 +6,15 @@ that carry a simulated sky, from six inputs:
         --output-dir <output_dir> --run-name TF_D3
 
 Each input is a flag, else its environment variable, else its default (flag > env var > default).
---dry-run prints the plan and runs nothing. Another recipe: copy this script and change RECIPE (with
-the chunk axes it is solved on, NUM_CH and NUM_COL).
+--dry-run prints the plan and runs nothing. Another recipe: copy this script and change RECIPE (its model
+carries the partition it is solved on, ``maps(num_ch=17, num_col=1)`` of ``selfcal_scripts.recipes.spherex``).
 """
 import argparse
 import os
 
 import selfcal as sc
-from selfcal.instruments import spherex
 from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
+from selfcal_scripts.spherex import jobs
 
 #: The production recipe of 2026-10, unchanged (SLOPE_GAUGE): per frame, a constant per subchannel and
 #: a free gradient along detector x, undamped and unregularised; every observation weighted by its shot
@@ -23,8 +23,8 @@ from selfcal_scripts.recipes.spherex import SLOPE_GAUGE
 #: 2-sigma clipped mean, flag 21 ignored). The transfer function is read off MEAN_MAP.
 RECIPE = SLOPE_GAUGE
 
-#: The chunk axes RECIPE is solved on: 17 channels (the channels are 1..17) and one column.
-NUM_CH, NUM_COL = 17, 1
+#: The channels RECIPE's chunk maps cut the band into (the channels are 1..17).
+NUM_CH = 17
 
 #: The six inputs: flags, environment variable, default, what it is.
 INPUTS = (
@@ -57,9 +57,8 @@ def arguments(argv=None):
 def setup(args):
     """The field and the calibrate() arguments of the run."""
     compute = sc.Compute(args.scratch, workers=args.workers)
-    field = sc.Field(os.path.join(args.output_dir, args.run_name),
-                     sc.SPHEREx(args.detector, num_col=NUM_COL, num_ch=NUM_CH), 6.2, compute=compute)
-    return field, dict(jobs=spherex.channel(args.channel), frames=args.frames)
+    field = sc.Field(os.path.join(args.output_dir, args.run_name), sc.SPHEREx(args.detector), 6.2, compute=compute)
+    return field, dict(jobs=jobs.channel(args.channel), frames=args.frames)
 
 
 def link_reference(ref, run_dir):

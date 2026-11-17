@@ -48,15 +48,16 @@ from scipy.sparse.linalg import lsqr, LinearOperator, aslinearoperator
 from threadpoolctl import threadpool_limits
 
 from .blockcsr import BlockCSR, ColSplitCSR, _csr_shell
-from .cgls import cgls
+from .cgls import REFRESH, cgls
 from .deflation import Deflation, storage_of
 from .projector import ColumnProjector
 from .lsmr import lsmr
 from .lsqr_inplace import lsqr_inplace
 from .monitor import Watch
+from .observations import ObservationTable
 from .snapshots import ActiveColumns, Iterate
 from .solve_record import SolveHistory, SolveRecord
-from .spill import ParkedVector
+from .spill import ParkedVector, release_free_memory
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,25 @@ def _make_parallel_operator(A_csr, n_threads, promote=False):
     op._rmatvec_executor = _rex
     op._AT_view = AT_view  # prevent GC
     return op
+
+
+def _column_squares(A, n_cols, chunk=64_000_000):
+    """The sum of the squared entries of each column of ``A`` (a csr_matrix, :class:`BlockCSR` or :class:`ColSplitCSR`),
+    float64: zero for a column without data (a coverage floor, ``setup_lsqr(min_observations=)``, keeps its columns in
+    the layout with zeroed entries); the columns' information for a constraint measured with it."""
+    if isinstance(A, ObservationTable):
+        return A.column_squares(chunk)
+    sq = np.zeros(int(n_cols), dtype=np.float64)
+    if isinstance(A, ColSplitCSR):
+        parts = [(int(A.cuts[t]), A.sub[b][t][0], A.sub[b][t][1]) for b in range(A.nblocks) for t in range(A.nranges)]
+    else:
+        parts = [(0, blk.data, blk.indices) for blk in (A.blocks if isinstance(A, BlockCSR) else (A,))]
+    for c0, d, i in parts:
+        for s in range(0, d.size, chunk):
+            v = d[s:s + chunk].astype(np.float64)
+            idx = i[s:s + chunk]
+            sq += np.bincount(idx + c0 if c0 else idx, weights=v * v, minlength=sq.size)[:sq.size]
+    return sq
 
 
 def _iter_global_entry_chunks(blocks, chunk_size, join=True):
@@ -331,10 +351,11 @@ def rmatvec_threads(n_threads, n_cols, itemsize=4):
     return max(1, min(int(n_threads), int(budget // per_thread)))
 
 
-def _row_spans(row_bounds, m, n_pieces):
-    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges and intersect each
+def _row_spans(row_bounds, m, n_pieces, cuts=None):
+    """Cut rows ``0..m`` into ``n_pieces`` contiguous ranges (at ``cuts`` when given) and intersect each
     with the storage blocks: ``[(r0, r1, [(block, lo, hi), ...]), ...]``."""
-    cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
+    if cuts is None:
+        cuts = np.linspace(0, m, max(1, n_pieces) + 1, dtype=np.int64)
     pieces = []
     for r0, r1 in zip(cuts[:-1], cuts[1:]):
         r0, r1 = int(r0), int(r1)
@@ -350,7 +371,7 @@ def _row_spans(row_bounds, m, n_pieces):
     return pieces
 
 
-def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
+def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter, fused=None):
     """Row-split ``A^T @ y`` over any storage: ``scatter(bi, lo, hi, y_seg, buf)``
     must add rows ``lo:hi`` (global ids, inside storage block ``bi``) into
     ``buf`` (length ``n``) with scipy's ``csc_matvec``.
@@ -361,6 +382,11 @@ def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
     column chunk — deterministic, and parallel. Rows within a thread are
     scattered in row order block by block, so for a column the per-thread
     partial is the same sequence whatever the storage layout.
+
+    ``fused(bi, lo, hi, x, out_seg, buf)``, when given, writes ``A[lo:hi] @ x`` into ``out_seg`` and adds
+    ``A[lo:hi]^T out_seg`` into ``buf`` (float64) in one pass over those rows; the returned function then carries
+    ``normal(x, out) -> A^T (A x)`` in float64 with ``A x`` left in ``out``, over the same pieces and the same fold
+    as the transpose product, into float64 buffers of its own.
     """
     pieces = _row_spans(row_bounds, m, n_threads)
     bufs = [np.zeros(n, dtype=dtype) for _ in pieces]
@@ -391,6 +417,49 @@ def _make_rowsplit_rmatvec(m, n, dtype, n_threads, row_bounds, scatter):
 
         list(ex.map(_reduce_chunk, range(len(pieces))))
         return out
+
+    if fused is not None:
+        bufs64 = []                                    # float64 buffers of the same pieces, made on first use
+
+        def _reduce64(t):
+            def _reduce_t(k):
+                c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+                t[c0:c1] = bufs64[0][c0:c1]
+                for b in bufs64[1:]:
+                    t[c0:c1] += b[c0:c1]
+            list(ex.map(_reduce_t, range(len(pieces))))
+            return t
+
+        def _normal(x, out):
+            if not bufs64:
+                bufs64.extend(np.zeros(n, dtype=np.float64) for _ in pieces)
+
+            def _fused_piece(i):
+                buf = bufs64[i]
+                buf[...] = 0
+                for bi, lo, hi in pieces[i][2]:
+                    fused(bi, lo, hi, x, out[lo:hi], buf)
+
+            list(ex.map(_fused_piece, range(len(pieces))))
+            return _reduce64(np.empty(n, dtype=np.float64))
+
+        def _rmatvec64(y):
+            """``A^T y`` in float64 over the same pieces and fold, ``y`` in any dtype (the gradient of a float64
+            residual, for CGLS's recurrence)."""
+            if not bufs64:
+                bufs64.extend(np.zeros(n, dtype=np.float64) for _ in pieces)
+            y = np.ascontiguousarray(y, dtype=np.float64)
+
+            def _scatter_piece(i):
+                buf = bufs64[i]
+                buf[...] = 0
+                for bi, lo, hi in pieces[i][2]:
+                    scatter(bi, lo, hi, y[lo:hi], buf)
+
+            list(ex.map(_scatter_piece, range(len(pieces))))
+            return _reduce64(np.empty(n, dtype=np.float64))
+        _rmatvec.normal = _normal
+        _rmatvec.promoted = _rmatvec64
 
     return _rmatvec, ex, len(pieces)
 
@@ -767,13 +836,200 @@ def _make_parallel_operator_blocks(bcsr, n_threads, a_owned=False, promote=False
     op._bcsr = bcsr  # prevent GC of the storage blocks
     return op
 
+def _make_owned_rmatvec(table, n_threads):
+    """The transpose products of an :class:`~selfcal.core.observations.ObservationTable` grouped by sky range
+    (``table.row_order == 'sky'``): the data rows cut into ``n_threads`` pieces at blocks' first rows
+    (:meth:`~selfcal.core.observations.ObservationTable.row_cuts`), so each piece is the only one with rows of its
+    pixels and adds their sky columns straight into the output, each column's products in row order from zero; the
+    offset columns (from :meth:`~selfcal.core.observations.ObservationTable.first_offset_column` on) go to private
+    buffers, one per piece, reduced in piece order; the constraint rows, when present, add after, sequentially.
+    Deterministic, and the sky columns' sums do not depend on the thread count. Returns ``(rmatvec, executor,
+    pieces)`` as :func:`_make_rowsplit_rmatvec` does, ``rmatvec`` carrying ``normal`` (``A^T (A x)`` in float64 with
+    ``A x`` left in ``out``) and ``promoted`` (``A^T y`` in float64)."""
+    m_data, n = table.n_data_rows, int(table.shape[1])
+    m = int(table.shape[0])
+    dtype = table.dtype
+    split = table.first_offset_column()
+    n_off = n - split
+    pieces = _row_spans(table.row_bounds, m_data, n_threads, cuts=table.row_cuts(n_threads))
+    np_ = max(1, len(pieces))
+    ex = ThreadPoolExecutor(max_workers=np_)
+    zero_cuts = np.linspace(0, split, np_ + 1, dtype=np.int64)
+    red_cuts = np.linspace(split, n, np_ + 1, dtype=np.int64)
+    tail_bi = table.nblocks if table.tail is not None else None
+    logger.info(f"  rmatvec: rows by sky range over {len(pieces)} threads, the {split} sky columns summed in place "
+                f"(+{len(pieces) * n_off * np.dtype(dtype).itemsize / 2**30:.2f} GB of private buffers for the {n_off} "
+                "offset columns; deterministic for this thread count, the sky columns for any).")
+    bufs = {}
+
+    def _bufs(dt):
+        b = bufs.get(np.dtype(dt))
+        if b is None:
+            b = bufs[np.dtype(dt)] = [np.zeros(n_off, dtype=dt) for _ in pieces]
+        return b
+
+    def _run(out, dt, rows):
+        """``rows(bi, lo, hi, obuf)`` over every piece's spans, ``out`` (length n, ``dt``) set from zero."""
+        ob = _bufs(dt)
+
+        def _zero(k):
+            out[int(zero_cuts[k]):int(zero_cuts[k + 1])] = 0
+
+        list(ex.map(_zero, range(np_)))
+
+        def _work(i):
+            buf = ob[i]
+            buf[...] = 0
+            for bi, lo, hi in pieces[i][2]:
+                rows(bi, lo, hi, buf)
+
+        list(ex.map(_work, range(len(pieces))))
+
+        def _reduce(k):
+            c0, c1 = int(red_cuts[k]), int(red_cuts[k + 1])
+            seg = out[c0:c1]
+            if ob:
+                seg[...] = ob[0][c0 - split:c1 - split]
+                for b in ob[1:]:                   # fixed order => same fold everywhere
+                    seg += b[c0 - split:c1 - split]
+            else:
+                seg[...] = 0
+
+        list(ex.map(_reduce, range(np_)))
+        return out
+
+    def _rmatvec(y):
+        y = np.ascontiguousarray(y, dtype=dtype)
+        out = np.empty(n, dtype=dtype)
+        _run(out, dtype, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], out, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], out)
+        return out
+
+    def _normal(x, out_rows):
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.normal_rows(bi, lo, hi, x, out_rows[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.normal_rows(tail_bi, m_data, m, x, out_rows[m_data:m], t)
+        return t
+
+    def _promoted(y):
+        y = np.ascontiguousarray(y, dtype=np.float64)
+        t = np.empty(n, dtype=np.float64)
+        _run(t, np.float64, lambda bi, lo, hi, buf: table.rmatvec_rows(bi, lo, hi, y[lo:hi], t, split, buf))
+        if tail_bi is not None:
+            table.rmatvec_rows(tail_bi, m_data, m, y[m_data:m], t)
+        return t
+
+    _rmatvec.normal = _normal
+    _rmatvec.promoted = _promoted
+    return _rmatvec, ex, len(pieces)
+
+
+def _make_table_operator(table, n_threads, promote=False):
+    """The SpMV operator of an :class:`~selfcal.core.observations.ObservationTable`.
+
+    ``A @ x``: the row pieces of :func:`_row_spans` in threads, each row's entries made and multiplied by the table's
+    loops (the constraint rows by scipy's kernel), the output in the entries' dtype, or the promoted one at one
+    thread or with ``promote`` (the block storages' regimes). ``A^T @ y``: the row-split scatter of
+    :func:`_make_rowsplit_rmatvec` with the table's rows as the scatter, so the same pieces, private buffers and
+    reduction order as the stored storages give the same bytes for the same thread count; a vector wider than the
+    entries goes through the sequential scatter in the promoted dtype, as there. A table grouped by sky range has
+    the transpose products of :func:`_make_owned_rmatvec` (private buffers for the offset columns only).
+    """
+    from .observations import warm_up
+    warm_up()
+    m, n = table.shape
+    dtype = table.dtype
+    threads = max(1, int(n_threads))
+    table.threads = threads
+    row_bounds = table.row_bounds
+    logger.info(f"Building SpMV operator over the observation table ({threads} threads, {table.nblocks} blocks)...")
+    pieces = _row_spans(row_bounds, m, threads)
+    executor = ThreadPoolExecutor(max_workers=threads)
+    promote_matvec = n_threads <= 1 or promote
+    _outs = {}
+
+    def _matvec(x):
+        # the output in the entries' dtype unless promoted (the block storages' regimes); the products in the
+        # promoted dtype of the entries and x, as scipy forms them, rounded on the store
+        od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
+        out = _out_buffer(_outs, m, od)
+        xs = np.ascontiguousarray(x)
+
+        def _work(piece):
+            for bi, lo, hi in piece[2]:
+                table.matvec_rows(bi, lo, hi, xs, out[lo:hi])
+        list(executor.map(_work, pieces))
+        return out
+
+    by_sky = table.row_order == 'sky' and table.first_offset_column() > 0      # sky columns to own
+    _rmv_threads = rmatvec_threads(n_threads, n - table.first_offset_column() if by_sky else n,
+                                   np.dtype(dtype).itemsize)
+    _rowsplit, _rex = (None, None)
+    if by_sky and _rmv_threads > 1:
+        _rowsplit, _rex, _ = _make_owned_rmatvec(table, _rmv_threads)
+    elif _rmv_threads > 1:
+        _rowsplit, _rex, _ = _make_rowsplit_rmatvec(m, n, dtype, _rmv_threads, row_bounds, table.rmatvec_rows,
+                                                   fused=table.normal_rows)
+
+    def _rmatvec(y):
+        if _rowsplit is not None and np.promote_types(dtype, y.dtype) == dtype:
+            return _rowsplit(y)
+        out_dtype = np.promote_types(dtype, y.dtype)
+        out = np.zeros(n, dtype=out_dtype)
+        yc = np.ascontiguousarray(y, dtype=out_dtype)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.rmatvec_rows(bi, lo, hi, yc[lo:hi], out)
+        return out
+
+    def _normal_product(x):
+        # (A x, A^T A x) from one making of the rows: the matvec's output as _matvec stores it and the transpose
+        # product of that stored vector in float64, by the row-split pieces when they serve this dtype, else
+        # sequentially
+        od = np.promote_types(dtype, x.dtype) if promote_matvec else dtype
+        out = _out_buffer(_outs, m, od)
+        xs = np.ascontiguousarray(x)
+        if _rowsplit is not None and od == dtype:
+            return out, _rowsplit.normal(xs, out)
+        t = np.zeros(n, dtype=np.float64)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.normal_rows(bi, lo, hi, xs, out[lo:hi], t)
+        return out, t
+
+    def _rmatvec_promoted(y):
+        # A^T y in float64 (the row-split pieces when they exist, else the sequential scatter): the gradient of a
+        # float64 residual, for CGLS's recurrence; rmatvec itself keeps the stored storages' regimes
+        if _rowsplit is not None:
+            return _rowsplit.promoted(y)
+        out = np.zeros(n, dtype=np.float64)
+        yc = np.ascontiguousarray(y, dtype=np.float64)
+        for bi in range(len(row_bounds) - 1):
+            lo, hi = int(row_bounds[bi]), int(row_bounds[bi + 1])
+            if hi > lo:
+                table.rmatvec_rows(bi, lo, hi, yc[lo:hi], out)
+        return out
+
+    op = LinearOperator((m, n), matvec=_matvec, rmatvec=_rmatvec, dtype=dtype)
+    op.normal_product = _normal_product
+    op.rmatvec_promoted = _rmatvec_promoted
+    op._executor = executor
+    op._rmatvec_executor = _rex
+    op._table = table
+    return op
+
+
 _SOLVERS = ('lsqr', 'lsmr', 'cgls')
 # The pieces of b the final residual is accumulated over (float64 temporaries of 64 MB).
 _RESIDUAL_BLOCK = 1 << 23
 
 
 def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_lim, history, callback=None,
-                callback_every=1, watch=None, constrain=None, refresh=None, vectors=None):
+                callback_every=1, watch=None, constrain=None, refresh=None, vectors=None, gradient='recomputed'):
     """Run LSQR or LSMR on the (scaled) operator ``A``.
 
     ``b_owned`` / ``x0_owned`` are one-element lists: LSQR (``lsqr_inplace``) takes both over (it
@@ -781,8 +1037,9 @@ def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_
     in place. ``callback(itn, x)``: called every ``callback_every`` iterations while the solve goes
     on; ``watch``: the monitors and stop rules (:class:`~selfcal.core.monitor.Watch`); ``constrain``:
     applied to each normalised right Lanczos vector (a deflated solve's,
-    :meth:`~selfcal.core.deflation.Deflation.constrain`); ``refresh`` and ``vectors``: CGLS's right-hand side
-    for its residual refresh and its vectors' dtype (:func:`~selfcal.core.cgls.cgls`). Returns the solver's tuple."""
+    :meth:`~selfcal.core.deflation.Deflation.constrain`); ``refresh``, ``vectors`` and ``gradient``: CGLS's
+    right-hand side for its residual refresh, its vectors' dtype and how it has each iteration's gradient
+    (:func:`~selfcal.core.cgls.cgls`). Returns the solver's tuple."""
     hook = {} if callback is None else {'callback': callback, 'callback_every': int(callback_every)}
     if watch is not None:
         hook['watch'] = watch
@@ -797,7 +1054,7 @@ def _run_solver(A, b_owned, x0_owned, solver, *, atol, btol, damp, conlim, iter_
     if solver == 'cgls':
         return cgls(A, b_owned.pop(), x0=x0_owned.pop(), x0_owned=True, show=True, atol=atol, btol=btol, damp=damp,
                     conlim=conlim, iter_lim=iter_lim, history=history, refresh=refresh,
-                    vectors=np.float64 if vectors is None else vectors, **hook)
+                    vectors=np.float64 if vectors is None else vectors, gradient=gradient, **hook)
     raise ValueError(f"Unknown solver: {solver}. Use 'lsqr' or 'lsmr'.")
 
 
@@ -848,7 +1105,7 @@ def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter
 
 def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 ref_shape: tuple[int, int], x0: np.ndarray | None = None,
-                atol: float = 1e-05, btol: float = 1e-05, damp: float = 1e-2,
+                atol: float = 1e-05, btol: float = 1e-05, damp: float = 0.0,
                 iter_lim: int = 100, precondition: bool = True,
                 solver: str = 'lsmr', use_float32: bool = False, n_threads: int = 32,
                 active_mask: np.ndarray | None = None,
@@ -857,7 +1114,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 return_record: bool = False, snapshot=None,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
-                vectors=None, signatures=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                vectors=None, signatures=None, held=None,
+                gradient='recomputed') -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -881,7 +1139,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     btol : float, optional
         Relative tolerance passed to the solver (default 1e-05).
     damp : float, optional
-        Tikhonov damping applied by the solver (default 1e-2).
+        Tikhonov damping applied by the solver (default 0: none).
     iter_lim : int, optional
         Maximum solver iterations (default 100).
     precondition : bool, optional
@@ -899,6 +1157,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         as before. The solution is returned in the products' precision either way. ``'float64'`` with ``use_float32``: LSQR and LSMR keep ``b`` and their
         vectors in float64 and the products are computed in float64 from the float32 matrix
         (upcast piece by piece in each product: slower). ``'float32'`` needs ``use_float32``.
+    gradient : {'recomputed', 'recurrence'}, optional
+        How CGLS has each iteration's gradient (:func:`~selfcal.core.cgls.cgls`): from the residual
+        by a transpose product, or carried along from the transpose product of the matvec's own
+        result, which an operator with ``normal_product`` (the observation table) forms in the
+        matvec's pass. CGLS only.
     n_threads : int, optional
         Thread count for the parallel SpMV ``LinearOperator``; <=1 uses scipy's
         serial matvec (default 32).
@@ -955,7 +1218,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         (:class:`~selfcal.core.spill.ParkedVector`; the run engine gives the
         run's scratch directory). None, or a directory it cannot be written
         to: no copy, and those residuals are recorded as NaN (a warning says
-        why; the solve goes on). LSMR and the COO path keep ``b`` anyway.
+        why; the solve goes on). LSMR and the COO path keep ``b`` anyway. A
+        deflated CGLS solve also parks there the deflated right-hand side its
+        residual refresh reads (without it, each refresh makes it again).
     exclusions : list, optional
         Hard constraints on the unknowns, ``[(cols, P), ...]`` in the full column layout: the
         solution has no component along the directions ``P`` (``(n, r)``) over each row of
@@ -970,6 +1235,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         :meth:`~selfcal.models.spec.ModelSpec.signature_exclusions`).
         The responses come from the deflation's setup, which also adds the constraint to the column
         constraints (:meth:`~selfcal.core.deflation.Deflation._exclude_signatures`): needs ``deflate``.
+        With ``deflate.direct`` False that setup ends there: the constraint is made and the solver runs
+        on every unknown, the deflation's patterns included.
+    held : array of int, optional
+        The offset columns (full layout) of the terms ``Deflate(offsets=)`` leaves out: the deflation holds their
+        response to its patterns at zero (:class:`~selfcal.core.deflation.Deflation`).
 
     Returns
     -------
@@ -984,9 +1254,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         right-hand side LSQR overwrites is parked on disk for it,
         ``scratch_dir``; NaN when it could not be).
     """
-    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR)):
+    if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         raise TypeError(
-            "A must be a scipy.sparse.coo_matrix, csr_matrix, BlockCSR or ColSplitCSR")
+            "A must be a scipy.sparse.coo_matrix, csr_matrix, BlockCSR, ColSplitCSR or ObservationTable")
     if not isinstance(b, np.ndarray):
         raise TypeError("b must be a numpy array")
     if not (isinstance(ref_shape, (list, np.ndarray, tuple)) and len(ref_shape) == 2):
@@ -1030,9 +1300,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
 
     # ---- Pre-compacted fast path: setup_lsqr already dropped all-zero
     # ---- columns; A arrives as compact CSR (or int32 BlockCSR).
-    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR)):
+    if isinstance(A, (csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         is_block = isinstance(A, BlockCSR)
         is_split = isinstance(A, ColSplitCSR)
+        is_table = isinstance(A, ObservationTable)
         if active_mask is not None:
             if num_cols_full is None:
                 raise ValueError(
@@ -1062,7 +1333,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                         _d, _i, _ip = A.sub[_b][_t]
                         if _d.dtype != np.float32:
                             A.sub[_b][_t] = (_d.astype(np.float32), _i, _ip)
-            else:
+            elif not is_table:                # the table's entries are float32 by construction
                 for _blk in (A.blocks if is_block else (A,)):
                     if _blk.data.dtype != np.float32:
                         _blk.data = _blk.data.astype(np.float32)
@@ -1073,6 +1344,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             if x0_compressed is not None and not keep64:
                 x0_compressed = x0_compressed.astype(np.float32)
 
+        # an exclusion measured with the columns' information (Overlap(weights='information')) needs their squared norms
+        weighted = bool(exclusions) and any(len(e) > 2 and e[2] is not None for e in exclusions)
         if precondition:
             logger.info("Applying column-norm preconditioning...")
             chunk_size = 64_000_000  # ~256 MB per chunk at f32
@@ -1082,12 +1355,15 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # partial-sum tree is part of the byte-equal contract); a chunk
             # that straddles storage blocks comes as its blocks' slices, folded
             # one after another (the fold over their concatenation), never split.
-            def _chunk_pieces():
+            def _chunk_pieces(A):
                 """Each global chunk as [(col_offset, width, [(data, indices), ...])]:
                 one entry per column range for partitioned storage, a single
                 whole-width one otherwise."""
                 if is_split:
                     yield from _iter_range_pieces_colsplit(A, chunk_size, join=False)
+                elif is_table:
+                    for _slices in A.entry_chunks(chunk_size):
+                        yield [(0, n_active, _slices)]
                 elif is_block:
                     for _slices in _iter_global_entry_chunks(A.blocks, chunk_size, join=False):
                         yield [(0, n_active, _slices)]
@@ -1143,18 +1419,20 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 from collections import deque
                 with ThreadPoolExecutor(max_workers=_win) as _ex:
                     _q = deque()
-                    for _k, _pieces in enumerate(_chunk_pieces()):
+                    for _k, _pieces in enumerate(_chunk_pieces(A)):
                         _q.append(_ex.submit(_partial, _pieces, _slots[_k % _win]))
                         if len(_q) >= _win:
                             _fold(_q.popleft().result())
                     while _q:
                         _fold(_q.popleft().result())
             else:
-                for _pieces in _chunk_pieces():
+                for _pieces in _chunk_pieces(A):
                     _fold(_partial(_pieces, _slots[0]))
             del _slots
 
             col_norms = np.sqrt(col_sq_norm)
+            no_data = np.flatnonzero(col_norms == 0) if exclusions else None
+            information = col_sq_norm if weighted else None
             col_norms[col_norms == 0] = 1.0
             M_inv = col_norms
             M = 1.0 / M_inv
@@ -1173,6 +1451,15 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                         for start in range(0, _d.size, chunk_size):
                             _tiles.append(((_d, _i, _Mt), start,
                                            min(start + chunk_size, _d.size)))
+            elif is_table:
+                # the table scales every entry it makes (float32 M times the float32 entry, as the tiles below do);
+                # its stored constraint rows are scaled here
+                if M.dtype != np.float32:
+                    raise TypeError(f"the column scale is {M.dtype}, not float32")
+                A.scale = M
+                if A.tail is not None:
+                    for start in range(0, A.tail.data.size, chunk_size):
+                        _tiles.append((A.tail, start, min(start + chunk_size, A.tail.data.size)))
             else:
                 for _blk in (A.blocks if is_block else (A,)):
                     for start in range(0, _blk.data.size, chunk_size):
@@ -1212,6 +1499,11 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             M = None
             x0_solver = x0_compressed
             x0_compressed = None
+            if exclusions:
+                information = _column_squares(A, n_active)
+                no_data = np.flatnonzero(information == 0)
+                if not weighted:
+                    information = None
 
         proj = None
         sig = None
@@ -1227,8 +1519,26 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 cols = np.asarray(cols, dtype=np.int64)
                 c = cols if active_mask is None else cmap[cols]
                 sig.append((c[c >= 0], k if k == 'all' else int(k), str(name), np.asarray(chunk, dtype=np.int64)[c >= 0]))
+            cmap = None                                   # the full layout's column map: one int64 per grid column
+        def solver_columns(cols):
+            # full-layout columns -> solver columns (the active ones)
+            c = np.asarray(cols, dtype=np.int64)
+            if active_mask is not None:
+                smap = np.full(len(active_mask), -1, dtype=np.int64)
+                smap[np.asarray(active_mask, dtype=bool)] = np.arange(int(np.sum(active_mask)))
+                c = smap[c]
+                c = c[c >= 0]
+            return c
+
+        held_s = None
+        if held is not None and deflate is not None and len(held):
+            held_s = solver_columns(held)
         if exclusions:
-            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active)
+            # a column without data (a coverage floor's) has no unknown in the constraints: in them it would take
+            # the value that lifts them off the others
+            proj = ColumnProjector.build(exclusions, active_mask, M if precondition else None, n_active,
+                                         no_data=no_data, information=information)
+            information = None
             if x0_solver is not None:
                 proj.apply(x0_solver)
             logger.info(f"Column constraints: {proj} (the solver runs on A P: no row, no weight)")
@@ -1250,6 +1560,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         del b
         history = SolveHistory()
         solve_kw = dict(atol=atol, btol=btol, damp=damp, conlim=conlim, iter_lim=iter_lim, history=history)
+        if gradient != 'recomputed':
+            if solver != 'cgls':
+                raise ValueError(f"gradient={gradient!r} is CGLS's; the solver is {solver!r}")
+            solve_kw['gradient'] = gradient           # (:func:`~selfcal.core.cgls.cgls`)
         watch = None
         if stop is not None or monitor is not None:
             watch = Watch(stop=stop, monitor=monitor, ref_shape=ref_shape, sky_names=sky_names, history=history,
@@ -1316,6 +1630,8 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             # Run the solver on the column-scaled operator op (the matrix storage behind it: storage),
             # deflated when asked; returns (the solver's result with the solution first, the record).
             nonlocal defl, proj
+            shift_kept = None
+            responses = None                                # Deflate(direct=False): the setup that made the constraints
             op0 = op if hasattr(op, 'matvec') else aslinearoperator(op)
             if deflate is not None:
                 # The deflation first: with Deflate(exclude=) its setup adds the degenerate directions' sky shapes to
@@ -1323,36 +1639,57 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 t0 = time.perf_counter()
                 defl = Deflation(storage, _b_owned[0], scale=M, active_mask=active_mask, ref_shape=ref_shape,
                                  sky_names=sky_names, settings=deflate, threads=n_threads, projector=proj,
-                                 signatures=sig)
+                                 signatures=sig, held=held_s)
                 if defl.projector is not proj:
                     proj = defl.projector
                     logger.info(f"Column constraints with the deflation's additions: {proj}")
+                if not defl.direct:
+                    # The offset responses alone: the constraints are made, and the solver runs on every unknown
+                    # (the plain solve under the column constraints; a start is put in the allowed subspace).
+                    responses, defl = defl, None
+                    if _x0_owned[0] is not None:
+                        proj.apply(_x0_owned[0])
             if proj is not None:
                 op = proj.wrap(op0)
             _watch(op)
             kw, solver_op, setup_s = solve_kw, op, None
-            if deflate is not None:
+            if defl is not None:
                 defl.bind(op, storage)
                 _x0_owned[0] = defl.start(_b_owned[0], _x0_owned[0])
                 setup_s = time.perf_counter() - t0
                 solver_op = defl.operator()
                 # LSQR / LSMR: the Lanczos vectors are kept in the complement of the space as well (constrain);
                 # CGLS: the two projections alone (its gradients stay there by construction; the guard on top of
-                # P^T was found to let a float32 solve drift far past convergence).
-                kw = dict(solve_kw, constrain=None if solver == 'cgls' else defl.constrain)
+                # P^T was found to let a float32 solve drift far past convergence), except with the gradient by
+                # recurrence, which no projection renews: a part of the gradient outside the complement would
+                # grow from iteration to iteration, so the recurrence's gradient is kept there (constrain).
+                guard = solver != 'cgls' or solve_kw.get('gradient') == 'recurrence'
+                kw = dict(solve_kw, constrain=defl.constrain if guard else None)
                 if solver == 'cgls':
-                    # CGLS measures its residual against the deflated right-hand side b - B x_c (its refresh
-                    # recomputes it from the parked original: one float64 pass over the matrix every 50 iterations).
-                    kw['refresh'] = lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype)))
+                    # CGLS measures its residual against the deflated right-hand side b - B x_c, which start() has just
+                    # made in b's buffer: parked on disk when the solve can reach a refresh, each refresh reads it back
+                    # a piece at a time; without that copy a refresh makes it again from the parked original (a new
+                    # m-vector and one float64 pass over the matrix). The same bits either way.
+                    if (_rhs() is not None and _b_owned[0].dtype == np.dtype(op.dtype)
+                            and (iter_lim is None or iter_lim >= REFRESH)):
+                        shift_kept = ParkedVector(_b_owned[0], scratch_dir,
+                                                  label='the deflated right-hand side (for the refresh)',
+                                                  without='each refresh makes it again from the original')
+                    kw['refresh'] = ((lambda: shift_kept) if shift_kept is not None and shift_kept.available else
+                                     lambda: (None if _rhs() is None else defl.shifted(_rhs(), np.dtype(op.dtype))))
                 if watch is not None:
                     kw['watch'] = (lambda itn, y, istop, tests:
                                    watch(itn, _as_solution(y) if any(watch._due(itn).values()) else y, istop, tests))
+            release_free_memory('before the iterations')     # what the build and the deflation setup freed
             t_solve = time.perf_counter()
             try:
                 result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)
                 if defl is not None:
                     result = (_as_solution(result[0], exact=True),) + tuple(result[1:])
                 record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve)
+                if responses is not None:
+                    record.deflation = responses.summary_json()
+                    record.deflation_s = responses.setup_s
                 if defl is not None:
                     record.deflation = defl.summary_json()
                     record.deflation_s = setup_s
@@ -1363,6 +1700,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             finally:
                 if defl is not None:
                     defl.close()
+                if responses is not None:
+                    responses.close()
+                if shift_kept is not None:
+                    shift_kept.discard()
             return result, record
 
         _b_kept = (ParkedVector(_b_owned[0], scratch_dir, label='the right-hand side (for the true residual)')
@@ -1372,8 +1713,9 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         elif vdt is not None:
             solve_kw['vectors'] = vdt
         try:
-            if is_block or is_split:
-                op = (_make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges, promote=promote)
+            if is_block or is_split or is_table:
+                op = (_make_table_operator(A_csr, n_threads, promote=promote) if is_table else
+                      _make_parallel_operator_colsplit(A_csr, n_threads, A_csr.nranges, promote=promote)
                       if is_split else
                       _make_parallel_operator_blocks(A_csr, n_threads, a_owned=a_owned, promote=promote))
                 try:

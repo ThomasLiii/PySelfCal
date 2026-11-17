@@ -45,7 +45,6 @@ only with `SELFCAL_TEST_FORK_HAZARD=1`.
 | | `test_sky_model.py`, `test_sky_coefficients.py` | sky terms: a map times any coefficient function of data variables; the ready-made coefficient shapes |
 | | `test_nsky_roundtrip.py` | a three-component sky model survives the save and the load exactly, with the v3 layout and its v2 aliases |
 | | `test_offset_structure.py` | the generic chunk-axes builders reproduce the SPHEREx builders exactly |
-| | `test_piecewise_offset_basis.py` | the segmented Chebyshev offset basis |
 | | `test_offset_terms.py` | the per-frame scalar as an ordinary offset term and `exclude=sc.Poly(0)` as an exact constraint: the column layout; the constraint on a map with several axes; the removed settings refused; two spellings of one model reach the same fit; a chunk's coverage fraction counted over its pixels in the solve's window; the mosaic leaves out a zeroed chunk nothing fills; a cal file with a separate `frame_scalar` refused |
 | Instruments | `test_euclid_instrument.py` | the Euclid exposure layout, chunk maps and axes, edge taper, renderers, hooks and grouped terms |
 | | `test_spherex_precompute.py` | `spherex.precompute_lvf` writes the LVF arc parameters |

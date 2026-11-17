@@ -15,7 +15,7 @@ field = sc.Field("quickstart_output/quickstart", camera, pixel_scale=10.0)   # o
 
 if __name__ == "__main__":                 # worker processes import this file again: declarations only above
     field.reproject("quickstart_output/exposures/sim_*.fits", method="interp", padding=8)
-    result = field.calibrate(sc.continuum(smooth=0.1))
+    result = field.calibrate(sc.continuum(smooth=0.1), jobs=sc.Job("All"))   # one job: every chunk
     print(result)
 ```
 
@@ -26,7 +26,8 @@ if __name__ == "__main__":                 # worker processes import this file a
   immutable: `recipe.replace(name="v2")` makes a checked copy. `repr` prints the Python that
   rebuilds an object.
 - **Every action plans first.** `field.plan(recipe, jobs=...)` (and every action, before it
-  starts) builds the instrument's geometry, checks the model against it, finds the frames and the
+  starts) builds the instrument's geometry with the model's chunk maps on it, checks the model and
+  the jobs against them, finds the frames and the
   existing products, and imports every function the run sends to the worker processes in a fresh
   worker. It takes seconds and computes nothing; `print(field.plan(...))` shows what would run.
 - **Every action leaves a record**: `<field>/records/<action>_<time>_<pid>.json` (the resolved
@@ -44,32 +45,104 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Field(path, instrument, pixel_scale, compute=)` | one data set: `path` holds `ref.fits`, `reprojected/`, `calibration/`, `mosaic/`, `logs/`, `records/` |
 | `field.reproject`, `.calibrate`, `.mosaic`, `.plan`, `.result` | the actions |
 | `sc.Model(sky=, offsets=, ...)`, `sc.continuum()`, `sc.spectral()`, `sc.two_block()` | the model |
+| `sc.ChunkMap(fn, tag=, **params)` in `sc.Model(chunk_maps=)`; `sc.Job(name, window=, strict=)` | the partitions of the detector the offsets live on; one solve and the chunks it covers |
 | `sc.Recipe(model, fit=sc.Fit(), coadd=sc.Coadd(), numerics=sc.Numerics(), name=)` | everything that decides the numbers |
 | `sc.Compute(scratch, workers=, ...)` | the machine (never changes a byte) |
 | `sc.Tiles`, `sc.Passes` | big fields: tiling, the N-pass solve |
 | `sc.Snapshots` | long solves: the solution every k iterations, as a cal file |
 | `sc.Fit(method=, vectors=)` | the solver (CGLS by default) and the precision of its vectors |
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
-| `sc.Fit(min_observations=2)` | leave out of the solve the sky pixels a single observation covers |
+| `sc.Fit(min_observations=2)`, `sc.Offsets(min_observations=2)` | leave out of the solve the sky pixels, or a term's offsets, a single observation covers |
+| `sc.Fit(window_edge='inside')` | keep in the solve only the observations whose bilinear sampling lies wholly inside the job's window, so the solve reads no detector pixel outside it (default `'partial'`: also those straddling its edge, at the share of their sampling inside) |
 | `sc.Result` | the products, with readers |
 
-### Instruments and jobs
+### Instruments
 
 ```python
-from selfcal.instruments import spherex
-
-nep = sc.Field(f"{OUTPUTS}/SPHEREx_NEP_2026W17_D3_6p2arcsec", sc.SPHEREx(3, num_col=3), 6.2)
-nep.calibrate(RECIPE, jobs=spherex.channel(17))                     # one map
-nep.calibrate(RECIPE, jobs=spherex.channels(1, 34))                 # 34 maps, the frames staged once
-nep.calibrate(RECIPE, jobs=spherex.group(17, 18))                   # one map over two channels
-nep.calibrate(RECIPE, jobs=spherex.window("Multiline3", subchannels=range(200, 321)))
+nep = sc.Field(f"{OUTPUTS}/SPHEREx_NEP_2026W17_D3_6p2arcsec", sc.SPHEREx(3), 6.2)   # SPHEREx detector 3
+edfn = sc.Field(f"{OUTPUTS}/EDFN_Y_1p5arcsec", sc.Euclid(band="Y"), 1.5)            # Euclid NISP, Y band
+cam = sc.Field("quickstart_output/quickstart", sc.Camera((64, 64), chunks=(4, 4)), 10.0)
 ```
 
-A `Camera` or `Euclid` field has one job and needs no `jobs=`. `sc.Camera` takes a custom
-exposure `reader`, per-pixel `detector_maps` and per-frame `headers` as data variables; any
-other chunk geometry is a subclass of `sc.Instrument` (see below). `instrument.geometry(oversample)`
-is an instrument's detector geometry (its chunk maps, their axes, its per-pixel maps), without
-any data: `sc.SPHEREx(4).geometry(1).chunk_maps["subchannel"]`.
+An instrument is what took the data: how its exposures are read, its detector and the detector's
+per-pixel maps. `sc.SPHEREx(d)` is one SPHEREx detector, with its band-centre and band-width maps
+and its LVF arc fit (`calib_dir=` and `lvf_dir=` choose their directories); `sc.Euclid` reads the 16
+detectors of a NISP exposure; `sc.Camera` is a single-detector FITS imager, and takes a custom
+exposure `reader`, per-pixel `detector_maps` and per-frame `headers` as data variables. Another
+telescope is a subclass of `sc.Instrument` ([A new telescope](#a-new-telescope)).
+`instrument.geometry(oversample)` is an instrument's detector geometry (its shape and its per-pixel
+maps), without any data.
+
+### Chunk maps and jobs
+
+The chunk maps, the partitions of the detector that the offset terms live on, are part of the
+model:
+
+```python
+from selfcal.instruments.camera import grid_chunks
+
+def amplifiers(geometry, n):                          # n strips side by side, one per amplifier
+    return sc.Chunks.rectangles(geometry.shape, (1, n), axes=("all", "amp"))
+
+MODEL = sc.Model(chunk_maps={"grid": sc.ChunkMap(grid_chunks, tag="Chunks8x8", chunks=(8, 8)),   # primary
+                             "amps": sc.ChunkMap(amplifiers, n=4)},
+                 offsets=[sc.Offsets(smooth=0.1, exclude=sc.Poly(0)),       # on the primary map
+                          sc.Offsets("amps", on="amps", exclude=sc.Poly(0)),
+                          sc.Offsets("scalar", on="detector")])
+```
+
+- **A chunk map**, `sc.ChunkMap(fn, tag=, **params)`: `fn(geometry, **params)` returns the partition,
+  an `sc.Chunks`: `det`, the chunk id of every detector pixel (`-1`: no chunk), and `axes`, the named
+  coordinates of its chunk grid ([`ChunkAxes`][selfcal.models.offset_structure.ChunkAxes]);
+  `sc.Chunks.rectangles(shape, chunks, axes=)` cuts the detector into rectangles. The run engine
+  evaluates every map on the instrument's detector geometry and names it after its key. `fn` must
+  be importable by the worker processes, like every function of a run.
+- **The primary map** is the first: the map of an offset term that names none, the map the jobs
+  name their chunks on, and the one whose `tag` joins the product names after the instrument's,
+  `cal_<instrument tag>_<map tag>_<job>_<recipe name>.h5`.
+- **A model that names no maps** gets the instrument's defaults (`instrument.default_chunk_maps()`):
+  `sc.Camera`'s `grid` of `chunks` rectangles (tag `Chunks<ny>x<nx>`), `sc.Euclid`'s grid, stripes and
+  tilted stripes. `sc.SPHEREx` has none: a SPHEREx model names its own (below).
+- **A job**, `sc.Job(name, window=, strict=)`, is one solve, with its own cal file and mosaic: a `name`
+  (part of every product name) and the chunks of the primary map it covers. `window` is a range of
+  chunk indices per chunk axis (`{"col": range(0, 4)}`; an axis it does not name takes every value),
+  `strict` the chunks whose pixels the coadd keeps (default: the window's). A window wider than its
+  strict set overlaps the neighbouring jobs, for stitching. `sc.Job("All")` is every chunk: the one
+  job of a camera run; a Euclid run names its job after the band, `sc.Job("Y")`.
+- **Every action names its jobs**: `jobs=` (one job or several) is required by `plan`, `calibrate`,
+  `mosaic`, `adopt`, `submit` and `result`. The plan checks each job against the primary map: the
+  axes it names exist, and its ranges lie inside them.
+
+**SPHEREx.** The partitions of a SPHEREx detector, its jobs and its model terms are choices of the
+recipes, built from the API in `selfcal_scripts/spherex/` (`chunks.py`, `jobs.py`, `terms.py`):
+
+```python
+from selfcal_scripts.spherex import jobs
+from selfcal_scripts.recipes.spherex import maps
+
+MAPS = maps(num_sub=10, num_ch=17, num_col=1)          # the arcs: 17 channels of 10 subchannels, 1 column
+RECIPE = sc.Recipe(sc.continuum(smooth=0.1).replace(chunk_maps=MAPS), name="v1")
+nep.calibrate(RECIPE, jobs=jobs.channel(9))                         # one map: channel 9
+nep.calibrate(RECIPE, jobs=jobs.channels(1, 17))                    # 17 maps, the frames staged once
+nep.calibrate(RECIPE, jobs=jobs.group(16, 17))                      # one map over two channels
+nep.calibrate(RECIPE, jobs=jobs.window("Aromatic"))                 # a preset window of subchannels
+```
+
+- `chunks.subchannels(geometry, num_sub, num_ch, num_col)` cuts the LVF arcs into `num_ch` channels of
+  `num_sub` subchannels and into `num_col` columns: the axes `subchannel` (the spectral axis) and
+  `column`, chunk id `subchannel · num_col + column`, `num_sub · num_ch + 2` subchannels (the first
+  and the last lie beyond the band's edges). `chunks.subchannel_map(num_sub, num_ch, num_col)` is it
+  as an `sc.ChunkMap`, tagged `NumSub<s>_NumCh<c>_NumCol<k>`. `chunks.detector_columns` (one chunk per
+  detector column) and `chunks.readouts` (one per readout channel) are other partitions.
+- `maps(num_sub, num_ch, num_col)` (`selfcal_scripts/recipes/spherex.py`) is the pair the recipes
+  name: the arcs (`subchannel`, primary) and the detector columns (`detector_column`);
+  `on_maps(recipe, num_sub, num_ch, num_col)` is a recipe on another partition.
+- `jobs.channel(c)` is channel `c`, counted from 1 (job `Ch<c>`): its window the channel's
+  subchannels padded by one on each side, its strict set the channel's own. `jobs.channels(first,
+  last)` (or a list) makes one job per channel; `jobs.group(16, 17)` one job over consecutive
+  channels (`Ch16-17`); `jobs.window(name, range(lo, hi))` a window of subchannels solved and kept as
+  given, or a preset by its name (`jobs.WINDOWS`: `Aromatic`, `Aliphatic`). `channel`, `channels`
+  and `group` take `num_sub=` (default 10), which must be the map's.
 
 ### The model
 
@@ -89,47 +162,88 @@ MODEL = sc.Model(sky=[sc.Sky(damping=1e-4)],
 
 - `sc.Sky(name, times=, damping=)`: a sky map times a known function of data variables
   (`times`; none: a constant sky). `damping` pulls the map toward zero, weighted by coverage
-  (default 0.1 for the first sky term, 0.3 for the others).
+  (default none: 0).
 - `sc.Offsets(name, on=, per=, ...)`: an offset per chunk of the chunk map `on` (default the
   primary map; `"detector"`: the whole detector), shared by `per` (`"frame"`, `"all"`, or a
   frame variable such as `"detector"`), optionally times one function (`times=`) or `n` basis
-  functions (`basis=`, `n=`), or a polynomial (`polynomial=sc.Poly(2, window=range(200, 321))`).
-  Priors: `smooth` along `smooth_along` (default the map's own axes), `poly_prior` (soft
-  `sc.Poly`), `damping`. A hard constraint, `exclude=sc.Poly(k, along=axis)`: the term carries no
+  functions (`basis=`, `n=`; an offset that is a polynomial in a coordinate is a basis of that
+  coordinate's polynomials, `n = degree + 1`). Priors: `smooth` along `smooth_along` (default the
+  map's own axes), `damping`. A hard constraint, `exclude=sc.Poly(k, along=axis)`: the term carries no
   polynomial of degree ≤ `k` along the axis (per group of frames), imposed exactly in the solver,
   with no row and no weight; `exclude=sc.Poly(0)` needs no `along` (no constant over all of a
   group's chunks). A per-frame scalar is the term `sc.Offsets("scalar", on="detector")`: one chunk, one
   value per frame. `exclude=sc.SkySignature(k)` keeps a per-frame term from taking up the smooth sky
   fields (the polynomials of degree 1 to `k`, or `'all'` of the deflation's patterns but the
-  constant); it needs `sc.Fit(deflate=...)`
+  constant); it needs `sc.Fit(deflate=...)`. `exclude=sc.Overlap("a", "b")` keeps a term from making
+  any detector pattern that the offset terms `a` and `b` can make with the same coefficients in every
+  frame (`weights="information"`: measured with each offset's information, so offsets the data barely
+  see cannot carry the constraint for the others). `min_observations=2`: the term's offsets a single observation sees leave the solve (value 0),
+  as `sc.Fit(min_observations=)` does for sky pixels. The cal holds a term shared by groups of frames
+  once per group, with each frame's group (the readers expand it per frame)
   ([What the data cannot tell apart](concepts.md#what-the-data-cannot-tell-apart)).
 - **Functions** are Python functions of data variables: their parameters without defaults name
   the variables they read. `sc.Function(np.cos, of="phase")` says it explicitly, and binds
   parameters (`sc.Function(above_80, t0=70.0)`). Built-in shapes: `sc.template(file)`,
-  `sc.gaussian(center, sigma=)`, `sc.linear(center, halfwidth)`, `sc.catalog(name)`.
+  `sc.gaussian(center, sigma=)` (or `width=`, a data variable such as `"bandwidth"`),
+  `sc.linear(center, halfwidth)`.
 - **Data variables** beyond the built-in coordinates and the instrument's maps:
   `sc.Header(key)`, `sc.PerFrame(fn)`, `sc.DetectorMap(array | file | fn)`, `sc.SkyMap(...)`,
   `sc.SolvedSky(cal)`, `sc.Layer()`, `sc.Derived(fn, of=)`, `sc.FrameFunction(fn)`.
 - **Priors**: `sc.priors.frame_smoothness(term, variable)`, `sc.priors.sky_smoothness(term)`,
   `sc.priors.toward(term, variable)`, or your own function wrapped in `sc.Prior(fn, terms)`.
-- **Presets**: `sc.continuum(smooth=0.1, poly_prior=None)`,
-  `sc.spectral(lines, polynomial=None, smooth=None, poly_prior=None)`,
-  `sc.two_block(second="readout")`; `spherex.line("aromatic", damping=5e-3)` is a sky term with
-  a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
+- **Presets**: `sc.continuum(smooth=0.1)`, `sc.spectral(lines, smooth=None)`,
+  `sc.two_block(second, along)`; `terms.line("aromatic", damping=5e-3)` (the SPHEREx model side, below)
+  is a sky term with a shipped line template. `sc.continuum` and `sc.spectral` end their offset terms with the
   per-frame scalar; `sc.two_block` has none. A preset is a plain function that returns a `Model`;
   a calibration variant of your own is one too, or the `Model` itself.
+- **The model side of an instrument is not the instrument.** What is intrinsic to a telescope (its
+  exposure format, calibration maps, the LVF fit, shipped data) lives in `selfcal.instruments.<name>`;
+  the chunk maps, the jobs and the terms a recipe applies to it are choices and live with the
+  recipes: the SPHEREx ones in `selfcal_scripts/spherex/` (the chunk maps and jobs
+  [above](#chunk-maps-and-jobs); in `terms.py`, `terms.frame_slope()`, a per-frame gradient along
+  detector x per subchannel; `terms.spectral_offsets(subchannels)`, a per-frame offset continuous
+  across the job's subchannels from hat functions of the position across the LVF arcs, read through
+  the variable the model registers as `sc.DetectorMap(terms.arc_position)`; `terms.line(name)`, a sky
+  term times a shipped line template; `terms.pah_3p29()`, the Gaussian of the 3.29 µm feature, its
+  width the band width in quadrature with the feature's own). In every such call a data variable
+  appears only inside an `of=`; a function's parameter names are never variable names.
 
 ### The recipe
 
 ```python
-NUMCOL3 = sc.Recipe(sc.continuum(smooth=0.1),               # the NumCol3 channel maps' recipe
-                    fit=sc.Fit(50, clip=5.0, method="lsqr"),  # 50 LSQR iterations; a 5-sigma clip in each frame
-                    coadd=sc.Coadd(clip=2.0, oversample=2, ignore_flags=[21]),
-                    name="damp0p1_reg0p1_outThresh5_sigma2")    # the products' suffix
+from selfcal.models.variables import identity
+from selfcal_scripts.recipes.spherex import maps
+from selfcal_scripts.spherex import terms as T
+
+FINAL = sc.Recipe(
+    sc.Model(chunk_maps=maps(num_ch=17, num_col=1),           # the LVF arcs (primary), the detector columns
+             sky=[sc.Sky(damping=0.0)],                       # a constant sky, undamped
+             offsets=[sc.Offsets(on="subchannel"),            # per frame, a constant per subchannel
+                      T.frame_slope(exclude=sc.SkySignature("all")),   # and a gradient along x per subchannel
+                      sc.Offsets("columns", on="detector_column", per="all",   # a constant per detector
+                                 exclude=sc.Poly(1))],                         # column, shared by all frames
+             variables={"variance": sc.Layer()},              # the frames' stored variance
+             weight=sc.Variance(identity, of="variance")),    # inverse-variance weights
+    fit=sc.Fit(600, clip=None, ignore_flags=[], tolerance=0.0, deflate=sc.Deflate(4),
+               stop=sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10)),
+               min_observations=2),                           # sky pixels one observation covers: not solved
+    coadd=sc.Coadd(clip=2.0, std=True, ignore_flags=[21], instrument_maps=False),
+    numerics=sc.Numerics(30, batch=40),
+    name="subch_varweight_columns_final")                     # the products' suffix
 
 SUBCHANNEL = sc.ChunkGroups.along("subchannel")              # chunks grouped by subchannel
-BY_SUBCHANNEL = NUMCOL3.replace(fit=NUMCOL3.fit.replace(clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
+BY_SUBCHANNEL = FINAL.replace(fit=FINAL.fit.replace(clip=sc.Clip(5.0, per=SUBCHANNEL)), name="subch_clip")
 ```
+
+`FINAL` is `SUBCH_VARWEIGHT_COLUMNS_FINAL` of `selfcal_scripts/recipes/spherex.py`, spelled out.
+A recipe can also be a function of the job: `continuous_final(channel)` there is this recipe for one
+channel job, its per-frame subchannel constants replaced by `terms.spectral_offsets` of the job's
+subchannels (a function continuous across the subchannels):
+`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`. `pixels_final(channel)`, the final channel recipe,
+replaces its column constants with one constant per detector pixel shared by every frame
+(`sc.Offsets("pixels", on="pixel", per="all", exclude=sc.Overlap("spectral", "xs_term", weights="information"),
+min_observations=2)`), its deflation solving the per-frame terms' response alone
+(`sc.Deflate(offsets=("spectral", "xs_term"))`).
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver, its
 starting vector, per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the
@@ -171,6 +285,22 @@ owns) and the solver and the coadd keep their intermediates there. Without it, f
 in place. Every action pins the BLAS and OpenMP threads to one per process before any worker
 starts (the solver's thread pool is the parallelism).
 
+`matrix` is how the solve keeps its matrix. `"stored"` (default) keeps its entries: 8 bytes each,
+8 to 12 per observation. `"compact"` keeps the observations the rows are made from (the reference
+pixel, the detector position, the weight: 16 bytes each) and makes the rows again at every pass,
+with the build's arithmetic in compiled loops, so the products and the solution are the same bytes
+as the stored matrix's for the same thread count: a matrix 4 to 6 times smaller for a slower pass
+(the rows are computed instead of read). It needs the `numba` package (`pip install selfcal[compact]`),
+holds data rows only (no per-frame adjacency rows) and asks that the model's functions read only the observation's
+coordinates, the detector maps, the frame values, the sky maps and functions of them (not the
+stored values, flag bits, layers or frame functions, which the build reads from the frame files).
+With the table, `functions` says how the model's functions (the sky coefficients and the offset
+bases at each observation) are served to the passes: `"computed"` (default) evaluates them at every
+pass over a chunk of rows; `"stored"` evaluates them once, when the table is made, and keeps them
+with it, 4 bytes per value and a basis that is mostly zero packed as (function, value) pairs: faster
+passes for a larger table, the same values either way. Both are machine settings: a product's
+fingerprint does not depend on them.
+
 ### Worker processes and functions
 
 The pipeline's worker processes start fresh and import the run script again, so:
@@ -186,11 +316,14 @@ The pipeline's worker processes start fresh and import the run script again, so:
 ### Big fields
 
 ```python
-LINES = [spherex.line(n, damping=5e-3) for n in ("aromatic", "aliphatic", "plateau")]
-MULTILINE = sc.Recipe(sc.spectral(LINES, polynomial=sc.Poly(2, window=range(200, 321))),
+LINES = [terms.line(n, damping=5e-3) for n in ("aromatic", "aliphatic", "plateau")]
+MODEL = sc.Model(chunk_maps=maps(num_ch=34, num_col=3), sky=[sc.Sky(), *LINES],
+                 offsets=[terms.spectral_polynomial(range(200, 321), 2, on="detector_column")],
+                 variables={"arc_position": sc.DetectorMap(terms.arc_position)})
+MULTILINE = sc.Recipe(MODEL,
                       fit=sc.Fit(300, ignore_flags=[21], shot_noise_weights=True), coadd=None,
                       name="multiline3_SEP6")
-result = sep.calibrate(MULTILINE, jobs=spherex.window("Multiline3", subchannels=range(200, 321)),
+result = sep.calibrate(MULTILINE, jobs=jobs.window("Multiline3", range(200, 321)),
                        tiles=sc.Tiles(boxes=SEP_BOXES),
                        passes=sc.Passes(5, sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
                                         offset=sc.Refit(clip=sc.Clip(2.5, per=SUBCHANNEL))))
@@ -199,7 +332,16 @@ aromatic = result.sky("aromatic")               # from the last SKY pass
 
 `sc.Tiles` solves the field tile by tile and stitches the tiles' skies; `sc.Passes` runs the
 N-pass alternating solve (`order="offset_first"` by default; a schedule ending on an OFFSET pass
-is refused unless `ends_on_offset=True`).
+is refused unless `ends_on_offset=True`). `sc.Passes(2, order="sky_first")` is the joint solve
+followed by one SKY pass: every pixel's sky terms solved in closed form with the joint solve's offsets
+subtracted. The first pass can read other data-quality bits than the SKY pass
+(`init_ignore_flags=`; the SKY and OFFSET passes read the fit's, `Fit(ignore_flags=)`), so the offsets
+can be fitted on fewer pixels than the sky is made from: with `sc.Fit(ignore_flags=[21])` and
+`sc.Passes(2, order="sky_first", init_ignore_flags=[])` the joint solve reads the pixels without any
+flag and the SKY pass those and the ones flagged with bit 21 alone. An offset term tied across frames
+(`exclude=sc.SkySignature(...)`) takes such a schedule and no OFFSET pass. The SKY and OFFSET passes
+clip nothing unless given a clip (`sky_clip=`, `sc.Refit(clip=)`: a sigma or an `sc.Clip`); the first
+pass has the fit's clip, or its own (`init_clip=`).
 
 ### Results
 
@@ -229,8 +371,7 @@ functions), the same reference grid and the same job (the plan checks most of it
 solve is set up). A cal of an older layout that holds the per-frame scalar apart, in a dataset
 `frame_scalar`, is refused too: its offsets miss each frame's level. Columns with data now that
 the source left at zero start at zero; the log counts them. Plain calibrations only: `tiles=`
-and `passes=` take no start, and a model with a hard polynomial basis (`Offsets(polynomial=...)`) cannot be continued (its cal holds the offsets
-the polynomial expands to, not its coefficients). Give the continuation a name of its own: the
+and `passes=` take no start. Give the continuation a name of its own: the
 cal an action writes is never its start.
 
 The start is part of the new cal's inputs: its fingerprint (see below) holds the start's
@@ -297,7 +438,7 @@ solve goes on. When the template of these parts cannot be written, the solve wri
 ### Monitors and stop rules
 
 ```python
-result = field.calibrate(long, monitor=sc.Monitor(every=10))
+result = field.calibrate(long, jobs=job, monitor=sc.Monitor(every=10))
 ```
 
 The weakest directions of a self-calibration system are usually its largest scales: a smooth sky
@@ -466,6 +607,7 @@ are what is slow, and the same otherwise.
 | `basis="cosine"` | `"cosine"` or `"polynomial"` |
 | `terms=None` | the sky terms to deflate (None: all) |
 | `storage=None` | the precision of the deflation's vectors: None, the products' (float32 with `float32=True`); `"float64"` always; `"float32"` needs float32 products |
+| `direct=True` | `False`: only the patterns' offset responses are made, for a term with `exclude=sc.SkySignature(...)`; nothing is solved directly and no vector is stored, the iterations run on every unknown (the same solution in more iterations; for a system whose pattern vectors would not fit in memory) |
 
 Read it with three facts in mind:
 
@@ -532,11 +674,12 @@ before records existed, by a TOML run of an earlier version, or interrupted befo
 `field.adopt(recipe, jobs=...)` checks such products against the recipe (their frames, sky terms
 and offset maps, and that what each is made from is current or adopted too) and writes their
 sidecars. What a product does not show, the fit's and the coadd's settings, is taken on trust:
-adopt a product only with the recipe that made it, such as `NUMCOL3` (above) for the NumCol3 maps
-its TOML production made:
+adopt a product only with the recipe that made it, such as `NUMCOL3` of
+`selfcal_scripts/recipes/spherex.py` (34 channels, 3 columns) for the NumCol3 maps its TOML
+production made:
 
 ```python
-nep.adopt(NUMCOL3, jobs=spherex.channels(1, 34))   # the TOML production's maps: NUMCOL3 made them
+nep.adopt(NUMCOL3, jobs=jobs.channels(1, 34))   # the TOML production's maps: NUMCOL3 made them
 ```
 
 `print(field.plan(...))` lists every product and whether it would be made or reused.
@@ -611,6 +754,13 @@ action (the worker start method, the parallel scatter, matrix block sizes, the v
 coadd's flush stripes, spill thresholds); each left at None defers to its environment variable.
 The transpose product's thread count changes the last bits, so it lives in the recipe:
 `sc.Numerics(rmatvec_threads=...)` (None: the solver's threads, capped by a 16 GB buffer).
+`sc.Numerics(gradient='recurrence')` lets CGLS carry its gradient along from the transpose product of the matvec's
+own result instead of recomputing it from the residual: on the observation table (`sc.Compute(matrix='compact')`)
+that product comes from the matvec's pass, so an iteration makes the rows once instead of twice. The two forms agree
+within rounding; the option is off by default. `sc.Numerics(row_order='sky')` regroups the table's rows into blocks by
+ranges of reference pixels, each range's rows in frame order: the transpose product's threads then each own whole
+blocks and sum their pixels' sky columns in place, so only the offset columns need a private buffer per thread. The
+same rows in another order, so the sums round differently; off by default, and refused without the table.
 
 ### The command line
 
@@ -633,29 +783,35 @@ of `selfcal_scripts/recipes/`, and `selfcal_scripts/run.sh` runs one (`--dry-run
 ## A new telescope
 
 Most cameras need no code (`sc.Camera(..., reader=read_mycam, detector_maps={"pix_angle": a},
-headers={"hwp": "HWPANG"})`). Another chunk geometry is a frozen-dataclass subclass of
-`sc.Instrument` whose fields are its settings and which implements `geometry(oversample)`:
+headers={"hwp": "HWPANG"})`). Another telescope is a frozen-dataclass subclass of
+`sc.Instrument` whose fields are its settings and which implements `geometry(oversample)`, its
+detector:
 
 ```python
 from dataclasses import dataclass
 
+from selfcal.instruments.camera import grid_chunks
+
 @dataclass(frozen=True, kw_only=True)
-class Owl(sc.Instrument):                         # two amplifier strips on a 2048 x 2048 detector
+class Owl(sc.Instrument):                         # a 2048 x 2048 detector read by two amplifiers
     chunks: int = 8
     tag: str = "Owl"
     unit: str = "e-/s"
 
-    def geometry(self, oversample):
-        grid = sc.ChunkMap.rectangles("grid", (2048, 2048), (self.chunks, self.chunks))
-        amps = sc.ChunkMap.rectangles("amps", (2048, 2048), (1, 2), axes=("all", "amp"))
-        return sc.Geometry((2048, 2048), oversample, maps=[grid, amps])
+    def geometry(self, oversample):               # the detector: its shape and per-pixel maps
+        return sc.Geometry((2048, 2048), oversample)
+
+    def default_chunk_maps(self):                 # optional: the maps of a model that names none
+        return {"grid": sc.ChunkMap(grid_chunks, tag=f"Chunks{self.chunks}x{self.chunks}",
+                                    chunks=(self.chunks, self.chunks)),
+                "amps": sc.ChunkMap(amplifiers, n=2)}     # amplifiers(): see Chunk maps and jobs
 ```
 
-It may also override `layout()` (how raw exposure files are read), `default_jobs()`,
-`job_geometry()` and `frame_variables()`, and define the optional hooks (`offset_renderer`,
-`aux_coadds`, `finalize_mosaic`, `coefficient_catalog`). A chunk map other than rectangles is
-`sc.ChunkMap(name, ids, ids, axes=sc.ChunkAxes.row_major(...), adjacency_axes=(...))` (the axes a
-term's `smooth` follows unless it gives `smooth_along`). The engine receives the object itself and
+It may also override `layout()` (how raw exposure files are read), `job_geometry()` and
+`frame_variables()`, and define the optional hooks (`aux_coadds`, `finalize_mosaic`). A chunk map
+other than rectangles is a function that returns `sc.Chunks(det, sc.ChunkAxes.row_major(...),
+adjacency_axes=(...))` (the axes a term's `smooth` follows unless it gives `smooth_along`); how the
+mosaic draws its offsets travels with it (`renderers=`, `render=`). The engine receives the object itself and
 calls it only through this contract, which the built-in instruments implement too
 (`selfcal/instruments/camera.py`, `spherex/settings.py`, `euclid/settings.py`); there is no
 registry. See [Bring your own telescope](../bring_your_own_telescope.md) for the instrument
