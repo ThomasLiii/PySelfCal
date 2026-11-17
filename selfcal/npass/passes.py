@@ -161,6 +161,11 @@ class PassRunner:
         if not calk.get("outlier_group_variable"):
             calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = ctx.sky_damping
+        # The model's observation weight, which the joint solve applies to every observation as well
+        # (engine.setup_job): the pass's sums are the weighted normal equations of the same objective.
+        weight_function = ctx.weight()
+        if weight_function is not None:
+            calk['weight_function'] = weight_function
         io_limit = spec.frames.io_limit
         if spec.tiling is not None:
             nvme = staging.claim(spec.tiling.stage_dir, spec.tiling.frames_dir)

@@ -22,7 +22,9 @@ to pass (each pass is an exact block minimisation), and from a deliberately unco
 the passes bring the sky much closer to the truth. A third model, a detector-fixed pattern shared by
 every frame (``per="all"``), would tie the frames of an OFFSET pass together; the plan refuses it. A term
 that excludes a sky signature is tied across frames by that constraint: the plan refuses it for a schedule
-with an OFFSET pass and takes it for the joint solve followed by a SKY pass alone.
+with an OFFSET pass and takes it for the joint solve followed by a SKY pass alone. A SKY pass weighs every
+observation with the model's observation weight, as the joint solve does, and a prior on a sky term, which a
+SKY pass cannot hold, is refused.
 """
 import json
 import os
@@ -174,8 +176,21 @@ def write_field(field_dir, kind, rng):
         write_frame(standard_frame_path(frames, k, 0), values, [oy, oy + DET, ox, ox + DET], np.stack([det_x, det_y]))
 
 
-def model_of(kind, slope_exclude=None):
-    """The model of ``kind``; ``slope_exclude``: what the x-slopes of ``poly_slope`` may not carry."""
+def variance_by_column(det_x):
+    """An observation variance for the tests of the model's weight: rising with the detector column, and undefined
+    (NaN: the observation carries no weight) on column 5."""
+    v = (1.0 + np.asarray(det_x, dtype=np.float64) / 32.0) ** 2
+    return np.where(np.rint(det_x) == 5, np.nan, v)
+
+
+def sky_prior(line):
+    """A prior on the line term; never evaluated (the plan refuses it with a SKY pass before anything runs)."""
+    raise AssertionError("not evaluated")
+
+
+def model_of(kind, slope_exclude=None, weighted=False, prior=False):
+    """The model of ``kind``; ``slope_exclude``: what the x-slopes of ``poly_slope`` may not carry; ``weighted``: the
+    observation weight ``1 / variance_by_column``; ``prior``: a prior on the line term."""
     sky = [sc.Sky(damping=0.0), sc.Sky('line', times=sc.gaussian(LINE_CENTER, sigma=LINE_SIGMA), damping=0.0)]
     if kind == 'plain':
         offsets = [sc.Offsets(exclude=sc.Poly(0))]
@@ -187,19 +202,22 @@ def model_of(kind, slope_exclude=None):
     else:
         offsets = [sc.Offsets(per='all', exclude=sc.Poly(0))]
     return sc.Model(sky=sky, offsets=offsets + [sc.Offsets('scalar', on='detector')],
-                    variables={'band_pos': sc.DetectorMap(band_position)} if kind == 'poly_slope' else {})
+                    variables={'band_pos': sc.DetectorMap(band_position)} if kind == 'poly_slope' else {},
+                    **({'weight': sc.Variance(variance_by_column, of='det_x')} if weighted else {}),
+                    **({'priors': [sc.Prior(sky_prior, 'line')]} if prior else {}))
 
 
-def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False, floor=None):
+def solve(root, kind, init_iterations, n=5, order='offset_first', tied=False, floor=None, weighted=False, prior=False):
     """The products of an ``n``-pass solve of ``kind``'s field: the first solve's cal, then each pass's. ``tied``: the
     x-slopes of ``poly_slope`` exclude every sky signature of a deflation of order 2 (a constraint across frames).
-    ``floor``: the fit's coverage floor (``Fit(min_observations=)``)."""
+    ``floor``: the fit's coverage floor (``Fit(min_observations=)``). ``weighted``, ``prior``: as :func:`model_of`."""
     field_dir = os.path.join(root, kind, 'out', 'toy')
     if not os.path.exists(field_dir):
         os.makedirs(field_dir)
         write_field(field_dir, kind, np.random.default_rng(7))
-    name = f'{kind}{"_tied" if tied else ""}{"" if floor is None else f"_floor{floor}"}_it{init_iterations}'
-    model = model_of(kind, slope_exclude=sc.SkySignature('all')) if tied else model_of(kind)
+    name = (f'{kind}{"_tied" if tied else ""}{"" if floor is None else f"_floor{floor}"}'
+            f'{"_weighted" if weighted else ""}{"_prior" if prior else ""}_it{init_iterations}')
+    model = model_of(kind, slope_exclude=sc.SkySignature('all') if tied else None, weighted=weighted, prior=prior)
     fit = sc.Fit(init_iterations, clip=None, line_fisher_threshold=0.0, min_observations=floor,
                  **({'deflate': sc.Deflate(2)} if tied else {}))
     recipe = sc.Recipe(model, fit=fit, coadd=None, numerics=sc.Numerics(2, batch=4), name=name)
@@ -393,3 +411,31 @@ def test_the_coverage_floor_on_a_pass_sums():
     assert counts.tolist() == [0, 0, 3, 5, 0, 0, 3, 5]
     assert fisher.tolist() == [1, 0, 3, 4, 5, 0, 7, 8] and rhs.tolist() == [11, 0, 13, 14, 15, 0, 17, 18]
     assert cross[(0, 1)].tolist() == [0.5, 0.0, 0.7, 0.8]
+
+
+def test_a_sky_pass_weighs_every_observation_with_the_models_weight(root):
+    """With ``sc.Model(weight=sc.Variance(...))`` a SKY pass weighs every observation as the joint solve does: each
+    pixel's stored information on the continuum (whose coefficient is one) is the sum of 1/variance over the
+    observations that see it, computed here from the frames, in the joint solve's cal and in the SKY pass's product
+    alike; the observations of detector column 5, whose variance is undefined, carry no weight in either."""
+    products = solve(root, 'plain', init_iterations=50, n=2, order='sky_first', weighted=True)
+    field_dir = os.path.dirname(os.path.dirname(products[0]))
+    expected = np.zeros((REF, REF))
+    for name in sorted(os.listdir(os.path.join(field_dir, 'reprojected'))):
+        with h5py.File(os.path.join(field_dir, 'reprojected', name), 'r') as g:
+            det_x = g['sub_mapping'][0].astype(np.float64)
+            y0, y1, x0, x1 = (int(v) for v in g.attrs['ref_coords'])
+        expected[y0:y1, x0:x1] += np.nan_to_num(1.0 / variance_by_column(det_x), nan=0.0)
+    assert np.any(expected > 0)
+    for path in products:
+        with h5py.File(path, 'r') as f:
+            fisher = f['sky_fisher']['continuum'][()].astype(np.float64)
+        np.testing.assert_allclose(fisher, expected, rtol=1e-5, atol=0.0, err_msg=os.path.basename(path))
+
+
+def test_a_prior_on_a_sky_term_is_refused_with_a_sky_pass(root):
+    """A SKY pass solves every pixel from that pixel's own sums, which have no place for a prior's rows on the sky:
+    the plan refuses a model with a prior on a sky term for a schedule with a SKY pass, before anything runs."""
+    from selfcal.config.base import ConfigError
+    with pytest.raises(ConfigError, match="act on sky terms"):
+        solve(root, 'plain', init_iterations=3, n=2, order='sky_first', prior=True)

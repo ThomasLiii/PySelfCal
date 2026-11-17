@@ -4,7 +4,8 @@ Given the offsets, the sky is block diagonal: each pixel's J sky values are an i
 least-squares problem. A SKY pass subtracts the solved offsets from every frame
 (:class:`OffsetModelSubtractor`, a frame hook), streams the per-pixel sums of the normal equations of the
 rest (``setup_lsqr(..., sky_rhs_moments=True, moments_only=True)``: no matrix) and solves every pixel once
-(:func:`solve_pixels`). The sums are additive over disjoint frame sets, so the tiles' dumps
+(:func:`solve_pixels`); every observation carries the model's observation weight, as in the joint solve. The sums
+are additive over disjoint frame sets, so the tiles' dumps
 (:func:`dump_moments`) are summed before anything is solved (:func:`combine_moments`): exactly a
 full-field solve, with no seam.
 
