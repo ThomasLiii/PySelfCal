@@ -564,7 +564,10 @@ of an OFFSET pass together, and the plan refuses it. A term that excludes a sky 
 schedule with an OFFSET pass, and takes it for the joint solve followed by SKY passes alone
 (`sc.Passes(2, order="sky_first")`), which hold the joint solve's offsets. A coverage floor
 (`sc.Fit(min_observations=)`) applies in a SKY pass to the pass's own sums: a pixel its observations cover
-fewer times gets no value and no coverage, as in the joint solve. The offset terms are chosen in the run script
+fewer times gets no value and no coverage, as in the joint solve. A SKY pass weighs every observation with the
+model's observation weight (`sc.Model(weight=...)`), as the joint solve does; a prior on a sky term
+(`sc.Prior(..., '<sky term>')`) has no place in a pixel's own sums, and the plan refuses it for a schedule with a
+SKY pass. The offset terms are chosen in the run script
 and nowhere else: the passes take them from the model. Given the offsets the sky is **block-diagonal** (one J×J normal
 system per pixel); given the sky the offsets are the model's own offset system. The joint problem
 is therefore solved by alternating least squares with each half exact:
