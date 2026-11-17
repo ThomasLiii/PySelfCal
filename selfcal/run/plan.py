@@ -564,6 +564,12 @@ def _check_passes(ctx, recipe, passes):
                           f"across frames; an OFFSET pass solves every frame's offsets on their own (the joint solve "
                           f"followed by SKY passes alone, Passes(2, order='sky_first'), holds the joint solve's "
                           f"offsets and is taken)")
+    sky_names = {t.name for t in recipe.model.sky}
+    on_sky = [pr.name or ', '.join(pr.terms) for pr in recipe.model.priors if set(pr.terms) & sky_names]
+    # A SKY pass solves every pixel from that pixel's own sums: a prior's rows on the sky have no place in them.
+    if on_sky and 'sky' in schedule(passes.n, passes.order):
+        raise ConfigError(f"calibrate(passes=...): the priors on {on_sky} act on sky terms; a SKY pass solves every "
+                          f"pixel from its own sums and cannot hold them")
     for name, clip in (('init_clip', passes.init_clip), ('sky_clip', passes.sky_clip),
                        ('offset.clip', passes.offset.clip)):
         per = getattr(clip, 'per', 'frame')
