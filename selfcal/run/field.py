@@ -152,6 +152,7 @@ def _prepare(plan):
     """Before a calibration runs: delete the products it makes again (``overwrite``), and the N-pass
     intermediates that were made from other inputs (an interrupted run with the same inputs resumes)."""
     from ..io.atomic import sweep_partials
+    from .engine import tile_names
     from .schedule import schedule
     for prod in plan.products:                    # what interrupted writes left behind
         sweep_partials(prod.path)
@@ -177,7 +178,8 @@ def _prepare(plan):
                     expected[f'pass{i}'] = fingerprint(book.passed(job, i, 'off'))
                     expected[f'sky{i - 1}'] = book.fp_of(previous)
                 previous = path
-            clear_stale_intermediates(work, cal_dir, stem, expected)
+            for path in clear_stale_intermediates(work, cal_dir, stem, expected, tile_names(spec.tiling)):
+                print(f"[selfcal] removed {path}: an N-pass intermediate made from other inputs", flush=True)
 
 
 @dataclass(frozen=True)

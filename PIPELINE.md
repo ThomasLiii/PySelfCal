@@ -910,8 +910,10 @@ N-pass product, a mosaic) has a sidecar next to it, `<product>.json`, written af
 An action reuses a product only when its fingerprint matches what it would make; one made by other
 inputs, or one without a sidecar (made by a TOML run of an earlier version, say), is refused until
 it is adopted or the action passes `overwrite=True`. The N-pass work directory keeps
-`intermediates.json`, the fingerprints its moment dumps and sky exports were made from; the Python
-API deletes those that differ before a run.
+`intermediates.json`, the fingerprints its moment dumps and sky exports were made from, and the names
+of the tiles they were made for; the Python API deletes those that differ before a run, by those tiles'
+names only, and prints each file it removes. Any other file in the calibration directory is left alone,
+even one whose name starts like a tile piece's (`<stem>_pass{i}sky_...`).
 
 ## Zodi anchor stage (absolute brightness)
 
