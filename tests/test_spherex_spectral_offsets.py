@@ -63,3 +63,23 @@ def test_the_channel_recipe_replaces_the_subchannel_constants():
     assert [o.name for o in terms[1:]] == [o.name for o in SUBCH_VARWEIGHT_COLUMNS_FINAL.model.offsets[1:]]
     assert 'arc_position' in dict(recipe.model.variables) and dict(recipe.model.variables)['arc_position'].source is T.arc_position
     assert recipe.fit == SUBCH_VARWEIGHT_COLUMNS_FINAL.fit and recipe.coadd == SUBCH_VARWEIGHT_COLUMNS_FINAL.coadd
+
+
+def test_the_final_channel_recipes_solve_the_job_s_subchannels_within_the_band():
+    from selfcal_scripts.recipes.spherex import pixels_final
+    from selfcal_scripts.spherex import jobs
+    for num_ch in (17, 34):
+        for c in range(1, num_ch + 1):
+            solved = jobs.channel(c, num_ch=num_ch).window['subchannel']
+            recipe = pixels_final(c, num_ch=num_ch)
+            (spectral,) = [o for o in recipe.model.offsets if o.name == 'spectral']
+            pixel = recipe.model.chunk_maps['pixel'].params
+            # the spectral hats sit on the edges of the job's solved subchannels, the per-pixel constants on them
+            assert spectral.basis.params == {'first': solved.start - 1, 'last': solved.stop - 1}
+            assert (pixel['first'], pixel['last']) == (solved.start, solved.stop - 1)
+            assert 0 not in solved and 10 * num_ch + 1 not in solved
+            if 1 < c < num_ch:            # the inner channels as before: one padding subchannel on each side
+                assert solved == range(10 * (c - 1), 10 * c + 2) == jobs.channel(c).window['subchannel']
+    assert jobs.channel(1, num_ch=34).window['subchannel'] == range(1, 12)
+    assert jobs.channel(34, num_ch=34).window['subchannel'] == range(330, 341)
+    assert pixels_final(34, num_ch=34).model.chunk_maps['pixel'].params['last'] == 340

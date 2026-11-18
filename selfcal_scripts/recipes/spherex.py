@@ -19,7 +19,7 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.models.variables import identity
-from selfcal_scripts.spherex import chunks as C, terms as T
+from selfcal_scripts.spherex import chunks as C, jobs as J, terms as T
 
 from .site import ORCA, OUTPUTS
 
@@ -154,16 +154,19 @@ SUBCH_VARWEIGHT_COLUMNS_FINAL = SUBCH_VARWEIGHT_COLUMNS.replace(
 
 def continuous_final(channel, num_sub=10, num_ch=17, num_col=1):
     """SUBCH_VARWEIGHT_COLUMNS_FINAL on :func:`maps` of ``num_sub`` x ``num_ch`` x ``num_col``, for one channel job
-    (``jobs.channel(channel)``) with its per-frame subchannel constants replaced by ``terms.spectral_offsets``: a
-    continuous, piecewise-linear function of the position across the LVF arcs, one coefficient per frame and
-    subchannel edge of the job (its ``num_sub`` subchannels and the one on each side: ``num_sub + 3`` edges), so
-    a background that varies within a subchannel (an airglow line's edge) is followed without steps. The
+    (``jobs.channel(channel, num_ch=num_ch)``) with its per-frame subchannel constants replaced by
+    ``terms.spectral_offsets``: a continuous, piecewise-linear function of the position across the LVF arcs, one
+    coefficient per frame and subchannel edge of the job (its ``num_sub`` subchannels and the one on each side
+    within the band, :func:`selfcal_scripts.spherex.jobs.solved_subchannels`: ``num_sub + 3`` edges, ``num_sub + 2``
+    for the first and the last channel), so a background that varies within a subchannel (an airglow line's
+    edge) is followed without steps. The
     x-slopes and the shared column offsets are the final recipe's. Products carry
     'subch_varweight_columns_final_continuous' (the user, 2026-10-26: the channel recipe from the weak-mode work
     on; from 2026-10-29 :func:`pixels_final`, which replaces its column constants with per-pixel ones, is the final
     channel recipe)."""
     base = on_maps(SUBCH_VARWEIGHT_COLUMNS_FINAL, num_sub, num_ch, num_col)
-    offsets = (T.spectral_offsets(range(num_sub * (channel - 1), num_sub * channel + 2), position='arc_position'),) + tuple(
+    solved = J.solved_subchannels(channel, num_sub=num_sub, num_ch=num_ch)
+    offsets = (T.spectral_offsets(solved, position='arc_position'),) + tuple(
         o for o in base.model.offsets if not (o.on == 'subchannel' and o.times is None and o.basis is None))
     model = base.model.replace(offsets=offsets,
                                variables={**dict(base.model.variables), 'arc_position': sc.DetectorMap(T.arc_position)})
@@ -193,9 +196,15 @@ def pixels_final(channel, num_sub=10, num_ch=17, num_col=1):
     Made with the observations at the window's edge kept and the per-pixel constants one subchannel beyond it (main
     9daeae0): on real NEP W17 Ch9 frames the solve stopped on the chi-squared rule (D2 at iteration 120, D6 at 160);
     on the D6 transfer-function scene with dark current, zodi and noise its r_l is continuous_final's within 0.004 in every
-    bin. Products carry 'subch_varweight_pixels_final_continuous'."""
+    bin. Pair it with ``jobs.channel(channel, num_ch=num_ch)``: the first and the last channel solve no subchannel
+    beyond the band's edges. Until 2026-11-18 they also solved the one beyond (0, or ``num_sub * num_ch + 1``),
+    several times wider than a subchannel, where the spectral term's hats end one subchannel past the
+    channel: most of its pixels had no per-frame level, and the sky took the frame-to-frame change of the zodi
+    there (a large-scale pattern of about 0.02 MJy/sr in the NEP W17 NumCh34 maps of D5 Ch34 and D6 Ch1, gone when
+    solved within the band). Products carry 'subch_varweight_pixels_final_continuous'."""
     base = continuous_final(channel, num_sub, num_ch, num_col)
-    first, last = num_sub * (channel - 1), num_sub * channel + 1           # the job's solved subchannels
+    solved = J.solved_subchannels(channel, num_sub=num_sub, num_ch=num_ch)
+    first, last = solved.start, solved.stop - 1                            # the job's solved subchannels
     offsets = tuple(o for o in base.model.offsets if o.on != 'detector_column') + (
         sc.Offsets('pixels', on='pixel', per='all', exclude=sc.Overlap('spectral', 'xs_term', weights='information'),
                    min_observations=2),)
