@@ -48,6 +48,31 @@ def test_atomic_writes_leave_nothing_behind_on_failure(tmp_path):
     assert target.read_text() == 'complete' and os.listdir(tmp_path) == ['product.h5']
 
 
+def test_stale_npass_intermediates_are_deleted_by_their_tile_names_only(tmp_path):
+    """A pass whose inputs changed loses its tiles' pieces and nothing else: a file in the calibration
+    directory whose name starts like a piece's stays; a later run with other tiles also deletes the pieces
+    of the tiles the manifest recorded."""
+    work, cal, stem = tmp_path / 'npass_cal_x', tmp_path / 'calibration', 'cal_x'
+    (work / 'moments').mkdir(parents=True)
+    cal.mkdir()
+    pieces = [work / 'moments' / 'pass2_all.npz', cal / f'{stem}_pass2sky_all.h5', cal / f'{stem}_pass3off_all.h5']
+    others = [cal / f'{stem}_pass2sky_kept.h5', cal / f'{stem}_pass2sky.h5', work / 'moments' / 'pass2_kept.npz']
+    for path in pieces + others:
+        path.write_bytes(b'x')
+    (work / 'sky_pass2').mkdir()
+    expected = {'pass2': 'a', 'pass3': 'b', 'sky2': 'c'}
+    removed = products.clear_stale_intermediates(str(work), str(cal), stem, expected, ['all'])
+    assert sorted(removed) == sorted(str(p) for p in pieces + [work / 'sky_pass2'])
+    assert all(path.exists() for path in others)
+    for path in pieces:
+        path.write_bytes(b'x')
+    assert products.clear_stale_intermediates(str(work), str(cal), stem, expected, ['all']) == []
+    (cal / f'{stem}_pass2sky_t0.h5').write_bytes(b'x')
+    removed = products.clear_stale_intermediates(str(work), str(cal), stem, {**expected, 'pass2': 'd'}, ['t0', 't1'])
+    assert sorted(removed) == sorted(str(p) for p in pieces[:2] + [cal / f'{stem}_pass2sky_t0.h5'])
+    assert all(path.exists() for path in others + [pieces[2]])
+
+
 def test_fingerprints_ignore_order_and_name_their_differences():
     a = {'fit': {'iterations': 50, 'clip': 5.0}, 'frames': {'n': 3}}
     b = {'frames': {'n': 3}, 'fit': {'clip': 5.0, 'iterations': 50}}

@@ -28,7 +28,6 @@ refused until :meth:`~selfcal.run.field.Field.adopt` checks it and writes its si
 from __future__ import annotations
 
 import datetime
-import glob
 import hashlib
 import json
 import os
@@ -563,30 +562,35 @@ def verify(product, recipe, geom=None) -> list[str]:
 
 
 # --------------------------------------------------------------------------- N-pass intermediates
-def clear_stale_intermediates(work_dir, cal_dir, stem, expected):
-    """Delete the N-pass intermediates that were made from other inputs.
+def clear_stale_intermediates(work_dir, cal_dir, stem, expected, tiles):
+    """Delete the N-pass intermediates that were made from other inputs; returns the deleted paths.
 
     The SKY passes keep per-tile moment dumps (``<work_dir>/moments/pass<i>_<tile>.npz``; with
     ``sky_merge="stitch"``, ``<cal_dir>/<stem>_pass<i>sky_<tile>.h5``) and the OFFSET passes their
     tiles' solutions (``<cal_dir>/<stem>_pass<i>off_<tile>.h5``) and the previous sky they export
-    (``<work_dir>/sky_pass<j>/``); the engine reuses any it finds, so an interrupted run can resume. ``expected`` maps ``"pass<i>"`` and ``"sky<j>"`` to the fingerprint
-    of what made them; a manifest in ``work_dir`` records the fingerprints the intermediates were
-    made with, and those that differ (or are unknown) are deleted before the run.
+    (``<work_dir>/sky_pass<j>/``); the engine reuses any it finds, so an interrupted run can resume.
+    ``expected`` maps ``"pass<i>"`` and ``"sky<j>"`` to the fingerprint of what made them; a manifest
+    in ``work_dir`` records the fingerprints the intermediates were made with, and those that differ
+    (or are unknown) are deleted before the run. Only the pieces of named tiles are deleted: the run's
+    ``tiles`` and those of the earlier runs the manifest records. Any other file in ``cal_dir`` is left
+    alone, even one whose name starts like a piece's.
     """
     manifest = os.path.join(work_dir, 'intermediates.json')
     old = {}
     if os.path.exists(manifest):
         with open(manifest) as f:
             old = json.load(f)
+    names = sorted(set(old.get('tiles', ())) | set(tiles))
     removed = []
     for key, fp in expected.items():
         if old.get(key) == fp:
             continue
         if key.startswith('pass'):
             i = key[len('pass'):]
-            paths = glob.glob(os.path.join(work_dir, 'moments', f'pass{i}_*.npz'))
-            paths += glob.glob(os.path.join(cal_dir, f'{stem}_pass{i}sky_*.h5'))
-            paths += glob.glob(os.path.join(cal_dir, f'{stem}_pass{i}off_*.h5'))
+            paths = [path for tile in names for path in (
+                os.path.join(work_dir, 'moments', f'pass{i}_{tile}.npz'),
+                os.path.join(cal_dir, f'{stem}_pass{i}sky_{tile}.h5'),
+                os.path.join(cal_dir, f'{stem}_pass{i}off_{tile}.h5'))]
         else:
             paths = [os.path.join(work_dir, f'sky_pass{key[len("sky"):]}')]
         for p in paths:
@@ -600,5 +604,5 @@ def clear_stale_intermediates(work_dir, cal_dir, stem, expected):
         os.makedirs(work_dir, exist_ok=True)
         with atomic_path(manifest) as tmp:
             with open(tmp, 'w') as f:
-                json.dump({**old, **expected}, f, indent=1, sort_keys=True)
+                json.dump({**old, **expected, 'tiles': names}, f, indent=1, sort_keys=True)
     return removed
