@@ -142,7 +142,9 @@ nep.calibrate(RECIPE, jobs=jobs.window("Aromatic"))                 # a preset w
   last)` (or a list) makes one job per channel; `jobs.group(16, 17)` one job over consecutive
   channels (`Ch16-17`); `jobs.window(name, range(lo, hi))` a window of subchannels solved and kept as
   given, or a preset by its name (`jobs.WINDOWS`: `Aromatic`, `Aliphatic`). `channel`, `channels`
-  and `group` take `num_sub=` (default 10), which must be the map's.
+  and `group` take `num_sub=` (default 10), which must be the map's, and `num_ch=`, the map's channels:
+  given, the padding stops at the band's edges, so the first and the last channel solve neither
+  subchannel 0 nor `num_sub * num_ch + 1`, which lie beyond them (`jobs.solved_subchannels`).
 
 ### The model
 
@@ -239,11 +241,12 @@ BY_SUBCHANNEL = FINAL.replace(fit=FINAL.fit.replace(clip=sc.Clip(5.0, per=SUBCHA
 A recipe can also be a function of the job: `continuous_final(channel)` there is this recipe for one
 channel job, its per-frame subchannel constants replaced by `terms.spectral_offsets` of the job's
 subchannels (a function continuous across the subchannels):
-`nep.calibrate(continuous_final(9), jobs=jobs.channel(9))`. `pixels_final(channel)`, the final channel recipe,
+`nep.calibrate(continuous_final(9), jobs=jobs.channel(9, num_ch=17))`. `pixels_final(channel)`, the final channel recipe,
 replaces its column constants with one constant per detector pixel shared by every frame
 (`sc.Offsets("pixels", on="pixel", per="all", exclude=sc.Overlap("spectral", "xs_term", weights="information"),
 min_observations=2)`), its deflation solving the per-frame terms' response alone
-(`sc.Deflate(offsets=("spectral", "xs_term"))`).
+(`sc.Deflate(offsets=("spectral", "xs_term"))`). Both take their terms over the subchannels that
+`jobs.channel(channel, num_ch=num_ch)` solves, within the band's edges.
 
 `sc.Fit` is the solve (iterations, the outlier clip, masks, weights, tolerance, solver, its
 starting vector, per-frame hooks, the post-solve gauge `sc.Gauge` of a per-frame gradient model); `sc.Coadd` the

@@ -1,7 +1,7 @@
 """Real channel maps of the final channel recipe on the NEP 2026W17 fields: ``pixels_final(c, num_ch=n)`` for each
-channel ``c`` of a detector's ``n`` channels (17 or 34), each the job ``jobs.channel(c)``: its cal and its coadded
-mosaic. The recipe is made for each channel, since its spectral term, its per-pixel constants and its fit window
-follow the channel's subchannels.
+channel ``c`` of a detector's ``n`` channels (17 or 34), each the job ``jobs.channel(c, num_ch=n)``: its cal and its
+coadded mosaic. The recipe is made for each channel, since its spectral term, its per-pixel constants and its fit
+window follow the channel's subchannels (within the band's edges for the first and the last channel).
 
     selfcal run selfcal_scripts/runs/final_channel_maps.py 1 17                   # Detector 1, Ch1-17 of 17
     selfcal run selfcal_scripts/runs/final_channel_maps.py 1 34 5 6 --frames DIR  # Ch5 and Ch6 of 34, frames from DIR
@@ -19,14 +19,14 @@ from selfcal_scripts.spherex import jobs
 
 FIELD = nep(1)
 RECIPE = pixels_final(9, num_ch=17)
-RUN = dict(jobs=jobs.channel(9))
+RUN = dict(jobs=jobs.channel(9, num_ch=17))
 
 
 def channel_maps(detector, num_ch, channels=(), frames=None, plan=False):
     """Make, or with ``plan`` print the plan of, the maps of ``channels`` (all ``num_ch`` when empty) of ``detector``."""
     field = nep(detector)
     for c in channels or range(1, num_ch + 1):
-        recipe, job = pixels_final(c, num_ch=num_ch), jobs.channel(c)
+        recipe, job = pixels_final(c, num_ch=num_ch), jobs.channel(c, num_ch=num_ch)
         print(field.plan(recipe, jobs=job, frames=frames) if plan else field.calibrate(recipe, jobs=job, frames=frames))
 
 
