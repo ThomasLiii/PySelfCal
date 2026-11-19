@@ -753,6 +753,14 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
     values the full mesh is built from, so the subset is bit-identical to
     ``full.ravel()[needed]`` — the mosaic uses it because a single-channel
     frame samples ~3 % of the grid.
+
+    Grid pixel ``(i, j)`` lies at detector position ``(i, j) / oversample``
+    (``oversample = shape[0] // 2040``), as in the chunk map
+    (:func:`make_spherex_chunk_map`): its radius about the arc centre is taken
+    there, on the same coordinates as the arcs ``r_edges`` that cut the
+    subchannels. The column edges ``x_edges`` bound pixel indices (pixel ``j``
+    spans ``j`` to ``j + 1``), so the spline's column coordinate is
+    ``(j + 0.5) / oversample``.
     """
     spl = _stripped_offset_spline(chunk_offset, chunk_valid_mask, r_edges, x_edges,
                                   tot_subchannels, num_columns, fill_invalid)
@@ -761,19 +769,16 @@ def make_spherex_stripped_offset_map(chunk_map, chunk_offset, chunk_valid_mask, 
 
     h, w = np.shape(chunk_map)
     oversample_factor = h // 2040
-    subpixel_shift = 0.5 / oversample_factor
     det_size = 2040
-    increment = 1 / oversample_factor
-    axis = np.arange(subpixel_shift, det_size+subpixel_shift, increment)
+    axis = np.arange(det_size * oversample_factor) / oversample_factor
+    col_axis = axis + 0.5 / oversample_factor
     if needed is not None:
         ii, jj = np.divmod(np.asarray(needed), w)
-        x_pts = axis[jj]
-        y_pts = axis[ii]
-        r_pts = np.sqrt((y_pts - yc)**2 + (x_pts - xc)**2)
-        return spl(r_pts, x_pts)
+        r_pts = np.sqrt((axis[ii] - yc)**2 + (axis[jj] - xc)**2)
+        return spl(r_pts, col_axis[jj])
     x_mesh, y_mesh = np.meshgrid(axis, axis)
     r_mesh = np.sqrt((y_mesh - yc)**2 + (x_mesh - xc)**2)
-    
-    offset_map = spl(r_mesh, x_mesh)
+
+    offset_map = spl(r_mesh, x_mesh + 0.5 / oversample_factor)
     return offset_map
 

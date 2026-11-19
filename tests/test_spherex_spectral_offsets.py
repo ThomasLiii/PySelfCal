@@ -83,3 +83,23 @@ def test_the_final_channel_recipes_solve_the_job_s_subchannels_within_the_band()
     assert jobs.channel(1, num_ch=34).window['subchannel'] == range(1, 12)
     assert jobs.channel(34, num_ch=34).window['subchannel'] == range(330, 341)
     assert pixels_final(34, num_ch=34).model.chunk_maps['pixel'].params['last'] == 340
+
+
+def test_the_arc_renderer_keeps_each_subchannel_s_mean_on_its_pixels():
+    # The mosaic's renderer of per-subchannel offsets is a spline whose mean between two arcs is the subchannel's
+    # offset; evaluated where the chunk map places the pixels, each subchannel's pixels average to that offset (up to
+    # the pixels cut by the arcs). Evaluating the pixels half a pixel off misses it by about 0.05 for these offsets.
+    from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map
+    geom = _geometry()
+    chunks = geom.chunk_maps['subchannel']
+    sub, extra = chunks.det, chunks.extra
+    n = 172
+    valid = np.zeros(n)
+    valid[20:61] = 1
+    offset = np.where(valid > 0, np.sin(np.arange(n) * 1.3), 0.0)
+    args = (offset, valid, geom.extra['lvf_params'], extra['r_edges'], extra['x_edges'], n, 1)
+    rendered = make_spherex_stripped_offset_map(sub, *args)
+    means = np.array([rendered[sub == s].mean() for s in range(21, 60)])
+    assert np.max(np.abs(means - offset[21:60])) < 0.01
+    some = np.flatnonzero((sub == 30).ravel())[:500]
+    assert np.array_equal(make_spherex_stripped_offset_map(sub, *args, needed=some), rendered.ravel()[some])
