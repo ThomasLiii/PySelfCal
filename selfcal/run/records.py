@@ -61,21 +61,33 @@ def _claim(directory, stem) -> str:
             continue
 
 
-def code_version():
-    """``{commit, branch, modified}`` of the git checkout selfcal runs from (None outside one)."""
+def code_version(repo=None):
+    """The code an action runs: ``{commit, branch, modified, repository}``.
+
+    ``repository`` is the directory that holds the imported selfcal package (``repo`` when given).
+    ``commit``, ``branch`` and ``modified`` (the tracked files changed since the commit) are read
+    from git only when that directory is the top of a git checkout. Otherwise the commit is unknown
+    and they are None, None and []: outside git, and for a copy of the package inside another
+    repository's checkout (such as a ``git archive`` export kept in a worktree), where git would
+    report the enclosing checkout's HEAD, not the commit the copy was made from."""
     import subprocess
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    repo = repo or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    unknown = {'commit': None, 'branch': None, 'modified': [], 'repository': repo}
+
+    def git(*args):
+        return subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True, timeout=5).stdout
+
     try:
-        sha = subprocess.run(['git', '-C', repo, 'rev-parse', 'HEAD'], capture_output=True, text=True,
-                             timeout=5).stdout.strip()
-        if not sha:
-            return None
-        branch = subprocess.run(['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,
-                                text=True, timeout=5).stdout.strip()
-        dirty = subprocess.run(['git', '-C', repo, 'status', '--porcelain', '--untracked-files=no'],
-                               capture_output=True, text=True, timeout=5).stdout.split('\n')
+        top = git('rev-parse', '--show-toplevel').strip()
+        if not top or os.path.realpath(top) != os.path.realpath(repo):
+            return unknown
+        sha = git('rev-parse', 'HEAD').strip()
+        branch = git('rev-parse', '--abbrev-ref', 'HEAD').strip()
+        dirty = git('status', '--porcelain', '--untracked-files=no').split('\n')
     except (OSError, subprocess.SubprocessError):
-        return None
+        return unknown
+    if not sha:
+        return unknown
     return {'commit': sha, 'branch': branch, 'modified': [line[3:] for line in dirty if line.strip()],
             'repository': repo}
 
@@ -224,11 +236,12 @@ def rerun(path, *, overwrite=False):
     cwd, sys_path = os.getcwd(), list(sys.path)
     try:
         field, action, settings, data = load_action(path)
-        then, now = data.get('code') or {}, code_version() or {}
-        if then.get('commit') != now.get('commit') or then.get('modified') or now.get('modified'):
-            warnings.warn(f"{path}: recorded with code {then.get('commit', '?')[:10]}"
-                          f"{' (modified)' if then.get('modified') else ''}, running {now.get('commit', '?')[:10]}"
-                          f"{' (modified)' if now.get('modified') else ''}: the products may differ", stacklevel=2)
+        then, now = data.get('code') or {}, code_version()
+        known = then.get('commit') is not None and now['commit'] is not None
+        if not known or then.get('commit') != now['commit'] or then.get('modified') or now['modified']:
+            warnings.warn(f"{path}: recorded with code {(then.get('commit') or '?')[:10]}"
+                          f"{' (modified)' if then.get('modified') else ''}, running {(now['commit'] or '?')[:10]}"
+                          f"{' (modified)' if now['modified'] else ''}: the products may differ", stacklevel=2)
         _RERUN_SCRIPT, _RERUN_FRAMES = data.get('script'), data.get('frames')
         if action == 'reproject':
             settings['replace'] = bool(overwrite)

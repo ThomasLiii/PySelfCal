@@ -23,18 +23,13 @@ _active = None
 
 
 def _git_description(repo):
-    try:
-        sha = subprocess.run(['git', '-C', repo, 'rev-parse', '--short', 'HEAD'], capture_output=True,
-                             text=True, timeout=5).stdout.strip()
-        dirty = subprocess.run(['git', '-C', repo, 'status', '--porcelain', '--untracked-files=no'],
-                               capture_output=True, text=True, timeout=5).stdout.strip()
-        branch = subprocess.run(['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,
-                                text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return 'unknown (git unavailable)'
-    if not sha:
-        return 'unknown (not a git checkout)'
-    return f"{sha} on {branch}" + (f" with {len(dirty.splitlines())} modified tracked file(s)" if dirty else "")
+    """The commit of the code in ``repo`` as the run's record has it (:func:`~selfcal.run.records.code_version`)."""
+    from .records import code_version
+    code = code_version(repo)
+    if code['commit'] is None:
+        return 'unknown (not the top of a git checkout)'
+    n = len(code['modified'])
+    return f"{code['commit'][:7]} on {code['branch']}" + (f" with {n} modified tracked file(s)" if n else "")
 
 
 def _command_line():
