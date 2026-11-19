@@ -18,7 +18,7 @@ from ..pipeline import pipeline_wrapper
 from ..pipeline.model_eval import ComposedHook
 from ..pipeline.tiled import stitch
 from ..run import staging
-from ..run.engine import setup_job, tile_assignment
+from ..run.engine import UNTILED, setup_job, tile_assignment
 from .offsets import SkySubtractor, merge_offset_cals, normal_equations, solve_frames
 from .sky import OffsetModelSubtractor, apply_coverage_floor, combine_moments, dump_moments, solve_pixels
 
@@ -122,7 +122,7 @@ class PassRunner:
                 reproj = [r.decode() if isinstance(r, bytes) else str(r) for r in f["reproj_list"][:]]
             src = spec.frames.in_place or os.path.dirname(reproj[0])
             frames = [os.path.join(src, os.path.basename(r)) for r in reproj]
-            self.tile_frames = {"all": frames}
+            self.tile_frames = {UNTILED: frames}
             self.all_frames = list(frames)
 
     # ---- SKY pass -----------------------------------------------------------

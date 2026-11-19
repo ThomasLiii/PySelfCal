@@ -233,6 +233,16 @@ def test_spherex_jobs_and_their_runs():
     assert group.name == 'Ch17-18' and group.strict == {'subchannel': range(161, 181)}
     with pytest.raises(ConfigError, match='consecutive channels'):
         jobs.group(17, 19)
+    # given the map's channels, the padding stops at the band's edges (subchannels 0 and 341 of 34 channels)
+    assert jobs.channel(1).window == {'subchannel': range(0, 12)}
+    first, last = jobs.channel(1, num_ch=34), jobs.channel(34, num_ch=34)
+    assert first.window == {'subchannel': range(1, 12)} and first.strict == {'subchannel': range(1, 11)}
+    assert last.window == {'subchannel': range(330, 341)} and last.strict == {'subchannel': range(331, 341)}
+    assert jobs.channel(17, num_ch=34) == jobs.channel(17) and jobs.group(33, 34, num_ch=34).window == {
+        'subchannel': range(320, 341)}
+    assert [j.window for j in jobs.channels(1, 17, num_ch=17)][-1] == {'subchannel': range(160, 171)}
+    with pytest.raises(ConfigError, match='outside'):
+        jobs.channel(35, num_ch=34)
     # channel jobs and window jobs run together, on the recipe's chunk maps, whose primary map tags the products
     recipe = sc.Recipe(sc.continuum().replace(chunk_maps=maps(num_ch=34, num_col=3)), coadd=None)
     (run,) = lower(sc.Field('/tmp/spherex_field', inst, 6.2), recipe, jobs=chans + (window,))

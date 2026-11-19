@@ -63,3 +63,43 @@ def test_the_channel_recipe_replaces_the_subchannel_constants():
     assert [o.name for o in terms[1:]] == [o.name for o in SUBCH_VARWEIGHT_COLUMNS_FINAL.model.offsets[1:]]
     assert 'arc_position' in dict(recipe.model.variables) and dict(recipe.model.variables)['arc_position'].source is T.arc_position
     assert recipe.fit == SUBCH_VARWEIGHT_COLUMNS_FINAL.fit and recipe.coadd == SUBCH_VARWEIGHT_COLUMNS_FINAL.coadd
+
+
+def test_the_final_channel_recipes_solve_the_job_s_subchannels_within_the_band():
+    from selfcal_scripts.recipes.spherex import pixels_final
+    from selfcal_scripts.spherex import jobs
+    for num_ch in (17, 34):
+        for c in range(1, num_ch + 1):
+            solved = jobs.channel(c, num_ch=num_ch).window['subchannel']
+            recipe = pixels_final(c, num_ch=num_ch)
+            (spectral,) = [o for o in recipe.model.offsets if o.name == 'spectral']
+            pixel = recipe.model.chunk_maps['pixel'].params
+            # the spectral hats sit on the edges of the job's solved subchannels, the per-pixel constants on them
+            assert spectral.basis.params == {'first': solved.start - 1, 'last': solved.stop - 1}
+            assert (pixel['first'], pixel['last']) == (solved.start, solved.stop - 1)
+            assert 0 not in solved and 10 * num_ch + 1 not in solved
+            if 1 < c < num_ch:            # the inner channels as before: one padding subchannel on each side
+                assert solved == range(10 * (c - 1), 10 * c + 2) == jobs.channel(c).window['subchannel']
+    assert jobs.channel(1, num_ch=34).window['subchannel'] == range(1, 12)
+    assert jobs.channel(34, num_ch=34).window['subchannel'] == range(330, 341)
+    assert pixels_final(34, num_ch=34).model.chunk_maps['pixel'].params['last'] == 340
+
+
+def test_the_arc_renderer_keeps_each_subchannel_s_mean_on_its_pixels():
+    # The mosaic's renderer of per-subchannel offsets is a spline whose mean between two arcs is the subchannel's
+    # offset; evaluated where the chunk map places the pixels, each subchannel's pixels average to that offset (up to
+    # the pixels cut by the arcs). Evaluating the pixels half a pixel off misses it by about 0.05 for these offsets.
+    from selfcal.instruments.spherex.spherex_utility import make_spherex_stripped_offset_map
+    geom = _geometry()
+    chunks = geom.chunk_maps['subchannel']
+    sub, extra = chunks.det, chunks.extra
+    n = 172
+    valid = np.zeros(n)
+    valid[20:61] = 1
+    offset = np.where(valid > 0, np.sin(np.arange(n) * 1.3), 0.0)
+    args = (offset, valid, geom.extra['lvf_params'], extra['r_edges'], extra['x_edges'], n, 1)
+    rendered = make_spherex_stripped_offset_map(sub, *args)
+    means = np.array([rendered[sub == s].mean() for s in range(21, 60)])
+    assert np.max(np.abs(means - offset[21:60])) < 0.01
+    some = np.flatnonzero((sub == 30).ravel())[:500]
+    assert np.array_equal(make_spherex_stripped_offset_map(sub, *args, needed=some), rendered.ravel()[some])

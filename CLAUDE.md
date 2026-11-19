@@ -74,7 +74,7 @@ but `reproject`.
   The chunk maps are the model's (the first is primary: its tag joins the product names); a model without them gets the
   instrument's `default_chunk_maps()`.
 - **Instruments:** `sc.SPHEREx(d)` (the detector only, no default maps; its maps from `selfcal_scripts.recipes.spherex.maps`,
-  its jobs from `selfcal_scripts.spherex.jobs`: `jobs.channel(17)`, `jobs.channels(1, 17)`, `jobs.window(name, range(lo, hi))`),
+  its jobs from `selfcal_scripts.spherex.jobs`: `jobs.channel(17)`, `jobs.channels(1, 17)`, `jobs.window(name, range(lo, hi))`; with `num_ch=` the channel padding stops at the band's edges, as `pixels_final` expects),
   `sc.Euclid()` (`jobs=sc.Job(band)`), `sc.Camera(shape, chunks=)` (`jobs=sc.Job('All')`).
 - **Jobs:** `sc.Job(name, window={axis: range}, strict={axis: range})`, a box in the primary map's chunk axes.
 

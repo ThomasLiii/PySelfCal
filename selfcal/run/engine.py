@@ -938,6 +938,18 @@ def resolve_tiles(tiling):
     return tiles, only
 
 
+#: The name of the one tile of an untiled N-pass run: its per-tile pieces end in ``_all``.
+UNTILED = 'all'
+
+
+def tile_names(tiling):
+    """The names of the tiles an N-pass run's passes go over: those of a
+    :class:`~selfcal.run.runspec.TilingSpec` (after its ``only``), or :data:`UNTILED` for ``None``."""
+    if tiling is None:
+        return [UNTILED]
+    return [tile.name for tile in resolve_tiles(tiling)[0]]
+
+
 def tiling_frames(frames_dir):
     """Every frame of a directory (every detector), in (exposure, detector) order."""
     from selfcal.io.reproj import parse_reproj_basename
