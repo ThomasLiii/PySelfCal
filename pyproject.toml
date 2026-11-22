@@ -100,6 +100,8 @@ warn_unused_ignores = true
 # Ship the SPHEREx LVF arc-fit parameters, multi-line spectral templates and channel table.
 "selfcal.instruments.spherex" = ["data/lvf_params/*.npy", "data/line_templates/*.npz",
                                  "data/spherex_channels.csv"]
+# The SPHEREx model side's data: the lists of bad detector positions (selfcal_scripts/spherex/bad_pixels.py).
+"selfcal_scripts.spherex" = ["data/*.json"]
 # PEP 561 marker: advertise the package's inline type hints to downstream
 # type checkers (mypy/pyright) and IDEs.
 "selfcal" = ["py.typed"]
