@@ -19,7 +19,7 @@ those products were made.
 """
 import selfcal as sc
 from selfcal.models.variables import identity
-from selfcal_scripts.spherex import chunks as C, jobs as J, terms as T
+from selfcal_scripts.spherex import bad_pixels, chunks as C, jobs as J, terms as T
 
 from .site import ORCA, OUTPUTS
 
@@ -27,6 +27,7 @@ __all__ = ['nep', 'sep', 'nep_qr2', 'maps', 'on_maps', 'CHANNEL_MAPS', 'SLOPE_GA
            'SLOPE_GAUGE_COLUMNS', 'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'SUBCH_VARWEIGHT_COLUMNS',
            'SUBCH_VARWEIGHT_COLUMNS_FINAL', 'continuous_final', 'NUMCOL3', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
+           'multiline3_flag_split', 'FLAG_SPLIT_PASSES', 'flag_split_first_pass',
            ]
 
 
@@ -255,6 +256,64 @@ MULTILINE3_PASSES = sc.Passes(5, order='offset_first',
                               init_clip=sc.Clip(2.5, per=SUBCHANNEL, ignore_flags=[21]),
                               sky_clip=sc.Clip(5.0, per=SUBCHANNEL),
                               offset=sc.Refit(clip=sc.Clip(2.5, per=SUBCHANNEL), bright_cut=0.05))
+
+
+def multiline3_flag_split(name='multiline3_flag_split', *, detector=4, iterations=600, threads=40, pixels=None):
+    """The multi-line recipe of the whole-field fits, solved with the data-quality flags split between the offsets and
+    the sky by :data:`FLAG_SPLIT_PASSES` (pass 1 on the observations that carry no flag, pass 2 the sky terms alone on
+    those with no flag but the source bit).
+
+    * Model, on :func:`maps` of 34 channels and one column: a constant sky plus the aromatic, aliphatic and plateau
+      lines (the shipped templates), all undamped; two offset terms: ``spectral``, a degree-2 Chebyshev polynomial of
+      the position across the LVF arcs over the subchannels of :data:`MULTILINE3_WINDOW`, one per frame
+      (:func:`selfcal_scripts.spherex.terms.spectral_polynomial`; its constant holds the frame's level), and
+      ``xs_term``, a free gradient along detector x per frame and subchannel
+      (:func:`selfcal_scripts.spherex.terms.frame_slope`) with every sky term's signature excluded
+      (``sc.SkySignature('all')``).
+    * Weight: the frames' variance layer, with no weight for ``pixels`` (None: the detector's list,
+      :func:`selfcal_scripts.spherex.bad_pixels.load`) and for stored values below -1 MJy/sr
+      (:func:`selfcal_scripts.spherex.bad_pixels.variance_without`).
+    * Fit: CGLS for at most ``iterations``, no clip, the source-mask bit ignored, tolerance 0; the deflation of the
+      cosine patterns up to order 4 with the response of the two offset terms solved alone
+      (``sc.Deflate(4, offsets=('spectral', 'xs_term'), direct=False)``); the pixels observed fewer than 5 times left
+      out; no detector pixel outside the window read (``window_edge='inside'``). The solve stops early only when both
+      stop rules hold, each checked every 10 iterations: the chi-squared gained over the last 50 iterations is below
+      0.1 squared (``sc.ChiSquaredRule``), and every sky term's smooth fit of degree 4 changes by less than 1e-3 of
+      its rms (``sc.LargeScaleRule``).
+    * Numerics: ``threads`` threads, batches of 10 frames, the observations grouped by sky range
+      (``row_order='sky'``). No mosaic: the sky terms of the cal are the maps.
+    """
+    if pixels is None:
+        pixels = bad_pixels.load(detector)
+    lines = [T.line(n, damping=0.0) for n in ('aromatic', 'aliphatic', 'plateau')]
+    weight = sc.Variance(bad_pixels.variance_without, of=('variance', 'det_x', 'det_y', 'value'), pixels=pixels,
+                         floor=-1.0)
+    stop = sc.Stop(chi2=sc.ChiSquaredRule(0.1, window=50, every=10),
+                   large_scale=sc.LargeScaleRule(1e-3, every=10, degree=4))
+    return sc.Recipe(
+        sc.Model(chunk_maps=maps(num_ch=34, num_col=1), sky=[sc.Sky(damping=0.0), *lines],
+                 offsets=[T.spectral_polynomial(MULTILINE3_WINDOW, 2, name='spectral'),
+                          T.frame_slope(exclude=sc.SkySignature('all'))],
+                 variables={'variance': sc.Layer(), 'arc_position': sc.DetectorMap(T.arc_position)}, weight=weight),
+        fit=sc.Fit(iterations, clip=None, ignore_flags=[21], tolerance=0.0,
+                   deflate=sc.Deflate(4, offsets=('spectral', 'xs_term'), direct=False), stop=stop,
+                   min_observations=5, window_edge='inside'),
+        coadd=None, numerics=sc.Numerics(threads, batch=10, row_order='sky'), name=name)
+
+
+#: The two passes of :func:`multiline3_flag_split`: pass 1 fits the sky terms and the offsets jointly on the
+#: observations that carry no flag at all (``init_ignore_flags=()``); pass 2 fits the sky terms alone on the
+#: observations with no flag but the source bit (the recipe's ``ignore_flags=[21]``), pass 1's offsets subtracted.
+FLAG_SPLIT_PASSES = sc.Passes(2, order='sky_first', init_ignore_flags=())
+
+
+def flag_split_first_pass(recipe, passes=FLAG_SPLIT_PASSES):
+    """``recipe`` with the fit of the first pass of ``passes``: a plain calibration of it makes the product the pass
+    schedule's first pass would make (and reuses), and can write snapshots."""
+    if passes.init_clip is not None:
+        return recipe.replace(fit=recipe.fit.replace(clip=passes.init_clip.replace(ignore_flags=None),
+                                                     ignore_flags=passes.init_clip.ignore_flags))
+    return recipe.replace(fit=recipe.fit.replace(ignore_flags=passes.init_ignore_flags))
 
 
 # ---------------------------------------------------------------------------------------------- tilings
