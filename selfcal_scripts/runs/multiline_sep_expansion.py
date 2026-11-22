@@ -1,6 +1,6 @@
 """SEP Detector 4 on the expanded field (the 2026W29 data plus one ring of the all-sky survey): the three-line
-PAH fit of the NEP expansion (runs/multiline_nep_expansion.py, its recipe itself: the same model, fit and numerics),
-one pass, on eight tiles balanced by frame count.
+PAH fit with an x-slope offset, one pass, on eight tiles balanced by frame count. The recipe is the one the NEP
+expansion's six-tile fit of 2026-10-14 used (the same model, fit and numerics; only the name differs).
 
 The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
 two offset terms at NumCol 1, a degree-2 Chebyshev polynomial of the position across the LVF arcs over the
@@ -17,10 +17,9 @@ and its matrix build's spill go to the NVMe (``site.NVME``): ~0.11 GB of spill p
 the staged frames stay there (~0.5 TB for the field by the last tile), so check the free space before a run.
 """
 import selfcal as sc
-from selfcal_scripts.spherex import jobs
+from selfcal_scripts.spherex import jobs, terms as T
 from selfcal_scripts.recipes.site import ORCA, OUTPUTS
-from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW
-from selfcal_scripts.runs.multiline_nep_expansion import RECIPE as NEP_EXPANSION_RECIPE
+from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW, maps
 
 #: The expanded SEP canvas (17946 x 17942 pixels, 26,810 frames) in eight tiles of ~3,350 frames each.
 SEP_EXPANSION8_TILES = {
@@ -33,8 +32,13 @@ ONLY = None
 
 FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_SEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4), 6.2,
                  compute=ORCA.replace(memory_guard=True))
-RECIPE = NEP_EXPANSION_RECIPE.replace(
-    name='multiline3_xslope_SEPexp8_STITCHED_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg')
+LINES = [T.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
+RECIPE = sc.Recipe(sc.Model(chunk_maps=maps(num_ch=34, num_col=1), sky=[sc.Sky(damping=0.0), *LINES],
+                            offsets=[T.spectral_polynomial(MULTILINE3_WINDOW, 2), T.frame_slope('xslope')],
+                            variables={'arc_position': sc.DetectorMap(T.arc_position)}),
+                   fit=sc.Fit(400, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
+                   coadd=None, numerics=sc.Numerics(32),
+                   name='multiline3_xslope_SEPexp8_STITCHED_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg')
 RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW),
            tiles=sc.Tiles(boxes=SEP_EXPANSION8_TILES, only=ONLY,
                           tile_name='multiline3_xslope_SEPexp8_{tile}_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg',

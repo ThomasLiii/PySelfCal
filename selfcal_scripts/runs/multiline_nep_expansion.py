@@ -1,43 +1,49 @@
-"""NEP Detector 4 on the expanded field (the 2026W29 data plus one ring of the all-sky survey): the three-line
-PAH fit over the Multiline3 window with a free x-slope offset term, on six tiles balanced by frame count.
+"""NEP Detector 4 on the expanded field (the 2026W29 data plus one ring of the all-sky survey: 25,421 frames on the
+16,631 x 16,633 grid): the three-line PAH fit over the Multiline3 window, the whole field in one solve, with the
+data-quality flags split between the offsets and the sky.
 
-The model: a constant sky plus the aromatic, aliphatic and plateau lines (the shipped templates), all undamped;
-two offset terms at NumCol 1, a degree-2 Chebyshev polynomial of the position across the LVF arcs over the
-window per frame (``terms.spectral_polynomial``; its constant holds the frame's level) and a free gradient along
-detector x per frame and subchannel (``terms.frame_slope``); no damping or
-regularisation of any kind; shot-noise weights, the source-mask bit ignored, a 5-sigma clip; the default solver
-to convergence, at most 400 iterations; no mosaic. The tiles are solved one at a time; ``ONLY`` limits the run
-to the tiles listed (no stitch: a later run of every tile reuses their cals and stitches them).
+The recipe is :func:`selfcal_scripts.recipes.spherex.multiline3_flag_split` (a constant sky and the aromatic,
+aliphatic and plateau lines, the spectral polynomial and the x-slope offsets, no damping, the listed bad detector
+positions given no weight), solved in the two passes of
+:data:`~selfcal_scripts.recipes.spherex.FLAG_SPLIT_PASSES`: pass 1 fits the sky terms and the offsets jointly on the
+observations that carry no flag; pass 2 fits the sky terms alone on the observations with no flag but the source bit,
+pass 1's offsets subtracted. The pass-2 cal's sky terms are the maps (no mosaic).
 
-The frames of a tile and the matrix build's spill go to the NVMe (``site.NVME``): the spill peaks at ~0.11 GB per
-frame (460 GB measured for tile B01's 4,236 frames), so check the free space before a run.
+    ./selfcal_scripts/run.sh selfcal_scripts/runs/multiline_nep_expansion.py [--dry-run]
+    ./selfcal_scripts/run.sh selfcal_scripts/runs/multiline_nep_expansion.py --first-pass-only [--snapshots N]
+
+``--first-pass-only``: pass 1 alone, as a plain calibration that writes its solution every ``N`` iterations as a cal
+file (``sc.Snapshots``), so that a stopped solve can be continued from its last snapshot. The command without it then
+reuses that cal and runs pass 2.
+
+Measured on this field (2026-11-15 to 17; 24 workers, 40 threads, the compact matrix): pass 1 had 10.78 billion
+observations and 376.75 million unknowns; its setup took 2,978 s and peaked at 600 GiB in the deflation's setup (the
+peak grows by ~5.5 GiB per thread), and its 600 iterations ran to the cap (~29 h in all). Pass 2 took 13,852 s. The
+frames are staged to the NVMe (``site.NVME``, ~800 GB), and pass 2's matrix build spills there too (projected
+~1.3 TB from the 911 GB of the 17,647-frame W17 field), so check the free space before a run.
 """
+import argparse
+
 import selfcal as sc
-from selfcal_scripts.spherex import jobs, terms as T
+from selfcal_scripts.spherex import jobs
 from selfcal_scripts.recipes.site import ORCA, OUTPUTS
-from selfcal_scripts.recipes.spherex import MULTILINE3_WINDOW, maps
-
-#: The expanded NEP canvas (16631 x 16633 pixels, 25,421 frames) in six tiles of ~4,236 frames each.
-NEP_EXPANSION6_TILES = {
-    'B01': (0, 7797, 0, 8034), 'B02': (0, 7728, 8034, 16631), 'B03': (7797, 9757, 0, 8034),
-    'B04': (7728, 9193, 8034, 16631), 'B05': (9757, 16633, 0, 8034), 'B06': (9193, 16633, 8034, 16631)}
-
-#: The tiles this run solves (None: every tile, then the stitch).
-ONLY = None
+from selfcal_scripts.recipes.spherex import (FLAG_SPLIT_PASSES, MULTILINE3_WINDOW, flag_split_first_pass,
+                                             multiline3_flag_split)
 
 FIELD = sc.Field(f'{OUTPUTS}/SPHEREx_NEP_expansion_2026W29_D4_6p2arcsec', sc.SPHEREx(4), 6.2,
-                 compute=ORCA.replace(keep_staged=True, memory_guard=True))
-LINES = [T.line(name, damping=0.0) for name in ('aromatic', 'aliphatic', 'plateau')]
-RECIPE = sc.Recipe(sc.Model(chunk_maps=maps(num_ch=34, num_col=1), sky=[sc.Sky(damping=0.0), *LINES],
-                            offsets=[T.spectral_polynomial(MULTILINE3_WINDOW, 2), T.frame_slope('xslope')],
-                            variables={'arc_position': sc.DetectorMap(T.arc_position)}),
-                   fit=sc.Fit(400, clip=5.0, ignore_flags=[21], shot_noise_weights=True),
-                   coadd=None, numerics=sc.Numerics(32),
-                   name='multiline3_xslope_NEPexp6_STITCHED_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg')
-RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW),
-           tiles=sc.Tiles(boxes=NEP_EXPANSION6_TILES, only=ONLY,
-                          tile_name='multiline3_xslope_NEPexp6_{tile}_conv400_cheb2_NumCol1_outThresh5_nodamp_noreg',
-                          stitched_name='{name}'))
+                 compute=ORCA.replace(workers=24, matrix='compact', memory_guard=True))
+RECIPE = multiline3_flag_split()
+RUN = dict(jobs=jobs.window('Multiline3', MULTILINE3_WINDOW), passes=FLAG_SPLIT_PASSES)
 
 if __name__ == '__main__':
-    print(FIELD.calibrate(RECIPE, **RUN))
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--first-pass-only', action='store_true')
+    ap.add_argument('--snapshots', type=int, default=0, help='with --first-pass-only: every this many iterations')
+    a = ap.parse_args()
+    if a.first_pass_only:
+        snapshots = sc.Snapshots(every=a.snapshots) if a.snapshots else None
+        print(FIELD.calibrate(flag_split_first_pass(RECIPE), jobs=RUN['jobs'], snapshots=snapshots))
+    else:
+        if a.snapshots:
+            ap.error('--snapshots goes with --first-pass-only (a pass schedule writes none)')
+        print(FIELD.calibrate(RECIPE, **RUN))
