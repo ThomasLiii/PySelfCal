@@ -576,6 +576,11 @@ class Fit(Config):
     :func:`~selfcal.core.solution.compute_x0_offsets_fit`) or ``'zero'`` (everything at zero). The terms'
     hard constraints (``exclude=``) are then imposed on the start. A warm start (``calibrate(start=)``)
     replaces them.
+    ``chi_squared``: write the chi-squared of the solution per sky pixel into the cal file (``sky_chi2``: the sum
+    of the squared weighted residuals of the pixel's observations, made at the end of the solve for about one
+    iteration's time; with a model weight that is the inverse noise, ``sc.Model(weight=sc.Variance(...))``, it is
+    the pixel's chi-squared, and divided by its coverage less the number of sky terms the reduced one). True by
+    default; it changes nothing else in the cal file.
     """
     iterations: int = 50
     _: KW_ONLY
@@ -598,8 +603,11 @@ class Fit(Config):
     seed: Literal['separate', 'offsets', 'zero'] = added('separate', since='2026-10')
     min_observations: int | None = added(None, since='2026-10')
     window_edge: Literal['partial', 'inside'] = added('partial', since='2026-10')
+    chi_squared: bool = added(True, since='2026-11')
 
     def _validate(self):
+        if not isinstance(self.chi_squared, bool):
+            raise ConfigError(f"Fit(chi_squared={self.chi_squared!r}): True or False")
         if self.seed not in ('separate', 'offsets', 'zero'):
             raise ConfigError(f"Fit(seed={self.seed!r}): 'separate' (every offset column at its own least-squares fit, the sky "
                               f"at zero), 'offsets' (every offset column at its frame's joint least-squares fit, the sky at zero) "

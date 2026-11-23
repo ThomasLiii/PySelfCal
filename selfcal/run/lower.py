@@ -82,7 +82,8 @@ def solver_options(recipe) -> dict:
     """The solver's ``apply_lsqr`` keywords: with ``Fit(tolerance=0)`` also ``conlim=0``, so the
     solve runs exactly ``Fit.iterations`` iterations (otherwise the solver's own ``conlim``); with
     ``Fit(stop=...)`` the stop rules (``stop``); with ``Fit(deflate=...)`` the deflation (``deflate``); with
-    ``Fit(vectors=...)`` the solver's vector precision (``vectors``)."""
+    ``Fit(vectors=...)`` the solver's vector precision (``vectors``); with ``Fit(chi_squared=False)`` no chi-squared
+    map (``chi_squared``)."""
     fit = recipe.fit
     atol, btol = fit.atol_btol
     out = {'solver': fit.method, 'iter_lim': fit.iterations, 'atol': atol, 'btol': btol, 'damp': float(fit.damp),
@@ -95,6 +96,8 @@ def solver_options(recipe) -> dict:
         out['deflate'] = fit.deflate
     if fit.vectors is not None:
         out['vectors'] = fit.vectors
+    if not fit.chi_squared:
+        out['chi_squared'] = False
     if recipe.numerics.gradient != 'recomputed':
         if fit.method != 'cgls':
             raise ConfigError(f"Numerics(gradient={recipe.numerics.gradient!r}) is CGLS's (Fit(method='cgls')); "

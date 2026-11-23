@@ -129,7 +129,8 @@ def _solve(path):
 @pytest.mark.parametrize('float32', [True, False])
 @pytest.mark.parametrize('model', sorted(MODELS))
 def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
-    """cal -> x0 -> cal reproduces every dataset exactly: the solve's solution is its starting vector."""
+    """cal -> x0 -> cal reproduces every dataset exactly: the solve's solution is its starting vector. (But the
+    chi-squared map, which the end of a solve makes: the solver's stand-in here makes none.)"""
     field, _ = toy
     tag = f'rt_{model}_{int(float32)}'
     source = field.calibrate(_recipe(MODELS[model], 15, name=tag, float32=float32),     # a real solve
@@ -137,6 +138,8 @@ def test_a_cal_reads_back_as_its_solution(toy, monkeypatch, model, float32):
     _no_solve(monkeypatch)                                                  # then the solution is the start
     again = field.calibrate(_recipe(MODELS[model], 15, name=tag + '_again', float32=float32), start=source, jobs=ALL)
     a, b = _items(source), _items(again.cal_paths[0])
+    assert 'sky_chi2' not in b
+    del a['sky_chi2']
     assert sorted(a) == sorted(b)
     for name in a:
         assert a[name] == b[name], name

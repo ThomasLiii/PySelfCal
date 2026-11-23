@@ -23,7 +23,7 @@ __all__ = ["write_sky_groups", "write_sky_maps"]
 
 def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
                      pixel_cross, pixel_fisher, ref_shape, num_sky_blocks,
-                     line_fisher_threshold=None):
+                     line_fisher_threshold=None, chi2=None):
     """Write the sky blocks (+ separability + aliases) into an open h5py file.
 
     Parameters
@@ -42,6 +42,9 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
     num_sky_blocks : int
     line_fisher_threshold : float or None
         Informational read-time mask threshold (not applied destructively).
+    chi2 : np.ndarray or None
+        The chi-squared of the solution per sky pixel (the sum of its observations' squared weighted
+        residuals), written as ``sky_chi2`` (float32); None: no such dataset.
     """
     from ..core.system import parse_line_separability
     from .parallel_h5 import create_gzip_dataset_parallel
@@ -85,6 +88,9 @@ def write_sky_groups(f, *, sky_names, sky_maps, sky_coverages, sky_fishers,
             f['skymap_line_fisher'] = skyfish_grp[ln]
     if line_fisher_threshold is not None:
         f.attrs['line_fisher_threshold'] = float(line_fisher_threshold)
+    if chi2 is not None:
+        create_gzip_dataset_parallel(f, 'sky_chi2',
+                                     np.asarray(chi2, dtype='float32').reshape(tuple(ref_shape)))
 
 
 def write_sky_maps(f, *, sky_names, ref_shape, dtype, rows):

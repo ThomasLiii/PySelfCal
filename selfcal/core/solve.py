@@ -1064,10 +1064,11 @@ def _iteration_limit(solver, iter_lim, shape):
     return iter_lim if iter_lim is not None else (2 * n if solver in ('lsqr', 'cgls') else min(m, n))
 
 
-def _true_residual(matvec, x, b):
+def _true_residual(matvec, x, b, squares=None):
     """``(|b - A x|, |b|)`` from one product ``A x``, accumulated in float64 over pieces of ``b``
     (an array, or a :class:`~selfcal.core.spill.ParkedVector` read a piece at a time); ``(NaN,
-    NaN)`` when ``b`` is None (it could not be kept)."""
+    NaN)`` when ``b`` is None (it could not be kept). ``squares``: an array of ``b``'s length that
+    receives each element's ``(b - A x)^2``."""
     if b is None:
         return math.nan, math.nan
     from .cgls import _run
@@ -1075,19 +1076,49 @@ def _true_residual(matvec, x, b):
     # the blocks in the vector threads, their sums added in block order (the same sums as one loop)
     rr = bb = 0.0
     spans = [(s, min(b.shape[0], s + _RESIDUAL_BLOCK)) for s in range(0, b.shape[0], _RESIDUAL_BLOCK)]
-    for b2, r2 in _run(partial(_residual_part, b, ax), spans):
+    for b2, r2 in _run(partial(_residual_part, b, ax, squares), spans):
         bb += b2
         rr += r2
     del ax
     return sqrt(rr), sqrt(bb)
 
 
-def _residual_part(b, ax, _key, start, stop):
-    """``(|b|^2, |b - A x|^2)`` over the elements ``start:stop``, in float64 (``b`` read, never written)."""
+def _residual_part(b, ax, squares, _key, start, stop):
+    """``(|b|^2, |b - A x|^2)`` over the elements ``start:stop``, in float64 (``b`` read, never written); the
+    elements' squared residuals into ``squares[start:stop]`` when given."""
     piece = np.array(b[start:stop], dtype=np.float64)
     b2 = float(np.dot(piece, piece))
     piece -= ax[start:stop]
-    return b2, float(np.dot(piece, piece))
+    r2 = float(np.dot(piece, piece))
+    if squares is not None:
+        np.multiply(piece, piece, out=piece)
+        np.copyto(squares[start:stop], piece, casting='same_kind')
+    return b2, r2
+
+
+def _first_block_sums(op, squares, n_first, data_rows):
+    """The rows' squared residuals ``squares`` summed per column of the operator's first ``n_first`` columns: each of
+    the first ``data_rows`` rows adds its square to the columns it has entries in, in proportion to those entries (a row
+    with one entry there, an observation of one sky pixel, adds it whole; a row with none adds nothing). Two products of
+    the operator and no index of the matrix, so it serves every storage: ``u = A e`` with ``e`` one on those columns is
+    each row's entry there, and ``A^T (squares / u)`` on those columns the sums, whatever the columns' scales.
+    ``squares`` is overwritten. Returns the ``n_first`` sums in the operator's dtype."""
+    from .cgls import _run
+    m, n = op.shape
+    e = np.zeros(n, dtype=op.dtype)
+    e[:n_first] = 1
+    u = op.matvec(e)
+    del e
+
+    def part(_key, start, stop):
+        s, w = squares[start:stop], u[start:stop]
+        ok = w != 0
+        np.divide(s, w, out=s, where=ok)
+        s[~ok] = 0
+    _run(part, [(s, min(data_rows, s + _RESIDUAL_BLOCK)) for s in range(0, data_rows, _RESIDUAL_BLOCK)])
+    squares[data_rows:] = 0
+    del u
+    return np.array(op.rmatvec(squares)[:n_first])
 
 
 def _record(solver, result, history, residual, *, atol, btol, damp, conlim, iter_lim, shape, wall_s):
@@ -1115,7 +1146,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 snapshot_every: int | None = None, stop=None, monitor=None,
                 sky_names=None, scratch_dir=None, deflate=None, exclusions=None,
                 vectors=None, signatures=None, held=None,
-                gradient='recomputed') -> np.ndarray | tuple[np.ndarray, SolveRecord]:
+                gradient='recomputed', chi_squared=None) -> np.ndarray | tuple[np.ndarray, SolveRecord]:
     """Applies LSQR or LSMR to solve for the sky and detector offsets.
 
     Parameters
@@ -1184,6 +1215,14 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     return_record : bool, optional
         Also return the solve's
         :class:`~selfcal.core.solve_record.SolveRecord`.
+    chi_squared : int or None, optional
+        The number of the system's first rows that are observations (the rows after them are
+        constraint rows): also return the chi-squared of the solution per sky pixel, the sum of
+        ``(b - A x)^2`` over the observations with an entry in the pixel's column of the first sky
+        term (every observation of the pixel, for a sky term without a coefficient). It is made from
+        the residual the end of the solve forms and two more products of the matrix (about one
+        iteration's time, one vector of ``b``'s length). Only for a CSR / block system
+        (``setup_lsqr``'s), not the COO path, and only when the right-hand side could be kept.
     snapshot : callable or None, optional
         Called as ``snapshot(iterate)`` after every ``snapshot_every``-th
         iteration while the solve goes on (not after the iteration it stops
@@ -1253,6 +1292,10 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
         (one product with the solution, accumulated in float64; the
         right-hand side LSQR overwrites is parked on disk for it,
         ``scratch_dir``; NaN when it could not be).
+    chi2 : np.ndarray or None
+        Only with ``chi_squared`` (the return is then ``(x, record, chi2)``): the chi-squared per sky
+        pixel, ``(ref_h * ref_w,)`` float32, 0 where a pixel has no observation; None where it was
+        not made.
     """
     if not isinstance(A, (coo_matrix, csr_matrix, BlockCSR, ColSplitCSR, ObservationTable)):
         raise TypeError(
@@ -1599,13 +1642,27 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             if watch is not None:
                 watch.bind(operator, _rhs, scale=M, active=_active, num_cols=num_cols)
 
-        def _finish(matvec, result, t_solve):
+        num_sky = int(ref_shape[0]) * int(ref_shape[1])
+        first = active_mask[:num_sky] if active_mask is not None else None   # the first sky term's columns solved
+        n_first = num_sky if first is None else int(np.count_nonzero(first))
+        chi2 = [None]
+
+        def _finish(matvec, result, t_solve, op0=None):
             # The solve's wall time, then |b - A x| with one product of the
             # operator the solver ran on (the scaled A, the scaled x).
             wall = time.perf_counter() - t_solve
             b_ref = _rhs()
-            residual = _true_residual(matvec, result[0], b_ref)
+            squares = None
+            if chi_squared is not None and op0 is not None and b_ref is not None and 0 < n_first <= A_shape[1]:
+                squares = np.empty(A_shape[0], dtype=op0.dtype)
+            residual = _true_residual(matvec, result[0], b_ref, squares)
             del b_ref
+            if squares is not None:
+                t0 = time.perf_counter()
+                chi2[0] = _first_block_sums(op0, squares, n_first, min(int(chi_squared), A_shape[0]))
+                del squares
+                logger.info(f"Chi-squared per sky pixel: {time.perf_counter() - t0:.1f} s "
+                            f"(sum {float(chi2[0].sum(dtype=np.float64)):.6e})")
             rec = _record(solver, result, history, residual, atol=atol, btol=btol, damp=damp, conlim=conlim,
                           iter_lim=iter_lim, shape=A_shape, wall_s=wall)
             if watch is not None:
@@ -1686,7 +1743,7 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
                 result = _run_solver(solver_op, _b_owned, _x0_owned, solver, **kw)
                 if defl is not None:
                     result = (_as_solution(result[0], exact=True),) + tuple(result[1:])
-                record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve)
+                record = _finish(op.matvec if hasattr(op, 'matvec') else op.dot, result, t_solve, op0)
                 if responses is not None:
                     record.deflation = responses.summary_json()
                     record.deflation_s = responses.setup_s
@@ -1754,6 +1811,12 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
             x[active_mask] = x_solver
         else:
             x = x_solver
+        if chi_squared is not None:
+            chi2_map = None
+            if chi2[0] is not None:
+                chi2_map = np.zeros(num_sky, dtype=np.float32)
+                chi2_map[slice(None) if first is None else first] = chi2[0]
+            return x, record, chi2_map
         return (x, record) if return_record else x
 
     # ---- Legacy path: A is a COO. apply_lsqr does the compaction itself.
@@ -1893,4 +1956,6 @@ def apply_lsqr(A: coo_matrix | csr_matrix | BlockCSR, b: np.ndarray,
     else:
         x = x_solver
 
+    if chi_squared is not None:
+        return x, record, None
     return (x, record) if return_record else x

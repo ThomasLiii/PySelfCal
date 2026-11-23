@@ -71,7 +71,8 @@ class SetupResult(NamedTuple):
     for a subframe with no rows; ``constraint_blocks``: the constraint rows). ``offset_counts_solved``: with a
     coverage floor (``min_observations`` or ``offset_min_observations``), the entry counts of the offset columns (the
     full layout's columns from the first offset column on) over the rows the floor leaves in the solve, where
-    ``pixel_counts`` counts every row the build made; None without a floor.
+    ``pixel_counts`` counts every row the build made; None without a floor. ``data_rows``: the number of the
+    matrix's first rows that are observations (the constraint rows follow them).
     """
     A: object
     b: object
@@ -84,6 +85,7 @@ class SetupResult(NamedTuple):
     reduced: object = None
     constraint_blocks: object = None
     offset_counts_solved: object = None
+    data_rows: object = None
 
 
 def _place_rows(rows_local, cols, data, num_rows, n_cols, out_indices, out_data):
@@ -561,7 +563,7 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
         pixel_cross = pixel_cross[(0, 1)]
     return SetupResult(A=table, b=full_b, pixel_counts=pixel_counts, pixel_fisher=pixel_fisher,
                        pixel_cross=pixel_cross, pixel_rhs=pixel_rhs, active_mask=active_mask,
-                       offset_counts_solved=off_solved)
+                       offset_counts_solved=off_solved, data_rows=table.n_data_rows)
 
 
 def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
@@ -2176,7 +2178,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
                        active_mask=active_mask if compaction_active else None,
                        pixel_spill=(PixelSpill(_pix_spill_dir, num_sky_blocks)
                                     if _pix_spill_dir is not None else None),
-                       offset_counts_solved=_off_solved)
+                       offset_counts_solved=_off_solved, data_rows=total_rows_data)
 
 
 def parse_pixel_counts_sky(pixel_counts: np.ndarray, ref_shape: tuple[int, int],
