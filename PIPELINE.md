@@ -650,7 +650,7 @@ no-op. Note the parity: `offset_first` ends on a sky for **odd** `n`
 pass, whose product carries no sky map, unless `ends_on_offset=True`.
 
 Products: `<stem>_pass{i}sky.h5` (v3 sky-only cal: `sky/<name>`, Fisher,
-coverage, `sky_separability/<name>`; written by the same
+coverage, `sky_separability/<name>`, `sky_chi2`; written by the same
 `selfcal/io/cal_writer.write_sky_groups` as `save_calibration`) and
 `<stem>_pass{i}off.h5` (the offsets alone, in the cal layout: `offsets/map_<m>` of every offset
 term with each map's `n_basis` / `basis`, `offset_coverage`, `chunk_maps`,
@@ -716,6 +716,13 @@ scripts' `zodi_utils.load_cal_offsets` are its consumers. Schema varies by
   Fisher information of each sky term (schema v3: attrs `schema_version = 3`, `num_sky_blocks`,
   `sky_components` = the term names, first term first); `sky_separability/<name>` for every term
   after the first when there are several
+- `sky_chi2` — `(ref_h, ref_w)` float32 — the chi-squared of the solution per sky pixel: the sum of the squared
+  weighted residuals of the pixel's observations (those with an entry in the first sky term), 0 where it has
+  none. Made at the end of the solve (about one iteration's time), or by a SKY pass from its per-pixel sums;
+  absent with `sc.Fit(chi_squared=False)`, in snapshots, in a stitched cal (its tiles' cals hold it) and in
+  cals made before it existed. With a model weight that is the inverse noise
+  (`sc.Model(weight=sc.Variance(...))`) it is the pixel's chi-squared, and
+  `sky_chi2 / (sky_coverage/<first term> - num_sky_blocks)` the reduced one
 - `skymap` — `(ref_h, ref_w)` float32 — solved sky map (a hard link to the first sky term; `skymap_coverage` / `skymap_fisher` likewise, and `skymap_line*` link the last term when there are several)
 - `skymap_coverage` — `(ref_h, ref_w)` int64 — frames touching each pixel
 - `reproj_list` — list of HDD paths to the reprojected files (dataset of bytes)
