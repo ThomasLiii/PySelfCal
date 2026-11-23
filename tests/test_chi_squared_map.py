@@ -123,3 +123,33 @@ def test_the_setting_is_checked_and_keeps_the_default_fingerprint():
     assert sc.Fit(chi_squared=False).to_dict()['chi_squared'] is False
     with pytest.raises(ConfigError):
         sc.Fit(chi_squared=1)
+
+
+# ---------------------------------------------------------------------------------------------- the SKY pass
+@pytest.mark.parametrize('J', [2, 4])
+def test_a_sky_pass_has_the_map_from_its_sums(tmp_path, J):
+    """A SKY pass keeps no matrix: its chi-squared per pixel comes from its per-pixel sums, the squared right-hand side
+    among them (``pixel_rhs``, after its blocks). It is the per-pixel sum of the squared residuals of the same rows,
+    here built as a matrix too (whose damping rows, after the observations, add nothing)."""
+    from selfcal.npass.sky import pixel_chi_squared, solve_pixels
+    from test_npass_primitives import REF, _make_frames
+    from test_npass_primitives import _setup as sky_setup
+    paths, bc_det, _, sky_model = _make_frames(str(tmp_path), np.random.default_rng(11 + J), J)
+    r = sky_setup(paths, sky_model, bc_det)
+    num_sky = REF[0] * REF[1]
+    assert r.pixel_rhs.shape == ((J + 1) * num_sky,)
+    x = solve_pixels(r.pixel_fisher, r.pixel_cross, r.pixel_rhs, r.pixel_counts, num_sky, J)
+    chi2 = pixel_chi_squared(x, r.pixel_fisher, r.pixel_cross, r.pixel_rhs, r.pixel_counts, num_sky, J)
+    A, b = _full_width(r).astype(np.float64), np.asarray(r.b, np.float64)
+    assert r.data_rows < A.shape[0]                                 # the damping rows follow the observations
+    res = (b - A @ x)[:r.data_rows]
+    expect = np.zeros(num_sky)
+    for i in range(r.data_rows):
+        row = A[i]
+        expect[row.indices[row.indices < num_sky][0]] += res[i] ** 2
+    assert chi2.dtype == np.float32 and expect.sum() > 0
+    np.testing.assert_allclose(chi2, expect, rtol=1e-5, atol=1e-7 * expect.max())
+    assert (chi2[np.asarray(r.pixel_counts[:num_sky]) == 0] == 0).all()
+    # sums made before the right-hand side's squares were kept: no map
+    assert pixel_chi_squared(x, r.pixel_fisher, r.pixel_cross, r.pixel_rhs[:J * num_sky], r.pixel_counts, num_sky,
+                             J) is None

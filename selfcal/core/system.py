@@ -443,7 +443,7 @@ def _setup_table(batched_tasks, *, max_workers, shm_objects, layout, num_sky, nu
     num_sky_eff = num_sky_blocks * num_sky
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
-    pixel_rhs = np.zeros(num_sky_eff, dtype=np.float64) if sky_rhs_moments else None
+    pixel_rhs = np.zeros(num_sky_eff + num_sky, dtype=np.float64) if sky_rhs_moments else None
     pairs = [(i, j) for i in range(num_sky_blocks) for j in range(i + 1, num_sky_blocks)]
     pixel_cross = {p: np.zeros(num_sky, dtype=np.float64) for p in pairs} if num_sky_blocks >= 2 else None
     blocks, b_pieces = [], []
@@ -703,8 +703,10 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         done in CLOSED FORM per pixel (``selfcal.core.solution.
         solve_sky_closed_form``) — no LSQR, no iteration count, no
         semi-convergence on low-diversity pixels. Returned as
-        ``SetupResult.pixel_rhs`` (``(num_sky_blocks * num_sky,)`` float64) or
-        None. Default False = byte-identical to before.
+        ``SetupResult.pixel_rhs`` (``((num_sky_blocks + 1) * num_sky,)`` float64: the
+        blocks' moments, then ``Σ (w·v)²`` per pixel, over the observations with an entry
+        in the first sky block, from which a closed-form solve has its chi-squared per
+        pixel) or None. Default False = byte-identical to before.
     apply_mask : bool, optional
         Apply each subframe's data-quality mask when reading it (default True).
     apply_weight : bool, optional
@@ -1257,7 +1259,7 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
     # matrix entry, i.e. tens of GB once nnz reaches several 1e9).
     pixel_counts = np.zeros(total_cols, dtype=np.int64)
     pixel_fisher = np.zeros(total_cols, dtype=np.float64)
-    pixel_rhs = (np.zeros(num_sky_blocks * num_sky, dtype=np.float64)
+    pixel_rhs = (np.zeros((num_sky_blocks + 1) * num_sky, dtype=np.float64)
                  if sky_rhs_moments else None)
     # Per-pixel sky-block cross moments Σ a_i·a_j per pair (i, j), i < j
     # (a_0 = w for the continuum, a_j = w·coeff_j for spectral blocks).
@@ -1417,11 +1419,16 @@ def setup_lsqr(file_list: list[str], ref_shape: tuple[int, int],
         # b (= w*v) -> Σ w² G_j v per pixel, per block.
         _rowb = np.asarray(_b_b, dtype=np.float64)[_b_rows]
         _sky = _b_cols < num_sky_blocks * num_sky
-        np.add(pixel_rhs, np.bincount(
+        _blocks = pixel_rhs[:num_sky_blocks * num_sky]
+        np.add(_blocks, np.bincount(
             _b_cols[_sky],
             weights=_b_data[_sky].astype(np.float64) * _rowb[_sky],
             minlength=num_sky_blocks * num_sky,
-        ), out=pixel_rhs)
+        ), out=_blocks)
+        # Σ (w v)² per pixel, after the blocks: each observation by its entry in the first sky term
+        _first = _b_cols < num_sky
+        _squares = pixel_rhs[num_sky_blocks * num_sky:]
+        np.add(_squares, np.bincount(_b_cols[_first], weights=_rowb[_first] ** 2, minlength=num_sky), out=_squares)
 
     _families = [_acc_counts, _acc_fisher]
     if pixel_cross is not None:

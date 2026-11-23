@@ -20,7 +20,8 @@ from ..pipeline.tiled import stitch
 from ..run import staging
 from ..run.engine import UNTILED, setup_job, tile_assignment
 from .offsets import SkySubtractor, merge_offset_cals, normal_equations, solve_frames
-from .sky import OffsetModelSubtractor, apply_coverage_floor, combine_moments, dump_moments, solve_pixels
+from .sky import (OffsetModelSubtractor, apply_coverage_floor, combine_moments, dump_moments, pixel_chi_squared,
+                  solve_pixels)
 
 __all__ = ["PassRunner", "offset_spec", "append_monitor"]
 
@@ -161,6 +162,7 @@ class PassRunner:
         if not calk.get("outlier_group_variable"):
             calk["outlier_group_variable"] = self.geom.wavelength_key
         dws = ctx.sky_damping
+        chi_squared = ctx.solve_options().get('chi_squared', True)       # Fit(chi_squared=)
         # The model's observation weight, which the joint solve applies to every observation as well
         # (engine.setup_job): the pass's sums are the weighted normal equations of the same objective.
         weight_function = ctx.weight()
@@ -215,6 +217,10 @@ class PassRunner:
                                          cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, floor)
                 cc.x = solve_pixels(cc.pixel_fisher, cc.pixel_cross, cc.pixel_rhs, cc.pixel_counts,
                                     cc.ref_shape[0] * cc.ref_shape[1], cc.num_sky_blocks, damp_weights=dws)
+                if chi_squared:
+                    cc.pixel_chi2 = pixel_chi_squared(cc.x, cc.pixel_fisher, cc.pixel_cross, cc.pixel_rhs,
+                                                      cc.pixel_counts, cc.ref_shape[0] * cc.ref_shape[1],
+                                                      cc.num_sky_blocks)
                 ctx.configure(cc)
                 cc.reproj_list = staging.remap_to_nvme(cc.reproj_list, ctx.pipeline_config.reproj_dir)
                 cc.save_calibration(cal_file=os.path.basename(piece))
@@ -224,7 +230,8 @@ class PassRunner:
             pieces.append(piece)
         if p.sky_merge == "combine":
             combine_moments(pieces, out, sky_names=list(self.sky_model.names), damp_weights=dws,
-                            line_fisher_threshold=self.lft, attrs={"npass_pass": i}, min_observations=floor)
+                            line_fisher_threshold=self.lft, attrs={"npass_pass": i}, min_observations=floor,
+                            chi_squared=chi_squared)
             # The dumps are pure intermediates and they are BIG (a J=4 full-NEP
             # tile dump is ~23 GB, so one n=8 run is ~0.5 TB and a 16-tile one
             # ~1.4 TB). Once the combine has written the product they have no
