@@ -27,7 +27,8 @@ __all__ = ['nep', 'sep', 'nep_qr2', 'maps', 'on_maps', 'CHANNEL_MAPS', 'SLOPE_GA
            'SLOPE_GAUGE_COLUMNS', 'SLOPE_GAUGE_VARWEIGHT_COLUMNS', 'SUBCH_VARWEIGHT_COLUMNS',
            'SUBCH_VARWEIGHT_COLUMNS_FINAL', 'continuous_final', 'NUMCOL3', 'LINES3', 'SUBCHANNEL',
            'NEP_OVERLAP_TILES', 'NEP_BIG6_TILES', 'SEP6_TILES', 'SEP_HALVES', 'multiline3', 'MULTILINE3_PASSES',
-           'multiline3_flag_split', 'FLAG_SPLIT_PASSES', 'flag_split_first_pass',
+           'multiline3_flag_split', 'FLAG_SPLIT_PASSES', 'flag_split_first_pass', 'MULTILINE3_WAVELENGTH_D4',
+           'multiline3_slope',
            ]
 
 
@@ -314,6 +315,33 @@ def flag_split_first_pass(recipe, passes=FLAG_SPLIT_PASSES):
         return recipe.replace(fit=recipe.fit.replace(clip=passes.init_clip.replace(ignore_flags=None),
                                                      ignore_flags=passes.init_clip.ignore_flags))
     return recipe.replace(fit=recipe.fit.replace(ignore_flags=passes.init_ignore_flags))
+
+
+#: The wavelength at the centre of :data:`MULTILINE3_WINDOW` on Detector 4 and the window's half width (um): its
+#: subchannels span 3.155 to 3.722 um on the detector's wavelength map.
+MULTILINE3_WAVELENGTH_D4 = (3.438, 0.283)
+
+
+def multiline3_slope(name='multiline3_onepass_slope', *, iterations=350, threads=32, pixels=None):
+    """The multi-line recipe of :func:`multiline3_flag_split` with a sky term ``slope``, solved in one pass on every
+    observation with no flag but the source bit, on Detector 4.
+
+    * Model: that recipe's, plus ``slope``, a map times ``(wavelength - 3.438 um) / 0.283 um``
+      (:data:`MULTILINE3_WAVELENGTH_D4`; it runs from -1 to +1 over the window), undamped. With the constant term, each
+      sky pixel's continuum is a straight line of the wavelength across the window; the slope map is the continuum at
+      the window's red edge minus that at its centre.
+    * Fit: that recipe's, read in one pass with its own ``ignore_flags=[21]`` (no :data:`FLAG_SPLIT_PASSES`): the
+      offsets are fitted on the observations that carry the source bit too. Over a bright extended source nearly every
+      observation carries that bit, and a fit of the offsets on unflagged observations alone ties those frames by few
+      observations or none.
+    * ``iterations``: 350. The whole-field fit of the SEP expanded field (26,810 frames) was stopped at iteration 350,
+      and its solution there is the field's final map (user, 2026-11-23); its stop rules had not held by then.
+    * Numerics: ``threads`` threads (32 in that fit), batches of 10 frames, the observations grouped by sky range.
+    """
+    recipe = multiline3_flag_split(name, detector=4, iterations=iterations, threads=threads, pixels=pixels)
+    center, halfwidth = MULTILINE3_WAVELENGTH_D4
+    slope = sc.Sky('slope', times=sc.linear(center, halfwidth), damping=0.0)
+    return recipe.replace(model=recipe.model.replace(sky=[*recipe.model.sky, slope]))
 
 
 # ---------------------------------------------------------------------------------------------- tilings
