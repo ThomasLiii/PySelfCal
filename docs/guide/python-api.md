@@ -54,6 +54,7 @@ if __name__ == "__main__":                 # worker processes import this file a
 | `sc.Fit(deflate=sc.Deflate(...))` | slow large scales: solve the smooth sky patterns directly |
 | `sc.Fit(min_observations=2)`, `sc.Offsets(min_observations=2)` | leave out of the solve the sky pixels, or a term's offsets, a single observation covers |
 | `sc.Fit(window_edge='inside')` | keep in the solve only the observations whose bilinear sampling lies wholly inside the job's window, so the solve reads no detector pixel outside it (default `'partial'`: also those straddling its edge, at the share of their sampling inside) |
+| `sc.Fit(chi_squared=False)` | leave out of the cal the chi-squared of the solution per sky pixel (`sky_chi2`: the sum of the squared weighted residuals of the pixel's observations), which every calibration writes by default, for about one iteration's time |
 | `sc.Result` | the products, with readers |
 
 ### Instruments

@@ -245,6 +245,8 @@ def test_a_snapshot_is_the_cal_of_that_many_iterations(field, model, method):
         exact = field.calibrate(recipe.replace(fit=recipe.fit.replace(iterations=it),
                                                name=f'sn_{model}_{method}_{it}'), jobs=ALL).cal_paths[0]
         a, b = _items(snap), _items(exact)
+        assert 'sky_chi2' not in a           # the chi-squared map is made at the end of a solve: a snapshot has none
+        del b['sky_chi2']
         assert sorted(a) == sorted(b)
         for name in a:
             assert a[name] == b[name], name
@@ -274,6 +276,7 @@ def test_the_coverage_is_read_where_the_setup_parked_it(field, monkeypatch, tmp_
     exact = field.calibrate(recipe.replace(fit=recipe.fit.replace(iterations=5), name='parked_5'),
                             jobs=ALL).cal_paths[0]
     a, b = _items(snap), _items(exact)
+    del b['sky_chi2']                        # made at the end of a solve: a snapshot has none
     assert sorted(a) == sorted(b) and all(a[k] == b[k] for k in a)
     assert any(k.startswith('sky_separability/') for k in a)
     assert os.listdir(tmp_path) == []                    # every parked state was restored and removed

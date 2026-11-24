@@ -413,7 +413,9 @@ def _table_batch(sub_tasks, shm_arrays, batch_params):
     if batch_params.get('sky_rhs_moments'):
         rowb = np.asarray(b, dtype=np.float64)[rows]
         sky = cols < J * num_sky
-        u, vals = _sparse_bincount(cols[sky], data[sky].astype(np.float64) * rowb[sky])
+        first = cols < num_sky                      # each observation's entry in the first sky term: its pixel
+        u, vals = _sparse_bincount(np.concatenate([cols[sky], cols[first] + J * num_sky]),
+                                   np.concatenate([data[sky].astype(np.float64) * rowb[sky], rowb[first] ** 2]))
         shm['rhs'] = (_ship(u.astype(np.int64)), _ship(vals))
     return {'shm': shm, 'frames': frames, 'num_rows': off, 'n_entries': int(cols.shape[0])}
 

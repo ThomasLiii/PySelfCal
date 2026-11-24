@@ -27,8 +27,8 @@ from ..io.cal_writer import write_sky_groups
 from ..io.calfile import CalFile
 from ..pipeline.model_eval import frame_observations, weighted_pixels
 
-__all__ = ["OffsetModelSubtractor", "solve_pixels", "apply_coverage_floor", "dump_moments", "combine_moments",
-           "write_sky_cal", "sky_monitors"]
+__all__ = ["OffsetModelSubtractor", "solve_pixels", "pixel_chi_squared", "apply_coverage_floor", "dump_moments",
+           "combine_moments", "write_sky_cal", "sky_monitors"]
 
 
 def _basename(p):
@@ -157,6 +157,28 @@ def solve_pixels(pixel_fisher, pixel_cross, pixel_rhs, pixel_counts, num_sky, nu
     return x.T.reshape(-1)
 
 
+def pixel_chi_squared(x, pixel_fisher, pixel_cross, pixel_rhs, pixel_counts, num_sky, num_sky_blocks):
+    """The chi-squared of the sky ``x`` (:func:`solve_pixels`' layout) per pixel, from the pass's sums: the squared
+    weighted residuals of the pixel's observations, ``Σ(w v)² - 2 x·r + x·M x`` with ``M`` and ``r`` the pixel's
+    normal matrix (undamped) and right-hand side and ``Σ(w v)²`` the sum ``pixel_rhs`` holds after its blocks
+    (``setup_lsqr(sky_rhs_moments=True)``). Exact for any ``x``; 0 where a pixel has no observation. Returns
+    ``(num_sky,)`` float32, or None when ``pixel_rhs`` holds the blocks alone (sums made before it had that sum)."""
+    J = int(num_sky_blocks)
+    if np.shape(pixel_rhs)[0] < (J + 1) * num_sky:
+        return None
+    if not isinstance(pixel_cross, dict):
+        pixel_cross = {(0, 1): np.asarray(pixel_cross)} if J > 1 else {}
+    xs = [np.asarray(x[j * num_sky:(j + 1) * num_sky], dtype=np.float64) for j in range(J)]
+    chi2 = np.array(pixel_rhs[J * num_sky:(J + 1) * num_sky], dtype=np.float64)
+    for j in range(J):
+        sl = slice(j * num_sky, (j + 1) * num_sky)
+        chi2 += xs[j] * (np.asarray(pixel_fisher[sl], dtype=np.float64) * xs[j] - 2.0 * np.asarray(pixel_rhs[sl]))
+    for (i, j), c in pixel_cross.items():
+        chi2 += 2.0 * np.asarray(c, dtype=np.float64) * xs[i] * xs[j]
+    chi2[np.asarray(pixel_counts[:num_sky]) == 0] = 0.0
+    return np.maximum(chi2, 0.0).astype(np.float32)          # the rounding of the difference, never below zero
+
+
 def apply_coverage_floor(pixel_counts, pixel_fisher, pixel_rhs, pixel_cross, num_sky, num_sky_blocks, min_observations):
     """The coverage floor (``Fit(min_observations=)``) on a SKY pass's per-pixel sums, in place: a pixel the pass's
     observations cover fewer than ``min_observations`` times loses its sums (every sky term's counts, Fisher and
@@ -203,10 +225,11 @@ def dump_moments(cc, out_npz):
 
 
 def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_threshold=None,
-                    attrs=None, min_observations=None):
+                    attrs=None, min_observations=None, chi_squared=True):
     """Sum per-tile moment dumps and solve every pixel once (exactly a
     full-field solve). Writes a v3 sky-only cal via :func:`write_sky_cal`. ``min_observations``: the coverage floor,
-    applied to the summed counts before the solve (:func:`apply_coverage_floor`; None: every pixel with data)."""
+    applied to the summed counts before the solve (:func:`apply_coverage_floor`; None: every pixel with data).
+    ``chi_squared``: write the solution's chi-squared per pixel too (``sky_chi2``, :func:`pixel_chi_squared`)."""
     acc = None
     reproj = []
     for i, d in enumerate(dumps):
@@ -222,7 +245,9 @@ def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_thre
             ref_shape = tuple(int(v) for v in z["ref_shape"])
         else:
             for k in keys:
-                acc[k] += z[k]
+                if acc[k].shape != z[k].shape:           # a dump made before pixel_rhs held Σ(w v)²: the blocks alone
+                    acc[k] = acc[k][:min(acc[k].size, z[k].size)]
+                acc[k] += z[k][:acc[k].size]
             if legacy:
                 acc["cross_0_1"] += z["pixel_cross"]
         if "reproj_list" in z.files:
@@ -245,6 +270,8 @@ def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_thre
     print(f"[npass] combine: solving {num_sky:,} pixels, J={J}, damp {damp_weights} ...", flush=True)
     x = solve_pixels(acc["pixel_fisher"], cross, acc["pixel_rhs"], acc["pixel_counts"], num_sky, J,
                      damp_weights=damp_weights)
+    chi2 = (pixel_chi_squared(x, acc["pixel_fisher"], cross, acc["pixel_rhs"], acc["pixel_counts"], num_sky, J)
+            if chi_squared else None)
     maps = [x[j * num_sky:(j + 1) * num_sky].reshape(ref_shape).astype(np.float32)
             for j in range(J)]
     counts = [acc["pixel_counts"][j * num_sky:(j + 1) * num_sky].reshape(ref_shape)
@@ -254,7 +281,7 @@ def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_thre
     write_sky_cal(out_cal, ref_shape=ref_shape, sky_names=list(sky_names), sky_maps=maps,
                   sky_counts=counts, sky_fishers=fishers, pixel_cross=cross,
                   pixel_fisher=acc["pixel_fisher"], reproj_list=reproj,
-                  line_fisher_threshold=line_fisher_threshold,
+                  line_fisher_threshold=line_fisher_threshold, chi2=chi2,
                   attrs=dict({"recipe": "per-tile moment dumps summed, one per-pixel "
                                         "closed-form solve (== full-field solve)",
                               "n_tiles": len(dumps), "damp_weights": np.asarray(damp_weights)},
@@ -270,11 +297,11 @@ def combine_moments(dumps, out_cal, *, sky_names, damp_weights, line_fisher_thre
 
 def write_sky_cal(path, *, ref_shape, sky_names, sky_maps, sky_counts, sky_fishers,
                   pixel_cross, pixel_fisher, reproj_list, line_fisher_threshold=None,
-                  attrs=None):
+                  attrs=None, chi2=None):
     """Write a sky-only (``num_maps = 0``) cal in the v3 layout
     ``Calibrator.save_calibration`` produces: ``sky/<name>``, ``sky_coverage/``,
     ``sky_fisher/``, ``sky_separability/<name>`` for every spectral block, and
-    the ``skymap`` / ``skymap_line`` hard-link aliases.
+    the ``skymap`` / ``skymap_line`` hard-link aliases; with ``chi2``, ``sky_chi2``.
     """
     J = len(sky_names)
     with atomic_path(path) as tmp, h5py.File(tmp, "w") as f:
@@ -285,7 +312,7 @@ def write_sky_cal(path, *, ref_shape, sky_names, sky_maps, sky_counts, sky_fishe
                          sky_fishers=[np.asarray(fi, np.float32) for fi in sky_fishers],
                          pixel_cross=pixel_cross, pixel_fisher=pixel_fisher,
                          ref_shape=tuple(ref_shape), num_sky_blocks=J,
-                         line_fisher_threshold=line_fisher_threshold)
+                         line_fisher_threshold=line_fisher_threshold, chi2=chi2)
         f.create_dataset("reproj_list", data=np.array([str(p).encode() for p in reproj_list]))
         for k, v in (attrs or {}).items():
             f.attrs[k] = v

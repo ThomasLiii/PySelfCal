@@ -970,6 +970,7 @@ class Calibrator(Reprojector):
                 self.offset_counts_solved = None
             else:
                 self.A, self.b = r.A, r.b
+                self.data_rows = getattr(r, 'data_rows', None)
                 self.offset_counts_solved = getattr(r, 'offset_counts_solved', None)
                 self.pixel_counts = r.pixel_counts
                 self.pixel_fisher = r.pixel_fisher
@@ -1076,9 +1077,11 @@ class Calibrator(Reprojector):
                    precondition: bool = True, solver: str = 'lsmr', use_float32: bool = False,
                    n_threads: int = 32, conlim: float = 1e8, snapshots=None, stop=None, monitor=None,
                    scratch_dir: str | None = None, deflate=None, vectors=None, exclusions=None,
-                   signatures=None, held=None, gradient: str = 'recomputed') -> None:
+                   signatures=None, held=None, gradient: str = 'recomputed', chi_squared: bool = True) -> None:
         """Solve the assembled LSQR system, storing the result in ``self.x`` and the record of the
-        solve in ``self.solve_record``.
+        solve in ``self.solve_record``. ``chi_squared``: also keep the chi-squared of the solution per sky pixel
+        (``self.pixel_chi2``, which :meth:`save_calibration` writes as ``sky_chi2``; made at the end of the solve,
+        :func:`~selfcal.core.solve.apply_lsqr`; not for a system without sky unknowns).
 
         Parameters
         ----------
@@ -1197,13 +1200,20 @@ class Calibrator(Reprojector):
                 # post-solve consumer see unchanged state even on error.
                 _spill_dir = self._spill_pixel_state()
                 try:
-                    self.x, self.solve_record = apply_lsqr(
+                    # the observations' rows, for the chi-squared per sky pixel (none without sky unknowns)
+                    rows = (getattr(self, 'data_rows', None)
+                            if chi_squared and not getattr(self, 'fixed_sky', False) else None)
+                    self.pixel_chi2 = None
+                    solved = apply_lsqr(
                         _owned.pop(0), _owned.pop(0), ref_shape=self.ref_shape, x0=_owned.pop(0), a_owned=True,
                         atol=atol, btol=btol, damp=damp, iter_lim=iter_lim, precondition=precondition,
                         solver=solver, use_float32=use_float32, n_threads=n_threads, active_mask=active_mask_local,
                         num_cols_full=num_cols_full_local, conlim=conlim, return_record=True, exclusions=exclusions,
-                        signatures=signatures, held=held,
+                        signatures=signatures, held=held, chi_squared=rows,
                         **snap)
+                    self.x, self.solve_record = solved[:2]
+                    if rows is not None:
+                        self.pixel_chi2 = solved[2]
                 finally:
                     if _spill_dir is not None:
                         self._restore_pixel_state(_spill_dir)
@@ -1269,6 +1279,7 @@ class Calibrator(Reprojector):
         parts = [m.flatten() for m in sky_maps] + [o.flatten() for o in offsets]
         self.x = np.concatenate(parts)
         self.solve_record = None          # this x was read, not solved here
+        self.pixel_chi2 = None
 
         K = len(offsets)
         self.chunk_maps = chunk_maps
@@ -1366,7 +1377,8 @@ class Calibrator(Reprojector):
                                                       and self.pixel_fisher is not None) else None),
                     pixel_fisher=self.pixel_fisher, ref_shape=self.ref_shape,
                     num_sky_blocks=self.num_sky_blocks,
-                    line_fisher_threshold=self.line_fisher_threshold)
+                    line_fisher_threshold=self.line_fisher_threshold,
+                    chi2=getattr(self, 'pixel_chi2', None))
             f.create_dataset('reproj_list', data=np.array(self.reproj_list, dtype='S'))
             offsets_grp = f.create_group('offsets')
             cov_grp = f.create_group('offset_coverage')

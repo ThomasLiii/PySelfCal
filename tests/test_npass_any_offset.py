@@ -343,6 +343,42 @@ def test_passes_never_increase_the_objective(root, kind):
     assert solved['method'] == 'direct' and solved['blocks'] == N_FRAMES and solved['left_out'] == 0, solved
 
 
+def residual_squares(field_dir, sky_path, offsets_path):
+    """Per reference pixel, the sum over its observations of the squared residual against the sky of ``sky_path`` and
+    the offsets of ``offsets_path``: the rows of this module's recipes carry no weight."""
+    continuum, line, _ = sky_of(sky_path)
+    continuum, line = np.nan_to_num(continuum), np.nan_to_num(line)
+    gauss = np.exp(-0.5 * ((wavelength().astype(np.float64) - LINE_CENTER) / LINE_SIGMA) ** 2)
+    offsets = offsets_on_detector(offsets_path)
+    out = np.zeros(continuum.shape)
+    for name in sorted(os.listdir(os.path.join(field_dir, 'reprojected'))):
+        with h5py.File(os.path.join(field_dir, 'reprojected', name), 'r') as g:
+            data = g['sub_data'][()].astype(np.float64)
+            y0, y1, x0, x1 = (int(v) for v in g.attrs['ref_coords'])
+        model = continuum[y0:y1, x0:x1] + line[y0:y1, x0:x1] * gauss + offsets[name]
+        out[y0:y1, x0:x1] += (data - model) ** 2
+    return out
+
+
+def test_every_solve_writes_its_chi_squared(root):
+    """Each sky product holds the chi-squared of its sky per pixel (``sky_chi2``, on by default): the sum of the
+    squared residuals of the pixel's observations, here computed from the frames. The first solve's cal: against its
+    own offsets. A SKY pass's product: against the offsets the pass was given (it keeps no matrix; the map comes from
+    its per-pixel sums). From an unconverged first solve, whose passes leave residuals well above the rounding of
+    the data."""
+    products = solve(root, KINDS[0], init_iterations=3, n=5)
+    field_dir = os.path.dirname(os.path.dirname(products[0]))
+    pairs = [(products[0], products[0])] + [(p, [q for q in products[:i] if q.endswith('off.h5')][-1])
+                                           for i, p in enumerate(products) if p.endswith('sky.h5')]
+    assert len(pairs) == 3
+    for sky, offsets in pairs:
+        with h5py.File(sky, 'r') as f:
+            chi2, cov = f['sky_chi2'][()], f['sky_coverage']['continuum'][()]
+        expect = residual_squares(field_dir, sky, offsets)
+        assert chi2.shape == cov.shape and (chi2[cov == 0] == 0).all() and expect.sum() > 1.0
+        np.testing.assert_allclose(chi2, expect, rtol=1e-3, atol=1e-5 * expect.max(), err_msg=os.path.basename(sky))
+
+
 @pytest.mark.parametrize('kind', KINDS)
 def test_passes_improve_an_unconverged_start(root, kind):
     """From a deliberately unconverged first solve, every pass lowers the joint objective and the
